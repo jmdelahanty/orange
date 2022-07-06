@@ -15,4 +15,4 @@ g++ -Ofast -ffast-math -std=c++14 \
     -lGLEW -lGLU -lGL \
     `pkg-config --cflags --libs x11` \
     `PKG_CONFIG_PATH=/path/ffmpeg/lib/pkgconfig/ pkg-config --cflags libavformat libswscale libswresample libavutil libavcodec` `PKG_CONFIG_PATH=/path/ffmpeg/lib/pkgconfig/ pkg-config --libs libavformat libswscale libswresample libavutil libavcodec`
-sudo ./targets/orange;
+# sudo ./targets/orange;

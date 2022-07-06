@@ -17,7 +17,7 @@ const std::string current_date_time() {
 
 void start_one_camera(CameraParams camera_params, GigEVisionDeviceInfo* device_info, int* key_num_ptr, string folder_name, PTPParams* ptp_params)
 {
-    int buffer_size {100};
+    int buffer_size {1000};
     Emergent::CEmergentCamera camera;
     Emergent::CEmergentFrame evt_frame[buffer_size]; 
     
@@ -65,7 +65,7 @@ int main(int argc, char **args)
     GigEVisionDeviceInfo device_info[max_cameras];
     GigEVisionDeviceInfo ordered_device_info[max_cameras];
 
-    int num_cameras = 1;
+    int num_cameras = 7 ;
 
     int cam_count;
     cam_count = check_cameras(max_cameras, device_info, ordered_device_info);
@@ -75,12 +75,15 @@ int main(int argc, char **args)
         return 0;
     }
 
+
+    // set_ip_persistent_with_open_close_camera(device_info, 7);
+
     // popular change to camera settings 
     unsigned int width {3208}; 
     unsigned int height {2200};
-    unsigned int frame_rate {30};
-    unsigned int gain {1000}; 
-    unsigned int exposure {4000};
+    unsigned int frame_rate {25};
+    unsigned int gain {1700}; //{1500}; //{1700}; //{1000}; 
+    unsigned int exposure {3500}; //{800}; //{3500}; //{3000};
     string pixel_format = "BayerRG8"; 
     string color_temp = "CT_2800K";
 
@@ -92,8 +95,8 @@ int main(int argc, char **args)
 
 
     string folder_string = current_date_time();
-    //string folder_name = "/home/red/Videos/" + folder_string;
-    string folder_name = "/mnt/md129/videos/" + folder_string;
+    string folder_name = "/home/red/Videos/daily/" + folder_string;
+    //string folder_name = "/mnt/md129/videos/" + folder_string;
     
     // Creating a directory to save recorded video;
     if (mkdir(folder_name.c_str(), 0777) == -1)
@@ -106,7 +109,7 @@ int main(int argc, char **args)
 
 
     PTPParams* ptp_params = new PTPParams{0, 0};
-    int camera_orders[] = {0, 1, 3, 5, 2, 4, 6};  
+    int camera_orders[] = {0, 1, 2, 3, 4, 5, 6};  
     //int camera_orders[] = {0, 2};
     
     

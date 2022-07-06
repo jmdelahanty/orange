@@ -316,7 +316,7 @@ void aquire_frames_gpu_encode(Emergent::CEmergentCamera *camera, Emergent::CEmer
         if (frame_count % 10000 == 9999)
             printf("\n");
 
-        if (dropped_frames >= 100)
+        if (dropped_frames >= 5000)
             break;
         
         frame_count++; 
