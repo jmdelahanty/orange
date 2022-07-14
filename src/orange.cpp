@@ -82,7 +82,7 @@ int main(int argc, char **args)
     unsigned int width {3208}; 
     unsigned int height {2200};
     unsigned int frame_rate {25};
-    unsigned int gain {1700}; //{1500}; //{1700}; //{1000}; 
+    unsigned int gain {2000}; //{1500}; //{1700}; //{1000}; 
     unsigned int exposure {3500}; //{800}; //{3500}; //{3000};
     string pixel_format = "BayerRG8"; 
     string color_temp = "CT_2800K";
