@@ -65,7 +65,7 @@ int main(int argc, char **args)
     GigEVisionDeviceInfo device_info[max_cameras];
     GigEVisionDeviceInfo ordered_device_info[max_cameras];
 
-    int num_cameras = 7 ;
+    int num_cameras = 1 ;
 
     int cam_count;
     cam_count = check_cameras(max_cameras, device_info, ordered_device_info);
@@ -81,11 +81,11 @@ int main(int argc, char **args)
     // popular change to camera settings 
     unsigned int width {3208}; 
     unsigned int height {2200};
-    unsigned int frame_rate {25};
+    unsigned int frame_rate {210};
     unsigned int gain {2000}; //{1500}; //{1700}; //{1000}; 
-    unsigned int exposure {3500}; //{800}; //{3500}; //{3000};
+    unsigned int exposure {2500}; //{800}; //{3500}; //{3000};
     string pixel_format = "BayerRG8"; 
-    string color_temp = "CT_2800K";
+    string color_temp = "CT_3000K";
 
     std::vector<thread> camera_threads;
 

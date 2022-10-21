@@ -183,34 +183,38 @@ int check_cameras(int max_cameras, GigEVisionDeviceInfo *device_info, GigEVision
     {
         for (unsigned int i = 0; i < count; i++)
         {
-            if (strcmp(device_info[i].serialNumber, "710018") == 0)
+            if (strcmp(device_info[i].serialNumber, "710031") == 0)
             {
                 ordered_device_info[0] = device_info[i];
             }
-            else if (strcmp(device_info[i].serialNumber, "710041") == 0)
-            {
-                ordered_device_info[1] = device_info[i];
-            }
-            else if (strcmp(device_info[i].serialNumber, "710038") == 0)
-            {
-                ordered_device_info[2] = device_info[i];
-            }
-            else if (strcmp(device_info[i].serialNumber, "710039") == 0)
-            {
-                ordered_device_info[3] = device_info[i];
-            }
-            else if (strcmp(device_info[i].serialNumber, "710032") == 0)
-            {
-                ordered_device_info[4] = device_info[i];
-            }
-            else if (strcmp(device_info[i].serialNumber, "710037") == 0)
-            {
-                ordered_device_info[5] = device_info[i];
-            }
-            else if (strcmp(device_info[i].serialNumber, "710040") == 0)
-            {
-                ordered_device_info[6] = device_info[i];
-            }
+            // if (strcmp(device_info[i].serialNumber, "710018") == 0)
+            // {
+            //     ordered_device_info[0] = device_info[i];
+            // }
+            // else if (strcmp(device_info[i].serialNumber, "710041") == 0)
+            // {
+            //     ordered_device_info[1] = device_info[i];
+            // }
+            // else if (strcmp(device_info[i].serialNumber, "710038") == 0)
+            // {
+            //     ordered_device_info[2] = device_info[i];
+            // }
+            // else if (strcmp(device_info[i].serialNumber, "710039") == 0)
+            // {
+            //     ordered_device_info[3] = device_info[i];
+            // }
+            // else if (strcmp(device_info[i].serialNumber, "710032") == 0)
+            // {
+            //     ordered_device_info[4] = device_info[i];
+            // }
+            // else if (strcmp(device_info[i].serialNumber, "710037") == 0)
+            // {
+            //     ordered_device_info[5] = device_info[i];
+            // }
+            // else if (strcmp(device_info[i].serialNumber, "710040") == 0)
+            // {
+            //     ordered_device_info[6] = device_info[i];
+            // }
         }
 
         printf("Found %d cameras. \n", count);
