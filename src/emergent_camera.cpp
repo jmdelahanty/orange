@@ -315,9 +315,9 @@ void EmergentCamera::allocateFrameBuffers(int buffer_size) {
         required_size *= 3;  // RGB formats need 3x space
     }
     LOG(INFO) << "Estimated buffer size required: " << required_size << " bytes";
-    
+
     // Log GPU state if GPU direct is enabled
-    EVT_FRAME_BUFFER_FLAGS buffer_mode = EVT_FRAME_BUFFER_DEFAULT;
+    int buffer_mode = EVT_FRAME_BUFFER_DEFAULT;
     if (params_.gpu_direct) {
         size_t free_gpu_mem, total_gpu_mem;
         cudaMemGetInfo(&free_gpu_mem, &total_gpu_mem);
@@ -333,15 +333,38 @@ void EmergentCamera::allocateFrameBuffers(int buffer_size) {
     releaseFrameBuffers();
     
     try {
+        // Match the old code's behavior - resize vector and set up frames
         frame_buffers_.resize(buffer_size);
         
         for (int i = 0; i < buffer_size; i++) {
-            LOG(INFO) << "Allocating buffer " << i + 1 << " of " << buffer_size;
+            // Set frame properties first
             auto& frame = frame_buffers_[i];
             frame.size_x = params_.width;
             frame.size_y = params_.height;
-            frame.pixel_type = GVSP_PIX_MONO8;
             
+            // Match pixel type setting from the old code
+            if (params_.pixel_format == "Mono8") {
+                frame.pixel_type = GVSP_PIX_MONO8;
+            } else if (params_.pixel_format == "BayerRG8") {
+                frame.pixel_type = GVSP_PIX_BAYRG8;
+            } else if (params_.pixel_format == "RGB8Packed") {
+                frame.pixel_type = GVSP_PIX_RGB8;
+            } else if (params_.pixel_format == "BGR8Packed") {
+                frame.pixel_type = GVSP_PIX_BGR8;
+            } else if (params_.pixel_format == "YUV411Packed") {
+                frame.pixel_type = GVSP_PIX_YUV411_PACKED;
+            } else if (params_.pixel_format == "YUV422Packed") {
+                frame.pixel_type = GVSP_PIX_YUV422_PACKED;
+            } else if (params_.pixel_format == "YUV444Packed") {
+                frame.pixel_type = GVSP_PIX_YUV444_PACKED;
+            } else if (params_.pixel_format == "BayerGB8") {
+                frame.pixel_type = GVSP_PIX_BAYGB8;
+            } else {
+                // Default to mono8 for other formats
+                frame.pixel_type = GVSP_PIX_MONO8;
+            }
+            
+            // Allocate the buffer
             EVT_ERROR err = EVT_AllocateFrameBuffer(
                 camera_.get(),
                 &frame,
@@ -350,30 +373,31 @@ void EmergentCamera::allocateFrameBuffers(int buffer_size) {
             
             if (err != EVT_SUCCESS) {
                 std::stringstream ss;
-                ss << "Frame buffer allocation failed for buffer " << i << "\n"
-                   << "Error code: " << err << "\n"
-                   << "Error string: " << get_evt_error_string(err) << "\n"
-                   << "Buffer details:\n"
-                   << "  Size: " << frame.size_x << "x" << frame.size_y << "\n"
-                   << "  Pixel type: " << frame.pixel_type << "\n"
-                   << "  Required size: " << required_size << " bytes"
-                   << "  Buffer mode: " << (buffer_mode == EVT_FRAME_BUFFER_ZERO_COPY ? "ZERO_COPY" : "DEFAULT");
+                ss << "Frame buffer allocation failed for buffer " << i 
+                   << "\nError code: " << err 
+                   << "\nError string: " << get_evt_error_string(err)
+                   << "\nBuffer details:"
+                   << "\n  Size: " << frame.size_x << "x" << frame.size_y
+                   << "\n  Pixel type: " << frame.pixel_type
+                   << "\n  Required size: " << required_size << " bytes"
+                   << "\n  Buffer mode: " << (buffer_mode == EVT_FRAME_BUFFER_ZERO_COPY ? "ZERO_COPY" : "DEFAULT");
                 LOG(ERROR) << ss.str();
                 throw CameraException(ss.str(), err);
             }
-
+            
             LOG(INFO) << "Successfully allocated buffer " << i + 1;
 
+            // Queue the frame
             err = EVT_CameraQueueFrame(camera_.get(), &frame);
             if (err != EVT_SUCCESS) {
                 std::stringstream ss;
-                ss << "Frame queue failed for buffer " << i << "\n"
-                   << "Error code: " << err << "\n"
-                   << "Error string: " << get_evt_error_string(err);
+                ss << "Frame queue failed for buffer " << i
+                   << "\nError code: " << err 
+                   << "\nError string: " << get_evt_error_string(err);
                 LOG(ERROR) << ss.str();
                 throw CameraException(ss.str(), err);
             }
-
+            
             LOG(INFO) << "Successfully queued buffer " << i + 1;
         }
         
