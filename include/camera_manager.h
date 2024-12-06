@@ -38,69 +38,78 @@ public:
         LOG(INFO) << "Starting camera initialization with " << device_info.size() << " devices";
         
         for (size_t i = 0; i < device_info.size(); ++i) {
-            if (!selected_cameras[i]) {
-                LOG(INFO) << "Camera " << i << " not selected, skipping";
-                continue;
-            }
+            if (!selected_cameras[i]) continue;
 
             std::string serial(device_info[i].serialNumber);
             LOG(INFO) << "Initializing camera " << i << " (serial: " << serial << ")";
             
             CameraInstance instance;
             
-            // Set identification parameters
-            instance.params.device_info = device_info[i];
-            instance.params.camera_serial = serial;
-            instance.params.camera_name = device_info[i].userDefinedName;
-            
             try {
-                instance.camera = std::make_unique<EmergentCamera>(instance.params);
-                LOG(INFO) << "Camera instance created for " << serial;
+                // Set identification parameters
+                instance.params.device_info = device_info[i];
+                instance.params.camera_serial = serial;
+                instance.params.camera_name = device_info[i].userDefinedName;
                 
-                instance.camera->open(&device_info[i]);
-                LOG(INFO) << "Camera " << serial << " opened successfully";
-                
-                // First get current camera state
-                instance.camera->updateParamsFromCurrentState(instance.params);
-                instance.camera->logCurrentState("Initial camera state");
-                
-                LOG(INFO) << "Current camera settings:"
-                         << "\n  Exposure: " << instance.params.exposure
-                         << "\n  Gain: " << instance.params.gain
-                         << "\n  Frame Rate: " << instance.params.frame_rate
-                         << "\n  Iris: " << instance.params.iris
-                         << "\n  Focus: " << instance.params.focus;
-
-                // Now apply user config if it exists
-                auto config_it = known_cameras.find(serial);
-                if (config_it != known_cameras.end()) {
-                    LOG(INFO) << "Applying user configuration for camera " << serial;
+                try {
+                    instance.camera = std::make_unique<EmergentCamera>(instance.params);
+                    LOG(INFO) << "Camera instance created for " << serial;
                     
-                    // Apply each parameter with logging
-                    if (config_it->second.exposure != instance.params.exposure) {
-                        instance.camera->updateExposure(config_it->second.exposure);
-                    }
-                    if (config_it->second.gain != instance.params.gain) {
-                        instance.camera->updateGain(config_it->second.gain);
-                    }
-                    if (config_it->second.frame_rate != instance.params.frame_rate) {
-                        instance.camera->updateFrameRate(config_it->second.frame_rate);
-                    }
-                    if (config_it->second.iris != instance.params.iris) {
-                        instance.camera->updateIris(config_it->second.iris);
-                    }
-                    if (config_it->second.focus != instance.params.focus) {
-                        instance.camera->updateFocus(config_it->second.focus);
-                    }
+                    instance.camera->open(&device_info[i]);
+                    LOG(INFO) << "Camera " << serial << " opened successfully";
+                    
+                    // Initialize Mono8 pixel format
+                    instance.params.pixel_format = "Mono8";
+                    instance.camera->updatePixelFormat(instance.params.pixel_format);
+                    LOG(INFO) << "Set pixel format to: " << instance.params.pixel_format;
 
-                    // Get final state after applying config
+                    // First get current camera state
                     instance.camera->updateParamsFromCurrentState(instance.params);
-                    instance.camera->logCurrentState("After applying user config");
-                }
+                    instance.camera->logCurrentState("Initial camera state");
+                    
+                    LOG(INFO) << "Current camera settings:"
+                             << "\n  Exposure: " << instance.params.exposure
+                             << "\n  Gain: " << instance.params.gain
+                             << "\n  Frame Rate: " << instance.params.frame_rate
+                             << "\n  Iris: " << instance.params.iris
+                             << "\n  Focus: " << instance.params.focus;
 
-                cameras.push_back(std::move(instance));
-                LOG(INFO) << "Successfully initialized camera " << serial;
-                
+                    // Now apply user config if it exists
+                    auto config_it = known_cameras.find(serial);
+                    if (config_it != known_cameras.end()) {
+                        LOG(INFO) << "Applying user configuration for camera " << serial;
+                        
+                        // Apply each parameter with logging
+                        if (config_it->second.width != 0 && config_it->second.height != 0) {
+                            instance.camera->updateResolution(config_it->second.width, config_it->second.height);
+                        }
+                        if (config_it->second.exposure != instance.params.exposure) {
+                            instance.camera->updateExposure(config_it->second.exposure);
+                        }
+                        if (config_it->second.gain != instance.params.gain) {
+                            instance.camera->updateGain(config_it->second.gain);
+                        }
+                        if (config_it->second.frame_rate != instance.params.frame_rate) {
+                            instance.camera->updateFrameRate(config_it->second.frame_rate);
+                        }
+                        if (config_it->second.iris != instance.params.iris) {
+                            instance.camera->updateIris(config_it->second.iris);
+                        }
+                        if (config_it->second.focus != instance.params.focus) {
+                            instance.camera->updateFocus(config_it->second.focus);
+                        }
+
+                        // Get final state after applying config
+                        instance.camera->updateParamsFromCurrentState(instance.params);
+                        instance.camera->logCurrentState("After applying user config");
+                    }
+
+                    cameras.push_back(std::move(instance));
+                    LOG(INFO) << "Successfully initialized camera " << serial;
+                    
+                } catch (const evt::CameraException& e) {
+                    LOG(ERROR) << "Failed to initialize camera " << serial << ": " << e.what();
+                }
             } catch (const evt::CameraException& e) {
                 LOG(ERROR) << "Failed to initialize camera " << serial << ": " << e.what();
             }

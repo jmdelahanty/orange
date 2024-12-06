@@ -92,15 +92,62 @@ public:
         if (instance.is_streaming) return;
 
         try {
-            // Open the camera if not already open
+            // First ensure camera is open and configured
             if (!instance.camera->isOpen()) {
-                instance.camera->open(nullptr); // You'll need to pass proper device info here
+                // Configure GPU direct before opening camera
+                if (instance.params.gpu_direct) {
+                    // The GPU configuration is now handled inside EmergentCamera
+                    instance.params.gpu_id = enable_gpu ? 0 : -1;  // Set GPU ID based on enable_gpu flag
+                }
+
+                instance.camera->open(&instance.params.device_info);
+                
+                // Update all camera parameters in correct order
+                instance.camera->updateResolution(instance.params.width, instance.params.height);
+                instance.camera->updateOffset(0, 0);  // Reset offset first
+                instance.camera->updatePixelFormat(instance.params.pixel_format);
+                
+                if (instance.params.color) {
+                    instance.camera->setParameter("ColorTemp", instance.params.color_temp);
+                }
+                
+                // Update core parameters
+                instance.camera->updateGain(instance.params.gain);
+                instance.camera->updateExposure(instance.params.exposure);
+                instance.camera->updateFrameRate(instance.params.frame_rate);
+                instance.camera->updateFocus(instance.params.focus);
+                instance.camera->updateIris(instance.params.iris);
             }
 
+            LOG(INFO) << "Attempting to allocate frame buffers for camera " << camera_idx;
+            
+            // Get current camera state before allocation
+            instance.camera->logCurrentState("Before frame buffer allocation");
+            
+            // Allocate frame buffers before starting stream
+            constexpr int default_buffer_count = 32;
+            try {
+                instance.camera->allocateFrameBuffers(default_buffer_count);
+            } catch (const CameraException& e) {
+                LOG(ERROR) << "Frame buffer allocation failed with error code: " 
+                          << e.getErrorCode() << "\n" << e.what();
+                throw;
+            }
+
+            // Start the actual stream
+            try {
+                instance.camera->startStream();
+            } catch (const CameraException& e) {
+                LOG(ERROR) << "Stream start failed after successful buffer allocation: " 
+                          << e.what();
+                throw;
+            }
+
+            // Configure GPU streaming if requested
             if (enable_gpu) {
                 // Configure GPU streaming
                 instance.config.enable_gpu_direct = true;
-                instance.config.gpu_device_id = 0; // Would come from settings
+                instance.config.gpu_device_id = instance.params.gpu_id;
                 instance.gpu_stream = std::make_unique<GPUStreaming>(
                     *instance.camera,
                     instance.config
@@ -117,9 +164,16 @@ public:
             }
             
             instance.is_streaming = true;
+            LOG(INFO) << "Camera streaming started successfully";
         }
         catch (const CameraException& e) {
-            std::cerr << "Failed to start streaming: " << e.what() << std::endl;
+            // Make sure to clean up on failure
+            if (instance.gpu_stream) {
+                instance.gpu_stream->stopStreaming();
+                instance.gpu_stream.reset();
+            }
+            instance.is_streaming = false;
+            LOG(ERROR) << "Failed to start streaming: " << e.what();
             throw;
         }
     }

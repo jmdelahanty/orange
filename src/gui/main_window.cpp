@@ -23,6 +23,10 @@ void MainWindow::loadCameraConfigs(const std::string& config_path) {
                 
                 auto params = evt::CameraParams::from_json(j);
                 if (!params.camera_serial.empty()) {
+                    LOG(INFO) << "Loaded camera config values:\n"
+                             << "  Exposure: " << params.exposure << "\n"
+                             << "  Frame Rate: " << params.frame_rate << "\n"
+                             << "  Gain: " << params.gain;
                     LOG(INFO) << "Loading config with serial: " << params.camera_serial;
                     known_cameras_[params.camera_serial] = params;
                     LOG(INFO) << "Loaded config for camera: " << params.camera_serial;
@@ -221,8 +225,10 @@ void MainWindow::initializeCameras() {
         // Initialize camera manager with found devices
         if (!device_info_.empty()) {
             std::vector<std::string> config_files(device_info_.size());
+            LOG(INFO) << "Starting camera initialization with " << device_info_.size() << " devices";
             camera_manager_->initializeCameras(selected_cameras_, device_info_, config_files, known_cameras_);
             LOG(INFO) << "Camera manager initialized with " << camera_manager_->getCameraCount() << " active cameras";
+            LOG(INFO) << "Initialized " << device_info_.size() << " cameras";
         }
         
     } catch (const std::exception& e) {

@@ -34,7 +34,7 @@ struct CameraParams {
     unsigned int width_min{8};
     unsigned int width_inc{0};
     unsigned int height_max{0};
-    unsigned int height_min{16};
+    unsigned int height_min{8};
     unsigned int height_inc{0};
     unsigned int gain_max{0};
     unsigned int gain_min{8};
@@ -71,7 +71,7 @@ struct CameraParams {
         params.width = j.value("width", 0);
         params.height = j.value("height", 0);
         params.gain = j.value("gain", 0);
-        params.exposure = j.value("exposure", 0);  // This should be picking up the value 10
+        params.exposure = j.value("exposure", 0);
         params.frame_rate = j.value("frame_rate", 0);
         params.focus = j.value("focus", 0);
         params.gpu_id = j.value("gpu_id", 0);

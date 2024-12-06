@@ -49,6 +49,7 @@ EmergentCamera::EmergentCamera(const CameraParams& params)
     : params_(params),
       camera_(std::make_unique<Emergent::CEmergentCamera>()) {
     
+    LOG(INFO) << "Camera instance created for " << params.camera_serial;
     if (params_.gpu_direct) {
         camera_->gpuDirectDeviceId = params_.gpu_id;
     }
@@ -74,10 +75,21 @@ void EmergentCamera::open(const GigEVisionDeviceInfo* device_info) {
         is_open_ = true;
 
         // Only set the absolute minimum required settings
-        configureDefaults();
+        // configureDefaults();
 
         // Get all parameter ranges once during initialization
         updateCameraRanges();  // store all ranges in params_
+
+        // Set default pixel format if none specified
+        if (params_.pixel_format.empty()) {
+            params_.pixel_format = "Mono8";
+            LOG(INFO) << "Setting default pixel format: " << params_.pixel_format;
+        }
+        else {
+            LOG(INFO) << "Using configured pixel format: " << params_.pixel_format;
+        }
+        
+        updatePixelFormat(params_.pixel_format);
 
         LOG(INFO) << "Camera opened successfully";
 
@@ -92,77 +104,55 @@ void EmergentCamera::startStream() {
         throw CameraException("Cannot start stream - camera not open");
     }
     if (is_streaming_) {
-        throw CameraException("Stream already started");
+        return;  // Already streaming
     }
 
     try {
-        // Get camera temperature to verify communication
-        int temp = getSensorTemperature();
-        std::cout << "Camera temperature before stream: " << temp << std::endl;
+        LOG(INFO) << "Starting camera stream...";
 
-        // Get current packet size and other stream parameters
-        unsigned int packet_size;
-        checkError(EVT_CameraGetUInt32Param(camera_.get(), "GevSCPSPacketSize", &packet_size), 
-                  "Getting packet size");
-        std::cout << "Stream packet size: " << packet_size << " bytes" << std::endl;
+        // First allocate frame buffers before starting the stream
+        constexpr int default_buffer_count = 1;  
+        allocateFrameBuffers(default_buffer_count);
+        LOG(INFO) << "Allocated " << default_buffer_count << " frame buffers";
 
-        if (params_.gpu_direct) {
-            std::cout << "GPU Direct enabled - initializing GPU pipeline..." << std::endl;
-            if (!initializeGPUDirect()) {
-                std::cerr << "GPU Direct initialization failed - falling back to standard mode" << std::endl;
-                // Reset GPU Direct flag to ensure standard path is used
-                params_.gpu_direct = false;
-                camera_->gpuDirectDeviceId = -1;
-            }
-        } else {
-            std::cout << "Using standard streaming mode (GPU Direct disabled)" << std::endl;
-        }
-
-        // Configure memory allocations based on mode
-        if (!params_.gpu_direct) {
-            // Standard mode: Ensure host memory is properly aligned
-            camera_->gpuDirectDeviceId = -1;  // Explicitly disable GPU Direct
-            
-            // You might want to set specific buffer modes or memory alignments here
-            // For example:
-            checkError(EVT_CameraSetEnumParam(camera_.get(), "StreamBufferHandlingMode", 
-                                            "NewestOnly"), 
-                      "Setting buffer handling mode");
-        }
-
-        // Open the stream
-        EVT_ERROR stream_result = EVT_CameraOpenStream(camera_.get());
-        if (stream_result != EVT_SUCCESS) {
-            std::stringstream ss;
-            ss << "Failed to open camera stream (Error: " << evt::get_evt_error_string(stream_result) << ")";
-            if (params_.gpu_direct) {
-                ss << " - Check GPU Direct compatibility";
-            }
-            throw CameraException(ss.str());
-        }
-
+        // Now start the stream
+        checkError(EVT_CameraOpenStream(camera_.get()), "Opening camera stream");
+        
         is_streaming_ = true;
-        std::cout << "Stream successfully opened in " 
-                  << (params_.gpu_direct ? "GPU Direct" : "standard") 
-                  << " mode" << std::endl;
+        LOG(INFO) << "Camera stream started successfully";
 
     } catch (const std::exception& e) {
+        // Clean up on failure
+        releaseFrameBuffers();
         is_streaming_ = false;
         throw CameraException(std::string("Failed to start stream: ") + e.what());
     }
 }
 
 void EmergentCamera::configureDefaults() {
-    // Only set the absolute minimum required for initialization
-    // Do not set any resolution, exposure, gain etc. here
-    
-    checkError(EVT_CameraSetEnumParam(camera_.get(), "AcquisitionMode", "Continuous"), 
-        "Setting acquisition mode");
+    // Only set the absolute minimum required settings
+    checkError(EVT_CameraSetEnumParam(camera_.get(), "PixelFormat", "Mono8"),
+              "Setting default pixel format");
+              
+    checkError(EVT_CameraSetEnumParam(camera_.get(), "AcquisitionMode", "Continuous"),
+              "Setting acquisition mode");
+              
     checkError(EVT_CameraSetUInt32Param(camera_.get(), "AcquisitionFrameCount", 1),
-        "Setting frame count");
-        
-    // Add any other essential initialization settings that don't depend on ranges
-    
+              "Setting frame count");
+
+    // Configure packet size for GigE
+    unsigned int max_packet_size;
+    checkError(EVT_CameraGetUInt32ParamMax(camera_.get(), "GevSCPSPacketSize", &max_packet_size),
+              "Getting max packet size");
+    checkError(EVT_CameraSetUInt32Param(camera_.get(), "GevSCPSPacketSize", max_packet_size),
+              "Setting packet size");
+              
+    // Disable LUT and AutoGain
+    checkError(EVT_CameraSetBoolParam(camera_.get(), "LUTEnable", false),
+              "Disabling LUT");
+    checkError(EVT_CameraSetBoolParam(camera_.get(), "AutoGain", false),
+              "Disabling AutoGain");
+
     LOG(INFO) << "Camera defaults configured";
 }
 
@@ -314,35 +304,82 @@ void EmergentCamera::allocateFrameBuffers(int buffer_size) {
     if (!is_open_) {
         throw CameraException("Cannot allocate buffers - camera not open");
     }
-    if (buffer_size <= 0) {
-        throw CameraException("Invalid buffer size: " + std::to_string(buffer_size));
+    
+    LOG(INFO) << "Starting frame buffer allocation with size " << buffer_size;
+    LOG(INFO) << "Current resolution: " << params_.width << "x" << params_.height;
+    LOG(INFO) << "Current pixel format: " << params_.pixel_format;
+    
+    // Calculate required buffer size
+    size_t required_size = params_.width * params_.height;
+    if (params_.pixel_format != "Mono8") {
+        required_size *= 3;  // RGB formats need 3x space
     }
-
+    LOG(INFO) << "Estimated buffer size required: " << required_size << " bytes";
+    
+    // Log GPU state if GPU direct is enabled
+    EVT_FRAME_BUFFER_FLAGS buffer_mode = EVT_FRAME_BUFFER_DEFAULT;
+    if (params_.gpu_direct) {
+        size_t free_gpu_mem, total_gpu_mem;
+        cudaMemGetInfo(&free_gpu_mem, &total_gpu_mem);
+        LOG(INFO) << "GPU Memory before allocation:"
+                  << "\n  Free: " << (free_gpu_mem / 1024 / 1024) << "MB"
+                  << "\n  Total: " << (total_gpu_mem / 1024 / 1024) << "MB"
+                  << "\n  GPU ID: " << params_.gpu_id;
+        
+        buffer_mode = EVT_FRAME_BUFFER_ZERO_COPY;
+    }
+    
     // First release any existing buffers
     releaseFrameBuffers();
-
+    
     try {
         frame_buffers_.resize(buffer_size);
         
-        for (auto& frame : frame_buffers_) {
-            // Configure frame format based on current settings
-            setFrameBufferFormat(&frame);
+        for (int i = 0; i < buffer_size; i++) {
+            LOG(INFO) << "Allocating buffer " << i + 1 << " of " << buffer_size;
+            auto& frame = frame_buffers_[i];
+            frame.size_x = params_.width;
+            frame.size_y = params_.height;
+            frame.pixel_type = GVSP_PIX_MONO8;
             
-            // Allocate the frame buffer
-            checkError(EVT_AllocateFrameBuffer(
-                camera_.get(), 
-                &frame, 
-                EVT_FRAME_BUFFER_ZERO_COPY
-            ), "Allocating frame buffer");
+            EVT_ERROR err = EVT_AllocateFrameBuffer(
+                camera_.get(),
+                &frame,
+                buffer_mode
+            );
+            
+            if (err != EVT_SUCCESS) {
+                std::stringstream ss;
+                ss << "Frame buffer allocation failed for buffer " << i << "\n"
+                   << "Error code: " << err << "\n"
+                   << "Error string: " << get_evt_error_string(err) << "\n"
+                   << "Buffer details:\n"
+                   << "  Size: " << frame.size_x << "x" << frame.size_y << "\n"
+                   << "  Pixel type: " << frame.pixel_type << "\n"
+                   << "  Required size: " << required_size << " bytes"
+                   << "  Buffer mode: " << (buffer_mode == EVT_FRAME_BUFFER_ZERO_COPY ? "ZERO_COPY" : "DEFAULT");
+                LOG(ERROR) << ss.str();
+                throw CameraException(ss.str(), err);
+            }
 
-            // Queue the frame
-            checkError(EVT_CameraQueueFrame(
-                camera_.get(), 
-                &frame
-            ), "Queueing frame buffer");
+            LOG(INFO) << "Successfully allocated buffer " << i + 1;
+
+            err = EVT_CameraQueueFrame(camera_.get(), &frame);
+            if (err != EVT_SUCCESS) {
+                std::stringstream ss;
+                ss << "Frame queue failed for buffer " << i << "\n"
+                   << "Error code: " << err << "\n"
+                   << "Error string: " << get_evt_error_string(err);
+                LOG(ERROR) << ss.str();
+                throw CameraException(ss.str(), err);
+            }
+
+            LOG(INFO) << "Successfully queued buffer " << i + 1;
         }
-    } catch (const std::exception& e) {
-        // Clean up any allocated buffers on failure
+        
+        LOG(INFO) << "Successfully allocated all " << buffer_size << " frame buffers";
+    }
+    catch (const std::exception& e) {
         releaseFrameBuffers();
         throw;
     }
@@ -404,7 +441,10 @@ void EmergentCamera::setFrameBufferFormat(Emergent::CEmergentFrame* frame) const
     frame->size_y = params_.height;
 
     // Set pixel format based on camera configuration
-    if (params_.pixel_format == "BayerRG8") {
+    if (params_.pixel_format == "Mono8") {
+        frame->pixel_type = GVSP_PIX_MONO8;
+    }
+    else if (params_.pixel_format == "BayerRG8") {
         frame->pixel_type = GVSP_PIX_BAYRG8;
     }
     else if (params_.pixel_format == "RGB8Packed") {
@@ -426,8 +466,10 @@ void EmergentCamera::setFrameBufferFormat(Emergent::CEmergentFrame* frame) const
         frame->pixel_type = GVSP_PIX_BAYGB8;
     }
     else {
-        // Default to mono8 for other formats
+        // Default to mono8 for unknown formats
         frame->pixel_type = GVSP_PIX_MONO8;
+        LOG(WARNING) << "Unknown pixel format '" << params_.pixel_format 
+                    << "', defaulting to Mono8";
     }
 }
 
