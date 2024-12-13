@@ -110,16 +110,16 @@ void EmergentCamera::startStream() {
     try {
         LOG(INFO) << "Starting camera stream...";
 
-        // First allocate frame buffers before starting the stream
-        constexpr int default_buffer_count = 1;  
-        allocateFrameBuffers(default_buffer_count);
-        LOG(INFO) << "Allocated " << default_buffer_count << " frame buffers";
-
         // Now start the stream
         checkError(EVT_CameraOpenStream(camera_.get()), "Opening camera stream");
         
         is_streaming_ = true;
         LOG(INFO) << "Camera stream started successfully";
+
+        // First allocate frame buffers before starting the stream
+        constexpr int default_buffer_count = 16;  
+        allocateFrameBuffers(default_buffer_count);
+        LOG(INFO) << "Allocated " << default_buffer_count << " frame buffers";
 
     } catch (const std::exception& e) {
         // Clean up on failure
@@ -331,17 +331,25 @@ void EmergentCamera::allocateFrameBuffers(int buffer_size) {
     
     // First release any existing buffers
     releaseFrameBuffers();
-    
+
+    LOG(INFO) << "Frame buffer vector state after release:"
+              << "\n  Size: " << frame_buffers_.size()
+              << "\n  Capacity: " << frame_buffers_.capacity();
+
     try {
-        // Match the old code's behavior - resize vector and set up frames
+        // Clear vector before resize to ensure clean state
+        frame_buffers_.clear();
         frame_buffers_.resize(buffer_size);
         
+        LOG(INFO) << "Frame buffer vector state after resize:"
+                  << "\n  Size: " << frame_buffers_.size()
+                  << "\n  Capacity: " << frame_buffers_.capacity();
+
         for (int i = 0; i < buffer_size; i++) {
             // Set frame properties first
             auto& frame = frame_buffers_[i];
             frame.size_x = params_.width;
             frame.size_y = params_.height;
-            
             // Match pixel type setting from the old code
             if (params_.pixel_format == "Mono8") {
                 frame.pixel_type = GVSP_PIX_MONO8;
