@@ -176,7 +176,13 @@ void acquire_frames(
         void* imageDataSource = ecam->frame_recv.imagePtr;
         if (imageDataSource != nullptr && ecam->frame_recv.bufferSize > 0) {
             // --- Step 1: Safely copy the data from the SDK buffer to a CPU buffer. ---
-            cudaMemcpy(intermediate_cpu_buffer.data(), imageDataSource, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToHost);
+            if (camera_params->gpu_direct) {
+                CUDA_CHECK(cudaMemcpy(intermediate_cpu_buffer.data(), imageDataSource,
+                                     ecam->frame_recv.bufferSize, cudaMemcpyDeviceToHost));
+            } else {
+                CUDA_CHECK(cudaMemcpy(intermediate_cpu_buffer.data(), imageDataSource,
+                                     ecam->frame_recv.bufferSize, cudaMemcpyHostToHost));
+            }
 
             // --- Step 2: Immediately release the SDK's frame buffer. This is critical. ---
             EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
