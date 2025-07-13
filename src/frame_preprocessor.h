@@ -16,6 +16,7 @@ public:
         CameraParams* cam_params,
         SafeQueue<ProcessedFrame*>* yolo_queue,
         SafeQueue<ProcessedFrame*>* encoder_queue,
+        SafeQueue<ProcessedFrame*>* display_queue,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
         SafeQueue<ProcessedFrame*>& processed_recycle_queue);
 
@@ -31,6 +32,7 @@ private:
     // Queues for dispatching processed frames
     SafeQueue<ProcessedFrame*>* m_yolo_queue;
     SafeQueue<ProcessedFrame*>* m_encoder_queue;
+    SafeQueue<ProcessedFrame*>* m_display_queue;
 
     // Recycle queues
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;

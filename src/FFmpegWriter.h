@@ -16,7 +16,15 @@ extern "C"
 class FFmpegWriter
 {
 public:
-    FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file);
+    FFmpegWriter(AVCodecID eCodecId,
+        int nWidth,
+        int nHeight,
+        int nFps,
+        const char *szOutFilePath,
+        const char *metadata_file,
+        uint8_t* extradata,
+        int extradata_size
+);
     ~FFmpegWriter();
     bool write_packet(uint8_t *pData, int nBytes, int nPts);
     void push_packet(uint8_t* pData, int nBytes, int nPts);

@@ -2,7 +2,14 @@
 
 #include "FFmpegWriter.h"
 
-FFmpegWriter::FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file) : nFps(nFps), m_quitting(false)
+FFmpegWriter::FFmpegWriter(AVCodecID eCodecId,
+    int nWidth,
+    int nHeight,
+    int nFps,
+    const char *szOutFilePath,
+    const char *metadata_file,
+    uint8_t* extradata,
+    int extradata_size) : nFps(nFps), m_quitting(false)
 {
     oc = avformat_alloc_context();
     if (!oc) {
@@ -33,6 +40,16 @@ FFmpegWriter::FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps
     vpar->codec_type = AVMEDIA_TYPE_VIDEO;
     vpar->width = nWidth;
     vpar->height = nHeight;
+
+    if (extradata_size > 0) {
+        vpar->extradata = (uint8_t*)av_malloc(extradata_size + AV_INPUT_BUFFER_PADDING_SIZE);
+        if (!vpar->extradata) {
+            printf("FFMPEG: Failed to allocate extradata\n");
+            return;
+        }
+        memcpy(vpar->extradata, extradata, extradata_size);
+        vpar->extradata_size = extradata_size;
+    }
 
     // Everything is ready. Now open the output stream.
     if (avio_open(&oc->pb, szOutFilePath, AVIO_FLAG_WRITE) < 0) {

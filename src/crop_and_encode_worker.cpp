@@ -1,3 +1,4 @@
+// src/crop_and_encode_worker.cpp
 #include "crop_and_encode_worker.h"
 #include "kernel.cuh"
 #include <nppi.h>
@@ -21,7 +22,7 @@ CropAndEncodeWorker::CropAndEncodeWorker(const char* name, CameraParams* camera_
     writer_.metadata_file = folder_name_ + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
 
     writer_.video = new FFmpegWriter(AV_CODEC_ID_HEVC, 256, 256, camera_params_->frame_rate,
-                                   writer_.video_file.c_str(), writer_.keyframe_file.c_str());
+                                   writer_.video_file.c_str(), writer_.keyframe_file.c_str(), nullptr, 0);
     writer_.video->create_thread();
 
     writer_.metadata = new std::ofstream();
@@ -357,8 +358,6 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             entry->detections.begin(), entry->detections.end(),
             [](const pose::Object& a, const pose::Object& b) { return a.prob < b.prob; });
 
-        // --- START: NEW, EFFICIENT MONO-TO-NV12 PIPELINE ---
-
         // 1. Define crop region and size
         const int CROP_W = 256;
         const int CROP_H = 256;
@@ -399,9 +398,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             for (auto& p : packets) {
                 writer_.video->push_packet(p.data(), static_cast<int>(p.size()), frame_counter_);
             }
-        }
-
-        // --- END: NEW PIPELINE ---
+        }-
 
         ++frame_counter_;
         if (writer_.metadata && writer_.metadata->is_open()) {

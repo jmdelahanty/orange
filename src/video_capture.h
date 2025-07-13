@@ -114,6 +114,7 @@ struct CameraResources {
     WORKER_ENTRY* worker_entry_pool = nullptr;
     SafeQueue<WORKER_ENTRY*>* free_entries_queue = nullptr;
     SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr;
+    SafeQueue<ProcessedFrame*>* processed_recycle_queue = nullptr;
 
     std::vector<cudaEvent_t> event_pool;
     std::vector<cudaEvent_t> yolo_event_pool;
@@ -128,6 +129,7 @@ struct CameraResources {
         worker_entry_pool = other.worker_entry_pool;
         free_entries_queue = other.free_entries_queue;
         recycle_queue = other.recycle_queue;
+        processed_recycle_queue = other.processed_recycle_queue;
         event_pool = std::move(other.event_pool);
         yolo_event_pool = std::move(other.yolo_event_pool);
         free_events_queue = other.free_events_queue;
@@ -135,6 +137,7 @@ struct CameraResources {
         other.worker_entry_pool = nullptr;
         other.free_entries_queue = nullptr;
         other.recycle_queue = nullptr;
+        other.processed_recycle_queue = nullptr;
         other.free_events_queue = nullptr;
         other.yolo_events_queue = nullptr;
     }
@@ -145,6 +148,7 @@ struct CameraResources {
             worker_entry_pool = other.worker_entry_pool;
             free_entries_queue = other.free_entries_queue;
             recycle_queue = other.recycle_queue;
+            processed_recycle_queue = other.processed_recycle_queue;
             event_pool = std::move(other.event_pool);
             yolo_event_pool = std::move(other.yolo_event_pool);
             free_events_queue = other.free_events_queue;
@@ -152,6 +156,7 @@ struct CameraResources {
             other.worker_entry_pool = nullptr;
             other.free_entries_queue = nullptr;
             other.recycle_queue = nullptr;
+            other.processed_recycle_queue = nullptr;
             other.free_events_queue = nullptr;
             other.yolo_events_queue = nullptr;
         }
@@ -172,6 +177,7 @@ struct CameraResources {
         }
         
         recycle_queue = new SafeQueue<WORKER_ENTRY*>();
+        processed_recycle_queue = new SafeQueue<ProcessedFrame*>();
         
         event_pool.resize(EVENT_POOL_SIZE);
         free_events_queue = new SafeQueue<cudaEvent_t*>();
@@ -199,6 +205,7 @@ struct CameraResources {
 
         if (free_entries_queue) { delete free_entries_queue; free_entries_queue = nullptr; }
         if (recycle_queue) { delete recycle_queue; recycle_queue = nullptr; }
+        if (processed_recycle_queue) { delete processed_recycle_queue; processed_recycle_queue = nullptr; }
         
         if (free_events_queue) { delete free_events_queue; free_events_queue = nullptr; }
         for (auto& event : event_pool) {
