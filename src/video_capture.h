@@ -1,6 +1,7 @@
 // src/video_capture.h
 #ifndef ORANGE_VIDEO_CAPTURE
 #define ORANGE_VIDEO_CAPTURE
+
 #include "thread.h"
 #include "camera.h"
 #include <iostream>
@@ -11,13 +12,32 @@
 #include <cuda_runtime.h>
 #include "NvEncoder/NvCodecUtils.h"
 
+// Forward declarations to break circular dependencies
 class COpenGLDisplay;
 class GPUVideoEncoder;
 class YOLOv8Worker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
 
-typedef struct {
+// --- START: CORRECTED CODE ---
+
+// 1. Define enums and control structs first, as they are used by other structs.
+enum PictureSaveState {
+    State_Frame_Idle = 0,
+    State_Write_New_Frame = 1
+};
+
+struct CameraControl
+{
+    bool open = false;
+    bool subscribe = false;
+    bool stop_record = false;
+    bool record_video = false;
+    bool sync_camera = false;
+};
+
+// 2. Define the main WORKER_ENTRY struct.
+typedef struct WORKER_ENTRY {
     unsigned char* d_image;
     int width;
     int height;
@@ -51,20 +71,42 @@ typedef struct {
 
 } WORKER_ENTRY;
 
-enum PictureSaveState {
-    State_Frame_Idle = 0,
-    State_Write_New_Frame = 1
-};
+// 3. Now that WORKER_ENTRY is fully defined, we can define ProcessedFrame.
+typedef struct ProcessedFrame {
+    unsigned char* d_processed_image;
+    int width;
+    int height;
+    unsigned long long timestamp;
+    unsigned long long frame_id;
 
-struct CameraControl
+    std::vector<pose::Object> detections;
+    bool has_detections;
+    std::atomic<bool> detections_ready;
+
+    std::atomic<int> ref_count;
+    WORKER_ENTRY* original_entry;
+} ProcessedFrame;
+
+// 4. Now we can define CameraEachSelect, which depends on PictureSaveState.
+struct CameraEachSelect
 {
-    bool open = false;
-    bool subscribe = false;
-    bool stop_record = false;
-    bool record_video = false;
-    bool sync_camera = false;
+    bool stream_on = true;
+    bool record = false;
+    bool yolo = false;
+    bool crop_and_encode = false;
+    int downsample = 1;
+    PictureSaveState frame_save_state = State_Frame_Idle; // This is now valid
+    std::string frame_save_format;
+    std::string frame_save_name;
+    int pictures_counter = 0;
+    bool selected_to_save = false;
+    std::string picture_save_folder;
+    const char* yolo_model;
+    bool send_yolo_via_ipc = false;
+    bool send_yolo_via_enet = false;
 };
 
+// 5. And CameraResources, which depends on WORKER_ENTRY.
 struct CameraResources {
     static const int ACQUIRE_WORK_ENTRIES_MAX = 120;
     static const int EVENT_POOL_SIZE = 256;
@@ -119,7 +161,7 @@ struct CameraResources {
     void initialize(int gpu_id, size_t frame_size) {
         ck(cudaSetDevice(gpu_id));
         
-        worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX];
+        worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX]; // This is now valid
         for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
         }
@@ -170,25 +212,6 @@ struct CameraResources {
         }
         yolo_event_pool.clear();
     }
-};
-
-
-struct CameraEachSelect
-{
-    bool stream_on = true;
-    bool record = false;
-    bool yolo = false;
-    bool crop_and_encode = false;
-    int downsample = 1;
-    PictureSaveState frame_save_state = State_Frame_Idle;
-    std::string frame_save_format;
-    std::string frame_save_name;
-    int pictures_counter = 0;
-    bool selected_to_save = false;
-    std::string picture_save_folder;
-    const char* yolo_model;
-    bool send_yolo_via_ipc = false;
-    bool send_yolo_via_enet = false;
 };
 
 struct CameraState
