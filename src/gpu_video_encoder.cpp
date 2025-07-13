@@ -33,7 +33,6 @@ static inline void initialize_writer(Writer *writer, CameraParams *camera_params
     *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
 }
 
-
 static inline void write_metadata(std::ofstream *metadata, unsigned long long frame_id, unsigned long long timestamp, uint64_t timestamp_sys)
 {
     NVTX_RANGE("Write_Metadata");
@@ -84,66 +83,78 @@ static inline void close_writer(EncoderContext *encoder, Writer *writer)
 GPUVideoEncoder::GPUVideoEncoder(const char* name, CameraParams *camera_params,
     const std::string& codec, const std::string& preset, const std::string& tuning,
     std::string folder_name, bool* encoder_ready_signal,
-    SafeQueue<ProcessedFrame*>* input_queue, // <-- New parameter
-    SafeQueue<WORKER_ENTRY*>& raw_recycle_queue,
-    SafeQueue<ProcessedFrame*>& processed_recycle_queue)
-: CThreadWorker<ProcessedFrame>(name),
-  m_input_queue(input_queue), // <-- Store the queue
-  camera_params(camera_params),
-  folder_name(folder_name),
-  encoder_ready_signal(encoder_ready_signal),
-  m_recycle_queue(raw_recycle_queue),
-  m_processed_recycle_queue(processed_recycle_queue),
-  m_stream(nullptr),
-  d_rgb_temp_(nullptr),
-  d_iyuv_temp_(nullptr),
-  d_uv_default_plane_(nullptr),
-  last_fps_update_time_(std::chrono::steady_clock::now()),
-  frame_counter_(0),
-  current_fps_(0.0),
-  scaled_width_(camera_params->width),
-  scaled_height_(camera_params->height),
-  d_scaled_mono_buffer_(nullptr),
-  encoder_pitch_(0)
+    SafeQueue<WORKER_ENTRY*>* input_queue,
+    SafeQueue<WORKER_ENTRY*>& recycle_queue)
+: CThreadWorker<WORKER_ENTRY>(name),
+camera_params(camera_params),
+folder_name(folder_name),
+encoder_ready_signal(encoder_ready_signal),
+m_input_queue(input_queue),
+m_recycle_queue(recycle_queue),
+m_stream(nullptr),
+last_fps_update_time_(std::chrono::steady_clock::now()),
+frame_counter_(0),
+current_fps_(0.0),
+encoder_pitch_(0)
 {
     NVTX_ENCODE("GPUVideoEncoder_Constructor");
+    CUDA_CTX_LOG("=== GPU Video Encoder Constructor START ===");
     
+    std::cout << "[GPUVideoEncoder] Constructor for " << name << " on GPU " << camera_params->gpu_id << std::endl;
+    std::cout << "[GPUVideoEncoder] OPTIMIZED DIRECT CONVERSION MODE: " << camera_params->width << "x" << camera_params->height << std::endl;
+
     try {
         ck(cudaSetDevice(camera_params->gpu_id));
         ck(cudaStreamCreate(&m_stream));
         ck(cuCtxGetCurrent(&encoder.cuContext));
-        
-        ck(cudaMalloc(&d_rgb_temp_, scaled_width_ * scaled_height_ * 3));
-        
+
         encoder.eFormat = NV_ENC_BUFFER_FORMAT_NV12;
         
+        CUDA_CTX_LOG("Creating NVIDIA encoder");
         encoder.pEnc = new NvEncoderCuda(encoder.cuContext, camera_params->width, camera_params->height, encoder.eFormat);
+        CUDA_CTX_LOG("NVIDIA encoder created successfully");
         
         NV_ENC_INITIALIZE_PARAMS initializeParams = { NV_ENC_INITIALIZE_PARAMS_VER };
         NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
         initializeParams.encodeConfig = &encodeConfig;
 
         GUID codecGuid = (codec == "hevc") ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
-        GUID presetGuid = NV_ENC_PRESET_P7_GUID;
-        NV_ENC_TUNING_INFO tuningInfo = (tuning == "lossless") ? NV_ENC_TUNING_INFO_LOSSLESS : NV_ENC_TUNING_INFO_HIGH_QUALITY;
+        GUID presetGuid = (preset == "p1") ? NV_ENC_PRESET_P1_GUID : (preset == "p5") ? NV_ENC_PRESET_P5_GUID : (preset == "p7") ? NV_ENC_PRESET_P7_GUID : NV_ENC_PRESET_P3_GUID;
+        NV_ENC_TUNING_INFO tuningInfo = (tuning == "ll") ? NV_ENC_TUNING_INFO_LOW_LATENCY : (tuning == "ull") ? NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY : (tuning == "lossless") ? NV_ENC_TUNING_INFO_LOSSLESS : NV_ENC_TUNING_INFO_HIGH_QUALITY;
 
         encoder.pEnc->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
-        
-        initializeParams.encodeWidth = scaled_width_;
-        initializeParams.encodeHeight = scaled_height_;
+
+        initializeParams.encodeWidth = camera_params->width;
+        initializeParams.encodeHeight = camera_params->height;
         initializeParams.frameRateNum = camera_params->frame_rate;
-        
-        if (tuning != "lossless") {
-            encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-            encodeConfig.rcParams.averageBitRate = 20000000;
-        } else {
-            encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-            encodeConfig.rcParams.constQP = { 1, 1, 1 };
+        initializeParams.frameRateDen = 1;
+        initializeParams.enablePTD = 1;
+
+        if (tuningInfo == NV_ENC_TUNING_INFO_LOW_LATENCY || tuningInfo == NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY)
+        {
+            encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
+            encodeConfig.frameIntervalP = 1;
+            encodeConfig.rcParams.lowDelayKeyFrameScale = 1;
         }
-        
+
+        encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+        encodeConfig.rcParams.averageBitRate = 20000000;
+        encodeConfig.rcParams.maxBitRate = 25000000;
+        encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.averageBitRate;
+
         if (!camera_params->color) {
+            std::cout << "[GPUVideoEncoder] Mono camera detected, setting monoChromeEncoding to 1" << std::endl;
             encodeConfig.monoChromeEncoding = 1;
         }
+
+        std::cout << "===== NVENC Initialization Parameters =====" << std::endl;
+        std::cout << "  Width: " << initializeParams.encodeWidth << std::endl;
+        std::cout << "  Height: " << initializeParams.encodeHeight << std::endl;
+        std::cout << "  Frame Rate: " << initializeParams.frameRateNum << "/" << initializeParams.frameRateDen << std::endl;
+        std::cout << "  Rate Control: " << encodeConfig.rcParams.rateControlMode << std::endl;
+        std::cout << "  Avg Bitrate: " << encodeConfig.rcParams.averageBitRate << std::endl;
+        std::cout << "  Input Format: " << encoder.eFormat << std::endl;
+        std::cout << "========================================" << std::endl;
 
         encoder.pEnc->CreateEncoder(&initializeParams);
         encoder.pEnc->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
@@ -151,38 +162,44 @@ GPUVideoEncoder::GPUVideoEncoder(const char* name, CameraParams *camera_params,
         const NvEncInputFrame *tempFrame = encoder.pEnc->GetNextInputFrame();
         encoder_pitch_ = tempFrame->pitch;
 
-        size_t encoder_buffer_size = (size_t)encoder_pitch_ * scaled_height_ * 3 / 2;
-        ck(cudaMalloc(&d_iyuv_temp_, encoder_buffer_size));
+        std::cout << "[GPUVideoEncoder] Encoder initialized with pitch: " << encoder_pitch_ << std::endl;
 
         std::vector<std::uint8_t> seqParams;
         encoder.pEnc->GetSequenceParams(seqParams);
         initialize_writer(&writer, camera_params, folder_name, codec, seqParams);
         writer.video->create_thread();
-
+        
+        std::cout << "[GPUVideoEncoder] Successfully initialized OPTIMIZED encoder for " << name 
+                  << " - Codec: " << codec << ", Preset: " << preset << ", Tuning: " << tuning << std::endl;
         *encoder_ready_signal = true;
         
     } catch (const std::exception& e) {
-        std::cerr << "[GPUVideoEncoder] Exception initializing: " << e.what() << std::endl;
+        std::cerr << "[GPUVideoEncoder] Exception initializing encoder for " << name
+                  << ": " << e.what() << std::endl;
+        CUDA_CTX_LOG("Exception in constructor");
         throw;
     }
+    
+    CUDA_CTX_LOG("=== GPU Video Encoder Constructor END ===");
 }
 
-GPUVideoEncoder::~GPUVideoEncoder() {
+GPUVideoEncoder::~GPUVideoEncoder()
+{
+    NVTX_ENCODE("GPUVideoEncoder_Destructor");
+    std::cout << "[GPUVideoEncoder] Destructor for " << this->threadName << std::endl;
+
     close_writer(&encoder, &writer);
     
-    if (m_stream) cudaStreamDestroy(m_stream);
-    if (d_rgb_temp_) cudaFree(d_rgb_temp_);
-    if (d_iyuv_temp_) cudaFree(d_iyuv_temp_);
+    if (m_stream) { 
+        cudaStreamDestroy(m_stream); 
+    }
 }
-
-// CHANGE 2: Implement the overridden ThreadRunning function.
 void GPUVideoEncoder::ThreadRunning()
 {
     printf("GPUVideoEncoder Thread Start %d\n", GetID());
     while (IsMachineOn())
     {
-        ProcessedFrame* f = nullptr;
-        // Pop from the shared input queue.
+        WORKER_ENTRY* f = nullptr;
         if (m_input_queue && m_input_queue->pop(f))
         {
             if (f)
@@ -196,41 +213,39 @@ void GPUVideoEncoder::ThreadRunning()
         }
     }
 
-    // Process remaining items.
+    // Process any remaining items
     while (true)
     {
-        ProcessedFrame* f = nullptr;
+        WORKER_ENTRY* f = nullptr;
         if (m_input_queue && m_input_queue->pop(f))
         {
-            if (f)
-            {
-                WorkerFunction(f);
-            }
+             if (f) WorkerFunction(f);
         }
         else
         {
             break;
         }
     }
-    printf("GPUVideoEncoder Thread DONE %d\n", GetID());
+    printf("GPUVideoEncoder Thread DONE %d\n", id);
 }
 
-// The WorkerFunction remains the same.
-bool GPUVideoEncoder::WorkerFunction(ProcessedFrame* frame)
+bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 {
-    if (!frame) return false;
+    if (!entry) return false;
 
-    ENCODER_CTX_LOG("=== ENTERING WorkerFunction ===", frame->frame_id);
-    dumpCudaState("WorkerFunction Entry", frame->frame_id);
+    ck(cudaSetDevice(camera_params->gpu_id));
+    ENCODER_CTX_LOG("=== ENTERING WorkerFunction ===", entry->frame_id);
     NVTX_ENCODE("GPUEncoder_WorkerFunction");
 
     try {
-        NVTX_RANGE_PUSH("Setup_Device_And_Stream");
-        ck(cudaSetDevice(camera_params->gpu_id));
         nppSetStream(m_stream);
-        NVTX_RANGE_POP();
         
-        NVTX_RANGE_PUSH("FPS_Tracking");
+        // Wait for camera data to be ready
+        if (entry->event_ptr) {
+            ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+        }
+
+        // FPS tracking
         frame_counter_++;
         auto now = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed = now - last_fps_update_time_;
@@ -241,60 +256,121 @@ bool GPUVideoEncoder::WorkerFunction(ProcessedFrame* frame)
             frame_counter_ = 0;
             last_fps_update_time_ = now;
         }
-        NVTX_RANGE_POP();
 
-        ENCODER_CTX_LOG("Processing frame dimensions", frame->frame_id);
-        
-        NVTX_RANGE_PUSH("Color_Conversion_For_Encoder");
-        rgba2rgb_convert(d_rgb_temp_, frame->d_processed_image, frame->width, frame->height, m_stream);
-        
-        NppiSize image_size = {frame->width, frame->height};
-        unsigned char* d_y_plane = d_iyuv_temp_;
-        unsigned char* d_u_plane = d_y_plane + ((size_t)encoder_pitch_ * frame->height);
-        unsigned char* d_v_plane = d_u_plane + ((size_t)encoder_pitch_ * frame->height / 4);
-        
-        unsigned char* yuv_planes[3] = {d_y_plane, d_u_plane, d_v_plane};
-        int yuv_steps[3] = {encoder_pitch_, encoder_pitch_ / 2, encoder_pitch_ / 2};
+        ENCODER_CTX_LOG("Processing frame dimensions", entry->frame_id);
 
-        NppStatus npp_status = nppiRGBToYUV420_8u_C3P3R(d_rgb_temp_, frame->width * 3, yuv_planes, yuv_steps, image_size);
-        if (npp_status != NPP_SUCCESS) {
-            std::cerr << "[GPUEncoder] NPP RGB to YUV420 conversion failed: " << npp_status << std::endl;
+        // === OPTIMIZED DIRECT CONVERSION ===
+        const NvEncInputFrame* encoderInputFrame = encoder.pEnc->GetNextInputFrame();
+        
+        if (!camera_params->color) {
+            // === OPTIMIZED MONO PATH: Direct mono → NV12 ===
+            std::cout << "[GPUEncoder] OPTIMIZED MONO Frame " << entry->frame_id 
+                      << " - Direct conversion (Mono8 → NV12)" << std::endl;
+
+            // Y plane: Direct copy of mono data
+            unsigned char* d_y_plane_dst = static_cast<unsigned char*>(encoderInputFrame->inputPtr);
+            
+            ck(cudaMemcpy2DAsync(
+                d_y_plane_dst,                    // Destination: Encoder's Y-plane
+                encoderInputFrame->pitch,         // Destination pitch
+                entry->d_image,                   // Source: Raw mono data from camera
+                entry->width,                     // Source pitch (mono width)
+                entry->width,                     // Width to copy
+                entry->height,                    // Height to copy
+                cudaMemcpyDeviceToDevice,
+                m_stream
+            ));
+
+            // UV plane: Set to neutral gray (128)
+            unsigned char* d_uv_plane_dst = d_y_plane_dst + (encoderInputFrame->pitch * encoder.pEnc->GetEncodeHeight());
+            size_t uv_height = encoder.pEnc->GetEncodeHeight() / 2;
+
+            ck(cudaMemset2DAsync(
+                d_uv_plane_dst,              // Destination: Encoder's UV-plane
+                encoderInputFrame->pitch,    // Destination pitch
+                128,                         // Neutral chroma value
+                entry->width,                // Width to set
+                uv_height,                   // Height of UV plane
+                m_stream
+            ));
+
+            std::cout << "[GPUEncoder] OPTIMIZED MONO Frame " << entry->frame_id 
+                      << " - Direct conversion completed" << std::endl;
+
+        } else {
+            // === COLOR PATH: For future color camera support ===
+            std::cout << "[GPUEncoder] COLOR Frame " << entry->frame_id 
+                      << " - Color conversion not yet implemented in optimized path" << std::endl;
+            // TODO: Implement optimized color conversion if needed
+            throw std::runtime_error("Color camera support not implemented in optimized encoder");
         }
-        NVTX_RANGE_POP();
 
-        ENCODER_CTX_LOG("About to call NVIDIA EncodeFrame", frame->frame_id);
-        
-        const NvEncInputFrame *encoderInputFrame = encoder.pEnc->GetNextInputFrame();
-        
-        NvEncoderCuda::CopyToDeviceFrame(encoder.cuContext,
-                                         d_iyuv_temp_,
-                                         encoder_pitch_, 
-                                         (CUdeviceptr)encoderInputFrame->inputPtr,
-                                         encoderInputFrame->pitch,
-                                         encoder.pEnc->GetEncodeWidth(),
-                                         encoder.pEnc->GetEncodeHeight(),
-                                         CU_MEMORYTYPE_DEVICE,
-                                         encoderInputFrame->bufferFormat,
-                                         encoderInputFrame->chromaOffsets,
-                                         encoderInputFrame->numChromaPlanes);
-
+        // Hardware encode
+        ENCODER_CTX_LOG("About to call NVIDIA EncodeFrame - CRITICAL POINT", entry->frame_id);
         encoder.pEnc->EncodeFrame(encoder.vPacket);
-        
+        ENCODER_CTX_LOG("EncodeFrame completed successfully", entry->frame_id);
+
+        // Write packets to file
         for (std::vector<uint8_t> &packet : encoder.vPacket) {
             writer.video->push_packet(packet.data(), (int)packet.size(), encoder.num_frame_encode++);
         }
         
-        write_metadata(writer.metadata, frame->frame_id, frame->timestamp, frame->original_entry->timestamp_sys);
+        // Write metadata
+        write_metadata(writer.metadata, entry->frame_id, entry->timestamp, entry->timestamp_sys);
         
+        std::cout << "[GPUEncoder] Frame " << entry->frame_id << " encoded successfully" << std::endl;
+
+        // Handle reference counting and cleanup
+        ENCODER_CTX_LOG("Handling reference count", entry->frame_id);
+        int remaining_refs = entry->ref_count.fetch_sub(1, std::memory_order_acq_rel);
+        
+        if (remaining_refs == 1) {
+            // This is the last worker - handle cleanup
+            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+                // GPU Direct: Requeue the camera buffer
+                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+                std::cout << "[GPUEncoder] GPU DIRECT Frame " << entry->frame_id 
+                          << " - Last worker requeued camera buffer" << std::endl;
+                ENCODER_CTX_LOG("GPU Direct camera buffer requeued by last worker", entry->frame_id);
+            }
+            
+            // Reset GPU Direct fields for recycling
+            entry->gpu_direct_mode = false;
+            entry->owns_memory = true;
+            entry->camera_buffer_ptr = nullptr;
+            entry->camera_instance = nullptr;
+            entry->camera_frame_struct = nullptr;
+            
+            // Recycle the worker entry
+            m_recycle_queue.push(entry);
+            
+            std::cout << "[GPUEncoder] Frame " << entry->frame_id 
+                      << " - Last worker recycled entry" << std::endl;
+        } else {
+            std::cout << "[GPUEncoder] Frame " << entry->frame_id 
+                      << " - Worker finished, " << (remaining_refs - 1) << " workers remaining" << std::endl;
+        }
+
     } catch (const std::exception& e) {
         std::cerr << "[GPUEncoder] Exception in WorkerFunction: " << e.what() << std::endl;
+        
+        // Handle reference counting even on error
+        int remaining_refs = entry->ref_count.fetch_sub(1, std::memory_order_acq_rel);
+        if (remaining_refs == 1) {
+            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+            }
+            entry->gpu_direct_mode = false;
+            entry->owns_memory = true;
+            entry->camera_buffer_ptr = nullptr;
+            entry->camera_instance = nullptr;
+            entry->camera_frame_struct = nullptr;
+            m_recycle_queue.push(entry);
+        }
+        
+        return false;
     }
     
-    if (frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        m_recycle_queue.push(frame->original_entry);
-        m_processed_recycle_queue.push(frame);
-    }
-
-    ENCODER_CTX_LOG("=== EXITING WorkerFunction ===", frame->frame_id);
+    ENCODER_CTX_LOG("=== EXITING WorkerFunction ===", entry->frame_id);
     return false;
 }

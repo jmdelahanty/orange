@@ -65,12 +65,14 @@ void acquire_frames(
 
         WORKER_ENTRY* current_entry = nullptr;
         cudaEvent_t* current_event = nullptr;
+
         if (!resources->free_entries_queue->pop(current_entry) || !resources->free_events_queue->pop(current_event)) {
             if (current_entry) resources->free_entries_queue->push(current_entry);
             if (current_event) resources->free_events_queue->push(current_event);
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            usleep(100);
             continue;
         }
+
 
         camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
 
@@ -80,6 +82,7 @@ void acquire_frames(
             // --- Logging recommendation is here ---
             CUDA_MEM_LOG("ACQUIRED Frame", current_entry, ecam->frame_recv.bufferSize, camera_state.frame_count);
 
+            // Populate the WORKER_ENTRY with the new frame's data
             current_entry->event_ptr = current_event;
             ck(cudaEventRecord(*current_entry->event_ptr, stream));
 
@@ -87,7 +90,6 @@ void acquire_frames(
             current_entry->width = ecam->frame_recv.size_x;
             current_entry->height = ecam->frame_recv.size_y;
             current_entry->timestamp = ecam->frame_recv.timestamp;
-            current_entry->timestamp_sys = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
             current_entry->frame_id = camera_state.frame_count;
 
             current_entry->gpu_direct_mode = true;
@@ -96,14 +98,21 @@ void acquire_frames(
             current_entry->camera_instance = &ecam->camera;
             current_entry->camera_frame_struct = &ecam->frame_recv;
 
+            // Set reference count to 1 (only the preprocessor will receive this)
             current_entry->ref_count.store(1);
 
-            preprocessor->PutObjectToQueueIn(current_entry);
-            CUDA_CTX_LOG("DISPATCHED Frame to Preprocessor");
-
-        } else {
-            CUDA_MEM_LOG("RECYCLING entry after failed acquisition", current_entry, 0, 0);
-            resources->free_entries_queue->push(current_entry);
+            // Dispatch the raw frame ONLY to the preprocessor
+            if (preprocessor) {
+                preprocessor->PutObjectToQueueIn(current_entry);
+            } else {
+                // If there's no preprocessor, we must recycle the entry immediately
+                // This case shouldn't happen in a normal run
+                if (current_entry->gpu_direct_mode) {
+                   EVT_CameraQueueFrame(current_entry->camera_instance, current_entry->camera_frame_struct);
+                }
+                resources->free_entries_queue->push(current_entry);
+                resources->free_events_queue->push(current_event);
+            }
         }
     }
 

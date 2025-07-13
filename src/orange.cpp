@@ -400,8 +400,7 @@ int main(int argc, char **args) {
                                 encoder_config->folder_name,
                                 &encoder_ready_signal,
                                 encoder_input_queue,
-                                *camera_resources[i].free_entries_queue,
-                                *processed_recycle_queue);
+                                *camera_resources[i].free_entries_queue);
                         }
                     }
             
@@ -1077,166 +1076,131 @@ int main(int argc, char **args) {
                 if (camera_control->subscribe) {
                     // ImGui::EndDisabled();
                 }
-                if (ImGui::Button(camera_control->subscribe ? "Stop streaming" : "Start streaming")) {
-                    (camera_control->subscribe) = !(camera_control->subscribe);
+                            if (ImGui::Button(camera_control->subscribe ? "Stop streaming" : "Start streaming")) {
+                (camera_control->subscribe) = !(camera_control->subscribe);
 
-                    if (camera_control->subscribe) {
-                        // START STREAMING
-                        std::cout << "STARTING STREAMING SESSION..." << std::endl;
+                if (camera_control->subscribe) {
+                    // START STREAMING
+                    std::cout << "STARTING STREAMING SESSION..." << std::endl;
 
-                        if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record; })) {
-                            encoder_config->folder_name = input_folder + "/" + get_current_date_time();
-                            make_folder(encoder_config->folder_name);
-                            std::cout << "Recording session folder: " << encoder_config->folder_name << std::endl;
+                    if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record; })) {
+                        encoder_config->folder_name = input_folder + "/" + get_current_date_time();
+                        make_folder(encoder_config->folder_name);
+                        std::cout << "Recording session folder: " << encoder_config->folder_name << std::endl;
+                    }
+
+                    camera_resources.resize(num_cameras);
+                    processed_recycle_queue = new SafeQueue<ProcessedFrame*>();
+                    for (int i = 0; i < num_cameras; ++i) {
+                        camera_resources[i].initialize(cameras_params[i].gpu_id, (size_t)cameras_params[i].width * cameras_params[i].height);
+                    }
+
+                    openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
+                    gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
+                    yolo_workers.assign(num_cameras, nullptr);
+                    cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
+                    framePreprocessors = new FramePreprocessor*[num_cameras]();
+                    tex = new GL_Texture[num_cameras];
+
+                    cudaSetDevice(display_gpu_id);
+                    for (int i = 0; i < num_cameras; i++) {
+                        if (cameras_select[i].stream_on) {
+                            int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
+                            int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
+                            setup_texture(tex[i], w, h);
                         }
+                    }
 
-                        // 1. INITIALIZE SHARED RESOURCE POOLS
-                        camera_resources.resize(num_cameras);
-                        SafeQueue<ProcessedFrame*>* processed_recycle_queue = new SafeQueue<ProcessedFrame*>(); // For ProcessedFrame objects
-                        
-                        size_t max_frame_size_bytes = 0;
-                        for (int i = 0; i < num_cameras; ++i) {
-                            size_t current_size = (size_t)cameras_params[i].width * (size_t)cameras_params[i].height;
-                            if (current_size > max_frame_size_bytes) max_frame_size_bytes = current_size;
-                        }
+                    for (int i = 0; i < num_cameras; i++) { // Corrected Loop Structure
+                        SafeQueue<ProcessedFrame*>* display_output_queue = (cameras_select[i].stream_on) ? new SafeQueue<ProcessedFrame*>() : nullptr;
+                        SafeQueue<ProcessedFrame*>* yolo_output_queue = (cameras_select[i].yolo) ? new SafeQueue<ProcessedFrame*>() : nullptr;
+                        SafeQueue<WORKER_ENTRY*>* raw_encoder_queue = (cameras_select[i].record) ? new SafeQueue<WORKER_ENTRY*>() : nullptr;
+                        SafeQueue<WORKER_ENTRY*>* preprocessor_input_queue = nullptr;
 
-                        for (int i = 0; i < num_cameras; ++i) {
-                            std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
-                            camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
-                        }
-
-                        // 2. ALLOCATE WORKER POINTERS
-                        openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
-                        gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
-                        yolo_workers.assign(num_cameras, nullptr);
-                        cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
-                        framePreprocessors = new FramePreprocessor*[num_cameras]();
-                        tex = new GL_Texture[num_cameras];
-
-                        // SETUP TEXTURES (requires display GPU context)
-                        cudaSetDevice(display_gpu_id);
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (cameras_select[i].stream_on) {
-                                int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
-                                int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
-                                setup_texture(tex[i], w, h);
-                            }
-                        }
-
-                        // 3. CREATE AND WIRE UP THE NEW PIPELINE
-                        for (int i = 0; i < num_cameras; i++) {
-                            // Create the dedicated output queues for this camera's preprocessor
-                            SafeQueue<ProcessedFrame*>* yolo_input_queue = cameras_select[i].yolo ? new SafeQueue<ProcessedFrame*>() : nullptr;
-                            SafeQueue<ProcessedFrame*>* encoder_input_queue = cameras_select[i].record ? new SafeQueue<ProcessedFrame*>() : nullptr;
-                            SafeQueue<ProcessedFrame*>* display_input_queue = cameras_select[i].stream_on ? new SafeQueue<ProcessedFrame*>() : nullptr;
-
-                            // Create the FramePreprocessor
+                        if (cameras_select[i].stream_on || cameras_select[i].yolo) {
+                            preprocessor_input_queue = new SafeQueue<WORKER_ENTRY*>();
                             std::string preproc_name = "Preprocessor_Cam" + cameras_params[i].camera_serial;
-                            framePreprocessors[i] = new FramePreprocessor(preproc_name.c_str(), 
-                                                                    &cameras_params[i], 
-                                                                    yolo_input_queue, 
-                                                                    encoder_input_queue,
-                                                                    display_input_queue,
-                                                                    *camera_resources[i].free_entries_queue, 
-                                                                    *processed_recycle_queue,
-                                                                    *camera_resources[i].free_events_queue);
-
-                            // Create the downstream workers
-                            if (cameras_select[i].stream_on) {
-                                std::string display_name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
-                                openGLDisplayWorkers[i] = new COpenGLDisplay(
-                                    display_name.c_str(),
-                                    &cameras_params[i],
-                                    &cameras_select[i],
-                                    tex[i].cuda_buffer,
-                                    &indigo_signal_builder,
-                                    display_input_queue,
-                                    *camera_resources[i].free_entries_queue,
-                                    *processed_recycle_queue);
-                            }
-                            if (cameras_select[i].yolo) {
-                                std::string yolo_name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
-                                cameras_select[i].yolo_model = yolo_model.c_str();
-                                yolo_workers[i] = new YOLOv8Worker(
-                                    yolo_name.c_str(),
-                                    &cameras_params[i],
-                                    &cameras_select[i],
-                                    yolo_input_queue,
-                                    *camera_resources[i].free_entries_queue,
-                                    *processed_recycle_queue
-                                );
-                            }
-
-                            if (cameras_select[i].record) {
-                                std::string encoder_name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
-                                bool encoder_ready_signal = false;
-                                gpuVideoEncoders[i] = new GPUVideoEncoder(
-                                    encoder_name.c_str(),
-                                    &cameras_params[i],
-                                    encoder_config->encoder_codec,
-                                    encoder_config->encoder_preset,
-                                    encoder_config->tuning_info,
-                                    encoder_config->folder_name,
-                                    &encoder_ready_signal,
-                                    display_input_queue,
-                                    *camera_resources[i].free_entries_queue,
-                                    *processed_recycle_queue
-                                );
-                            }
-                            if (cameras_select[i].crop_and_encode) {
-                                std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
-                                cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
-                                    name.c_str(),
-                                    &cameras_params[i],
-                                    encoder_config->folder_name,
-                                    *camera_resources[i].free_entries_queue
-                                );
-                            }
-                        }
-
-                        // LINK YOLO WORKERS TO CROP WORKERS
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (yolo_workers[i] && cropAndEncodeWorkers[i]) {
-                                yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
-                            }
-                        }
-
-                        // START ALL WORKER THREADS
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (framePreprocessors[i]) framePreprocessors[i]->StartThread();
-                            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
-                            if (yolo_workers[i]) yolo_workers[i]->StartThread();
-                            if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
-                            if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StartThread();
-                        }
-
-                        // 5. PREPARE CAMERAS AND START ACQUISITION THREADS
-                        for (int i = 0; i < num_cameras; i++) {
-                            camera_open_stream(&ecams[i].camera, &cameras_params[i]);
-                            ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
-                            allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
-                        }
-
-                        // PTP sync if needed
-                        if (ptp_stream_sync) {
-                            for (int i = 0; i < num_cameras; i++) {
-                                ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
-                            }
-                            camera_control->sync_camera = true;
-                        }
-
-                        // Start acquisition threads
-                        for (int i = 0; i < num_cameras; i++) {
-                            camera_threads.emplace_back(
-                                &acquire_frames,
-                                &ecams[i],
+                            framePreprocessors[i] = new FramePreprocessor(
+                                preproc_name.c_str(),
                                 &cameras_params[i],
-                                camera_control,
-                                &camera_resources[i],
-                                framePreprocessors[i]
+                                yolo_output_queue,
+                                nullptr,
+                                display_output_queue,
+                                *camera_resources[i].free_entries_queue,
+                                *processed_recycle_queue,
+                                *camera_resources[i].free_events_queue // Added missing argument
                             );
                         }
-                    } else {
+
+                        if (cameras_select[i].stream_on) {
+                            std::string display_name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
+                            openGLDisplayWorkers[i] = new COpenGLDisplay(
+                                display_name.c_str(),
+                                &cameras_params[i], &cameras_select[i], tex[i].cuda_buffer,
+                                &indigo_signal_builder, display_output_queue,
+                                *camera_resources[i].free_entries_queue, *processed_recycle_queue
+                            );
+                        }
+                        if (cameras_select[i].yolo) {
+                            std::string yolo_name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
+                            cameras_select[i].yolo_model = yolo_model.c_str();
+                            yolo_workers[i] = new YOLOv8Worker(
+                                yolo_name.c_str(), &cameras_params[i], &cameras_select[i],
+                                yolo_output_queue, *camera_resources[i].free_entries_queue, *processed_recycle_queue
+                            );
+                        }
+                        if (cameras_select[i].record) {
+                            std::string encoder_name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
+                            bool encoder_ready_signal = false;
+                            gpuVideoEncoders[i] = new GPUVideoEncoder(
+                                encoder_name.c_str(), &cameras_params[i],
+                                encoder_config->encoder_codec, encoder_config->encoder_preset,
+                                encoder_config->tuning_info, encoder_config->folder_name,
+                                &encoder_ready_signal, raw_encoder_queue,
+                                *camera_resources[i].free_entries_queue
+                            );
+                        }
+                        if (cameras_select[i].crop_and_encode) {
+                            std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
+                            cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
+                                name.c_str(), &cameras_params[i],
+                                encoder_config->folder_name,
+                                *camera_resources[i].free_entries_queue
+                            );
+                        }
+
+                        if (yolo_workers[i] && cropAndEncodeWorkers[i]) {
+                            yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
+                        }
+
+                        // START THREADS FOR THIS CAMERA
+                        if (framePreprocessors[i]) framePreprocessors[i]->StartThread();
+                        if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
+                        if (yolo_workers[i]) yolo_workers[i]->StartThread();
+                        if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
+
+                        // PREPARE AND START ACQUISITION
+                        camera_open_stream(&ecams[i].camera, &cameras_params[i]);
+                        ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
+                        allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
+
+                        camera_threads.emplace_back(
+                            &acquire_frames,
+                            &ecams[i],
+                            &cameras_params[i],
+                            camera_control,
+                            &camera_resources[i],
+                            framePreprocessors[i]
+                        );
+                    } // End of camera loop
+
+                    if (ptp_stream_sync) {
+                        for (int i = 0; i < num_cameras; i++) {
+                            ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
+                        }
+                        camera_control->sync_camera = true;
+                    }
+                } else {
                         // --- STOP STREAMING ---
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
 

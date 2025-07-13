@@ -32,56 +32,42 @@ struct EncoderContext
     NvEncoderCuda *pEnc;
 };
 
-class GPUVideoEncoder : public CThreadWorker<ProcessedFrame>
+class GPUVideoEncoder : public CThreadWorker<WORKER_ENTRY>
 {
 public:
-    GPUVideoEncoder(const char* name,
-                    CameraParams* camera_params,
-                    const std::string& codec,
-                    const std::string& preset,
-                    const std::string& tuning,
-                    std::string folder_name,
-                    bool* encoder_ready_signal,
-                    // This worker receives frames from the preprocessor via this queue
-                    SafeQueue<ProcessedFrame*>* input_queue,
-                    SafeQueue<WORKER_ENTRY*>& raw_recycle_queue,
-                    SafeQueue<ProcessedFrame*>& processed_recycle_queue);
+    GPUVideoEncoder(const char* name, CameraParams *camera_params,
+        const std::string& codec, const std::string& preset, const std::string& tuning,
+        std::string folder_name, bool* encoder_ready_signal,
+        SafeQueue<WORKER_ENTRY*>* input_queue, // This worker gets its input from here
+        SafeQueue<WORKER_ENTRY*>& recycle_queue); // This is where it recycles entries
+
     ~GPUVideoEncoder() override;
 
-    double get_fps() const { return current_fps_; }
+    double get_fps() const {
+        return current_fps_;
+    }
     bool* encoder_ready_signal;
 
 protected:
-    bool WorkerFunction(ProcessedFrame* f) override;
+    bool WorkerFunction(WORKER_ENTRY* f) override;
 
 private:
-    // Overriding the base class's loop to use our own input source.
     void ThreadRunning() override;
 
     CameraParams* camera_params;
     std::string folder_name;
-    FrameGPU frame_original;
-    Debayer debayer;
     EncoderContext encoder;
     Writer writer;
     cudaStream_t m_stream;
     int encoder_pitch_;
-    int scaled_width_;
-    int scaled_height_;
-    unsigned char* d_scaled_mono_buffer_;
-    unsigned char* d_rgb_temp_;
-    unsigned char* d_iyuv_temp_;
-    unsigned char* d_uv_default_plane_;
 
-    // Pointer to the shared input queue.
-    SafeQueue<ProcessedFrame*>* m_input_queue;
+    SafeQueue<WORKER_ENTRY*>* m_input_queue;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
-    SafeQueue<ProcessedFrame*>& m_processed_recycle_queue;
 
+    // FPS tracking
     std::chrono::steady_clock::time_point last_fps_update_time_;
     int frame_counter_;
     double current_fps_;
 };
-
 
 #endif // ORANGE_GPU_VIDEO_ENCODER
