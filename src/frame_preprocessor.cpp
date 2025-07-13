@@ -35,7 +35,8 @@ FramePreprocessor::~FramePreprocessor() {
 
 bool FramePreprocessor::WorkerFunction(WORKER_ENTRY* entry) {
     if (!entry) return false;
-
+    
+    CUDA_CTX_LOG("PREPROCESSOR: Starting WorkerFunction");
     NVTX_RANGE("FramePreprocessor_Worker");
     ck(cudaSetDevice(camera_params_->gpu_id));
     nppSetStream(m_stream); // Bind NPP operations to our stream
@@ -47,6 +48,7 @@ bool FramePreprocessor::WorkerFunction(WORKER_ENTRY* entry) {
     
     // Wait for the raw frame data to be ready
     if (entry->event_ptr) {
+        CUDA_SYNC_LOG("PREPROCESSOR: Waiting on acquisition event", *entry->event_ptr, entry->frame_id);
         ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
     }
 
@@ -93,9 +95,9 @@ bool FramePreprocessor::WorkerFunction(WORKER_ENTRY* entry) {
 
     if (dispatch_count > 0) {
         processed_frame->ref_count.store(dispatch_count);
-        if (m_yolo_queue) { m_yolo_queue->push(processed_frame); }
-        if (m_encoder_queue) { m_encoder_queue->push(processed_frame); }
-        if (m_display_queue) { m_display_queue->push(processed_frame); }
+        if (m_yolo_queue) { m_yolo_queue->push(processed_frame); CUDA_CTX_LOG("PREPROCESSOR: Pushed to YOLO Queue"); }
+        if (m_encoder_queue) { m_encoder_queue->push(processed_frame); CUDA_CTX_LOG("PREPROCESSOR: Pushed to Encoder Queue");}
+        if (m_display_queue) { m_display_queue->push(processed_frame); CUDA_CTX_LOG("PREPROCESSOR: Pushed to Display Queue");}
     } else {
         m_processed_recycle_queue.push(processed_frame);
         m_recycle_queue.push(entry);

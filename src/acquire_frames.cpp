@@ -80,6 +80,8 @@ void acquire_frames(
 
         if (camera_state.camera_return == EVT_SUCCESS) {
             camera_state.frame_count++;
+            
+            CUDA_MEM_LOG("ACQUIRED Frame", current_entry, camera_params->width * camera_params->height, camera_state.frame_count);
 
             // 3. Populate the WORKER_ENTRY with the new frame's data
             current_entry->event_ptr = current_event;
@@ -105,9 +107,12 @@ void acquire_frames(
 
             // 6. Dispatch the raw frame to the preprocessor. This is its only destination.
             preprocessor->PutObjectToQueueIn(current_entry);
+            CUDA_CTX_LOG("DISPATCHED Frame to Preprocessor");
+
 
         } else {
             // If we fail to get a frame, immediately return the WORKER_ENTRY to the pool
+            CUDA_MEM_LOG("RECYCLING entry after failed acquisition", current_entry, 0, 0);
             resources->free_entries_queue->push(current_entry);
         }
     }
