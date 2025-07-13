@@ -12,6 +12,7 @@
 #include "global.h"
 #include <npp.h>
 #include "yolo_worker.h"
+#include "global.h"
 
 #define display_gpu_id 0
 
@@ -36,28 +37,21 @@ COpenGLDisplay::COpenGLDisplay(
       d_display_resize_buffer_(nullptr),
       m_stream(nullptr),
       m_recycle_queue(raw_recycle_queue),
-      m_processed_recycle_queue(processed_recycle_queue)
+      m_processed_recycle_queue(processed_recycle_queue),
+      last_fps_update_time_(std::chrono::steady_clock::now()),
+      frame_counter_(0)
 {
+    // Constructor now ONLY sets up parameters.
+    // It does NOT interact with CUDA, as it runs on the main thread.
     std::cout << "[OPENGL_DISPLAY] CONSTRUCTOR for " << camera_params->camera_name << " on display GPU " << display_gpu_id << std::endl;
-    ck(cudaSetDevice(display_gpu_id));
-    ck(cudaStreamCreate(&m_stream));
-    
-    ck(cudaMalloc(&d_detections_for_drawing_, sizeof(pose::Object) * shaman::MAX_OBJECTS));
-    ck(cudaMalloc(&d_skeleton_for_drawing_, sizeof(unsigned int) * 4 * 2));
-    ck(cudaMalloc(&d_display_resize_buffer_, (size_t)camera_params->width * camera_params->height * 4));
-
-    size_t staging_buffer_size = (size_t)camera_params->width * camera_params->height * 4;
-    ck(cudaHostAlloc(&h_p2p_copy_buffer_, staging_buffer_size, cudaHostAllocDefault));
-    std::cout << "[OPENGL_DISPLAY] Constructor completed for " << camera_params->camera_name << std::endl;
 }
 
 COpenGLDisplay::~COpenGLDisplay()
 {
     std::cout << "[OPENGL_DISPLAY] DESTRUCTOR for " << (camera_params ? camera_params->camera_name : "unknown") << std::endl;
-    ck(cudaSetDevice(display_gpu_id));
-
+    // The thread should be stopped before destruction, so we can safely clean up resources.
+    ck(cudaSetDevice(display_gpu_id)); // Set context for cleanup
     if (m_stream) cudaStreamDestroy(m_stream);
-    if (h_p2p_copy_buffer_) cudaFreeHost(h_p2p_copy_buffer_);
     if (d_detections_for_drawing_) cudaFree(d_detections_for_drawing_);
     if (d_skeleton_for_drawing_) cudaFree(d_skeleton_for_drawing_);
     if (d_display_resize_buffer_) cudaFree(d_display_resize_buffer_);
@@ -65,43 +59,46 @@ COpenGLDisplay::~COpenGLDisplay()
 
 void COpenGLDisplay::ThreadRunning()
 {
+    // 1. Set the CUDA device FOR THIS THREAD. This creates the context.
+    ck(cudaSetDevice(display_gpu_id));
     printf("OpenGLDisplay Thread Start %d\n", GetID());
-    CUDA_CTX_LOG("DISPLAY: ThreadRunning Start");
+    CUDA_CTX_LOG("DISPLAY: ThreadRunning Start - Context Established");
+
+    // 2. Now that a context exists, we can create stream and buffers.
+    ck(cudaStreamCreate(&m_stream));
+    ck(cudaMalloc(&d_detections_for_drawing_, sizeof(pose::Object) * shaman::MAX_OBJECTS));
+    ck(cudaMalloc(&d_skeleton_for_drawing_, sizeof(unsigned int) * 4 * 2));
+    ck(cudaMalloc(&d_display_resize_buffer_, (size_t)camera_params->width * camera_params->height * 4));
+
+    // Enable peer access between the acquisition GPU and the display GPU
+    if (camera_params->gpu_id != display_gpu_id) {
+        cudaSetDevice(display_gpu_id);
+        cudaDeviceEnablePeerAccess(camera_params->gpu_id, 0);
+    }
+    
+    // --- The rest of the loop is the same ---
     while (IsMachineOn())
     {
         ProcessedFrame* latest_frame = nullptr;
-        // Step 1: Wait for and get the first available frame.
         if (m_input_queue && m_input_queue->pop(latest_frame))
         {
-            CUDA_CTX_LOG("DISPLAY: Popped initial frame");
-            // Step 2: Aggressively drain the queue to find the newest frame.
             ProcessedFrame* newer_frame = nullptr;
             while(m_input_queue->pop(newer_frame))
             {
-                CUDA_CTX_LOG("DISPLAY: Discarding older frame");
-                // A newer frame was available. The 'latest_frame' we were holding is now old.
-                // We must decrement its reference count. If we were the last one
-                // holding onto it, its resources will be properly recycled.
                 if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-                    CUDA_MEM_LOG("DISPLAY: Recycling discarded frame", latest_frame->original_entry, 0, latest_frame->frame_id);
                     m_recycle_queue.push(latest_frame->original_entry);
                     m_processed_recycle_queue.push(latest_frame);
                 }
-                // The frame we just popped is now the latest one.
                 latest_frame = newer_frame;
             }
 
-            // Step 3: After the loop, latest_frame holds the absolute most
-            // recent frame. Process it.
             if (latest_frame)
             {
-                CUDA_CTX_LOG("DISPLAY: Processing latest frame");
                 WorkerFunction(latest_frame);
             }
         }
         else
         {
-            // If the queue was empty, sleep briefly.
             usleep(1000);
         }
     }
@@ -112,11 +109,21 @@ bool COpenGLDisplay::WorkerFunction(ProcessedFrame* frame)
 {
     if (!frame) return false;
 
-    CUDA_CTX_LOG("DISPLAY: WorkerFunction Start");
-    ck(cudaSetDevice(display_gpu_id));
+    frame_counter_++;
+    auto now = std::chrono::steady_clock::now();
+    std::chrono::duration<double> elapsed = now - last_fps_update_time_;
+    if (elapsed.count() >= 1.0) {
+        // Calculate FPS
+        double fps = static_cast<double>(frame_counter_) / elapsed.count();
+        // Update the global atomic variable
+        streaming_fps.store(fps);
+        // Reset counters for the next interval
+        frame_counter_ = 0;
+        last_fps_update_time_ = now;
+    }
+
     nppSetStream(m_stream);
 
-    // --- GPU-ACCELERATED DRAWING ---
     if (frame->has_detections && frame->detections_ready.load(std::memory_order_acquire) && !frame->detections.empty()) {
         ck(cudaMemcpyAsync(d_detections_for_drawing_,
                            frame->detections.data(),
@@ -133,6 +140,10 @@ bool COpenGLDisplay::WorkerFunction(ProcessedFrame* frame)
             m_stream);
     }
 
+    // --- Select the correct copy method based on GPU IDs ---
+    unsigned char* source_buffer_for_copy = frame->d_processed_image;
+    size_t copy_size = (size_t)frame->width * (size_t)frame->height * 4;
+
     if (camera_select->downsample > 1) {
         output_display_size_.width = frame->width / camera_select->downsample;
         output_display_size_.height = frame->height / camera_select->downsample;
@@ -145,21 +156,34 @@ bool COpenGLDisplay::WorkerFunction(ProcessedFrame* frame)
                             d_display_resize_buffer_, output_display_size_.width * 4, output_display_size_,
                             output_roi, NPPI_INTER_SUPER);
 
-        size_t copy_size = (size_t)output_display_size_.width * (size_t)output_display_size_.height * 4;
-        ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, d_display_resize_buffer_, copy_size, cudaMemcpyDeviceToDevice, m_stream));
-    } else {
-        size_t copy_size = (size_t)frame->width * (size_t)frame->height * 4;
-        ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, frame->d_processed_image, copy_size, cudaMemcpyDeviceToDevice, m_stream));
+        source_buffer_for_copy = d_display_resize_buffer_; // Update the source for the copy
+        copy_size = (size_t)output_display_size_.width * (size_t)output_display_size_.height * 4;
     }
 
-    CUDA_SYNC_LOG("DISPLAY: Waiting on stream sync", m_stream, frame->frame_id);
-    ck(cudaStreamSynchronize(m_stream));
-    CUDA_SYNC_LOG("DISPLAY: Stream sync complete", m_stream, frame->frame_id);
+    // Now perform the copy using the correct method
+    if (camera_params->gpu_id == display_gpu_id) {
+        // Same GPU: Use standard device-to-device copy
+        ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, source_buffer_for_copy, copy_size, cudaMemcpyDeviceToDevice, m_stream));
+    } else {
+        // Different GPUs: Use peer-to-peer copy
+        ck(cudaMemcpyPeerAsync(display_buffer_pbo_cuda_ptr_, display_gpu_id, 
+                               source_buffer_for_copy, camera_params->gpu_id, 
+                               copy_size, m_stream));
+    }
 
-    // --- Final Step: Reference Counting and Recycling ---
+    ck(cudaStreamSynchronize(m_stream));
+
+    // --- Corrected Recycling Logic ---
     if (frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        CUDA_MEM_LOG("DISPLAY: Recycling processed frame", frame->original_entry, 0, frame->frame_id);
-        m_recycle_queue.push(frame->original_entry);
+        WORKER_ENTRY* entry = frame->original_entry;
+
+        // If the frame came from a GPU Direct buffer, requeue it with the camera SDK first.
+        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+        }
+
+        // Now, recycle the software containers.
+        m_recycle_queue.push(entry);
         m_processed_recycle_queue.push(frame);
     }
 

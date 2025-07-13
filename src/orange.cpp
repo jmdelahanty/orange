@@ -368,7 +368,7 @@ int main(int argc, char **args) {
                                 tex[i].cuda_buffer,
                                 &indigo_signal_builder,
                                 display_input_queue,
-                                *camera_resources[i].recycle_queue,
+                                *camera_resources[i].free_entries_queue,
                                 *processed_recycle_queue);
                         }
                         if (cameras_select[i].yolo) {
@@ -381,7 +381,7 @@ int main(int argc, char **args) {
                                 &cameras_params[i],
                                 &cameras_select[i],
                                 yolo_input_queue,
-                                *camera_resources[i].recycle_queue,
+                                *camera_resources[i].free_entries_queue,
                                 *camera_resources[i].processed_recycle_queue);
                                 if (openGLDisplayWorkers[i]) {
                                     yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
@@ -400,7 +400,7 @@ int main(int argc, char **args) {
                                 encoder_config->folder_name,
                                 &encoder_ready_signal,
                                 encoder_input_queue,
-                                *camera_resources[i].recycle_queue,
+                                *camera_resources[i].free_entries_queue,
                                 *processed_recycle_queue);
                         }
                     }
@@ -1110,7 +1110,7 @@ int main(int argc, char **args) {
                         gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
                         yolo_workers.assign(num_cameras, nullptr);
                         cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
-                        framePreprocessors = new FramePreprocessor*[num_cameras](); // <-- Allocate preprocessor array
+                        framePreprocessors = new FramePreprocessor*[num_cameras]();
                         tex = new GL_Texture[num_cameras];
 
                         // SETUP TEXTURES (requires display GPU context)
@@ -1137,8 +1137,9 @@ int main(int argc, char **args) {
                                                                     yolo_input_queue, 
                                                                     encoder_input_queue,
                                                                     display_input_queue,
-                                                                    *camera_resources[i].recycle_queue, 
-                                                                    *processed_recycle_queue);
+                                                                    *camera_resources[i].free_entries_queue, 
+                                                                    *processed_recycle_queue,
+                                                                    *camera_resources[i].free_events_queue);
 
                             // Create the downstream workers
                             if (cameras_select[i].stream_on) {
@@ -1150,7 +1151,7 @@ int main(int argc, char **args) {
                                     tex[i].cuda_buffer,
                                     &indigo_signal_builder,
                                     display_input_queue,
-                                    *camera_resources[i].recycle_queue,
+                                    *camera_resources[i].free_entries_queue,
                                     *processed_recycle_queue);
                             }
                             if (cameras_select[i].yolo) {
@@ -1160,8 +1161,8 @@ int main(int argc, char **args) {
                                     yolo_name.c_str(),
                                     &cameras_params[i],
                                     &cameras_select[i],
-                                    display_input_queue,
-                                    *camera_resources[i].recycle_queue,
+                                    yolo_input_queue,
+                                    *camera_resources[i].free_entries_queue,
                                     *processed_recycle_queue
                                 );
                             }
@@ -1178,7 +1179,7 @@ int main(int argc, char **args) {
                                     encoder_config->folder_name,
                                     &encoder_ready_signal,
                                     display_input_queue,
-                                    *camera_resources[i].recycle_queue,
+                                    *camera_resources[i].free_entries_queue,
                                     *processed_recycle_queue
                                 );
                             }
@@ -1188,7 +1189,7 @@ int main(int argc, char **args) {
                                     name.c_str(),
                                     &cameras_params[i],
                                     encoder_config->folder_name,
-                                    *camera_resources[i].recycle_queue
+                                    *camera_resources[i].free_entries_queue
                                 );
                             }
                         }

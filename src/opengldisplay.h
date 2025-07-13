@@ -7,6 +7,7 @@
 #include <nppi.h>
 #include "common.hpp"
 #include <cuda.h>
+#include <chrono>
 
 class COpenGLDisplay : public CThreadWorker<ProcessedFrame>
 {
@@ -52,4 +53,8 @@ private:
 
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     SafeQueue<ProcessedFrame*>& m_processed_recycle_queue;
+
+    // FPS Calculation Members
+    std::chrono::steady_clock::time_point last_fps_update_time_;
+    int frame_counter_ = 0;
 };

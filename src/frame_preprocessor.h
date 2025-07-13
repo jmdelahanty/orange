@@ -18,7 +18,8 @@ public:
         SafeQueue<ProcessedFrame*>* encoder_queue,
         SafeQueue<ProcessedFrame*>* display_queue,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
-        SafeQueue<ProcessedFrame*>& processed_recycle_queue);
+        SafeQueue<ProcessedFrame*>& processed_recycle_queue,
+        SafeQueue<cudaEvent_t*>& free_events_queue);
 
     ~FramePreprocessor() override;
 
@@ -33,6 +34,7 @@ private:
     SafeQueue<ProcessedFrame*>* m_yolo_queue;
     SafeQueue<ProcessedFrame*>* m_encoder_queue;
     SafeQueue<ProcessedFrame*>* m_display_queue;
+    SafeQueue<cudaEvent_t*>& m_free_events_queue;
 
     // Recycle queues
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
