@@ -22,7 +22,9 @@ public:
         unsigned char* display_buffer_cuda_pbo,
         INDIGOSignalBuilder* indigo_signal_builder,
         SafeQueue<WORKER_ENTRY*>& raw_recycle_queue,
-        SafeQueue<ProcessedFrame*>& processed_recycle_queue);
+        SafeQueue<ProcessedFrame*>& processed_recycle_queue,
+        CameraResources* resources
+    );
 
     ~COpenGLDisplay() override;
 
@@ -33,8 +35,6 @@ private:
     CameraEachSelect* camera_select;
     unsigned char* display_buffer_pbo_cuda_ptr_;
     INDIGOSignalBuilder* indigo_signal_builder_;
-    
-    // --- Members for this worker's specific tasks ---
 
     // A dedicated CUDA stream for this worker's operations (resizing, drawing)
     cudaStream_t m_stream;
@@ -48,6 +48,9 @@ private:
 
     // Staging buffer for P2P transfers if the display GPU is different from the worker GPU
     unsigned char* h_p2p_copy_buffer_; 
+
+    // Camera Resources
+    CameraResources* m_resources;
 
     // --- Memory Management ---
     SafeQueue<WORKER_ENTRY*>& m_raw_recycle_queue;

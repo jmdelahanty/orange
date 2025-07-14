@@ -353,7 +353,8 @@ int main(int argc, char **args) {
                                 tex[i].cuda_buffer,
                                 &indigo_signal_builder,
                                 *camera_resources[i].recycle_queue,
-                                *camera_resources[i].processed_recycle_queue
+                                *camera_resources[i].processed_recycle_queue,
+                                &camera_resources[i]
                             );
                         }
                         if (cameras_select[i].yolo) {
@@ -1093,7 +1094,8 @@ int main(int argc, char **args) {
                                     tex[i].cuda_buffer,
                                     &indigo_signal_builder,
                                     *camera_resources[i].recycle_queue,
-                                    *camera_resources[i].processed_recycle_queue
+                                    *camera_resources[i].processed_recycle_queue,
+                                    &camera_resources[i]
                                 );
                                 openGLDisplayWorkers[i]->SetInputQueue(&display_queues[i]);
                             }

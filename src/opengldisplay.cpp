@@ -17,12 +17,14 @@ COpenGLDisplay::COpenGLDisplay(
     unsigned char* display_buffer_cuda_pbo,
     INDIGOSignalBuilder* indigo_signal_builder,
     SafeQueue<WORKER_ENTRY*>& raw_recycle_queue,
-    SafeQueue<ProcessedFrame*>& processed_recycle_queue
+    SafeQueue<ProcessedFrame*>& processed_recycle_queue,
+    CameraResources* resources
 ) : CThreadWorker<ProcessedFrame>(name),
       camera_params(camera_params),
       camera_select(camera_select),
       display_buffer_pbo_cuda_ptr_(display_buffer_cuda_pbo),
       indigo_signal_builder_(indigo_signal_builder),
+      m_resources(resources),
       m_stream(nullptr),
       d_detections_for_drawing_(nullptr),
       d_display_resize_buffer_(nullptr),
@@ -142,11 +144,16 @@ bool COpenGLDisplay::WorkerFunction(ProcessedFrame* f)
     CUDA_SYNC_LOG("Stream synchronized", m_stream, f->frame_id);
 
     if (f->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        CUDA_CTX_LOG("DISPLAY_WORKER: Last worker for frame " + std::to_string(f->frame_id) + ", recycling resources.");
+        // This is the last worker for this frame. Recycle everything.
+        
+        // ** THE FIX: Return the event to the free pool **
+        if (f->original_entry && f->original_entry->event_ptr) {
+            m_resources->free_events_queue->push(f->original_entry->event_ptr);
+        }
+
+        // Recycle the raw and processed frame structs
         m_raw_recycle_queue.push(f->original_entry);
         m_processed_recycle_queue.push(f);
-    } else {
-        CUDA_CTX_LOG("DISPLAY_WORKER: Not last worker for frame " + std::to_string(f->frame_id) + ", ref_count > 1.");
     }
 
     return false;
