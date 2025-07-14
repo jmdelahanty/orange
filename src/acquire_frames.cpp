@@ -53,7 +53,7 @@ void acquire_frames(
             current_entry->width = ecam->frame_recv.size_x;
             current_entry->height = ecam->frame_recv.size_y;
             current_entry->timestamp = ecam->frame_recv.timestamp;
-            current_entry->frame_id = frame_count;
+            current_entry->frame_id = camera_params->camera_frame_counter.fetch_add(1, std::memory_order_relaxed);
             current_entry->has_detections = camera_select->yolo;
 
             // Record an event to signal that the cudaMemcpy is complete

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <vector>
 #include <numeric>
+#include <atomic>
 
 struct CameraParams{
     unsigned int width;
@@ -29,6 +30,7 @@ struct CameraParams{
     std::string color_temp;
     int gpu_id;
     int camera_id;
+    std::atomic<uint64_t> camera_frame_counter{0};
     std::string camera_name;
     std::string camera_serial;
     int num_cameras;

@@ -49,6 +49,16 @@ public:
         return success;
     }
 
+    size_t size()
+    {
+        size_t queue_size = 0;
+        mutex.Lock();
+        queue_size = queue.size();
+        mutex.Unlock();
+        return queue_size;
+    }
+
+
 private:
     std::queue<T> queue;
     CGenericMutex mutex;

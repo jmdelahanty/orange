@@ -1082,6 +1082,14 @@ int main(int argc, char **args) {
                         // START STREAMING
                         std::cout << "STARTING STREAMING SESSION..." << std::endl;
 
+                        for (int i = 0; i < num_cameras; i++) {
+                            if (cameras_select[i].stream_on) {
+                                cameras_params[i].camera_frame_counter.store(0, std::memory_order_relaxed);
+                                std::cout << "[MAIN] Reset frame counter for camera " 
+                                        << cameras_params[i].camera_serial << std::endl;
+                            }
+                        }
+
                         if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record; })) {
                             encoder_config->folder_name = input_folder + "/" + get_current_date_time();
                             make_folder(encoder_config->folder_name);

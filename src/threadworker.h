@@ -55,6 +55,9 @@ public:
 protected:
     virtual bool WorkerFunction(T* f) = 0;
     virtual void WorkerReset() {}
+    SafeQueue<T*>* GetInputQueue() {
+        return m_input_queue;
+    }
 
 private:
     void ThreadRunning() override;
