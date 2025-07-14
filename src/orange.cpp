@@ -32,6 +32,9 @@ simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger(
 
 int main(int argc, char **args) {
 
+    // Initialize CUDA
+    ck(cuInit(0));
+
     // Initialize the YOLOv8 plugins
     YOLOv8::initialize_plugins();
 
@@ -45,6 +48,9 @@ int main(int argc, char **args) {
     };
 
     render_initialize_target(window);
+
+    CUcontext cuda_ctx;
+    ck(cuCtxGetCurrent(&cuda_ctx));
 
     int max_cameras = 20;
     int cam_count;
@@ -61,7 +67,7 @@ int main(int argc, char **args) {
     std::string input_folder = orange_root_dir_str + "/exp/unsorted";
 
     std::string yolo_model_folder = orange_root_dir_str + "/detect";
-    std::string yolo_model = yolo_model_folder + "/fish_jinyao.engine";
+    std::string yolo_model = yolo_model_folder + "/fish3.engine";
     
     bool camera_is_selected[cam_count]{0};
     CameraParams *cameras_params;
@@ -360,9 +366,10 @@ int main(int argc, char **args) {
                             std::string display_name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
                             openGLDisplayWorkers[i] = new COpenGLDisplay(
                                 display_name.c_str(),
+                                cuda_ctx,
                                 &cameras_params[i],
                                 &cameras_select[i],
-                                tex[i].cuda_buffer,
+                                &tex[i],
                                 &indigo_signal_builder,
                                 *camera_resources[i].recycle_queue,
                                 *camera_resources[i].processed_recycle_queue
@@ -1106,7 +1113,6 @@ int main(int argc, char **args) {
                             camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes, max_processed_frame_size_bytes);
                         }
 
-                        // --- NEW PIPELINE SETUP ---
                         // 1. ALLOCATE POINTERS FOR WORKERS, QUEUES, and TEXTURES
                         preprocessors = new FramePreprocessor*[num_cameras];
                         SafeQueue<ProcessedFrame*>* yolo_queues = new SafeQueue<ProcessedFrame*>[num_cameras];
@@ -1144,15 +1150,14 @@ int main(int argc, char **args) {
                                 std::string name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
                                 openGLDisplayWorkers[i] = new COpenGLDisplay(
                                     name.c_str(),
+                                    cuda_ctx,
                                     &cameras_params[i],
                                     &cameras_select[i],
-                                    tex[i].cuda_buffer,
+                                    &tex[i],
                                     &indigo_signal_builder,
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
-                                // Set the input queue for the display worker
-                                openGLDisplayWorkers[i]->SetInputQueue(&display_queues[i]);
                             }
                             if (cameras_select[i].yolo) {
                                 std::string name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
@@ -1512,6 +1517,15 @@ int main(int argc, char **args) {
 
     image_writer->StopThread();
     delete image_writer;
+
+    if (camera_control->subscribe) {
+        for (int i = 0; i < num_cameras; i++) {
+            if (cameras_select[i].stream_on) {
+                clear_upload_and_cleanup(tex[i], cameras_params[i].width, cameras_params[i].height);
+            }
+        }
+        if (tex) delete[] tex;
+    }
 
     // Cleanup
     gx_cleanup(window);
