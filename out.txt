@@ -1,0 +1,1754 @@
+[YOLOv8] TensorRT plugins initialized.
+Server Initiated
+Child Thread Start 0
+enet_thread.cpp: Address of EnetContext 'server_enet_context' received: 0x7ffd3e0f9c80
+Load camera json file: /home/jeremy/orange_data/config/local/javier_no_shelf/02010096.json
+Resolution: 		4512 x 4512
+OffsetX Max: 		0
+OffsetX Min: 		0
+OffsetX Inc: 		8
+OffsetX Set: 		0
+OffsetY Max: 		0
+OffsetY Min: 		0
+OffsetY Inc: 		16
+OffsetX Set: 		0
+PixelFormat: 		Mono8
+STARTING STREAMING SESSION...
+Initializing resources for camera 0 on GPU 0
+[FramePreprocessor] Constructor for Preprocessor_Cam_2010096 on GPU 0
+Child Thread Start 0
+Child Thread DONE 0
+Cleaned up all per-camera resources.
+
+Close Camera: 		Camera Closed
+Load camera json file: /home/jeremy/orange_data/config/local/javier_no_shelf/02010096.json
+Resolution: 		4512 x 4512
+OffsetX Max: 		0
+OffsetX Min: 		0
+OffsetX Inc: 		8
+OffsetX Set: 		0
+OffsetY Max: 		0
+OffsetY Min: 		0
+OffsetY Inc: 		16
+OffsetX Set: 		0
+PixelFormat: 		Mono8
+STARTING STREAMING SESSION...
+[MAIN] Reset frame counter for camera 2010096
+Initializing resources for camera 0 on GPU 0
+[OPENGL_DISPLAY] CONSTRUCTOR for Cam4 on display GPU 0
+[OPENGL_DISPLAY] Constructor completed for Cam4
+[FramePreprocessor] Constructor for Preprocessor_Cam_2010096 on GPU 0
+Child Thread Start 0
+Child Thread Start 0
+[DISPLAY] Camera 2010096Processing freshest frame 0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 0 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 0 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 0 | Copying full-size image to PBO | Ptr: 0x7596f4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 0 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 0 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 0, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 1
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 1 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 1 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 1 | Copying full-size image to PBO | Ptr: 0x7596ee000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 1 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 1 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 1, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 2
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 2 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 2 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 2 | Copying full-size image to PBO | Ptr: 0x7596e8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 2 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 2 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 2, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 3
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 3 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 3 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 3 | Copying full-size image to PBO | Ptr: 0x7596e2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 3 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 3 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 3, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 4
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 4 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 4 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 4 | Copying full-size image to PBO | Ptr: 0x7596dc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 4 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 4 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 4, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 5
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 5 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 5 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 5 | Copying full-size image to PBO | Ptr: 0x7596d6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 5 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 5 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 5, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 6
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 6 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 6 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 6 | Copying full-size image to PBO | Ptr: 0x7596d0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 6 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 6 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 6, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 7
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 7 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 7 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 7 | Copying full-size image to PBO | Ptr: 0x7596ca000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 7 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 7 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 7, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 8
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 8 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 8 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 8 | Copying full-size image to PBO | Ptr: 0x7596c4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 8 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 8 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 8, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 9
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 9 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 9 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 9 | Copying full-size image to PBO | Ptr: 0x7596be000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 9 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 9 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 9, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 10
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 10 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 10 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 10 | Copying full-size image to PBO | Ptr: 0x7596b8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 10 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 10 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 10, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 11
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 11 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 11 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 11 | Copying full-size image to PBO | Ptr: 0x7596b2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 11 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 11 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 11, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 12
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 12 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 12 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 12 | Copying full-size image to PBO | Ptr: 0x7596ac000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 12 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 12 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 12, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 13
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 13 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 13 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 13 | Copying full-size image to PBO | Ptr: 0x7596a6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 13 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 13 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 13, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 14
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 14 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 14 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 14 | Copying full-size image to PBO | Ptr: 0x7596a0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 14 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 14 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 14, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 15
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 15 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 15 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 15 | Copying full-size image to PBO | Ptr: 0x75969a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 15 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 15 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 15, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 16
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 16 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 16 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 16 | Copying full-size image to PBO | Ptr: 0x759694000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 16 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 16 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 16, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 17
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 17 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 17 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 17 | Copying full-size image to PBO | Ptr: 0x75968e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 17 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 17 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 17, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 18
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 18 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 18 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 18 | Copying full-size image to PBO | Ptr: 0x759688000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 18 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 18 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 18, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 19
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 19 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 19 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 19 | Copying full-size image to PBO | Ptr: 0x759682000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 19 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 19 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 19, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 20
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 20 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 20 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 20 | Copying full-size image to PBO | Ptr: 0x75967c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 20 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 20 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 20, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 21
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 21 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 21 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 21 | Copying full-size image to PBO | Ptr: 0x759676000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 21 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 21 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 21, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 22
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 22 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 22 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 22 | Copying full-size image to PBO | Ptr: 0x759670000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 22 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 22 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 22, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 23
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 23 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 23 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 23 | Copying full-size image to PBO | Ptr: 0x75966a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 23 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 23 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 23, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 24
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 24 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 24 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 24 | Copying full-size image to PBO | Ptr: 0x759664000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 24 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 24 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 24, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 25
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 25 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 25 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 25 | Copying full-size image to PBO | Ptr: 0x75965e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 25 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 25 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 25, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 26
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 26 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 26 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 26 | Copying full-size image to PBO | Ptr: 0x759658000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 26 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 26 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 26, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 27
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 27 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 27 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 27 | Copying full-size image to PBO | Ptr: 0x759652000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 27 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 27 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 27, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 28
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 28 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 28 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 28 | Copying full-size image to PBO | Ptr: 0x75964c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 28 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 28 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 28, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 29
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 29 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 29 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 29 | Copying full-size image to PBO | Ptr: 0x759646000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 29 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 29 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 29, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 30
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 30 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 30 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 30 | Copying full-size image to PBO | Ptr: 0x759640000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 30 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 30 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 30, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 31
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 31 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 31 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 31 | Copying full-size image to PBO | Ptr: 0x75963a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 31 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 31 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 31, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 32
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 32 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 32 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 32 | Copying full-size image to PBO | Ptr: 0x759634000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 32 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 32 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 32, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 33
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 33 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 33 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 33 | Copying full-size image to PBO | Ptr: 0x75962e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 33 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 33 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 33, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 34
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 34 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 34 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 34 | Copying full-size image to PBO | Ptr: 0x759628000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 34 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 34 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 34, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 35
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 35 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 35 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 35 | Copying full-size image to PBO | Ptr: 0x759622000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 35 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 35 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 35, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 36
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 36 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 36 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 36 | Copying full-size image to PBO | Ptr: 0x75961c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 36 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 36 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 36, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 37
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 37 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 37 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 37 | Copying full-size image to PBO | Ptr: 0x759616000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 37 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 37 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 37, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 38
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 38 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 38 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 38 | Copying full-size image to PBO | Ptr: 0x759610000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 38 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 38 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 38, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 39
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 39 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 39 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 39 | Copying full-size image to PBO | Ptr: 0x75960a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 39 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 39 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 39, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 40
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 40 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 40 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 40 | Copying full-size image to PBO | Ptr: 0x759604000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 40 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 40 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 40, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 41
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 41 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 41 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 41 | Copying full-size image to PBO | Ptr: 0x7595fe000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 41 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 41 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 41, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 42
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 42 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 42 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 42 | Copying full-size image to PBO | Ptr: 0x7595f8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 42 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 42 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 42, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 43
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 43 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 43 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 43 | Copying full-size image to PBO | Ptr: 0x7595f2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 43 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 43 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 43, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 44
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 44 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 44 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 44 | Copying full-size image to PBO | Ptr: 0x7595ec000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 44 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 44 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 44, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 45
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 45 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 45 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 45 | Copying full-size image to PBO | Ptr: 0x7595e6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 45 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 45 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 45, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 46
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 46 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 46 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 46 | Copying full-size image to PBO | Ptr: 0x7595e0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 46 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 46 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 46, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 47
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 47 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 47 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 47 | Copying full-size image to PBO | Ptr: 0x7595da000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 47 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 47 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 47, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 48
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 48 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 48 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 48 | Copying full-size image to PBO | Ptr: 0x7595d4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 48 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 48 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 48, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 49
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 49 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 49 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 49 | Copying full-size image to PBO | Ptr: 0x7595ce000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 49 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 49 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 49, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 50
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 50 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 50 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 50 | Copying full-size image to PBO | Ptr: 0x7595c8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 50 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 50 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 50, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 51
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 51 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 51 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 51 | Copying full-size image to PBO | Ptr: 0x7595c2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 51 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 51 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 51, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 52
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 52 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 52 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 52 | Copying full-size image to PBO | Ptr: 0x7595bc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 52 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 52 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 52, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 53
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 53 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 53 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 53 | Copying full-size image to PBO | Ptr: 0x7595b6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 53 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 53 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 53, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 54
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 54 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 54 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 54 | Copying full-size image to PBO | Ptr: 0x7595b0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 54 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 54 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 54, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 55
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 55 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 55 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 55 | Copying full-size image to PBO | Ptr: 0x7595aa000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 55 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 55 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 55, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 56
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 56 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 56 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 56 | Copying full-size image to PBO | Ptr: 0x7595a4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 56 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 56 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 56, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 57
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 57 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 57 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 57 | Copying full-size image to PBO | Ptr: 0x75959e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 57 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 57 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 57, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 58
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 58 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 58 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 58 | Copying full-size image to PBO | Ptr: 0x759598000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 58 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 58 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 58, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 59
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 59 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 59 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 59 | Copying full-size image to PBO | Ptr: 0x759592000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 59 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 59 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 59, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 60
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 60 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 60 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 60 | Copying full-size image to PBO | Ptr: 0x75958c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 60 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 60 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 60, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 61
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 61 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 61 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 61 | Copying full-size image to PBO | Ptr: 0x759586000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 61 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 61 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 61, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 62
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 62 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 62 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 62 | Copying full-size image to PBO | Ptr: 0x759580000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 62 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 62 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 62, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 63
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 63 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 63 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 63 | Copying full-size image to PBO | Ptr: 0x75957a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 63 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 63 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 63, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 64
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 64 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 64 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 64 | Copying full-size image to PBO | Ptr: 0x759574000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 64 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 64 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 64, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 65
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 65 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 65 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 65 | Copying full-size image to PBO | Ptr: 0x75956e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 65 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 65 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 65, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 66
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 66 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 66 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 66 | Copying full-size image to PBO | Ptr: 0x759568000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 66 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 66 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 66, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 67
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 67 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 67 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 67 | Copying full-size image to PBO | Ptr: 0x759562000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 67 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 67 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 67, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 68
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 68 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 68 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 68 | Copying full-size image to PBO | Ptr: 0x75955c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 68 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 68 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 68, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 69
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 69 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 69 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 69 | Copying full-size image to PBO | Ptr: 0x759556000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 69 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 69 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 69, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 70
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 70 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 70 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 70 | Copying full-size image to PBO | Ptr: 0x759550000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 70 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 70 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 70, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 71
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 71 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 71 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 71 | Copying full-size image to PBO | Ptr: 0x75954a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 71 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 71 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 71, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 72
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 72 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 72 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 72 | Copying full-size image to PBO | Ptr: 0x759544000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 72 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 72 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 72, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 73
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 73 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 73 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 73 | Copying full-size image to PBO | Ptr: 0x75953e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 73 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 73 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 73, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 74
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 74 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 74 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 74 | Copying full-size image to PBO | Ptr: 0x759538000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 74 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 74 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 74, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 75
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 75 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 75 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 75 | Copying full-size image to PBO | Ptr: 0x759532000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 75 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 75 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 75, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 76
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 76 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 76 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 76 | Copying full-size image to PBO | Ptr: 0x75952c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 76 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 76 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 76, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 77
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 77 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 77 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 77 | Copying full-size image to PBO | Ptr: 0x759526000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 77 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 77 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 77, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 78
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 78 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 78 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 78 | Copying full-size image to PBO | Ptr: 0x759520000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 78 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 78 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 78, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 79
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 79 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 79 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 79 | Copying full-size image to PBO | Ptr: 0x75951a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 79 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 79 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 79, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 80
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 80 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 80 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 80 | Copying full-size image to PBO | Ptr: 0x759514000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 80 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 80 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 80, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 81
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 81 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 81 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 81 | Copying full-size image to PBO | Ptr: 0x75950e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 81 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 81 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 81, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 82
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 82 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 82 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 82 | Copying full-size image to PBO | Ptr: 0x759508000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 82 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 82 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 82, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 83
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 83 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 83 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 83 | Copying full-size image to PBO | Ptr: 0x759502000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 83 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 83 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 83, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 84
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 84 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 84 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 84 | Copying full-size image to PBO | Ptr: 0x7594fc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 84 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 84 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 84, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 85
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 85 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 85 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 85 | Copying full-size image to PBO | Ptr: 0x7594f6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 85 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 85 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 85, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 86
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 86 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 86 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 86 | Copying full-size image to PBO | Ptr: 0x7594f0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 86 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 86 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 86, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 87
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 87 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 87 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 87 | Copying full-size image to PBO | Ptr: 0x7594ea000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 87 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 87 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 87, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 88
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 88 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 88 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 88 | Copying full-size image to PBO | Ptr: 0x7594e4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 88 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 88 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 88, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 89
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 89 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 89 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 89 | Copying full-size image to PBO | Ptr: 0x7594de000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 89 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 89 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 89, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 90
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 90 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 90 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 90 | Copying full-size image to PBO | Ptr: 0x7594d8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 90 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 90 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 90, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 91
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 91 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 91 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 91 | Copying full-size image to PBO | Ptr: 0x7594d2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 91 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 91 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 91, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 92
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 92 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 92 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 92 | Copying full-size image to PBO | Ptr: 0x7594cc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 92 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 92 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 92, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 93
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 93 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 93 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 93 | Copying full-size image to PBO | Ptr: 0x7594c6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 93 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 93 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 93, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 94
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 94 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 94 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 94 | Copying full-size image to PBO | Ptr: 0x7594c0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 94 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 94 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 94, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 95
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 95 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 95 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 95 | Copying full-size image to PBO | Ptr: 0x7594ba000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 95 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 95 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 95, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 96
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 96 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 96 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 96 | Copying full-size image to PBO | Ptr: 0x7594b4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 96 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 96 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 96, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 97
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 97 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 97 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 97 | Copying full-size image to PBO | Ptr: 0x7594ae000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 97 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 97 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 97, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 98
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 98 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 98 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 98 | Copying full-size image to PBO | Ptr: 0x7594a8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 98 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 98 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 98, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 99
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 99 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 99 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 99 | Copying full-size image to PBO | Ptr: 0x7594a2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 99 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 99 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 99, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 100
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 100 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 100 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 100 | Copying full-size image to PBO | Ptr: 0x75949c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 100 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 100 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 100, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 101
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 101 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 101 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 101 | Copying full-size image to PBO | Ptr: 0x759496000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 101 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 101 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 101, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 102
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 102 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 102 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 102 | Copying full-size image to PBO | Ptr: 0x759490000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 102 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 102 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 102, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 103
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 103 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 103 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 103 | Copying full-size image to PBO | Ptr: 0x75948a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 103 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 103 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 103, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 104
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 104 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 104 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 104 | Copying full-size image to PBO | Ptr: 0x759484000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 104 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 104 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 104, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 105
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 105 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 105 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 105 | Copying full-size image to PBO | Ptr: 0x75947e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 105 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 105 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 105, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 106
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 106 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 106 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 106 | Copying full-size image to PBO | Ptr: 0x759478000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 106 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 106 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 106, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 107
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 107 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 107 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 107 | Copying full-size image to PBO | Ptr: 0x759472000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 107 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 107 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 107, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 108
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 108 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 108 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 108 | Copying full-size image to PBO | Ptr: 0x75946c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 108 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 108 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 108, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 109
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 109 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 109 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 109 | Copying full-size image to PBO | Ptr: 0x759466000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 109 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 109 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 109, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 110
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 110 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 110 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 110 | Copying full-size image to PBO | Ptr: 0x759460000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 110 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 110 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 110, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 111
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 111 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 111 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 111 | Copying full-size image to PBO | Ptr: 0x75945a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 111 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 111 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 111, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 112
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 112 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 112 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 112 | Copying full-size image to PBO | Ptr: 0x759454000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 112 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 112 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 112, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 113
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 113 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 113 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 113 | Copying full-size image to PBO | Ptr: 0x75944e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 113 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 113 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 113, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 114
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 114 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 114 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 114 | Copying full-size image to PBO | Ptr: 0x759448000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 114 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 114 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 114, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 115
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 115 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 115 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 115 | Copying full-size image to PBO | Ptr: 0x759442000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 115 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 115 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 115, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 116
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 116 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 116 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 116 | Copying full-size image to PBO | Ptr: 0x75943c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 116 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 116 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 116, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 117
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 117 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 117 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 117 | Copying full-size image to PBO | Ptr: 0x759436000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 117 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 117 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 117, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 118
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 118 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 118 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 118 | Copying full-size image to PBO | Ptr: 0x759430000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 118 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 118 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 118, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 119
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 119 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 119 | Preprocessor event signaled | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 119 | Copying full-size image to PBO | Ptr: 0x759416000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 119 | Synchronizing stream after display copy | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 119 | Stream synchronized | Stream: 0x55b695962740 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 119, recycling resources. | Current context: 0x55b695ac33b0
+Child Thread DONE 0
+Child Thread DONE 0
+[OPENGL_DISPLAY] DESTRUCTOR for Cam4
+Cleaned up all per-camera resources.
+
+Close Camera: 		Camera Closed
+Load camera json file: /home/jeremy/orange_data/config/local/javier_no_shelf/02010096.json
+Resolution: 		4512 x 4512
+OffsetX Max: 		0
+OffsetX Min: 		0
+OffsetX Inc: 		8
+OffsetX Set: 		0
+OffsetY Max: 		0
+OffsetY Min: 		0
+OffsetY Inc: 		16
+OffsetX Set: 		0
+PixelFormat: 		Mono8
+STARTING STREAMING SESSION...
+[MAIN] Reset frame counter for camera 2010096
+Initializing resources for camera 0 on GPU 0
+[OPENGL_DISPLAY] CONSTRUCTOR for Cam4 on display GPU 0
+[OPENGL_DISPLAY] Constructor completed for Cam4
+[FramePreprocessor] Constructor for Preprocessor_Cam_2010096 on GPU 0
+Child Thread Start 0
+Child Thread Start 0
+[DISPLAY] Camera 2010096Processing freshest frame 0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 0 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 0 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 0 | Copying full-size image to PBO | Ptr: 0x7596fa000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 0 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 0 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 0, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 1
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 1 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 1 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 1 | Copying full-size image to PBO | Ptr: 0x7596f4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 1 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 1 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 1, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 2
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 2 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 2 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 2 | Copying full-size image to PBO | Ptr: 0x7596ee000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 2 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 2 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 2, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 3
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 3 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 3 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 3 | Copying full-size image to PBO | Ptr: 0x7596e8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 3 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 3 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 3, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 4
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 4 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 4 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 4 | Copying full-size image to PBO | Ptr: 0x7596e2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 4 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 4 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 4, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 5
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 5 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 5 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 5 | Copying full-size image to PBO | Ptr: 0x7596dc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 5 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 5 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 5, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 6
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 6 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 6 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 6 | Copying full-size image to PBO | Ptr: 0x7596d6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 6 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 6 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 6, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 7
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 7 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 7 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 7 | Copying full-size image to PBO | Ptr: 0x7596d0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 7 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 7 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 7, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 8
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 8 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 8 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 8 | Copying full-size image to PBO | Ptr: 0x7596ca000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 8 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 8 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 8, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 9
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 9 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 9 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 9 | Copying full-size image to PBO | Ptr: 0x7596c4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 9 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 9 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 9, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 10
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 10 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 10 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 10 | Copying full-size image to PBO | Ptr: 0x7596be000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 10 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 10 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 10, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 11
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 11 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 11 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 11 | Copying full-size image to PBO | Ptr: 0x7596b8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 11 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 11 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 11, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 12
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 12 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 12 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 12 | Copying full-size image to PBO | Ptr: 0x7596b2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 12 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 12 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 12, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 13
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 13 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 13 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 13 | Copying full-size image to PBO | Ptr: 0x7596ac000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 13 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 13 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 13, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 14
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 14 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 14 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 14 | Copying full-size image to PBO | Ptr: 0x7596a6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 14 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 14 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 14, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 15
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 15 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 15 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 15 | Copying full-size image to PBO | Ptr: 0x7596a0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 15 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 15 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 15, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 16
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 16 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 16 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 16 | Copying full-size image to PBO | Ptr: 0x75969a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 16 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 16 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 16, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 17
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 17 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 17 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 17 | Copying full-size image to PBO | Ptr: 0x759694000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 17 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 17 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 17, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 18
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 18 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 18 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 18 | Copying full-size image to PBO | Ptr: 0x75968e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 18 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 18 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 18, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 19
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 19 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 19 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 19 | Copying full-size image to PBO | Ptr: 0x759688000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 19 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 19 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 19, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 20
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 20 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 20 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 20 | Copying full-size image to PBO | Ptr: 0x759682000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 20 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 20 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 20, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 21
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 21 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 21 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 21 | Copying full-size image to PBO | Ptr: 0x75967c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 21 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 21 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 21, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 22
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 22 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 22 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 22 | Copying full-size image to PBO | Ptr: 0x759676000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 22 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 22 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 22, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 23
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 23 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 23 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 23 | Copying full-size image to PBO | Ptr: 0x759670000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 23 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 23 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 23, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 24
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 24 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 24 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 24 | Copying full-size image to PBO | Ptr: 0x75966a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 24 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 24 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 24, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 25
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 25 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 25 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 25 | Copying full-size image to PBO | Ptr: 0x759664000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 25 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 25 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 25, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 26
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 26 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 26 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 26 | Copying full-size image to PBO | Ptr: 0x75965e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 26 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 26 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 26, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 27
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 27 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 27 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 27 | Copying full-size image to PBO | Ptr: 0x759658000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 27 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 27 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 27, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 28
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 28 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 28 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 28 | Copying full-size image to PBO | Ptr: 0x759652000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 28 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 28 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 28, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 29
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 29 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 29 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 29 | Copying full-size image to PBO | Ptr: 0x75964c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 29 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 29 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 29, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 30
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 30 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 30 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 30 | Copying full-size image to PBO | Ptr: 0x759646000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 30 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 30 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 30, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 31
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 31 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 31 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 31 | Copying full-size image to PBO | Ptr: 0x759640000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 31 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 31 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 31, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 32
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 32 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 32 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 32 | Copying full-size image to PBO | Ptr: 0x75963a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 32 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 32 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 32, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 33
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 33 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 33 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 33 | Copying full-size image to PBO | Ptr: 0x759634000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 33 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 33 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 33, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 34
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 34 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 34 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 34 | Copying full-size image to PBO | Ptr: 0x75962e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 34 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 34 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 34, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 35
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 35 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 35 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 35 | Copying full-size image to PBO | Ptr: 0x759628000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 35 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 35 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 35, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 36
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 36 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 36 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 36 | Copying full-size image to PBO | Ptr: 0x759622000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 36 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 36 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 36, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 37
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 37 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 37 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 37 | Copying full-size image to PBO | Ptr: 0x75961c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 37 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 37 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 37, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 38
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 38 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 38 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 38 | Copying full-size image to PBO | Ptr: 0x759616000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 38 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 38 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 38, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 39
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 39 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 39 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 39 | Copying full-size image to PBO | Ptr: 0x759610000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 39 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 39 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 39, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 40
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 40 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 40 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 40 | Copying full-size image to PBO | Ptr: 0x75960a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 40 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 40 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 40, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 41
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 41 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 41 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 41 | Copying full-size image to PBO | Ptr: 0x759604000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 41 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 41 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 41, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 42
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 42 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 42 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 42 | Copying full-size image to PBO | Ptr: 0x7595fe000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 42 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 42 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 42, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 43
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 43 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 43 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 43 | Copying full-size image to PBO | Ptr: 0x7595f8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 43 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 43 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 43, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 44
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 44 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 44 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 44 | Copying full-size image to PBO | Ptr: 0x7595f2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 44 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 44 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 44, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 45
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 45 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 45 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 45 | Copying full-size image to PBO | Ptr: 0x7595ec000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 45 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 45 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 45, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 46
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 46 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 46 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 46 | Copying full-size image to PBO | Ptr: 0x7595e6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 46 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 46 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 46, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 47
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 47 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 47 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 47 | Copying full-size image to PBO | Ptr: 0x7595e0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 47 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 47 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 47, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 48
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 48 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 48 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 48 | Copying full-size image to PBO | Ptr: 0x7595da000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 48 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 48 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 48, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 49
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 49 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 49 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 49 | Copying full-size image to PBO | Ptr: 0x7595d4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 49 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 49 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 49, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 50
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 50 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 50 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 50 | Copying full-size image to PBO | Ptr: 0x7595ce000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 50 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 50 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 50, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 51
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 51 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 51 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 51 | Copying full-size image to PBO | Ptr: 0x7595c8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 51 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 51 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 51, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 52
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 52 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 52 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 52 | Copying full-size image to PBO | Ptr: 0x7595c2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 52 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 52 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 52, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 53
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 53 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 53 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 53 | Copying full-size image to PBO | Ptr: 0x7595bc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 53 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 53 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 53, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 54
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 54 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 54 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 54 | Copying full-size image to PBO | Ptr: 0x7595b6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 54 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 54 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 54, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 55
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 55 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 55 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 55 | Copying full-size image to PBO | Ptr: 0x7595b0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 55 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 55 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 55, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 56
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 56 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 56 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 56 | Copying full-size image to PBO | Ptr: 0x7595aa000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 56 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 56 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 56, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 57
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 57 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 57 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 57 | Copying full-size image to PBO | Ptr: 0x7595a4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 57 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 57 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 57, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 58
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 58 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 58 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 58 | Copying full-size image to PBO | Ptr: 0x75959e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 58 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 58 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 58, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 59
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 59 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 59 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 59 | Copying full-size image to PBO | Ptr: 0x759598000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 59 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 59 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 59, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 60
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 60 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 60 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 60 | Copying full-size image to PBO | Ptr: 0x759592000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 60 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 60 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 60, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 61
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 61 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 61 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 61 | Copying full-size image to PBO | Ptr: 0x75958c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 61 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 61 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 61, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 62
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 62 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 62 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 62 | Copying full-size image to PBO | Ptr: 0x759586000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 62 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 62 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 62, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 63
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 63 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 63 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 63 | Copying full-size image to PBO | Ptr: 0x759580000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 63 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 63 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 63, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 64
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 64 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 64 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 64 | Copying full-size image to PBO | Ptr: 0x75957a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 64 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 64 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 64, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 65
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 65 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 65 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 65 | Copying full-size image to PBO | Ptr: 0x759574000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 65 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 65 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 65, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 66
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 66 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 66 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 66 | Copying full-size image to PBO | Ptr: 0x75956e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 66 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 66 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 66, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 67
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 67 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 67 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 67 | Copying full-size image to PBO | Ptr: 0x759568000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 67 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 67 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 67, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 68
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 68 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 68 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 68 | Copying full-size image to PBO | Ptr: 0x759562000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 68 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 68 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 68, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 69
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 69 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 69 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 69 | Copying full-size image to PBO | Ptr: 0x75955c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 69 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 69 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 69, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 70
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 70 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 70 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 70 | Copying full-size image to PBO | Ptr: 0x759556000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 70 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 70 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 70, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 71
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 71 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 71 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 71 | Copying full-size image to PBO | Ptr: 0x759550000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 71 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 71 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 71, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 72
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 72 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 72 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 72 | Copying full-size image to PBO | Ptr: 0x75954a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 72 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 72 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 72, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 73
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 73 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 73 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 73 | Copying full-size image to PBO | Ptr: 0x759544000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 73 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 73 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 73, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 74
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 74 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 74 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 74 | Copying full-size image to PBO | Ptr: 0x75953e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 74 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 74 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 74, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 75
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 75 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 75 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 75 | Copying full-size image to PBO | Ptr: 0x759538000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 75 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 75 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 75, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 76
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 76 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 76 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 76 | Copying full-size image to PBO | Ptr: 0x759532000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 76 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 76 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 76, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 77
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 77 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 77 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 77 | Copying full-size image to PBO | Ptr: 0x75952c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 77 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 77 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 77, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 78
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 78 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 78 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 78 | Copying full-size image to PBO | Ptr: 0x759526000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 78 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 78 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 78, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 79
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 79 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 79 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 79 | Copying full-size image to PBO | Ptr: 0x759520000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 79 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 79 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 79, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 80
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 80 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 80 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 80 | Copying full-size image to PBO | Ptr: 0x75951a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 80 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 80 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 80, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 81
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 81 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 81 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 81 | Copying full-size image to PBO | Ptr: 0x759514000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 81 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 81 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 81, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 82
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 82 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 82 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 82 | Copying full-size image to PBO | Ptr: 0x75950e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 82 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 82 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 82, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 83
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 83 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 83 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 83 | Copying full-size image to PBO | Ptr: 0x759508000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 83 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 83 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 83, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 84
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 84 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 84 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 84 | Copying full-size image to PBO | Ptr: 0x759502000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 84 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 84 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 84, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 85
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 85 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 85 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 85 | Copying full-size image to PBO | Ptr: 0x7594fc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 85 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 85 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 85, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 86
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 86 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 86 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 86 | Copying full-size image to PBO | Ptr: 0x7594f6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 86 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 86 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 86, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 87
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 87 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 87 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 87 | Copying full-size image to PBO | Ptr: 0x7594f0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 87 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 87 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 87, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 88
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 88 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 88 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 88 | Copying full-size image to PBO | Ptr: 0x7594ea000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 88 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 88 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 88, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 89
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 89 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 89 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 89 | Copying full-size image to PBO | Ptr: 0x7594e4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 89 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 89 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 89, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 90
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 90 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 90 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 90 | Copying full-size image to PBO | Ptr: 0x7594de000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 90 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 90 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 90, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 91
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 91 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 91 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 91 | Copying full-size image to PBO | Ptr: 0x7594d8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 91 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 91 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 91, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 92
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 92 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 92 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 92 | Copying full-size image to PBO | Ptr: 0x7594d2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 92 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 92 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 92, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 93
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 93 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 93 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 93 | Copying full-size image to PBO | Ptr: 0x7594cc000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 93 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 93 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 93, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 94
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 94 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 94 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 94 | Copying full-size image to PBO | Ptr: 0x7594c6000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 94 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 94 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 94, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 95
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 95 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 95 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 95 | Copying full-size image to PBO | Ptr: 0x7594c0000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 95 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 95 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 95, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 96
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 96 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 96 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 96 | Copying full-size image to PBO | Ptr: 0x7594ba000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 96 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 96 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 96, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 97
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 97 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 97 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 97 | Copying full-size image to PBO | Ptr: 0x7594b4000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 97 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 97 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 97, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 98
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 98 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 98 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 98 | Copying full-size image to PBO | Ptr: 0x7594ae000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 98 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 98 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 98, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 99
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 99 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 99 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 99 | Copying full-size image to PBO | Ptr: 0x7594a8000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 99 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 99 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 99, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 100
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 100 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 100 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 100 | Copying full-size image to PBO | Ptr: 0x7594a2000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 100 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 100 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 100, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 101
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 101 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 101 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 101 | Copying full-size image to PBO | Ptr: 0x75949c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 101 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 101 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 101, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 102
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 102 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 102 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 102 | Copying full-size image to PBO | Ptr: 0x759496000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 102 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 102 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 102, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 103
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 103 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 103 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 103 | Copying full-size image to PBO | Ptr: 0x759490000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 103 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 103 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 103, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 104
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 104 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 104 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 104 | Copying full-size image to PBO | Ptr: 0x75948a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 104 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 104 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 104, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 105
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 105 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 105 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 105 | Copying full-size image to PBO | Ptr: 0x759484000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 105 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 105 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 105, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 106
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 106 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 106 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 106 | Copying full-size image to PBO | Ptr: 0x75947e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 106 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 106 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 106, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 107
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 107 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 107 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 107 | Copying full-size image to PBO | Ptr: 0x759478000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 107 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 107 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 107, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 108
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 108 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 108 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 108 | Copying full-size image to PBO | Ptr: 0x759472000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 108 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 108 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 108, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 109
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 109 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 109 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 109 | Copying full-size image to PBO | Ptr: 0x75946c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 109 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 109 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 109, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 110
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 110 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 110 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 110 | Copying full-size image to PBO | Ptr: 0x759466000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 110 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 110 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 110, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 111
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 111 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 111 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 111 | Copying full-size image to PBO | Ptr: 0x759460000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 111 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 111 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 111, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 112
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 112 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 112 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 112 | Copying full-size image to PBO | Ptr: 0x75945a000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 112 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 112 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 112, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 113
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 113 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 113 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 113 | Copying full-size image to PBO | Ptr: 0x759454000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 113 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 113 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 113, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 114
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 114 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 114 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 114 | Copying full-size image to PBO | Ptr: 0x75944e000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 114 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 114 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 114, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 115
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 115 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 115 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 115 | Copying full-size image to PBO | Ptr: 0x759448000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 115 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 115 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 115, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 116
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 116 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 116 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 116 | Copying full-size image to PBO | Ptr: 0x759442000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 116 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 116 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 116, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 117
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 117 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 117 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 117 | Copying full-size image to PBO | Ptr: 0x75943c000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 117 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 117 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 117, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 118
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 118 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 118 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 118 | Copying full-size image to PBO | Ptr: 0x759436000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 118 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 118 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 118, recycling resources. | Current context: 0x55b695ac33b0
+[DISPLAY] Camera 2010096Processing freshest frame 119
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Set device for frame 119 | Current context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 119 | Preprocessor event signaled | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_MEM] [Thread 759819dff000] Frame 119 | Copying full-size image to PBO | Ptr: 0x759430000000 | Size: 81432576 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 119 | Synchronizing stream after display copy | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_SYNC] [Thread 759819dff000] Frame 119 | Stream synchronized | Stream: 0x55b69685ba30 | Context: 0x55b695ac33b0
+[CUDA_CTX] [Thread 759819dff000] DISPLAY_WORKER: Last worker for frame 119, recycling resources. | Current context: 0x55b695ac33b0
+Child Thread DONE 0
+Child Thread DONE 0
+[OPENGL_DISPLAY] DESTRUCTOR for Cam4
+Cleaned up all per-camera resources.
+
+Close Camera: 		Camera Closed
+Child Thread DONE 0

@@ -23,8 +23,8 @@
 #include "crop_and_encode_worker.h"
 #include "frame_preprocessor.h"
 
-std::vector<YOLOv8Worker*> yolo_workers; // For managing YOLO workers
-ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
+std::vector<YOLOv8Worker*> yolo_workers;
+ENetPeer* external_data_consumer_peer = nullptr;
 
 simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger();
 
@@ -32,7 +32,6 @@ simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger(
 
 int main(int argc, char **args) {
 
-    // Initialize the YOLOv8 plugins
     YOLOv8::initialize_plugins();
 
     gx_context *window = (gx_context *) malloc(sizeof(gx_context));
@@ -212,7 +211,6 @@ int main(int argc, char **args) {
                 std::vector<std::string> folder_token = string_split(network_config_folders[i], "/");
                 const std::string& label = folder_token.back();
             
-                // Highlight "rig_new" in purple
                 if (label == "rig_new") {
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.0f, 1.0f));  
                 }
@@ -290,20 +288,15 @@ int main(int argc, char **args) {
                 }
                 ImGui::PopStyleColor(1);
                 ImGui::SameLine();
-                ImGui::SetWindowFontScale(1.5f); // 1.0 is default
+                ImGui::SetWindowFontScale(1.5f);
                 ImGui::Text("%s", input_folder.c_str());
-                ImGui::SetWindowFontScale(1.0f); // Reset to normal
+                ImGui::SetWindowFontScale(1.0f);
             }
 
             if (!camera_control->subscribe && my_servers[0].server_state == FetchGame::ManagerState_WAITTHREAD &&
                 my_servers[1].server_state == FetchGame::ManagerState_WAITTHREAD) {
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0, 0.5f, 0, 1.0f});
                 if (ImGui::Button("Clients start camera threads")) {
-                    // --- This button now does two things ---
-                    // 1. It sends the command to the clients to start their threads.
-                    // 2. It starts its own local threads using the same robust, centralized logic.
-            
-                    // --- Logic for telling clients to start ---
                     std::string encoder_setup_for_clients =
                             "-codec " + encoder_config->encoder_codec + " -preset " + encoder_config->encoder_preset +
                             " -fps ";
@@ -312,11 +305,9 @@ int main(int argc, char **args) {
                     ptp_params->network_sync = true;
                     host_broadcast_start_threads(fb_builder, &server, encoder_config->folder_name, encoder_setup_for_clients);
                     
-                    // --- Centralized Startup Logic (for local cameras) ---
-                    (camera_control->subscribe) = true; // Set the master flag to true
-                    camera_control->record_video = true; // This button implies recording
+                    (camera_control->subscribe) = true;
+                    camera_control->record_video = true;
             
-                    // 1. ALLOCATE WORKER AND TEXTURE POINTERS (these are just pointers, the real resources are in camera_resources)
                     openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
                     gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
                     for(int i = 0; i < num_cameras; ++i) {
@@ -324,7 +315,6 @@ int main(int argc, char **args) {
                         gpuVideoEncoders[i] = nullptr;
                     }
                     
-                    // 2. INITIALIZE PER-CAMERA RESOURCE POOLS
                     camera_resources.resize(num_cameras);
                     size_t max_frame_size_bytes = 0;
                     for (int i = 0; i < num_cameras; ++i) {
@@ -333,7 +323,7 @@ int main(int argc, char **args) {
                             max_frame_size_bytes = current_size;
                         }
                     }
-                    size_t max_processed_frame_size_bytes = max_frame_size_bytes * 4; // For RGBA
+                    size_t max_processed_frame_size_bytes = max_frame_size_bytes * 4;
 
                     std::cout << "Allocating worker pools with max frame size: " << max_frame_size_bytes << " bytes" << std::endl;
 
@@ -342,7 +332,6 @@ int main(int argc, char **args) {
                         camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes, max_processed_frame_size_bytes);
                     }
 
-                    // 3. SETUP GPU TEXTURES FOR DISPLAY
                     cudaSetDevice(display_gpu_id);
                     tex = new GL_Texture[num_cameras];
                     for (int i = 0; i < num_cameras; i++) {
@@ -353,7 +342,6 @@ int main(int argc, char **args) {
                         }
                     }
             
-                    // 4. CREATE WORKER THREAD OBJECTS (ENCODERS, YOLO, DISPLAY)
                     yolo_workers.assign(num_cameras, nullptr);
                     for (int i = 0; i < num_cameras; i++) {
                         if (cameras_select[i].stream_on) {
@@ -402,14 +390,12 @@ int main(int argc, char **args) {
                         }
                     }
             
-                    // 5. START ALL WORKER THREADS
                     for (int i = 0; i < num_cameras; i++) {
                         if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
                         if (yolo_workers[i]) yolo_workers[i]->StartThread();
                         if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
                     }
             
-                    // 6. PREPARE CAMERAS AND START ACQUISITION THREADS
                     for (int i = 0; i < num_cameras; i++) {
                         camera_open_stream(&ecams[i].camera, &cameras_params[i]);
                         ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
@@ -442,11 +428,9 @@ int main(int argc, char **args) {
 
             if (my_servers[0].server_state == FetchGame::ManagerState_WAITSTART && my_servers[1].server_state ==
                 FetchGame::ManagerState_WAITSTART) {
-                // check network servers are ready as well as local computer
                 if (ptp_params->ptp_counter == num_cameras) {
                     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0, 0.5f, 0, 1.0f});
                     if (ImGui::Button("Start Recording")) {
-                        // get the host ready, and then set global ptp time to start recording
                         unsigned long long ptp_time = get_current_PTP_time(&ecams[0].camera);
                         int delay_in_second = 3;
                         ptp_params->ptp_global_time = ((unsigned long long) delay_in_second) * 1000000000 + ptp_time;
@@ -483,7 +467,6 @@ int main(int argc, char **args) {
             if (my_servers[0].server_state == FetchGame::ManagerState_IDLE && my_servers[1].server_state ==
                 FetchGame::ManagerState_IDLE) {
                 if (ImGui::Button("Clients close")) {
-                    // broadcast data
                     fb_builder->Clear();
                     FetchGame::ServerBuilder server_builder(*fb_builder);
                     server_builder.add_control(FetchGame::ServerControl_QUIT);
@@ -549,11 +532,8 @@ int main(int argc, char **args) {
         }
 
         if (ImGui::Begin("Orange", nullptr, ImGuiWindowFlags_MenuBar)) {
-            // ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
-            //            ImGui::GetIO().Framerate);
 
             if (camera_control->open) {
-                // ImGui::BeginDisabled();
             }
 
             if (ImGui::BeginTable("Cameras", 3,
@@ -586,17 +566,14 @@ int main(int argc, char **args) {
             }
 
             if (camera_control->open) {
-                // ImGui::EndDisabled();
             }
 
             if (camera_control->subscribe) {
-                // ImGui::BeginDisabled();
             }
 
             ImGui::Separator();
             ImGui::Spacing();
 
-            // selection for yolo model
             if (ImGui::Button("Select YOLO")) {
                 IGFD::FileDialogConfig config;
                 config.countSelectionMax = 1;
@@ -607,11 +584,9 @@ int main(int argc, char **args) {
             ImGui::Text("%s", yolo_model.c_str());
 
             if (camera_control->subscribe) {
-                // ImGui::EndDisabled();
             }
 
             if (camera_control->record_video) {
-                // ImGui::BeginDisabled();
             }
 
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.0f, 0.7f, 1.0f));
@@ -639,13 +614,12 @@ int main(int argc, char **args) {
                     encoder_config->encoder_preset = items[preset_current];
                 }
             }
-            { // Scoped for clarity
+            { 
                 const char *items[] = {"hq", "ll", "ull", "lossless"};
-                static int tuning_current = 1; // Default to "ll" (low latency)
+                static int tuning_current = 1;
                 if (ImGui::Combo("tuning", &tuning_current, items, IM_ARRAYSIZE(items))) {
                     encoder_config->tuning_info = items[tuning_current];
                 }
-                // Ensure default is set on first run
                 if (encoder_config->tuning_info.empty()) {
                     encoder_config->tuning_info = "ll";
                 }
@@ -661,23 +635,20 @@ int main(int argc, char **args) {
                 }
             }
 
-            int fps_temp = streaming_target_fps.load(); // get the current atomic value
+            int fps_temp = streaming_target_fps.load();
 
             if (ImGui::InputInt("streaming fps", &fps_temp)) {
-                // Clamp if necessary
                 if (fps_temp < 1) fps_temp = 1;
                 if (fps_temp > 240) fps_temp = 240;
-                streaming_target_fps.store(fps_temp); // write it back safely
+                streaming_target_fps.store(fps_temp);
             }
             
    
             if (camera_control->record_video) {
-                // ImGui::EndDisabled();
             }
 
             if (camera_control->open) {
                 if (camera_control->record_video) {
-                    // ImGui::BeginDisabled();
                 }
 
                 ImGui::Checkbox("Show camera temperature", &show_realtime_plot);
@@ -685,11 +656,9 @@ int main(int argc, char **args) {
                 set_camera_properties(ecams, cameras_params, num_cameras, color_temps);
 
                 if (camera_control->record_video) {
-                    // ImGui::EndDisabled();
                 }
 
                 if (camera_control->subscribe) {
-                    // ImGui::BeginDisabled();
                 }
 
                 bool stream_all_cameras = true;
@@ -780,12 +749,9 @@ int main(int argc, char **args) {
                         ImGui::TableNextColumn();
                         if (cameras_select[i].yolo)
                         {
-                            // Button is always visible and clickable if YOLO is selected.
                             sprintf(temp_string, "Dump Input##yolo_debug%d", i);
                             if (ImGui::Button(temp_string))
                             {
-                                // We still check if the worker is ready before calling the function
-                                // to prevent a crash, but the button is never grayed out.
                                 if (camera_control->subscribe && i < yolo_workers.size() && yolo_workers[i])
                                 {
                                     yolo_workers[i]->DumpNextFrame();
@@ -799,18 +765,16 @@ int main(int argc, char **args) {
                         }
                         else
                         {
-                            // Add an empty cell to keep table alignment correct
                             ImGui::Text("");
                         }
 
-                        // New Checkboxes for IPC and ENet
                         ImGui::TableNextColumn();
                         sprintf(temp_string, "##yolo_ipc%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_ipc); // Assumes flag name from video_capture.h
+                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_ipc);
 
                         ImGui::TableNextColumn();
                         sprintf(temp_string, "##yolo_enet%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_enet); // Assumes flag name from video_capture.h
+                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_enet);
 
                         ImGui::TableNextColumn();
                         sprintf(temp_string, "##crop_encode%d", i);
@@ -820,7 +784,6 @@ int main(int argc, char **args) {
                 }
 
                 if (camera_control->subscribe) {
-                    // ImGui::EndDisabled();
                 }
 
                 if (camera_control->subscribe == true) {
@@ -855,7 +818,6 @@ int main(int argc, char **args) {
                                                     ImVec2(150, 50))) {
                             }
     
-                            // Keep items on the same line until end of row
                             if ((i + 1) % cols != 0)
                                 ImGui::SameLine();
                         }
@@ -930,44 +892,33 @@ int main(int argc, char **args) {
         }
         ImGui::End();
 
-        // file explorer display
         if (ImGuiFileDialog::Instance()->Display("ChooseYOLOFile")) {
-            // => will show a dialog
             if (ImGuiFileDialog::Instance()->IsOk()) {
-                // action if OK
                 yolo_model = ImGuiFileDialog::Instance()->GetFilePathName();
             }
-            // close
             ImGuiFileDialog::Instance()->Close();
         }
 
         if (ImGuiFileDialog::Instance()->Display("ChooseRecordingDir")) {
-            // => will show a dialog
             if (ImGuiFileDialog::Instance()->IsOk()) {
-                // action if OK
                 auto selected_folder = ImGuiFileDialog::Instance()->GetSelection();
                 input_folder = ImGuiFileDialog::Instance()->GetCurrentPath();
             }
-            // close
             ImGuiFileDialog::Instance()->Close();
         }
 
 
         if (ImGuiFileDialog::Instance()->Display("ChoosePictureDir")) {
-            // => will show a dialog
             if (ImGuiFileDialog::Instance()->IsOk()) {
-                // action if OK
                 auto selected_folder = ImGuiFileDialog::Instance()->GetSelection();
                 picture_save_folder = ImGuiFileDialog::Instance()->GetCurrentPath();
             }
-            // close
             ImGuiFileDialog::Instance()->Close();
         }
 
 
             if (ImGui::Begin("Local")) {
             if (camera_control->open) {
-                // ImGui::BeginDisabled();
             }
 
             for (size_t i = 0; i < local_config_folders.size(); i++) {
@@ -979,11 +930,9 @@ int main(int argc, char **args) {
             ImGui::RadioButton("Null", &local_config_select, local_config_folders.size());
 
             if (camera_control->open) {
-                // ImGui::EndDisabled();
             }
 
             if (camera_control->subscribe) {
-                // ImGui::BeginDisabled();
             }
 
             if (ImGui::Button(camera_control->open ? "Close Camera" : "Open camera")) {
@@ -1063,23 +1012,19 @@ int main(int argc, char **args) {
                 }
             }
             if (camera_control->subscribe) {
-                // ImGui::BeginDisabled();
             }
 
             if (!camera_control->record_video && camera_control->open) {
                 if (camera_control->subscribe) {
-                    // ImGui::BeginDisabled();
                 }
                 ImGui::Checkbox("PTP Stream Sync", &ptp_stream_sync);
                 ImGui::SameLine();
                 if (camera_control->subscribe) {
-                    // ImGui::EndDisabled();
                 }
                 if (ImGui::Button(camera_control->subscribe ? "Stop streaming" : "Start streaming")) {
                     (camera_control->subscribe) = !(camera_control->subscribe);
 
                     if (camera_control->subscribe) {
-                        // START STREAMING
                         std::cout << "STARTING STREAMING SESSION..." << std::endl;
 
                         for (int i = 0; i < num_cameras; i++) {
@@ -1096,7 +1041,6 @@ int main(int argc, char **args) {
                             std::cout << "Recording session folder: " << encoder_config->folder_name << std::endl;
                         }
 
-                        // INITIALIZE PER-CAMERA RESOURCE POOLS
                         camera_resources.resize(num_cameras);
                         size_t max_frame_size_bytes = 0;
                         for (int i = 0; i < num_cameras; ++i) {
@@ -1105,17 +1049,13 @@ int main(int argc, char **args) {
                                 max_frame_size_bytes = current_size;
                             }
                         }
-                        // For RGBA frames after preprocessing
                         size_t max_processed_frame_size_bytes = max_frame_size_bytes * 4;
 
                         for (int i = 0; i < num_cameras; ++i) {
                             std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
-                            // This is the corrected call with the 3rd argument
                             camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes, max_processed_frame_size_bytes);
                         }
 
-                        // --- NEW PIPELINE SETUP ---
-                        // 1. ALLOCATE POINTERS FOR WORKERS, QUEUES, and TEXTURES
                         preprocessors = new FramePreprocessor*[num_cameras];
                         SafeQueue<ProcessedFrame*>* yolo_queues = new SafeQueue<ProcessedFrame*>[num_cameras];
                         SafeQueue<ProcessedFrame*>* encoder_queues = new SafeQueue<ProcessedFrame*>[num_cameras];
@@ -1127,7 +1067,6 @@ int main(int argc, char **args) {
                         tex = new GL_Texture[num_cameras];
                         yolo_workers.assign(num_cameras, nullptr);
 
-                        // Initialize all pointers to nullptr
                         for(int i = 0; i < num_cameras; ++i) {
                             preprocessors[i] = nullptr;
                             openGLDisplayWorkers[i] = nullptr;
@@ -1135,7 +1074,6 @@ int main(int argc, char **args) {
                             cropAndEncodeWorkers[i] = nullptr;
                         }
 
-                        // 2. SETUP GPU TEXTURES FOR DISPLAY (Requires display GPU context)
                         cudaSetDevice(display_gpu_id);
                         for (int i = 0; i < num_cameras; i++) {
                             if (cameras_select[i].stream_on) {
@@ -1145,9 +1083,7 @@ int main(int argc, char **args) {
                             }
                         }
 
-                        // 3. CREATE ALL WORKER THREADS AND THE PREPROCESSOR
                         for (int i = 0; i < num_cameras; i++) {
-                            // Create the downstream workers first
                             if (cameras_select[i].stream_on) {
                                 std::string name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
                                 openGLDisplayWorkers[i] = new COpenGLDisplay(
@@ -1159,7 +1095,6 @@ int main(int argc, char **args) {
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
-                                // Set the input queue for the display worker
                                 openGLDisplayWorkers[i]->SetInputQueue(&display_queues[i]);
                             }
                             if (cameras_select[i].yolo) {
@@ -1171,10 +1106,8 @@ int main(int argc, char **args) {
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
-                                // Set the input queue for the YOLO worker
                                 yolo_workers[i]->SetInputQueue(&yolo_queues[i]);
 
-                                // This is also a good place to link the workers if needed
                                 if (openGLDisplayWorkers[i]) {
                                     yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
                                 }
@@ -1193,11 +1126,9 @@ int main(int argc, char **args) {
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
-                                // Set the input queue for the encoder worker
                                 gpuVideoEncoders[i]->SetInputQueue(&encoder_queues[i]);
                             }
                             
-                            // Now create the FramePreprocessor and tell it where to send its output
                             preprocessors[i] = new FramePreprocessor(
                                 ("Preprocessor_Cam_" + cameras_params[i].camera_serial).c_str(),
                                 &cameras_params[i],
@@ -1209,10 +1140,15 @@ int main(int argc, char **args) {
                             );
                         }
                         
-                        // 4. START ALL WORKER THREADS
                         for (int i = 0; i < num_cameras; i++) {
+                            // ** THE FIX IS HERE **
+                            // The preprocessor's input queue MUST be separate from the recycle queues.
+                            // We create a new queue for this purpose.
+                            camera_resources[i].preprocessor_input_queue = new SafeQueue<WORKER_ENTRY*>();
+                            
                             if (preprocessors[i]) {
-                                preprocessors[i]->SetInputQueue(camera_resources[i].recycle_queue); // The preprocessor's input is the raw recycle queue
+                                // Set the NEWLY created queue as the input for the preprocessor.
+                                preprocessors[i]->SetInputQueue(camera_resources[i].preprocessor_input_queue);
                                 preprocessors[i]->StartThread();
                             }
                             if (openGLDisplayWorkers[i]) {
@@ -1229,14 +1165,12 @@ int main(int argc, char **args) {
                             }
                         }
 
-                        // 5. PREPARE CAMERAS
                         for (int i = 0; i < num_cameras; i++) {
                             camera_open_stream(&ecams[i].camera, &cameras_params[i]);
                             ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
                             allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
                         }
 
-                        // PTP sync if needed
                         if (ptp_stream_sync) {
                             for (int i = 0; i < num_cameras; i++) {
                                 ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
@@ -1244,7 +1178,6 @@ int main(int argc, char **args) {
                             camera_control->sync_camera = true;
                         }
 
-                        // Start acquisition threads
                         for (int i = 0; i < num_cameras; i++) {
                             camera_threads.emplace_back(
                                 &acquire_frames,
@@ -1258,16 +1191,11 @@ int main(int argc, char **args) {
                             );
                         }
                     } else {
-                        // --- STOP STREAMING ---
-                        // (This part also needs to be updated to clean up the new pointers)
-
-                        // 1. Stop acquisition threads
                         for (auto &t : camera_threads) {
                             if (t.joinable()) t.join();
                         }
                         camera_threads.clear();
 
-                        // 2. Stop all worker threads
                         for (int i = 0; i < num_cameras; i++) {
                             if (preprocessors[i]) preprocessors[i]->StopThread();
                             if (yolo_workers[i]) yolo_workers[i]->StopThread();
@@ -1275,7 +1203,6 @@ int main(int argc, char **args) {
                             if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StopThread();
                         }
 
-                        // 3. Delete all worker instances
                         for (int i = 0; i < num_cameras; i++) {
                             if (preprocessors[i]) delete preprocessors[i];
                             if (yolo_workers[i]) delete yolo_workers[i];
@@ -1288,7 +1215,6 @@ int main(int argc, char **args) {
                         delete[] gpuVideoEncoders;
                         cropAndEncodeWorkers = nullptr;
 
-                        // 3. Clean up camera SDK resources
                         for (int i = 0; i < num_cameras; i++) {
                             destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
                             delete[] ecams[i].evt_frame;
@@ -1296,7 +1222,6 @@ int main(int argc, char **args) {
                             check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
                         }
 
-                        // 4. Clean up OpenGL textures
                         for (int i = 0; i < num_cameras; i++) {
                              if (cameras_select[i].stream_on) {
                                  int w = int(cameras_params[i].width / cameras_select[i].downsample);
@@ -1307,7 +1232,6 @@ int main(int argc, char **args) {
                         if(tex) delete[] tex;
                         tex = nullptr;
 
-                        // CLEAN UP ALL PER-CAMERA RESOURCES
                         for(int i = 0; i < num_cameras; ++i) {
                             camera_resources[i].cleanup();
                         }
@@ -1326,15 +1250,12 @@ int main(int argc, char **args) {
             if (camera_control->open) {
 
                 if (!camera_control->subscribe) {
-                    // ImGui::BeginDisabled();
                 }
 
                 if (ImGui::Button(camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY)) {
                     camera_control->record_video = !camera_control->record_video;
                 
                     if (camera_control->record_video) {
-                        // The folder is now created when streaming starts.
-                        // We can still start the timer here if we want.
                         try_start_timer();
                         std::cout << "Recording toggled ON." << std::endl;
                     } else {
@@ -1344,7 +1265,6 @@ int main(int argc, char **args) {
                 }
                 
                 if (!camera_control->subscribe) {
-                    // ImGui::EndDisabled();
                 }
             }
 
@@ -1407,21 +1327,17 @@ int main(int argc, char **args) {
                         static ImVec2 uv1(1, 1);
                         static ImVec4 tint(1, 1, 1, 1);
     
-                        // ImGui::Image((void*)(intptr_t)texture[i], avail_size);
                         ImPlotAxisFlags axisFlags = ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks |
                                                     ImPlotAxisFlags_NoGridLines;
                         if (ImPlot::BeginPlot("##no_plot_name", avail_size, ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
                             
-                            // Calculate the correct display dimensions based on the downsample factor.
                             const float display_width = static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
                             const float display_height = static_cast<float>(cameras_params[i].height / cameras_select[i].downsample);
 
-                            // Set the plot axes to match the dimensions of the image being displayed.
                             ImPlot::SetupAxesLimits(0, display_width, 0, display_height);
                             ImPlot::SetupAxis(ImAxis_X1, nullptr, axisFlags); 
                             ImPlot::SetupAxis(ImAxis_Y1, nullptr, axisFlags);
 
-                            // Tell ImPlot to draw the image using these correct dimensions.
                             ImPlot::PlotImage("##no_image_name", (void *) (intptr_t) tex[i].texture, ImVec2(0, 0),
                                               ImVec2(display_width, display_height));
                                               
@@ -1451,13 +1367,12 @@ int main(int argc, char **args) {
                         static ImVec2 uv1(1, 1);
                         static ImVec4 tint(1, 1, 1, 1);
     
-                        // ImGui::Image((void*)(intptr_t)texture[i], avail_size);
                         ImPlotAxisFlags axisFlags = ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks |
                                                     ImPlotAxisFlags_NoGridLines;
                         if (ImPlot::BeginPlot("##no_plot_name", avail_size, ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
                             ImPlot::SetupAxesLimits(0, cameras_params[i].width, 0, cameras_params[i].height);
-                            ImPlot::SetupAxis(ImAxis_X1, nullptr, axisFlags); // X-axis
-                            ImPlot::SetupAxis(ImAxis_Y1, nullptr, axisFlags); // Y-axis
+                            ImPlot::SetupAxis(ImAxis_X1, nullptr, axisFlags); 
+                            ImPlot::SetupAxis(ImAxis_Y1, nullptr, axisFlags);
                             ImPlot::PlotImage("##no_image_name", (void *) (intptr_t) tex[i].texture, ImVec2(0, 0),
                                                 ImVec2(cameras_params[i].width, cameras_params[i].height));
                         
@@ -1521,7 +1436,6 @@ int main(int argc, char **args) {
     image_writer->StopThread();
     delete image_writer;
 
-    // Cleanup
     gx_cleanup(window);
     cudaDeviceReset();
     enet_release(&server);

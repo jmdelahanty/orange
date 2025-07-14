@@ -93,10 +93,11 @@ struct CameraResources {
     WORKER_ENTRY* worker_entry_pool = nullptr;
     SafeQueue<WORKER_ENTRY*>* free_entries_queue = nullptr;
     SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr;
+    SafeQueue<WORKER_ENTRY*>* preprocessor_input_queue = nullptr;
 
     // --- PROCESSED frame resources ---
-    ProcessedFrame* processed_frame_pool = nullptr; // NEW: Pool for processed frames
-    SafeQueue<ProcessedFrame*>* processed_recycle_queue = nullptr; // NEW: The missing member
+    ProcessedFrame* processed_frame_pool = nullptr;
+    SafeQueue<ProcessedFrame*>* processed_recycle_queue = nullptr;
 
     // --- Event resources ---
     std::vector<cudaEvent_t> event_pool;
@@ -141,6 +142,7 @@ struct CameraResources {
             free_entries_queue->push(&worker_entry_pool[i]);
         }
         recycle_queue = new SafeQueue<WORKER_ENTRY*>();
+        preprocessor_input_queue = new SafeQueue<WORKER_ENTRY*>();
         
         // --- Processed entry setup --- (NEW)
         processed_frame_pool = new ProcessedFrame[ACQUIRE_WORK_ENTRIES_MAX];
@@ -180,7 +182,8 @@ struct CameraResources {
 
         if (free_entries_queue) { delete free_entries_queue; free_entries_queue = nullptr; }
         if (recycle_queue) { delete recycle_queue; recycle_queue = nullptr; }
-        if (processed_recycle_queue) { delete processed_recycle_queue; processed_recycle_queue = nullptr; } // NEW
+        if (processed_recycle_queue) { delete processed_recycle_queue; processed_recycle_queue = nullptr; }
+        if (preprocessor_input_queue) { delete preprocessor_input_queue; preprocessor_input_queue = nullptr; }
         
         if (free_events_queue) { delete free_events_queue; free_events_queue = nullptr; }
         for (auto& event : event_pool) {
