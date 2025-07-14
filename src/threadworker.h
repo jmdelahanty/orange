@@ -5,6 +5,7 @@
 #include "offthreadmachine.h"
 #include "genericmutex.h"
 #include <cstdio>
+#include "thread.h" // For SafeQueue
 
 #if defined(__GNUC__)
 #include <unistd.h>
@@ -23,21 +24,25 @@ public:
     void Reset();
     int GetMyWork() const { return myWork; }
 
-    // Type-safe methods using templates
+    // This method allows the main application to tell the worker where to get its input from.
+    void SetInputQueue(SafeQueue<T*>* input_queue) {
+        m_input_queue = input_queue;
+    }
+
+    // These methods now operate on the externally-provided input queue.
     void PutObjectToQueueIn(T* f);
+    T* GetObjectFromQueueIn();
+
+    // Output queue methods remain the same as the worker owns its output.
     void GetObjectsFromQueueOut(std::vector<T*>& items);
     T* GetObjectFromQueueOut();
     void PutObjectToQueueOut(T* f);
-    T* GetObjectFromQueueIn();
-    void SetMaxQueueSize(int size) { maxQueueSize = size; }
 
+    // Getters for stats
     int GetCountQueueInSize();
     int GetCountQueueOutSize();
-    int GetCountQueueIn() const { return countQueueIn; }
-    int GetCountQueueOut() const { return countQueueOut; }
     int GetCountInTotal() const { return countInTotal; }
     int GetCountOutTotal() const { return countOutTotal; }
-    int GetCountQueueInMax() const { return countQueueInMax; }
 
     void SetInterval(unsigned int i) {
         interval = i;
@@ -48,34 +53,27 @@ public:
     }
 
 protected:
-    // The main worker function that derived classes must implement.
-    // It now returns a bool to indicate if the item should be passed to the output queue.
     virtual bool WorkerFunction(T* f) = 0;
-
-    // This function is called when the worker is reset.
     virtual void WorkerReset() {}
 
 private:
-    // This overrides the pure virtual function in the base class COffThreadMachine.
     void ThreadRunning() override;
-
     void ResetInner();
 
 private:
     int id = 0;
-    CGenericMutex mutexQueueIn;
-    std::queue<T*> queueIn;
+    
+    // The worker no longer owns its input queue. It gets a pointer to one.
+    SafeQueue<T*>* m_input_queue = nullptr;
+    
+    // The worker still owns its output queue.
     CGenericMutex mutexQueueOut;
     std::queue<T*> queueOut;
 
     // Tracing counts
-    int countQueueIn = 0;
-    int countQueueOut = 0;
     int countInTotal = 0;
     int countOutTotal = 0;
-    int countQueueInMax = 0;
-    int maxQueueSize = 40; // Default max queue size
-
+    
     int myWork = 0;
     unsigned int interval;
 #ifdef _WIN32
@@ -89,13 +87,10 @@ template<typename T>
 CThreadWorker<T>::CThreadWorker(const char* name)
     : COffThreadMachine(name),
       id(0),
-      countQueueIn(0),
-      countQueueOut(0),
       countInTotal(0),
       countOutTotal(0),
-      countQueueInMax(0),
       myWork(0),
-      interval(10)
+      interval(1000) // Start with a 1ms sleep interval
 {
     this->ResetInner();
 #ifdef _WIN32
@@ -119,18 +114,10 @@ template<typename T>
 void CThreadWorker<T>::ResetInner()
 {
     myWork = 0;
-    countQueueIn = 0;
-    countQueueOut = 0;
     countInTotal = 0;
     countOutTotal = 0;
-    countQueueInMax = 0;
 
-    // Safely clear the queues
-    mutexQueueIn.Lock();
-    std::queue<T*> emptyIn;
-    std::swap(queueIn, emptyIn);
-    mutexQueueIn.Unlock();
-
+    // We no longer manage the input queue's memory here
     mutexQueueOut.Lock();
     std::queue<T*> emptyOut;
     std::swap(queueOut, emptyOut);
@@ -140,24 +127,20 @@ void CThreadWorker<T>::ResetInner()
 template<typename T>
 void CThreadWorker<T>::PutObjectToQueueIn(T* f)
 {
-    // This loop will now block until there is space in the queue.
-    // The IsMachineOn() check is removed to prevent the race condition on startup.
-    while (true) {
-        mutexQueueIn.Lock();
-        if (queueIn.size() < maxQueueSize) {
-            queueIn.push(f);
-            countQueueIn++;
-            countInTotal++;
-            if (countQueueInMax < countQueueIn) {
-                countQueueInMax = countQueueIn;
-            }
-            mutexQueueIn.Unlock();
-            return; // Exit the loop and function once the item is pushed
-        }
-        mutexQueueIn.Unlock();
-        // Wait a moment if the queue is full before trying again.
-        usleep(1000);
+    if (m_input_queue) {
+        m_input_queue->push(f);
+        countInTotal++;
     }
+}
+
+template<typename T>
+T* CThreadWorker<T>::GetObjectFromQueueIn()
+{
+    T* f = nullptr;
+    if (m_input_queue) {
+        m_input_queue->pop(f);
+    }
+    return f;
 }
 
 template<typename T>
@@ -171,7 +154,6 @@ void CThreadWorker<T>::GetObjectsFromQueueOut(std::vector<T*>& items)
         queueOut.pop();
     }
     countOutTotal += static_cast<int>(items.size());
-    countQueueOut = 0; // The queue is now empty
     mutexQueueOut.Unlock();
 }
 
@@ -184,7 +166,6 @@ T* CThreadWorker<T>::GetObjectFromQueueOut()
     {
         f = queueOut.front();
         queueOut.pop();
-        countQueueOut--;
     }
     mutexQueueOut.Unlock();
     return f;
@@ -196,18 +177,18 @@ void CThreadWorker<T>::PutObjectToQueueOut(T* f)
 {
     mutexQueueOut.Lock();
     queueOut.push(f);
-    countQueueOut++;
     mutexQueueOut.Unlock();
 }
 
 template<typename T>
 int CThreadWorker<T>::GetCountQueueInSize()
 {
-    int size = -1;
-    mutexQueueIn.Lock();
-    size = static_cast<int>(queueIn.size());
-    mutexQueueIn.Unlock();
-    return size;
+    if (m_input_queue) {
+        // This function will need to be added to your SafeQueue implementation
+        // return m_input_queue->size(); 
+        return 0; // Placeholder
+    }
+    return 0;
 }
 
 template<typename T>
@@ -221,61 +202,43 @@ int CThreadWorker<T>::GetCountQueueOutSize()
 }
 
 template<typename T>
-T* CThreadWorker<T>::GetObjectFromQueueIn()
-{
-    T* f = nullptr;
-    mutexQueueIn.Lock();
-    if (!queueIn.empty())
-    {
-        f = queueIn.front();
-        queueIn.pop();
-        countQueueIn--;
-    }
-    mutexQueueIn.Unlock();
-    return f;
-}
-
-template<typename T>
 void CThreadWorker<T>::ThreadRunning()
 {
     printf("Child Thread Start %d\n", id);
-    // FIX: Use 'this->' to explicitly qualify member function calls inside a template
     while (this->IsMachineOn())
     {
-        T* f = this->GetObjectFromQueueIn();
-        if (f)
-        {
-            if (this->WorkerFunction(f)) // Check the return value
-            {
-                this->PutObjectToQueueOut(f);
+        if (m_input_queue) { // Check if the input queue has been set
+            T* f = nullptr;
+            if (m_input_queue->pop(f)) {
+                if (f) {
+                    if (this->WorkerFunction(f)) {
+                        this->PutObjectToQueueOut(f);
+                    }
+                    myWork++;
+                }
+            } else {
+                usleep(interval); // Sleep if the queue is empty
             }
-            myWork++;
-        }
-        else
-        {
-#if defined(__GNUC__)
-            usleep(interval);
-#else
-            Sleep(intervalMilliSeconds);
-#endif
+        } else {
+            // If no input queue is set, just sleep.
+            usleep(interval * 10);
         }
     }
 
-    // Process remaining items in the queue after thread is stopped
-    while (true)
-    {
-        T* f = this->GetObjectFromQueueIn();
-        if (f)
-        {
-            if (this->WorkerFunction(f)) // Check the return value
-            {
-                 this->PutObjectToQueueOut(f);
+    // Process remaining items in the input queue after thread is stopped
+    if (m_input_queue) {
+        while (true) {
+            T* f = nullptr;
+            if (m_input_queue->pop(f)) {
+                if (f) {
+                    if (this->WorkerFunction(f)) {
+                         this->PutObjectToQueueOut(f);
+                    }
+                    myWork++;
+                }
+            } else {
+                break; // Queue is empty
             }
-            myWork++;
-        }
-        else
-        {
-            break;
         }
     }
     printf("Child Thread DONE %d\n", id);

@@ -12,25 +12,20 @@
 #include "video_capture.h"
 #include <cuda.h>
 
-// Forward declare worker classes to break include cycles
-class COpenGLDisplay;
-class GPUVideoEncoder;
-class YOLOv8Worker;
+// Forward declare worker classes
+class FramePreprocessor;
 class ImageWriterWorker;
-class CropAndEncodeWorker; // Keep this forward declaration
+class CropAndEncodeWorker; 
 
+// The signature now matches the implementation in the .cpp file
 void acquire_frames(
     CameraEmergent *ecam,
     CameraParams *camera_params,
     CameraEachSelect* camera_select,
     CameraControl* camera_control,
     PTPParams* ptp_params,
-    INDIGOSignalBuilder* indigo_signal_builder,
-    COpenGLDisplay* openGLDisplay,
-    GPUVideoEncoder* gpu_encoder,
-    YOLOv8Worker* yolo_worker,
-    ImageWriterWorker* image_writer,
     CameraResources* resources,
-    CropAndEncodeWorker* crop_encoder
+    FramePreprocessor* preprocessor
 );
+
 #endif

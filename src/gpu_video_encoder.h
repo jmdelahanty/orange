@@ -7,11 +7,11 @@
 #include "video_capture.h"
 #include "FFmpegWriter.h"
 #include "NvEncoder/NvEncoderCuda.h"
-#include "NvEncoder/NvEncoderCLIOptions.h"
-#include "image_processing.h"
+#include "image_processing.h" // For Debayer, FrameGPU
 #include "thread.h" // For SafeQueue
-#include <chrono> // For FPS tracking
-#include <cuda.h> // For CUcontext
+#include <chrono>   // For FPS tracking
+#include <cuda.h>   // For CUcontext
+#include <fstream>  // For std::ofstream
 
 struct Writer
 {
@@ -25,20 +25,26 @@ struct Writer
 struct EncoderContext
 {
     NV_ENC_BUFFER_FORMAT eFormat;
-    NvEncoderInitParam encodeCLIOptions;
     CUcontext cuContext;
     unsigned long long num_frame_encode = 0;
     std::vector<std::vector<uint8_t>> vPacket;
     NvEncoderCuda *pEnc;
 };
 
-class GPUVideoEncoder : public CThreadWorker<WORKER_ENTRY>
+class GPUVideoEncoder : public CThreadWorker<ProcessedFrame>
 {
 public:
-    GPUVideoEncoder(const char* name, CameraParams *camera_params,
-        const std::string& codec, const std::string& preset, const std::string& tuning,
-        std::string folder_name, bool* encoder_ready_signal,
-        SafeQueue<WORKER_ENTRY*>& recycle_queue);
+    GPUVideoEncoder(
+        const char* name,
+        CameraParams *camera_params,
+        const std::string& codec,
+        const std::string& preset,
+        const std::string& tuning,
+        std::string folder_name,
+        bool* encoder_ready_signal,
+        SafeQueue<WORKER_ENTRY*>& raw_recycle_queue,
+        SafeQueue<ProcessedFrame*>& processed_recycle_queue
+    );
     ~GPUVideoEncoder() override;
 
     double get_fps() const {
@@ -48,37 +54,35 @@ public:
     bool* encoder_ready_signal;
 
 protected:
-    bool WorkerFunction(WORKER_ENTRY* f) override;
+    bool WorkerFunction(ProcessedFrame* f) override;
 
 private:
     CameraParams* camera_params;
     std::string folder_name;
-
-    FrameGPU frame_original;
-    Debayer debayer;
     EncoderContext encoder;
     Writer writer;
-    cudaStream_t m_stream; // Dedicated stream for this worker
-	int encoder_pitch_;
-    int scaled_width_;
-    int scaled_height_;
-    unsigned char* d_scaled_mono_buffer_;
+    cudaStream_t m_stream = nullptr;
+    int encoder_pitch_ = 0;
 
-    // Intermediate GPU buffers for conversion
-    unsigned char* d_rgb_temp_;
-    unsigned char* d_iyuv_temp_; // Single buffer for the 3-plane IYUV data
-    unsigned char* d_uv_default_plane_; // Pre-filled buffer for monochrome U/V planes
+    // The worker now needs access to both recycle queues to properly manage memory.
+    SafeQueue<WORKER_ENTRY*>& m_raw_recycle_queue;
+    SafeQueue<ProcessedFrame*>& m_processed_recycle_queue;
 
-    SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
-
-    // FPS tracking
+    // FPS tracking members
     std::chrono::steady_clock::time_point last_fps_update_time_;
-    int frame_counter_;
-    double current_fps_;
+    int frame_counter_ = 0;
+    double current_fps_ = 0.0;
 
-    // Debug helper functions
-    void DumpYUVFrame(const char* filename, unsigned char* d_yuv_data, int width, int height);
-    void TestPattern(unsigned char* d_iyuv, int width, int height);
+    // --- Cleaned up members for the new pipeline ---
+
+    // Intermediate GPU buffer for color space conversion (RGBA from preprocessor -> NV12 for encoder)
+    unsigned char* d_iyuv_temp_ = nullptr;
+
+    // If your color conversion goes RGBA -> RGB -> IYUV, you still need this.
+    unsigned char* d_rgb_temp_ = nullptr;
+
+    // This is still useful for monochrome cameras to quickly fill the chroma planes.
+    unsigned char* d_uv_default_plane_ = nullptr;
 };
 
 #endif // ORANGE_GPU_VIDEO_ENCODER

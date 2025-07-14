@@ -21,7 +21,8 @@
 YOLOv8Worker::YOLOv8Worker(const char* name,
                            CameraParams* cam_params,
                            CameraEachSelect* cam_select,
-                           SafeQueue<WORKER_ENTRY*>& recycle_queue)
+                           SafeQueue<WORKER_ENTRY*>& raw_recycle_queue,
+                           SafeQueue<ProcessedFrame*>& processed_recycle_queue)
     : CThreadWorker(name),
       yolov8_instance_(nullptr),
       associated_camera_params_(cam_params),
@@ -33,7 +34,8 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
       frame_counter_(0),
       current_fps_(0.0),
       shaman_ipc_queue_(nullptr),
-      m_recycle_queue(recycle_queue),
+      m_raw_recycle_queue(raw_recycle_queue),
+      m_processed_recycle_queue(processed_recycle_queue),
       m_dump_next_frame(false)
 {
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
@@ -58,9 +60,6 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
         std::cout << "[YOLOv8 MODEL INFO] " << name << " expects input size: "
                   << yolov8_instance_->inp_w_int << "x" << yolov8_instance_->inp_h_int << std::endl;
 
-        initalize_gpu_frame(&frame_original_gpu_, associated_camera_params_);
-        initialize_gpu_debayer(&debayer_gpu_, associated_camera_params_);
-        
         if (associated_camera_select_->yolo && associated_camera_select_->send_yolo_via_ipc) {
             shaman_ipc_queue_ = new shaman::SharedBoxQueue(true /* is_writer */);
         }
@@ -72,8 +71,6 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
         
         if (fb_builder_) { delete fb_builder_; fb_builder_ = nullptr; }
         if (yolov8_instance_) { delete yolov8_instance_; yolov8_instance_ = nullptr; }
-        if (frame_original_gpu_.d_orig) { cudaFree(frame_original_gpu_.d_orig); frame_original_gpu_.d_orig = nullptr; }
-        if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); debayer_gpu_.d_debayer = nullptr; }
         
         throw;
     }
@@ -84,7 +81,6 @@ YOLOv8Worker::~YOLOv8Worker() {
     
     if (associated_camera_params_) {
         ck(cudaSetDevice(associated_camera_params_->gpu_id));
-        if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); }
         if (yolov8_instance_) { delete yolov8_instance_; }
     }
     
@@ -112,10 +108,14 @@ void YOLOv8Worker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
 }
 
 
-bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
-    if (!yolov8_instance_ || !entry || !entry->d_image) {
-        if (entry && entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            m_recycle_queue.push(entry);
+bool YOLOv8Worker::WorkerFunction(ProcessedFrame* frame) {
+    if (!yolov8_instance_ || !frame || !frame->d_processed_image) {
+        if (frame) {
+            // If something is wrong with the frame, we must still handle recycling
+            if (frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+                m_raw_recycle_queue.push(frame->original_entry);
+                m_processed_recycle_queue.push(frame);
+            }
         }
         return false;
     }
@@ -124,81 +124,37 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
 
     try {
-        const int camera_width = associated_camera_params_->width;
-        const int camera_height = associated_camera_params_->height;
-
-        // Set the NPP stream to the one used by the YOLO instance.
         nppSetStream(yolov8_instance_->stream);
 
-        // Wait for the previous stage (acquire_frames) to finish copying data.
-        if (entry->event_ptr) {
-            ck(cudaStreamWaitEvent(yolov8_instance_->stream, *entry->event_ptr, 0));
+        // Wait for the FramePreprocessor to finish its work
+        if (frame->processed_event_ptr) {
+            ck(cudaStreamWaitEvent(yolov8_instance_->stream, *frame->processed_event_ptr, 0));
         }
 
-        frame_original_gpu_.d_orig = entry->d_image;
-        debayer_gpu_.size.width = camera_width;
-        debayer_gpu_.size.height = camera_height;
-
-        // Debayer or duplicate mono channel to prepare for color conversion.
-        if (associated_camera_params_->color) {
-            // If color, debayer to RGBA first, then our kernel will handle the rest.
-            debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_);
-            yolov8_instance_->preprocess_gpu(debayer_gpu_.d_debayer, camera_width, camera_height, true);
-        } else {
-            // If mono, pass the raw mono buffer directly to the kernel.
-            yolov8_instance_->preprocess_gpu(frame_original_gpu_.d_orig, camera_width, camera_height, false);
-        }
-
-        // Logic for dumping a debug frame if requested.
-        bool dump_this_frame = m_dump_next_frame.exchange(false);
-        if (dump_this_frame)
-        {
-            size_t image_size_bytes = (size_t)camera_width * camera_height * 4;
-            unsigned char* h_rgba_buffer = new unsigned char[image_size_bytes];
-            ck(cudaMemcpy(h_rgba_buffer, debayer_gpu_.d_debayer, image_size_bytes, cudaMemcpyDeviceToHost));
-            try {
-                cv::Mat rgba_image(camera_height, camera_width, CV_8UC4, h_rgba_buffer);
-                cv::Mat bgr_image;
-                cv::cvtColor(rgba_image, bgr_image, cv::COLOR_RGBA2BGR);
-                std::string filename = "debug_pre_yolo_" + std::string(associated_camera_params_->camera_serial) + "_" + std::to_string(entry->frame_id) + ".png";
-                cv::imwrite(filename, bgr_image);
-                std::cout << "[" << threadName << "] Saved debug image to " << filename << std::endl;
-            } catch (const cv::Exception& ex) {
-                std::cerr << "OpenCV exception while saving debug image: " << ex.what() << std::endl;
-            }
-            delete[] h_rgba_buffer;
-        }
+        // --- THE BIG CHANGE ---
+        // The frame is already RGBA. We can use it directly.
+        // The 'is_color' flag is now true because the input is RGBA.
+        yolov8_instance_->preprocess_gpu(frame->d_processed_image, frame->width, frame->height, true);
 
         // Preprocess and run inference. These are non-blocking CUDA calls.
         yolov8_instance_->infer();
 
-        if (entry->yolo_completion_event) {
-            ck(cudaEventRecord(*entry->yolo_completion_event, yolov8_instance_->stream));
-        }
-
-        // record per-frame event for synchronization
+        // This event now signals that YOLO's GPU work is done.
+        // It should be part of the ProcessedFrame struct if other workers need to wait on it.
+        // For now, we'll synchronize here.
         ck(cudaStreamSynchronize(yolov8_instance_->stream));
         
         // Now that the GPU is finished, process the results.
-        yolov8_instance_->postprocess(entry->detections);
+        yolov8_instance_->postprocess(frame->detections);
 
         // After detections are found, dispatch to the crop worker if it exists
-        if (m_crop_worker && !entry->detections.empty()) {
-            entry->ref_count.fetch_add(1, std::memory_order_acq_rel); // Increment ref count for the new worker
-            m_crop_worker->PutObjectToQueueIn(entry);
+        if (m_crop_worker && !frame->detections.empty()) {
+            frame->ref_count.fetch_add(1, std::memory_order_acq_rel); // Increment ref count for the new worker
+            // Note: The crop worker will also need to be updated to accept a ProcessedFrame*
+            // m_crop_worker->PutObjectToQueueIn(frame);
         }
-
-        if (!entry->detections.empty()) {
-            std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
-            for(size_t i = 0; i < entry->detections.size(); ++i) {
-                const auto& obj = entry->detections[i];
-                std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
-                          << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
-                          << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
-            }
-        }
-
-        entry->detections_ready.store(true);
+        
+        frame->detections_ready.store(true);
 
         // FPS calculation and IPC/ENet logic remains the same.
         frame_counter_++;
@@ -212,10 +168,10 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             last_fps_update_time_ = now;
         }
 
-        if (entry->has_detections) {
+        if (frame->has_detections) {
             if (associated_camera_select_->send_yolo_via_ipc && shaman_ipc_queue_) {
-                std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
-                if (!shaman_ipc_queue_->push(shaman_objects, entry->frame_id, associated_camera_params_->camera_id)) {
+                std::vector<shaman::Object> shaman_objects = conv_shaman(frame->detections);
+                if (!shaman_ipc_queue_->push(shaman_objects, frame->frame_id, associated_camera_params_->camera_id)) {
                     std::cerr << "[" << threadName << "] Failed to push to IPC queue." << std::endl;
                 }
             }
@@ -228,12 +184,17 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         }
     }
 
-    // Reference counting for recycling the WORKER_ENTRY.
-    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+    // --- NEW RECYCLING LOGIC ---
+    // This worker is now responsible for recycling both structs when it's the last one.
+    if (frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        // Recycle the raw entry from the acquisition stage
+        if (frame->original_entry->gpu_direct_mode && frame->original_entry->camera_instance && frame->original_entry->camera_frame_struct) {
+            EVT_CameraQueueFrame(frame->original_entry->camera_instance, frame->original_entry->camera_frame_struct);
         }
-        m_recycle_queue.push(entry);
+        m_raw_recycle_queue.push(frame->original_entry);
+        
+        // Recycle the processed frame struct itself
+        m_processed_recycle_queue.push(frame);
     }
     
     // This worker doesn't pass an item to its own output queue so we return false
@@ -244,4 +205,8 @@ void YOLOv8Worker::WorkerReset() {
     last_fps_update_time_ = std::chrono::steady_clock::now();
     frame_counter_ = 0;
     current_fps_ = 0.0;
+}
+
+double YOLOv8Worker::get_fps() const {
+    return current_fps_.load(std::memory_order_relaxed);
 }

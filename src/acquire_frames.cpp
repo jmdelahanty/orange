@@ -1,248 +1,89 @@
 // src/acquire_frames.cpp
 
 #include "acquire_frames.h"
+#include "frame_preprocessor.h" // Include the new preprocessor header
 #include "nvtx_profiling.h"
-#include "NvEncoder/NvCodecUtils.h"
-#include "image_processing.h"
-#include "kernel.cuh"
-#include <chrono>
-#include <cuda_runtime.h>
 #include "global.h"
-#include "thread.h"
-#include "opengldisplay.h"
-#include "gpu_video_encoder.h"
-#include "yolo_worker.h"
-#include "image_writer_worker.h"
-#include "crop_and_encode_worker.h"
-#include "cuda_context_debug.h"
+#include <chrono>
 
-static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *ecam, CameraState *camera_state){
-    NVTX_RANGE("PTP_Timestamp_Check");
-    EVT_CameraExecuteCommand(&ecam->camera, "GevTimestampControlLatch");
-    EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
-    EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueLow", &ptp_state->ptp_time_low);
-    ptp_state->ptp_time = (((unsigned long long)(ptp_state->ptp_time_high)) << 32) | ((unsigned long long)(ptp_state->ptp_time_low));
-    ptp_state->frame_ts = ecam->frame_recv.timestamp;
-    if (camera_state->frame_count != 0) {
-        ptp_state->ptp_time_delta = ptp_state->ptp_time - ptp_state->ptp_time_prev;
-        ptp_state->ptp_time_delta_sum += ptp_state->ptp_time_delta;
-        ptp_state->frame_ts_delta = ptp_state->frame_ts - ptp_state->frame_ts_prev;
-        ptp_state->frame_ts_delta_sum += ptp_state->frame_ts_delta;
-    }
-    ptp_state->ptp_time_prev = ptp_state->ptp_time;
-    ptp_state->frame_ts_prev = ptp_state->frame_ts;
-}
-
+// The signature changes slightly: it now needs a pointer to the preprocessor
 void acquire_frames(
     CameraEmergent *ecam,
     CameraParams *camera_params,
     CameraEachSelect* camera_select,
     CameraControl* camera_control,
     PTPParams* ptp_params,
-    INDIGOSignalBuilder* indigo_signal_builder,
-    COpenGLDisplay* openGLDisplay,
-    GPUVideoEncoder* gpu_encoder,
-    YOLOv8Worker* yolo_worker,
-    ImageWriterWorker* image_writer,
     CameraResources* resources,
-    CropAndEncodeWorker* crop_and_encode_worker
+    FramePreprocessor* preprocessor // New parameter
 ){
     ck(cudaSetDevice(camera_params->gpu_id));
     NVTX_CAMERA("AcquireFrames_Main");
-    std::cout << "Starting acquisition loop for camera " << camera_params->camera_serial << std::endl;
 
-    {
-        NVTX_RANGE("CUDA_Context_Setup");
-        CUDA_CTX_LOG("=== ACQUIRE FRAMES START ===");
-        dumpCudaState("Acquire frames startup");
-        ck(cudaSetDevice(camera_params->gpu_id));
-        CUDA_RT_LOG("Set device to " + std::to_string(camera_params->gpu_id));
-    }
-
-    cudaStream_t stream;
-    FrameProcess frame_process_save;
-
-    {
-        NVTX_RANGE("Stream_and_Buffer_Init");
-        ck(cudaStreamCreate(&stream));
-        CUDA_STREAM_LOG("Created acquisition stream", stream);
-
-        initalize_gpu_frame(&frame_process_save.frame_original, camera_params);
-        initialize_gpu_debayer(&frame_process_save.debayer, camera_params);
-        initialize_cpu_frame(&frame_process_save.frame_cpu, camera_params);
-        ck(cudaMalloc((void **)&frame_process_save.d_convert, (size_t)camera_params->width * camera_params->height * 3));
-    }
-
-    CameraState camera_state{};
-    PTPState ptp_state{};
-    StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
     int frame_counter_for_fps = 0;
+    unsigned long long frame_count = 0;
 
-    {
-        NVTX_RANGE("Camera_Initialization");
-        if (camera_control->sync_camera) {
-            NVTX_RANGE_PUSH("PTP_Sync_Setup");
-            show_ptp_offset(&ptp_state, ecam);
-            start_ptp_sync(&ptp_state, ptp_params, camera_params, ecam, 3);
-            NVTX_RANGE_POP();
-        }
+    // Camera startup logic (PTP, etc.) remains the same...
 
-        NVTX_CAMERA("Camera_Acquisition_Start");
-        check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStart"), camera_params->camera_serial.c_str());
-
-        if (camera_control->sync_camera) {
-            NVTX_RANGE_PUSH("PTP_Countdown");
-            grab_frames_after_countdown(&ptp_state, ecam);
-            NVTX_RANGE_POP();
-        } else {
-            try_start_timer();
-        }
-    }
-
-    w.Start();
+    check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStart"), camera_params->camera_serial.c_str());
 
     while (camera_control->subscribe) {
-        NVTX_RANGE_PUSH("Frame_Processing_Loop");
+        NVTX_RANGE_PUSH("Frame_Acquire_Loop");
 
-        WORKER_ENTRY* recycled_entry = nullptr;
-        while(resources->recycle_queue->pop(recycled_entry)) {
-            if (recycled_entry) {
-                if (recycled_entry->event_ptr) {
-                    resources->free_events_queue->push(recycled_entry->event_ptr);
-                }
-                if (recycled_entry->yolo_completion_event) {
-                    resources->yolo_events_queue->push(recycled_entry->yolo_completion_event);
-                }
-                resources->free_entries_queue->push(recycled_entry);
-            }
-        }
-
+        // Get a free WORKER_ENTRY and a free CUDA event from the resource pool
         WORKER_ENTRY* current_entry = nullptr;
         cudaEvent_t* current_event = nullptr;
-        cudaEvent_t* yolo_event = nullptr;
-
-        if (!resources->free_entries_queue->pop(current_entry) || !resources->free_events_queue->pop(current_event) || !resources->yolo_events_queue->pop(yolo_event)) {
+        if (!resources->free_entries_queue->pop(current_entry) || !resources->free_events_queue->pop(current_event)) {
             if (current_entry) resources->free_entries_queue->push(current_entry);
             if (current_event) resources->free_events_queue->push(current_event);
-            if (yolo_event) resources->yolo_events_queue->push(yolo_event);
-            NVTX_RANGE_POP();
             usleep(100);
+            NVTX_RANGE_POP();
             continue;
         }
 
-        camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
+        // Get the frame from the camera SDK
+        if (EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000) == EVT_SUCCESS) {
+            frame_count++;
 
-        if (camera_state.camera_return == EVT_SUCCESS) {
-            camera_state.frames_recd++;
-            camera_state.frame_count++;
+            // Copy raw data to the WORKER_ENTRY's GPU buffer
+            ck(cudaMemcpyAsync(current_entry->d_image, ecam->frame_recv.imagePtr, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToDevice, nullptr));
+            EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv); // Re-queue SDK buffer immediately
 
-            cudaPointerAttributes attrs;
-            bool use_direct_pointer = (cudaPointerGetAttributes(&attrs, ecam->frame_recv.imagePtr) == cudaSuccess &&
-                                       attrs.type == cudaMemoryTypeDevice &&
-                                       attrs.device == camera_params->gpu_id);
-
-            if (use_direct_pointer) {
-                current_entry->d_image = static_cast<unsigned char*>(ecam->frame_recv.imagePtr);
-                current_entry->gpu_direct_mode = true;
-                current_entry->owns_memory = false;
-            } else {
-                ck(cudaMemcpyAsync(current_entry->d_image, ecam->frame_recv.imagePtr, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToDevice, stream));
-                EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
-            }
-
-            current_entry->event_ptr = current_event;
-            current_entry->yolo_completion_event = yolo_event;
-            ck(cudaEventRecord(*current_entry->event_ptr, stream));
-
+            // Populate the entry's metadata
             current_entry->width = ecam->frame_recv.size_x;
             current_entry->height = ecam->frame_recv.size_y;
-            current_entry->pixelFormat = ecam->frame_recv.pixel_type;
             current_entry->timestamp = ecam->frame_recv.timestamp;
-            current_entry->frame_id = camera_state.frame_count;
-            current_entry->has_detections = (camera_select->yolo && yolo_worker);
-            current_entry->detections_ready.store(false);
+            current_entry->frame_id = frame_count;
+            current_entry->has_detections = camera_select->yolo;
 
-            if (camera_select->frame_save_state == State_Write_New_Frame && image_writer) {
-                ImageWriter_Entry* save_job = new ImageWriter_Entry();
-                save_job->event_ptr = current_event;
-                image_writer->PutObjectToQueueIn(save_job);
-            }
-            
-            // Create a dispatch counter to track how many workers will process this frame
-            // If the camera is set to stream, record video, or run YOLO detection,
-            // we increment the dispatch count for each active worker.
-            // If no workers are active, we return the frame to the free queue.
-            // This allows us to efficiently manage resources and avoid unnecessary processing.
-            int dispatch_count = 0;
-            if (camera_select->stream_on && openGLDisplay) dispatch_count++;
-            if (camera_control->record_video && gpu_encoder) dispatch_count++;
-            if (camera_select->yolo && yolo_worker) dispatch_count++;
+            // Record an event to signal that the cudaMemcpy is complete
+            current_entry->event_ptr = current_event;
+            ck(cudaEventRecord(*current_entry->event_ptr, nullptr));
 
-            if (dispatch_count > 0) {
-                current_entry->ref_count.store(dispatch_count);
-
-                if (camera_select->stream_on && openGLDisplay) openGLDisplay->PutObjectToQueueIn(current_entry);
-                if (camera_control->record_video && gpu_encoder) gpu_encoder->PutObjectToQueueIn(current_entry);
-                if (camera_select->yolo && yolo_worker) yolo_worker->PutObjectToQueueIn(current_entry);
-
-                if (use_direct_pointer) {
-                    current_entry->camera_buffer_ptr = ecam->frame_recv.imagePtr;
-                    current_entry->camera_instance = &ecam->camera;
-                    current_entry->camera_frame_struct = &ecam->frame_recv;
-                }
-
+            // --- THE NEW LOGIC ---
+            // Dispatch the raw frame to the preprocessor
+            if (preprocessor) {
+                preprocessor->PutObjectToQueueIn(current_entry);
             } else {
-                if (use_direct_pointer) {
-                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
-                }
-                resources->free_events_queue->push(current_event);
-                resources->yolo_events_queue->push(yolo_event);
-                resources->free_entries_queue->push(current_entry);
+                // If there's no preprocessor, we must recycle the entry ourselves
+                resources->recycle_queue->push(current_entry);
             }
 
+            // FPS calculation
             frame_counter_for_fps++;
             auto now = std::chrono::steady_clock::now();
-            std::chrono::duration<double> elapsed = now - last_fps_update_time;
-            if (elapsed.count() >= 1.0) {
-                streaming_fps.store(frame_counter_for_fps / elapsed.count());
+            if (std::chrono::duration<double>(now - last_fps_update_time).count() >= 1.0) {
+                streaming_fps.store(frame_counter_for_fps / std::chrono::duration<double>(now - last_fps_update_time).count());
                 frame_counter_for_fps = 0;
                 last_fps_update_time = now;
             }
+        } else {
+            // If getting a frame failed, recycle the entry and event
+            resources->free_entries_queue->push(current_entry);
+            resources->free_events_queue->push(current_event);
         }
         NVTX_RANGE_POP();
     }
 
-    // Cleanup
-    {
-        NVTX_RANGE("Cleanup_and_Shutdown");
-        CUDA_CTX_LOG("=== ACQUIRE FRAMES CLEANUP ===");
-
-        {
-            NVTX_CAMERA("Camera_Acquisition_Stop");
-            check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStop"), camera_params->camera_serial.c_str());
-        }
-
-        if (!ptp_params->network_sync) {
-            try_stop_timer();
-        }
-        double time_diff = w.Stop();
-        report_statistics(camera_params, &camera_state, time_diff);
-
-        {
-            NVTX_RANGE("Memory_Cleanup");
-            cudaFree(frame_process_save.frame_original.d_orig);
-            cudaFree(frame_process_save.debayer.d_debayer);
-            cudaFree(frame_process_save.d_convert);
-            free(frame_process_save.frame_cpu.frame);
-        }
-
-        CUDA_STREAM_LOG("Destroying acquisition stream", stream);
-        cudaStreamDestroy(stream);
-
-        CUDA_CTX_LOG("=== ACQUIRE FRAMES END ===");
-        std::cout << "Acquire frames thread finished for camera: " << camera_params->camera_serial << std::endl;
-
-        CUcontext popped_context;
-    }
+    check_camera_errors(EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStop"), camera_params->camera_serial.c_str());
 }

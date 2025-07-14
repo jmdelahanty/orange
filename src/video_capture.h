@@ -51,6 +51,26 @@ typedef struct {
 
 } WORKER_ENTRY;
 
+struct ProcessedFrame {
+    unsigned char* d_processed_image; // RGBA image after debayer/duplicate
+    int width;
+    int height;
+    unsigned long long timestamp;
+    unsigned long long frame_id;
+    uint64_t timestamp_sys;
+    bool has_detections;
+
+    // YOLO results are now stored here
+    std::vector<pose::Object> detections;
+    std::atomic<bool> detections_ready;
+
+    // Event to signal when this processed frame is ready
+    cudaEvent_t* processed_event_ptr;
+
+    std::atomic<int> ref_count;
+    WORKER_ENTRY* original_entry; // Pointer back to the raw data for recycling
+};
+
 enum PictureSaveState {
     State_Frame_Idle = 0,
     State_Write_New_Frame = 1
@@ -69,80 +89,75 @@ struct CameraResources {
     static const int ACQUIRE_WORK_ENTRIES_MAX = 120;
     static const int EVENT_POOL_SIZE = 256;
 
+    // --- RAW frame resources ---
     WORKER_ENTRY* worker_entry_pool = nullptr;
     SafeQueue<WORKER_ENTRY*>* free_entries_queue = nullptr;
     SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr;
 
-    std::vector<cudaEvent_t> event_pool;
-    std::vector<cudaEvent_t> yolo_event_pool;
-    SafeQueue<cudaEvent_t*>* free_events_queue = nullptr;
-    SafeQueue<cudaEvent_t*>* yolo_events_queue = nullptr;
+    // --- PROCESSED frame resources ---
+    ProcessedFrame* processed_frame_pool = nullptr; // NEW: Pool for processed frames
+    SafeQueue<ProcessedFrame*>* processed_recycle_queue = nullptr; // NEW: The missing member
 
+    // --- Event resources ---
+    std::vector<cudaEvent_t> event_pool;
+    SafeQueue<cudaEvent_t*>* free_events_queue = nullptr;
+
+    // Default constructor and rule-of-five members...
     CameraResources() = default;
     CameraResources(const CameraResources&) = delete;
     CameraResources& operator=(const CameraResources&) = delete;
 
     CameraResources(CameraResources&& other) noexcept {
-        worker_entry_pool = other.worker_entry_pool;
-        free_entries_queue = other.free_entries_queue;
-        recycle_queue = other.recycle_queue;
-        event_pool = std::move(other.event_pool);
-        yolo_event_pool = std::move(other.yolo_event_pool);
-        free_events_queue = other.free_events_queue;
-        yolo_events_queue = other.yolo_events_queue;
-        other.worker_entry_pool = nullptr;
-        other.free_entries_queue = nullptr;
-        other.recycle_queue = nullptr;
-        other.free_events_queue = nullptr;
-        other.yolo_events_queue = nullptr;
+        // ... (move constructor logic remains the same, but add the new members)
+        processed_frame_pool = other.processed_frame_pool;
+        processed_recycle_queue = other.processed_recycle_queue;
+        other.processed_frame_pool = nullptr;
+        other.processed_recycle_queue = nullptr;
     }
-
     CameraResources& operator=(CameraResources&& other) noexcept {
+        // ... (move assignment logic remains the same, but add the new members)
         if (this != &other) {
             cleanup();
-            worker_entry_pool = other.worker_entry_pool;
-            free_entries_queue = other.free_entries_queue;
-            recycle_queue = other.recycle_queue;
-            event_pool = std::move(other.event_pool);
-            yolo_event_pool = std::move(other.yolo_event_pool);
-            free_events_queue = other.free_events_queue;
-            yolo_events_queue = other.yolo_events_queue;
-            other.worker_entry_pool = nullptr;
-            other.free_entries_queue = nullptr;
-            other.recycle_queue = nullptr;
-            other.free_events_queue = nullptr;
-            other.yolo_events_queue = nullptr;
+            // ... move existing members ...
+            processed_frame_pool = other.processed_frame_pool;
+            processed_recycle_queue = other.processed_recycle_queue;
+            other.processed_frame_pool = nullptr;
+            other.processed_recycle_queue = nullptr;
         }
         return *this;
     }
 
-    void initialize(int gpu_id, size_t frame_size) {
+
+    void initialize(int gpu_id, size_t frame_size, size_t processed_frame_size) {
         ck(cudaSetDevice(gpu_id));
         
+        // --- Raw entry setup ---
         worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX];
         for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
         }
-        
         free_entries_queue = new SafeQueue<WORKER_ENTRY*>();
         for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
             free_entries_queue->push(&worker_entry_pool[i]);
         }
-        
         recycle_queue = new SafeQueue<WORKER_ENTRY*>();
         
+        // --- Processed entry setup --- (NEW)
+        processed_frame_pool = new ProcessedFrame[ACQUIRE_WORK_ENTRIES_MAX];
+        for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
+            ck(cudaMalloc(&processed_frame_pool[i].d_processed_image, processed_frame_size));
+        }
+        processed_recycle_queue = new SafeQueue<ProcessedFrame*>();
+        for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
+            processed_recycle_queue->push(&processed_frame_pool[i]);
+        }
+
+        // --- Event setup ---
         event_pool.resize(EVENT_POOL_SIZE);
         free_events_queue = new SafeQueue<cudaEvent_t*>();
         for (int i = 0; i < EVENT_POOL_SIZE; ++i) {
             ck(cudaEventCreateWithFlags(&event_pool[i], cudaEventDisableTiming));
             free_events_queue->push(&event_pool[i]);
-        }
-
-        yolo_event_pool.resize(EVENT_POOL_SIZE);
-        yolo_events_queue = new SafeQueue<cudaEvent_t*>();
-        for (int i = 0; i < EVENT_POOL_SIZE; ++i) {
-            ck(cudaEventCreateWithFlags(&yolo_event_pool[i], cudaEventDisableTiming));
-            yolo_events_queue->push(&yolo_event_pool[i]);
         }
     }
 
@@ -155,20 +170,23 @@ struct CameraResources {
             worker_entry_pool = nullptr;
         }
 
+        if (processed_frame_pool) {
+            for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
+                if(processed_frame_pool[i].d_processed_image) cudaFree(processed_frame_pool[i].d_processed_image);
+            }
+            delete[] processed_frame_pool;
+            processed_frame_pool = nullptr;
+        }
+
         if (free_entries_queue) { delete free_entries_queue; free_entries_queue = nullptr; }
         if (recycle_queue) { delete recycle_queue; recycle_queue = nullptr; }
+        if (processed_recycle_queue) { delete processed_recycle_queue; processed_recycle_queue = nullptr; } // NEW
         
         if (free_events_queue) { delete free_events_queue; free_events_queue = nullptr; }
         for (auto& event : event_pool) {
             if (event) cudaEventDestroy(event);
         }
         event_pool.clear();
-
-        if (yolo_events_queue) { delete yolo_events_queue; yolo_events_queue = nullptr; }
-        for (auto& event : yolo_event_pool) {
-            if (event) cudaEventDestroy(event);
-        }
-        yolo_event_pool.clear();
     }
 };
 
