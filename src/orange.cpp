@@ -1142,7 +1142,6 @@ int main(int argc, char **args) {
                             // Create the downstream workers first
                             if (cameras_select[i].stream_on) {
                                 std::string name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
-                                // The display worker will now get data from its own queue
                                 openGLDisplayWorkers[i] = new COpenGLDisplay(
                                     name.c_str(),
                                     &cameras_params[i],
@@ -1152,6 +1151,7 @@ int main(int argc, char **args) {
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
+                                // Set the input queue for the display worker
                                 openGLDisplayWorkers[i]->SetInputQueue(&display_queues[i]);
                             }
                             if (cameras_select[i].yolo) {
@@ -1163,7 +1163,13 @@ int main(int argc, char **args) {
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
+                                // Set the input queue for the YOLO worker
                                 yolo_workers[i]->SetInputQueue(&yolo_queues[i]);
+
+                                // This is also a good place to link the workers if needed
+                                if (openGLDisplayWorkers[i]) {
+                                    yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
+                                }
                             }
                             if (cameras_select[i].record) {
                                 std::string name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
@@ -1179,10 +1185,11 @@ int main(int argc, char **args) {
                                     *camera_resources[i].recycle_queue,
                                     *camera_resources[i].processed_recycle_queue
                                 );
+                                // Set the input queue for the encoder worker
                                 gpuVideoEncoders[i]->SetInputQueue(&encoder_queues[i]);
                             }
                             
-                            // Now create the FramePreprocessor, telling it where to send its output
+                            // Now create the FramePreprocessor and tell it where to send its output
                             preprocessors[i] = new FramePreprocessor(
                                 ("Preprocessor_Cam_" + cameras_params[i].camera_serial).c_str(),
                                 &cameras_params[i],
@@ -1196,10 +1203,22 @@ int main(int argc, char **args) {
                         
                         // 4. START ALL WORKER THREADS
                         for (int i = 0; i < num_cameras; i++) {
-                            if (preprocessors[i]) preprocessors[i]->StartThread();
-                            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
-                            if (yolo_workers[i]) yolo_workers[i]->StartThread();
-                            if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
+                            if (preprocessors[i]) {
+                                preprocessors[i]->SetInputQueue(camera_resources[i].recycle_queue); // The preprocessor's input is the raw recycle queue
+                                preprocessors[i]->StartThread();
+                            }
+                            if (openGLDisplayWorkers[i]) {
+                                openGLDisplayWorkers[i]->SetInputQueue(&display_queues[i]);
+                                openGLDisplayWorkers[i]->StartThread();
+                            }
+                            if (yolo_workers[i]) {
+                                yolo_workers[i]->SetInputQueue(&yolo_queues[i]);
+                                yolo_workers[i]->StartThread();
+                            }
+                            if (gpuVideoEncoders[i]) {
+                                gpuVideoEncoders[i]->SetInputQueue(&encoder_queues[i]);
+                                gpuVideoEncoders[i]->StartThread();
+                            }
                         }
 
                         // 5. PREPARE CAMERAS
