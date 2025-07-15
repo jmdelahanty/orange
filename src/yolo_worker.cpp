@@ -188,15 +188,15 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             m_crop_worker->PutObjectToQueueIn(entry);
         }
 
-        if (!entry->detections.empty()) {
-            std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
-            for(size_t i = 0; i < entry->detections.size(); ++i) {
-                const auto& obj = entry->detections[i];
-                std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
-                          << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
-                          << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
-            }
-        }
+        // if (!entry->detections.empty()) {
+        //     std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
+        //     for(size_t i = 0; i < entry->detections.size(); ++i) {
+        //         const auto& obj = entry->detections[i];
+        //         std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
+        //                   << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
+        //                   << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
+        //     }
+        // }
 
         entry->detections_ready.store(true);
 
