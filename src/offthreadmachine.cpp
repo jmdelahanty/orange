@@ -24,23 +24,42 @@ COffThreadMachine::~COffThreadMachine()
 */
 int COffThreadMachine::StartThread(const char* tName)
 {
-	if(threadHandle) return EEXIST;
-	if(tName) strncpy(threadName, tName, 16);
+    if (threadHandle) return EEXIST;
+
+    // If a new name is provided when starting, update the member variable.
+    if (tName) {
+        strncpy(threadName, tName, sizeof(threadName) - 1);
+        threadName[sizeof(threadName) - 1] = 0; // Ensure null termination
+    }
 
 #if defined(__GNUC__)
-	if(pthread_create(&threadHandle, NULL, MachineThread, (void*)this) != 0)
-#else		
-	if(! (threadHandle = CreateThread(NULL, 0, MachineThread, (void*)this, 0, NULL)))
-#endif
-	{
-		return ECHILD;
-	}
-#if defined(__GNUC__)
-	pthread_setname_np(threadHandle, threadName);
+    // Create the thread first.
+    if (pthread_create(&threadHandle, NULL, MachineThread, (void*)this) != 0) {
+        return ECHILD; // Failed to create thread
+    }
+
+    // --- Start of Naming Logic ---
+    if (threadName[0] != '\0') // Only set name if one exists
+    {
+        // Create a temporary buffer that is the exact size required by the OS.
+        char truncated_name[16];
+        strncpy(truncated_name, threadName, 15);
+        truncated_name[15] = 0; // Manually ensure null termination
+
+        // Set the thread name using the safe, truncated version.
+        pthread_setname_np(threadHandle, truncated_name);
+    }
+    // --- End of Naming Logic ---
+
 #else
-    //SetThreadDescription(threadHandle, threadName);  // SetThreadDescription is not found.
+    // Windows version remains the same
+    if (!(threadHandle = CreateThread(NULL, 0, MachineThread, (void*)this, 0, NULL))) {
+        return ECHILD;
+    }
+    // SetThreadDescription(threadHandle, ...); // Windows naming call would go here
 #endif
-	return 0;
+
+    return 0; // Success
 }
 
 void COffThreadMachine::StopThread()
