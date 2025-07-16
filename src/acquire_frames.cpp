@@ -44,8 +44,7 @@ void acquire_frames(
     GPUVideoEncoder* gpu_encoder,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
-    CameraResources* resources,
-    CropAndEncodeWorker* crop_and_encode_worker
+    CameraResources* resources
 ){
     ck(cudaSetDevice(camera_params->gpu_id));
     NVTX_CAMERA("AcquireFrames_Main");
@@ -136,6 +135,14 @@ void acquire_frames(
         if (camera_state.camera_return == EVT_SUCCESS) {
             camera_state.frames_recd++;
             camera_state.frame_count++;
+            current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
+
+            // If recording is active, increment and assign the recording-specific frame ID
+            if (camera_control->record_video) {
+                current_entry->recording_frame_id = g_recording_frame_count.fetch_add(1);
+            } else {
+                current_entry->recording_frame_id = 0; // Or another sentinel value if preferred
+            }
 
             cudaPointerAttributes attrs;
             bool use_direct_pointer = (cudaPointerGetAttributes(&attrs, ecam->frame_recv.imagePtr) == cudaSuccess &&

@@ -8,6 +8,7 @@
 extern std::atomic<double> streaming_fps;
 extern std::atomic<int> streaming_target_fps;
 extern std::atomic<int64_t> record_start_time_ns;
+extern std::atomic<uint64_t> g_recording_frame_count;
 
 bool try_start_timer();
 bool try_stop_timer();

@@ -25,6 +25,7 @@ public:
     YOLOv8Worker(const char* name,
                     CameraParams* cam_params,
                     CameraEachSelect* cam_select,
+                    CameraControl* camera_control,
                     SafeQueue<WORKER_ENTRY*>& recycle_queue);
     ~YOLOv8Worker() override;
 
@@ -55,6 +56,7 @@ private:
     YOLOv8* yolov8_instance_;
     CameraParams* associated_camera_params_;
     CameraEachSelect* associated_camera_select_;
+    CameraControl* camera_control_;
 
     EnetContext* enet_host_context_;
     ENetPeer* enet_target_peer_;

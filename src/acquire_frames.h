@@ -17,7 +17,7 @@ class COpenGLDisplay;
 class GPUVideoEncoder;
 class YOLOv8Worker;
 class ImageWriterWorker;
-class CropAndEncodeWorker; // Keep this forward declaration
+class CropAndEncodeWorker;
 
 void acquire_frames(
     CameraEmergent *ecam,
@@ -30,7 +30,6 @@ void acquire_frames(
     GPUVideoEncoder* gpu_encoder,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
-    CameraResources* resources,
-    CropAndEncodeWorker* crop_encoder
+    CameraResources* resources
 );
 #endif

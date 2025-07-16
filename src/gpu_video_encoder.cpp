@@ -55,7 +55,7 @@ static inline void write_metadata(std::ofstream *metadata, unsigned long long fr
     *metadata << frame_id << "," << timestamp << "," << timestamp_sys << std::endl;
 }
 
-static inline void close_writer(EncoderContext *encoder, Writer *writer)
+static inline void close_writer(EncoderContext *encoder, Writer *writer, uint64_t& last_frame_id)
 {
     NVTX_RANGE("Close_Writer");
     
@@ -67,7 +67,7 @@ static inline void close_writer(EncoderContext *encoder, Writer *writer)
         NVTX_RANGE_PUSH("Flush_Remaining_Packets");
         for (std::vector<uint8_t> &packet : encoder->vPacket)
         {
-            writer->video->push_packet(packet.data(), (int)packet.size(), encoder->num_frame_encode++);
+            writer->video->push_packet(packet.data(), (int)packet.size(), ++last_frame_id);
         }
         NVTX_RANGE_POP();
         
@@ -255,7 +255,7 @@ GPUVideoEncoder::~GPUVideoEncoder()
 
 
     NVTX_RANGE_PUSH("Close_Writer_And_Encoder");
-    close_writer(&encoder, &writer);
+    close_writer(&encoder, &writer, last_recording_frame_id_);
     NVTX_RANGE_POP();
     
     NVTX_RANGE_PUSH("Cleanup_CUDA_Resources");
@@ -494,13 +494,17 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         NVTX_RANGE_PUSH("Process_Encoded_Packets");
         // Push encoded packets to writer
         for (std::vector<uint8_t> &packet : encoder.vPacket) {
-            writer.video->push_packet(packet.data(), (int)packet.size(), encoder.num_frame_encode++);
+            writer.video->push_packet(packet.data(), (int)packet.size(), entry->recording_frame_id);
         }
         NVTX_RANGE_POP();
+
+        // Increment the recording frame ID so last_recording_frame_id_ is always the last processed frame
+        // and make sure that final frames are written to the metadata file and video stream
+        last_recording_frame_id_ = entry->recording_frame_id;
         
         NVTX_RANGE_PUSH("Write_Frame_Metadata");
-        // Write metadata
-        write_metadata(writer.metadata, entry->frame_id, entry->timestamp, entry->timestamp_sys);
+        ENCODER_CTX_LOG("Writing metadata for frame", entry->recording_frame_id);
+        write_metadata(writer.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
         NVTX_RANGE_POP();
         
         std::cout << "[GPUEncoder] Frame " << entry->frame_id << " encoded successfully" << std::endl;

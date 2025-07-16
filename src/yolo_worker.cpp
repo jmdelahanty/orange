@@ -21,11 +21,13 @@
 YOLOv8Worker::YOLOv8Worker(const char* name,
                            CameraParams* cam_params,
                            CameraEachSelect* cam_select,
+                           CameraControl* camera_control,
                            SafeQueue<WORKER_ENTRY*>& recycle_queue)
     : CThreadWorker(name),
       yolov8_instance_(nullptr),
       associated_camera_params_(cam_params),
       associated_camera_select_(cam_select),
+      camera_control_(camera_control),
       enet_host_context_(nullptr),
       enet_target_peer_(nullptr),
       fb_builder_(nullptr),
@@ -183,20 +185,20 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         yolov8_instance_->postprocess(entry->detections);
 
         // After detections are found, dispatch to the crop worker if it exists
-        if (m_crop_worker && !entry->detections.empty()) {
+        if (m_crop_worker && camera_control_->record_video) {
             entry->ref_count.fetch_add(1, std::memory_order_acq_rel); // Increment ref count for the new worker
             m_crop_worker->PutObjectToQueueIn(entry);
         }
 
-        // if (!entry->detections.empty()) {
-        //     std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
-        //     for(size_t i = 0; i < entry->detections.size(); ++i) {
-        //         const auto& obj = entry->detections[i];
-        //         std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
-        //                   << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
-        //                   << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
-        //     }
-        // }
+        if (!entry->detections.empty()) {
+            std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
+            for(size_t i = 0; i < entry->detections.size(); ++i) {
+                const auto& obj = entry->detections[i];
+                std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
+                          << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
+                          << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
+            }
+        }
 
         entry->detections_ready.store(true);
 
@@ -215,7 +217,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         if (entry->has_detections) {
             if (associated_camera_select_->send_yolo_via_ipc && shaman_ipc_queue_) {
                 std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
-                if (!shaman_ipc_queue_->push(shaman_objects, entry->frame_id, associated_camera_params_->camera_id)) {
+                if (!shaman_ipc_queue_->push(shaman_objects, entry->recording_frame_id, associated_camera_params_->camera_id)) {
                     std::cerr << "[" << threadName << "] Failed to push to IPC queue." << std::endl;
                 }
             }

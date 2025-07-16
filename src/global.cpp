@@ -4,6 +4,7 @@ std::atomic<double> streaming_fps{0.0};
 std::atomic<int> streaming_target_fps = 60;
 std::atomic<int64_t> record_start_time_ns{0};
 std::atomic<CalibState> calib_state{CalibIdle};
+std::atomic<uint64_t> g_recording_frame_count{0};
 
 bool try_start_timer() {
     int64_t expected = record_start_time_ns.load();
@@ -17,6 +18,7 @@ bool try_start_timer() {
 
     while (expected <= 0) {
         if (record_start_time_ns.compare_exchange_strong(expected, now_ns)) {
+            g_recording_frame_count.store(0); // Reset frame count on new start
             return true;  // Successfully started or restarted
         }
         // CAS failed, reload and check again

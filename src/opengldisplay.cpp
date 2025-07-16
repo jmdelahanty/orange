@@ -66,6 +66,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
 {
     if (!f) return false;
 
+    // This logic to get the latest frame is good, let's keep it.
     WORKER_ENTRY* latest_frame = f;
     WORKER_ENTRY* discarded_frame = nullptr;
 
@@ -82,20 +83,25 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     ck(cudaSetDevice(display_gpu_id));
     nppSetStream(m_stream);
 
+    // Wait for the data to be ready from the acquisition thread
     if (latest_frame->event_ptr) {
         ck(cudaStreamWaitEvent(m_stream, *latest_frame->event_ptr, 0));
     }
-
+    
+    // Also wait for YOLO detections if they exist for this frame, so we can draw them
     if (latest_frame->has_detections && latest_frame->yolo_completion_event) {
         ck(cudaStreamWaitEvent(m_stream, *latest_frame->yolo_completion_event, 0));
     }
-
+    
+    // Spin-wait until the YOLO worker has finished its CPU-side post-processing
     while (latest_frame->has_detections && camera_select->yolo && !latest_frame->detections_ready.load(std::memory_order_acquire)) {
-        // Spin-wait for CPU-side post-processing to finish
+        // This is a tight loop; a small sleep can be added if it consumes too much CPU
     }
 
+    // --- Perform image processing on the GPU ---
     size_t frame_size = (size_t)camera_params->width * camera_params->height;
 
+    // Handle P2P copy if the acquisition GPU is different from the display GPU
     if (camera_params->gpu_id != display_gpu_id) {
         ck(cudaMemcpyAsync(h_p2p_copy_buffer_, latest_frame->d_image, frame_size, cudaMemcpyDeviceToHost, m_stream));
         ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, h_p2p_copy_buffer_, frame_size, cudaMemcpyHostToDevice, m_stream));
@@ -103,49 +109,64 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
         ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, latest_frame->d_image, frame_size, cudaMemcpyDeviceToDevice, m_stream));
     }
 
+    // Debayer or duplicate mono channel to get a 4-channel RGBA image in debayer_gpu_.d_debayer
     if (camera_params->color){
         debayer_frame_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_);
     } else {
         duplicate_channel_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_);
     }
 
-    // --- GPU-ACCELERATED DRAWING ---
+    // --- Draw detections directly on the GPU buffer ---
     if (latest_frame->has_detections && !latest_frame->detections.empty()) {
-        // 1. Copy the raw detection data (vector of pose::Object) directly to the GPU buffer.
+        // Copy detection data to the GPU
         ck(cudaMemcpyAsync(d_detections_for_drawing_, 
                            latest_frame->detections.data(), 
                            latest_frame->detections.size() * sizeof(pose::Object), 
                            cudaMemcpyHostToDevice, 
                            m_stream));
 
-        // 2. Launch the kernel that reads pose::Object structs and draws rectangles.
+        // Launch the kernel to draw boxes directly onto the debayered RGBA image
         gpu_draw_box(
-            debayer_gpu_.d_debayer,
+            debayer_gpu_.d_debayer, // Draw onto the RGBA buffer
             camera_params->width,
             camera_params->height,
             d_detections_for_drawing_,
             latest_frame->detections.size(),
             m_stream);
     }
+    
+    // --- FINAL GPU-to-GPU COPY
+    // Instead of copying to CPU, we now copy from our final GPU buffer (debayer_gpu_.d_debayer)
+    // directly to the PBO's mapped CUDA pointer (display_buffer_pbo_cuda_ptr_).
 
+    unsigned char* final_image_source = debayer_gpu_.d_debayer;
+    size_t copy_size = (size_t)camera_params->width * camera_params->height * 4;
+
+    // Handle downsampling if needed
     if (camera_select->downsample > 1) {
         output_display_size_.width = camera_params->width / camera_select->downsample;
         output_display_size_.height = camera_params->height / camera_select->downsample;
         NppiSize input_size = {static_cast<int>(camera_params->width), static_cast<int>(camera_params->height)};
         NppiRect input_roi = {0, 0, static_cast<int>(camera_params->width), static_cast<int>(camera_params->height)};
         NppiRect output_roi = {0, 0, output_display_size_.width, output_display_size_.height};
+        
+        // Resize the RGBA image
         nppiResize_8u_C4R(debayer_gpu_.d_debayer, camera_params->width * 4, input_size, input_roi,
                             d_display_resize_buffer_, output_display_size_.width * 4, output_display_size_,
                             output_roi, NPPI_INTER_SUPER);
-        size_t copy_size = (size_t)output_display_size_.width * (size_t)output_display_size_.height * 4;
-        ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, d_display_resize_buffer_, copy_size, cudaMemcpyDeviceToDevice, m_stream));
-    } else {
-        size_t copy_size = (size_t)camera_params->width * (size_t)camera_params->height * 4;
-        ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, debayer_gpu_.d_debayer, copy_size, cudaMemcpyDeviceToDevice, m_stream));
+        
+        // Update the source and size for the final copy
+        final_image_source = d_display_resize_buffer_;
+        copy_size = (size_t)output_display_size_.width * output_display_size_.height * 4;
     }
-
+    
+    // Perform the efficient GPU->GPU copy into the PBO buffer
+    ck(cudaMemcpyAsync(display_buffer_pbo_cuda_ptr_, final_image_source, copy_size, cudaMemcpyDeviceToDevice, m_stream));
+    
+    // Synchronize this worker's stream to ensure the copy is complete before OpenGL uses it
     ck(cudaStreamSynchronize(m_stream));
     
+    // --- Cleanup and recycle ---
     if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
         if (latest_frame->gpu_direct_mode && latest_frame->camera_instance && latest_frame->camera_frame_struct) {
             EVT_CameraQueueFrame(latest_frame->camera_instance, latest_frame->camera_frame_struct);
@@ -153,5 +174,5 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
         m_recycle_queue.push(latest_frame);
     }
 
-    return false; 
+    return false; // This worker doesn't pass items to its own output queue
 }

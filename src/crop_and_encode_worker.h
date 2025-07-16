@@ -25,6 +25,7 @@ private:
     NvEncoderCuda* encoder_ = nullptr;
     unsigned char* d_cropped_bgr_ = nullptr;
     unsigned char* d_yuv_buffer_ = nullptr;
+    unsigned char* d_blank_frame_ = nullptr;
     int encoder_pitch_ = 0;
     cudaStream_t m_stream = nullptr;
     int frame_counter_ = 0;
