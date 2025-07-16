@@ -15,10 +15,13 @@ public:
     CropAndEncodeWorker(const char* name, CameraParams *camera_params, const std::string& folder_name, SafeQueue<WORKER_ENTRY*>& recycle_queue);
     ~CropAndEncodeWorker() override;
 
+    void flush_and_close();
+
 protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;
 
 private:
+    uint64_t last_frame_id_used_ = 0;
     CameraParams* camera_params_;
     std::string folder_name_;
     Writer writer_;

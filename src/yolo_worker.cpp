@@ -184,12 +184,12 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         // Now that the GPU is finished, process the results.
         yolov8_instance_->postprocess(entry->detections);
 
-        // After detections are found, dispatch to the crop worker if it exists
+        // After detections are found, dispatch to the crop worker if it exists AND recording is on
         if (m_crop_worker && camera_control_->record_video) {
-            entry->ref_count.fetch_add(1, std::memory_order_acq_rel); // Increment ref count for the new worker
+            // Increment the reference count because another worker will now use this entry
+            entry->ref_count.fetch_add(1, std::memory_order_acq_rel); 
             m_crop_worker->PutObjectToQueueIn(entry);
         }
-
         if (!entry->detections.empty()) {
             std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
             for(size_t i = 0; i < entry->detections.size(); ++i) {

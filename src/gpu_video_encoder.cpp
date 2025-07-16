@@ -22,6 +22,52 @@ static std::string NvEncFormatToString(NV_ENC_BUFFER_FORMAT format) {
     }
 }
 
+// This static function will now contain all the logic for flushing and closing the writer.
+static inline void flush_and_close_writer(EncoderContext *encoder, Writer *writer, uint64_t& last_frame_id)
+{
+    NVTX_RANGE("Flush_And_Close_Writer");
+    
+    if(encoder->pEnc) {
+        NVTX_RANGE_PUSH("End_Encode");
+        // Flush any remaining frames from the encoder
+        encoder->pEnc->EndEncode(encoder->vPacket);
+        NVTX_RANGE_POP();
+        
+        NVTX_RANGE_PUSH("Flush_Remaining_Packets");
+        // Write any newly flushed packets to the file
+        for (std::vector<uint8_t> &packet : encoder->vPacket)
+        {
+            writer->video->push_packet(packet.data(), (int)packet.size(), ++last_frame_id);
+        }
+        encoder->vPacket.clear(); // Clear packets after writing
+        NVTX_RANGE_POP();
+        
+        // This is now redundant as it's called in the destructor, but safe to keep.
+        NVTX_RANGE_PUSH("Destroy_Encoder");
+        encoder->pEnc->DestroyEncoder();
+        delete encoder->pEnc;
+        encoder->pEnc = nullptr;
+        NVTX_RANGE_POP();
+    }
+
+    if(writer->video) {
+        NVTX_RANGE_PUSH("Close_Video_Writer");
+        writer->video->quit_thread();
+        writer->video->join_thread(); // Wait for the writer thread to finish
+        delete writer->video;
+        writer->video = nullptr;
+        NVTX_RANGE_POP();
+    }
+
+    if(writer->metadata && writer->metadata->is_open()) {
+        NVTX_RANGE_PUSH("Close_Metadata");
+        writer->metadata->close();
+        delete writer->metadata;
+        writer->metadata = nullptr;
+        NVTX_RANGE_POP();
+    }
+}
+
 // Helper to initialize the FFmpeg-based file writer
 static inline void initialize_writer(Writer *writer, CameraParams *camera_params, std::string folder_name, std::string encoder_str)
 {
@@ -253,22 +299,26 @@ GPUVideoEncoder::~GPUVideoEncoder()
     
     std::cout << "[GPUVideoEncoder] Destructor for " << this->threadName << std::endl;
 
-
-    NVTX_RANGE_PUSH("Close_Writer_And_Encoder");
-    close_writer(&encoder, &writer, last_recording_frame_id_);
-    NVTX_RANGE_POP();
+    // The destructor now focuses only on releasing its own resources.
+    // The main thread is responsible for calling flush_and_close().
+    // We can add a safeguard here.
+    if (encoder.pEnc) {
+        std::cerr << "Warning: GPUVideoEncoder destroyed without explicit flush. Forcing cleanup." << std::endl;
+        flush_and_close(); 
+    }
     
     NVTX_RANGE_PUSH("Cleanup_CUDA_Resources");
     if (m_stream) { cudaStreamDestroy(m_stream); }
-    cudaFree(frame_original.d_orig);
-    cudaFree(debayer.d_debayer);
+    if (frame_original.d_orig) cudaFree(frame_original.d_orig);
+    if (debayer.d_debayer) cudaFree(debayer.d_debayer);
     if (d_rgb_temp_) cudaFree(d_rgb_temp_);
     if (d_iyuv_temp_) cudaFree(d_iyuv_temp_);
     if (d_scaled_mono_buffer_) cudaFree(d_scaled_mono_buffer_);
     if (d_uv_default_plane_) cudaFree(d_uv_default_plane_);
     NVTX_RANGE_POP();
-
 }
+
+
 
 bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 {
@@ -572,4 +622,9 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
     
     ENCODER_CTX_LOG("=== EXITING WorkerFunction ===", entry->frame_id);
     return false;
+}
+
+void GPUVideoEncoder::flush_and_close()
+{
+    flush_and_close_writer(&encoder, &writer, last_recording_frame_id_);
 }

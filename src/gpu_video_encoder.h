@@ -46,6 +46,7 @@ public:
     }
 
     bool* encoder_ready_signal;
+    void flush_and_close();
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;

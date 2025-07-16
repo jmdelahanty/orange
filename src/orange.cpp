@@ -947,7 +947,7 @@ int main(int argc, char **args) {
         }
 
 
-            if (ImGui::Begin("Local")) {
+        if (ImGui::Begin("Local")) {
             if (camera_control->open) {
                 // ImGui::BeginDisabled();
             }
@@ -1129,7 +1129,6 @@ int main(int argc, char **args) {
                                 gpuVideoEncoders[i] = new GPUVideoEncoder(name.c_str(), &cameras_params[i], encoder_config->encoder_codec, encoder_config->encoder_preset, encoder_config->tuning_info, encoder_config->folder_name, &ready_signal, *camera_resources[i].recycle_queue);
                             }
 
-                            // *** MOVED LOGIC: Create the CropAndEncodeWorker here ***
                             if (cameras_select[i].crop_and_encode) {
                                 std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
                                 cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
@@ -1150,7 +1149,6 @@ int main(int argc, char **args) {
                             if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
                             if (yolo_workers[i]) yolo_workers[i]->StartThread();
                             if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
-                            // *** ADDED: Start the CropAndEncodeWorker thread here ***
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StartThread();
                         }
 
@@ -1185,49 +1183,72 @@ int main(int argc, char **args) {
                             );
                         }
                     } else {
-                        // --- STOP STREAMING ---
+                        // STOP STREAMING
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
 
-                        // 1. Stop the acquisition threads from producing more work
+                        // 1. Stop the acquisition threads first.
+                        // This prevents new frames from entering the pipeline.
                         for (auto &t : camera_threads) {
                             if (t.joinable()) t.join();
                         }
                         camera_threads.clear();
                         std::cout << "Acquisition threads joined." << std::endl;
 
-                        // 2. Stop all worker threads
+                        // 2. Signal all worker threads to stop processing NEW data from their queues.
+                        // They will finish processing whatever is currently in their queue.
                         for (int i = 0; i < num_cameras; i++) {
-                            if (yolo_workers[i]) { yolo_workers[i]->StopThread(); }
-                            if (openGLDisplayWorkers[i]) { openGLDisplayWorkers[i]->StopThread(); }
-                            if (gpuVideoEncoders[i]) { gpuVideoEncoders[i]->StopThread(); }
-                            if (cropAndEncodeWorkers[i]) { cropAndEncodeWorkers[i]->StopThread(); }
+                            if (yolo_workers[i]) yolo_workers[i]->StopThread();
+                            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
+                            if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
+                            if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StopThread();
                         }
-                        // 3. Wait for all workers to complete shutdown
+                        std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
+
+                        // 3. Join and delete workers in REVERSE pipeline order to ensure the pipeline is drained.
                         for (int i = 0; i < num_cameras; i++) {
-                            if (yolo_workers[i]) { delete yolo_workers[i]; }
-                            if (openGLDisplayWorkers[i]) { delete openGLDisplayWorkers[i]; }
-                            if (gpuVideoEncoders[i]) { delete gpuVideoEncoders[i]; }
-                            if (cropAndEncodeWorkers[i]) { delete cropAndEncodeWorkers[i]; }
+                            // Endpoints are first.
+                            if (openGLDisplayWorkers[i]) {
+                                delete openGLDisplayWorkers[i];
+                                openGLDisplayWorkers[i] = nullptr;
+                            }
+
+                            // Flush the crop-and-encode worker BEFORE deleting the YOLO worker that feeds it.
+                            if (cropAndEncodeWorkers[i]) {
+                                std::cout << "Flushing final packets for crop encoder " << cameras_params[i].camera_serial << "..." << std::endl;
+                                cropAndEncodeWorkers[i]->flush_and_close();
+                                delete cropAndEncodeWorkers[i];
+                                cropAndEncodeWorkers[i] = nullptr;
+                            }
+
+                            // Now it's safe to delete the YOLO worker.
+                            if (yolo_workers[i]) {
+                                delete yolo_workers[i];
+                                yolo_workers[i] = nullptr;
+                            }
+
+                            // Finally, flush and close the main video encoder.
+                            if (gpuVideoEncoders[i]) {
+                                std::cout << "Flushing final packets for main encoder " << cameras_params[i].camera_serial << "..." << std::endl;
+                                gpuVideoEncoders[i]->flush_and_close();
+                                delete gpuVideoEncoders[i];
+                                gpuVideoEncoders[i] = nullptr;
+                            }
                         }
+                        
+                        // Clear the worker pointer vectors
                         yolo_workers.clear();
-                        if(openGLDisplayWorkers) delete[] openGLDisplayWorkers;
-                        openGLDisplayWorkers = nullptr;
-                        if(gpuVideoEncoders) delete[] gpuVideoEncoders;
-                        gpuVideoEncoders = nullptr;
-                        if(cropAndEncodeWorkers) delete[] cropAndEncodeWorkers;
-                        cropAndEncodeWorkers = nullptr;
+                        if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
+                        if(gpuVideoEncoders) { delete[] gpuVideoEncoders; gpuVideoEncoders = nullptr; }
+                        if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
+                        std::cout << "Worker threads all cleaned up." << std::endl;
 
-                        std::cout << "Worker threads all cleaned." << std::endl;
-
-                        // 4. Clean up camera SDK resources
+                        // 4. Final resource cleanup (same as before).
                         for (int i = 0; i < num_cameras; i++) {
                             destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
                             delete[] ecams[i].evt_frame;
                             ecams[i].evt_frame = nullptr;
                             check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
                         }
-
-                        // 5. Clean up OpenGL textures
                         for (int i = 0; i < num_cameras; i++) {
                             if (cameras_select[i].stream_on) {
                                 int w = int(cameras_params[i].width / cameras_select[i].downsample);
@@ -1237,8 +1258,6 @@ int main(int argc, char **args) {
                         }
                         if(tex) delete[] tex;
                         tex = nullptr;
-
-                        // CLEAN UP ALL PER-CAMERA RESOURCES
                         for(int i = 0; i < num_cameras; ++i) {
                             camera_resources[i].cleanup();
                         }
@@ -1266,48 +1285,23 @@ int main(int argc, char **args) {
                     if (camera_control->record_video) {
                         // START RECORDING
                         try_start_timer();
-                        // Create and start crop workers only when recording starts
-                        for (int i = 0; i < num_cameras; ++i) {
-                            if (cameras_select[i].crop_and_encode) {
-                                std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
-                                cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
-                                    name.c_str(),
-                                    &cameras_params[i],
-                                    encoder_config->folder_name,
-                                    *camera_resources[i].recycle_queue
-                                );
-                                if (yolo_workers[i]) {
-                                    yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
-                                }
-                                cropAndEncodeWorkers[i]->StartThread();
-                            }
-                        }
                         std::cout << "Recording toggled ON." << std::endl;
                     } else {
                         // STOP RECORDING
                         try_stop_timer();
-                        for (int i = 0; i < num_cameras; ++i) {
-                            if (cropAndEncodeWorkers[i]) {
-                                cropAndEncodeWorkers[i]->StopThread();
-                                delete cropAndEncodeWorkers[i];
-                                cropAndEncodeWorkers[i] = nullptr;
-                                if(yolo_workers[i]) {
-                                    yolo_workers[i]->SetCropAndEncodeWorker(nullptr);
-                                }
-                            }
-                        }
-                        std::cout << "Recording toggled OFF." << std::endl;
+                        std::cout << "Recording toggled OFF. Encoders will stop receiving frames." << std::endl;
                     }
                 }
                 
                 if (!camera_control->subscribe) {
-                    // ImGui::EndDisabled();
+                    // ImGui::EndDisabled(); // This can be uncommented if you want to disable the button
                 }
             }
 
             ImGui::PopStyleColor(1);
-            }
-            ImGui::End();
+        }
+        ImGui::End();
+
 
         if (camera_control->subscribe) {
             for (int i = 0; i < num_cameras; i++) {
@@ -1424,8 +1418,6 @@ int main(int argc, char **args) {
                     }
                 }
             }
-
-
         }
 
         if (camera_control->open && show_realtime_plot) {
@@ -1472,15 +1464,24 @@ int main(int argc, char **args) {
         delete[] ecams;
     }
 
+    std::cout << "GUI closed, initiating cleanup..." << std::endl;
+
+    // 1. Signal the ENet thread to stop
     quite_enet = true;
-    enet_thread.join();
 
-    image_writer->StopThread();
-    delete image_writer;
+    // 2. Join the ENet thread before exiting
+    if (enet_thread.joinable()) {
+        std::cout << "Waiting for ENet thread to finish..." << std::endl;
+        enet_thread.join();
+        std::cout << "ENet thread joined successfully." << std::endl;
+    }
 
-    // Cleanup
+    // 3. Cleanup any remaining resources
     gx_cleanup(window);
-    cudaDeviceReset();
-    enet_release(&server);
-    return 0;
+
+    // 4. Free allocated memory
+    free(window->glsl_version);
+    free(window);
+
+    std::cout << "Cleanup completed, exiting..." << std::endl;
 }

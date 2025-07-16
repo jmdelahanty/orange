@@ -94,22 +94,47 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         ck(cudaSetDevice(camera_params_->gpu_id));
     }
 
+    // Always flush and close the writer and encoder.
+    flush_and_close();
+
+    // Explicitly delete the encoder to release its resources.
+    if (encoder_) {
+        delete encoder_;
+        encoder_ = nullptr;
+    }
+
+    if (d_blank_frame_) cudaFree(d_blank_frame_);
+    if (m_stream) cudaStreamDestroy(m_stream);
+}
+
+void CropAndEncodeWorker::flush_and_close() {
+    std::cout << "[CropAndEncodeWorker] Flushing and closing for " << threadName << std::endl;
+
+    if (encoder_) {
+        std::vector<std::vector<uint8_t>> packets;
+        encoder_->EndEncode(packets);
+        for (auto& p : packets) {
+            // Use the next available frame ID for flushed frames
+            writer_.video->push_packet(p.data(), static_cast<int>(p.size()), ++last_frame_id_used_); // Corrected line
+        }
+        std::cout << "[CropAndEncodeWorker] Encoder flushed." << std::endl;
+    }
+
     if (writer_.video) {
         writer_.video->quit_thread();
         writer_.video->join_thread();
         delete writer_.video;
+        writer_.video = nullptr;
+        std::cout << "[CropAndEncodeWorker] Video writer closed." << std::endl;
     }
 
     if (writer_.metadata && writer_.metadata->is_open()) {
         writer_.metadata->close();
         delete writer_.metadata;
+        writer_.metadata = nullptr;
     }
-
-    if (d_blank_frame_) cudaFree(d_blank_frame_);
-    
-    if (encoder_) delete encoder_;
-    if (m_stream) cudaStreamDestroy(m_stream);
 }
+
 
 bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     if (!entry) { // Handle null entry case first
@@ -166,6 +191,10 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
         encoder_->EncodeFrame(packets);
         for (auto& p : packets) {
             writer_.video->push_packet(p.data(), static_cast<int>(p.size()), entry->recording_frame_id);
+            // Keep track of the highest frame ID we've sent
+            if (entry->recording_frame_id > last_frame_id_used_) {
+                last_frame_id_used_ = entry->recording_frame_id;
+            }
         }
 
         // Write metadata, handling the case with no detections

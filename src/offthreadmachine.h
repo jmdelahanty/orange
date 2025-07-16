@@ -1,41 +1,45 @@
+// offthreadmachine.h – revised header to match new lifecycle logic
 #pragma once
 
+#include <atomic>
+
 #if defined(__GNUC__)
-    #include <pthread.h>
-    #define THREAD_HANDLE pthread_t
-    #define THREAD_FUNCTION void*
+#  include <pthread.h>
+#  define THREAD_HANDLE pthread_t
+#  define THREAD_FUNCTION void*
 #else
-	#include <windows.h>
-    #define THREAD_HANDLE HANDLE
-    #define THREAD_FUNCTION  DWORD WINAPI
+#  include <windows.h>
+#  define THREAD_HANDLE HANDLE
+#  define THREAD_FUNCTION DWORD WINAPI
 #endif
 
-
-class COffThreadMachine
-{
+class COffThreadMachine {
 public:
-	COffThreadMachine(const char* tName); // thread name
-	virtual ~COffThreadMachine();
+    explicit COffThreadMachine(const char *tName = nullptr);
+    virtual ~COffThreadMachine();
 
+    // optional: fix CPU affinity (‑1 ⇒ no affinity)
     void SetCPU(int cpu) { cpuToUse = cpu; }
-	int StartThread(const char* tName = NULL);
-	void StopThread();
-	bool IsMachineOn() const { return threadOn; }
+
+    // start/stop helpers; returns 0 on success, EEXIST if already running
+    int  StartThread(const char *tName = nullptr);
+    void StopThread();
+
+    // read‑only helpers
+    bool IsMachineOn() const { return threadOn.load(std::memory_order_acquire); }
 
 protected:
-	char threadName[64];
+    char threadName[64]{}; // NUL‑terminated label for debugging / naming
 
 private:
-	static THREAD_FUNCTION MachineThread(void*);	
+    static THREAD_FUNCTION MachineThread(void *);
 
-private: 
-	// overide these 2 members:
-	virtual void ThreadRunning() = 0; // the body to run
-	virtual void DoStopThread(); // Called by Stop(), makes extra signal to stop ThreadRunning() if not using IsMachineOn().
+    // derive these two in subclasses
+    virtual void ThreadRunning() = 0; // main body
+    virtual void DoStopThread();      // extra signal if needed
 
-private:
-	bool threadOn;
-	THREAD_HANDLE threadHandle;
-    int cpuToUse;  // cpu number is 0-based in CPU_SET. -1: not setting affinity
-	
+    // data
+    std::atomic<bool> threadOn{false}; // true while thread should stay alive
+    THREAD_HANDLE      threadHandle{}; // 0 / nullptr when not running
+    int                cpuToUse = -1;  // 0‑based CPU#, ‑1 ⇒ no affinity
 };

@@ -238,9 +238,13 @@ T* CThreadWorker<T>::GetObjectFromQueueIn()
 template<typename T>
 void CThreadWorker<T>::ThreadRunning()
 {
-    printf("Child Thread Start %d\n", id);
-    // FIX: Use 'this->' to explicitly qualify member function calls inside a template
-    while (this->IsMachineOn())
+    printf("Child Thread Start %d (%s)\n", id, threadName);
+
+    // ====================================================================
+    // MODIFICATION: The main worker loop now drains the queue on shutdown.
+    // It continues as long as the thread is "on" OR there are items left.
+    // ====================================================================
+    while (this->IsMachineOn() || this->GetCountQueueInSize() > 0)
     {
         T* f = this->GetObjectFromQueueIn();
         if (f)
@@ -253,6 +257,12 @@ void CThreadWorker<T>::ThreadRunning()
         }
         else
         {
+            // If the thread is supposed to be off and the queue is empty, exit.
+            if (!this->IsMachineOn()) {
+                break;
+            }
+            
+            // Otherwise, wait for work.
 #if defined(__GNUC__)
             usleep(interval);
 #else
@@ -260,23 +270,5 @@ void CThreadWorker<T>::ThreadRunning()
 #endif
         }
     }
-
-    // Process remaining items in the queue after thread is stopped
-    while (true)
-    {
-        T* f = this->GetObjectFromQueueIn();
-        if (f)
-        {
-            if (this->WorkerFunction(f)) // Check the return value
-            {
-                 this->PutObjectToQueueOut(f);
-            }
-            myWork++;
-        }
-        else
-        {
-            break;
-        }
-    }
-    printf("Child Thread DONE %d\n", id);
+    printf("Child Thread DONE %d (%s)\n", id, threadName);
 }
