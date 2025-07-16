@@ -32,6 +32,5 @@ private:
     std::ofstream *metadata;
     SafeQueue<AVPacket*> m_queue; // Queue for packets to be written
     std::thread m_thread;
-    bool m_quitting;
     void write_thread();
 };

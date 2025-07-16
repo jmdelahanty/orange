@@ -1,8 +1,15 @@
 // src/FFmpegWriter.cpp
 
 #include "FFmpegWriter.h"
+#include <unistd.h>
 
-FFmpegWriter::FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file) : nFps(nFps), m_quitting(false)
+FFmpegWriter::FFmpegWriter(
+    AVCodecID eCodecId,
+    int nWidth,
+    int nHeight,
+    int nFps,
+    const char *szOutFilePath,
+    const char *metadata_file) : nFps(nFps)
 {
     oc = avformat_alloc_context();
     if (!oc) {
@@ -85,7 +92,7 @@ void FFmpegWriter::create_thread()
 
 void FFmpegWriter::quit_thread()
 {
-    m_quitting = true;
+    m_queue.push(nullptr); // Push a nullptr to signal the thread to quit
 };
 
 void FFmpegWriter::join_thread()
@@ -107,27 +114,20 @@ void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 // off-thread saving
 void FFmpegWriter::write_thread()
 {
-    while(!m_quitting) {
+    while (true) {
         AVPacket* pkt = nullptr;
-        if(m_queue.pop(pkt)) {
-            if(pkt) {
-                write_one_pkt(pkt);
-                av_packet_free(&pkt);
-            }
-        }
-    }
-
-    // check if there is more in the queue
-    while(true) {
-        AVPacket* pkt = nullptr;
-        if (!m_queue.pop(pkt)) {
-            break;
-        }
-        else {
+        if (m_queue.pop(pkt)) {
             if (pkt) {
                 write_one_pkt(pkt);
                 av_packet_free(&pkt);
+            } else {
+                // nullptr is the sentinel, break the loop
+                break;
             }
+        }
+        // Add a small sleep to prevent busy-waiting if the queue is empty
+        else {
+            usleep(100);
         }
     }
 }

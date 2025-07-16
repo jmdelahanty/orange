@@ -63,10 +63,19 @@ CropAndEncodeWorker::CropAndEncodeWorker(const char* name, CameraParams* camera_
         const NvEncInputFrame *tempFrame = encoder_->GetNextInputFrame();
         encoder_pitch_ = tempFrame->pitch;
 
-        // ADDED: Allocate and initialize the blank frame buffer
+        // Allocate and initialize the blank frame buffer
         const size_t encoder_buffer_size = static_cast<size_t>(encoder_pitch_) * 256 * 3 / 2;
         ck(cudaMalloc(&d_blank_frame_, encoder_buffer_size));
-        ck(cudaMemsetAsync(d_blank_frame_, 128, encoder_buffer_size, m_stream)); // Fill with neutral gray
+
+        // --- Correct YUV Initialization for a Black Frame ---
+        // 1. Set the Y (luma) plane to 0 for black.
+        size_t luma_size = static_cast<size_t>(encoder_pitch_) * 256;
+        ck(cudaMemsetAsync(d_blank_frame_, 0, luma_size, m_stream));
+
+        // 2. Set the UV (chroma) plane to 128 for neutral color.
+        size_t chroma_size = static_cast<size_t>(encoder_pitch_) * 256 / 2;
+        unsigned char* d_uv_plane = d_blank_frame_ + luma_size;
+        ck(cudaMemsetAsync(d_uv_plane, 128, chroma_size, m_stream));
 
     } catch (const std::exception& e) {
         std::cerr << "[CropAndEncodeWorker] Failed to initialize encoder: " << e.what() << std::endl;
@@ -141,11 +150,18 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ck(cudaMemset2DAsync(d_uv_plane_dst, encIn->pitch, 128, CROP_W, CROP_H / 2, m_stream));
         } else {
             // NO DETECTION PATH
-            // Copy the pre-made blank frame directly to the encoder's input buffer.
-            ck(cudaMemcpyAsync(d_nv12_dst, d_blank_frame_, 256 * 256 * 3 / 2, cudaMemcpyDeviceToDevice, m_stream));
+            // Use a 2D memory copy to respect the encoder's buffer pitch.
+            ck(cudaMemcpy2DAsync(d_nv12_dst,             // Destination pointer
+                                 encIn->pitch,           // Destination pitch
+                                 d_blank_frame_,         // Source pointer
+                                 encoder_pitch_,         // Source pitch
+                                 encoder_pitch_,         // Width in bytes to copy (the full pitch)
+                                 256 * 3 / 2,            // Total height for NV12 (Y + UV planes)
+                                 cudaMemcpyDeviceToDevice,
+                                 m_stream));
         }
 
-        // --- ENCODE AND WRITE (This part now runs for every frame) ---
+        // Encode packet and write frame
         std::vector<std::vector<uint8_t>> packets;
         encoder_->EncodeFrame(packets);
         for (auto& p : packets) {
