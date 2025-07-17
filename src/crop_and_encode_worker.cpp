@@ -6,15 +6,27 @@
 #include <nppi_geometry_transforms.h>
 #include <algorithm> // For std::max_element
 
-CropAndEncodeWorker::CropAndEncodeWorker(const char* name, CameraParams* camera_params, const std::string& folder_name, SafeQueue<WORKER_ENTRY*>& recycle_queue)
-    : CThreadWorker(name), camera_params_(camera_params), folder_name_(folder_name), m_recycle_queue(recycle_queue) {
+CropAndEncodeWorker::CropAndEncodeWorker(
+    const char* name,
+    CameraParams* camera_params,
+    const std::string& folder_name,
+    SafeQueue<WORKER_ENTRY*>& recycle_queue,
+    unsigned char* display_buffer_pbo
+):CThreadWorker(name),
+camera_params_(camera_params),
+folder_name_(folder_name),
+m_recycle_queue(recycle_queue),
+d_display_buffer_pbo_(display_buffer_pbo),
+d_cropped_rgba_(nullptr)
+{
 
     std::cout << "[CropAndEncodeWorker] Initializing " << name << " on GPU " << camera_params_->gpu_id << std::endl;
 
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreate(&m_stream));
 
-    // REMOVED: initialize_gpu_debayer is no longer needed here
+    // Allocate buffer for RGBA cropped frame for display
+    ck(cudaMalloc(&d_cropped_rgba_, 256 * 256 * 4));
 
     writer_.video_file = folder_name_ + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
     writer_.keyframe_file = folder_name_ + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.csv";
@@ -127,7 +139,7 @@ void CropAndEncodeWorker::flush_and_close() {
         writer_.video = nullptr;
         std::cout << "[CropAndEncodeWorker] Video writer closed." << std::endl;
     }
-
+    
     if (writer_.metadata && writer_.metadata->is_open()) {
         writer_.metadata->close();
         delete writer_.metadata;
@@ -137,7 +149,7 @@ void CropAndEncodeWorker::flush_and_close() {
 
 
 bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
-    if (!entry) { // Handle null entry case first
+    if (!entry) {
         return false;
     }
 
@@ -145,20 +157,25 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     nppSetStream(m_stream);
 
     try {
-        if (entry->event_ptr) ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+        // Wait for the frame to be ready from the acquisition thread
+        if (entry->event_ptr) {
+            ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+        }
         
         const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
         unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
 
-        pose::Object best_detection{}; // Create a default-initialized detection
+        pose::Object best_detection{};
         bool has_detection = !entry->detections.empty();
 
         if (has_detection) {
-            // --- DETECTION PATH
+            // --- DETECTION PATH ---
+            // Find the detection with the highest confidence
             best_detection = *std::max_element(
                 entry->detections.begin(), entry->detections.end(),
                 [](const pose::Object& a, const pose::Object& b) { return a.prob < b.prob; });
             
+            // Calculate the top-left corner of the 256x256 crop, centered on the detection
             const int CROP_W = 256;
             const int CROP_H = 256;
             float cx = best_detection.rect.x + best_detection.rect.width * 0.5f;
@@ -166,44 +183,67 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             int ix = std::clamp(static_cast<int>(cx) - CROP_W / 2, 0, entry->width - CROP_W);
             int iy = std::clamp(static_cast<int>(cy) - CROP_H / 2, 0, entry->height - CROP_H);
             
-            const unsigned char* d_mono_full = entry->d_image;
+            // --- NEW: LOGIC FOR LIVE DISPLAY ---
+            if (d_display_buffer_pbo_) {
+                // Create a temporary rect for the kernel
+                pose::Rect crop_rect = {(float)ix, (float)iy, (float)CROP_W, (float)CROP_H};
+                
+                // Use the new kernel to crop from the full mono frame and convert to RGBA
+                gpu_crop_and_resize_rgba(
+                    entry->d_image,      // Source: Full-size mono frame
+                    d_cropped_rgba_,     // Destination: Our internal RGBA buffer
+                    entry->width, entry->height,
+                    crop_rect,
+                    CROP_W, CROP_H,
+                    m_stream
+                );
+                
+                // Copy the resulting RGBA crop to the PBO for the GUI to render
+                ck(cudaMemcpyAsync(d_display_buffer_pbo_, d_cropped_rgba_, CROP_W * CROP_H * 4, cudaMemcpyDeviceToDevice, m_stream));
+            }
             
-            ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch, d_mono_full + (iy * entry->width + ix),
+            // --- EXISTING ENCODING LOGIC ---
+            // Copy the mono crop region to the Y plane of the encoder's input buffer
+            ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch, entry->d_image + (iy * entry->width + ix),
                                  entry->width, CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
             
+            // Fill the UV plane with a neutral gray (128)
             unsigned char* d_uv_plane_dst = d_nv12_dst + encIn->pitch * CROP_H;
             ck(cudaMemset2DAsync(d_uv_plane_dst, encIn->pitch, 128, CROP_W, CROP_H / 2, m_stream));
+
         } else {
-            // NO DETECTION PATH
-            // Use a 2D memory copy to respect the encoder's buffer pitch.
-            ck(cudaMemcpy2DAsync(d_nv12_dst,             // Destination pointer
-                                 encIn->pitch,           // Destination pitch
-                                 d_blank_frame_,         // Source pointer
-                                 encoder_pitch_,         // Source pitch
-                                 encoder_pitch_,         // Width in bytes to copy (the full pitch)
-                                 256 * 3 / 2,            // Total height for NV12 (Y + UV planes)
-                                 cudaMemcpyDeviceToDevice,
-                                 m_stream));
+            // --- NO DETECTION PATH ---
+            // If the PBO pointer is valid, copy the blank frame to it for display
+            if (d_display_buffer_pbo_) {
+                 ck(cudaMemsetAsync(d_display_buffer_pbo_, 0, 256 * 256 * 4, m_stream)); // Black RGBA frame
+            }
+            
+            // Copy the pre-made blank YUV frame to the encoder's input buffer
+            ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch, d_blank_frame_,
+                                 encoder_pitch_, encoder_pitch_, 256 * 3 / 2,
+                                 cudaMemcpyDeviceToDevice, m_stream));
         }
 
-        // Encode packet and write frame
+        // --- COMMON LOGIC ---
         std::vector<std::vector<uint8_t>> packets;
         encoder_->EncodeFrame(packets);
         for (auto& p : packets) {
             writer_.video->push_packet(p.data(), static_cast<int>(p.size()), entry->recording_frame_id);
-            // Keep track of the highest frame ID we've sent
             if (entry->recording_frame_id > last_frame_id_used_) {
                 last_frame_id_used_ = entry->recording_frame_id;
             }
         }
 
-        // Write metadata, handling the case with no detections
+        // Write metadata
         if (writer_.metadata && writer_.metadata->is_open()) {
             *writer_.metadata << entry->recording_frame_id << ',' << entry->timestamp << ','
                               << entry->timestamp_sys << ',' << (has_detection ? best_detection.prob : 0.0f) << ','
                               << (has_detection ? best_detection.rect.x : 0.0f) << ',' << (has_detection ? best_detection.rect.y : 0.0f) << ','
                               << (has_detection ? best_detection.rect.width : 0.0f) << ',' << (has_detection ? best_detection.rect.height : 0.0f) << '\n';
         }
+
+        // Synchronize the stream to ensure all copies (to PBO and encoder) are complete
+        ck(cudaStreamSynchronize(m_stream));
 
     } catch (const std::exception& e) {
         std::cerr << "[CropAndEncodeWorker] Exception processing frame " << entry->frame_id

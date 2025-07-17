@@ -60,7 +60,9 @@ FFmpegWriter::~FFmpegWriter()
     // (GPUVideoEncoder::close_writer) *before* this destructor is called.
     // This ensures all packets are processed before we write the trailer.
     if (oc) {
-        av_write_frame(oc, NULL); // Flush remaining packets
+        // Send a NULL packet to muxer for flushing any internally buffered frames
+        // and ensure that last frame is written
+        av_interleaved_write_frame(oc, NULL);
         av_write_trailer(oc);
         avio_close(oc->pb);
         avformat_free_context(oc);
@@ -104,7 +106,7 @@ void FFmpegWriter::join_thread()
 
 void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 {
-    int ret = av_write_frame(oc, pkt);
+    int ret = av_interleaved_write_frame(oc, pkt);
     if (ret < 0) {
         std::cout << "FFMPEG: Error while writing video frame" << std::endl;
     }

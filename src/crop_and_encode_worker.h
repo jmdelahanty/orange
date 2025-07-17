@@ -12,7 +12,13 @@
 
 class CropAndEncodeWorker : public CThreadWorker<WORKER_ENTRY> {
 public:
-    CropAndEncodeWorker(const char* name, CameraParams *camera_params, const std::string& folder_name, SafeQueue<WORKER_ENTRY*>& recycle_queue);
+    CropAndEncodeWorker(
+        const char* name,
+        CameraParams *camera_params,
+        const std::string& folder_name,
+        SafeQueue<WORKER_ENTRY*>& recycle_queue,
+        unsigned char* display_buffer_pbo
+    );
     ~CropAndEncodeWorker() override;
 
     void flush_and_close();
@@ -29,6 +35,8 @@ private:
     unsigned char* d_cropped_bgr_ = nullptr;
     unsigned char* d_yuv_buffer_ = nullptr;
     unsigned char* d_blank_frame_ = nullptr;
+    unsigned char* d_cropped_rgba_ = nullptr;
+    unsigned char* d_display_buffer_pbo_ = nullptr;
     int encoder_pitch_ = 0;
     cudaStream_t m_stream = nullptr;
     int frame_counter_ = 0;

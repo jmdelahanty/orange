@@ -131,6 +131,39 @@ void gpu_crop_and_resize(
     if(err != cudaSuccess) printf("crop_and_resize_kernel failed: %s\n", cudaGetErrorString(err));
 }
 
+__global__ void crop_and_resize_rgba_kernel(
+    const unsigned char* d_src,
+    unsigned char* d_dst_rgba,
+    int src_width, int src_height,
+    int crop_x, int crop_y, int crop_w, int crop_h,
+    int dst_width, int dst_height
+) {
+    int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (dst_x >= dst_width || dst_y >= dst_height) return;
+
+    float scale_x = (float)crop_w / dst_width;
+    float scale_y = (float)crop_h / dst_height;
+
+    float src_x_f = crop_x + dst_x * scale_x;
+    float src_y_f = crop_y + dst_y * scale_y;
+
+    src_x_f = fmaxf(0.0f, fminf(src_width - 1.0f, src_x_f));
+    src_y_f = fmaxf(0.0f, fminf(src_height - 1.0f, src_y_f));
+
+    int src_x = (int)src_x_f;
+    int src_y = (int)src_y_f;
+
+    unsigned char pixel_value = d_src[src_y * src_width + src_x];
+
+    int dst_idx = (dst_y * dst_width + dst_x) * 4; // Changed to 4 channels
+    d_dst_rgba[dst_idx + 0] = pixel_value; // R
+    d_dst_rgba[dst_idx + 1] = pixel_value; // G
+    d_dst_rgba[dst_idx + 2] = pixel_value; // B
+    d_dst_rgba[dst_idx + 3] = 255;         // A (Opaque)
+}
+
 
 __global__ void Mono8ToRGBMonoKernel(unsigned char* dest, const unsigned char* src, int width, int height)
 {
@@ -356,4 +389,40 @@ void launch_interleave_uv_planes(
         //                    shared memory size (0)
         //                                  ^
         //                                stream
+}
+
+void gpu_crop_and_resize_rgba(
+    const unsigned char* d_src,
+    unsigned char* d_dst_rgba,
+    int src_width, int src_height,
+    pose::Rect detection_rect,
+    int dst_width, int dst_height,
+    cudaStream_t stream
+) {
+    // Extract crop region from detection
+    int crop_x = (int)detection_rect.x;
+    int crop_y = (int)detection_rect.y;
+    int crop_w = (int)detection_rect.width;
+    int crop_h = (int)detection_rect.height;
+    
+    // Clamp crop region to source image bounds
+    crop_x = max(0, min(src_width - 1, crop_x));
+    crop_y = max(0, min(src_height - 1, crop_y));
+    crop_w = min(crop_w, src_width - crop_x);
+    crop_h = min(crop_h, src_height - crop_y);
+    
+    dim3 block(16, 16);
+    dim3 grid((dst_width + block.x - 1) / block.x, 
+              (dst_height + block.y - 1) / block.y);
+    
+    // Call the RGBA version of the kernel
+    crop_and_resize_rgba_kernel<<<grid, block, 0, stream>>>(
+        d_src, d_dst_rgba,
+        src_width, src_height,
+        crop_x, crop_y, crop_w, crop_h,
+        dst_width, dst_height
+    );
+    
+    cudaError_t err = cudaGetLastError();
+    if(err != cudaSuccess) printf("crop_and_resize_rgba_kernel failed: %s\n", cudaGetErrorString(err));
 }

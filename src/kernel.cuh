@@ -30,6 +30,16 @@ void launch_interleave_uv_planes(
     int width, int height, int pitch,
     cudaStream_t stream);
 
+void gpu_crop_and_resize_rgba(
+    const unsigned char* d_src,
+    unsigned char* d_dst_rgba, // Changed from d_dst_bgr
+    int src_width, int src_height,
+    pose::Rect detection_rect,
+    int dst_width, int dst_height,
+    cudaStream_t stream
+);
+
+
 void launch_mono_to_rgb_kernel(unsigned char* dst_rgb, const unsigned char* src_mono, int width, int height, cudaStream_t stream);
 
 #endif // KERNEL_H

@@ -68,6 +68,7 @@ int main(int argc, char **args) {
     CameraEmergent *ecams;
     std::vector<std::thread> camera_threads;
     GL_Texture *tex;
+    GL_Texture* crop_tex;
     int num_cameras = 0;
     int stream_downsample = 1;
     CameraControl *camera_control = new CameraControl{false, false, false, false};
@@ -347,6 +348,9 @@ int main(int argc, char **args) {
                             int camera_height = int(cameras_params[i].height / cameras_select[i].downsample);
                             setup_texture(tex[i], camera_width, camera_height);
                         }
+                        if (cameras_select[i].crop_and_encode) {
+                            upload_texture_from_pbo(crop_tex[i], 256, 256);
+                        }
                     }
             
                     // 4. CREATE WORKER THREAD OBJECTS (ENCODERS, YOLO, DISPLAY)
@@ -531,8 +535,8 @@ int main(int argc, char **args) {
         }
 
         if (ImGui::Begin("Orange", nullptr, ImGuiWindowFlags_MenuBar)) {
-            // ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
-            //            ImGui::GetIO().Framerate);
+            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
+                       ImGui::GetIO().Framerate);
 
             if (camera_control->open) {
                 // ImGui::BeginDisabled();
@@ -1084,22 +1088,37 @@ int main(int argc, char **args) {
                             std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
                             camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
                         }
+                        // Create worker thread objects and GPU textures
                         openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
                         gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
                         cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
                         tex = new GL_Texture[num_cameras];
+                        crop_tex = new GL_Texture[num_cameras];
                         yolo_workers.assign(num_cameras, nullptr);
+
+                        // Initialize allworker pointers to nullptr
+                        // 
                         for(int i = 0; i < num_cameras; ++i) {
                             openGLDisplayWorkers[i] = nullptr;
                             gpuVideoEncoders[i] = nullptr;
                             cropAndEncodeWorkers[i] = nullptr;
                         }
                         cudaSetDevice(display_gpu_id);
+
+                        // Allocate main textures for each camera's OpenGL display
                         for (int i = 0; i < num_cameras; i++) {
                             if (cameras_select[i].stream_on) {
                                 int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
                                 int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
                                 setup_texture(tex[i], w, h);
+                            }
+                        }
+
+                        // Setup cropped textures for each crop/encode worker
+                        for (int i = 0; i < num_cameras; i++) {
+                            if (cameras_select[i].crop_and_encode) {
+                                // The crop view has a fixed size of 256x256
+                                setup_texture(crop_tex[i], 256, 256);
                             }
                         }
 
@@ -1135,7 +1154,8 @@ int main(int argc, char **args) {
                                     name.c_str(),
                                     &cameras_params[i],
                                     encoder_config->folder_name,
-                                    *camera_resources[i].recycle_queue
+                                    *camera_resources[i].recycle_queue,
+                                    crop_tex[i].cuda_buffer
                                 );
                                 // Immediately link it to the YOLO worker if it exists
                                 if (yolo_workers[i]) {
@@ -1152,7 +1172,7 @@ int main(int argc, char **args) {
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StartThread();
                         }
 
-                        // PREPARE CAMERAS (no changes here)
+                        // PREPARE CAMERAS
                         for (int i = 0; i < num_cameras; i++) {
                             camera_open_stream(&ecams[i].camera, &cameras_params[i]);
                             ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
@@ -1165,7 +1185,7 @@ int main(int argc, char **args) {
                             camera_control->sync_camera = true;
                         }
 
-                        // Start acquisition threads (no changes here)
+                        // Start acquisition threads
                         for (int i = 0; i < num_cameras; i++) {
                             camera_threads.emplace_back(
                                 &acquire_frames,
@@ -1242,22 +1262,31 @@ int main(int argc, char **args) {
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
 
-                        // 4. Final resource cleanup (same as before).
+                        // 4. Final resource cleanup
                         for (int i = 0; i < num_cameras; i++) {
                             destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
                             delete[] ecams[i].evt_frame;
                             ecams[i].evt_frame = nullptr;
                             check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
                         }
+
                         for (int i = 0; i < num_cameras; i++) {
                             if (cameras_select[i].stream_on) {
                                 int w = int(cameras_params[i].width / cameras_select[i].downsample);
                                 int h = int(cameras_params[i].height / cameras_select[i].downsample);
                                 clear_upload_and_cleanup(tex[i], w, h);
                             }
+                            // Add this block to clean up the crop textures
+                            if (cameras_select[i].crop_and_encode) {
+                                clear_upload_and_cleanup(crop_tex[i], 256, 256);
+                            }
                         }
+
                         if(tex) delete[] tex;
                         tex = nullptr;
+                        if(crop_tex) delete[] crop_tex;
+                        crop_tex = nullptr;
+
                         for(int i = 0; i < num_cameras; ++i) {
                             camera_resources[i].cleanup();
                         }
@@ -1304,14 +1333,17 @@ int main(int argc, char **args) {
 
 
         if (camera_control->subscribe) {
+            // Upload the texture data from the PBOs to the GPU textures
             for (int i = 0; i < num_cameras; i++) {
                 if (cameras_select[i].stream_on) {
                     int camera_width = int(cameras_params[i].width / cameras_select[i].downsample);
                     int camera_height = int(cameras_params[i].height / cameras_select[i].downsample);
                     upload_texture_from_pbo(tex[i], camera_width, camera_height);
                 }
+                if (cameras_select[i].crop_and_encode) {
+                    upload_texture_from_pbo(crop_tex[i], 256, 256);
+                }
             }
-
             if (camera_control->record_video) {
                 int64_t start_ns = record_start_time_ns.load();
                 std::string g_formatted_elapsed_time;
@@ -1412,6 +1444,22 @@ int main(int argc, char **args) {
                             ImPlot::PlotImage("##no_image_name", (void *) (intptr_t) tex[i].texture, ImVec2(0, 0),
                                                 ImVec2(cameras_params[i].width, cameras_params[i].height));
                         
+                            ImPlot::EndPlot();
+                            
+                        }
+                        ImGui::End();
+                    }
+                }
+                for (int i = 0; i < num_cameras; i++) {
+                    // Check if the crop and encode feature is enabled for this camera
+                    if (cameras_select[i].crop_and_encode) {
+                        // Create a unique name for the new window
+                        std::string window_name = cameras_params[i].camera_name + " Crop";
+                        ImGui::Begin(window_name.c_str());
+
+                        // Use ImPlot to display the texture, just like the main view
+                        if (ImPlot::BeginPlot("##crop_plot", ImGui::GetContentRegionAvail(), ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
+                            ImPlot::PlotImage("##crop_image", (void*)(intptr_t)crop_tex[i].texture, ImVec2(0, 0), ImVec2(256, 256));
                             ImPlot::EndPlot();
                         }
                         ImGui::End();

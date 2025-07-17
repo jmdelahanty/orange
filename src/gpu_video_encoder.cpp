@@ -97,6 +97,9 @@ static inline void initialize_writer(Writer *writer, CameraParams *camera_params
 
 static inline void write_metadata(std::ofstream *metadata, unsigned long long frame_id, unsigned long long timestamp, uint64_t timestamp_sys)
 {
+    if (timestamp == 0 || timestamp_sys == 0) {
+        std::cerr << "[WARNING] GPUVideoEncoder: Zero timestamp detected for frame " << frame_id << std::endl;
+    }
     NVTX_RANGE("Write_Metadata");
     *metadata << frame_id << "," << timestamp << "," << timestamp_sys << std::endl;
 }
@@ -142,10 +145,16 @@ static inline void close_writer(EncoderContext *encoder, Writer *writer, uint64_
     }
 }
 
-GPUVideoEncoder::GPUVideoEncoder(const char* name, CameraParams *camera_params,
-    const std::string& codec, const std::string& preset, const std::string& tuning,
-    std::string folder_name, bool* encoder_ready_signal,
-    SafeQueue<WORKER_ENTRY*>& recycle_queue)
+GPUVideoEncoder::GPUVideoEncoder(
+    const char* name,
+    CameraParams *camera_params,
+    const std::string& codec,
+    const std::string& preset,
+    const std::string& tuning,
+    std::string folder_name,
+    bool* encoder_ready_signal,
+    SafeQueue<WORKER_ENTRY*>& recycle_queue
+)
 : CThreadWorker<WORKER_ENTRY>(name),
 camera_params(camera_params),
 folder_name(folder_name),
