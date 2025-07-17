@@ -17,7 +17,8 @@ public:
         CameraParams *camera_params,
         const std::string& folder_name,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
-        unsigned char* display_buffer_pbo
+        unsigned char* display_buffer_pbo,
+        CameraControl* camera_control
     );
     ~CropAndEncodeWorker() override;
 
@@ -39,9 +40,11 @@ private:
     unsigned char* d_display_buffer_pbo_ = nullptr;
     int encoder_pitch_ = 0;
     cudaStream_t m_stream = nullptr;
+    cudaStream_t m_display_stream = nullptr;
     int frame_counter_ = 0;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     Debayer debayer_gpu_;
+    CameraControl* camera_control_;
 };
 
 #endif // CROP_AND_ENCODE_WORKER_H

@@ -1155,7 +1155,8 @@ int main(int argc, char **args) {
                                     &cameras_params[i],
                                     encoder_config->folder_name,
                                     *camera_resources[i].recycle_queue,
-                                    crop_tex[i].cuda_buffer
+                                    crop_tex[i].cuda_buffer,
+                                    camera_control
                                 );
                                 // Immediately link it to the YOLO worker if it exists
                                 if (yolo_workers[i]) {
@@ -1344,6 +1345,7 @@ int main(int argc, char **args) {
                     upload_texture_from_pbo(crop_tex[i], 256, 256);
                 }
             }
+            // Draw main camera views
             if (camera_control->record_video) {
                 int64_t start_ns = record_start_time_ns.load();
                 std::string g_formatted_elapsed_time;
@@ -1450,7 +1452,8 @@ int main(int argc, char **args) {
                         ImGui::End();
                     }
                 }
-                for (int i = 0; i < num_cameras; i++) {
+            }
+            for (int i = 0; i < num_cameras; i++) {
                     // Check if the crop and encode feature is enabled for this camera
                     if (cameras_select[i].crop_and_encode) {
                         // Create a unique name for the new window
@@ -1465,7 +1468,6 @@ int main(int argc, char **args) {
                         ImGui::End();
                     }
                 }
-            }
         }
 
         if (camera_control->open && show_realtime_plot) {
