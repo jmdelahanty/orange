@@ -9,11 +9,8 @@
 #include <cuda_runtime.h>
 #include "global.h"
 #include "thread.h"
-#include "opengldisplay.h"
-#include "gpu_video_encoder.h"
-#include "yolo_worker.h"
+#include "preprocess_worker.h"
 #include "image_writer_worker.h"
-#include "crop_and_encode_worker.h"
 #include "cuda_context_debug.h"
 
 static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *ecam, CameraState *camera_state){
@@ -40,9 +37,10 @@ void acquire_frames(
     CameraControl* camera_control,
     PTPParams* ptp_params,
     INDIGOSignalBuilder* indigo_signal_builder,
-    COpenGLDisplay* openGLDisplay,
+    COpenGLDisplay* display_worker,
     GPUVideoEncoder* gpu_encoder,
     YOLOv8Worker* yolo_worker,
+    CropAndEncodeWorker* crop_encode_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources
 ){
@@ -102,7 +100,7 @@ void acquire_frames(
     w.Start();
 
     while (camera_control->subscribe) {
-        NVTX_RANGE_PUSH("Frame_Processing_Loop");
+        NVTX_RANGE_PUSH("Frame_Acquisition_Loop");
 
         WORKER_ENTRY* recycled_entry = nullptr;
         while(resources->recycle_queue->pop(recycled_entry)) {
@@ -136,9 +134,6 @@ void acquire_frames(
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
-            std::cout << "[DEBUG] GUI - Frame: " << camera_state.frame_count 
-              << ", Cam TS: " << ecam->frame_recv.timestamp 
-              << ", Sys TS: " << real_time << std::endl;
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
@@ -174,7 +169,7 @@ void acquire_frames(
             current_entry->timestamp = ecam->frame_recv.timestamp;
             current_entry->timestamp_sys = real_time;
             current_entry->frame_id = camera_state.frame_count;
-            current_entry->has_detections = (camera_select->yolo && yolo_worker);
+            current_entry->has_detections = (camera_select->yolo && preprocessing_worker);
             current_entry->detections_ready.store(false);
 
             if (camera_select->frame_save_state == State_Write_New_Frame && image_writer) {
@@ -183,30 +178,19 @@ void acquire_frames(
                 image_writer->PutObjectToQueueIn(save_job);
             }
             
-            // Create a dispatch counter to track how many workers will process this frame
-            // If the camera is set to stream, record video, or run YOLO detection,
-            // we increment the dispatch count for each active worker.
-            // If no workers are active, we return the frame to the free queue.
-            // This allows us to efficiently manage resources and avoid unnecessary processing.
-            int dispatch_count = 0;
-            if (camera_select->stream_on && openGLDisplay) dispatch_count++;
-            if (camera_control->record_video && gpu_encoder) dispatch_count++;
-            if (camera_select->yolo && yolo_worker) dispatch_count++;
-
-            if (dispatch_count > 0) {
-                current_entry->ref_count.store(dispatch_count);
-
-                if (camera_select->stream_on && openGLDisplay) openGLDisplay->PutObjectToQueueIn(current_entry);
-                if (camera_control->record_video && gpu_encoder) gpu_encoder->PutObjectToQueueIn(current_entry);
-                if (camera_select->yolo && yolo_worker) yolo_worker->PutObjectToQueueIn(current_entry);
-
+            // --- REFACTORED DISPATCH LOGIC ---
+            // The preprocessor is the first consumer, so the ref_count starts at 1.
+            current_entry->ref_count.store(1);
+            
+            if (preprocessing_worker) {
                 if (use_direct_pointer) {
                     current_entry->camera_buffer_ptr = ecam->frame_recv.imagePtr;
                     current_entry->camera_instance = &ecam->camera;
                     current_entry->camera_frame_struct = &ecam->frame_recv;
                 }
-
+                preprocessing_worker->PutObjectToQueueIn(current_entry);
             } else {
+                // Failsafe: if there's no preprocessor, recycle immediately.
                 if (use_direct_pointer) {
                     EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
                 }

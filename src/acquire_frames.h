@@ -12,7 +12,7 @@
 #include "video_capture.h"
 #include <cuda.h>
 
-// Forward declare worker classes to break include cycles
+// Forward declare all consumers
 class COpenGLDisplay;
 class GPUVideoEncoder;
 class YOLOv8Worker;
@@ -26,9 +26,10 @@ void acquire_frames(
     CameraControl* camera_control,
     PTPParams* ptp_params,
     INDIGOSignalBuilder* indigo_signal_builder,
-    COpenGLDisplay* openGLDisplay,
+    COpenGLDisplay* display_worker,
     GPUVideoEncoder* gpu_encoder,
     YOLOv8Worker* yolo_worker,
+    CropAndEncodeWorker* crop_encode_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources
 );

@@ -46,6 +46,11 @@ public:
         if(interval % 1000) intervalMilliSeconds++;
 #endif
     }
+    
+    // New method to link workers together
+    void SetNextWorker(CThreadWorker<T>* worker) {
+        m_pNextWorker = worker;
+    }
 
 protected:
     // The main worker function that derived classes must implement.
@@ -81,6 +86,9 @@ private:
 #ifdef _WIN32
     unsigned int intervalMilliSeconds;
 #endif
+
+    // Pointer to the next worker in the pipeline
+    CThreadWorker<T>* m_pNextWorker = nullptr;
 };
 
 // --- Template Implementation ---
@@ -251,7 +259,14 @@ void CThreadWorker<T>::ThreadRunning()
         {
             if (this->WorkerFunction(f)) // Check the return value
             {
-                this->PutObjectToQueueOut(f);
+                if (m_pNextWorker)
+                {
+                    m_pNextWorker->PutObjectToQueueIn(f);
+                }
+                else
+                {
+                    this->PutObjectToQueueOut(f);
+                }
             }
             myWork++;
         }

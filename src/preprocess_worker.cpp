@@ -1,38 +1,11 @@
-// src/preprocessing_worker.h
+// src/preprocess_worker.cpp
 
-#ifndef PREPROCESSING_WORKER_H
-#define PREPROCESSING_WORKER_H
-
-#include "threadworker.h"
-#include "video_capture.h"
-#include "image_processing.h"
-#include <cuda_runtime.h>
-#include "kernel.cuh" 
+#include "preprocess_worker.h"
+#include "kernel.cuh" // For mono_to_rgb_kernel
 #include "nvtx_profiling.h"
 #include <iostream>
 
-class PreprocessingWorker : public CThreadWorker<WORKER_ENTRY>
-{
-public:
-    inline PreprocessingWorker(
-        const char* name,
-        CameraParams* cam_params,
-        SafeQueue<WORKER_ENTRY*>& recycle_queue);
-    inline ~PreprocessingWorker() override;
-
-protected:
-    inline bool WorkerFunction(WORKER_ENTRY* entry) override;
-
-private:
-    CameraParams* camera_params_;
-    SafeQueue<WORKER_ENTRY*>& m_recycle_queue_;
-    cudaStream_t m_stream;
-    unsigned char* d_rgb_buffer_; 
-};
-
-// --- IMPLEMENTATIONS ---
-
-inline PreprocessingWorker::PreprocessingWorker(
+PreprocessWorker::PreprocessWorker(
     const char* name,
     CameraParams* cam_params,
     SafeQueue<WORKER_ENTRY*>& recycle_queue)
@@ -46,11 +19,13 @@ inline PreprocessingWorker::PreprocessingWorker(
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreate(&m_stream));
 
+    // Allocate the intermediate RGB buffer once.
+    // This buffer will be reused for every frame this worker processes.
     size_t rgb_buffer_size = (size_t)camera_params_->width * camera_params_->height * 3;
     ck(cudaMalloc(&d_rgb_buffer_, rgb_buffer_size));
 }
 
-inline PreprocessingWorker::~PreprocessingWorker()
+PreprocessWorker::~PreprocessWorker()
 {
     std::cout << "[PREPROCESS] DESTRUCTOR for " << threadName << std::endl;
     ck(cudaSetDevice(camera_params_->gpu_id));
@@ -62,19 +37,23 @@ inline PreprocessingWorker::~PreprocessingWorker()
     }
 }
 
-inline bool PreprocessingWorker::WorkerFunction(WORKER_ENTRY* entry)
+bool PreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 {
     if (!entry) {
         return false;
     }
 
-    NVTX_RANGE("PreprocessingWorker");
+    NVTX_RANGE("PreprocessWorker");
     ck(cudaSetDevice(camera_params_->gpu_id));
 
+    // Wait for the raw data to be ready from the acquisition thread.
     if (entry->event_ptr) {
         ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
     }
 
+    // This is the core logic: convert the raw Mono8 frame to a 3-channel RGB frame.
+    // We will need a new kernel or modify an existing one for this. For now, we'll
+    // assume a 'mono_to_rgb_kernel' exists.
     launch_mono_to_rgb_kernel(
         entry->d_processed_rgb,
         entry->d_image,         
@@ -83,8 +62,5 @@ inline bool PreprocessingWorker::WorkerFunction(WORKER_ENTRY* entry)
         m_stream
     );
 
-    return true; // Pass the entry to the output queue for the dispatcher
+    return true; // Return true to pass the entry to the output queue for the dispatcher
 }
-
-
-#endif // PREPROCESSING_WORKER_H
