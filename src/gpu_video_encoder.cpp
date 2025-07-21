@@ -381,7 +381,7 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
             std::cout << "[GPUEncoder] GPU DIRECT Frame " << entry->frame_id 
                       << " - Using camera buffer directly (ZERO COPY!)" << std::endl;
             
-            // Use the GPU Direct pointer directly - NO COPY!
+            // Use the GPU Direct pointer directly!
             frame_original.d_orig = entry->d_image;
             
             ENCODER_CTX_LOG("GPU Direct path - no copy needed", entry->frame_id);

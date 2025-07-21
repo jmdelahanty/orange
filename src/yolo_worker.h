@@ -9,6 +9,7 @@
 #include "video_capture.h"    // For CameraEachSelect, WORKER_ENTRY
 #include "network_base.h"     // For EnetContext, ENetPeer
 #include "shaman.h"           // For shaman::SharedBoxQueue
+#include "velocity_tracker.h" // For VelocityTracker
 #include <chrono>
 #include <vector>
 #include <chrono>
@@ -33,6 +34,12 @@ public:
     void SetDisplayWorker(COpenGLDisplay* display_worker);
     void SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker);
     void DumpNextFrame() { m_dump_next_frame.store(true);}
+    std::vector<TrackedObject> getTrackedObjects() const {
+        return velocity_tracker_.getTrackedObjects();
+    }
+    float getSpeedCmPerSec(int track_id) const {
+        return velocity_tracker_.getSpeedCmPerSec(track_id);
+    }
 
     CameraParams* GetCameraParams() const { return associated_camera_params_; }
 
@@ -72,7 +79,8 @@ private:
 
     shaman::SharedBoxQueue* shaman_ipc_queue_;
     COpenGLDisplay* m_display_worker = nullptr;
-    CropAndEncodeWorker* m_crop_worker = nullptr; // New pointer to the crop worker
+    CropAndEncodeWorker* m_crop_worker = nullptr;
+    VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
 };
 

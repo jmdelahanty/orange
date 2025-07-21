@@ -10,6 +10,7 @@
 #include "gui.h"
 #include <sys/stat.h>
 #include <cuda.h>
+#include <unordered_map>
 #include <cuda_runtime.h>
 #include "NvEncoder/NvCodecUtils.h"
 #include "network_base.h"
@@ -24,6 +25,76 @@
 
 std::vector<YOLOv8Worker*> yolo_workers; // For managing YOLO workers
 ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
+std::vector<SpeedTrackingData> speed_tracking_data;
+
+
+void RenderSpeedGraph(int camera_id, YOLOv8Worker* yolo_worker, SpeedTrackingData& speed_data) {
+    if (!yolo_worker) return;
+    
+    // Get current tracked objects from YOLO worker
+    auto tracked_objects = yolo_worker->getTrackedObjects();
+    
+    // Update speed data WITH CM/S SPEEDS
+    static float app_time = 0.0f;
+    app_time += ImGui::GetIO().DeltaTime;
+    
+    for (const auto& obj : tracked_objects) {
+        // USE CALIBRATED SPEED IN CM/S
+        speed_data.AddSpeedData(obj.track_id, obj.current_speed_physical_units, app_time);
+    }
+    
+    // Clean up old tracks
+    speed_data.ClearOldTracks(app_time);
+    
+    // Render the speed graph
+    ImGui::Separator();
+    ImGui::Text("Object Speed Tracking");
+    
+    if (ImGui::CollapsingHeader("Speed Graph", ImGuiTreeNodeFlags_DefaultOpen)) {
+        static float history = 10.0f;
+        ImGui::SliderFloat("Time Window", &history, 2.0f, 30.0f, "%.1f s");
+        
+        // Make graph size responsive
+        ImVec2 available = ImGui::GetContentRegionAvail();
+        available.y -= 80;
+        ImVec2 graph_size = ImVec2(-1, std::max(250.0f, available.y));
+        
+        // CHANGE PLOT TITLE AND Y-AXIS LABEL
+        if (ImPlot::BeginPlot("Speed (cm/sec)", graph_size)) {
+            // Setup axes
+            ImPlot::SetupAxes("Time (s)", "Speed (cm/s)");
+            ImPlot::SetupAxisLimits(ImAxis_X1, app_time - history, app_time, ImGuiCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, 0, speed_data.max_speed_seen);
+            
+            // Plot each track
+            for (const auto& [track_id, buffer] : speed_data.track_buffers) {
+                if (buffer.Data.size() > 1) {
+                    ImPlot::SetNextLineStyle(speed_data.track_colors.at(track_id), 2.0f);
+                    std::string label = "Track " + std::to_string(track_id);
+                    ImPlot::PlotLine(label.c_str(), 
+                                   &buffer.Data[0].x, &buffer.Data[0].y, 
+                                   buffer.Data.size(), 0, buffer.Offset, 
+                                   2 * sizeof(float));
+                }
+            }
+            
+            ImPlot::EndPlot();
+        }
+        
+        // CHANGE CURRENT SPEEDS DISPLAY TO CM/S
+        if (!tracked_objects.empty()) {
+            ImGui::Text("Current Speeds:");
+            for (const auto& obj : tracked_objects) {
+                ImVec4 color = speed_data.track_colors[obj.track_id];
+                ImGui::TextColored(color, "Track %d: %.2f cm/s", 
+                                 obj.track_id, obj.current_speed_physical_units);
+            }
+        } else {
+            ImGui::TextDisabled("No objects being tracked");
+        }
+    }
+}
+
 
 simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger();
 
@@ -1356,8 +1427,13 @@ int main(int argc, char **args) {
                     auto elapsed_sec = std::chrono::seconds((now_ns - start_ns) / 1'000'000'000);
                     g_formatted_elapsed_time = format_elapsed_time(elapsed_sec);
                 }
+                // Resize speed tracking data
+                if (speed_tracking_data.size() != num_cameras) {
+                        speed_tracking_data.resize(num_cameras);
+                }
 
                 for (int i = 0; i < num_cameras; i++) {
+                    
                     if (cameras_select[i].stream_on) {
                         std::string window_name = cameras_params[i].camera_name;
                         ImGui::Begin(window_name.c_str());
@@ -1386,6 +1462,7 @@ int main(int argc, char **args) {
                         }
             
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
+                        avail_size.y *= 0.5f;
     
                         static ImVec2 bmin(0, 0);
                         static ImVec2 uv0(0, 0);
@@ -1412,6 +1489,10 @@ int main(int argc, char **args) {
                                               
 
                             ImPlot::EndPlot();
+                        }
+
+                        if (cameras_select[i].yolo && i < yolo_workers.size() && yolo_workers[i]) {
+                            RenderSpeedGraph(i, yolo_workers[i], speed_tracking_data[i]);
                         }
                         ImGui::End();
                     }

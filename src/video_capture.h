@@ -31,6 +31,9 @@ typedef struct {
     std::vector<pose::Object> detections;
     bool has_detections;
     std::atomic<bool> detections_ready;
+
+    // Velocity tracking fields
+    bool tracking_ready;
     
     // Reference counting for memory management
     std::atomic<int> ref_count;
