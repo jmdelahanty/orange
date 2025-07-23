@@ -136,9 +136,6 @@ void acquire_frames(
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
-            std::cout << "[DEBUG] GUI - Frame: " << camera_state.frame_count 
-              << ", Cam TS: " << ecam->frame_recv.timestamp 
-              << ", Sys TS: " << real_time << std::endl;
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
