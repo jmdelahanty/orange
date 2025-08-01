@@ -65,7 +65,7 @@ d_cropped_rgba_(nullptr)
 
         encoder_->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
 
-        encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
+        encodeConfig.gopLength = 1; // Keyframe every frame for lossless
         encodeConfig.frameIntervalP = 1;
         initializeParams.frameRateNum = camera_params_->frame_rate;
         initializeParams.frameRateDen = 1;

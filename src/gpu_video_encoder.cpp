@@ -220,7 +220,7 @@ encoder_pitch_(0)
 
         if (tuningInfo == NV_ENC_TUNING_INFO_LOW_LATENCY || tuningInfo == NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY)
         {
-            encodeConfig.gopLength = NVENC_INFINITE_GOPLENGTH;
+            encodeConfig.gopLength = 15;
             encodeConfig.frameIntervalP = 1;
             encodeConfig.rcParams.lowDelayKeyFrameScale = 1;
         }

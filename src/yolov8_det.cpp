@@ -203,13 +203,29 @@ void YOLOv8::postprocess(std::vector<Object>& objs)
     float* scores   = static_cast<float*>(this->host_ptrs[2]);
     int* labels   = static_cast<int*>(this->host_ptrs[3]);
 
+    // FIX: Add a sanity check for the number of detections.
+    // A very large number indicates a mismatch between the model's output
+    // and what the code expects. This often happens when a new engine
+    // with built-in NMS is used with code expecting raw output.
+    int detections_to_process = num_dets[0];
+    const int MAX_REASONABLE_DETS = 1000; // A safe upper limit for detections in one frame.
+
+    if (detections_to_process < 0 || detections_to_process > MAX_REASONABLE_DETS) {
+        std::cerr << "[YOLOv8 Postprocess Warning] Unreasonable number of detections reported: "
+                  << detections_to_process
+                  << ". Clamping to a maximum of " << MAX_REASONABLE_DETS
+                  << ". This strongly suggests an engine model mismatch." << std::endl;
+        detections_to_process = MAX_REASONABLE_DETS;
+    }
+
     float& dw_letterbox    = this->pparam.dw;
     float& dh_letterbox    = this->pparam.dh;
     float& original_img_w = this->pparam.width;
     float& original_img_h = this->pparam.height;
     float& inv_ratio       = this->pparam.ratio;
 
-    for (int i = 0; i < num_dets[0]; i++) {
+    // Use the sanitized number of detections in the loop
+    for (int i = 0; i < detections_to_process; i++) {
         float* ptr = boxes + i * 4;
 
         float x0_letterboxed = *ptr++;
