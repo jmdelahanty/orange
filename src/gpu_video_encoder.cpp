@@ -10,6 +10,7 @@
 #include "NvEncoder/NvEncoder.h"
 #include "cuda_context_debug.h"
 #include "nvtx_profiling.h"
+#include "project.h"
 
 static std::string NvEncFormatToString(NV_ENC_BUFFER_FORMAT format) {
     switch (format) {
@@ -153,13 +154,16 @@ GPUVideoEncoder::GPUVideoEncoder(
     const std::string& tuning,
     std::string folder_name,
     bool* encoder_ready_signal,
-    SafeQueue<WORKER_ENTRY*>& recycle_queue
+    SafeQueue<WORKER_ENTRY*>& recycle_queue,
+    CameraControl* camera_control
 )
 : CThreadWorker<WORKER_ENTRY>(name),
 camera_params(camera_params),
 folder_name(folder_name),
+codec_(codec), // Added this line
 encoder_ready_signal(encoder_ready_signal),
 m_recycle_queue(recycle_queue),
+camera_control_(camera_control),
 m_stream(nullptr),
 d_rgb_temp_(nullptr),
 d_iyuv_temp_(nullptr),
@@ -331,7 +335,43 @@ GPUVideoEncoder::~GPUVideoEncoder()
 
 bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 {
-    if (!entry) return false;
+
+    // A nullptr entry means the queue was empty. Use this opportunity to check for a state change from recording to paused.
+    if (!entry)
+    {
+        if (is_recording_ && !camera_control_->record_video)
+        {
+            std::cout << "[" << this->threadName << "] Recording paused. Finalizing video file..." << std::endl;
+            flush_and_close();
+            is_recording_ = false; // Update our state
+        }
+        return false; // No work to do
+    }
+
+    // If the global flag is true, but we aren't recording yet, it's time to start.
+    if (camera_control_->record_video && !is_recording_)
+    {
+        std::cout << "[" << this->threadName << "] Recording started. Opening new video file..." << std::endl;
+        // Re-initialize the writer to create a new file set for this recording segment.
+        initialize_writer(&writer, camera_params, folder_name, codec_);
+        writer.video->create_thread();
+        is_recording_ = true; // Mark that we are now actively recording.
+    }
+
+    // If recording is globally disabled, skip all processing for this frame.
+    if (!camera_control_->record_video)
+    {
+        // IMPORTANT: We must still manage the lifecycle of the frame entry to avoid leaks.
+        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        {
+            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct)
+            {
+                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+            }
+            m_recycle_queue.push(entry);
+        }
+        return false;
+    }
 
     ck(cudaSetDevice(camera_params->gpu_id));
 

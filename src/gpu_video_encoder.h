@@ -38,7 +38,8 @@ public:
     GPUVideoEncoder(const char* name, CameraParams *camera_params,
         const std::string& codec, const std::string& preset, const std::string& tuning,
         std::string folder_name, bool* encoder_ready_signal,
-        SafeQueue<WORKER_ENTRY*>& recycle_queue);
+        SafeQueue<WORKER_ENTRY*>& recycle_queue,
+        CameraControl* camera_control);
     ~GPUVideoEncoder() override;
 
     double get_fps() const {
@@ -54,6 +55,7 @@ protected:
 private:
     CameraParams* camera_params;
     std::string folder_name;
+    std::string codec_;
 
     FrameGPU frame_original;
     Debayer debayer;
@@ -64,6 +66,9 @@ private:
     int scaled_width_;
     int scaled_height_;
     unsigned char* d_scaled_mono_buffer_;
+
+    CameraControl* camera_control_;
+    bool is_recording_ = false;
 
     // Intermediate GPU buffers for conversion
     unsigned char* d_rgb_temp_;

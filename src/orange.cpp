@@ -452,7 +452,17 @@ int main(int argc, char **args) {
                         if (cameras_select[i].record) {
                             std::string encoder_thread_name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
                             bool encoder_ready_signal = false;
-                            gpuVideoEncoders[i] = new GPUVideoEncoder(encoder_thread_name.c_str(), &cameras_params[i], encoder_config->encoder_codec, encoder_config->encoder_preset, encoder_config->tuning_info, encoder_config->folder_name, &encoder_ready_signal, *camera_resources[i].recycle_queue);
+                            gpuVideoEncoders[i] = new GPUVideoEncoder(
+                                encoder_thread_name.c_str(),
+                                &cameras_params[i],
+                                encoder_config->encoder_codec,
+                                encoder_config->encoder_preset,
+                                encoder_config->tuning_info,
+                                encoder_config->folder_name,
+                                &encoder_ready_signal,
+                                *camera_resources[i].recycle_queue,
+                                camera_control
+                            );
                         }
                     }
             
@@ -1040,7 +1050,7 @@ int main(int argc, char **args) {
             }
 
             if (camera_control->subscribe) {
-                // ImGui::BeginDisabled();
+                ImGui::BeginDisabled();
             }
 
             if (ImGui::Button(camera_control->open ? "Close Camera" : "Open camera")) {
@@ -1120,7 +1130,7 @@ int main(int argc, char **args) {
                 }
             }
             if (camera_control->subscribe) {
-                // ImGui::BeginDisabled();
+                ImGui::EndDisabled();
             }
 
             if (!camera_control->record_video && camera_control->open) {
@@ -1216,7 +1226,17 @@ int main(int argc, char **args) {
                             if (cameras_select[i].record) {
                                 std::string name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
                                 bool ready_signal = false;
-                                gpuVideoEncoders[i] = new GPUVideoEncoder(name.c_str(), &cameras_params[i], encoder_config->encoder_codec, encoder_config->encoder_preset, encoder_config->tuning_info, encoder_config->folder_name, &ready_signal, *camera_resources[i].recycle_queue);
+                                gpuVideoEncoders[i] = new GPUVideoEncoder(
+                                    name.c_str(),
+                                    &cameras_params[i],
+                                    encoder_config->encoder_codec,
+                                    encoder_config->encoder_preset,
+                                    encoder_config->tuning_info,
+                                    encoder_config->folder_name,
+                                    &ready_signal,
+                                    *camera_resources[i].recycle_queue,
+                                    camera_control
+                                );
                             }
 
                             if (cameras_select[i].crop_and_encode) {
@@ -1285,6 +1305,20 @@ int main(int argc, char **args) {
                         }
                         camera_threads.clear();
                         std::cout << "Acquisition threads joined." << std::endl;
+
+                        // RESET PTP STATE
+                        if (ptp_stream_sync) {
+                            ptp_params->ptp_global_time = 0;
+                            ptp_params->ptp_stop_time = 0;
+                            ptp_params->ptp_counter = 0;
+                            ptp_params->ptp_stop_counter = 0;
+                            ptp_params->network_sync = false;
+                            ptp_params->network_set_start_ptp = false;
+                            ptp_params->ptp_stop_reached = false;
+                            ptp_params->ptp_start_reached = false;
+                            camera_control->sync_camera = false; // Also reset this flag
+                            std::cout << "PTPParams state has been reset for the next run." << std::endl;
+                        }
 
                         // 2. Signal all worker threads to stop processing NEW data from their queues.
                         // They will finish processing whatever is currently in their queue.
