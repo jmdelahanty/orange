@@ -1,0 +1,185 @@
+// src/encoder_hw_worker.cpp
+
+#include "encoder_hw_worker.h"
+#include "encoder_preprocess_worker.h"
+#include <iostream>
+#include "global.h"
+#include "NvEncoder/NvEncoder.h"
+#include "cuda_context_debug.h"
+#include "nvtx_profiling.h"
+#include "project.h"
+
+// Helper to initialize the FFmpeg-based file writer
+static inline void initialize_writer_hw(Writer *writer, CameraParams *camera_params, std::string folder_name, std::string encoder_str)
+{
+    writer->video_file = folder_name + "/Cam" + camera_params->camera_serial + ".mp4";
+    writer->metadata_file = folder_name + "/Cam" + camera_params->camera_serial + "_meta.csv";
+    writer->keyframe_file = folder_name + "/Cam" + camera_params->camera_serial + "_keyframe.csv";
+
+    if (encoder_str.find("h264") != std::string::npos) {
+        writer->video = new FFmpegWriter(AV_CODEC_ID_H264, camera_params->width, camera_params->height, camera_params->frame_rate, writer->video_file.c_str(), writer->keyframe_file.c_str());
+    } else {
+        writer->video = new FFmpegWriter(AV_CODEC_ID_HEVC, camera_params->width, camera_params->height, camera_params->frame_rate, writer->video_file.c_str(), writer->keyframe_file.c_str());
+    }
+    writer->metadata = new std::ofstream();
+    writer->metadata->open(writer->metadata_file.c_str());
+     if (!(*writer->metadata))
+    {
+        std::cout << "Metadata file did not open!";
+        return;
+    }
+    *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
+    writer->video->create_thread();
+}
+
+static inline void write_metadata_hw(std::ofstream *metadata, unsigned long long frame_id, unsigned long long timestamp, uint64_t timestamp_sys)
+{
+    if (metadata && metadata->is_open())
+    {
+        *metadata << frame_id << "," << timestamp << "," << timestamp_sys << '\n';
+    }
+}
+
+// CORRECTED CONSTRUCTOR SIGNATURE
+EncoderHwWorker::EncoderHwWorker(
+    const char* name,
+    CameraParams* camera_params,
+    const std::string& codec,
+    const std::string& preset,
+    const std::string& tuning,
+    std::string folder_name,
+    EncoderPreprocessWorker* prep_worker, // Changed from FramePreparationWorker*
+    CameraControl* camera_control
+)
+: CThreadWorker(name),
+  camera_params_(camera_params),
+  folder_name_(folder_name),
+  codec_(codec),
+  m_prep_worker_(prep_worker),
+  camera_control_(camera_control),
+  encoder_(),
+  m_stream(nullptr)
+{
+    ck(cudaSetDevice(camera_params_->gpu_id));
+    ck(cudaStreamCreate(&m_stream));
+    ck(cuCtxGetCurrent(&encoder_.cuContext));
+    encoder_.pEnc = new NvEncoderCuda(encoder_.cuContext, camera_params_->width, camera_params_->height, NV_ENC_BUFFER_FORMAT_NV12);
+    
+    NV_ENC_INITIALIZE_PARAMS initializeParams = { NV_ENC_INITIALIZE_PARAMS_VER };
+    NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
+    initializeParams.encodeConfig = &encodeConfig;
+
+    GUID codecGuid = (codec_ == "hevc") ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
+    
+    GUID presetGuid = NV_ENC_PRESET_P1_GUID; 
+    NV_ENC_TUNING_INFO tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+    std::cout << "[" << this->threadName << "] Using FASTEST encoder settings (P1 Preset, Ultra-Low Latency)." << std::endl;
+
+    encoder_.pEnc->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
+    
+    initializeParams.frameRateNum = camera_params_->frame_rate;
+    initializeParams.enablePTD = 1;
+    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+    encodeConfig.rcParams.averageBitRate = 2000000;
+    encodeConfig.rcParams.maxBitRate = 10000000;
+    encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.averageBitRate;
+    encodeConfig.gopLength = camera_params_->frame_rate;
+    encodeConfig.frameIntervalP = 1;
+    encodeConfig.rcParams.lowDelayKeyFrameScale = 1;
+    encodeConfig.frameIntervalP = 0;
+
+    if (!camera_params_->color) {
+        std::cout << "[" << this->threadName << "] Mono camera detected, enabling monoChromeEncoding." << std::endl;
+        encodeConfig.monoChromeEncoding = 1;
+    }
+
+    encoder_.pEnc->CreateEncoder(&initializeParams);
+    encoder_.pEnc->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
+
+    initialize_writer_hw(&writer_, camera_params_, folder_name_, codec_);
+}
+
+EncoderHwWorker::~EncoderHwWorker()
+{
+    flush_and_close();
+    if (encoder_.pEnc) {
+        delete encoder_.pEnc;
+        encoder_.pEnc = nullptr;
+    }
+    if (m_stream) {
+        cudaStreamDestroy(m_stream);
+        m_stream = nullptr;
+    }
+}
+
+void EncoderHwWorker::flush_and_close()
+{
+    if (encoder_.pEnc) {
+        encoder_.pEnc->EndEncode(encoder_.vPacket);
+        for (auto &packet : encoder_.vPacket)
+        {
+            writer_.video->push_packet(packet.data(), (int)packet.size(), ++last_recording_frame_id_);
+        }
+    }
+
+    if (writer_.video) {
+        writer_.video->quit_thread();
+        writer_.video->join_thread();
+        delete writer_.video;
+        writer_.video = nullptr;
+    }
+    if (writer_.metadata && writer_.metadata->is_open()) {
+        writer_.metadata->close();
+        delete writer_.metadata;
+        writer_.metadata = nullptr;
+    }
+}
+
+
+// CORRECTED WORKER FUNCTION
+bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
+{
+    if (!entry) {
+        return false;
+    }
+
+    ck(cudaSetDevice(camera_params_->gpu_id));
+
+    try {
+        const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
+
+        NvEncoderCuda::CopyToDeviceFrame(
+            encoder_.cuContext,
+            entry->d_prepared_frame, // Use the correct member name
+            encoderInputFrame->pitch, // Get the pitch directly from the encoder's input frame
+            (CUdeviceptr)encoderInputFrame->inputPtr,
+            encoderInputFrame->pitch,
+            encoder_.pEnc->GetEncodeWidth(),
+            encoder_.pEnc->GetEncodeHeight(),
+            CU_MEMORYTYPE_DEVICE,
+            encoderInputFrame->bufferFormat,
+            encoderInputFrame->chromaOffsets,
+            encoderInputFrame->numChromaPlanes
+        );
+
+        encoder_.pEnc->EncodeFrame(encoder_.vPacket);
+        
+        for (auto& packet : encoder_.vPacket) {
+            writer_.video->push_packet(packet.data(), (int)packet.size(), entry->recording_frame_id);
+        }
+
+        write_metadata_hw(writer_.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
+        last_recording_frame_id_ = entry->recording_frame_id;
+
+    } catch (const std::exception& e) {
+        std::cerr << "[" << threadName << "] Exception: " << e.what() << std::endl;
+    }
+    
+    // The lightweight ENCODER_WORKER_ENTRY doesn't have a ref_count.
+    // Its only job is to be returned to the preprocess worker's free pool.
+    if (m_prep_worker_) {
+        m_prep_worker_->free_encoder_entries_.push(entry);
+    }
+
+    return false;
+}
