@@ -34,12 +34,23 @@ FFmpegWriter::FFmpegWriter(
     }
     vs->id = 0;
 
+    // Use standard MPEG time base for better compatibility
+    vs->time_base = AVRational{1, 90000};
+    vs->r_frame_rate = AVRational{nFps, 1};
+
     // Set video parameters
     AVCodecParameters *vpar = vs->codecpar;
     vpar->codec_id = fmt->video_codec;
     vpar->codec_type = AVMEDIA_TYPE_VIDEO;
     vpar->width = nWidth;
     vpar->height = nHeight;
+
+    // Set codec tags for Apple compatibility
+    if (vpar->codec_id == AV_CODEC_ID_H264) {
+        vpar->codec_tag = MKTAG('a', 'v', 'c', '1');
+    } else if (vpar->codec_id == AV_CODEC_ID_HEVC) {
+        vpar->codec_tag = MKTAG('h', 'v', 'c', '1');
+    }
 
     // Everything is ready. Now open the output stream.
     if (avio_open(&oc->pb, szOutFilePath, AVIO_FLAG_WRITE) < 0) {
@@ -77,10 +88,16 @@ void FFmpegWriter::push_packet(uint8_t* pData, int nBytes, int nPts)
         return;
     }
     memcpy(pkt->data, pData, nBytes);
-    pkt->pts = av_rescale_q(nPts, AVRational {1, nFps}, vs->time_base);
-    // No B-frames
+    
+    // Use sequential counter instead of passed-in PTS to ensure proper playback
+    pkt->pts = av_rescale_q(sequential_frame_counter_++, AVRational{1, nFps}, vs->time_base);
     pkt->dts = pkt->pts;
     pkt->stream_index = vs->index;
+    
+    // Add duration for each frame
+    pkt->duration = av_rescale_q(1, AVRational{1, nFps}, vs->time_base);
+    
+    // Check for keyframe
     if(!memcmp(pData, "\x00\x00\x00\x01\x67", 5)) {
         pkt->flags |= AV_PKT_FLAG_KEY;
     }
@@ -90,19 +107,19 @@ void FFmpegWriter::push_packet(uint8_t* pData, int nBytes, int nPts)
 void FFmpegWriter::create_thread()
 {
     m_thread = std::thread(&FFmpegWriter::write_thread, this);
-};
+}
 
 void FFmpegWriter::quit_thread()
 {
     m_queue.push(nullptr); // Push a nullptr to signal the thread to quit
-};
+}
 
 void FFmpegWriter::join_thread()
 {
     if (m_thread.joinable()) {
         m_thread.join();
     }
-};
+}
 
 void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 {
@@ -134,20 +151,23 @@ void FFmpegWriter::write_thread()
     }
 }
 
-
 // this function only used for on thread saving
 bool FFmpegWriter::write_packet(uint8_t * pData, int nBytes, int nPts)
 {
     AVPacket *pkt;
     pkt = av_packet_alloc();
 
-    pkt->pts = av_rescale_q(nPts++, AVRational {1, nFps}, vs->time_base);
-    // No B-frames
+    // Use sequential counter instead of passed-in PTS to ensure proper playback
+    pkt->pts = av_rescale_q(sequential_frame_counter_++, AVRational{1, nFps}, vs->time_base);
     pkt->dts = pkt->pts;
     pkt->stream_index = vs->index;
     pkt->data = pData;
     pkt->size = nBytes;
+    
+    // Add duration for each frame
+    pkt->duration = av_rescale_q(1, AVRational{1, nFps}, vs->time_base);
 
+    // Check for keyframe
     if(!memcmp(pData, "\x00\x00\x00\x01\x67", 5)) {
         pkt->flags |= AV_PKT_FLAG_KEY;
     }

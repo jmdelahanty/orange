@@ -1,6 +1,4 @@
-/*
-Adapted from Nvidia video sdk, FFmepgStreamer.
-*/
+// FFmpegWriter.h
 #pragma once
 extern "C"
 {
@@ -32,5 +30,6 @@ private:
     std::ofstream *metadata;
     SafeQueue<AVPacket*> m_queue; // Queue for packets to be written
     std::thread m_thread;
+    int sequential_frame_counter_ = 0; // Counter for sequential frame numbers
     void write_thread();
 };

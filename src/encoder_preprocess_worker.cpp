@@ -122,7 +122,6 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         ck(cudaMemcpyAsync(d_v_plane_dst, d_uv_default_plane_, uv_plane_size, cudaMemcpyDeviceToDevice, m_stream));
     }
     
-    // *** THIS IS THE CRITICAL FIX ***
     // Wait for all the copies and conversions launched above to complete on the GPU.
     ck(cudaStreamSynchronize(m_stream));
 
