@@ -15,6 +15,8 @@
 #include "image_writer_worker.h"
 #include "crop_and_encode_worker.h"
 #include "cuda_context_debug.h"
+#include "encoder_preprocess_worker.h"
+#include "frame_ipc_manager.h"
 
 static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *ecam, CameraState *camera_state){
     NVTX_RANGE("PTP_Timestamp_Check");
@@ -41,7 +43,7 @@ void acquire_frames(
     PTPParams* ptp_params,
     INDIGOSignalBuilder* indigo_signal_builder,
     COpenGLDisplay* openGLDisplay,
-    GPUVideoEncoder* gpu_encoder,
+    EncoderPreprocessWorker* encoder_preprocess_worker,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources
@@ -70,6 +72,22 @@ void acquire_frames(
         initialize_gpu_debayer(&frame_process_save.debayer, camera_params);
         initialize_cpu_frame(&frame_process_save.frame_cpu, camera_params);
         ck(cudaMalloc((void **)&frame_process_save.d_convert, (size_t)camera_params->width * camera_params->height * 3));
+    }
+
+    // FRAME_IPC: Initialize Frame IPC Manager if requested
+    std::unique_ptr<FrameIPCManager> frame_ipc_manager;
+    if (camera_select->send_frame_ipc) {
+        frame_ipc_manager = std::make_unique<FrameIPCManager>(camera_params);
+        if (!frame_ipc_manager->isEnabled()) {
+            std::cerr << "[acquire_frames] WARNING: Failed to initialize Frame IPC for camera " 
+                      << camera_params->camera_serial 
+                      << ". Frame synchronization will be disabled." << std::endl;
+            frame_ipc_manager.reset();  // Disable if initialization failed
+        } else {
+            std::cout << "[acquire_frames] Frame IPC enabled for camera " 
+                      << camera_params->camera_serial 
+                      << " (ID: " << camera_params->camera_id << ")" << std::endl;
+        }
     }
 
     CameraState camera_state{};
@@ -174,6 +192,58 @@ void acquire_frames(
             current_entry->has_detections = (camera_select->yolo && yolo_worker);
             current_entry->detections_ready.store(false);
 
+            // FRAME_IPC: Send frame data immediately after capture
+            // This ensures EVERY frame is sent for synchronization
+            if (frame_ipc_manager && frame_ipc_manager->isEnabled()) {
+                // ALWAYS use recording_frame_id when it's valid (non-zero or recording active)
+                // This ensures consistency - if a frame gets recorded, we use its recording ID
+                // Otherwise, fall back to absolute frame_id
+                uint64_t frame_id_for_ipc;
+                
+                if (camera_control->record_video && current_entry->recording_frame_id > 0) {
+                    // Recording is active and we have a valid recording frame ID
+                    frame_id_for_ipc = current_entry->recording_frame_id;
+                } else {
+                    // Not recording or recording just stopped - use absolute frame ID
+                    // This ensures continuity even when recording toggles
+                    frame_id_for_ipc = current_entry->frame_id;
+                }
+                
+                // Send frame-only data (no detections at this point)
+                std::vector<shaman::Object> empty_detections;
+                bool yolo_will_process = (camera_select->yolo && yolo_worker != nullptr);
+                
+                // Log the frame ID being sent (for debugging)
+                static uint64_t last_logged_frame = 0;
+                if (frame_id_for_ipc != last_logged_frame + 1 && last_logged_frame != 0) {
+                    std::cout << "[FRAME_IPC] Non-sequential frame ID: " 
+                              << last_logged_frame << " -> " << frame_id_for_ipc 
+                              << " (recording: " << (camera_control->record_video ? "yes" : "no") 
+                              << ")" << std::endl;
+                }
+                last_logged_frame = frame_id_for_ipc;
+                
+                bool ipc_success = frame_ipc_manager->sendFrame(
+                    frame_id_for_ipc,
+                    current_entry->timestamp,
+                    empty_detections,
+                    yolo_will_process
+                );
+                
+                if (!ipc_success) {
+                    // Log but don't stop - IPC queue might be temporarily full
+                    static int ipc_failure_count = 0;
+                    if (++ipc_failure_count % 100 == 0) {
+                        std::cerr << "[acquire_frames] IPC queue full - " 
+                                  << ipc_failure_count << " frames dropped" << std::endl;
+                    }
+                }
+            }
+            
+            // FRAME_IPC: Store IPC manager pointer in entry for YOLO to use later
+            // This allows YOLO to update the frame with detection data
+            current_entry->frame_ipc_manager = frame_ipc_manager.get();
+
             if (camera_select->frame_save_state == State_Write_New_Frame && image_writer) {
                 ImageWriter_Entry* save_job = new ImageWriter_Entry();
                 save_job->event_ptr = current_event;
@@ -187,14 +257,14 @@ void acquire_frames(
             // This allows us to efficiently manage resources and avoid unnecessary processing.
             int dispatch_count = 0;
             if (camera_select->stream_on && openGLDisplay) dispatch_count++;
-            if (camera_control->record_video && gpu_encoder) dispatch_count++;
+            if (camera_control->record_video && encoder_preprocess_worker) dispatch_count++;
             if (camera_select->yolo && yolo_worker) dispatch_count++;
 
             if (dispatch_count > 0) {
                 current_entry->ref_count.store(dispatch_count);
 
                 if (camera_select->stream_on && openGLDisplay) openGLDisplay->PutObjectToQueueIn(current_entry);
-                if (camera_control->record_video && gpu_encoder) gpu_encoder->PutObjectToQueueIn(current_entry);
+                if (camera_control->record_video && encoder_preprocess_worker) encoder_preprocess_worker->PutObjectToQueueIn(current_entry);
                 if (camera_select->yolo && yolo_worker) yolo_worker->PutObjectToQueueIn(current_entry);
 
                 if (use_direct_pointer) {
@@ -204,6 +274,8 @@ void acquire_frames(
                 }
 
             } else {
+                // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above
+                // This ensures frame synchronization works even when just recording without display/YOLO
                 if (use_direct_pointer) {
                     EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
                 }
@@ -228,6 +300,13 @@ void acquire_frames(
     {
         NVTX_RANGE("Cleanup_and_Shutdown");
         CUDA_CTX_LOG("=== ACQUIRE FRAMES CLEANUP ===");
+
+        // FRAME_IPC: Log final statistics if IPC was active
+        if (frame_ipc_manager && frame_ipc_manager->isEnabled()) {
+            std::cout << "[acquire_frames] Frame IPC final stats for camera " 
+                      << camera_params->camera_serial << ": "
+                      << frame_ipc_manager->getFramesSent() << " frames sent" << std::endl;
+        }
 
         {
             NVTX_CAMERA("Camera_Acquisition_Stop");

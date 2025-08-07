@@ -1,3 +1,4 @@
+// src/kernel.cu
 #include "kernel.cuh"
 #include "common.hpp"
 
@@ -8,7 +9,7 @@
     *1                        0
     *2  top/bot interleave    N - 1
     *3  ==================>   1
-    *                         ....
+    * ....
     *N
     *
 **/
@@ -302,7 +303,7 @@ __global__ void gpu_draw_rat_pose(unsigned char* src, const int width, const int
         for (int i= 0; i < 4; i++) {
             unsigned int pt0_idx = d_skeleton[i*2];
             unsigned int pt1_idx = d_skeleton[i*2+1];
-            float lengh_squared = (d_points[pt1_idx*2]-d_points[pt0_idx*2]) * (d_points[pt1_idx*2]-d_points[pt0_idx*2]) + (d_points[pt1_idx*2+1]-d_points[pt0_idx*2+1]) *  (d_points[pt1_idx*2+1]-d_points[pt0_idx*2+1]);
+            float lengh_squared = (d_points[pt1_idx*2]-d_points[pt0_idx*2]) * (d_points[pt1_idx*2]-d_points[pt0_idx*2]) + (d_points[pt1_idx*2+1]-d_points[pt0_idx*2+1]) * (d_points[pt1_idx*2+1]-d_points[pt0_idx*2+1]);
             float dot_product = (x - d_points[pt0_idx*2]) * (d_points[pt1_idx*2] - d_points[pt0_idx*2]) + (y-d_points[pt0_idx*2+1]) * (d_points[pt1_idx*2+1]-d_points[pt0_idx*2+1]);
             float t = fmaxf(0.0f, fminf(1.0f, dot_product/lengh_squared));
             float proj_x = d_points[pt0_idx*2] + t * (d_points[pt1_idx*2] - d_points[pt0_idx*2]);
@@ -425,4 +426,62 @@ void gpu_crop_and_resize_rgba(
     
     cudaError_t err = cudaGetLastError();
     if(err != cudaSuccess) printf("crop_and_resize_rgba_kernel failed: %s\n", cudaGetErrorString(err));
+}
+
+
+// New Optimized Kernel: RGB to NV12
+__global__ void rgb_to_nv12_kernel(const unsigned char* src_rgb,
+                                   unsigned char* dst_y,
+                                   unsigned char* dst_uv,
+                                   int width, int height,
+                                   int y_pitch, int uv_pitch)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x >= width || y >= height) return;
+
+    // Y plane calculation (every thread does one pixel)
+    int rgb_idx = (y * width + x) * 3;
+    int y_idx = y * y_pitch + x;
+
+    uint8_t r = src_rgb[rgb_idx];
+    uint8_t g = src_rgb[rgb_idx + 1];
+    uint8_t b = src_rgb[rgb_idx + 2];
+
+    // Standard RGB to Y conversion (BT.601)
+    dst_y[y_idx] = (uint8_t)((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
+
+    // UV plane calculation (only for top-left pixel of each 2x2 block)
+    if ((y % 2 == 0) && (x % 2 == 0))
+    {
+        int uv_idx = (y / 2) * uv_pitch + x;
+
+        // Simple averaging of the 2x2 block
+        uint8_t r_avg = (r + src_rgb[rgb_idx + 3] + src_rgb[rgb_idx + width * 3] + src_rgb[rgb_idx + width * 3 + 3]) / 4;
+        uint8_t g_avg = (g + src_rgb[rgb_idx + 1 + 3] + src_rgb[rgb_idx + 1 + width * 3] + src_rgb[rgb_idx + 1 + width * 3 + 3]) / 4;
+        uint8_t b_avg = (b + src_rgb[rgb_idx + 2 + 3] + src_rgb[rgb_idx + 2 + width * 3] + src_rgb[rgb_idx + 2 + width * 3 + 3]) / 4;
+
+        // Standard RGB to U/V conversion
+        dst_uv[uv_idx]     = (uint8_t)((-38 * r_avg - 74 * g_avg + 112 * b_avg + 128) >> 8) + 128; // U
+        dst_uv[uv_idx + 1] = (uint8_t)((112 * r_avg - 94 * g_avg - 18 * b_avg + 128) >> 8) + 128; // V
+    }
+}
+
+// New Launcher for the optimized kernel
+void launch_rgb_to_nv12_kernel(const unsigned char* d_rgb,
+                               unsigned char* d_nv12,
+                               int width, int height,
+                               int pitch,
+                               cudaStream_t stream)
+{
+    unsigned char* d_y_plane = d_nv12;
+    unsigned char* d_uv_plane = d_nv12 + (size_t)pitch * height;
+
+    dim3 threads_per_block(32, 32);
+    dim3 num_blocks((width + threads_per_block.x - 1) / threads_per_block.x,
+                   (height + threads_per_block.y - 1) / threads_per_block.y);
+
+    rgb_to_nv12_kernel<<<num_blocks, threads_per_block, 0, stream>>>(
+        d_rgb, d_y_plane, d_uv_plane, width, height, pitch, pitch);
 }

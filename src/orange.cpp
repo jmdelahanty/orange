@@ -17,7 +17,8 @@
 #include "enet_thread.h"
 #include "yolo_worker.h"
 #include "global.h"
-#include "gpu_video_encoder.h"
+#include "encoder_preprocess_worker.h"
+#include "encoder_hw_worker.h"
 #include "opengldisplay.h"
 #include "image_writer_worker.h"
 #include "yolov8_det.h"
@@ -147,7 +148,8 @@ int main(int argc, char **args) {
     int evt_buffer_size{100};
     PTPParams *ptp_params = new PTPParams{0, 0, 0, 0, false, false, false, false};
     COpenGLDisplay** openGLDisplayWorkers = nullptr;
-    GPUVideoEncoder** gpuVideoEncoders = nullptr;
+    EncoderPreprocessWorker** encoderPreprocessWorkers = nullptr;
+    EncoderHwWorker** encoderHWWorkers = nullptr;
     CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
@@ -208,413 +210,7 @@ int main(int argc, char **args) {
 
     while (!glfwWindowShouldClose(window->render_target)) {
         create_new_frame();
-        if (ImGui::Begin("Network")) {
-            if (ImGui::BeginTable("##Local Apps", 2,
-                                  ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
-                                  ImGuiTableFlags_Borders)) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("Indigo");
-                ImGui::TableNextColumn();
-                sprintf(temp_string, "Not connected");
-                if (indigo_signal_builder.indigo_connection != nullptr) {
-                    if (indigo_signal_builder.indigo_connection->state == ENET_PEER_STATE_CONNECTED) {
-                        sprintf(temp_string, "Connected");
-                    }
-                }
-                ImGui::Text("%s", temp_string);
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("Calibration");
-                ImGui::TableNextColumn();
-                if (indigo_signal_builder.indigo_connection != nullptr) {
-                    ImGui::Text("%s", enum_names_calib_state()[calib_state]);
-                } else {
-                    ImGui::Text("%s", "Not connected");
-                }
-                ImGui::EndTable();
-            }
-
-            if (ImGui::BeginTable("Servers", 4,
-                                  ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
-                                  ImGuiTableFlags_Borders)) {
-                for (int i = 0; i < 2; i++) {
-                    sprintf(temp_string, "##servers%d", i);
-                    ImGui::TableNextRow();
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%s", my_servers[i].name);
-                    ImGui::TableNextColumn();
-
-                    if (my_servers[i].peer != nullptr) {
-                        if (my_servers[i].peer->state == ENET_PEER_STATE_CONNECTED) {
-                            my_servers[i].connected = true;
-                        }
-                    } else {
-                        my_servers[i].connected = false;
-                    }
-
-                    if (ImGui::Button(my_servers[i].connected ? "Disconnect" : "Connect")) {
-                        if (my_servers[i].connected) {
-                            enet_peer_disconnect(my_servers[i].peer, 0);
-                        } else {
-                            my_servers[i].peer = connect_peer(&server,
-                                                              my_servers[i].ip_add[0],
-                                                              my_servers[i].ip_add[1],
-                                                              my_servers[i].ip_add[2],
-                                                              my_servers[i].ip_add[3],
-                                                              my_servers[i].port);
-                        }
-                    }
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%s", std::to_string(my_servers[i].num_cameras).c_str());
-                    ImGui::TableNextColumn();
-
-                    if (my_servers[i].connected) {
-                        ImGui::Text("%s", FetchGame::EnumNamesManagerState()[my_servers[i].server_state]);
-                    } else {
-                        ImGui::Text("%s", "Not connected");
-                    }
-                }
-                ImGui::EndTable();
-            }
-
-            for (size_t i = 0; i < network_config_folders.size(); i++) {
-                std::vector<std::string> folder_token = string_split(network_config_folders[i], "/");
-                const std::string& label = folder_token.back();
-            
-                // Highlight "rig_new" in purple
-                if (label == "rig_new") {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.0f, 1.0f));  
-                }
-            
-                sprintf(temp_string, "%s", label.c_str());
-                ImGui::RadioButton(temp_string, &network_config_select, i);
-            
-                if (label == "rig_new") {
-                    ImGui::PopStyleColor();
-                }
-            
-                if (i != network_config_folders.size() - 1)
-                    ImGui::SameLine();
-            }
-
-            if (!camera_control->open && my_servers[0].server_state == FetchGame::ManagerState_IDLE && my_servers[1].
-                server_state == FetchGame::ManagerState_IDLE && my_servers[0].connected && my_servers[1].connected) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0, 0.5f, 0, 1.0f});
-                if (ImGui::Button("Open Cameras")) {
-                    update_camera_configs(camera_config_files, network_config_folders[network_config_select]);
-                    select_cameras_have_configs(camera_config_files, device_info, camera_is_selected, cam_count);
-                    host_broadcast_open_cameras(fb_builder, &server, network_config_folders[network_config_select]);
-                    // open cameras
-                    num_cameras = 0;
-                    for (int i = 0; i < cam_count; i++) {
-                        if (camera_is_selected[i]) {
-                            num_cameras++;
-                        }
-                    }
-                    if (num_cameras > 0) {
-                        cameras_params = new CameraParams[num_cameras]();
-                        cameras_select = new CameraEachSelect[num_cameras]();
-
-                        std::vector<int> selected_cameras;
-                        for (int i = 0; i < cam_count; i++) {
-                            if (camera_is_selected[i]) {
-                                selected_cameras.push_back(i);
-                            }
-                        }
-                        for (int i = 0; i < num_cameras; i++) {
-                            set_camera_params(&cameras_params[i], &device_info[selected_cameras[i]],
-                                              camera_config_files, selected_cameras[i], num_cameras);
-                        }
-
-                        for (int i = 0; i < num_cameras; i++) {
-                            cameras_select[i].stream_on = false;
-                            if (cameras_params[i].camera_name == "Cam16") {
-                                cameras_select[i].stream_on = true;
-                                cameras_select[i].yolo = true;
-                            }
-                            if (cameras_params[i].camera_name == "shelter") {
-                                cameras_select[i].stream_on = true;
-                                cameras_select[i].yolo = false;
-                            }
-                        }
-
-                        ecams = new CameraEmergent[num_cameras];
-                        for (int i = 0; i < num_cameras; i++) {
-                            open_camera_with_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id],
-                                                    &cameras_params[i]);
-                        }
-
-                        realtime_plot_data = new ScrollingBuffer[num_cameras];
-                    }
-                    camera_control->open = true;
-                }
-                ImGui::PopStyleColor(1);
-                ImGui::SameLine();
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.5f, 0.0f, 0.7f, 1.0f));
-                if (ImGui::Button("Save to")) {
-                    IGFD::FileDialogConfig config;
-                    config.countSelectionMax = 1;
-                    config.path = input_folder;
-                    ImGuiFileDialog::Instance()->OpenDialog("ChooseRecordingDir", "Choose a Directory", nullptr, config);
-                }
-                ImGui::PopStyleColor(1);
-                ImGui::SameLine();
-                ImGui::SetWindowFontScale(1.5f); // 1.0 is default
-                ImGui::Text("%s", input_folder.c_str());
-                ImGui::SetWindowFontScale(1.0f); // Reset to normal
-            }
-
-            if (!camera_control->subscribe && my_servers[0].server_state == FetchGame::ManagerState_WAITTHREAD &&
-                my_servers[1].server_state == FetchGame::ManagerState_WAITTHREAD) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0, 0.5f, 0, 1.0f});
-                if (ImGui::Button("Clients start camera threads")) {
-                    // --- This button now does two things ---
-                    // 1. It sends the command to the clients to start their threads.
-                    // 2. It starts its own local threads using the same robust, centralized logic.
-            
-                    // --- Logic for telling clients to start ---
-                    std::string encoder_setup_for_clients =
-                            "-codec " + encoder_config->encoder_codec + " -preset " + encoder_config->encoder_preset +
-                            " -fps ";
-                    encoder_config->folder_name = input_folder + "/" + get_current_date_time();
-                    make_folder(encoder_config->folder_name);
-                    ptp_params->network_sync = true;
-                    host_broadcast_start_threads(fb_builder, &server, encoder_config->folder_name, encoder_setup_for_clients);
-                    
-                    // --- Centralized Startup Logic (for local cameras) ---
-                    (camera_control->subscribe) = true; // Set the master flag to true
-                    camera_control->record_video = true; // This button implies recording
-            
-                    // 1. ALLOCATE WORKER AND TEXTURE POINTERS (these are just pointers, the real resources are in camera_resources)
-                    openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
-                    gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
-                    for(int i = 0; i < num_cameras; ++i) {
-                        openGLDisplayWorkers[i] = nullptr;
-                        gpuVideoEncoders[i] = nullptr;
-                    }
-                    
-                    // 2. INITIALIZE PER-CAMERA RESOURCE POOLS
-                    camera_resources.resize(num_cameras);
-                    size_t max_frame_size_bytes = 0;
-                    for (int i = 0; i < num_cameras; ++i) {
-                        size_t current_size = static_cast<size_t>(cameras_params[i].width) * static_cast<size_t>(cameras_params[i].height);
-                        if (current_size > max_frame_size_bytes) {
-                            max_frame_size_bytes = current_size;
-                        }
-                    }
-                    std::cout << "Allocating worker pools with max frame size: " << max_frame_size_bytes << " bytes" << std::endl;
-
-                    for (int i = 0; i < num_cameras; ++i) {
-                        std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
-                        camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
-                    }
-
-                    // 3. SETUP GPU TEXTURES FOR DISPLAY
-                    cudaSetDevice(display_gpu_id);
-                    tex = new GL_Texture[num_cameras];
-                    for (int i = 0; i < num_cameras; i++) {
-                        if (cameras_select[i].stream_on) {
-                            int camera_width = int(cameras_params[i].width / cameras_select[i].downsample);
-                            int camera_height = int(cameras_params[i].height / cameras_select[i].downsample);
-                            setup_texture(tex[i], camera_width, camera_height);
-                        }
-                        if (cameras_select[i].crop_and_encode) {
-                            upload_texture_from_pbo(crop_tex[i], 256, 256);
-                        }
-                    }
-            
-                    // 4. CREATE WORKER THREAD OBJECTS (ENCODERS, YOLO, DISPLAY)
-                    yolo_workers.assign(num_cameras, nullptr);
-                    for (int i = 0; i < num_cameras; i++) {
-                        if (cameras_select[i].stream_on) {
-                            std::string display_name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
-                            openGLDisplayWorkers[i] = new COpenGLDisplay(display_name.c_str(), &cameras_params[i], &cameras_select[i], tex[i].cuda_buffer, &indigo_signal_builder, *camera_resources[i].recycle_queue);
-                        }
-                        if (cameras_select[i].yolo) {
-                            std::string yolo_name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
-                            cameras_select[i].yolo_model = yolo_model.c_str();
-                            if (yolo_model.empty()) {
-                                std::cerr << "YOLO model not selected. Please select a YOLO model." << std::endl;
-                            } else {
-                                yolo_workers[i] = new YOLOv8Worker(
-                                    yolo_name.c_str(),
-                                    &cameras_params[i],
-                                    &cameras_select[i],
-                                    camera_control,
-                                    *camera_resources[i].recycle_queue
-                                );
-                                if (openGLDisplayWorkers[i]) {
-                                    yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
-                                }
-                            }
-                        }
-                        if (cameras_select[i].record) {
-                            std::string encoder_thread_name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
-                            bool encoder_ready_signal = false;
-                            gpuVideoEncoders[i] = new GPUVideoEncoder(
-                                encoder_thread_name.c_str(),
-                                &cameras_params[i],
-                                encoder_config->encoder_codec,
-                                encoder_config->encoder_preset,
-                                encoder_config->tuning_info,
-                                encoder_config->folder_name,
-                                &encoder_ready_signal,
-                                *camera_resources[i].recycle_queue,
-                                camera_control
-                            );
-                        }
-                    }
-            
-                    // 5. START ALL WORKER THREADS
-                    for (int i = 0; i < num_cameras; i++) {
-                        if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
-                        if (yolo_workers[i]) yolo_workers[i]->StartThread();
-                        if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
-                    }
-            
-                    // 6. PREPARE CAMERAS AND START ACQUISITION THREADS
-                    for (int i = 0; i < num_cameras; i++) {
-                        camera_open_stream(&ecams[i].camera, &cameras_params[i]);
-                        ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
-                        allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
-                    }
-            
-                    if (ptp_stream_sync) {
-                        for (int i = 0; i < num_cameras; i++) {
-                            ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
-                        }
-                        camera_control->sync_camera = true;
-                    }
-            
-                    for (int i = 0; i < num_cameras; i++) {
-                        camera_threads.emplace_back(
-                            &acquire_frames,
-                            &ecams[i],                         // CameraEmergent *ecam
-                            &cameras_params[i],                // CameraParams *camera_params
-                            &cameras_select[i],                // CameraEachSelect* camera_select
-                            camera_control,                    // CameraControl* camera_control
-                            ptp_params,                        // PTPParams* ptp_params
-                            &indigo_signal_builder,            // INDIGOSignalBuilder* indigo_signal_builder
-                            openGLDisplayWorkers[i],           // COpenGLDisplay* openGLDisplay
-                            gpuVideoEncoders[i],               // GPUVideoEncoder* gpu_encoder
-                            yolo_workers[i],                   // YOLOv8Worker* yolo_worker
-                            image_writer,                      // ImageWriterWorker* image_writer
-                            &camera_resources[i]               // CameraResources* resources
-                        );
-                    }
-                }
-                ImGui::PopStyleColor(1);
-            }
-
-            if (my_servers[0].server_state == FetchGame::ManagerState_WAITSTART && my_servers[1].server_state ==
-                FetchGame::ManagerState_WAITSTART) {
-                // check network servers are ready as well as local computer
-                if (ptp_params->ptp_counter == num_cameras) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0, 0.5f, 0, 1.0f});
-                    if (ImGui::Button("Start Recording")) {
-                        // get the host ready, and then set global ptp time to start recording
-                        unsigned long long ptp_time = get_current_PTP_time(&ecams[0].camera);
-                        int delay_in_second = 3;
-                        ptp_params->ptp_global_time = ((unsigned long long) delay_in_second) * 1000000000 + ptp_time;
-                        host_broadcast_set_start_ptp(fb_builder, &server, ptp_params->ptp_global_time);
-                        ptp_params->network_set_start_ptp = true;
-                    }
-                    ImGui::PopStyleColor(1);
-                }
-            }
-
-            if (!ptp_params->network_set_stop_ptp && ptp_params->ptp_start_reached && my_servers[0].server_state ==
-                FetchGame::ManagerState_WAITSTOP && my_servers[1].server_state == FetchGame::ManagerState_WAITSTOP) {
-                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0, 0.5f, 0, 1.0f});
-                if (ImGui::Button("Stop Recording")) {
-                    unsigned long long ptp_time = get_current_PTP_time(&ecams[0].camera);
-                    int delay_in_second = 3;
-                    ptp_params->ptp_stop_time = ((unsigned long long) delay_in_second) * 1000000000 + ptp_time;
-                    std::cout << ptp_params->ptp_stop_time << std::endl;
-                    fb_builder->Clear();
-                    FetchGame::ServerBuilder server_builder(*fb_builder);
-                    server_builder.add_control(FetchGame::ServerControl_STOPRECORDING);
-                    server_builder.add_ptp_global_time(ptp_params->ptp_stop_time);
-                    auto my_server = server_builder.Finish();
-                    fb_builder->Finish(my_server);
-                    uint8_t *server_buffer = fb_builder->GetBufferPointer();
-                    size_t server_buf_size = fb_builder->GetSize();
-                    ENetPacket *enet_packet = enet_packet_create(server_buffer, server_buf_size, 0);
-                    enet_host_broadcast(server.m_pNetwork, 0, enet_packet);
-                    ptp_params->network_set_stop_ptp = true;
-                }
-                ImGui::PopStyleColor(1);
-            }
-
-            if (my_servers[0].server_state == FetchGame::ManagerState_IDLE && my_servers[1].server_state ==
-                FetchGame::ManagerState_IDLE) {
-                if (ImGui::Button("Clients close")) {
-                    // broadcast data
-                    fb_builder->Clear();
-                    FetchGame::ServerBuilder server_builder(*fb_builder);
-                    server_builder.add_control(FetchGame::ServerControl_QUIT);
-                    auto my_server = server_builder.Finish();
-                    fb_builder->Finish(my_server);
-                    uint8_t *server_buffer = fb_builder->GetBufferPointer();
-                    size_t server_buf_size = fb_builder->GetSize();
-                    ENetPacket *enet_packet = enet_packet_create(server_buffer, server_buf_size, 0);
-                    enet_host_broadcast(server.m_pNetwork, 0, enet_packet);
-                }
-            }
-        }
-        ImGui::End();
-
-        if (ptp_params->network_set_stop_ptp && ptp_params->ptp_stop_reached) {
-            ptp_params->network_set_stop_ptp = false;
-
-            for (int i = 0; i < num_cameras; i++) {
-                if (cameras_select[i].stream_on) {
-                    int camera_width = int(cameras_params[i].width / cameras_select[i].downsample);
-                    int camera_height = int(cameras_params[i].height / cameras_select[i].downsample);
-                    clear_upload_and_cleanup(tex[i], camera_width, camera_height);
-                }
-            }
-            delete[] tex;
-
-            for (auto &t: camera_threads)
-                t.join();
-
-            for (int i = 0; i < num_cameras; i++) {
-                camera_threads.pop_back();
-            }
-            for (int i = 0; i < num_cameras; i++) {
-                destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
-                delete[] ecams[i].evt_frame;
-                check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
-            }
-
-            for (int i = 0; i < num_cameras; i++) {
-                ptp_sync_off(&ecams[i].camera, &cameras_params[i]);
-            }
-            camera_control->sync_camera = false;
-            camera_control->record_video = false;
-
-            ptp_params->ptp_global_time = 0;
-            ptp_params->ptp_stop_time = 0;
-            ptp_params->ptp_counter = 0;
-            ptp_params->ptp_stop_counter = 0;
-            ptp_params->network_sync = false;
-            ptp_params->network_set_start_ptp = false;
-            ptp_params->ptp_stop_reached = false;
-            ptp_params->ptp_start_reached = false;
-
-            for (int i = 0; i < num_cameras; i++) {
-                close_camera(&ecams[i].camera, &cameras_params[i]);
-            }
-
-            camera_control->open = false;
-
-            for (int i = 0; i < cam_count; i++) {
-                camera_is_selected[i] = 0;
-            }
-        }
-
+        
         if (ImGui::Begin("Orange", nullptr, ImGuiWindowFlags_MenuBar)) {
             ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
                        ImGui::GetIO().Framerate);
@@ -775,7 +371,7 @@ int main(int argc, char **args) {
                     }
                 }
 
-                if (ImGui::BeginTable("Camera Control Setting", 8,
+                if (ImGui::BeginTable("Camera Control Setting", 9,
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
                                       ImGuiTableFlags_Borders)) {
                     ImGui::TableNextRow();
@@ -819,13 +415,23 @@ int main(int argc, char **args) {
                     ImGui::TableNextColumn();
                     ImGui::Text("YOLO Debug");
 
+                    // NEW COLUMN: Frame IPC
+                    ImGui::TableNextColumn();
+                    ImGui::Text("Frame IPC");
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("Enable frame synchronization via IPC\n"
+                                          "Sends EVERY frame for stimulus correlation\n"
+                                          "Works with or without YOLO");
+                    }
+
                     ImGui::TableNextColumn();
                     ImGui::Text("YOLO IPC");
+                    if (ImGui::IsItemHovered()) {
+                        ImGui::SetTooltip("DEPRECATED: Use Frame IPC instead");
+                    }
 
                     ImGui::TableNextColumn();
                     ImGui::Text("YOLO ENet");
-                    ImGui::TableNextColumn();
-                    ImGui::Text("Crop & Encode");
 
 
                     for (int i = 0; i < num_cameras; i++) {
@@ -864,26 +470,61 @@ int main(int argc, char **args) {
                                 }
                             }
                         }
-                        else
-                        {
-                            // Add an empty cell to keep table alignment correct
-                            ImGui::Text("");
+
+                        // NEW: Frame IPC checkbox
+                        ImGui::TableNextColumn();
+                        sprintf(temp_string, "##frame_ipc%d", i);
+                        ImGui::Checkbox(temp_string, &cameras_select[i].send_frame_ipc);
+                        // Optional: Show status indicator when active
+                        if (cameras_select[i].send_frame_ipc && camera_control->subscribe) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("IPC active: /shm_cam_%u", cameras_params[i].camera_id);
+                            }
                         }
 
-                        // New Checkboxes for IPC and ENet
+                        // Existing YOLO IPC checkbox (now deprecated)
                         ImGui::TableNextColumn();
                         sprintf(temp_string, "##yolo_ipc%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_ipc); // Assumes flag name from video_capture.h
+                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_ipc);
+                        if (cameras_select[i].send_yolo_via_ipc) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "!");
+                            if (ImGui::IsItemHovered()) {
+                                ImGui::SetTooltip("Deprecated! Use Frame IPC instead");
+                            }
+                        }
 
                         ImGui::TableNextColumn();
                         sprintf(temp_string, "##yolo_enet%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_enet); // Assumes flag name from video_capture.h
-
-                        ImGui::TableNextColumn();
-                        sprintf(temp_string, "##crop_encode%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].crop_and_encode);
+                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_enet);
                     }
                     ImGui::EndTable();
+                }
+
+                // NEW: Add Frame IPC status section after the table
+                if (camera_control->subscribe) {
+                    bool any_frame_ipc_active = false;
+                    for (int i = 0; i < num_cameras; i++) {
+                        if (cameras_select[i].send_frame_ipc) {
+                            any_frame_ipc_active = true;
+                            break;
+                        }
+                    }
+                    
+                    if (any_frame_ipc_active) {
+                        ImGui::Separator();
+                        ImGui::Text("Frame IPC Status:");
+                        for (int i = 0; i < num_cameras; i++) {
+                            if (cameras_select[i].send_frame_ipc) {
+                                ImGui::Text("  %s: /shm_cam_%u", 
+                                           cameras_params[i].camera_serial.c_str(), 
+                                           cameras_params[i].camera_id);
+                            }
+                        }
+                        ImGui::TextDisabled("  Run './dummy_reader' to monitor");
+                    }
                 }
 
                 if (camera_control->subscribe) {
@@ -1171,17 +812,18 @@ int main(int argc, char **args) {
                         }
                         // Create worker thread objects and GPU textures
                         openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
-                        gpuVideoEncoders = new GPUVideoEncoder*[num_cameras]();
+                        encoderPreprocessWorkers = new EncoderPreprocessWorker*[num_cameras]();
+                        encoderHWWorkers = new EncoderHwWorker*[num_cameras]();
                         cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
                         tex = new GL_Texture[num_cameras];
                         crop_tex = new GL_Texture[num_cameras];
                         yolo_workers.assign(num_cameras, nullptr);
 
-                        // Initialize allworker pointers to nullptr
-                        // 
+                        // Initialize all worker pointers to nullptr
                         for(int i = 0; i < num_cameras; ++i) {
                             openGLDisplayWorkers[i] = nullptr;
-                            gpuVideoEncoders[i] = nullptr;
+                            encoderPreprocessWorkers[i] = nullptr;
+                            encoderHWWorkers[i] = nullptr;
                             cropAndEncodeWorkers[i] = nullptr;
                         }
                         cudaSetDevice(display_gpu_id);
@@ -1224,19 +866,54 @@ int main(int argc, char **args) {
                                 }
                             }
                             if (cameras_select[i].record) {
-                                std::string name = "GPUEncoder_Cam_" + cameras_params[i].camera_serial;
-                                bool ready_signal = false;
-                                gpuVideoEncoders[i] = new GPUVideoEncoder(
-                                    name.c_str(),
+                                // The encoder pitch is required by the preprocess worker to prepare the frame correctly.
+                                // We can get it by creating a temporary encoder instance.
+
+                                // Get the current CUDA context for this thread
+                                CUcontext cuContext;
+                                ck(cuCtxGetCurrent(&cuContext));
+
+                                // Now, use the local cuContext variable
+                                NvEncoderCuda temp_enc(cuContext, cameras_params[i].width, cameras_params[i].height, NV_ENC_BUFFER_FORMAT_NV12);
+
+                                // --- START: ADDED INITIALIZATION ---
+                                // We must initialize the encoder to get valid parameters from it.
+                                NV_ENC_INITIALIZE_PARAMS initializeParams = {NV_ENC_INITIALIZE_PARAMS_VER};
+                                NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
+                                initializeParams.encodeConfig = &encodeConfig;
+
+                                // Use placeholder settings; we only need the pitch which is determined by resolution and format.
+                                temp_enc.CreateDefaultEncoderParams(&initializeParams, NV_ENC_CODEC_HEVC_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY);
+                                temp_enc.CreateEncoder(&initializeParams);
+                                // --- END: ADDED INITIALIZATION ---
+
+                                const NvEncInputFrame* temp_frame = temp_enc.GetNextInputFrame();
+                                int encoder_pitch = temp_frame->pitch;
+                                temp_enc.DestroyEncoder();
+
+                                std::string preprocess_name = "Preprocess_Cam_" + cameras_params[i].camera_serial;
+                                encoderPreprocessWorkers[i] = new EncoderPreprocessWorker(
+                                    preprocess_name.c_str(),
                                     &cameras_params[i],
-                                    encoder_config->encoder_codec,
-                                    encoder_config->encoder_preset,
-                                    encoder_config->tuning_info,
-                                    encoder_config->folder_name,
-                                    &ready_signal,
+                                    encoder_pitch,
                                     *camera_resources[i].recycle_queue,
                                     camera_control
                                 );
+
+                                std::string hw_encoder_name = "HW_Encoder_Cam_" + cameras_params[i].camera_serial;
+                                encoderHWWorkers[i] = new EncoderHwWorker(
+                                    hw_encoder_name.c_str(),
+                                    &cameras_params[i],
+                                    encoder_config->encoder_codec,
+                                    "p1",   // Fastest preset as requested
+                                    "ull",  // Ultra low latency as requested
+                                    encoder_config->folder_name,
+                                    encoderPreprocessWorkers[i], // Link to the preprocess worker
+                                    camera_control
+                                );
+                                
+                                // CRITICAL STEP: Link the two stages together
+                                encoderPreprocessWorkers[i]->SetHwWorker(encoderHWWorkers[i]);
                             }
 
                             if (cameras_select[i].crop_and_encode) {
@@ -1258,10 +935,26 @@ int main(int argc, char **args) {
 
                         // START ALL WORKER THREADS
                         for (int i = 0; i < num_cameras; i++) {
-                            if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StartThread();
-                            if (yolo_workers[i]) yolo_workers[i]->StartThread();
-                            if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StartThread();
-                            if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StartThread();
+                            if (openGLDisplayWorkers[i]) {
+                                openGLDisplayWorkers[i]->SetMaxQueueSize(240); 
+                                openGLDisplayWorkers[i]->StartThread();
+                            }
+                            if (yolo_workers[i]) {
+                                yolo_workers[i]->SetMaxQueueSize(240);
+                                yolo_workers[i]->StartThread();
+                            }
+                            if (encoderPreprocessWorkers[i]) {
+                                encoderPreprocessWorkers[i]->SetMaxQueueSize(240);
+                                encoderPreprocessWorkers[i]->StartThread();
+                            }
+                            if (encoderHWWorkers[i]) {
+                                encoderHWWorkers[i]->SetMaxQueueSize(240);
+                                encoderHWWorkers[i]->StartThread();
+                            }
+                            if (cropAndEncodeWorkers[i]) {
+                                cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
+                                cropAndEncodeWorkers[i]->StartThread();
+                            }
                         }
 
                         // PREPARE CAMERAS
@@ -1288,7 +981,7 @@ int main(int argc, char **args) {
                                 ptp_params,
                                 &indigo_signal_builder,
                                 openGLDisplayWorkers[i],
-                                gpuVideoEncoders[i],
+                                encoderPreprocessWorkers[i],
                                 yolo_workers[i],
                                 image_writer,
                                 &camera_resources[i]
@@ -1326,7 +1019,8 @@ int main(int argc, char **args) {
                             if (yolo_workers[i]) yolo_workers[i]->StopThread();
                             if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
-                            if (gpuVideoEncoders[i]) gpuVideoEncoders[i]->StopThread();
+                            if (encoderHWWorkers[i]) encoderHWWorkers[i]->StopThread();
+                            if (encoderPreprocessWorkers[i]) encoderPreprocessWorkers[i]->StopThread();
                         }
                         std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
 
@@ -1338,33 +1032,39 @@ int main(int argc, char **args) {
                                 openGLDisplayWorkers[i] = nullptr;
                             }
 
-                            // Flush the crop-and-encode worker BEFORE deleting the YOLO worker that feeds it.
                             if (cropAndEncodeWorkers[i]) {
                                 std::cout << "Flushing final packets for crop encoder " << cameras_params[i].camera_serial << "..." << std::endl;
                                 cropAndEncodeWorkers[i]->flush_and_close();
                                 delete cropAndEncodeWorkers[i];
                                 cropAndEncodeWorkers[i] = nullptr;
                             }
+                            
+                            // Now the hardware encoder, which is fed by the preprocessor.
+                            if (encoderHWWorkers[i]) {
+                                std::cout << "Flushing final packets for main HW encoder " << cameras_params[i].camera_serial << "..." << std::endl;
+                                encoderHWWorkers[i]->flush_and_close(); // Ensure it has a flush_and_close method
+                                delete encoderHWWorkers[i];
+                                encoderHWWorkers[i] = nullptr;
+                            }
 
-                            // Now it's safe to delete the YOLO worker.
+                            // The YOLO worker can be deleted now.
                             if (yolo_workers[i]) {
                                 delete yolo_workers[i];
                                 yolo_workers[i] = nullptr;
                             }
 
-                            // Finally, flush and close the main video encoder.
-                            if (gpuVideoEncoders[i]) {
-                                std::cout << "Flushing final packets for main encoder " << cameras_params[i].camera_serial << "..." << std::endl;
-                                gpuVideoEncoders[i]->flush_and_close();
-                                delete gpuVideoEncoders[i];
-                                gpuVideoEncoders[i] = nullptr;
+                            // Finally, the preprocess worker which is at the start of the encoding pipeline.
+                            if (encoderPreprocessWorkers[i]) {
+                                delete encoderPreprocessWorkers[i];
+                                encoderPreprocessWorkers[i] = nullptr;
                             }
                         }
                         
                         // Clear the worker pointer vectors
                         yolo_workers.clear();
                         if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
-                        if(gpuVideoEncoders) { delete[] gpuVideoEncoders; gpuVideoEncoders = nullptr; }
+                        if(encoderPreprocessWorkers) { delete[] encoderPreprocessWorkers; encoderPreprocessWorkers = nullptr; }
+                        if(encoderHWWorkers) { delete[] encoderHWWorkers; encoderHWWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
 
@@ -1477,11 +1177,6 @@ int main(int argc, char **args) {
                         } else {
                             ImGui::TextColored(ImVec4{1.0, 1.0f, 0, 1.0f}, "Recording starting...");
                         }ImGui::SameLine();
-                        if (gpuVideoEncoders[i])
-                        {
-                            ImGui::TextColored(ImVec4(0.0f, 1.0f, 1.0f, 1.0f), "Encoding FPS: %.1f", gpuVideoEncoders[i]->get_fps());
-                        }
-                        
                         if (yolo_workers[i])
                         {
                             ImGui::SameLine();

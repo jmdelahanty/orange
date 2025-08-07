@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <signal.h>
 #include <chrono>
+#include <string>  // Added for std::string support
 
 inline uint64_t get_time_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
@@ -19,6 +20,7 @@ inline uint64_t get_time_us() {
 
 namespace shaman {
 
+// Default shared memory name for backward compatibility
 constexpr const char* SHM_NAME = "/shm_box_vector";
 constexpr size_t MAX_OBJECTS = 100;
 constexpr size_t MAX_KEYPOINTS = 32;
@@ -41,7 +43,8 @@ struct VectorSlot {
     Object objects[MAX_OBJECTS];
     uint64_t timestamp_us;
     uint64_t frame_id;
-    uint16_t camera_id;
+    uint32_t camera_id;  // FIXED: Changed from uint16_t to uint32_t
+    bool yolo_enabled;   // Indicates if YOLO processing was active
 };
 
 struct SharedQueue {
@@ -52,147 +55,236 @@ struct SharedQueue {
 };
 
 class SharedBoxQueue {
-    public:
-    SharedBoxQueue(bool is_writer) : writer(is_writer) {
-        // Try to create shared memory first
-        shm_fd = shm_open(SHM_NAME, O_RDWR | O_CREAT, 0666);
+public:
+    // NEW: Constructor with custom shared memory name (for per-camera queues)
+    SharedBoxQueue(const char* shm_name, bool is_writer) 
+        : writer(is_writer), shm_name_(shm_name) {
+        
+        // Try to create/open shared memory with the specified name
+        int flags = is_writer ? (O_RDWR | O_CREAT) : O_RDWR;
+        shm_fd = shm_open(shm_name_.c_str(), flags, 0666);  // Fixed: use c_str()
         if (shm_fd == -1) {
-            throw std::runtime_error(std::string("shm_open failed: ") + std::strerror(errno));
+            throw std::runtime_error(std::string("shm_open failed for ") + 
+                                     shm_name_ + ": " + std::strerror(errno));
         }
 
         // Check current size
         struct stat shm_stat;
-        if (fstat(shm_fd, &shm_stat) == -1)
+        if (fstat(shm_fd, &shm_stat) == -1) {
+            close(shm_fd);
             throw std::runtime_error("fstat failed");
+        }
 
         if (shm_stat.st_size < (off_t)sizeof(SharedQueue)) {
-            // First process to run
-            if (ftruncate(shm_fd, sizeof(SharedQueue)) == -1)
+            // First process to run - set up the shared memory
+            if (ftruncate(shm_fd, sizeof(SharedQueue)) == -1) {
+                close(shm_fd);
                 throw std::runtime_error("ftruncate failed");
+            }
             creator = true;
         }
 
         // Map the memory AFTER truncating
         shared = static_cast<SharedQueue*>(mmap(nullptr, sizeof(SharedQueue),
                         PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
-        if (shared == MAP_FAILED)
+        if (shared == MAP_FAILED) {
+            close(shm_fd);
             throw std::runtime_error("mmap failed");
+        }
 
         if (creator) {
             std::memset(shared, 0, sizeof(SharedQueue));
             shared->head.store(0, std::memory_order_relaxed);
             shared->tail.store(0, std::memory_order_relaxed);
             shared->initialized.store(true, std::memory_order_release);
+            if (writer) {
+                std::cout << "[SharedBoxQueue] Created new queue: " << shm_name_ << std::endl;
+            }
         } else {
             // Wait for initialization
             size_t attempts = 0;
             while (!shared->initialized.load(std::memory_order_acquire)) {
-                if (++attempts > 1000)
+                if (++attempts > 1000) {
+                    munmap(shared, sizeof(SharedQueue));
+                    close(shm_fd);
                     throw std::runtime_error("Timeout waiting for shared memory init");
+                }
                 usleep(1000); // wait 1ms
             }
+            if (!writer) {
+                std::cout << "[SharedBoxQueue] Connected to existing queue: " << shm_name_ << std::endl;
+            }
         }
-        
     }
- 
+    
+    // BACKWARD COMPATIBILITY: Legacy constructor uses default SHM_NAME
+    SharedBoxQueue(bool is_writer) : SharedBoxQueue(SHM_NAME, is_writer) {}
+    
     ~SharedBoxQueue() {
         if (shared) munmap(shared, sizeof(SharedQueue));
         if (shm_fd >= 0) close(shm_fd);
-        // if (!writer) shm_unlink(SHM_NAME);
+        // Only unlink if we created it and we're configured to clean up
+        // Typically you'd want to keep the queue around for other processes
+        // if (writer && creator) shm_unlink(shm_name_.c_str());
     }
     
-        // Writer pushes a vector
-        bool push(const std::vector<Object>& vec, uint64_t frame_id, uint16_t camera_id) {
-            if (!writer) return false;
-            if (vec.size() > MAX_OBJECTS) return false;
+    // UPDATED: Writer pushes with uint32_t camera_id and optional yolo_enabled flag
+    bool push(const std::vector<Object>& vec, uint64_t frame_id, uint32_t camera_id, bool yolo_enabled = false) {
+        if (!writer) return false;
+        if (vec.size() > MAX_OBJECTS) return false;
 
-            std::cout << "Camera ID: " << camera_id << ", Frame ID: " << frame_id << std::endl;
-            if (!vec.empty()) {
-                std::cout << "Detected objects:" << std::endl;
-                for (const auto& obj : vec) {
-                    std::cout << "  Label: " << obj.label 
-                              << ", Probability: " << obj.prob 
-                              << ", Rect: [" << obj.rect.x << ", " << obj.rect.y 
-                              << ", " << obj.rect.width << ", " << obj.rect.height << "]" 
-                              << std::endl;
-                }
-            }
+        size_t h = shared->head.load(std::memory_order_relaxed);
+        size_t t = shared->tail.load(std::memory_order_acquire);
+        size_t next = (h + 1) % QUEUE_SIZE;
 
-            size_t h = shared->head.load(std::memory_order_relaxed);
-            size_t t = shared->tail.load(std::memory_order_acquire);
-            size_t next = (h + 1) % QUEUE_SIZE;
+        if (next == t) return false; // queue full
 
-            if (next == t) return false; // queue full
-
-            VectorSlot& slot = shared->queue[h];
-            slot.count = vec.size();
-            for (size_t i = 0; i < vec.size(); ++i) {
-                slot.objects[i] = vec[i];
-            }
-
-            slot.timestamp_us = get_time_us(); 
-            slot.frame_id = frame_id;
-            slot.camera_id = camera_id;
-
-            shared->head.store(next, std::memory_order_release);
-            return true;
-        }
-    
-        // Reader pops a vector
-        bool pop(std::vector<Object>& out, uint64_t& frame_id) {
-            if (writer) return false;
-    
-            size_t h = shared->head.load(std::memory_order_acquire);
-            size_t t = shared->tail.load(std::memory_order_relaxed);
-    
-            if (h == t) return false; // empty
-    
-            const VectorSlot& slot = shared->queue[t];
-            out.resize(slot.count);
-            for (size_t i = 0; i < slot.count; ++i) {
-                out[i] = slot.objects[i];
-            }
-            frame_id = slot.frame_id;
-    
-            shared->tail.store((t + 1) % QUEUE_SIZE, std::memory_order_release);
-            return true;
+        VectorSlot& slot = shared->queue[h];
+        slot.count = vec.size();
+        for (size_t i = 0; i < vec.size(); ++i) {
+            slot.objects[i] = vec[i];
         }
 
-        // pop with timestamp logging
-        bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, uint16_t& camera_id) {
-            if (writer) return false;
-        
-            size_t h = shared->head.load(std::memory_order_acquire);
-            size_t t = shared->tail.load(std::memory_order_relaxed);
-        
-            if (h == t) return false; // empty
-        
-            const VectorSlot& slot = shared->queue[t];
-            out.resize(slot.count);
-            for (size_t i = 0; i < slot.count; ++i) {
-                out[i] = slot.objects[i];
-            }
-        
-            timestamp_us = slot.timestamp_us;  
-            frame_id = slot.frame_id;
-            camera_id = slot.camera_id;
-        
-            shared->tail.store((t + 1) % QUEUE_SIZE, std::memory_order_release);
-            return true;
-        }
-    
-    private:
-        int shm_fd = -1;
-        bool writer;
-        SharedQueue* shared = nullptr;
-        bool creator = false;
-    
-        void map_shared_memory() {
-            void* ptr = mmap(nullptr, sizeof(SharedQueue), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-            if (ptr == MAP_FAILED) throw std::runtime_error("mmap failed");
-            shared = reinterpret_cast<SharedQueue*>(ptr);
-        }
-    };
-    
+        slot.timestamp_us = get_time_us(); 
+        slot.frame_id = frame_id;
+        slot.camera_id = camera_id;
+        slot.yolo_enabled = yolo_enabled;
 
+        shared->head.store(next, std::memory_order_release);
+        return true;
+    }
+    
+    // DEPRECATED: Old push method with uint16_t - provided for transition period
+    // Remove this after updating all code
+    [[deprecated("Use push with uint32_t camera_id instead")]]
+    bool push(const std::vector<Object>& vec, uint64_t frame_id, uint16_t camera_id) {
+        return push(vec, frame_id, static_cast<uint32_t>(camera_id), false);
+    }
+    
+    // Reader pops a vector (basic version for backward compatibility)
+    bool pop(std::vector<Object>& out, uint64_t& frame_id) {
+        if (writer) return false;
+
+        size_t h = shared->head.load(std::memory_order_acquire);
+        size_t t = shared->tail.load(std::memory_order_relaxed);
+
+        if (h == t) return false; // empty
+
+        const VectorSlot& slot = shared->queue[t];
+        out.resize(slot.count);
+        for (size_t i = 0; i < slot.count; ++i) {
+            out[i] = slot.objects[i];
+        }
+        frame_id = slot.frame_id;
+
+        shared->tail.store((t + 1) % QUEUE_SIZE, std::memory_order_release);
+        return true;
+    }
+
+    // UPDATED: Pop with timestamp and uint32_t camera_id
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, uint32_t& camera_id) {
+        if (writer) return false;
+
+        size_t h = shared->head.load(std::memory_order_acquire);
+        size_t t = shared->tail.load(std::memory_order_relaxed);
+
+        if (h == t) return false; // empty
+
+        const VectorSlot& slot = shared->queue[t];
+        out.resize(slot.count);
+        for (size_t i = 0; i < slot.count; ++i) {
+            out[i] = slot.objects[i];
+        }
+
+        timestamp_us = slot.timestamp_us;  
+        frame_id = slot.frame_id;
+        camera_id = slot.camera_id;
+
+        shared->tail.store((t + 1) % QUEUE_SIZE, std::memory_order_release);
+        return true;
+    }
+    
+    // DEPRECATED: Old pop method with uint16_t - provided for transition period
+    [[deprecated("Use pop with uint32_t camera_id instead")]]
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, uint16_t& camera_id) {
+        uint32_t camera_id_32;
+        bool result = pop(out, timestamp_us, frame_id, camera_id_32);
+        camera_id = static_cast<uint16_t>(camera_id_32);  // May truncate!
+        return result;
+    }
+    
+    // NEW: Full pop with all info including YOLO flag
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, 
+             uint32_t& camera_id, bool& yolo_enabled) {
+        if (writer) return false;
+
+        size_t h = shared->head.load(std::memory_order_acquire);
+        size_t t = shared->tail.load(std::memory_order_relaxed);
+
+        if (h == t) return false; // empty
+
+        const VectorSlot& slot = shared->queue[t];
+        out.resize(slot.count);
+        for (size_t i = 0; i < slot.count; ++i) {
+            out[i] = slot.objects[i];
+        }
+
+        timestamp_us = slot.timestamp_us;  
+        frame_id = slot.frame_id;
+        camera_id = slot.camera_id;
+        yolo_enabled = slot.yolo_enabled;
+
+        shared->tail.store((t + 1) % QUEUE_SIZE, std::memory_order_release);
+        return true;
+    }
+    
+    // NEW: Utility method to check if queue is empty (for readers)
+    bool isEmpty() const {
+        if (writer) return false;
+        size_t h = shared->head.load(std::memory_order_acquire);
+        size_t t = shared->tail.load(std::memory_order_relaxed);
+        return h == t;
+    }
+    
+    // NEW: Utility method to check if queue is full (for writers)
+    bool isFull() const {
+        if (!writer) return false;
+        size_t h = shared->head.load(std::memory_order_relaxed);
+        size_t t = shared->tail.load(std::memory_order_acquire);
+        size_t next = (h + 1) % QUEUE_SIZE;
+        return next == t;
+    }
+    
+    // NEW: Get the queue name
+    const std::string& getQueueName() const { return shm_name_; }
+
+private:
+    int shm_fd = -1;
+    bool writer;
+    SharedQueue* shared = nullptr;
+    bool creator = false;
+    std::string shm_name_;  // NEW: Store the queue name
+};
+
+// NEW: Helper function to create per-camera queue name
+inline std::string getCameraQueueName(uint32_t camera_id) {
+    return "/shm_cam_" + std::to_string(camera_id);
 }
+
+// NEW: Helper function to check if a shared memory queue exists
+inline bool queueExists(const char* shm_name) {
+    int fd = shm_open(shm_name, O_RDONLY, 0666);
+    if (fd != -1) {
+        close(fd);
+        return true;
+    }
+    return false;
+}
+
+// NEW: Helper function to unlink (delete) a shared memory queue
+inline void unlinkQueue(const char* shm_name) {
+    shm_unlink(shm_name);
+    std::cout << "[shaman] Unlinked queue: " << shm_name << std::endl;
+}
+
+} // namespace shaman

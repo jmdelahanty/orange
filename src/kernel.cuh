@@ -39,6 +39,13 @@ void gpu_crop_and_resize_rgba(
     cudaStream_t stream
 );
 
+// New optimized kernel launcher
+void launch_rgb_to_nv12_kernel(const unsigned char* d_rgb,
+                               unsigned char* d_nv12,
+                               int width, int height,
+                               int pitch,
+                               cudaStream_t stream);
+
 
 void launch_mono_to_rgb_kernel(unsigned char* dst_rgb, const unsigned char* src_mono, int width, int height, cudaStream_t stream);
 

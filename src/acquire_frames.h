@@ -18,6 +18,7 @@ class GPUVideoEncoder;
 class YOLOv8Worker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
+class EncoderPreprocessWorker;
 
 void acquire_frames(
     CameraEmergent *ecam,
@@ -27,7 +28,7 @@ void acquire_frames(
     PTPParams* ptp_params,
     INDIGOSignalBuilder* indigo_signal_builder,
     COpenGLDisplay* openGLDisplay,
-    GPUVideoEncoder* gpu_encoder,
+    EncoderPreprocessWorker* encoder_preprocess_worker,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources

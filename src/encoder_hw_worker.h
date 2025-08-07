@@ -1,10 +1,12 @@
 // src/encoder_hw_worker.h
 
+// encoder_hw_worker.h - REMOVE the atomic counters from here
 #ifndef ENCODER_HW_WORKER_H
 #define ENCODER_HW_WORKER_H
 
 #include "threadworker.h"
 #include "video_capture.h"
+#include "gpu_video_encoder.h"
 #include <chrono>
 #include <fstream>
 #include "encoder_pipeline.h"
@@ -28,9 +30,9 @@ public:
 
     void flush_and_close();
 
-    double get_fps() const {
-        return current_fps_;
-    }
+    double get_fps() const { return current_fps_; }
+    uint64_t get_total_packets() const { return total_packets_.load(); }
+    uint64_t get_encode_failures() const { return encode_failures_.load(); }
 
     EncoderContext encoder_;
     EncoderPreprocessWorker* m_prep_worker_;
@@ -50,6 +52,9 @@ private:
     std::chrono::steady_clock::time_point last_fps_update_time_;
     int frame_counter_;
     double current_fps_;
+    std::atomic<uint64_t> slow_frames_{0};      // Frames taking >12.5ms
+    std::atomic<uint64_t> total_packets_{0};    // Total encoded packets
+    std::atomic<uint64_t> encode_failures_{0};  // Failed encode attempts
 };
 
 #endif // ENCODER_HW_WORKER_H

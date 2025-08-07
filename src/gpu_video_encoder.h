@@ -43,7 +43,7 @@ public:
     ~GPUVideoEncoder() override;
 
     double get_fps() const {
-        return current_fps_;
+        return current_fps_.load(std::memory_order_relaxed);
     }
 
     bool* encoder_ready_signal;
@@ -80,7 +80,7 @@ private:
     // FPS tracking
     std::chrono::steady_clock::time_point last_fps_update_time_;
     int frame_counter_;
-    double current_fps_;
+    std::atomic<double> current_fps_;
     uint64_t last_recording_frame_id_ = 0;
 
     // Debug helper functions

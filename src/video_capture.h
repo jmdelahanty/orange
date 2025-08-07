@@ -53,6 +53,10 @@ typedef struct {
     // New event specifically for YOLO completion
     cudaEvent_t* yolo_completion_event; 
 
+    // Frame IPC manager pointer (NEW)
+    // This allows workers (especially YOLO) to update frame data with detections
+    void* frame_ipc_manager = nullptr;
+
 } WORKER_ENTRY;
 
 enum PictureSaveState {
@@ -70,7 +74,7 @@ struct CameraControl
 };
 
 struct CameraResources {
-    static const int ACQUIRE_WORK_ENTRIES_MAX = 120;
+    static const int ACQUIRE_WORK_ENTRIES_MAX = 240;
     static const int EVENT_POOL_SIZE = 256;
 
     WORKER_ENTRY* worker_entry_pool = nullptr;
@@ -126,6 +130,8 @@ struct CameraResources {
         worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX];
         for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
+            // Initialize the new frame_ipc_manager pointer to nullptr
+            worker_entry_pool[i].frame_ipc_manager = nullptr;
         }
         
         free_entries_queue = new SafeQueue<WORKER_ENTRY*>();
@@ -191,7 +197,12 @@ struct CameraEachSelect
     bool selected_to_save = false;
     std::string picture_save_folder;
     const char* yolo_model;
-    bool send_yolo_via_ipc = false;
+
+    // Frame IPC settings (NEW)
+    bool send_frame_ipc = false;      // Enable frame synchronization via IPC
+    
+    // Legacy/deprecated settings (kept for backward compatibility)
+    bool send_yolo_via_ipc = false;   // DEPRECATED: Use send_frame_ipc instead
     bool send_yolo_via_enet = false;
 };
 

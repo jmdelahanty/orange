@@ -17,6 +17,7 @@
 #include "cuda_context_debug.h"
 #include "opencv2/opencv.hpp"
 #include "crop_and_encode_worker.h"
+#include "frame_ipc_manager.h"
 
 YOLOv8Worker::YOLOv8Worker(const char* name,
                            CameraParams* cam_params,
@@ -34,7 +35,6 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
       last_fps_update_time_(std::chrono::steady_clock::now()),
       frame_counter_(0),
       current_fps_(0.0),
-      shaman_ipc_queue_(nullptr),
       m_recycle_queue(recycle_queue),
       m_dump_next_frame(false)
 {
@@ -62,12 +62,9 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
 
         initalize_gpu_frame(&frame_original_gpu_, associated_camera_params_);
         initialize_gpu_debayer(&debayer_gpu_, associated_camera_params_);
-        
-        if (associated_camera_select_->yolo && associated_camera_select_->send_yolo_via_ipc) {
-            shaman_ipc_queue_ = new shaman::SharedBoxQueue(true /* is_writer */);
-        }
 
         std::cout << "YOLOv8Worker for " << name << " initialized successfully." << std::endl;
+        std::cout << "[NOTE] Frame IPC handled by acquire_frames. YOLO updates frames with detection data." << std::endl;
 
     } catch (const std::exception& e) {
         std::cerr << "YOLOv8Worker Error for " << name << ": " << e.what() << std::endl;
@@ -87,10 +84,10 @@ YOLOv8Worker::~YOLOv8Worker() {
     if (associated_camera_params_) {
         ck(cudaSetDevice(associated_camera_params_->gpu_id));
         if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); }
+        if (frame_original_gpu_.d_orig) { cudaFree(frame_original_gpu_.d_orig); }
         if (yolov8_instance_) { delete yolov8_instance_; }
     }
     
-    if (shaman_ipc_queue_) delete shaman_ipc_queue_;
     if (fb_builder_) delete fb_builder_;
     
     std::cout << "YOLOv8Worker destructor complete for " << threadName << std::endl;
@@ -112,7 +109,6 @@ void YOLOv8Worker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
     enet_host_context_ = host_ctx;
     enet_target_peer_ = target_peer;
 }
-
 
 bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
     if (!yolov8_instance_ || !entry || !entry->d_image) {
@@ -182,6 +178,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         ck(cudaStreamSynchronize(yolov8_instance_->stream));
         
         // Now that the GPU is finished, process the results.
+        // This completely REPLACES entry->detections, preventing stale data
         yolov8_instance_->postprocess(entry->detections);
 
         uint64_t current_timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
@@ -213,7 +210,11 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             entry->ref_count.fetch_add(1, std::memory_order_acq_rel); 
             m_crop_worker->PutObjectToQueueIn(entry);
         }
-        if (!entry->detections.empty()) {
+        
+        // Mark if we have detections
+        entry->has_detections = !entry->detections.empty();
+        
+        if (entry->has_detections) {
             std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
             for(size_t i = 0; i < entry->detections.size(); ++i) {
                 const auto& obj = entry->detections[i];
@@ -225,7 +226,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
 
         entry->detections_ready.store(true);
 
-        // FPS calculation and IPC/ENet logic remains the same.
+        // FPS calculation
         frame_counter_++;
         auto now = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed = now - last_fps_update_time_;
@@ -237,13 +238,47 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             last_fps_update_time_ = now;
         }
 
-        if (entry->has_detections) {
-            if (associated_camera_select_->send_yolo_via_ipc && shaman_ipc_queue_) {
+        // NEW: Update Frame IPC with YOLO detection results
+        // The frame was already sent by acquire_frames with empty detections
+        // This updates it with the actual detection data
+        if (entry->frame_ipc_manager && entry->has_detections) {
+            FrameIPCManager* frame_ipc = static_cast<FrameIPCManager*>(entry->frame_ipc_manager);
+            if (frame_ipc && frame_ipc->isEnabled()) {
+                // Convert detections to shaman format for IPC
                 std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
-                if (!shaman_ipc_queue_->push(shaman_objects, entry->recording_frame_id, associated_camera_params_->camera_id)) {
-                    std::cerr << "[" << threadName << "] Failed to push to IPC queue." << std::endl;
+                
+                // Use the same frame ID logic as acquire_frames
+                uint64_t frame_id = (camera_control_->record_video && entry->recording_frame_id > 0)
+                                   ? entry->recording_frame_id 
+                                   : entry->frame_id;
+                
+                // Update the frame with detection data
+                bool update_success = frame_ipc->updateFrameWithDetections(frame_id, shaman_objects);
+                
+                if (update_success) {
+                    // Log periodically to avoid spam
+                    static std::atomic<uint64_t> detection_updates{0};
+                    uint64_t update_count = detection_updates.fetch_add(1) + 1;
+                    
+                    if (update_count % 100 == 0) {
+                        std::cout << "[" << threadName << "] Sent " << update_count 
+                                  << " detection updates via Frame IPC" << std::endl;
+                    }
+                } else {
+                    // This might happen if the IPC queue is full
+                    static std::atomic<int> ipc_failures{0};
+                    if ((ipc_failures.fetch_add(1) + 1) % 100 == 0) {
+                        std::cerr << "[" << threadName << "] Frame IPC update failures: " 
+                                  << ipc_failures.load() << std::endl;
+                    }
                 }
             }
+        }
+
+        // Handle ENet sending if configured
+        if (enet_target_peer_ && associated_camera_select_->send_yolo_via_enet && !entry->detections.empty()) {
+            // ENet code remains unchanged
+            // ... (ENet sending code if you have it) ...
         }
 
     } catch (const std::exception& e) {
