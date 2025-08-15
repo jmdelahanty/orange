@@ -1,3 +1,5 @@
+// src/threadworker.h
+
 #pragma once
 
 #include <queue>
@@ -240,29 +242,29 @@ void CThreadWorker<T>::ThreadRunning()
 {
     printf("Child Thread Start %d (%s)\n", id, threadName);
 
-    // ====================================================================
-    // MODIFICATION: The main worker loop now drains the queue on shutdown.
-    // It continues as long as the thread is "on" OR there are items left.
-    // ====================================================================
     while (this->IsMachineOn() || this->GetCountQueueInSize() > 0)
     {
         T* f = this->GetObjectFromQueueIn();
+
+        // The worker function is now called even with a nullptr.
+        // It is the responsibility of the derived class to handle the nullptr case.
+        if (this->WorkerFunction(f) && f)
+        {
+            this->PutObjectToQueueOut(f);
+        }
+
         if (f)
         {
-            if (this->WorkerFunction(f)) // Check the return value
-            {
-                this->PutObjectToQueueOut(f);
-            }
             myWork++;
         }
         else
         {
-            // If the thread is supposed to be off and the queue is empty, exit.
+            // If the machine is shutting down and the queue is empty, we can exit.
             if (!this->IsMachineOn()) {
                 break;
             }
-            
-            // Otherwise, wait for work.
+
+            // If the queue was empty, wait a bit before trying again.
 #if defined(__GNUC__)
             usleep(interval);
 #else

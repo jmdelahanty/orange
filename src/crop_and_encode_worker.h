@@ -30,7 +30,7 @@ protected:
 private:
     uint64_t last_frame_id_used_ = 0;
     CameraParams* camera_params_;
-    std::string folder_name_;
+    std::string base_folder_name_; // Renamed from folder_name_
     Writer writer_;
     NvEncoderCuda* encoder_ = nullptr;
     unsigned char* d_cropped_bgr_ = nullptr;
@@ -45,6 +45,7 @@ private:
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     Debayer debayer_gpu_;
     CameraControl* camera_control_;
+    bool is_recording_ = false;
 };
 
 #endif // CROP_AND_ENCODE_WORKER_H

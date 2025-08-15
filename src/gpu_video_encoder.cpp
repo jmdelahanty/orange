@@ -158,27 +158,29 @@ GPUVideoEncoder::GPUVideoEncoder(
     CameraControl* camera_control
 )
 : CThreadWorker<WORKER_ENTRY>(name),
-camera_params(camera_params),
-folder_name(folder_name),
-codec_(codec), // Added this line
-encoder_ready_signal(encoder_ready_signal),
-m_recycle_queue(recycle_queue),
-camera_control_(camera_control),
-m_stream(nullptr),
-d_rgb_temp_(nullptr),
-d_iyuv_temp_(nullptr),
-d_uv_default_plane_(nullptr),
-last_fps_update_time_(std::chrono::steady_clock::now()),
-frame_counter_(0),
-current_fps_(0.0),
-scaled_width_(camera_params->width),
-scaled_height_(camera_params->height),
-d_scaled_mono_buffer_(nullptr),
-encoder_pitch_(0)
+  camera_params(camera_params),
+  folder_name(folder_name),
+  codec_(codec),
+  encoder_ready_signal(encoder_ready_signal),
+  m_recycle_queue(recycle_queue),
+  camera_control_(camera_control),
+  m_stream(nullptr),
+  d_rgb_temp_(nullptr),
+  d_iyuv_temp_(nullptr),
+  d_uv_default_plane_(nullptr),
+  last_fps_update_time_(std::chrono::steady_clock::now()),
+  frame_counter_(0),
+  current_fps_(0.0),
+  scaled_width_(camera_params->width),
+  scaled_height_(camera_params->height),
+  d_scaled_mono_buffer_(nullptr),
+  encoder_pitch_(0),
+  is_recording_(false),
+  last_recording_frame_id_(0)
 {
     NVTX_ENCODE("GPUVideoEncoder_Constructor");
     CUDA_CTX_LOG("=== GPU Video Encoder Constructor START ===");
-    
+
     std::cout << "[GPUVideoEncoder] Constructor for " << name << " on GPU " << camera_params->gpu_id << std::endl;
     std::cout << "[GPUVideoEncoder] NATIVE RESOLUTION MODE: " << camera_params->width << "x" << camera_params->height << std::endl;
 
@@ -198,13 +200,13 @@ encoder_pitch_(0)
         NVTX_RANGE_PUSH("Setup_Encoder_Format");
         encoder.eFormat = NV_ENC_BUFFER_FORMAT_NV12;
         NVTX_RANGE_POP();
-        
+
         NVTX_RANGE_PUSH("Create_NVIDIA_Encoder");
         CUDA_CTX_LOG("Creating NVIDIA encoder");
         encoder.pEnc = new NvEncoderCuda(encoder.cuContext, camera_params->width, camera_params->height, encoder.eFormat);
         CUDA_CTX_LOG("NVIDIA encoder created successfully");
         NVTX_RANGE_POP();
-        
+
         NVTX_RANGE_PUSH("Configure_Encoder_Parameters");
         NV_ENC_INITIALIZE_PARAMS initializeParams = { NV_ENC_INITIALIZE_PARAMS_VER };
         NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
@@ -246,7 +248,7 @@ encoder_pitch_(0)
         std::cout << "  Frame Rate: " << initializeParams.frameRateNum << "/" << initializeParams.frameRateDen << std::endl;
         std::cout << "  Rate Control: " << encodeConfig.rcParams.rateControlMode << std::endl;
         std::cout << "  Avg Bitrate: " << encodeConfig.rcParams.averageBitRate << std::endl;
-        std::cout << "  Input Format: " << encoder.eFormat << std::endl;
+        std::cout << "  Input Format: " << NvEncFormatToString(encoder.eFormat) << std::endl;
         std::cout << "========================================" << std::endl;
 
         NVTX_RANGE_PUSH("Initialize_Encoder");
@@ -260,34 +262,21 @@ encoder_pitch_(0)
 
         size_t encoder_buffer_size = (size_t)encoder_pitch_ * scaled_height_ * 3 / 2;
         ck(cudaMalloc(&d_iyuv_temp_, encoder_buffer_size));
-        
+
         if (!camera_params->color) {
-            // Determine the size of one chroma plane based on the final encoded resolution
-            // The pitch is determined by the encoder's requirements.
-            const NvEncInputFrame *tempFrame = encoder.pEnc->GetNextInputFrame();
-            encoder_pitch_ = tempFrame->pitch;
             size_t uv_plane_size = (size_t)encoder_pitch_ * scaled_height_ / 4;
-            
             ck(cudaMalloc(&d_uv_default_plane_, uv_plane_size));
             ck(cudaMemset(d_uv_default_plane_, 128, uv_plane_size));
             std::cout << "[GPUVideoEncoder] Pre-allocated monochrome UV plane (" << uv_plane_size << " bytes)." << std::endl;
         }
         NVTX_RANGE_POP();
 
-        std::cout << "[GPUVideoEncoder] Native resolution " << scaled_width_ << "x" << scaled_height_ 
+        std::cout << "[GPUVideoEncoder] Native resolution " << scaled_width_ << "x" << scaled_height_
                   << " with encoder pitch: " << encoder_pitch_ << std::endl;
 
-        NVTX_RANGE_PUSH("Initialize_File_Writer");
-        initialize_writer(&writer, camera_params, folder_name, codec);
-        writer.video->create_thread();
-        NVTX_RANGE_POP();
-        
-        std::cout << "[GPUVideoEncoder] Successfully initialized NATIVE RESOLUTION encoder for " << name 
+        std::cout << "[GPUVideoEncoder] Successfully initialized NATIVE RESOLUTION encoder for " << name
                   << " - Codec: " << codec << ", Preset: " << preset << ", Tuning: " << tuning << std::endl;
         *encoder_ready_signal = true;
-        
-        NVTX_RANGE_PUSH("Cleanup_Context");
-        NVTX_RANGE_POP();
     }
     catch (const std::exception& e)
     {
@@ -302,24 +291,24 @@ encoder_pitch_(0)
         CUDA_CTX_LOG("Unknown exception in constructor");
         throw;
     }
-    
+
     CUDA_CTX_LOG("=== GPU Video Encoder Constructor END ===");
 }
 
 GPUVideoEncoder::~GPUVideoEncoder()
 {
     NVTX_ENCODE("GPUVideoEncoder_Destructor");
-    
+
     std::cout << "[GPUVideoEncoder] Destructor for " << this->threadName << std::endl;
 
     // The destructor now focuses only on releasing its own resources.
-    // The main thread is responsible for calling flush_and_close().
-    // We can add a safeguard here.
-    if (encoder.pEnc) {
-        std::cerr << "Warning: GPUVideoEncoder destroyed without explicit flush. Forcing cleanup." << std::endl;
-        flush_and_close(); 
+    // A safeguard call to flush_and_close() ensures that if the worker is
+    // destroyed while a recording is active, the file is properly finalized.
+    if (is_recording_) {
+        std::cerr << "Warning: GPUVideoEncoder destroyed while still in a recording state. Forcing cleanup." << std::endl;
+        flush_and_close();
     }
-    
+
     NVTX_RANGE_PUSH("Cleanup_CUDA_Resources");
     if (m_stream) { cudaStreamDestroy(m_stream); }
     if (frame_original.d_orig) cudaFree(frame_original.d_orig);
@@ -335,13 +324,12 @@ GPUVideoEncoder::~GPUVideoEncoder()
 
 bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 {
-
     // A nullptr entry means the queue was empty. Use this opportunity to check for a state change from recording to paused.
     if (!entry)
     {
         if (is_recording_ && !camera_control_->record_video)
         {
-            std::cout << "[" << this->threadName << "] Recording paused. Finalizing video file..." << std::endl;
+            std::cout << "[" << this->threadName << "] Recording Stopped. Finalizing video file..." << std::endl;
             flush_and_close();
             is_recording_ = false; // Update our state
         }
@@ -649,7 +637,7 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 
     } catch (const std::exception& e) {
         NVTX_RANGE_PUSH("Exception_Handling");
-        std::cerr << "[GPUEncoder] Exception in WorkerFunction: " << e.what() << std::endl;
+        std::cerr << "[GPUVideoEncoder] Exception in WorkerFunction: " << e.what() << std::endl;
         
         // Handle reference counting even on error
         int remaining_refs = entry->ref_count.fetch_sub(1, std::memory_order_acq_rel);
@@ -675,5 +663,40 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 
 void GPUVideoEncoder::flush_and_close()
 {
-    flush_and_close_writer(&encoder, &writer, last_recording_frame_id_);
+    NVTX_ENCODE("GPUVideoEncoder_FlushAndClose");
+    std::cout << "[" << this->threadName << "] Flushing and closing video writer..." << std::endl;
+
+    if (encoder.pEnc) {
+        // Flush any remaining frames from the hardware encoder
+        encoder.pEnc->EndEncode(encoder.vPacket);
+        for (std::vector<uint8_t> &packet : encoder.vPacket)
+        {
+            if (writer.video) {
+                writer.video->push_packet(packet.data(), (int)packet.size(), ++last_recording_frame_id_);
+            }
+        }
+        encoder.vPacket.clear();
+
+        // Destroy the encoder instance
+        encoder.pEnc->DestroyEncoder();
+        delete encoder.pEnc;
+        encoder.pEnc = nullptr;
+    }
+
+    if(writer.video) {
+        // Signal the writer thread to finish, wait for it, then delete the object
+        writer.video->quit_thread();
+        writer.video->join_thread();
+        delete writer.video;
+        writer.video = nullptr;
+    }
+
+    if(writer.metadata && writer.metadata->is_open()) {
+        // Close and delete the metadata file stream
+        writer.metadata->close();
+        delete writer.metadata;
+        writer.metadata = nullptr;
+    }
+    
+    std::cout << "[" << this->threadName << "] Writer closed successfully." << std::endl;
 }

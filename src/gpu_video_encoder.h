@@ -61,7 +61,7 @@ private:
     Debayer debayer;
     EncoderContext encoder;
     Writer writer;
-    cudaStream_t m_stream; // Dedicated stream for this worker
+    cudaStream_t m_stream;
 	int encoder_pitch_;
     int scaled_width_;
     int scaled_height_;

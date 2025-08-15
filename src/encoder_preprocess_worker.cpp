@@ -233,12 +233,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(preprocess_end - start_time).count();
     
     // Log slow frames (> 12.5ms for 80fps target)
-    if (duration_us > 12500) {
-        std::cout << "[PERF WARNING] " << threadName 
-                  << " Camera " << camera_params_->camera_serial
-                  << " slow frame: " << duration_us << "μs"
-                  << " (target: <12500μs for 80fps)" << std::endl;
-    }
+    // if (duration_us > 12500) {
+    //     std::cout << "[PERF WARNING] " << threadName 
+    //               << " Camera " << camera_params_->camera_serial
+    //               << " slow frame: " << duration_us << "μs"
+    //               << " (target: <12500μs for 80fps)" << std::endl;
+    // }
 
     return false; // This worker never passes items to its own output queue.
 }

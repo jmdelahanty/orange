@@ -190,19 +190,19 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         
         // Log speed information for tracked objects
         auto tracked_objects = velocity_tracker_.getTrackedObjects();
-        if (!tracked_objects.empty()) {
-            std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Tracking " 
-                      << tracked_objects.size() << " objects with speeds:" << std::endl;
-            for (const auto& obj : tracked_objects) {
-                std::cout << "  - Track ID " << obj.track_id 
-                          << ": Speed = " << obj.current_speed_physical_units << " cm/s"
-                          << " (" << obj.current_speed_pixels_per_sec << " px/s)"
-                          << ", Label = " << obj.latest_detection.label
-                          << ", Pos = (" << (obj.latest_detection.rect.x + obj.latest_detection.rect.width * 0.5f)
-                          << ", " << (obj.latest_detection.rect.y + obj.latest_detection.rect.height * 0.5f) << ")"
-                          << std::endl;
-            }
-        }
+        // if (!tracked_objects.empty()) {
+        //     std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Tracking " 
+        //               << tracked_objects.size() << " objects with speeds:" << std::endl;
+        //     for (const auto& obj : tracked_objects) {
+        //         std::cout << "  - Track ID " << obj.track_id 
+        //                   << ": Speed = " << obj.current_speed_physical_units << " cm/s"
+        //                   << " (" << obj.current_speed_pixels_per_sec << " px/s)"
+        //                   << ", Label = " << obj.latest_detection.label
+        //                   << ", Pos = (" << (obj.latest_detection.rect.x + obj.latest_detection.rect.width * 0.5f)
+        //                   << ", " << (obj.latest_detection.rect.y + obj.latest_detection.rect.height * 0.5f) << ")"
+        //                   << std::endl;
+        //     }
+        // }
 
         // After detections are found, dispatch to the crop worker if it exists AND recording is on
         if (m_crop_worker && camera_control_->record_video) {
@@ -214,15 +214,15 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         // Mark if we have detections
         entry->has_detections = !entry->detections.empty();
         
-        if (entry->has_detections) {
-            std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
-            for(size_t i = 0; i < entry->detections.size(); ++i) {
-                const auto& obj = entry->detections[i];
-                std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
-                          << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
-                          << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
-            }
-        }
+        // if (entry->has_detections) {
+        //     std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
+        //     for(size_t i = 0; i < entry->detections.size(); ++i) {
+        //         const auto& obj = entry->detections[i];
+        //         std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
+        //                   << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
+        //                   << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
+        //     }
+        // }
 
         entry->detections_ready.store(true);
 

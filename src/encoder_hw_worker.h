@@ -1,6 +1,5 @@
 // src/encoder_hw_worker.h
 
-// encoder_hw_worker.h - REMOVE the atomic counters from here
 #ifndef ENCODER_HW_WORKER_H
 #define ENCODER_HW_WORKER_H
 
@@ -42,19 +41,21 @@ protected:
 
 private:
     CameraParams* camera_params_;
-    std::string folder_name_;
+    std::string base_folder_name_;
     std::string codec_;
     Writer writer_;
     cudaStream_t m_stream = nullptr;
     CameraControl* camera_control_;
 
+    bool is_recording_ = false; // Tracks the local recording state of this worker
+
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;
     int frame_counter_;
     double current_fps_;
-    std::atomic<uint64_t> slow_frames_{0};      // Frames taking >12.5ms
-    std::atomic<uint64_t> total_packets_{0};    // Total encoded packets
-    std::atomic<uint64_t> encode_failures_{0};  // Failed encode attempts
+    std::atomic<uint64_t> slow_frames_{0};
+    std::atomic<uint64_t> total_packets_{0};
+    std::atomic<uint64_t> encode_failures_{0};
 };
 
 #endif // ENCODER_HW_WORKER_H

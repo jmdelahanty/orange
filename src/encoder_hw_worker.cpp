@@ -40,25 +40,29 @@ static inline void write_metadata_hw(std::ofstream *metadata, unsigned long long
     }
 }
 
-// CORRECTED CONSTRUCTOR SIGNATURE
 EncoderHwWorker::EncoderHwWorker(
     const char* name,
     CameraParams* camera_params,
     const std::string& codec,
     const std::string& preset,
     const std::string& tuning,
-    std::string folder_name,
+    std::string base_folder_name,
     EncoderPreprocessWorker* prep_worker,
     CameraControl* camera_control
 )
 : CThreadWorker(name),
   camera_params_(camera_params),
-  folder_name_(folder_name),
+  base_folder_name_(base_folder_name),
   codec_(codec),
   m_prep_worker_(prep_worker),
   camera_control_(camera_control),
   encoder_(),
-  m_stream(nullptr)
+  m_stream(nullptr),
+  last_recording_frame_id_(0),
+  last_fps_update_time_(std::chrono::steady_clock::now()),
+  frame_counter_(0),
+  current_fps_(0.0),
+  is_recording_(false) // Initialize recording state
 {
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreate(&m_stream));
@@ -70,54 +74,45 @@ EncoderHwWorker::EncoderHwWorker(
     initializeParams.encodeConfig = &encodeConfig;
 
     GUID codecGuid = (codec_ == "hevc") ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
+    GUID presetGuid = (preset == "p1") ? NV_ENC_PRESET_P1_GUID : (preset == "p5") ? NV_ENC_PRESET_P5_GUID : (preset == "p7") ? NV_ENC_PRESET_P7_GUID : NV_ENC_PRESET_P3_GUID;
+    NV_ENC_TUNING_INFO tuningInfo = (tuning == "ll") ? NV_ENC_TUNING_INFO_LOW_LATENCY : (tuning == "ull") ? NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY : (tuning == "lossless") ? NV_ENC_TUNING_INFO_LOSSLESS : NV_ENC_TUNING_INFO_HIGH_QUALITY;
 
-    GUID presetGuid = NV_ENC_PRESET_P1_GUID;
-    NV_ENC_TUNING_INFO tuningInfo = NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
-    std::cout << "[" << this->threadName << "] Using FASTEST encoder settings (P1 Preset, Ultra-Low Latency)." << std::endl;
 
     encoder_.pEnc->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
 
     initializeParams.frameRateNum = camera_params_->frame_rate;
     initializeParams.frameRateDen = 1;
     initializeParams.enablePTD = 1;
-    
-    // ============ OPTIMIZED SETTINGS START HERE ============
-    
-    // Switch to CBR for consistent performance (CRITICAL CHANGE)
-    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;  // Changed from VBR
-    encodeConfig.rcParams.averageBitRate = 15000000;  // Reduced from 20MB to 15MB
-    encodeConfig.rcParams.maxBitRate = 15000000;      // Same as average for CBR
+
+    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
+    encodeConfig.rcParams.averageBitRate = 15000000;
+    encodeConfig.rcParams.maxBitRate = 15000000;
     encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.averageBitRate / camera_params_->frame_rate;
-    
-    // GOP settings for seekability - 2 second intervals
-    encodeConfig.gopLength = camera_params_->frame_rate * 2;  // 2-second GOP instead of 1-second
-    encodeConfig.frameIntervalP = 1;  // Only P-frames between I-frames
-    
-    // DISABLE ALL QUALITY ENHANCEMENTS FOR SPEED
-    encodeConfig.rcParams.enableAQ = 0;          // Disable adaptive quantization
-    encodeConfig.rcParams.enableTemporalAQ = 0;   // Disable temporal AQ
-    encodeConfig.rcParams.enableLookahead = 0;    // Disable lookahead
+    encodeConfig.gopLength = camera_params_->frame_rate * 2;
+    encodeConfig.frameIntervalP = 1;
+    encodeConfig.rcParams.enableAQ = 0;
+    encodeConfig.rcParams.enableTemporalAQ = 0;
+    encodeConfig.rcParams.enableLookahead = 0;
     encodeConfig.rcParams.lowDelayKeyFrameScale = 1;
-    encodeConfig.rcParams.enableMinQP = 0;       // Disable min QP
-    encodeConfig.rcParams.enableMaxQP = 0;       // Disable max QP
-    encodeConfig.rcParams.strictGOPTarget = 0;   // Disable strict GOP target
-    encodeConfig.rcParams.enableNonRefP = 0;     // Disable non-reference P frames
-    
-    // HEVC-specific optimizations
+    encodeConfig.rcParams.enableMinQP = 0;
+    encodeConfig.rcParams.enableMaxQP = 0;
+    encodeConfig.rcParams.strictGOPTarget = 0;
+    encodeConfig.rcParams.enableNonRefP = 0;
+    initializeParams.enableWeightedPrediction = 0;
+
     if (codec_ == "hevc") {
         auto& hevcConfig = encodeConfig.encodeCodecConfig.hevcConfig;
-        hevcConfig.pixelBitDepthMinus8 = 0;  // 8-bit encoding
+        hevcConfig.pixelBitDepthMinus8 = 0;
         hevcConfig.idrPeriod = encodeConfig.gopLength;
-        hevcConfig.sliceMode = 0;  // No slicing for speed
+        hevcConfig.sliceMode = 0;
         hevcConfig.sliceModeData = 0;
-        hevcConfig.maxNumRefFramesInDPB = 1;  // Minimize reference frames for speed
-        hevcConfig.repeatSPSPPS = 1;  // Include SPS/PPS for seeking
+        hevcConfig.maxNumRefFramesInDPB = 1;
+        hevcConfig.repeatSPSPPS = 1;
         hevcConfig.outputBufferingPeriodSEI = 0;
         hevcConfig.outputPictureTimingSEI = 0;
         hevcConfig.outputAUD = 0;
-        hevcConfig.enableLTR = 0;  // Disable long term references
+        hevcConfig.enableLTR = 0;
     } else {
-        // H.264 specific optimizations (if you test with H.264)
         auto& h264Config = encodeConfig.encodeCodecConfig.h264Config;
         h264Config.idrPeriod = encodeConfig.gopLength;
         h264Config.sliceMode = 0;
@@ -126,36 +121,24 @@ EncoderHwWorker::EncoderHwWorker(
         h264Config.maxNumRefFrames = 1;
         h264Config.adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_DISABLE;
         h264Config.bdirectMode = NV_ENC_H264_BDIRECT_MODE_DISABLE;
-        h264Config.entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC; // CAVLC is faster than CABAC
+        h264Config.entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC;
     }
-    
-    // Additional performance flags
-    initializeParams.enableWeightedPrediction = 0;
-    
-    // ============ OPTIMIZED SETTINGS END HERE ============
 
     if (!camera_params_->color) {
-        std::cout << "[" << this->threadName << "] Mono camera detected, enabling monoChromeEncoding." << std::endl;
         encodeConfig.monoChromeEncoding = 1;
     }
     
-    // Add debug output to confirm settings
-    std::cout << "[" << this->threadName << "] Encoder Configuration:" << std::endl;
-    std::cout << "  - Rate Control: CBR (Constant Bitrate)" << std::endl;
-    std::cout << "  - Bitrate: " << encodeConfig.rcParams.averageBitRate / 1000000 << " Mbps" << std::endl;
-    std::cout << "  - GOP Length: " << encodeConfig.gopLength << " frames" << std::endl;
-    std::cout << "  - Quality Enhancements: DISABLED" << std::endl;
-    std::cout << "  - Target FPS: " << camera_params_->frame_rate << std::endl;
-
     encoder_.pEnc->CreateEncoder(&initializeParams);
     encoder_.pEnc->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
-
-    initialize_writer_hw(&writer_, camera_params_, folder_name_, codec_);
 }
 
 EncoderHwWorker::~EncoderHwWorker()
 {
-    flush_and_close();
+    // Safeguard: Ensure resources are released if the worker is destroyed.
+    if(is_recording_)
+    {
+        flush_and_close();
+    }
     if (encoder_.pEnc) {
         delete encoder_.pEnc;
         encoder_.pEnc = nullptr;
@@ -172,8 +155,11 @@ void EncoderHwWorker::flush_and_close()
         encoder_.pEnc->EndEncode(encoder_.vPacket);
         for (auto &packet : encoder_.vPacket)
         {
-            writer_.video->push_packet(packet.data(), (int)packet.size(), ++last_recording_frame_id_);
+            if (writer_.video) {
+                writer_.video->push_packet(packet.data(), (int)packet.size(), ++last_recording_frame_id_);
+            }
         }
+        encoder_.vPacket.clear();
     }
 
     if (writer_.video) {
@@ -191,23 +177,47 @@ void EncoderHwWorker::flush_and_close()
 
 bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 {
-    // Start timing this frame's processing
-    auto start_time = std::chrono::steady_clock::now();
-    
     if (!entry) {
-        // No work available in the queue, do nothing.
+        if (is_recording_ && !camera_control_->record_video) {
+            std::cout << "[" << this->threadName << "] HW Recording paused. Finalizing video file..." << std::endl;
+            flush_and_close();
+            is_recording_ = false;
+        }
         return false;
     }
 
-    // --- Performance Tracking (Enhanced) ---
+    // If the global flag is true but we aren't recording yet, start a new recording.
+    if (camera_control_->record_video && !is_recording_) {
+        std::cout << "[" << this->threadName << "] HW Recording started. Opening new video file..." << std::endl;
+
+        // Create a new timestamped folder
+        std::string current_recording_folder = base_folder_name_ + "/" + get_current_date_time();
+        make_folder(current_recording_folder);
+
+        initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_);
+        is_recording_ = true;
+    }
+
+    // If recording is globally disabled, skip processing but recycle resources.
+    if (!camera_control_->record_video) {
+        if (m_prep_worker_) {
+            if (entry->preprocess_complete_event) {
+                m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
+                m_prep_worker_->available_events_++;
+            }
+            m_prep_worker_->free_encoder_entries_.push(entry);
+            m_prep_worker_->available_buffers_++;
+        }
+        return false;
+    }
+
+    auto start_time = std::chrono::steady_clock::now();
     frame_counter_++;
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = now - last_fps_update_time_;
     if (elapsed.count() >= 1.0) {
         current_fps_ = frame_counter_ / elapsed.count();
-        
-        // Detailed performance metrics
-        std::cout << "[" << threadName << "] GPU " << camera_params_->gpu_id 
+        std::cout << "[" << threadName << "] GPU " << camera_params_->gpu_id
                   << " Camera " << camera_params_->camera_serial
                   << " | FPS: " << std::fixed << std::setprecision(1) << current_fps_
                   << " | Queue: " << this->GetCountQueueInSize()
@@ -215,32 +225,27 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                   << " | Slow frames: " << slow_frames_
                   << " | Encode fails: " << encode_failures_
                   << std::endl;
-                  
         frame_counter_ = 0;
-        slow_frames_ = 0;  // Reset slow frame counter each second
+        slow_frames_ = 0;
         last_fps_update_time_ = now;
     }
 
     ck(cudaSetDevice(camera_params_->gpu_id));
 
     try {
-        // --- CRITICAL ASYNC STEP: Wait for the preprocess stage to finish ---
         if (entry->preprocess_complete_event) {
             ck(cudaStreamWaitEvent(m_stream, *entry->preprocess_complete_event, 0));
         }
 
-        // Measure time waiting for encoder input buffer
-        auto encode_start = std::chrono::steady_clock::now();
         const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
         
         if (!encoderInputFrame) {
             encode_failures_++;
-            std::cerr << "[PERF WARNING] " << threadName 
+            std::cerr << "[PERF WARNING] " << threadName
                       << ": Failed to get encoder input frame!" << std::endl;
             throw std::runtime_error("No encoder input frame available");
         }
 
-        // Copy the preprocessed frame into the hardware encoder's input buffer
         NvEncoderCuda::CopyToDeviceFrame(
             encoder_.cuContext,
             entry->d_prepared_frame,
@@ -255,67 +260,45 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             encoderInputFrame->numChromaPlanes
         );
 
-        // Encode the frame
         encoder_.pEnc->EncodeFrame(encoder_.vPacket);
 
-        // Track packet generation
         size_t packets_generated = encoder_.vPacket.size();
         total_packets_ += packets_generated;
         
-        // Send packets to FFmpeg writer
         for (auto& packet : encoder_.vPacket) {
             writer_.video->push_packet(packet.data(), (int)packet.size(), entry->recording_frame_id);
         }
 
-        // Write metadata
         write_metadata_hw(writer_.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
         last_recording_frame_id_ = entry->recording_frame_id;
 
-        // Log if we're generating unusual numbers of packets
         if (packets_generated > 2) {
-            std::cout << "[PERF INFO] " << threadName 
-                      << ": Generated " << packets_generated 
+            std::cout << "[PERF INFO] " << threadName
+                      << ": Generated " << packets_generated
                       << " packets for frame " << entry->recording_frame_id << std::endl;
         }
 
     } catch (const std::exception& e) {
         encode_failures_++;
-        std::cerr << "[" << threadName << "] Exception: " << e.what() 
+        std::cerr << "[" << threadName << "] Exception: " << e.what()
                   << " (Frame " << entry->recording_frame_id << ")" << std::endl;
     }
 
-    // --- CRITICAL RECYCLING STEP ---
     if (m_prep_worker_) {
-        // Return the event to the free pool so it can be used for another frame.
         if (entry->preprocess_complete_event) {
             m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
-            m_prep_worker_->available_events_++;  // Increment through the pointer
+            m_prep_worker_->available_events_++;
         }
-        // Return the prepared frame buffer to the free pool.
         m_prep_worker_->free_encoder_entries_.push(entry);
-        m_prep_worker_->available_buffers_++;  // Increment through the pointer
+        m_prep_worker_->available_buffers_++;
     }
 
-
-    // Measure total processing time
     auto end_time = std::chrono::steady_clock::now();
     auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
     
-    // Track slow frames (> 12.5ms for 80fps target)
     if (duration_us > 12500) {
         slow_frames_++;
-        std::cout << "[PERF WARNING] " << threadName 
-                  << " Camera " << camera_params_->camera_serial
-                  << " slow encode: " << duration_us << "μs"
-                  << " (target: <12500μs for 80fps)"
-                  << " Frame: " << entry->recording_frame_id << std::endl;
     }
     
-    // Log extremely slow frames immediately
-    if (duration_us > 25000) {  // > 25ms is very concerning
-        std::cout << "[PERF CRITICAL] " << threadName 
-                  << " VERY slow encode: " << duration_us << "μs!" << std::endl;
-    }
-
     return false;
 }

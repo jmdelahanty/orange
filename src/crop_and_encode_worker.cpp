@@ -1,5 +1,8 @@
+// src/crop_and_encode_worker.cpp
+
 #include "crop_and_encode_worker.h"
 #include "kernel.cuh"
+#include "project.h" // Add this include
 #include <nppi.h>
 #include <npp.h>
 #include <nppi_color_conversion.h>
@@ -15,7 +18,7 @@ CropAndEncodeWorker::CropAndEncodeWorker(
     CameraControl* camera_control
 ):CThreadWorker(name),
 camera_params_(camera_params),
-folder_name_(folder_name),
+base_folder_name_(folder_name),
 m_recycle_queue(recycle_queue),
 d_display_buffer_pbo_(display_buffer_pbo),
 camera_control_(camera_control),
@@ -30,22 +33,6 @@ d_cropped_rgba_(nullptr)
 
     // Allocate buffer for RGBA cropped frame for display
     ck(cudaMalloc(&d_cropped_rgba_, 256 * 256 * 4));
-
-    writer_.video_file = folder_name_ + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
-    writer_.keyframe_file = folder_name_ + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.csv";
-    writer_.metadata_file = folder_name_ + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
-
-    writer_.video = new FFmpegWriter(AV_CODEC_ID_HEVC, 256, 256, camera_params_->frame_rate,
-                                   writer_.video_file.c_str(), writer_.keyframe_file.c_str());
-    writer_.video->create_thread();
-
-    writer_.metadata = new std::ofstream();
-    writer_.metadata->open(writer_.metadata_file.c_str());
-    if (!(*writer_.metadata)) {
-        std::cout << "[CropAndEncodeWorker] Warning: Could not open metadata file!" << std::endl;
-    } else {
-        *writer_.metadata << "frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h\n";
-    }
 
     try {
         CUcontext cuContext;
@@ -154,12 +141,42 @@ void CropAndEncodeWorker::flush_and_close() {
 
 bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     if (!entry) {
+        // Add this check to finalize video if recording stops
+        if (!camera_control_->record_video && is_recording_) {
+            flush_and_close();
+            is_recording_ = false;
+        }
         return false;
     }
 
     // Set the correct CUDA device for this worker's operations
     ck(cudaSetDevice(camera_params_->gpu_id));
     nppSetStream(m_stream);
+
+    if (camera_control_->record_video && !is_recording_) {
+        std::string current_recording_folder = base_folder_name_ + "/" + get_current_date_time();
+        make_folder(current_recording_folder);
+
+        writer_.video_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
+        writer_.keyframe_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.csv";
+        writer_.metadata_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
+
+        writer_.video = new FFmpegWriter(AV_CODEC_ID_HEVC, 256, 256, camera_params_->frame_rate,
+                                       writer_.video_file.c_str(), writer_.keyframe_file.c_str());
+        writer_.video->create_thread();
+
+        writer_.metadata = new std::ofstream();
+        writer_.metadata->open(writer_.metadata_file.c_str());
+        if (!(*writer_.metadata)) {
+            std::cout << "[CropAndEncodeWorker] Warning: Could not open metadata file!" << std::endl;
+        } else {
+            *writer_.metadata << "frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h\n";
+        }
+        is_recording_ = true;
+    } else if (!camera_control_->record_video && is_recording_) {
+        flush_and_close();
+        is_recording_ = false;
+    }
 
     try {
         // Wait for the incoming frame data to be ready

@@ -790,11 +790,9 @@ int main(int argc, char **args) {
                         // START STREAMING
                         std::cout << "STARTING STREAMING SESSION..." << std::endl;
 
-                        // This part remains the same
-                        if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record || cs.crop_and_encode; })) { // Modified this line slightly for correctness
-                            encoder_config->folder_name = input_folder + "/" + get_current_date_time();
-                            make_folder(encoder_config->folder_name);
-                            std::cout << "Recording session folder: " << encoder_config->folder_name << std::endl;
+                        if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record || cs.crop_and_encode; })) {
+                            // Store the base folder for recordings, not the final timestamped one.
+                            encoder_config->folder_name = input_folder;
                         }
 
                         // This part remains the same
