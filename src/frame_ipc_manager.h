@@ -36,11 +36,11 @@ public:
     
     ~FrameIPCManager() {
         if (enabled_ && frames_sent_ > 0) {
-            std::cout << "[FrameIPCManager] Camera " << camera_params_->camera_serial 
-                      << " shutdown stats:" << std::endl
-                      << "  - Total frames sent: " << frames_sent_ << std::endl
-                      << "  - With detections: " << frames_with_detections_ << std::endl
-                      << "  - Without detections: " << frames_without_detections_ << std::endl;
+            // std::cout << "[FrameIPCManager] Camera " << camera_params_->camera_serial 
+            //           << " shutdown stats:" << std::endl
+            //           << "  - Total frames sent: " << frames_sent_ << std::endl
+            //           << "  - With detections: " << frames_with_detections_ << std::endl
+            //           << "  - Without detections: " << frames_without_detections_ << std::endl;
         }
     }
     
@@ -75,14 +75,14 @@ public:
             }
             
             // Log periodically to avoid spam
-            if (frames_sent_ % 100 == 0) {
-                std::cout << "[FrameIPCManager] Camera " << camera_params_->camera_serial 
-                          << " sent " << frames_sent_ << " frames "
-                          << "(" << frames_with_detections_ << " with detections)" << std::endl;
-            }
+            // if (frames_sent_ % 100 == 0) {
+            //     std::cout << "[FrameIPCManager] Camera " << camera_params_->camera_serial 
+            //               << " sent " << frames_sent_ << " frames "
+            //               << "(" << frames_with_detections_ << " with detections)" << std::endl;
+            // }
         } else {
-            std::cerr << "[FrameIPCManager] Queue full! Camera " << camera_params_->camera_serial
-                      << " dropped frame " << frame_id << std::endl;
+            // std::cerr << "[FrameIPCManager] Queue full! Camera " << camera_params_->camera_serial
+            //           << " dropped frame " << frame_id << std::endl;
         }
         
         return success;

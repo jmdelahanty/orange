@@ -228,15 +228,15 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
 
         // FPS calculation
         frame_counter_++;
-        auto now = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = now - last_fps_update_time_;
-        if (elapsed.count() >= 1.0) {
-            current_fps_.store(frame_counter_ / elapsed.count());
-            std::cout << "[" << this->threadName << "] Inference FPS: " << current_fps_.load()
-                      << " (Queue depth: " << this->GetCountQueueInSize() << ")" << std::endl;
-            frame_counter_ = 0;
-            last_fps_update_time_ = now;
-        }
+        // auto now = std::chrono::steady_clock::now();
+        // std::chrono::duration<double> elapsed = now - last_fps_update_time_;
+        // if (elapsed.count() >= 1.0) {
+        //     current_fps_.store(frame_counter_ / elapsed.count());
+        //     std::cout << "[" << this->threadName << "] Inference FPS: " << current_fps_.load()
+        //               << " (Queue depth: " << this->GetCountQueueInSize() << ")" << std::endl;
+        //     frame_counter_ = 0;
+        //     last_fps_update_time_ = now;
+        // }
 
         // NEW: Update Frame IPC with YOLO detection results
         // The frame was already sent by acquire_frames with empty detections

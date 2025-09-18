@@ -106,22 +106,22 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     // FPS calculation and logging every second
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = now - last_fps_update_time_;
-    if (elapsed.count() >= 1.0) {
-        current_fps_ = frame_counter_.load() / elapsed.count();
+    // if (elapsed.count() >= 1.0) {
+    //     current_fps_ = frame_counter_.load() / elapsed.count();
         
-        std::cout << "[" << threadName << "] GPU " << camera_params_->gpu_id 
-                  << " Camera " << camera_params_->camera_serial
-                  << " | FPS: " << std::fixed << std::setprecision(1) << current_fps_
-                  << " | Queue: " << GetCountQueueInSize()
-                  << " | Free Buffers: " << available_buffers_.load()
-                  << " | Free Events: " << available_events_.load()
-                  << " | Dropped: " << frames_dropped_
-                  << " | Waits: " << resource_waits_
-                  << std::endl;
+    //     std::cout << "[" << threadName << "] GPU " << camera_params_->gpu_id 
+    //               << " Camera " << camera_params_->camera_serial
+    //               << " | FPS: " << std::fixed << std::setprecision(1) << current_fps_
+    //               << " | Queue: " << GetCountQueueInSize()
+    //               << " | Free Buffers: " << available_buffers_.load()
+    //               << " | Free Events: " << available_events_.load()
+    //               << " | Dropped: " << frames_dropped_
+    //               << " | Waits: " << resource_waits_
+    //               << std::endl;
                   
-        frame_counter_ = 0;
-        last_fps_update_time_ = now;
-    }
+    //     frame_counter_ = 0;
+    //     last_fps_update_time_ = now;
+    // }
 
     ck(cudaSetDevice(camera_params_->gpu_id));
     nppSetStream(m_stream);
