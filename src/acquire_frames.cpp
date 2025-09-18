@@ -17,6 +17,7 @@
 #include "cuda_context_debug.h"
 #include "encoder_preprocess_worker.h"
 #include "frame_ipc_manager.h"
+#include "frame_id_monitor.h"
 
 static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *ecam, CameraState *camera_state){
     NVTX_RANGE("PTP_Timestamp_Check");
@@ -89,12 +90,17 @@ void acquire_frames(
                       << " (ID: " << camera_params->camera_id << ")" << std::endl;
         }
     }
+    auto frame_monitor = std::make_shared<FrameIDMonitor>(camera_params->camera_serial);
 
     CameraState camera_state{};
+    std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
+          << " - camera_state address: " << &camera_state 
+          << ", frame_count address: " << &camera_state.frame_count << std::endl;
     PTPState ptp_state{};
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
     int frame_counter_for_fps = 0;
+    uint64_t local_recording_frame_count = 0;
 
     {
         NVTX_RANGE("Camera_Initialization");
@@ -151,7 +157,7 @@ void acquire_frames(
         camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
 
         if (camera_state.camera_return == EVT_SUCCESS) {
-            
+
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
@@ -161,10 +167,21 @@ void acquire_frames(
 
             // If recording is active, increment and assign the recording-specific frame ID
             if (camera_control->record_video) {
-                current_entry->recording_frame_id = g_recording_frame_count.fetch_add(1);
+                current_entry->recording_frame_id = ++local_recording_frame_count;
             } else {
                 current_entry->recording_frame_id = 0; // Or another sentinel value if preferred
+                local_recording_frame_count = 0;
             }
+
+            std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
+          << " incremented to frame_count=" << camera_state.frame_count 
+          << " (entry->frame_id=" << current_entry->frame_id << ")" << std::endl;
+
+            frame_monitor->logFrame(
+                camera_params->camera_serial, 
+                current_entry->frame_id, 
+                current_entry->recording_frame_id
+            );
 
             cudaPointerAttributes attrs;
             bool use_direct_pointer = (cudaPointerGetAttributes(&attrs, ecam->frame_recv.imagePtr) == cudaSuccess &&
