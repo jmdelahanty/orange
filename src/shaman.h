@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <grp.h>
+#include <cerrno>
 #include <cstring>
 #include <atomic>
 #include <vector>
@@ -22,6 +24,8 @@ namespace shaman {
 
 // Default shared memory name for backward compatibility
 constexpr const char* SHM_NAME = "/shm_box_vector";
+constexpr const char* SHM_IPC_GROUP = "ipc";
+constexpr mode_t SHM_IPC_MODE = 0660;
 constexpr size_t MAX_OBJECTS = 100;
 constexpr size_t MAX_KEYPOINTS = 32;
 constexpr size_t QUEUE_SIZE = 8;
@@ -62,10 +66,26 @@ public:
         
         // Try to create/open shared memory with the specified name
         int flags = is_writer ? (O_RDWR | O_CREAT) : O_RDWR;
-        shm_fd = shm_open(shm_name_.c_str(), flags, 0666);  // Fixed: use c_str()
+        shm_fd = shm_open(shm_name_.c_str(), flags, SHM_IPC_MODE);  // Fixed: use c_str()
         if (shm_fd == -1) {
             throw std::runtime_error(std::string("shm_open failed for ") + 
                                      shm_name_ + ": " + std::strerror(errno));
+        }
+
+        if (writer) {
+            if (fchmod(shm_fd, SHM_IPC_MODE) == -1) {
+                std::cerr << "[shaman] fchmod failed for " << shm_name_
+                          << ": " << std::strerror(errno) << std::endl;
+            }
+            struct group* grp = getgrnam(SHM_IPC_GROUP);
+            if (!grp) {
+                std::cerr << "[shaman] group '" << SHM_IPC_GROUP
+                          << "' not found; shared memory stays with current group for "
+                          << shm_name_ << std::endl;
+            } else if (fchown(shm_fd, -1, grp->gr_gid) == -1) {
+                std::cerr << "[shaman] fchown failed for " << shm_name_
+                          << ": " << std::strerror(errno) << std::endl;
+            }
         }
 
         // Check current size

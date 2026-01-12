@@ -7,6 +7,7 @@
 #include <nppi.h>
 #include "common.hpp"
 #include <cuda.h>
+#include <chrono>
 
 class COpenGLDisplay : public CThreadWorker<WORKER_ENTRY>
 {
@@ -38,6 +39,9 @@ private:
     NppiSize output_display_size_;
     NppiRect input_roi_for_display_resize_;
     NppiRect output_roi_for_display_resize_;
+    uint64_t display_same_gpu_frames_ = 0;
+    uint64_t display_cross_gpu_frames_ = 0;
+    std::chrono::steady_clock::time_point last_display_log_time_;
 
     cudaStream_t m_stream;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;

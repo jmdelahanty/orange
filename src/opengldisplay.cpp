@@ -26,7 +26,8 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
       d_skeleton_for_drawing_(nullptr),
       d_display_resize_buffer_(nullptr),
       m_stream(nullptr),
-      m_recycle_queue(recycle_queue)
+      m_recycle_queue(recycle_queue),
+      last_display_log_time_(std::chrono::steady_clock::now())
 {
     std::cout << "[OPENGL_DISPLAY] CONSTRUCTOR for " << camera_params->camera_name << " on display GPU " << display_gpu_id << std::endl;
     ck(cudaSetDevice(display_gpu_id));
@@ -105,8 +106,10 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     if (camera_params->gpu_id != display_gpu_id) {
         ck(cudaMemcpyAsync(h_p2p_copy_buffer_, latest_frame->d_image, frame_size, cudaMemcpyDeviceToHost, m_stream));
         ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, h_p2p_copy_buffer_, frame_size, cudaMemcpyHostToDevice, m_stream));
+        display_cross_gpu_frames_++;
     } else {
         ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, latest_frame->d_image, frame_size, cudaMemcpyDeviceToDevice, m_stream));
+        display_same_gpu_frames_++;
     }
 
     // Debayer or duplicate mono channel to get a 4-channel RGBA image in debayer_gpu_.d_debayer
@@ -165,6 +168,20 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     
     // Synchronize this worker's stream to ensure the copy is complete before OpenGL uses it
     ck(cudaStreamSynchronize(m_stream));
+
+    auto now = std::chrono::steady_clock::now();
+    std::chrono::duration<double> log_elapsed = now - last_display_log_time_;
+    if (log_elapsed.count() >= 1.0) {
+        std::cout << "[DISPLAY] Cam " << camera_params->camera_serial
+                  << " GPU " << camera_params->gpu_id
+                  << " display_gpu " << display_gpu_id
+                  << " same_gpu=" << display_same_gpu_frames_
+                  << " cross_gpu=" << display_cross_gpu_frames_
+                  << std::endl;
+        display_same_gpu_frames_ = 0;
+        display_cross_gpu_frames_ = 0;
+        last_display_log_time_ = now;
+    }
     
     // --- Cleanup and recycle ---
     if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {

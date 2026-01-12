@@ -68,28 +68,28 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
 
     } catch (const std::exception& e) {
         std::cerr << "YOLOv8Worker Error for " << name << ": " << e.what() << std::endl;
-        
+
         if (fb_builder_) { delete fb_builder_; fb_builder_ = nullptr; }
         if (yolov8_instance_) { delete yolov8_instance_; yolov8_instance_ = nullptr; }
         if (frame_original_gpu_.d_orig) { cudaFree(frame_original_gpu_.d_orig); frame_original_gpu_.d_orig = nullptr; }
         if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); debayer_gpu_.d_debayer = nullptr; }
-        
+
         throw;
     }
 }
 
 YOLOv8Worker::~YOLOv8Worker() {
     std::cout << "YOLOv8Worker destructor for " << threadName << std::endl;
-    
+
     if (associated_camera_params_) {
         ck(cudaSetDevice(associated_camera_params_->gpu_id));
         if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); }
         if (frame_original_gpu_.d_orig) { cudaFree(frame_original_gpu_.d_orig); }
         if (yolov8_instance_) { delete yolov8_instance_; }
     }
-    
+
     if (fb_builder_) delete fb_builder_;
-    
+
     std::cout << "YOLOv8Worker destructor complete for " << threadName << std::endl;
 }
 
@@ -168,117 +168,88 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         }
 
         // Preprocess and run inference. These are non-blocking CUDA calls.
+        auto inference_start_time = std::chrono::steady_clock::now();
         yolov8_instance_->infer();
 
+        // record per-frame event for synchronization
         if (entry->yolo_completion_event) {
             ck(cudaEventRecord(*entry->yolo_completion_event, yolov8_instance_->stream));
         }
 
-        // record per-frame event for synchronization
-        ck(cudaStreamSynchronize(yolov8_instance_->stream));
-        
-        // Now that the GPU is finished, process the results.
-        // This completely REPLACES entry->detections, preventing stale data
-        yolov8_instance_->postprocess(entry->detections);
+        // Wait for the GPU to finish, with a timeout.
+        const int timeout_us = 100000; // 100ms timeout
+        bool finished_in_time = false;
+
+        while (true) {
+            cudaError_t result = cudaStreamQuery(yolov8_instance_->stream);
+            if (result == cudaSuccess) {
+                finished_in_time = true;
+                break;
+            }
+            if (result != cudaErrorNotReady) {
+                // An actual error occurred
+                ck(result);
+                break;
+            }
+
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - inference_start_time).count();
+
+            if (elapsed_us > timeout_us) {
+                std::cerr << "[YOLOv8Worker] WARNING: Inference timed out after " << elapsed_us << "us. Dropping frame." << std::endl;
+                break; // Timed out
+            }
+
+            // Wait for a very short time before polling again
+            usleep(100);
+        }
+
+        if (finished_in_time) {
+            // Now that the GPU is finished, process the results.
+            // This completely REPLACES entry->detections, preventing stale data
+            yolov8_instance_->postprocess(entry->detections);
+        } else {
+            // Timed out, clear any potential partial results
+            entry->detections.clear();
+        }
 
         uint64_t current_timestamp_us = std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::steady_clock::now().time_since_epoch()
         ).count();
-        
+
         // Update velocity tracking with new detections
         velocity_tracker_.updateTracking(entry->detections, current_timestamp_us);
-        
-        // Log speed information for tracked objects
-        auto tracked_objects = velocity_tracker_.getTrackedObjects();
-        // if (!tracked_objects.empty()) {
-        //     std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Tracking " 
-        //               << tracked_objects.size() << " objects with speeds:" << std::endl;
-        //     for (const auto& obj : tracked_objects) {
-        //         std::cout << "  - Track ID " << obj.track_id 
-        //                   << ": Speed = " << obj.current_speed_physical_units << " cm/s"
-        //                   << " (" << obj.current_speed_pixels_per_sec << " px/s)"
-        //                   << ", Label = " << obj.latest_detection.label
-        //                   << ", Pos = (" << (obj.latest_detection.rect.x + obj.latest_detection.rect.width * 0.5f)
-        //                   << ", " << (obj.latest_detection.rect.y + obj.latest_detection.rect.height * 0.5f) << ")"
-        //                   << std::endl;
-        //     }
-        // }
 
         // After detections are found, dispatch to the crop worker if it exists AND recording is on
         if (m_crop_worker && camera_control_->record_video) {
             // Increment the reference count because another worker will now use this entry
-            entry->ref_count.fetch_add(1, std::memory_order_acq_rel); 
+            entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
             m_crop_worker->PutObjectToQueueIn(entry);
         }
-        
+
         // Mark if we have detections
         entry->has_detections = !entry->detections.empty();
-        
-        // if (entry->has_detections) {
-        //     std::cout << "[YOLO_WORKER] Frame " << entry->frame_id << ": Post-processed " << entry->detections.size() << " detections." << std::endl;
-        //     for(size_t i = 0; i < entry->detections.size(); ++i) {
-        //         const auto& obj = entry->detections[i];
-        //         std::cout << "  - Det " << i << ": Label=" << obj.label << ", Prob=" << obj.prob 
-        //                   << ", Rect=[x:" << obj.rect.x << ", y:" << obj.rect.y 
-        //                   << ", w:" << obj.rect.width << ", h:" << obj.rect.height << "]" << std::endl;
-        //     }
-        // }
-
         entry->detections_ready.store(true);
 
-        // FPS calculation
-        frame_counter_++;
-        // auto now = std::chrono::steady_clock::now();
-        // std::chrono::duration<double> elapsed = now - last_fps_update_time_;
-        // if (elapsed.count() >= 1.0) {
-        //     current_fps_.store(frame_counter_ / elapsed.count());
-        //     std::cout << "[" << this->threadName << "] Inference FPS: " << current_fps_.load()
-        //               << " (Queue depth: " << this->GetCountQueueInSize() << ")" << std::endl;
-        //     frame_counter_ = 0;
-        //     last_fps_update_time_ = now;
-        // }
-
         // NEW: Update Frame IPC with YOLO detection results
-        // The frame was already sent by acquire_frames with empty detections
-        // This updates it with the actual detection data
         if (entry->frame_ipc_manager && entry->has_detections) {
             FrameIPCManager* frame_ipc = static_cast<FrameIPCManager*>(entry->frame_ipc_manager);
             if (frame_ipc && frame_ipc->isEnabled()) {
                 // Convert detections to shaman format for IPC
                 std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
-                
-                // Use the same frame ID logic as acquire_frames
+
                 uint64_t frame_id = (camera_control_->record_video && entry->recording_frame_id > 0)
-                                   ? entry->recording_frame_id 
+                                   ? entry->recording_frame_id
                                    : entry->frame_id;
-                
+
                 // Update the frame with detection data
-                bool update_success = frame_ipc->updateFrameWithDetections(frame_id, shaman_objects);
-                
-                if (update_success) {
-                    // Log periodically to avoid spam
-                    static std::atomic<uint64_t> detection_updates{0};
-                    uint64_t update_count = detection_updates.fetch_add(1) + 1;
-                    
-                    if (update_count % 100 == 0) {
-                        std::cout << "[" << threadName << "] Sent " << update_count 
-                                  << " detection updates via Frame IPC" << std::endl;
-                    }
-                } else {
-                    // This might happen if the IPC queue is full
-                    static std::atomic<int> ipc_failures{0};
-                    if ((ipc_failures.fetch_add(1) + 1) % 100 == 0) {
-                        std::cerr << "[" << threadName << "] Frame IPC update failures: " 
-                                  << ipc_failures.load() << std::endl;
-                    }
-                }
+                frame_ipc->updateFrameWithDetections(frame_id, shaman_objects);
             }
         }
 
         // Handle ENet sending if configured
         if (enet_target_peer_ && associated_camera_select_->send_yolo_via_enet && !entry->detections.empty()) {
             // ENet code remains unchanged
-            // ... (ENet sending code if you have it) ...
         }
 
     } catch (const std::exception& e) {
@@ -295,7 +266,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         }
         m_recycle_queue.push(entry);
     }
-    
+
     // This worker doesn't pass an item to its own output queue so we return false
     return false;
 }

@@ -93,14 +93,20 @@ void acquire_frames(
     auto frame_monitor = std::make_shared<FrameIDMonitor>(camera_params->camera_serial);
 
     CameraState camera_state{};
-    std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
-          << " - camera_state address: " << &camera_state 
-          << ", frame_count address: " << &camera_state.frame_count << std::endl;
+    // std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
+    //       << " - camera_state address: " << &camera_state 
+    //       << ", frame_count address: " << &camera_state.frame_count << std::endl;
     PTPState ptp_state{};
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
     int frame_counter_for_fps = 0;
     uint64_t local_recording_frame_count = 0;
+    uint64_t gpu_direct_frames = 0;
+    uint64_t gpu_copy_frames = 0;
+    uint64_t gpu_direct_attr_errors = 0;
+    uint64_t gpu_direct_non_device = 0;
+    uint64_t gpu_direct_wrong_device = 0;
+    auto last_gpu_direct_log_time = std::chrono::steady_clock::now();
 
     {
         NVTX_RANGE("Camera_Initialization");
@@ -173,9 +179,9 @@ void acquire_frames(
                 local_recording_frame_count = 0;
             }
 
-            std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
-          << " incremented to frame_count=" << camera_state.frame_count 
-          << " (entry->frame_id=" << current_entry->frame_id << ")" << std::endl;
+        //     std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
+        //   << " incremented to frame_count=" << camera_state.frame_count 
+        //   << " (entry->frame_id=" << current_entry->frame_id << ")" << std::endl;
 
             frame_monitor->logFrame(
                 camera_params->camera_serial, 
@@ -183,16 +189,31 @@ void acquire_frames(
                 current_entry->recording_frame_id
             );
 
-            cudaPointerAttributes attrs;
-            bool use_direct_pointer = (cudaPointerGetAttributes(&attrs, ecam->frame_recv.imagePtr) == cudaSuccess &&
+            cudaPointerAttributes attrs{};
+            cudaError_t attr_status = cudaPointerGetAttributes(&attrs, ecam->frame_recv.imagePtr);
+            if (attr_status != cudaSuccess) {
+                gpu_direct_attr_errors++;
+                cudaGetLastError(); // Clear error so we can continue.
+            }
+            bool use_direct_pointer = (attr_status == cudaSuccess &&
                                        attrs.type == cudaMemoryTypeDevice &&
                                        attrs.device == camera_params->gpu_id);
 
+            if (attr_status == cudaSuccess) {
+                if (attrs.type != cudaMemoryTypeDevice) {
+                    gpu_direct_non_device++;
+                } else if (attrs.device != camera_params->gpu_id) {
+                    gpu_direct_wrong_device++;
+                }
+            }
+
             if (use_direct_pointer) {
+                gpu_direct_frames++;
                 current_entry->d_image = static_cast<unsigned char*>(ecam->frame_recv.imagePtr);
                 current_entry->gpu_direct_mode = true;
                 current_entry->owns_memory = false;
             } else {
+                gpu_copy_frames++;
                 ck(cudaMemcpyAsync(current_entry->d_image, ecam->frame_recv.imagePtr, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToDevice, stream));
                 EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
             }
@@ -309,6 +330,27 @@ void acquire_frames(
                 streaming_fps.store(frame_counter_for_fps / elapsed.count());
                 frame_counter_for_fps = 0;
                 last_fps_update_time = now;
+            }
+
+            std::chrono::duration<double> direct_elapsed = now - last_gpu_direct_log_time;
+            if (direct_elapsed.count() >= 1.0) {
+                std::cout << "[GPU_DIRECT] Cam " << camera_params->camera_serial
+                          << " GPU " << camera_params->gpu_id
+                          << " direct=" << gpu_direct_frames
+                          << " copy=" << gpu_copy_frames
+                          << " attr_err=" << gpu_direct_attr_errors
+                          << " non_dev=" << gpu_direct_non_device
+                          << " wrong_dev=" << gpu_direct_wrong_device
+                          << " stream=" << (camera_select->stream_on ? "on" : "off")
+                          << " yolo=" << (camera_select->yolo ? "on" : "off")
+                          << " record=" << (camera_control->record_video ? "on" : "off")
+                          << std::endl;
+                gpu_direct_frames = 0;
+                gpu_copy_frames = 0;
+                gpu_direct_attr_errors = 0;
+                gpu_direct_non_device = 0;
+                gpu_direct_wrong_device = 0;
+                last_gpu_direct_log_time = now;
             }
         }
         NVTX_RANGE_POP();
