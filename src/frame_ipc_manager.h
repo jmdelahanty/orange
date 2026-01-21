@@ -23,13 +23,10 @@ public:
         try {
             ipc_queue_ = std::make_unique<shaman::SharedBoxQueue>(
                 queue_name_.c_str(), true /* is_writer */);
-            std::cout << "[FrameIPCManager] Created IPC queue: " << queue_name_ 
-                      << " for camera " << camera_params_->camera_serial 
-                      << " (ID: " << camera_params_->camera_id << ")" << std::endl;
+            // IPC logging disabled: queue creation message.
             enabled_ = true;
         } catch (const std::exception& e) {
-            std::cerr << "[FrameIPCManager] Failed to create IPC queue: " 
-                      << e.what() << std::endl;
+            // IPC logging disabled: queue creation failure warning.
             enabled_ = false;
         }
     }
@@ -53,10 +50,7 @@ public:
         
         // Verify frame ID is monotonically increasing
         if (last_frame_id_ != 0 && frame_id != last_frame_id_ + 1) {
-            std::cerr << "[FrameIPCManager] WARNING: Frame gap detected! Camera " 
-                      << camera_params_->camera_id
-                      << " jumped from " << last_frame_id_ 
-                      << " to " << frame_id << std::endl;
+            // IPC logging disabled: frame gap warning.
         }
         
         // Send the frame data

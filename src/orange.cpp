@@ -158,7 +158,8 @@ int main(int argc, char **args) {
 
     EncoderConfig *encoder_config = new EncoderConfig{
         "h264",
-        "p1"
+        "p1",
+        "ll"
     };
     std::vector<std::string> camera_config_files;
 
@@ -903,8 +904,8 @@ int main(int argc, char **args) {
                                     hw_encoder_name.c_str(),
                                     &cameras_params[i],
                                     encoder_config->encoder_codec,
-                                    "p1",   // Fastest preset as requested
-                                    "ull",  // Ultra low latency as requested
+                                    encoder_config->encoder_preset,
+                                    encoder_config->tuning_info,
                                     encoder_config->folder_name,
                                     encoderPreprocessWorkers[i], // Link to the preprocess worker
                                     camera_control

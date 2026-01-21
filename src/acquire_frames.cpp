@@ -80,14 +80,10 @@ void acquire_frames(
     if (camera_select->send_frame_ipc) {
         frame_ipc_manager = std::make_unique<FrameIPCManager>(camera_params);
         if (!frame_ipc_manager->isEnabled()) {
-            std::cerr << "[acquire_frames] WARNING: Failed to initialize Frame IPC for camera " 
-                      << camera_params->camera_serial 
-                      << ". Frame synchronization will be disabled." << std::endl;
+            // IPC logging disabled: init failure warning.
             frame_ipc_manager.reset();  // Disable if initialization failed
         } else {
-            std::cout << "[acquire_frames] Frame IPC enabled for camera " 
-                      << camera_params->camera_serial 
-                      << " (ID: " << camera_params->camera_id << ")" << std::endl;
+            // IPC logging disabled: init success message.
         }
     }
     auto frame_monitor = std::make_shared<FrameIDMonitor>(camera_params->camera_serial);
@@ -255,10 +251,7 @@ void acquire_frames(
                 // Log the frame ID being sent (for debugging)
                 static uint64_t last_logged_frame = 0;
                 if (frame_id_for_ipc != last_logged_frame + 1 && last_logged_frame != 0) {
-                    std::cout << "[FRAME_IPC] Non-sequential frame ID: " 
-                              << last_logged_frame << " -> " << frame_id_for_ipc 
-                              << " (recording: " << (camera_control->record_video ? "yes" : "no") 
-                              << ")" << std::endl;
+                    // IPC logging disabled: non-sequential frame ID warning.
                 }
                 last_logged_frame = frame_id_for_ipc;
                 
@@ -270,12 +263,7 @@ void acquire_frames(
                 );
                 
                 if (!ipc_success) {
-                    // Log but don't stop - IPC queue might be temporarily full
-                    static int ipc_failure_count = 0;
-                    if (++ipc_failure_count % 100 == 0) {
-                        std::cerr << "[acquire_frames] IPC queue full - " 
-                                  << ipc_failure_count << " frames dropped" << std::endl;
-                    }
+                    // IPC logging disabled: queue full warning.
                 }
             }
             
@@ -363,9 +351,7 @@ void acquire_frames(
 
         // FRAME_IPC: Log final statistics if IPC was active
         if (frame_ipc_manager && frame_ipc_manager->isEnabled()) {
-            std::cout << "[acquire_frames] Frame IPC final stats for camera " 
-                      << camera_params->camera_serial << ": "
-                      << frame_ipc_manager->getFramesSent() << " frames sent" << std::endl;
+            // IPC logging disabled: final stats.
         }
 
         {

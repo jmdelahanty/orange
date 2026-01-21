@@ -9,7 +9,8 @@ FFmpegWriter::FFmpegWriter(
     int nHeight,
     int nFps,
     const char *szOutFilePath,
-    const char *metadata_file) : nFps(nFps)
+    const char *metadata_file,
+    const std::vector<std::pair<std::string, std::string>>& metadata_tags) : nFps(nFps)
 {
     oc = avformat_alloc_context();
     if (!oc) {
@@ -24,6 +25,12 @@ FFmpegWriter::FFmpegWriter(
     }
     fmt->video_codec = eCodecId;
     oc->oformat = fmt;
+
+    for (const auto& tag : metadata_tags) {
+        if (!tag.first.empty() && !tag.second.empty()) {
+            av_dict_set(&oc->metadata, tag.first.c_str(), tag.second.c_str(), 0);
+        }
+    }
 
     vs = avformat_new_stream(oc, NULL);
     if (!vs) {

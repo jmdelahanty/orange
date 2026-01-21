@@ -64,7 +64,7 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
         initialize_gpu_debayer(&debayer_gpu_, associated_camera_params_);
 
         std::cout << "YOLOv8Worker for " << name << " initialized successfully." << std::endl;
-        std::cout << "[NOTE] Frame IPC handled by acquire_frames. YOLO updates frames with detection data." << std::endl;
+        // IPC logging disabled: YOLO IPC note.
 
     } catch (const std::exception& e) {
         std::cerr << "YOLOv8Worker Error for " << name << ": " << e.what() << std::endl;

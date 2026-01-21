@@ -43,6 +43,8 @@ private:
     CameraParams* camera_params_;
     std::string base_folder_name_;
     std::string codec_;
+    std::string preset_;
+    std::string tuning_;
     Writer writer_;
     cudaStream_t m_stream = nullptr;
     CameraControl* camera_control_;

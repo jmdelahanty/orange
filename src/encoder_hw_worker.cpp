@@ -3,23 +3,122 @@
 #include "encoder_hw_worker.h"
 #include "encoder_preprocess_worker.h"
 #include <iostream>
+#include <utility>
+#include <vector>
 #include "global.h"
 #include "NvEncoder/NvEncoder.h"
 #include "cuda_context_debug.h"
 #include "nvtx_profiling.h"
 #include "project.h"
+#include <iomanip>
+#include <sstream>
+
+namespace {
+constexpr uint64_t kMinQualityBitrate = 20000000ULL;
+constexpr uint64_t kMaxQualityBitrate = 250000000ULL;
+constexpr double kColorTargetBpp = 0.30;
+constexpr double kMonoTargetBpp = 0.20;
+
+uint32_t clamp_bitrate(uint64_t value) {
+    if (value < kMinQualityBitrate) {
+        return static_cast<uint32_t>(kMinQualityBitrate);
+    }
+    if (value > kMaxQualityBitrate) {
+        return static_cast<uint32_t>(kMaxQualityBitrate);
+    }
+    return static_cast<uint32_t>(value);
+}
+
+uint32_t calculate_quality_bitrate(const CameraParams* camera_params) {
+    const double target_bpp = camera_params->color ? kColorTargetBpp : kMonoTargetBpp;
+    const double bits_per_sec =
+        static_cast<double>(camera_params->width) *
+        static_cast<double>(camera_params->height) *
+        static_cast<double>(camera_params->frame_rate) *
+        target_bpp;
+    return clamp_bitrate(static_cast<uint64_t>(bits_per_sec));
+}
+
+bool is_low_latency_tuning(const std::string& tuning) {
+    return tuning == "ll" || tuning == "ull";
+}
+
+bool is_lossless_tuning(const std::string& tuning) {
+    return tuning == "lossless";
+}
+
+std::vector<std::pair<std::string, std::string>> build_metadata_tags(
+    const CameraParams* camera_params,
+    const std::string& codec,
+    const std::string& preset,
+    const std::string& tuning
+) {
+    std::vector<std::pair<std::string, std::string>> tags;
+    tags.emplace_back("title", "Cam" + camera_params->camera_serial);
+
+    std::ostringstream comment;
+    comment << "nvenc codec=" << codec
+            << "; preset=" << preset
+            << "; tuning=" << tuning
+            << "; res=" << camera_params->width << "x" << camera_params->height
+            << "; fps=" << camera_params->frame_rate
+            << "; color=" << (camera_params->color ? 1 : 0);
+
+    if (is_lossless_tuning(tuning)) {
+        comment << "; rc=constqp; qp=0";
+    } else {
+        const uint32_t target_bps = calculate_quality_bitrate(camera_params);
+        const double actual_bpp = static_cast<double>(target_bps) /
+                                  (static_cast<double>(camera_params->width) *
+                                   static_cast<double>(camera_params->height) *
+                                   static_cast<double>(camera_params->frame_rate));
+        comment << "; rc=vbr; bpp=" << std::fixed << std::setprecision(3) << actual_bpp
+                << "; target_bps=" << target_bps;
+    }
+
+    tags.emplace_back("comment", comment.str());
+    return tags;
+}
+
+void apply_quality_recording_profile(
+    NV_ENC_CONFIG& encodeConfig,
+    const CameraParams* camera_params,
+    bool low_latency
+) {
+    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
+    encodeConfig.rcParams.averageBitRate = calculate_quality_bitrate(camera_params);
+
+    uint64_t max_bitrate = static_cast<uint64_t>(encodeConfig.rcParams.averageBitRate) * 3 / 2;
+    if (max_bitrate < encodeConfig.rcParams.averageBitRate) {
+        max_bitrate = encodeConfig.rcParams.averageBitRate;
+    }
+    encodeConfig.rcParams.maxBitRate = clamp_bitrate(max_bitrate);
+    encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.maxBitRate;
+
+    encodeConfig.rcParams.enableAQ = 1;
+    encodeConfig.rcParams.enableTemporalAQ = 1;
+    encodeConfig.rcParams.enableLookahead = low_latency ? 0 : 1;
+    encodeConfig.rcParams.lowDelayKeyFrameScale = low_latency ? 1 : 0;
+}
+} // namespace
 
 // Helper to initialize the FFmpeg-based file writer
-static inline void initialize_writer_hw(Writer *writer, CameraParams *camera_params, std::string folder_name, std::string encoder_str)
+static inline void initialize_writer_hw(
+    Writer *writer,
+    CameraParams *camera_params,
+    const std::string& folder_name,
+    const std::string& encoder_str,
+    const std::vector<std::pair<std::string, std::string>>& metadata_tags
+)
 {
     writer->video_file = folder_name + "/Cam" + camera_params->camera_serial + ".mp4";
     writer->metadata_file = folder_name + "/Cam" + camera_params->camera_serial + "_meta.csv";
     writer->keyframe_file = folder_name + "/Cam" + camera_params->camera_serial + "_keyframe.csv";
 
     if (encoder_str.find("h264") != std::string::npos) {
-        writer->video = new FFmpegWriter(AV_CODEC_ID_H264, camera_params->width, camera_params->height, camera_params->frame_rate, writer->video_file.c_str(), writer->keyframe_file.c_str());
+        writer->video = new FFmpegWriter(AV_CODEC_ID_H264, camera_params->width, camera_params->height, camera_params->frame_rate, writer->video_file.c_str(), writer->keyframe_file.c_str(), metadata_tags);
     } else {
-        writer->video = new FFmpegWriter(AV_CODEC_ID_HEVC, camera_params->width, camera_params->height, camera_params->frame_rate, writer->video_file.c_str(), writer->keyframe_file.c_str());
+        writer->video = new FFmpegWriter(AV_CODEC_ID_HEVC, camera_params->width, camera_params->height, camera_params->frame_rate, writer->video_file.c_str(), writer->keyframe_file.c_str(), metadata_tags);
     }
     writer->metadata = new std::ofstream();
     writer->metadata->open(writer->metadata_file.c_str());
@@ -54,6 +153,8 @@ EncoderHwWorker::EncoderHwWorker(
   camera_params_(camera_params),
   base_folder_name_(base_folder_name),
   codec_(codec),
+  preset_(preset),
+  tuning_(tuning),
   m_prep_worker_(prep_worker),
   camera_control_(camera_control),
   encoder_(),
@@ -80,20 +181,29 @@ EncoderHwWorker::EncoderHwWorker(
 
     encoder_.pEnc->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
 
+    const bool low_latency = is_low_latency_tuning(tuning);
+    const bool lossless = is_lossless_tuning(tuning);
+
     initializeParams.frameRateNum = camera_params_->frame_rate;
     initializeParams.frameRateDen = 1;
     initializeParams.enablePTD = 1;
 
-    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-    encodeConfig.rcParams.averageBitRate = 15000000;
-    encodeConfig.rcParams.maxBitRate = 15000000;
-    encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.averageBitRate / camera_params_->frame_rate;
     encodeConfig.gopLength = camera_params_->frame_rate * 2;
     encodeConfig.frameIntervalP = 1;
-    encodeConfig.rcParams.enableAQ = 0;
-    encodeConfig.rcParams.enableTemporalAQ = 0;
-    encodeConfig.rcParams.enableLookahead = 0;
-    encodeConfig.rcParams.lowDelayKeyFrameScale = 1;
+
+    if (lossless) {
+        encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+        encodeConfig.rcParams.constQP = {0, 0, 0};
+        encodeConfig.rcParams.enableAQ = 0;
+        encodeConfig.rcParams.enableTemporalAQ = 0;
+        encodeConfig.rcParams.enableLookahead = 0;
+        encodeConfig.rcParams.lowDelayKeyFrameScale = 0;
+        encodeConfig.gopLength = 1;
+        encodeConfig.frameIntervalP = 1;
+    } else {
+        apply_quality_recording_profile(encodeConfig, camera_params_, low_latency);
+    }
+
     encodeConfig.rcParams.enableMinQP = 0;
     encodeConfig.rcParams.enableMaxQP = 0;
     encodeConfig.rcParams.strictGOPTarget = 0;
@@ -194,7 +304,8 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         std::string current_recording_folder = base_folder_name_ + "/" + get_current_date_time();
         make_folder(current_recording_folder);
 
-        initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_);
+        const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);
+        initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_, metadata_tags);
         is_recording_ = true;
     }
 

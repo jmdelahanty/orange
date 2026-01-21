@@ -9,12 +9,16 @@ extern "C"
 #include <iostream>
 #include <fstream>
 #include <thread>
+#include <string>
+#include <utility>
+#include <vector>
 #include "thread.h"
 
 class FFmpegWriter
 {
 public:
-    FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file);
+    FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file,
+                 const std::vector<std::pair<std::string, std::string>>& metadata_tags = {});
     ~FFmpegWriter();
     bool write_packet(uint8_t *pData, int nBytes, int nPts);
     void push_packet(uint8_t* pData, int nBytes, int nPts);
