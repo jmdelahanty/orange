@@ -19,6 +19,13 @@
 #include "crop_and_encode_worker.h"
 #include "frame_ipc_manager.h"
 
+#ifndef YOLO_PROFILE
+#define YOLO_PROFILE 0
+#endif
+#if YOLO_PROFILE
+static constexpr int kYoloProfileLogEvery = 60;
+#endif
+
 YOLOv8Worker::YOLOv8Worker(const char* name,
                            CameraParams* cam_params,
                            CameraEachSelect* cam_select,
@@ -122,6 +129,53 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
 
     try {
+        const auto fps_now = std::chrono::steady_clock::now();
+        frame_counter_++;
+        std::chrono::duration<double> fps_elapsed = fps_now - last_fps_update_time_;
+        if (fps_elapsed.count() >= 1.0) {
+            const double fps = frame_counter_ / fps_elapsed.count();
+            current_fps_.store(fps, std::memory_order_relaxed);
+            frame_counter_ = 0;
+            last_fps_update_time_ = fps_now;
+#if YOLO_PROFILE
+            std::cout << "[YOLO_FPS] " << threadName
+                      << " fps=" << fps
+                      << " q=" << GetCountQueueInSize()
+                      << std::endl;
+#endif
+        }
+#if YOLO_PROFILE
+        static thread_local bool prof_init = false;
+        static thread_local cudaEvent_t e_pre_start;
+        static thread_local cudaEvent_t e_pre_end;
+        static thread_local cudaEvent_t e_infer_start;
+        static thread_local cudaEvent_t e_infer_end;
+        static thread_local cudaEvent_t e_wait_start;
+        static thread_local cudaEvent_t e_wait_end;
+        static thread_local int prof_count = 0;
+        if (!prof_init) {
+            ck(cudaEventCreate(&e_pre_start));
+            ck(cudaEventCreate(&e_pre_end));
+            ck(cudaEventCreate(&e_infer_start));
+            ck(cudaEventCreate(&e_infer_end));
+            ck(cudaEventCreate(&e_wait_start));
+            ck(cudaEventCreate(&e_wait_end));
+            prof_init = true;
+        }
+        float ms_pre = 0.0f;
+        float ms_gap = 0.0f;
+        float ms_infer = 0.0f;
+        float ms_wait = 0.0f;
+        double ms_enqueue = 0.0;
+        double ms_sync_wait = 0.0;
+        double ms_queue = 0.0;
+        double ms_post = 0.0;
+        double ms_track = 0.0;
+        double ms_ipc = 0.0;
+        double ms_enet = 0.0;
+        const auto cpu_start = std::chrono::steady_clock::now();
+        bool timed_wait = false;
+#endif
         const int camera_width = associated_camera_params_->width;
         const int camera_height = associated_camera_params_->height;
 
@@ -130,7 +184,14 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
 
         // Wait for the previous stage (acquire_frames) to finish copying data.
         if (entry->event_ptr) {
+#if YOLO_PROFILE
+            ck(cudaEventRecord(e_wait_start, yolov8_instance_->stream));
+#endif
             ck(cudaStreamWaitEvent(yolov8_instance_->stream, *entry->event_ptr, 0));
+#if YOLO_PROFILE
+            ck(cudaEventRecord(e_wait_end, yolov8_instance_->stream));
+            timed_wait = true;
+#endif
         }
 
         frame_original_gpu_.d_orig = entry->d_image;
@@ -138,6 +199,9 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         debayer_gpu_.size.height = camera_height;
 
         // Debayer or duplicate mono channel to prepare for color conversion.
+#if YOLO_PROFILE
+        ck(cudaEventRecord(e_pre_start, yolov8_instance_->stream));
+#endif
         if (associated_camera_params_->color) {
             // If color, debayer to RGBA first, then our kernel will handle the rest.
             debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_);
@@ -146,6 +210,9 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             // If mono, pass the raw mono buffer directly to the kernel.
             yolov8_instance_->preprocess_gpu(frame_original_gpu_.d_orig, camera_width, camera_height, false);
         }
+#if YOLO_PROFILE
+        ck(cudaEventRecord(e_pre_end, yolov8_instance_->stream));
+#endif
 
         // Logic for dumping a debug frame if requested.
         bool dump_this_frame = m_dump_next_frame.exchange(false);
@@ -169,7 +236,16 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
 
         // Preprocess and run inference. These are non-blocking CUDA calls.
         auto inference_start_time = std::chrono::steady_clock::now();
+#if YOLO_PROFILE
+        const auto infer_call_start = inference_start_time;
+        ck(cudaEventRecord(e_infer_start, yolov8_instance_->stream));
+#endif
         yolov8_instance_->infer();
+#if YOLO_PROFILE
+        const auto infer_call_end = std::chrono::steady_clock::now();
+        ms_enqueue = std::chrono::duration<double, std::milli>(infer_call_end - infer_call_start).count();
+        ck(cudaEventRecord(e_infer_end, yolov8_instance_->stream));
+#endif
 
         // record per-frame event for synchronization
         if (entry->yolo_completion_event) {
@@ -180,6 +256,9 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         const int timeout_us = 100000; // 100ms timeout
         bool finished_in_time = false;
 
+#if YOLO_PROFILE
+        const auto sync_wait_start = std::chrono::steady_clock::now();
+#endif
         while (true) {
             cudaError_t result = cudaStreamQuery(yolov8_instance_->stream);
             if (result == cudaSuccess) {
@@ -203,11 +282,37 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             // Wait for a very short time before polling again
             usleep(100);
         }
+#if YOLO_PROFILE
+        const auto sync_wait_end = std::chrono::steady_clock::now();
+        ms_sync_wait = std::chrono::duration<double, std::milli>(sync_wait_end - sync_wait_start).count();
+#endif
 
+#if YOLO_PROFILE
+        if (finished_in_time) {
+            ck(cudaEventSynchronize(e_infer_end));
+            if (timed_wait) {
+                ck(cudaEventElapsedTime(&ms_wait, e_wait_start, e_wait_end));
+            }
+            ck(cudaEventElapsedTime(&ms_pre, e_pre_start, e_pre_end));
+            ck(cudaEventElapsedTime(&ms_gap, e_pre_end, e_infer_start));
+            ck(cudaEventElapsedTime(&ms_infer, e_infer_start, e_infer_end));
+            ms_queue = ms_sync_wait - ms_infer;
+            if (ms_queue < 0.0) {
+                ms_queue = 0.0;
+            }
+        }
+#endif
         if (finished_in_time) {
             // Now that the GPU is finished, process the results.
             // This completely REPLACES entry->detections, preventing stale data
+#if YOLO_PROFILE
+            const auto post_start = std::chrono::steady_clock::now();
+#endif
             yolov8_instance_->postprocess(entry->detections);
+#if YOLO_PROFILE
+            const auto post_end = std::chrono::steady_clock::now();
+            ms_post = std::chrono::duration<double, std::milli>(post_end - post_start).count();
+#endif
         } else {
             // Timed out, clear any potential partial results
             entry->detections.clear();
@@ -218,7 +323,14 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         ).count();
 
         // Update velocity tracking with new detections
+#if YOLO_PROFILE
+        const auto track_start = std::chrono::steady_clock::now();
+#endif
         velocity_tracker_.updateTracking(entry->detections, current_timestamp_us);
+#if YOLO_PROFILE
+        const auto track_end = std::chrono::steady_clock::now();
+        ms_track = std::chrono::duration<double, std::milli>(track_end - track_start).count();
+#endif
 
         // After detections are found, dispatch to the crop worker if it exists AND recording is on
         if (m_crop_worker && camera_control_->record_video) {
@@ -232,6 +344,9 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         entry->detections_ready.store(true);
 
         // NEW: Update Frame IPC with YOLO detection results
+#if YOLO_PROFILE
+        const auto ipc_start = std::chrono::steady_clock::now();
+#endif
         if (entry->frame_ipc_manager && entry->has_detections) {
             FrameIPCManager* frame_ipc = static_cast<FrameIPCManager*>(entry->frame_ipc_manager);
             if (frame_ipc && frame_ipc->isEnabled()) {
@@ -246,12 +361,44 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
                 frame_ipc->updateFrameWithDetections(frame_id, shaman_objects);
             }
         }
+#if YOLO_PROFILE
+        const auto ipc_end = std::chrono::steady_clock::now();
+        ms_ipc = std::chrono::duration<double, std::milli>(ipc_end - ipc_start).count();
+#endif
 
         // Handle ENet sending if configured
+#if YOLO_PROFILE
+        const auto enet_start = std::chrono::steady_clock::now();
+#endif
         if (enet_target_peer_ && associated_camera_select_->send_yolo_via_enet && !entry->detections.empty()) {
             // ENet code remains unchanged
         }
+#if YOLO_PROFILE
+        const auto enet_end = std::chrono::steady_clock::now();
+        ms_enet = std::chrono::duration<double, std::milli>(enet_end - enet_start).count();
+#endif
 
+#if YOLO_PROFILE
+        const auto cpu_end = std::chrono::steady_clock::now();
+        const double ms_total = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();
+        prof_count++;
+        if (prof_count % kYoloProfileLogEvery == 0) {
+            std::cout << "[YOLO_TIME] " << threadName
+                      << " wait=" << ms_wait << "ms"
+                      << " pre=" << ms_pre << "ms"
+                      << " gap=" << ms_gap << "ms"
+                      << " enqueue=" << ms_enqueue << "ms"
+                      << " infer=" << ms_infer << "ms"
+                      << " sync=" << ms_sync_wait << "ms"
+                      << " queue=" << ms_queue << "ms"
+                      << " post=" << ms_post << "ms"
+                      << " track=" << ms_track << "ms"
+                      << " ipc=" << ms_ipc << "ms"
+                      << " enet=" << ms_enet << "ms"
+                      << " total=" << ms_total << "ms"
+                      << std::endl;
+        }
+#endif
     } catch (const std::exception& e) {
         std::cerr << "[" << threadName << "] Exception in WorkerFunction: " << e.what() << std::endl;
         if (yolov8_instance_ && yolov8_instance_->stream) {

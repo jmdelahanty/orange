@@ -1,6 +1,26 @@
 // src/yolov8_det.cpp
 #include "yolov8_det.h"
+#include <cstdlib>
+#include <cstring>
+#include <mutex>
 #include <opencv2/opencv.hpp>
+
+namespace {
+std::mutex g_trt_enqueue_mutex;
+
+bool UseTrtEnqueueMutex()
+{
+    static const bool enabled = []() {
+        const char* env = std::getenv("ORANGE_YOLO_ENQUEUE_MUTEX");
+        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        if (on) {
+            std::cout << "[YOLOv8] Global enqueue mutex enabled." << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+}  // namespace
 
 void YOLOv8::initialize_plugins() {
     static bool plugins_initialized = false;
@@ -19,6 +39,17 @@ YOLOv8::YOLOv8(const std::string& engine_file_path, int width, int height)
     this->engine = nullptr;
     this->runtime = nullptr;
     this->context = nullptr;
+    this->use_cuda_graph_ = true;
+    this->infer_graph_ = nullptr;
+    this->infer_graph_exec_ = nullptr;
+
+    const char* graph_env = std::getenv("ORANGE_YOLO_CUDA_GRAPH");
+    if (graph_env && *graph_env && std::strcmp(graph_env, "0") == 0) {
+        this->use_cuda_graph_ = false;
+    }
+    std::cout << "[YOLOv8] CUDA graph mode: "
+              << (this->use_cuda_graph_ ? "enabled" : "disabled")
+              << std::endl;
 
     std::ifstream file(engine_file_path, std::ios::binary);
     if (!file.good()) {
@@ -94,6 +125,8 @@ YOLOv8::~YOLOv8()
     if (this->stream) {
         cudaStreamSynchronize(this->stream);
     }
+    if (this->infer_graph_exec_) { cudaGraphExecDestroy(this->infer_graph_exec_); }
+    if (this->infer_graph_) { cudaGraphDestroy(this->infer_graph_); }
     if (this->context) { delete this->context; }
     if (this->engine) { delete this->engine; }
     if (this->runtime) { delete this->runtime; }
@@ -105,7 +138,44 @@ YOLOv8::~YOLOv8()
 void YOLOv8::make_pipe(bool warmup, int max_width, int max_height)
 {
     if (this->stream == nullptr) {
-        CHECK(cudaStreamCreate(&this->stream));
+        int least_priority = 0;
+        int greatest_priority = 0;
+        CHECK(cudaDeviceGetStreamPriorityRange(&least_priority, &greatest_priority));
+        int priority = 0;
+        unsigned int stream_flags = 0;
+        const char* priority_env = std::getenv("ORANGE_YOLO_STREAM_PRIORITY");
+        if (priority_env && *priority_env) {
+            if (std::strcmp(priority_env, "high") == 0) {
+                priority = greatest_priority;
+            } else if (std::strcmp(priority_env, "low") == 0) {
+                priority = least_priority;
+            } else {
+                char* end = nullptr;
+                long parsed = std::strtol(priority_env, &end, 10);
+                if (end != priority_env && *end == '\0') {
+                    if (parsed < greatest_priority) {
+                        parsed = greatest_priority;
+                    } else if (parsed > least_priority) {
+                        parsed = least_priority;
+                    }
+                    priority = static_cast<int>(parsed);
+                }
+            }
+        }
+        const char* nonblocking_env = std::getenv("ORANGE_YOLO_STREAM_NONBLOCKING");
+        if (nonblocking_env && *nonblocking_env && std::strcmp(nonblocking_env, "0") != 0) {
+            stream_flags = cudaStreamNonBlocking;
+        }
+        if (priority < greatest_priority) {
+            priority = greatest_priority;
+        } else if (priority > least_priority) {
+            priority = least_priority;
+        }
+        CHECK(cudaStreamCreateWithPriority(&this->stream, stream_flags, priority));
+        std::cout << "[YOLOv8] Stream priority " << priority
+                  << " (range " << greatest_priority << ".." << least_priority << ")"
+                  << " nonblocking=" << (stream_flags == cudaStreamNonBlocking ? "on" : "off")
+                  << std::endl;
     }
 
     for (size_t i = 0; i < this->input_bindings.size(); ++i) {
@@ -125,6 +195,8 @@ void YOLOv8::make_pipe(bool warmup, int max_width, int max_height)
         this->host_ptrs.push_back(h_ptr);
     }
 
+    this->bind_tensors();
+
     if (warmup) {
         for (int i = 0; i < 10; i++) {
             for (size_t j = 0; j < this->input_bindings.size(); ++j) {
@@ -136,6 +208,10 @@ void YOLOv8::make_pipe(bool warmup, int max_width, int max_height)
             }
             this->infer();
         }
+    }
+
+    if (this->use_cuda_graph_) {
+        capture_infer_graph();
     }
 }
 
@@ -161,6 +237,94 @@ void YOLOv8::preprocess_gpu(unsigned char *d_src, int source_width, int source_h
     this->pparam.height = (float)source_height;
 }
 
+bool YOLOv8::capture_infer_graph()
+{
+    if (!this->use_cuda_graph_ || this->infer_graph_exec_) {
+        return this->infer_graph_exec_ != nullptr;
+    }
+    if (!this->context || !this->stream) {
+        std::cerr << "[YOLOv8] CUDA graph capture failed: context or stream not initialized." << std::endl;
+        this->use_cuda_graph_ = false;
+        return false;
+    }
+
+    cudaError_t err = cudaStreamSynchronize(this->stream);
+    if (err != cudaSuccess) {
+        std::cerr << "[YOLOv8] CUDA graph capture sync failed: "
+                  << cudaGetErrorString(err) << std::endl;
+        this->use_cuda_graph_ = false;
+        return false;
+    }
+
+    err = cudaStreamBeginCapture(this->stream, cudaStreamCaptureModeThreadLocal);
+    if (err != cudaSuccess) {
+        std::cerr << "[YOLOv8] CUDA graph capture begin failed: "
+                  << cudaGetErrorString(err) << std::endl;
+        this->use_cuda_graph_ = false;
+        return false;
+    }
+
+    if (!this->context->enqueueV3(this->stream)) {
+        cudaStreamEndCapture(this->stream, &this->infer_graph_);
+        throw std::runtime_error("YOLOv8::capture_infer_graph: enqueueV3 failed");
+    }
+
+    for (int i = 0; i < this->num_outputs; ++i) {
+        size_t osize = this->output_bindings[i].size * this->output_bindings[i].dsize;
+        CHECK(cudaMemcpyAsync(
+            this->host_ptrs[i],
+            this->device_ptrs[this->num_inputs + i],
+            osize,
+            cudaMemcpyDeviceToHost,
+            this->stream));
+    }
+
+    err = cudaStreamEndCapture(this->stream, &this->infer_graph_);
+    if (err != cudaSuccess) {
+        std::cerr << "[YOLOv8] CUDA graph capture end failed: "
+                  << cudaGetErrorString(err) << std::endl;
+        this->use_cuda_graph_ = false;
+        return false;
+    }
+
+    err = cudaGraphInstantiate(&this->infer_graph_exec_, this->infer_graph_, nullptr, nullptr, 0);
+    if (err != cudaSuccess) {
+        std::cerr << "[YOLOv8] CUDA graph instantiate failed: "
+                  << cudaGetErrorString(err) << std::endl;
+        this->use_cuda_graph_ = false;
+        return false;
+    }
+
+    std::cout << "[YOLOv8] CUDA graph captured." << std::endl;
+    return true;
+}
+
+void YOLOv8::bind_tensors()
+{
+    if (!this->context) {
+        throw std::runtime_error("YOLOv8::bind_tensors: Execution context is null");
+    }
+    if (this->device_ptrs.size() < static_cast<size_t>(this->num_inputs + this->num_outputs)) {
+        throw std::runtime_error("YOLOv8::bind_tensors: Device pointers are not initialized");
+    }
+
+    for (size_t i = 0; i < this->input_bindings.size(); ++i) {
+        const auto& binding = this->input_bindings[i];
+        if (!this->context->setTensorAddress(binding.name.c_str(), this->device_ptrs[i])) {
+            throw std::runtime_error("YOLOv8::bind_tensors: Failed to set tensor address for " + binding.name);
+        }
+    }
+
+    for (size_t i = 0; i < this->output_bindings.size(); ++i) {
+        const auto& binding = this->output_bindings[i];
+        if (!this->context->setTensorAddress(binding.name.c_str(),
+                                             this->device_ptrs[this->num_inputs + i])) {
+            throw std::runtime_error("YOLOv8::bind_tensors: Failed to set tensor address for " + binding.name);
+        }
+    }
+
+    this->tensor_addresses_set_ = true;
+}
 
 void YOLOv8::infer()
 {
@@ -172,15 +336,31 @@ void YOLOv8::infer()
         throw std::runtime_error("YOLOv8::infer: CUDA stream is null");
     }
     
-    for (int32_t i = 0; i < this->num_bindings; ++i) {
-        auto const name = this->engine->getIOTensorName(i);
-        if (!this->context->setTensorAddress(name, this->device_ptrs[i])) {
-            throw std::runtime_error("YOLOv8::infer: Failed to set tensor address for " + std::string(name));
+    if (!this->tensor_addresses_set_) {
+        this->bind_tensors();
+    }
+
+    if (this->use_cuda_graph_ && this->infer_graph_exec_) {
+        cudaError_t err = cudaGraphLaunch(this->infer_graph_exec_, this->stream);
+        if (err != cudaSuccess) {
+            std::cerr << "[YOLOv8] CUDA graph launch failed: "
+                      << cudaGetErrorString(err) << ". Falling back to enqueue."
+                      << std::endl;
+            this->use_cuda_graph_ = false;
+        } else {
+            return;
         }
     }
 
-    if (!this->context->enqueueV3(this->stream)) {
-        throw std::runtime_error("YOLOv8::infer: enqueueV3 failed");
+    if (UseTrtEnqueueMutex()) {
+        std::lock_guard<std::mutex> lock(g_trt_enqueue_mutex);
+        if (!this->context->enqueueV3(this->stream)) {
+            throw std::runtime_error("YOLOv8::infer: enqueueV3 failed");
+        }
+    } else {
+        if (!this->context->enqueueV3(this->stream)) {
+            throw std::runtime_error("YOLOv8::infer: enqueueV3 failed");
+        }
     }
 
     for (int i = 0; i < this->num_outputs; ++i) {

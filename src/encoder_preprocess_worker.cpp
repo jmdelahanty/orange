@@ -7,6 +7,17 @@
 #include <nppi.h>
 #include <nppi_color_conversion.h>
 
+#ifndef PIPELINE_PROFILE
+#if defined(YOLO_PROFILE) && YOLO_PROFILE
+#define PIPELINE_PROFILE 1
+#else
+#define PIPELINE_PROFILE 0
+#endif
+#endif
+#if PIPELINE_PROFILE
+static constexpr int kEncProfileLogEvery = 60;
+#endif
+
 EncoderPreprocessWorker::EncoderPreprocessWorker(
     const char* name,
     CameraParams* cam_params,
@@ -126,6 +137,37 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     ck(cudaSetDevice(camera_params_->gpu_id));
     nppSetStream(m_stream);
 
+#if PIPELINE_PROFILE
+    static thread_local bool enc_prof_init = false;
+    static thread_local bool enc_prof_inflight = false;
+    static thread_local int enc_prof_count = 0;
+    static thread_local cudaEvent_t enc_prof_start;
+    static thread_local cudaEvent_t enc_prof_end;
+    if (!enc_prof_init) {
+        ck(cudaEventCreate(&enc_prof_start));
+        ck(cudaEventCreate(&enc_prof_end));
+        enc_prof_init = true;
+    }
+    if (enc_prof_inflight) {
+        cudaError_t enc_status = cudaEventQuery(enc_prof_end);
+        if (enc_status == cudaSuccess) {
+            float enc_ms = 0.0f;
+            ck(cudaEventElapsedTime(&enc_ms, enc_prof_start, enc_prof_end));
+            std::cout << "[ENC_PRE_TIME] Cam " << camera_params_->camera_serial
+                      << " GPU " << camera_params_->gpu_id
+                      << " ms=" << enc_ms
+                      << " q=" << GetCountQueueInSize()
+                      << std::endl;
+            enc_prof_inflight = false;
+        } else if (enc_status != cudaErrorNotReady) {
+            std::cerr << "[ENC_PRE_TIME] Cam " << camera_params_->camera_serial
+                      << " event query failed: " << cudaGetErrorString(enc_status)
+                      << std::endl;
+            enc_prof_inflight = false;
+        }
+    }
+#endif
+
     // Acquire resources for the next stage with retry logic
     ENCODER_WORKER_ENTRY* encoder_entry = nullptr;
     cudaEvent_t* event = nullptr;
@@ -169,6 +211,17 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 
     encoder_entry->preprocess_complete_event = event;
 
+#if PIPELINE_PROFILE
+    bool sample_preprocess = false;
+    if (!enc_prof_inflight) {
+        enc_prof_count++;
+        if (enc_prof_count % kEncProfileLogEvery == 0) {
+            sample_preprocess = true;
+            ck(cudaEventRecord(enc_prof_start, m_stream));
+        }
+    }
+#endif
+
     // Wait for the raw frame data to be ready from the acquisition thread.
     if (entry->event_ptr) {
         ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
@@ -204,6 +257,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     
     // Record an event in the stream once all the above GPU work is queued.
     ck(cudaEventRecord(*encoder_entry->preprocess_complete_event, m_stream));
+#if PIPELINE_PROFILE
+    if (sample_preprocess) {
+        ck(cudaEventRecord(enc_prof_end, m_stream));
+        enc_prof_inflight = true;
+    }
+#endif
 
     // Release the main WORKER_ENTRY immediately.
     if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {

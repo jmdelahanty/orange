@@ -19,6 +19,7 @@ class CropAndEncodeWorker;
 
 typedef struct {
     unsigned char* d_image;
+    unsigned char* d_image_pool;
     int width;
     int height;
     int pixelFormat;
@@ -130,6 +131,7 @@ struct CameraResources {
         worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX];
         for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
+            worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
         }
@@ -159,7 +161,11 @@ struct CameraResources {
     void cleanup() {
         if (worker_entry_pool) {
             for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
-                if (worker_entry_pool[i].d_image) cudaFree(worker_entry_pool[i].d_image);
+                if (worker_entry_pool[i].d_image_pool) {
+                    cudaFree(worker_entry_pool[i].d_image_pool);
+                }
+                worker_entry_pool[i].d_image = nullptr;
+                worker_entry_pool[i].d_image_pool = nullptr;
             }
             delete[] worker_entry_pool;
             worker_entry_pool = nullptr;

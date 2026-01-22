@@ -5,6 +5,7 @@
 #include "optimized_yolo_preprocess.h"
 #include "common.hpp"
 #include "fstream"
+#include <cuda_runtime_api.h>
 #include <nppi.h>
 #include <opencv2/opencv.hpp>
 
@@ -44,12 +45,19 @@ public:
     cudaStream_t stream = nullptr;
 
 private:
+    void bind_tensors();
+    bool capture_infer_graph();
+
     float *d_planar = nullptr;
 
     nvinfer1::ICudaEngine *engine = nullptr;
     nvinfer1::IRuntime *runtime = nullptr;
     nvinfer1::IExecutionContext *context = nullptr;
     Logger gLogger{nvinfer1::ILogger::Severity::kERROR};
+    bool tensor_addresses_set_ = false;
+    bool use_cuda_graph_ = false;
+    cudaGraph_t infer_graph_ = nullptr;
+    cudaGraphExec_t infer_graph_exec_ = nullptr;
 };
 
 #endif // DETECT_END2END_YOLOV8_HPP

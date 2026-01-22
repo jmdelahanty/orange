@@ -9,6 +9,7 @@ DEBUG=0
 CLEAN=0
 CUDA_DEBUG=0
 NVTX_PROFILE=0
+YOLO_PROFILE=0
 for arg in "$@"; do
   case $arg in
     --debug)
@@ -27,6 +28,10 @@ for arg in "$@"; do
     NVTX_PROFILE=1
     shift
     ;;
+    --yolo-profile)
+    YOLO_PROFILE=1
+    shift
+    ;;
     --help)
     echo "Usage: $0 [options]"
     echo "Options:"
@@ -34,6 +39,7 @@ for arg in "$@"; do
     echo "  --clean       Remove all generated files and rebuild"
     echo "  --cuda-debug  Enable CUDA context debugging (can be combined with --debug)"
     echo "  --nvtx        Enable NVTX profiling markers (recommended for Nsight)"
+    echo "  --yolo-profile Enable YOLO timing logs (pre/infer/post/track/IPC/ENet)"
     echo "  --help        Show this help message"
     echo ""
     echo "Profiling Examples:"
@@ -86,6 +92,12 @@ if [ $NVTX_PROFILE -eq 1 ]; then
   else
     BUILD_DIR="targets/release_nvtx"
   fi
+fi
+
+# Add YOLO profiling support
+if [ $YOLO_PROFILE -eq 1 ]; then
+  echo "==> Enabling YOLO profiling logs"
+  CFLAGS="$CFLAGS -DYOLO_PROFILE=1"
 fi
 
 echo "==> Using build directory: $BUILD_DIR"
@@ -252,6 +264,11 @@ if [ $CUDA_DEBUG -eq 1 ]; then
   NVCC_FLAGS="$NVCC_FLAGS -DDEBUG_CUDA_CONTEXT -DENABLE_CUDA_DEBUG_LOGGING"
 fi
 
+# NVCC doesn't accept some host-only optimization flags like -Ofast.
+NVCC_CFLAGS="$CFLAGS"
+NVCC_CFLAGS="${NVCC_CFLAGS//-Ofast/}"
+NVCC_CFLAGS="${NVCC_CFLAGS//-ffast-math/}"
+
 # Helper function to compile CUDA files
 compile_cuda_file() {
   local src="$1"
@@ -260,7 +277,7 @@ compile_cuda_file() {
   
   if is_outdated "$src" "$obj"; then
     echo "==> Compiling $desc with flags: $NVCC_FLAGS"
-    nvcc -c "$src" $NVCC_FLAGS $CFLAGS -o "$obj"
+    nvcc -c "$src" $NVCC_FLAGS $NVCC_CFLAGS -o "$obj"
     if [ $? -eq 0 ]; then
       echo "==> $desc compilation complete"
     else
@@ -407,6 +424,10 @@ if [ $need_link -eq 1 ]; then
   
   if [ $NVTX_PROFILE -eq 1 ]; then
     echo "==> NVTX profiling ENABLED"
+  fi
+  
+  if [ $YOLO_PROFILE -eq 1 ]; then
+    echo "==> YOLO profiling ENABLED"
   fi
   
   # Check if optimized preprocessing is available
