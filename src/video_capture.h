@@ -6,6 +6,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <mutex>
 #include "network_base.h"
 #include "common.hpp" // For pose::Object
 #include <cuda_runtime.h>
@@ -16,6 +17,7 @@ class GPUVideoEncoder;
 class YOLOv8Worker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
+class FrameIPCManager;
 
 typedef struct {
     unsigned char* d_image;
@@ -26,6 +28,7 @@ typedef struct {
     unsigned long long timestamp;
     unsigned long long frame_id;
     uint64_t recording_frame_id;
+    uint64_t ipc_frame_id;
     uint64_t timestamp_sys;
     
     // YOLO detection fields
@@ -56,7 +59,7 @@ typedef struct {
 
     // Frame IPC manager pointer (NEW)
     // This allows workers (especially YOLO) to update frame data with detections
-    void* frame_ipc_manager = nullptr;
+    FrameIPCManager* frame_ipc_manager = nullptr;
 
 } WORKER_ENTRY;
 
@@ -72,6 +75,8 @@ struct CameraControl
     bool stop_record = false;
     bool record_video = false;
     bool sync_camera = false;
+    std::mutex recording_folder_mutex;
+    std::string recording_folder;
 };
 
 struct CameraResources {
@@ -134,6 +139,7 @@ struct CameraResources {
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
+            worker_entry_pool[i].ipc_frame_id = 0;
         }
         
         free_entries_queue = new SafeQueue<WORKER_ENTRY*>();
@@ -205,10 +211,9 @@ struct CameraEachSelect
     const char* yolo_model;
 
     // Frame IPC settings (NEW)
-    bool send_frame_ipc = false;      // Enable frame synchronization via IPC
+    bool send_frame_ipc = true;      // Enable frame synchronization via IPC
     
     // Legacy/deprecated settings (kept for backward compatibility)
-    bool send_yolo_via_ipc = false;   // DEPRECATED: Use send_frame_ipc instead
     bool send_yolo_via_enet = false;
 };
 

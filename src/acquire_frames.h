@@ -19,6 +19,7 @@ class YOLOv8Worker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
 class EncoderPreprocessWorker;
+class FrameIPCManager;
 
 void acquire_frames(
     CameraEmergent *ecam,
@@ -31,6 +32,7 @@ void acquire_frames(
     EncoderPreprocessWorker* encoder_preprocess_worker,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
-    CameraResources* resources
+    CameraResources* resources,
+    FrameIPCManager* frame_ipc_manager
 );
 #endif

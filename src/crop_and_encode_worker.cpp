@@ -2,6 +2,7 @@
 
 #include "crop_and_encode_worker.h"
 #include "kernel.cuh"
+#include "npp_utils.h"
 #include "project.h" // Add this include
 #include <nppi.h>
 #include <npp.h>
@@ -145,16 +146,27 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
         if (!camera_control_->record_video && is_recording_) {
             flush_and_close();
             is_recording_ = false;
+            {
+                std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+                camera_control_->recording_folder.clear();
+            }
         }
         return false;
     }
 
     // Set the correct CUDA device for this worker's operations
     ck(cudaSetDevice(camera_params_->gpu_id));
-    nppSetStream(m_stream);
+    EnsureNppStream(m_stream);
 
     if (camera_control_->record_video && !is_recording_) {
-        std::string current_recording_folder = base_folder_name_ + "/" + get_current_date_time();
+        std::string current_recording_folder;
+        {
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            if (camera_control_->recording_folder.empty()) {
+                camera_control_->recording_folder = base_folder_name_ + "/" + get_current_date_time();
+            }
+            current_recording_folder = camera_control_->recording_folder;
+        }
         make_folder(current_recording_folder);
 
         writer_.video_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
@@ -176,6 +188,10 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     } else if (!camera_control_->record_video && is_recording_) {
         flush_and_close();
         is_recording_ = false;
+        {
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            camera_control_->recording_folder.clear();
+        }
     }
 
     try {

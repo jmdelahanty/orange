@@ -6,14 +6,31 @@
 #include <vector>
 #include "kernel.cuh"
 #include "shaman.h"
+#include "npp_utils.h"
 #include <cuda_runtime.h>
 #include <iostream>
 #include <cuda.h>
 #include "global.h"
-#include <npp.h> // For nppSetStream
+#include <npp.h> // For NPP APIs
 #include "yolo_worker.h"
+#include <cstring>
 
 #define display_gpu_id 0 
+
+namespace {
+bool SkipDisplayYoloWait()
+{
+    static const bool enabled = []() {
+        const char* env = std::getenv("ORANGE_DISPLAY_SKIP_YOLO_WAIT");
+        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        if (on) {
+            std::cout << "[OPENGL_DISPLAY] Skipping YOLO CPU wait for overlays." << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+}  // namespace
 
 COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, CameraEachSelect *camera_select, unsigned char *display_buffer_cuda_pbo, INDIGOSignalBuilder* indigo_signal_builder, SafeQueue<WORKER_ENTRY*>& recycle_queue)
     : CThreadWorker(name),
@@ -82,7 +99,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
 
     ck(cudaSetDevice(display_gpu_id));
-    nppSetStream(m_stream);
+    EnsureNppStream(m_stream);
 
     // Wait for the data to be ready from the acquisition thread
     if (latest_frame->event_ptr) {
@@ -95,8 +112,15 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
     
     // Spin-wait until the YOLO worker has finished its CPU-side post-processing
-    while (latest_frame->has_detections && camera_select->yolo && !latest_frame->detections_ready.load(std::memory_order_acquire)) {
-        // This is a tight loop; a small sleep can be added if it consumes too much CPU
+    bool allow_overlay = latest_frame->has_detections && camera_select->yolo;
+    if (allow_overlay) {
+        if (!SkipDisplayYoloWait()) {
+            while (!latest_frame->detections_ready.load(std::memory_order_acquire)) {
+                // Busy-wait to keep overlays in sync with the current frame.
+            }
+        } else if (!latest_frame->detections_ready.load(std::memory_order_acquire)) {
+            allow_overlay = false;
+        }
     }
 
     // --- Perform image processing on the GPU ---
@@ -120,7 +144,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
 
     // --- Draw detections directly on the GPU buffer ---
-    if (latest_frame->has_detections && !latest_frame->detections.empty()) {
+    if (allow_overlay && !latest_frame->detections.empty()) {
         // Copy detection data to the GPU
         ck(cudaMemcpyAsync(d_detections_for_drawing_, 
                            latest_frame->detections.data(), 

@@ -15,10 +15,14 @@
 #include <chrono>
 #include <cuda.h>
 #include <atomic>
+#include <memory>
 #include "common.hpp"         // For pose::Object
 
 class COpenGLDisplay;
 class CropAndEncodeWorker;
+namespace yolo_perf {
+class YoloPerfLogger;
+}
 
 class YOLOv8Worker : public CThreadWorker<WORKER_ENTRY>
 {
@@ -82,6 +86,10 @@ private:
     CropAndEncodeWorker* m_crop_worker = nullptr;
     VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
+    std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;
+    uint64_t perf_sample_counter_ = 0;
+    int perf_sample_rate_ = 1;
+    std::string perf_log_folder_;
 };
 
 #endif // YOLO_WORKER_H

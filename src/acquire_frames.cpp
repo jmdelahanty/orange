@@ -60,7 +60,8 @@ void acquire_frames(
     EncoderPreprocessWorker* encoder_preprocess_worker,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
-    CameraResources* resources
+    CameraResources* resources,
+    FrameIPCManager* frame_ipc_manager
 ){
     ck(cudaSetDevice(camera_params->gpu_id));
     NVTX_CAMERA("AcquireFrames_Main");
@@ -88,16 +89,9 @@ void acquire_frames(
         ck(cudaMalloc((void **)&frame_process_save.d_convert, (size_t)camera_params->width * camera_params->height * 3));
     }
 
-    // FRAME_IPC: Initialize Frame IPC Manager if requested
-    std::unique_ptr<FrameIPCManager> frame_ipc_manager;
-    if (camera_select->send_frame_ipc) {
-        frame_ipc_manager = std::make_unique<FrameIPCManager>(camera_params);
-        if (!frame_ipc_manager->isEnabled()) {
-            // IPC logging disabled: init failure warning.
-            frame_ipc_manager.reset();  // Disable if initialization failed
-        } else {
-            // IPC logging disabled: init success message.
-        }
+    FrameIPCManager* ipc_manager = frame_ipc_manager;
+    if (ipc_manager && !ipc_manager->isEnabled()) {
+        ipc_manager = nullptr;
     }
     auto frame_monitor = std::make_shared<FrameIDMonitor>(camera_params->camera_serial);
 
@@ -407,10 +401,11 @@ void acquire_frames(
             current_entry->frame_id = camera_state.frame_count;
             current_entry->has_detections = will_yolo;
             current_entry->detections_ready.store(false);
+            current_entry->ipc_frame_id = 0;
 
             // FRAME_IPC: Send frame data immediately after capture
             // This ensures EVERY frame is sent for synchronization
-            if (frame_ipc_manager && frame_ipc_manager->isEnabled()) {
+            if (ipc_manager) {
                 // ALWAYS use recording_frame_id when it's valid (non-zero or recording active)
                 // This ensures consistency - if a frame gets recorded, we use its recording ID
                 // Otherwise, fall back to absolute frame_id
@@ -425,8 +420,7 @@ void acquire_frames(
                     frame_id_for_ipc = current_entry->frame_id;
                 }
                 
-                // Send frame-only data (no detections at this point)
-                std::vector<shaman::Object> empty_detections;
+                current_entry->ipc_frame_id = frame_id_for_ipc;
                 bool yolo_will_process = will_yolo;
                 
                 // Log the frame ID being sent (for debugging)
@@ -436,10 +430,9 @@ void acquire_frames(
                 }
                 last_logged_frame = frame_id_for_ipc;
                 
-                bool ipc_success = frame_ipc_manager->sendFrame(
+                bool ipc_success = ipc_manager->sendFrame(
                     frame_id_for_ipc,
                     current_entry->timestamp,
-                    empty_detections,
                     yolo_will_process
                 );
                 
@@ -450,7 +443,7 @@ void acquire_frames(
             
             // FRAME_IPC: Store IPC manager pointer in entry for YOLO to use later
             // This allows YOLO to update the frame with detection data
-            current_entry->frame_ipc_manager = frame_ipc_manager.get();
+            current_entry->frame_ipc_manager = ipc_manager;
 
             if (camera_select->frame_save_state == State_Write_New_Frame && image_writer) {
                 ImageWriter_Entry* save_job = new ImageWriter_Entry();
@@ -558,7 +551,7 @@ void acquire_frames(
         CUDA_CTX_LOG("=== ACQUIRE FRAMES CLEANUP ===");
 
         // FRAME_IPC: Log final statistics if IPC was active
-        if (frame_ipc_manager && frame_ipc_manager->isEnabled()) {
+        if (ipc_manager) {
             // IPC logging disabled: final stats.
         }
 

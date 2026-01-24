@@ -3,6 +3,7 @@
 #include "encoder_preprocess_worker.h"
 #include "encoder_hw_worker.h"
 #include "kernel.cuh"
+#include "npp_utils.h"
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
@@ -135,7 +136,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     // }
 
     ck(cudaSetDevice(camera_params_->gpu_id));
-    nppSetStream(m_stream);
+    EnsureNppStream(m_stream);
 
 #if PIPELINE_PROFILE
     static thread_local bool enc_prof_init = false;

@@ -292,6 +292,10 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             std::cout << "[" << this->threadName << "] HW Recording paused. Finalizing video file..." << std::endl;
             flush_and_close();
             is_recording_ = false;
+            {
+                std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+                camera_control_->recording_folder.clear();
+            }
         }
         return false;
     }
@@ -301,7 +305,14 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         std::cout << "[" << this->threadName << "] HW Recording started. Opening new video file..." << std::endl;
 
         // Create a new timestamped folder
-        std::string current_recording_folder = base_folder_name_ + "/" + get_current_date_time();
+        std::string current_recording_folder;
+        {
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            if (camera_control_->recording_folder.empty()) {
+                camera_control_->recording_folder = base_folder_name_ + "/" + get_current_date_time();
+            }
+            current_recording_folder = camera_control_->recording_folder;
+        }
         make_folder(current_recording_folder);
 
         const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);

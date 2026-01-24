@@ -23,6 +23,7 @@
 #include "image_writer_worker.h"
 #include "yolov8_det.h"
 #include "crop_and_encode_worker.h"
+#include "frame_ipc_manager.h"
 
 std::vector<YOLOv8Worker*> yolo_workers; // For managing YOLO workers
 ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
@@ -155,6 +156,7 @@ int main(int argc, char **args) {
     image_writer->StartThread();
 
     std::vector<CameraResources> camera_resources;
+    std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
 
     EncoderConfig *encoder_config = new EncoderConfig{
         "h264",
@@ -372,7 +374,7 @@ int main(int argc, char **args) {
                     }
                 }
 
-                if (ImGui::BeginTable("Camera Control Setting", 9,
+                if (ImGui::BeginTable("Camera Control Setting", 7,
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
                                       ImGuiTableFlags_Borders)) {
                     ImGui::TableNextRow();
@@ -416,21 +418,6 @@ int main(int argc, char **args) {
                     ImGui::TableNextColumn();
                     ImGui::Text("YOLO Debug");
 
-                    // NEW COLUMN: Frame IPC
-                    ImGui::TableNextColumn();
-                    ImGui::Text("Frame IPC");
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("Enable frame synchronization via IPC\n"
-                                          "Sends EVERY frame for stimulus correlation\n"
-                                          "Works with or without YOLO");
-                    }
-
-                    ImGui::TableNextColumn();
-                    ImGui::Text("YOLO IPC");
-                    if (ImGui::IsItemHovered()) {
-                        ImGui::SetTooltip("DEPRECATED: Use Frame IPC instead");
-                    }
-
                     ImGui::TableNextColumn();
                     ImGui::Text("YOLO ENet");
 
@@ -469,31 +456,6 @@ int main(int argc, char **args) {
                                     std::cout << "Warning: Cannot dump frame. YOLO worker is not ready for camera "
                                               << cameras_params[i].camera_serial << std::endl;
                                 }
-                            }
-                        }
-
-                        // NEW: Frame IPC checkbox
-                        ImGui::TableNextColumn();
-                        sprintf(temp_string, "##frame_ipc%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].send_frame_ipc);
-                        // Optional: Show status indicator when active
-                        if (cameras_select[i].send_frame_ipc && camera_control->subscribe) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "●");
-                            if (ImGui::IsItemHovered()) {
-                                ImGui::SetTooltip("IPC active: /shm_cam_%u", cameras_params[i].camera_id);
-                            }
-                        }
-
-                        // Existing YOLO IPC checkbox (now deprecated)
-                        ImGui::TableNextColumn();
-                        sprintf(temp_string, "##yolo_ipc%d", i);
-                        ImGui::Checkbox(temp_string, &cameras_select[i].send_yolo_via_ipc);
-                        if (cameras_select[i].send_yolo_via_ipc) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), "!");
-                            if (ImGui::IsItemHovered()) {
-                                ImGui::SetTooltip("Deprecated! Use Frame IPC instead");
                             }
                         }
 
@@ -798,6 +760,8 @@ int main(int argc, char **args) {
 
                         // This part remains the same
                         camera_resources.resize(num_cameras);
+                        frame_ipc_managers.clear();
+                        frame_ipc_managers.resize(num_cameras);
                         size_t max_frame_size_bytes = 0;
                         for (int i = 0; i < num_cameras; ++i) {
                             size_t current_size = (size_t)cameras_params[i].width * (size_t)cameras_params[i].height;
@@ -808,6 +772,12 @@ int main(int argc, char **args) {
                         for (int i = 0; i < num_cameras; ++i) {
                             std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
                             camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
+                            if (cameras_select[i].send_frame_ipc) {
+                                frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
+                                if (!frame_ipc_managers[i]->isEnabled()) {
+                                    frame_ipc_managers[i].reset();
+                                }
+                            }
                         }
                         // Create worker thread objects and GPU textures
                         openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
@@ -983,7 +953,8 @@ int main(int argc, char **args) {
                                 encoderPreprocessWorkers[i],
                                 yolo_workers[i],
                                 image_writer,
-                                &camera_resources[i]
+                                &camera_resources[i],
+                                frame_ipc_managers[i].get()
                             );
                         }
                     } else {
@@ -1066,6 +1037,7 @@ int main(int argc, char **args) {
                         if(encoderHWWorkers) { delete[] encoderHWWorkers; encoderHWWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
+                        frame_ipc_managers.clear();
 
                         // 4. Final resource cleanup
                         for (int i = 0; i < num_cameras; i++) {

@@ -2,6 +2,7 @@
 
 #include "gpu_video_encoder.h"
 #include "kernel.cuh"
+#include "npp_utils.h"
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
@@ -372,7 +373,7 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
     try {
         NVTX_RANGE_PUSH("Setup_Device_And_Stream");
         ck(cudaSetDevice(camera_params->gpu_id));
-        nppSetStream(m_stream);
+        EnsureNppStream(m_stream);
         NVTX_RANGE_POP();
         
         {
