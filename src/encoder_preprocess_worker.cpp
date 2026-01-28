@@ -139,21 +139,44 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     EnsureNppStream(m_stream);
 
 #if PIPELINE_PROFILE
-    static thread_local bool enc_prof_init = false;
+    struct EncProfileEvents {
+        cudaEvent_t start{};
+        cudaEvent_t end{};
+        int device = -1;
+        bool initialized = false;
+
+        void Init(int gpu_id) {
+            if (initialized) {
+                return;
+            }
+            device = gpu_id;
+            ck(cudaSetDevice(device));
+            ck(cudaEventCreate(&start));
+            ck(cudaEventCreate(&end));
+            initialized = true;
+        }
+
+        ~EncProfileEvents() {
+            if (!initialized) {
+                return;
+            }
+            if (device >= 0) {
+                cudaSetDevice(device);
+            }
+            cudaEventDestroy(start);
+            cudaEventDestroy(end);
+        }
+    };
+
+    static thread_local EncProfileEvents enc_prof_events;
     static thread_local bool enc_prof_inflight = false;
     static thread_local int enc_prof_count = 0;
-    static thread_local cudaEvent_t enc_prof_start;
-    static thread_local cudaEvent_t enc_prof_end;
-    if (!enc_prof_init) {
-        ck(cudaEventCreate(&enc_prof_start));
-        ck(cudaEventCreate(&enc_prof_end));
-        enc_prof_init = true;
-    }
+    enc_prof_events.Init(camera_params_->gpu_id);
     if (enc_prof_inflight) {
-        cudaError_t enc_status = cudaEventQuery(enc_prof_end);
+        cudaError_t enc_status = cudaEventQuery(enc_prof_events.end);
         if (enc_status == cudaSuccess) {
             float enc_ms = 0.0f;
-            ck(cudaEventElapsedTime(&enc_ms, enc_prof_start, enc_prof_end));
+            ck(cudaEventElapsedTime(&enc_ms, enc_prof_events.start, enc_prof_events.end));
             std::cout << "[ENC_PRE_TIME] Cam " << camera_params_->camera_serial
                       << " GPU " << camera_params_->gpu_id
                       << " ms=" << enc_ms
@@ -218,7 +241,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         enc_prof_count++;
         if (enc_prof_count % kEncProfileLogEvery == 0) {
             sample_preprocess = true;
-            ck(cudaEventRecord(enc_prof_start, m_stream));
+        ck(cudaEventRecord(enc_prof_events.start, m_stream));
         }
     }
 #endif
@@ -260,7 +283,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     ck(cudaEventRecord(*encoder_entry->preprocess_complete_event, m_stream));
 #if PIPELINE_PROFILE
     if (sample_preprocess) {
-        ck(cudaEventRecord(enc_prof_end, m_stream));
+        ck(cudaEventRecord(enc_prof_events.end, m_stream));
         enc_prof_inflight = true;
     }
 #endif

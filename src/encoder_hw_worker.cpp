@@ -2,6 +2,7 @@
 
 #include "encoder_hw_worker.h"
 #include "encoder_preprocess_worker.h"
+#include "fsuid_guard.h"
 #include <iostream>
 #include <utility>
 #include <vector>
@@ -125,6 +126,8 @@ static inline void initialize_writer_hw(
      if (!(*writer->metadata))
     {
         std::cout << "Metadata file did not open!";
+        delete writer->metadata;
+        writer->metadata = nullptr;
         return;
     }
     *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
@@ -278,8 +281,10 @@ void EncoderHwWorker::flush_and_close()
         delete writer_.video;
         writer_.video = nullptr;
     }
-    if (writer_.metadata && writer_.metadata->is_open()) {
-        writer_.metadata->close();
+    if (writer_.metadata) {
+        if (writer_.metadata->is_open()) {
+            writer_.metadata->close();
+        }
         delete writer_.metadata;
         writer_.metadata = nullptr;
     }
@@ -287,16 +292,17 @@ void EncoderHwWorker::flush_and_close()
 
 bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 {
-    if (!entry) {
-        if (is_recording_ && !camera_control_->record_video) {
-            std::cout << "[" << this->threadName << "] HW Recording paused. Finalizing video file..." << std::endl;
-            flush_and_close();
-            is_recording_ = false;
-            {
-                std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
-                camera_control_->recording_folder.clear();
-            }
+    if (!camera_control_->record_video && is_recording_) {
+        std::cout << "[" << this->threadName << "] HW Recording paused. Finalizing video file..." << std::endl;
+        flush_and_close();
+        is_recording_ = false;
+        {
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            camera_control_->recording_folder.clear();
         }
+    }
+
+    if (!entry) {
         return false;
     }
 
@@ -313,10 +319,14 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             }
             current_recording_folder = camera_control_->recording_folder;
         }
-        make_folder(current_recording_folder);
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            make_folder(current_recording_folder);
 
-        const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);
-        initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_, metadata_tags);
+            const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);
+            initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_, metadata_tags);
+        }
         is_recording_ = true;
     }
 

@@ -65,6 +65,11 @@ void clear_upload_and_cleanup(GL_Texture& tex, int width, int height) {
       cudaStreamDestroy(tex.streams);
       tex.streams = nullptr;
     }
+    if (tex.texture) {
+      glDeleteTextures(1, &tex.texture);
+      tex.texture = 0;
+    }
+    tex.cuda_buffer = nullptr;
 }
 
 static void set_camera_properties(CameraEmergent* ecams, CameraParams* cameras_params, const int num_cameras, std::vector<std::string>& color_temps)

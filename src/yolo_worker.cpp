@@ -20,6 +20,7 @@
 #include "crop_and_encode_worker.h"
 #include "frame_ipc_manager.h"
 #include "project.h"
+#include "fsuid_guard.h"
 #include <condition_variable>
 #include <deque>
 #include <cstdlib>
@@ -243,6 +244,8 @@ private:
         if (folder.empty()) {
             return;
         }
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
         make_folder(folder);
         current_folder_ = folder;
         file_path_ = current_folder_ + "/Cam" + camera_serial_ + "_yolo_perf.csv";
@@ -556,23 +559,50 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         double ms_total = -1.0;
         const auto cpu_start = std::chrono::steady_clock::now();
 #if YOLO_PROFILE
-        static thread_local bool prof_init = false;
-        static thread_local cudaEvent_t e_pre_start;
-        static thread_local cudaEvent_t e_pre_end;
-        static thread_local cudaEvent_t e_infer_start;
-        static thread_local cudaEvent_t e_infer_end;
-        static thread_local cudaEvent_t e_wait_start;
-        static thread_local cudaEvent_t e_wait_end;
+        struct YoloProfileEvents {
+            cudaEvent_t pre_start{};
+            cudaEvent_t pre_end{};
+            cudaEvent_t infer_start{};
+            cudaEvent_t infer_end{};
+            cudaEvent_t wait_start{};
+            cudaEvent_t wait_end{};
+            int device = -1;
+            bool initialized = false;
+
+            void Init(int gpu_id) {
+                if (initialized) {
+                    return;
+                }
+                device = gpu_id;
+                ck(cudaSetDevice(device));
+                ck(cudaEventCreate(&pre_start));
+                ck(cudaEventCreate(&pre_end));
+                ck(cudaEventCreate(&infer_start));
+                ck(cudaEventCreate(&infer_end));
+                ck(cudaEventCreate(&wait_start));
+                ck(cudaEventCreate(&wait_end));
+                initialized = true;
+            }
+
+            ~YoloProfileEvents() {
+                if (!initialized) {
+                    return;
+                }
+                if (device >= 0) {
+                    cudaSetDevice(device);
+                }
+                cudaEventDestroy(pre_start);
+                cudaEventDestroy(pre_end);
+                cudaEventDestroy(infer_start);
+                cudaEventDestroy(infer_end);
+                cudaEventDestroy(wait_start);
+                cudaEventDestroy(wait_end);
+            }
+        };
+
+        static thread_local YoloProfileEvents prof_events;
         static thread_local int prof_count = 0;
-        if (!prof_init) {
-            ck(cudaEventCreate(&e_pre_start));
-            ck(cudaEventCreate(&e_pre_end));
-            ck(cudaEventCreate(&e_infer_start));
-            ck(cudaEventCreate(&e_infer_end));
-            ck(cudaEventCreate(&e_wait_start));
-            ck(cudaEventCreate(&e_wait_end));
-            prof_init = true;
-        }
+        prof_events.Init(associated_camera_params_->gpu_id);
         bool timed_wait = false;
 #endif
         const int camera_width = associated_camera_params_->width;
@@ -588,11 +618,11 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         if (entry->event_ptr) {
             const auto cpu_wait_start = std::chrono::steady_clock::now();
 #if YOLO_PROFILE
-            ck(cudaEventRecord(e_wait_start, yolov8_instance_->stream));
+            ck(cudaEventRecord(prof_events.wait_start, yolov8_instance_->stream));
 #endif
             ck(cudaStreamWaitEvent(yolov8_instance_->stream, *entry->event_ptr, 0));
 #if YOLO_PROFILE
-            ck(cudaEventRecord(e_wait_end, yolov8_instance_->stream));
+            ck(cudaEventRecord(prof_events.wait_end, yolov8_instance_->stream));
             timed_wait = true;
 #endif
             const auto cpu_wait_end = std::chrono::steady_clock::now();
@@ -608,7 +638,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         // Debayer or duplicate mono channel to prepare for color conversion.
         const auto cpu_preprocess_start = std::chrono::steady_clock::now();
 #if YOLO_PROFILE
-        ck(cudaEventRecord(e_pre_start, yolov8_instance_->stream));
+        ck(cudaEventRecord(prof_events.pre_start, yolov8_instance_->stream));
 #endif
         if (associated_camera_params_->color) {
             // If color, debayer to RGBA first, then our kernel will handle the rest.
@@ -619,7 +649,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
             yolov8_instance_->preprocess_gpu(frame_original_gpu_.d_orig, camera_width, camera_height, false);
         }
 #if YOLO_PROFILE
-        ck(cudaEventRecord(e_pre_end, yolov8_instance_->stream));
+        ck(cudaEventRecord(prof_events.pre_end, yolov8_instance_->stream));
 #endif
         const auto cpu_preprocess_end = std::chrono::steady_clock::now();
         ms_cpu_preprocess = std::chrono::duration<double, std::milli>(cpu_preprocess_end - cpu_preprocess_start).count();
@@ -637,6 +667,8 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
                 cv::Mat bgr_image;
                 cv::cvtColor(rgba_image, bgr_image, cv::COLOR_RGBA2BGR);
                 std::string filename = "debug_pre_yolo_" + std::string(associated_camera_params_->camera_serial) + "_" + std::to_string(entry->frame_id) + ".png";
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
                 cv::imwrite(filename, bgr_image);
                 std::cout << "[" << threadName << "] Saved debug image to " << filename << std::endl;
             } catch (const cv::Exception& ex) {
@@ -651,13 +683,13 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         const auto infer_call_start = std::chrono::steady_clock::now();
         auto inference_start_time = infer_call_start;
 #if YOLO_PROFILE
-        ck(cudaEventRecord(e_infer_start, yolov8_instance_->stream));
+        ck(cudaEventRecord(prof_events.infer_start, yolov8_instance_->stream));
 #endif
         yolov8_instance_->infer();
 #if YOLO_PROFILE
         const auto infer_call_end = std::chrono::steady_clock::now();
         ms_enqueue = std::chrono::duration<double, std::milli>(infer_call_end - infer_call_start).count();
-        ck(cudaEventRecord(e_infer_end, yolov8_instance_->stream));
+        ck(cudaEventRecord(prof_events.infer_end, yolov8_instance_->stream));
 #else
         const auto infer_call_end = std::chrono::steady_clock::now();
 #endif
@@ -727,13 +759,13 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
 
 #if YOLO_PROFILE
         if (finished_in_time) {
-            ck(cudaEventSynchronize(e_infer_end));
+            ck(cudaEventSynchronize(prof_events.infer_end));
             if (timed_wait) {
-                ck(cudaEventElapsedTime(&ms_wait, e_wait_start, e_wait_end));
+                ck(cudaEventElapsedTime(&ms_wait, prof_events.wait_start, prof_events.wait_end));
             }
-            ck(cudaEventElapsedTime(&ms_pre, e_pre_start, e_pre_end));
-            ck(cudaEventElapsedTime(&ms_gap, e_pre_end, e_infer_start));
-            ck(cudaEventElapsedTime(&ms_infer, e_infer_start, e_infer_end));
+            ck(cudaEventElapsedTime(&ms_pre, prof_events.pre_start, prof_events.pre_end));
+            ck(cudaEventElapsedTime(&ms_gap, prof_events.pre_end, prof_events.infer_start));
+            ck(cudaEventElapsedTime(&ms_infer, prof_events.infer_start, prof_events.infer_end));
             ms_queue = ms_sync_wait - ms_infer;
             if (ms_queue < 0.0) {
                 ms_queue = 0.0;

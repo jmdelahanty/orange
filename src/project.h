@@ -47,5 +47,10 @@ void client_send_state_update_message(EnetContext* enet_context, flatbuffers::Fl
 void host_broadcast_open_cameras(flatbuffers::FlatBufferBuilder* builder, EnetContext* server, std::string config_file_name);
 void host_broadcast_start_threads(flatbuffers::FlatBufferBuilder* builder, EnetContext* server, std::string record_folder_name, std::string encoder_basic_setup);
 void host_broadcast_set_start_ptp(flatbuffers::FlatBufferBuilder* builder, EnetContext* server, unsigned long long ptp_global_time);
+bool write_recording_snapshot(const std::string& recording_folder,
+                              const std::string& recording_id,
+                              const CameraParams* cameras_params,
+                              int num_cameras,
+                              const std::string& base_folder);
 
 #endif // ORANGE_PROJECT

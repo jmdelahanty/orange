@@ -4,6 +4,7 @@
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include "project.h" // Add this include
+#include "fsuid_guard.h"
 #include <nppi.h>
 #include <npp.h>
 #include <nppi_color_conversion.h>
@@ -106,7 +107,14 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         encoder_ = nullptr;
     }
 
-    if (d_blank_frame_) cudaFree(d_blank_frame_);
+    if (d_cropped_rgba_) {
+        cudaFree(d_cropped_rgba_);
+        d_cropped_rgba_ = nullptr;
+    }
+    if (d_blank_frame_) {
+        cudaFree(d_blank_frame_);
+        d_blank_frame_ = nullptr;
+    }
     if (m_stream) cudaStreamDestroy(m_stream);
     if (m_display_stream) cudaStreamDestroy(m_display_stream);
 }
@@ -132,8 +140,10 @@ void CropAndEncodeWorker::flush_and_close() {
         std::cout << "[CropAndEncodeWorker] Video writer closed." << std::endl;
     }
     
-    if (writer_.metadata && writer_.metadata->is_open()) {
-        writer_.metadata->close();
+    if (writer_.metadata) {
+        if (writer_.metadata->is_open()) {
+            writer_.metadata->close();
+        }
         delete writer_.metadata;
         writer_.metadata = nullptr;
     }
@@ -167,22 +177,26 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             }
             current_recording_folder = camera_control_->recording_folder;
         }
-        make_folder(current_recording_folder);
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            make_folder(current_recording_folder);
 
-        writer_.video_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
-        writer_.keyframe_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.csv";
-        writer_.metadata_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
+            writer_.video_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
+            writer_.keyframe_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.csv";
+            writer_.metadata_file = current_recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
 
-        writer_.video = new FFmpegWriter(AV_CODEC_ID_HEVC, 256, 256, camera_params_->frame_rate,
-                                       writer_.video_file.c_str(), writer_.keyframe_file.c_str());
-        writer_.video->create_thread();
+            writer_.video = new FFmpegWriter(AV_CODEC_ID_HEVC, 256, 256, camera_params_->frame_rate,
+                                           writer_.video_file.c_str(), writer_.keyframe_file.c_str());
+            writer_.video->create_thread();
 
-        writer_.metadata = new std::ofstream();
-        writer_.metadata->open(writer_.metadata_file.c_str());
-        if (!(*writer_.metadata)) {
-            std::cout << "[CropAndEncodeWorker] Warning: Could not open metadata file!" << std::endl;
-        } else {
-            *writer_.metadata << "frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h\n";
+            writer_.metadata = new std::ofstream();
+            writer_.metadata->open(writer_.metadata_file.c_str());
+            if (!(*writer_.metadata)) {
+                std::cout << "[CropAndEncodeWorker] Warning: Could not open metadata file!" << std::endl;
+            } else {
+                *writer_.metadata << "frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h\n";
+            }
         }
         is_recording_ = true;
     } else if (!camera_control_->record_video && is_recording_) {

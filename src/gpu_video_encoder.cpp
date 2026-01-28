@@ -1,6 +1,7 @@
 // src/gpu_video_encoder.cpp
 
 #include "gpu_video_encoder.h"
+#include "fsuid_guard.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include <npp.h>
@@ -74,6 +75,9 @@ static inline void flush_and_close_writer(EncoderContext *encoder, Writer *write
 static inline void initialize_writer(Writer *writer, CameraParams *camera_params, std::string folder_name, std::string encoder_str)
 {
     NVTX_RANGE("Initialize_Writer");
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     
     writer->video_file = folder_name + "/Cam" + camera_params->camera_serial + ".mp4";
     writer->metadata_file = folder_name + "/Cam" + camera_params->camera_serial + "_meta.csv";
@@ -92,6 +96,8 @@ static inline void initialize_writer(Writer *writer, CameraParams *camera_params
      if (!(*writer->metadata))
     {
         std::cout << "Metadata file did not open!";
+        delete writer->metadata;
+        writer->metadata = nullptr;
         return;
     }
     *writer->metadata << "frame_id,timestamp,timestamp_sys\n";
@@ -310,6 +316,12 @@ GPUVideoEncoder::~GPUVideoEncoder()
         flush_and_close();
     }
 
+    if (encoder.pEnc) {
+        encoder.pEnc->DestroyEncoder();
+        delete encoder.pEnc;
+        encoder.pEnc = nullptr;
+    }
+
     NVTX_RANGE_PUSH("Cleanup_CUDA_Resources");
     if (m_stream) { cudaStreamDestroy(m_stream); }
     if (frame_original.d_orig) cudaFree(frame_original.d_orig);
@@ -325,15 +337,15 @@ GPUVideoEncoder::~GPUVideoEncoder()
 
 bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 {
+    if (!camera_control_->record_video && is_recording_) {
+        std::cout << "[" << this->threadName << "] Recording Stopped. Finalizing video file..." << std::endl;
+        flush_and_close();
+        is_recording_ = false;
+    }
+
     // A nullptr entry means the queue was empty. Use this opportunity to check for a state change from recording to paused.
     if (!entry)
     {
-        if (is_recording_ && !camera_control_->record_video)
-        {
-            std::cout << "[" << this->threadName << "] Recording Stopped. Finalizing video file..." << std::endl;
-            flush_and_close();
-            is_recording_ = false; // Update our state
-        }
         return false; // No work to do
     }
 
@@ -677,11 +689,6 @@ void GPUVideoEncoder::flush_and_close()
             }
         }
         encoder.vPacket.clear();
-
-        // Destroy the encoder instance
-        encoder.pEnc->DestroyEncoder();
-        delete encoder.pEnc;
-        encoder.pEnc = nullptr;
     }
 
     if(writer.video) {
@@ -692,9 +699,10 @@ void GPUVideoEncoder::flush_and_close()
         writer.video = nullptr;
     }
 
-    if(writer.metadata && writer.metadata->is_open()) {
-        // Close and delete the metadata file stream
-        writer.metadata->close();
+    if(writer.metadata) {
+        if (writer.metadata->is_open()) {
+            writer.metadata->close();
+        }
         delete writer.metadata;
         writer.metadata = nullptr;
     }

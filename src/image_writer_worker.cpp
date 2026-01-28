@@ -2,6 +2,7 @@
 
 #include "image_writer_worker.h"
 #include "NvEncoder/NvCodecUtils.h" // For the 'ck' macro for CUDA error checking
+#include "fsuid_guard.h"
 #include <iostream>
 #include <opencv2/opencv.hpp>
 
@@ -42,6 +43,8 @@ bool ImageWriterWorker::WorkerFunction(ImageWriter_Entry* entry) {
         cv::Mat image(entry->height, entry->width, CV_8UC3, entry->cpu_buffer);
 
         // Write the image to disk. This is a blocking I/O call.
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
         cv::imwrite(entry->file_path, image);
     } catch (const cv::Exception& ex) {
         std::cerr << "Error writing image " << entry->file_path << ": " << ex.what() << std::endl;

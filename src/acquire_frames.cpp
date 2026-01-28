@@ -18,7 +18,6 @@
 #include "cuda_context_debug.h"
 #include "encoder_preprocess_worker.h"
 #include "frame_ipc_manager.h"
-#include "frame_id_monitor.h"
 #include <cstdlib>
 
 #ifndef PIPELINE_PROFILE
@@ -93,7 +92,6 @@ void acquire_frames(
     if (ipc_manager && !ipc_manager->isEnabled()) {
         ipc_manager = nullptr;
     }
-    auto frame_monitor = std::make_shared<FrameIDMonitor>(camera_params->camera_serial);
 
     CameraState camera_state{};
     // std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
@@ -163,27 +161,50 @@ void acquire_frames(
     w.Start();
 
 #if PIPELINE_PROFILE
-    static thread_local bool copy_prof_init = false;
+    struct CopyProfileEvents {
+        cudaEvent_t start{};
+        cudaEvent_t end{};
+        int device = -1;
+        bool initialized = false;
+
+        void Init(int gpu_id) {
+            if (initialized) {
+                return;
+            }
+            device = gpu_id;
+            ck(cudaSetDevice(device));
+            ck(cudaEventCreate(&start));
+            ck(cudaEventCreate(&end));
+            initialized = true;
+        }
+
+        ~CopyProfileEvents() {
+            if (!initialized) {
+                return;
+            }
+            if (device >= 0) {
+                cudaSetDevice(device);
+            }
+            cudaEventDestroy(start);
+            cudaEventDestroy(end);
+        }
+    };
+
+    static thread_local CopyProfileEvents copy_prof_events;
     static thread_local bool copy_prof_inflight = false;
     static thread_local int copy_prof_count = 0;
-    static thread_local cudaEvent_t copy_prof_start;
-    static thread_local cudaEvent_t copy_prof_end;
 #endif
 
     while (camera_control->subscribe) {
         NVTX_RANGE_PUSH("Frame_Processing_Loop");
 
 #if PIPELINE_PROFILE
-        if (!copy_prof_init) {
-            ck(cudaEventCreate(&copy_prof_start));
-            ck(cudaEventCreate(&copy_prof_end));
-            copy_prof_init = true;
-        }
+        copy_prof_events.Init(camera_params->gpu_id);
         if (copy_prof_inflight) {
-            cudaError_t copy_status = cudaEventQuery(copy_prof_end);
+            cudaError_t copy_status = cudaEventQuery(copy_prof_events.end);
             if (copy_status == cudaSuccess) {
                 float copy_ms = 0.0f;
-                ck(cudaEventElapsedTime(&copy_ms, copy_prof_start, copy_prof_end));
+                ck(cudaEventElapsedTime(&copy_ms, copy_prof_events.start, copy_prof_events.end));
                 std::cout << "[COPY_TIME] Cam " << camera_params->camera_serial
                           << " GPU " << camera_params->gpu_id
                           << " ring_ms=" << copy_ms << std::endl;
@@ -291,12 +312,6 @@ void acquire_frames(
         //   << " incremented to frame_count=" << camera_state.frame_count 
         //   << " (entry->frame_id=" << current_entry->frame_id << ")" << std::endl;
 
-            frame_monitor->logFrame(
-                camera_params->camera_serial, 
-                current_entry->frame_id, 
-                current_entry->recording_frame_id
-            );
-
             if (current_entry->d_image_pool) {
                 current_entry->d_image = current_entry->d_image_pool;
             }
@@ -355,7 +370,7 @@ void acquire_frames(
                     copy_prof_count++;
                     if (copy_prof_count % kCopyProfileLogEvery == 0) {
                         sample_copy = true;
-                        ck(cudaEventRecord(copy_prof_start, stream));
+                        ck(cudaEventRecord(copy_prof_events.start, stream));
                     }
                 }
 #endif
@@ -367,7 +382,7 @@ void acquire_frames(
                 ck(cudaMemcpyAsync(current_entry->d_image, ecam->frame_recv.imagePtr, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToDevice, stream));
 #if PIPELINE_PROFILE
                 if (sample_copy) {
-                    ck(cudaEventRecord(copy_prof_end, stream));
+                    ck(cudaEventRecord(copy_prof_events.end, stream));
                     copy_prof_inflight = true;
                 }
 #endif

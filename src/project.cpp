@@ -1,5 +1,6 @@
 // src/project.cpp
 #include "project.h"
+#include "fsuid_guard.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
 #include <sys/stat.h>    // For mkdir
 #include <iostream>
@@ -9,6 +10,7 @@
 #include <numeric>       // For std::iota (if used, though it's in camera.cpp sort_indexes)
 #include <iomanip>       // For std::put_time, std::setfill, std::setw
 #include <sstream>       // For std::ostringstream
+#include <ctime>         // For std::gmtime
 #include "json.hpp"      // For nlohmann::json
 #include "fetch_generated.h" // For FetchGame:: enums and builders
 #include "flatbuffers/flatbuffers.h" // For flatbuffers::FlatBufferBuilder
@@ -150,6 +152,143 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->focus = camera_config["focus"];
     camera_params->iris = camera_config["iris"];
 }
+
+namespace {
+std::string get_current_utc_timestamp() {
+    auto now = std::chrono::system_clock::now();
+    auto time_t_now = std::chrono::system_clock::to_time_t(now);
+    std::tm utc_time = *std::gmtime(&time_t_now);
+    std::ostringstream oss;
+    oss << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
+    return oss.str();
+}
+
+std::string read_file_to_string(const std::string& path, std::string* error) {
+    std::ifstream input(path, std::ios::in | std::ios::binary);
+    if (!input.is_open()) {
+        if (error) {
+            *error = "failed to open file";
+        }
+        return {};
+    }
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+bool write_json_atomic(const std::filesystem::path& path,
+                       const nlohmann::json& data,
+                       std::filesystem::perms perms,
+                       bool set_perms,
+                       const char* label) {
+    std::filesystem::path tmp = path;
+    tmp += ".tmp";
+
+    std::ofstream out(tmp.string(), std::ios::trunc);
+    if (!out.is_open()) {
+        std::cerr << "Failed to write " << label << " temp file: " << tmp.string() << std::endl;
+        return false;
+    }
+    out << data.dump(2) << std::endl;
+    out.close();
+
+    if (set_perms) {
+        std::error_code ec;
+        std::filesystem::permissions(tmp, perms, std::filesystem::perm_options::replace, ec);
+        if (ec) {
+            std::cerr << "Failed to set permissions on " << tmp.string() << " ("
+                      << ec.message() << ")" << std::endl;
+        }
+    }
+
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        std::cerr << "Failed to rename " << label << " temp file: " << tmp.string()
+                  << " -> " << path.string() << " (" << ec.message() << ")" << std::endl;
+        std::filesystem::remove(tmp);
+        return false;
+    }
+
+    return true;
+}
+
+bool write_latest_recording_pointer(const std::string& base_folder,
+                                    const std::string& recording_folder,
+                                    const std::string& recording_id,
+                                    const std::string& timestamp_utc) {
+    if (recording_folder.empty()) {
+        return false;
+    }
+
+    nlohmann::json pointer;
+    pointer["recording_id"] = recording_id;
+    pointer["timestamp_utc"] = timestamp_utc;
+    pointer["recording_folder"] = recording_folder;
+    pointer["snapshot_path"] = (std::filesystem::path(recording_folder) / "recording_snapshot.json").string();
+
+    bool wrote_any = false;
+
+    if (!base_folder.empty()) {
+        std::filesystem::path meta_dir = std::filesystem::path(base_folder) / ".orange";
+        std::filesystem::path pointer_path = meta_dir / "latest_recording.json";
+
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+
+            std::error_code ec;
+            std::filesystem::create_directories(meta_dir, ec);
+            if (ec) {
+                std::cerr << "Error creating metadata folder: " << meta_dir.string()
+                          << " (" << ec.message() << ")" << std::endl;
+            } else {
+                if (!write_json_atomic(pointer_path, pointer, std::filesystem::perms::unknown, false,
+                                       "latest recording pointer")) {
+                    std::cerr << "Failed to write latest recording pointer: " << pointer_path.string() << std::endl;
+                } else {
+                    wrote_any = true;
+                }
+            }
+        }
+    }
+
+    {
+        std::filesystem::path run_dir = "/run/orange";
+        std::filesystem::path run_pointer = run_dir / "latest_recording.json";
+        std::error_code ec;
+        std::filesystem::create_directories(run_dir, ec);
+        if (ec) {
+            std::cerr << "Error creating run metadata folder: " << run_dir.string()
+                      << " (" << ec.message() << ")" << std::endl;
+        } else {
+            std::filesystem::permissions(
+                run_dir,
+                std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+                    std::filesystem::perms::owner_exec | std::filesystem::perms::group_read |
+                    std::filesystem::perms::group_exec | std::filesystem::perms::others_read |
+                    std::filesystem::perms::others_exec,
+                std::filesystem::perm_options::replace,
+                ec);
+            if (ec) {
+                std::cerr << "Failed to set permissions on " << run_dir.string()
+                          << " (" << ec.message() << ")" << std::endl;
+            }
+
+            std::filesystem::perms run_perms =
+                std::filesystem::perms::owner_read | std::filesystem::perms::owner_write |
+                std::filesystem::perms::group_read | std::filesystem::perms::others_read;
+            if (!write_json_atomic(run_pointer, pointer, run_perms, true, "run latest recording pointer")) {
+                std::cerr << "Failed to write run latest recording pointer: " << run_pointer.string() << std::endl;
+            } else {
+                wrote_any = true;
+            }
+        }
+    }
+
+    return wrote_any;
+}
+} // namespace
 
 std::string get_current_time_milliseconds() {
     // ... (implementation from project.h)
@@ -297,6 +436,8 @@ void init_7MP_camera_params_mono(CameraParams* camera_params, int camera_id, int
 
 bool make_folder(std::string folder_name)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     // ... (implementation from project.h)
     if (!std::filesystem::exists(folder_name))
     {
@@ -342,6 +483,7 @@ bool set_camera_params(CameraParams* camera_params, GigEVisionDeviceInfo* device
     // ... (implementation from project.h)
     camera_params->camera_serial.append(device_info->serialNumber);
     camera_params->camera_name = camera_params->camera_serial;
+    camera_params->config_path.clear();
 
     std::string sub_str = camera_params->camera_serial + ".json";
     auto it = std::find_if(camera_config_files.begin(), camera_config_files.end(), [&](const std::string& str) {return str.find(sub_str) != std::string::npos;});
@@ -367,8 +509,90 @@ bool set_camera_params(CameraParams* camera_params, GigEVisionDeviceInfo* device
     } else {
         auto config_idx = std::distance(camera_config_files.begin(), it);
         std::cout << "Load camera json file: " << camera_config_files[config_idx] << std::endl;
+        camera_params->config_path = camera_config_files[config_idx];
         load_camera_json_config_files(camera_config_files[config_idx], camera_params, camera_idx, num_cameras);
     }
+    return true;
+}
+
+bool write_recording_snapshot(const std::string& recording_folder,
+                              const std::string& recording_id,
+                              const CameraParams* cameras_params,
+                              int num_cameras,
+                              const std::string& base_folder) {
+    if (!cameras_params || num_cameras <= 0) {
+        return false;
+    }
+
+    nlohmann::json snapshot;
+    std::string resolved_recording_id = recording_id.empty() ? get_current_date_time() : recording_id;
+    std::string timestamp_utc = get_current_utc_timestamp();
+    snapshot["recording_id"] = resolved_recording_id;
+    snapshot["timestamp_utc"] = timestamp_utc;
+    snapshot["producer_version"] = "unknown";
+
+    nlohmann::json cameras = nlohmann::json::object();
+
+    for (int i = 0; i < num_cameras; ++i) {
+        const CameraParams& params = cameras_params[i];
+        std::string config_error;
+        std::string config_contents;
+        nlohmann::json config_json;
+        bool config_ok = false;
+
+        if (!params.config_path.empty()) {
+            config_contents = read_file_to_string(params.config_path, &config_error);
+            if (!config_contents.empty()) {
+                try {
+                    config_json = nlohmann::json::parse(config_contents);
+                    config_ok = true;
+                } catch (const std::exception& ex) {
+                    config_error = std::string("config parse failed: ") + ex.what();
+                }
+            } else if (config_error.empty()) {
+                config_error = "config file empty";
+            }
+        } else {
+            config_error = "config path missing";
+        }
+
+        std::string camera_key = params.camera_serial;
+        if (camera_key.empty() && config_ok && config_json.contains("device_serial_number") &&
+            config_json["device_serial_number"].is_string()) {
+            camera_key = config_json["device_serial_number"].get<std::string>();
+        }
+        if (camera_key.empty()) {
+            camera_key = std::to_string(params.camera_id);
+        }
+        if (config_ok) {
+            cameras[camera_key] = config_json;
+        } else {
+            cameras[camera_key] = nullptr;
+            if (!config_error.empty()) {
+                std::cerr << "Camera " << params.camera_id << " config missing: " << config_error << std::endl;
+            }
+        }
+    }
+
+    snapshot["cameras"] = cameras;
+
+    bool wrote_snapshot = false;
+    if (!recording_folder.empty()) {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::filesystem::path out_path = std::filesystem::path(recording_folder) / "recording_snapshot.json";
+        if (!write_json_atomic(out_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+            return false;
+        }
+        wrote_snapshot = true;
+    }
+
+    if (wrote_snapshot) {
+        if (!write_latest_recording_pointer(base_folder, recording_folder, resolved_recording_id, timestamp_utc)) {
+            std::cerr << "Failed to update latest recording pointer in base folder." << std::endl;
+        }
+    }
+
     return true;
 }
 

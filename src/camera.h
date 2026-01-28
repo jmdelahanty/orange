@@ -67,6 +67,7 @@ struct CameraParams{
     int sens_temp;
     int sens_temp_max; 
     int sens_temp_min;
+    std::string config_path;
 }; 
 
 

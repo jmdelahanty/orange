@@ -730,7 +730,13 @@ int main(int argc, char **args) {
                         close_camera(&ecams[i].camera, &cameras_params[i]);
                     }
                     delete[] cameras_params;
+                    cameras_params = nullptr;
+                    delete[] cameras_select;
+                    cameras_select = nullptr;
                     delete[] ecams;
+                    ecams = nullptr;
+                    delete[] realtime_plot_data;
+                    realtime_plot_data = nullptr;
                 }
             }
             if (camera_control->subscribe) {
@@ -1086,7 +1092,34 @@ int main(int argc, char **args) {
                 }
 
                 if (ImGui::Button(camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY)) {
-                    camera_control->record_video = !camera_control->record_video;
+                    bool next_record_state = !camera_control->record_video;
+
+                    if (next_record_state) {
+                        std::string recording_id = get_current_date_time();
+                        std::string recording_folder;
+                        std::string base_folder = encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name;
+                        {
+                            std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+                            if (camera_control->recording_folder.empty()) {
+                                camera_control->recording_folder = base_folder + "/" + recording_id;
+                            } else {
+                                recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
+                            }
+                            recording_folder = camera_control->recording_folder;
+                        }
+                        if (base_folder.empty() && !recording_folder.empty()) {
+                            std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
+                            if (parent.empty() || parent == "/") {
+                                base_folder = recording_folder;
+                            } else {
+                                base_folder = parent.string();
+                            }
+                        }
+                        make_folder(recording_folder);
+                        write_recording_snapshot(recording_folder, recording_id, cameras_params, num_cameras, base_folder);
+                    }
+
+                    camera_control->record_video = next_record_state;
                 
                     if (camera_control->record_video) {
                         // START RECORDING
@@ -1292,7 +1325,13 @@ int main(int argc, char **args) {
             close_camera(&ecams[i].camera, &cameras_params[i]);
         }
         delete[] cameras_params;
+        cameras_params = nullptr;
+        delete[] cameras_select;
+        cameras_select = nullptr;
         delete[] ecams;
+        ecams = nullptr;
+        delete[] realtime_plot_data;
+        realtime_plot_data = nullptr;
     }
 
     std::cout << "GUI closed, initiating cleanup..." << std::endl;
