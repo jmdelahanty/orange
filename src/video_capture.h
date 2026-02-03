@@ -74,6 +74,8 @@ struct CameraControl
     bool subscribe = false;
     bool stop_record = false;
     bool record_video = false;
+    bool recording_draining = false;
+    std::atomic<int> active_recorders{0};
     bool sync_camera = false;
     std::mutex recording_folder_mutex;
     std::string recording_folder;

@@ -97,12 +97,25 @@ void EncoderPreprocessWorker::SetHwWorker(EncoderHwWorker* hw_worker)
     m_hw_worker_ = hw_worker;
 }
 
+bool EncoderPreprocessWorker::IsDrained()
+{
+    return (in_flight_.load(std::memory_order_relaxed) == 0) &&
+           (GetCountQueueInSize() == 0);
+}
+
 bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 {
     auto start_time = std::chrono::steady_clock::now();
 
-    // If there's no entry or we're not recording, just recycle and move on.
-    if (!entry || !camera_control_->record_video) {
+    if (!entry) {
+        return false;
+    }
+
+    const bool recording_enabled = camera_control_->record_video;
+    const bool draining = camera_control_->recording_draining;
+
+    // If we're not recording and not draining, just recycle and move on.
+    if (!recording_enabled && !draining) {
         if (entry && entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
              if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
                 EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
@@ -111,6 +124,8 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         }
         return false;
     }
+
+    in_flight_.fetch_add(1, std::memory_order_relaxed);
 
     // Track successful frame processing
     frame_counter_++;
@@ -226,13 +241,13 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             }
             m_recycle_queue_.push(entry);
         }
+        in_flight_.fetch_sub(1, std::memory_order_relaxed);
         return false;
     }
     
     // Successfully acquired resources - update counters
     available_buffers_--;
     available_events_--;
-
     encoder_entry->preprocess_complete_event = event;
 
 #if PIPELINE_PROFILE
@@ -310,6 +325,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         available_buffers_++;
         available_events_++;
     }
+    in_flight_.fetch_sub(1, std::memory_order_relaxed);
 
     // Measure total preprocessing time
     auto preprocess_end = std::chrono::steady_clock::now();

@@ -53,6 +53,9 @@ protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;
 
 private:
+    void finalize_recording();
+    bool drain_ready();
+
     CameraParams* camera_params;
     std::string folder_name;
     std::string codec_;

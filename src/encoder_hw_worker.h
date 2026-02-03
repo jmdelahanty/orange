@@ -40,6 +40,9 @@ protected:
     bool WorkerFunction(ENCODER_WORKER_ENTRY* f) override;
 
 private:
+    void finalize_recording();
+    bool drain_ready();
+
     CameraParams* camera_params_;
     std::string base_folder_name_;
     std::string codec_;

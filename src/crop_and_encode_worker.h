@@ -28,6 +28,9 @@ protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;
 
 private:
+    void finalize_recording();
+    bool drain_ready();
+
     uint64_t last_frame_id_used_ = 0;
     CameraParams* camera_params_;
     std::string base_folder_name_; // Renamed from folder_name_

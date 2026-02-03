@@ -98,8 +98,12 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         ck(cudaSetDevice(camera_params_->gpu_id));
     }
 
-    // Always flush and close the writer and encoder.
-    flush_and_close();
+    if (is_recording_) {
+        finalize_recording();
+    } else {
+        // Always flush and close the writer and encoder.
+        flush_and_close();
+    }
 
     // Explicitly delete the encoder to release its resources.
     if (encoder_) {
@@ -149,16 +153,42 @@ void CropAndEncodeWorker::flush_and_close() {
     }
 }
 
+void CropAndEncodeWorker::finalize_recording()
+{
+    if (!is_recording_) {
+        return;
+    }
+
+    flush_and_close();
+    is_recording_ = false;
+
+    if (camera_control_) {
+        int remaining = camera_control_->active_recorders.fetch_sub(1, std::memory_order_relaxed) - 1;
+        if (remaining == 0) {
+            if (camera_control_->recording_draining) {
+                camera_control_->recording_draining = false;
+            }
+            camera_control_->stop_record = false;
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            camera_control_->recording_folder.clear();
+        }
+    }
+}
+
+bool CropAndEncodeWorker::drain_ready()
+{
+    return (GetCountQueueInSize() == 0);
+}
+
 
 bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
+    const bool recording_enabled = camera_control_->record_video;
+    const bool draining = camera_control_->recording_draining;
+
     if (!entry) {
-        // Add this check to finalize video if recording stops
-        if (!camera_control_->record_video && is_recording_) {
-            flush_and_close();
-            is_recording_ = false;
-            {
-                std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
-                camera_control_->recording_folder.clear();
+        if (!recording_enabled && is_recording_) {
+            if (!draining || drain_ready()) {
+                finalize_recording();
             }
         }
         return false;
@@ -168,7 +198,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);
 
-    if (camera_control_->record_video && !is_recording_) {
+    if (recording_enabled && !is_recording_) {
         std::string current_recording_folder;
         {
             std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
@@ -198,14 +228,31 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 *writer_.metadata << "frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h\n";
             }
         }
+        camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
         is_recording_ = true;
-    } else if (!camera_control_->record_video && is_recording_) {
-        flush_and_close();
-        is_recording_ = false;
-        {
-            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
-            camera_control_->recording_folder.clear();
+    } else if (!recording_enabled && !draining && is_recording_) {
+        finalize_recording();
+    }
+
+    if (!recording_enabled && !draining) {
+        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+            }
+            m_recycle_queue.push(entry);
         }
+        return false;
+    }
+
+    if (!is_recording_) {
+        std::cerr << "[CropAndEncodeWorker] Warning: Dropping frame because encoder is not recording." << std::endl;
+        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+            }
+            m_recycle_queue.push(entry);
+        }
+        return false;
     }
 
     try {
@@ -242,7 +289,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             }
             
             // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
-            if (camera_control_->record_video) {
+            if (is_recording_) {
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
                 unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
 
@@ -278,7 +325,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             }
             
             // Only encode a blank frame if recording is active
-            if (camera_control_->record_video) {
+            if (is_recording_) {
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
                 ck(cudaMemcpy2DAsync(encIn->inputPtr, encIn->pitch, d_blank_frame_,
                                      encoder_pitch_, encoder_pitch_, 256 * 3 / 2,

@@ -144,7 +144,7 @@ int main(int argc, char **args) {
     GL_Texture* crop_tex;
     int num_cameras = 0;
     int stream_downsample = 1;
-    CameraControl *camera_control = new CameraControl{false, false, false, false};
+    CameraControl *camera_control = new CameraControl();
 
     int evt_buffer_size{100};
     PTPParams *ptp_params = new PTPParams{0, 0, 0, 0, false, false, false, false};
@@ -1092,43 +1092,57 @@ int main(int argc, char **args) {
                 }
 
                 if (ImGui::Button(camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY)) {
-                    bool next_record_state = !camera_control->record_video;
-
-                    if (next_record_state) {
-                        std::string recording_id = get_current_date_time();
-                        std::string recording_folder;
-                        std::string base_folder = encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name;
-                        {
-                            std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-                            if (camera_control->recording_folder.empty()) {
-                                camera_control->recording_folder = base_folder + "/" + recording_id;
-                            } else {
-                                recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
-                            }
-                            recording_folder = camera_control->recording_folder;
-                        }
-                        if (base_folder.empty() && !recording_folder.empty()) {
-                            std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
-                            if (parent.empty() || parent == "/") {
-                                base_folder = recording_folder;
-                            } else {
-                                base_folder = parent.string();
-                            }
-                        }
-                        make_folder(recording_folder);
-                        write_recording_snapshot(recording_folder, recording_id, cameras_params, num_cameras, base_folder);
-                    }
-
-                    camera_control->record_video = next_record_state;
-                
-                    if (camera_control->record_video) {
-                        // START RECORDING
-                        try_start_timer();
-                        std::cout << "Recording toggled ON." << std::endl;
+                    if (!camera_control->record_video && camera_control->recording_draining) {
+                        std::cout << "Recording is still draining. Please wait..." << std::endl;
                     } else {
-                        // STOP RECORDING
-                        try_stop_timer();
-                        std::cout << "Recording toggled OFF. Encoders will stop receiving frames." << std::endl;
+                        bool next_record_state = !camera_control->record_video;
+
+                        if (next_record_state) {
+                            camera_control->recording_draining = false;
+                            camera_control->stop_record = false;
+                            std::string recording_id = get_current_date_time();
+                            std::string recording_folder;
+                            std::string base_folder = encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name;
+                            {
+                                std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+                                if (camera_control->recording_folder.empty()) {
+                                    camera_control->recording_folder = base_folder + "/" + recording_id;
+                                } else {
+                                    recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
+                                }
+                                recording_folder = camera_control->recording_folder;
+                            }
+                            if (base_folder.empty() && !recording_folder.empty()) {
+                                std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
+                                if (parent.empty() || parent == "/") {
+                                    base_folder = recording_folder;
+                                } else {
+                                    base_folder = parent.string();
+                                }
+                            }
+                            make_folder(recording_folder);
+                            write_recording_snapshot(recording_folder, recording_id, cameras_params, num_cameras, base_folder);
+                        }
+
+                        camera_control->record_video = next_record_state;
+                        if (!camera_control->record_video) {
+                            camera_control->recording_draining = true;
+                            camera_control->stop_record = true;
+                            if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
+                                camera_control->recording_draining = false;
+                                camera_control->stop_record = false;
+                            }
+                        }
+
+                        if (camera_control->record_video) {
+                            // START RECORDING
+                            try_start_timer();
+                            std::cout << "Recording toggled ON." << std::endl;
+                        } else {
+                            // STOP RECORDING
+                            try_stop_timer();
+                            std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
+                        }
                     }
                 }
                 

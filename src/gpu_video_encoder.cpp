@@ -313,7 +313,7 @@ GPUVideoEncoder::~GPUVideoEncoder()
     // destroyed while a recording is active, the file is properly finalized.
     if (is_recording_) {
         std::cerr << "Warning: GPUVideoEncoder destroyed while still in a recording state. Forcing cleanup." << std::endl;
-        flush_and_close();
+        finalize_recording();
     }
 
     if (encoder.pEnc) {
@@ -333,36 +333,80 @@ GPUVideoEncoder::~GPUVideoEncoder()
     NVTX_RANGE_POP();
 }
 
+void GPUVideoEncoder::finalize_recording()
+{
+    if (!is_recording_) {
+        return;
+    }
+
+    flush_and_close();
+    is_recording_ = false;
+
+    if (camera_control_) {
+        int remaining = camera_control_->active_recorders.fetch_sub(1, std::memory_order_relaxed) - 1;
+        if (remaining == 0) {
+            if (camera_control_->recording_draining) {
+                camera_control_->recording_draining = false;
+            }
+            camera_control_->stop_record = false;
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            camera_control_->recording_folder.clear();
+        }
+    }
+}
+
+bool GPUVideoEncoder::drain_ready()
+{
+    return (GetCountQueueInSize() == 0);
+}
+
 
 
 bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 {
-    if (!camera_control_->record_video && is_recording_) {
-        std::cout << "[" << this->threadName << "] Recording Stopped. Finalizing video file..." << std::endl;
-        flush_and_close();
-        is_recording_ = false;
-    }
+    const bool recording_enabled = camera_control_->record_video;
+    const bool draining = camera_control_->recording_draining;
 
     // A nullptr entry means the queue was empty. Use this opportunity to check for a state change from recording to paused.
     if (!entry)
     {
+        if (!recording_enabled && is_recording_) {
+            if (!draining || drain_ready()) {
+                std::cout << "[" << this->threadName << "] Recording stopped. Finalizing video file..." << std::endl;
+                finalize_recording();
+            }
+        }
         return false; // No work to do
     }
 
     // If the global flag is true, but we aren't recording yet, it's time to start.
-    if (camera_control_->record_video && !is_recording_)
+    if (recording_enabled && !is_recording_)
     {
         std::cout << "[" << this->threadName << "] Recording started. Opening new video file..." << std::endl;
         // Re-initialize the writer to create a new file set for this recording segment.
         initialize_writer(&writer, camera_params, folder_name, codec_);
         writer.video->create_thread();
+        camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
         is_recording_ = true; // Mark that we are now actively recording.
     }
 
     // If recording is globally disabled, skip all processing for this frame.
-    if (!camera_control_->record_video)
+    if (!recording_enabled && !draining)
     {
         // IMPORTANT: We must still manage the lifecycle of the frame entry to avoid leaks.
+        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
+        {
+            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct)
+            {
+                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+            }
+            m_recycle_queue.push(entry);
+        }
+        return false;
+    }
+
+    if (!is_recording_) {
+        std::cerr << "[" << this->threadName << "] Warning: Dropping frame because encoder is not recording." << std::endl;
         if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
         {
             if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct)

@@ -39,6 +39,7 @@ public:
     double get_fps() const { return current_fps_.load(); }
     uint64_t get_frames_dropped() const { return frames_dropped_.load(); }
     uint64_t get_resource_waits() const { return resource_waits_.load(); }
+    bool IsDrained();
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
@@ -67,6 +68,7 @@ private:
     std::atomic<double> current_fps_{0.0};
     std::atomic<uint64_t> frames_dropped_{0};
     std::atomic<uint64_t> resource_waits_{0};
+    std::atomic<int> in_flight_{0};
 };
 
 #endif // ENCODER_PREPROCESS_WORKER_H

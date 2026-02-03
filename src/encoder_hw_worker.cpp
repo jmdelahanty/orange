@@ -250,7 +250,7 @@ EncoderHwWorker::~EncoderHwWorker()
     // Safeguard: Ensure resources are released if the worker is destroyed.
     if(is_recording_)
     {
-        flush_and_close();
+        finalize_recording();
     }
     if (encoder_.pEnc) {
         delete encoder_.pEnc;
@@ -260,6 +260,39 @@ EncoderHwWorker::~EncoderHwWorker()
         cudaStreamDestroy(m_stream);
         m_stream = nullptr;
     }
+}
+
+void EncoderHwWorker::finalize_recording()
+{
+    if (!is_recording_) {
+        return;
+    }
+
+    flush_and_close();
+    is_recording_ = false;
+
+    if (camera_control_) {
+        int remaining = camera_control_->active_recorders.fetch_sub(1, std::memory_order_relaxed) - 1;
+        if (remaining == 0) {
+            if (camera_control_->recording_draining) {
+                camera_control_->recording_draining = false;
+            }
+            camera_control_->stop_record = false;
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            camera_control_->recording_folder.clear();
+        }
+    }
+}
+
+bool EncoderHwWorker::drain_ready()
+{
+    if (GetCountQueueInSize() > 0) {
+        return false;
+    }
+    if (m_prep_worker_ && !m_prep_worker_->IsDrained()) {
+        return false;
+    }
+    return true;
 }
 
 void EncoderHwWorker::flush_and_close()
@@ -292,22 +325,32 @@ void EncoderHwWorker::flush_and_close()
 
 bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 {
-    if (!camera_control_->record_video && is_recording_) {
-        std::cout << "[" << this->threadName << "] HW Recording paused. Finalizing video file..." << std::endl;
-        flush_and_close();
-        is_recording_ = false;
-        {
-            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
-            camera_control_->recording_folder.clear();
+    const bool recording_enabled = camera_control_->record_video;
+    const bool draining = camera_control_->recording_draining;
+
+    auto recycle_entry = [&]() {
+        if (m_prep_worker_) {
+            if (entry->preprocess_complete_event) {
+                m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
+                m_prep_worker_->available_events_++;
+            }
+            m_prep_worker_->free_encoder_entries_.push(entry);
+            m_prep_worker_->available_buffers_++;
         }
-    }
+    };
 
     if (!entry) {
+        if (!recording_enabled && is_recording_) {
+            if (!draining || drain_ready()) {
+                std::cout << "[" << this->threadName << "] HW Recording stopped. Finalizing video file..." << std::endl;
+                finalize_recording();
+            }
+        }
         return false;
     }
 
     // If the global flag is true but we aren't recording yet, start a new recording.
-    if (camera_control_->record_video && !is_recording_) {
+    if (recording_enabled && !is_recording_) {
         std::cout << "[" << this->threadName << "] HW Recording started. Opening new video file..." << std::endl;
 
         // Create a new timestamped folder
@@ -327,19 +370,19 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);
             initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_, metadata_tags);
         }
+        camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
         is_recording_ = true;
     }
 
     // If recording is globally disabled, skip processing but recycle resources.
-    if (!camera_control_->record_video) {
-        if (m_prep_worker_) {
-            if (entry->preprocess_complete_event) {
-                m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
-                m_prep_worker_->available_events_++;
-            }
-            m_prep_worker_->free_encoder_entries_.push(entry);
-            m_prep_worker_->available_buffers_++;
-        }
+    if (!recording_enabled && !draining) {
+        recycle_entry();
+        return false;
+    }
+
+    if (!is_recording_) {
+        std::cerr << "[" << this->threadName << "] Warning: Dropping frame because encoder is not recording." << std::endl;
+        recycle_entry();
         return false;
     }
 
