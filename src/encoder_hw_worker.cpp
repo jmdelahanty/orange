@@ -48,6 +48,18 @@ bool is_lossless_tuning(const std::string& tuning) {
     return tuning == "lossless";
 }
 
+const char* rc_mode_to_string(NV_ENC_PARAMS_RC_MODE mode) {
+    switch (mode) {
+        case NV_ENC_PARAMS_RC_CONSTQP: return "constqp";
+        case NV_ENC_PARAMS_RC_VBR: return "vbr";
+        case NV_ENC_PARAMS_RC_CBR: return "cbr";
+        case NV_ENC_PARAMS_RC_CBR_LOWDELAY_HQ: return "cbr_lowdelay_hq";
+        case NV_ENC_PARAMS_RC_CBR_HQ: return "cbr_hq";
+        case NV_ENC_PARAMS_RC_VBR_HQ: return "vbr_hq";
+        default: return "unknown";
+    }
+}
+
 std::vector<std::pair<std::string, std::string>> build_metadata_tags(
     const CameraParams* camera_params,
     const std::string& codec,
@@ -243,6 +255,51 @@ EncoderHwWorker::EncoderHwWorker(
     
     encoder_.pEnc->CreateEncoder(&initializeParams);
     encoder_.pEnc->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
+
+    {
+        NV_ENC_INITIALIZE_PARAMS resolved_params = { NV_ENC_INITIALIZE_PARAMS_VER };
+        NV_ENC_CONFIG resolved_config = { NV_ENC_CONFIG_VER };
+        resolved_params.encodeConfig = &resolved_config;
+        encoder_.pEnc->GetInitializeParams(&resolved_params);
+
+        encoder_snapshot_.backend = "nvenc";
+        encoder_snapshot_.path = "hw";
+        encoder_snapshot_.codec = codec_;
+        encoder_snapshot_.preset = preset_;
+        encoder_snapshot_.tuning = tuning_;
+        encoder_snapshot_.width = resolved_params.encodeWidth;
+        encoder_snapshot_.height = resolved_params.encodeHeight;
+        encoder_snapshot_.fps = resolved_params.frameRateNum;
+        encoder_snapshot_.gop_length = resolved_config.gopLength;
+        encoder_snapshot_.frame_interval_p = resolved_config.frameIntervalP;
+        encoder_snapshot_.rc_mode = resolved_config.rcParams.rateControlMode;
+        encoder_snapshot_.average_bitrate = resolved_config.rcParams.averageBitRate;
+        encoder_snapshot_.max_bitrate = resolved_config.rcParams.maxBitRate;
+        encoder_snapshot_.vbv_buffer_size = resolved_config.rcParams.vbvBufferSize;
+        encoder_snapshot_.enable_aq = resolved_config.rcParams.enableAQ;
+        encoder_snapshot_.enable_temporal_aq = resolved_config.rcParams.enableTemporalAQ;
+        encoder_snapshot_.enable_lookahead = resolved_config.rcParams.enableLookahead;
+        encoder_snapshot_.low_delay_keyframe_scale = resolved_config.rcParams.lowDelayKeyFrameScale;
+        encoder_snapshot_.strict_gop_target = resolved_config.rcParams.strictGOPTarget;
+        encoder_snapshot_.enable_non_ref_p = resolved_config.rcParams.enableNonRefP;
+        encoder_snapshot_.enable_ptd = resolved_params.enablePTD;
+        encoder_snapshot_.gpu_id = camera_params_->gpu_id;
+        encoder_snapshot_.color = camera_params_->color;
+
+        if (codec_ == "hevc") {
+            const auto& hevc_config = resolved_config.encodeCodecConfig.hevcConfig;
+            encoder_snapshot_.idr_period = hevc_config.idrPeriod;
+            encoder_snapshot_.max_num_ref_frames_in_dpb = hevc_config.maxNumRefFramesInDPB;
+            encoder_snapshot_.repeat_sps_pps = hevc_config.repeatSPSPPS;
+        } else {
+            const auto& h264_config = resolved_config.encodeCodecConfig.h264Config;
+            encoder_snapshot_.idr_period = h264_config.idrPeriod;
+            encoder_snapshot_.max_num_ref_frames = h264_config.maxNumRefFrames;
+            encoder_snapshot_.repeat_sps_pps = h264_config.repeatSPSPPS;
+        }
+
+        encoder_snapshot_valid_ = true;
+    }
 }
 
 EncoderHwWorker::~EncoderHwWorker()
@@ -293,6 +350,58 @@ bool EncoderHwWorker::drain_ready()
         return false;
     }
     return true;
+}
+
+nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
+{
+    nlohmann::json info;
+    info["backend"] = encoder_snapshot_.backend;
+    info["path"] = encoder_snapshot_.path;
+    info["codec"] = encoder_snapshot_.codec;
+    info["preset"] = encoder_snapshot_.preset;
+    info["tuning"] = encoder_snapshot_.tuning;
+    info["gpu_id"] = encoder_snapshot_.gpu_id;
+    info["color"] = encoder_snapshot_.color;
+    info["resolution"] = {
+        {"width", encoder_snapshot_.width},
+        {"height", encoder_snapshot_.height}
+    };
+    info["fps"] = encoder_snapshot_.fps;
+    info["gop_length"] = encoder_snapshot_.gop_length;
+    info["frame_interval_p"] = encoder_snapshot_.frame_interval_p;
+    info["idr_period"] = encoder_snapshot_.idr_period;
+
+    nlohmann::json refs;
+    if (encoder_snapshot_.max_num_ref_frames > 0) {
+        refs["max_num_ref_frames"] = encoder_snapshot_.max_num_ref_frames;
+    }
+    if (encoder_snapshot_.max_num_ref_frames_in_dpb > 0) {
+        refs["max_num_ref_frames_in_dpb"] = encoder_snapshot_.max_num_ref_frames_in_dpb;
+    }
+    if (!refs.empty()) {
+        info["refs"] = refs;
+    }
+
+    info["rc"] = {
+        {"mode", rc_mode_to_string(static_cast<NV_ENC_PARAMS_RC_MODE>(encoder_snapshot_.rc_mode))},
+        {"mode_value", encoder_snapshot_.rc_mode},
+        {"average_bitrate", encoder_snapshot_.average_bitrate},
+        {"max_bitrate", encoder_snapshot_.max_bitrate},
+        {"vbv_buffer_size", encoder_snapshot_.vbv_buffer_size}
+    };
+    info["aq"] = {
+        {"enable_aq", encoder_snapshot_.enable_aq},
+        {"enable_temporal_aq", encoder_snapshot_.enable_temporal_aq}
+    };
+    info["lookahead"] = {
+        {"enable", encoder_snapshot_.enable_lookahead}
+    };
+    info["low_delay_keyframe_scale"] = encoder_snapshot_.low_delay_keyframe_scale;
+    info["strict_gop_target"] = encoder_snapshot_.strict_gop_target;
+    info["enable_non_ref_p"] = encoder_snapshot_.enable_non_ref_p;
+    info["repeat_sps_pps"] = encoder_snapshot_.repeat_sps_pps;
+    info["enable_ptd"] = encoder_snapshot_.enable_ptd;
+    return info;
 }
 
 void EncoderHwWorker::flush_and_close()
@@ -369,6 +478,13 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
             const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);
             initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_, metadata_tags);
+        }
+        if (encoder_snapshot_valid_) {
+            const std::string camera_key = camera_params_->camera_serial.empty()
+                ? std::to_string(camera_params_->camera_id)
+                : camera_params_->camera_serial;
+            nlohmann::json encoder_info = build_encoder_snapshot_json();
+            update_recording_snapshot_encoder(current_recording_folder, camera_key, encoder_info);
         }
         camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
         is_recording_ = true;

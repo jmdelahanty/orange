@@ -9,6 +9,7 @@
 #include <chrono>
 #include <fstream>
 #include "encoder_pipeline.h"
+#include "json.hpp"
 
 class EncoderPreprocessWorker; // Forward declaration
 
@@ -42,6 +43,37 @@ protected:
 private:
     void finalize_recording();
     bool drain_ready();
+    nlohmann::json build_encoder_snapshot_json() const;
+
+    struct EncoderSnapshotInfo {
+        std::string backend;
+        std::string path;
+        std::string codec;
+        std::string preset;
+        std::string tuning;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint32_t fps = 0;
+        uint32_t gop_length = 0;
+        uint32_t frame_interval_p = 0;
+        uint32_t idr_period = 0;
+        uint32_t max_num_ref_frames = 0;
+        uint32_t max_num_ref_frames_in_dpb = 0;
+        uint32_t rc_mode = 0;
+        uint32_t average_bitrate = 0;
+        uint32_t max_bitrate = 0;
+        uint32_t vbv_buffer_size = 0;
+        uint32_t enable_aq = 0;
+        uint32_t enable_temporal_aq = 0;
+        uint32_t enable_lookahead = 0;
+        uint32_t low_delay_keyframe_scale = 0;
+        uint32_t strict_gop_target = 0;
+        uint32_t enable_non_ref_p = 0;
+        uint32_t repeat_sps_pps = 0;
+        uint32_t enable_ptd = 0;
+        int gpu_id = -1;
+        bool color = false;
+    };
 
     CameraParams* camera_params_;
     std::string base_folder_name_;
@@ -53,6 +85,8 @@ private:
     CameraControl* camera_control_;
 
     bool is_recording_ = false; // Tracks the local recording state of this worker
+    bool encoder_snapshot_valid_ = false;
+    EncoderSnapshotInfo encoder_snapshot_;
 
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;

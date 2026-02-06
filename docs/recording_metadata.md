@@ -59,12 +59,17 @@ Top-level fields:
   "recording_id": "...",
   "timestamp_utc": "...",
   "producer_version": "...",
-  "cameras": { ... }
+  "cameras": { ... },
+  "encoders": { ... }
 }
 ```
 
 `cameras` is a dictionary keyed by camera serial number (as a string), where each
 value is the full camera config JSON used at recording start (or `null` if missing).
+
+`encoders` is a dictionary keyed by camera serial number (as a string). Each value
+captures resolved encoder parameters for that camera at recording start (HW NVENC
+path only).
 
 Important: these camera configs are read from the static JSON config files at
 recording start. The snapshot does not query live camera state from the SDK, and
@@ -78,6 +83,37 @@ Example:
     "02010093": { ... },
     "02010094": { ... },
     "02010095": null
+  },
+  "encoders": {
+    "02010093": {
+      "backend": "nvenc",
+      "path": "hw",
+      "codec": "hevc",
+      "preset": "p1",
+      "tuning": "ll",
+      "gpu_id": 0,
+      "color": true,
+      "resolution": {"width": 4512, "height": 4512},
+      "fps": 60,
+      "gop_length": 120,
+      "frame_interval_p": 1,
+      "idr_period": 120,
+      "refs": {"max_num_ref_frames_in_dpb": 1},
+      "rc": {
+        "mode": "vbr",
+        "mode_value": 1,
+        "average_bitrate": 244297728,
+        "max_bitrate": 250000000,
+        "vbv_buffer_size": 250000000
+      },
+      "aq": {"enable_aq": 1, "enable_temporal_aq": 1},
+      "lookahead": {"enable": 0},
+      "low_delay_keyframe_scale": 1,
+      "strict_gop_target": 0,
+      "enable_non_ref_p": 0,
+      "repeat_sps_pps": 1,
+      "enable_ptd": 1
+    }
   }
 }
 ```

@@ -52,5 +52,8 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const CameraParams* cameras_params,
                               int num_cameras,
                               const std::string& base_folder);
+bool update_recording_snapshot_encoder(const std::string& recording_folder,
+                                       const std::string& camera_serial,
+                                       const nlohmann::json& encoder_info);
 
 #endif // ORANGE_PROJECT

@@ -11,6 +11,7 @@
 #include <iomanip>       // For std::put_time, std::setfill, std::setw
 #include <sstream>       // For std::ostringstream
 #include <ctime>         // For std::gmtime
+#include <mutex>
 #include "json.hpp"      // For nlohmann::json
 #include "fetch_generated.h" // For FetchGame:: enums and builders
 #include "flatbuffers/flatbuffers.h" // For flatbuffers::FlatBufferBuilder
@@ -161,6 +162,11 @@ std::string get_current_utc_timestamp() {
     std::ostringstream oss;
     oss << std::put_time(&utc_time, "%Y-%m-%dT%H:%M:%SZ");
     return oss.str();
+}
+
+std::mutex& recording_snapshot_mutex() {
+    static std::mutex m;
+    return m;
 }
 
 std::string read_file_to_string(const std::string& path, std::string* error) {
@@ -591,6 +597,53 @@ bool write_recording_snapshot(const std::string& recording_folder,
         if (!write_latest_recording_pointer(base_folder, recording_folder, resolved_recording_id, timestamp_utc)) {
             std::cerr << "Failed to update latest recording pointer in base folder." << std::endl;
         }
+    }
+
+    return true;
+}
+
+bool update_recording_snapshot_encoder(const std::string& recording_folder,
+                                       const std::string& camera_serial,
+                                       const nlohmann::json& encoder_info) {
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    std::string error;
+    std::string contents = read_file_to_string(snapshot_path.string(), &error);
+    if (contents.empty()) {
+        std::cerr << "Failed to read recording snapshot: " << snapshot_path.string()
+                  << " (" << (error.empty() ? "empty file" : error) << ")" << std::endl;
+        return false;
+    }
+
+    nlohmann::json snapshot;
+    try {
+        snapshot = nlohmann::json::parse(contents);
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to parse recording snapshot: " << snapshot_path.string()
+                  << " (" << ex.what() << ")" << std::endl;
+        return false;
+    }
+
+    if (!snapshot.is_object()) {
+        snapshot = nlohmann::json::object();
+    }
+    if (!snapshot.contains("encoders") || !snapshot["encoders"].is_object()) {
+        snapshot["encoders"] = nlohmann::json::object();
+    }
+
+    snapshot["encoders"][camera_serial] = encoder_info;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
     }
 
     return true;
