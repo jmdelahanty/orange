@@ -35,5 +35,13 @@ private:
     SafeQueue<AVPacket*> m_queue; // Queue for packets to be written
     std::thread m_thread;
     int sequential_frame_counter_ = 0; // Counter for sequential frame numbers
+    AVCodecID codec_id_ = AV_CODEC_ID_NONE;
+    std::string keyframe_file_;
+    std::vector<int64_t> keyframe_frames_;
     void write_thread();
+    void write_keyframe_sidecar();
+    bool packet_has_idr(const uint8_t* data, size_t size) const;
+    bool packet_has_idr_h264(const uint8_t* data, size_t size) const;
+    bool packet_has_idr_hevc(const uint8_t* data, size_t size) const;
+    std::string keyframe_sidecar_path() const;
 };

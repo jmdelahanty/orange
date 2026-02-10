@@ -71,6 +71,33 @@ value is the full camera config JSON used at recording start (or `null` if missi
 captures resolved encoder parameters for that camera at recording start (HW NVENC
 path only).
 
+Note: if we add multiple encoder outputs per camera (e.g., full-res + crop),
+consider nesting by path (e.g., `encoders[serial].hw`, `encoders[serial].crop`) or
+switching `encoders[serial]` to a list of encoder objects with a unique
+`encoder_id`.
+
+## Keyframe sidecar
+
+Each recording also writes a keyframe index sidecar alongside the video:
+
+```
+Cam<serial>_keyframe.json
+```
+
+This file is emitted by the writer and contains:
+
+```
+{
+  "codec": "hevc",
+  "fps": 60,
+  "total_frames": 12345,
+  "keyframe_frames": [0, 60, 120, 180, ...]
+}
+```
+
+The writer sets `AV_PKT_FLAG_KEY` for H.264 IDR (NAL type 5) and HEVC IDR
+(NAL types 19/20), and uses that to populate the keyframe list.
+
 Important: these camera configs are read from the static JSON config files at
 recording start. The snapshot does not query live camera state from the SDK, and
 does not reflect any runtime UI tweaks applied after recording starts.

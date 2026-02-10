@@ -203,7 +203,7 @@ EncoderHwWorker::EncoderHwWorker(
     initializeParams.frameRateDen = 1;
     initializeParams.enablePTD = 1;
 
-    encodeConfig.gopLength = camera_params_->frame_rate * 2;
+    encodeConfig.gopLength = camera_params_->frame_rate;
     encodeConfig.frameIntervalP = 1;
 
     if (lossless) {
