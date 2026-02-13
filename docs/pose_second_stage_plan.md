@@ -6,6 +6,13 @@ Author: Codex (outline)
 ## Goal
 Add a second-stage pose model (TensorRT) that consumes the 256x256 crop and produces real-time pose results without breaking current display/recording throughput.
 
+## Current Assumptions (2026-02-13)
+- Pose runs on every frame that produces a crop (i.e., when YOLO fires and produces detections).
+- Output should be drawn on the overlay and published over IPC.
+- Use single-frame payloads (no batching) for now.
+- Target is to keep up with 60 FPS recordings.
+- Note: YOLO does not necessarily run every frame (decimation is possible), so pose rate may be less than 60 FPS if YOLO is decimated.
+
 ## Constraints / Existing Architecture
 - `CropAndEncodeWorker` already generates a 256x256 crop on GPU.
 - `CThreadWorker` stages rely on per-frame CUDA events for readiness.
@@ -220,6 +227,13 @@ if (cameras_select[i].pose) {
 ## Notes on output path
 - Easiest: publish pose results to IPC (similar to YOLO detections).
 - UI overlay: store last pose per camera and render in ImGui / overlay shader.
+
+## Open Questions
+1. TRT engine input: size, layout, data type, normalization, batch size?
+2. Detection selection: pose on all detections or only top confidence?
+3. Output schema: what keypoints + coordinate system are produced?
+4. IPC payload: ok with per-frame list of keypoints + scores?
+5. If YOLO is decimated, should pose run at YOLO rate or be forced to full rate?
 
 ## Testing / validation
 1. Run with pose disabled (should behave exactly as today).

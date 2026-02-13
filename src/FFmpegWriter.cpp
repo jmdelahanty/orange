@@ -1,6 +1,7 @@
 // src/FFmpegWriter.cpp
 
 #include "FFmpegWriter.h"
+#include "fsuid_guard.h"
 #include <unistd.h>
 #include <filesystem>
 
@@ -34,6 +35,10 @@ FFmpegWriter::FFmpegWriter(
     const char *metadata_file,
     const std::vector<std::pair<std::string, std::string>>& metadata_tags) : nFps(nFps)
 {
+    // Ensure output files are created as the invoking user even when running under sudo.
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+
     codec_id_ = eCodecId;
     if (metadata_file) {
         keyframe_file_ = metadata_file;
@@ -187,6 +192,8 @@ void FFmpegWriter::write_keyframe_sidecar()
     if (out_path.empty()) {
         return;
     }
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::ofstream out(out_path, std::ios::trunc);
     if (!out.is_open()) {
         std::cout << "FFMPEG: Failed to write keyframe sidecar " << out_path << std::endl;

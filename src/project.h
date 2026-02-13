@@ -7,7 +7,7 @@
 #include <chrono>
 #include "network_base.h" // For EnetContext, ENetPeer, FetchGame::ManagerState (via fetch_generated.h)
 #include "camera.h"     // For CameraParams, GigEVisionDeviceInfo, CameraEmergent
-#include "nlohmann/json.hpp" // For JSON handling
+#include "json.hpp" // For JSON handling (nlohmann::json)
 #include <filesystem> // For filesystem operations
 #include <fstream>   // For file operations
 #include <iostream>  // For console output
