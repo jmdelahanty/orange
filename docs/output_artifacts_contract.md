@@ -1,0 +1,300 @@
+# Orange Output Artifacts Contract (Current Runtime)
+
+Purpose: define the concrete output contracts currently produced by Orange so
+downstream analysis consumers can parse artifacts without guessing.
+
+Date anchored: 2026-02-27.
+
+Scope:
+- Current runtime behavior from writer code paths in this repository.
+- On-disk artifacts and runtime IPC payloads.
+
+Non-scope:
+- Planned/future contracts documented in TODO/plan files.
+- Cross-repo consumer behavior details beyond minimal parse guidance.
+
+## Contract Precedence
+
+Use this precedence when contracts disagree:
+1. Writer code paths in `src/` (current runtime behavior).
+2. This document.
+3. Other narrative docs/TODO plans.
+
+## Recording Folder Resolution
+
+Recording folder pattern:
+- `<base_folder>/<recording_id>`
+- `recording_id` format: `YYYY_MM_DD_HH_MM_SS`
+
+Where `base_folder` comes from:
+- UI/config save path (`input_folder` / encoder config folder).
+
+Default configured base path in runtime:
+- `.../orange_data/exp/unsorted`
+
+## Artifact Inventory
+
+| Artifact | Path pattern | Requiredness | Gate |
+|---|---|---|---|
+| Recording folder | `<base_folder>/<recording_id>/` | Required for recording sessions | Recording started |
+| Snapshot JSON | `<recording_folder>/recording_snapshot.json` | Required | Recording started |
+| Latest pointer (local) | `<base_folder>/.orange/latest_recording.json` | Required | Recording started |
+| Latest pointer (shared) | `/run/orange/latest_recording.json` | Required (best-effort write) | Recording started |
+| Main video | `<recording_folder>/Cam<serial>.mp4` | Typical | Per-camera HW encoding active |
+| Main metadata CSV | `<recording_folder>/Cam<serial>_meta.csv` | Typical | Per-camera HW encoding active |
+| Main keyframe sidecar | `<recording_folder>/Cam<serial>_keyframe.json` | Typical | Per-camera HW encoding active |
+| Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
+| Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
+| Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
+| YOLO perf CSV | `<recording_folder>/Cam<serial>_yolo_perf.csv` | Optional | `ORANGE_YOLO_PERF_LOG != 0` |
+| YOLO debug PNG | `./debug_pre_yolo_<serial>_<frame_id>.png` | Optional | `Dump Input` action |
+
+Note: still-image save path is currently not a stable output contract (writer
+handoff fields are underspecified at present).
+
+## JSON Contracts
+
+### Latest Recording Pointer JSON
+
+Written to both:
+- `<base_folder>/.orange/latest_recording.json`
+- `/run/orange/latest_recording.json`
+
+Current emitted shape:
+
+```json
+{
+  "recording_id": "YYYY_MM_DD_HH_MM_SS",
+  "timestamp_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "recording_folder": "/abs/path/to/base/recording_id",
+  "snapshot_path": "/abs/path/to/base/recording_id/recording_snapshot.json"
+}
+```
+
+Notes:
+- Writes are atomic (`.tmp` + rename).
+- `/run/orange/latest_recording.json` is chmod `0644`.
+
+### Recording Snapshot JSON
+
+Path:
+- `<recording_folder>/recording_snapshot.json`
+
+Current emitted top-level fields:
+- `recording_id: string`
+- `timestamp_utc: string` (UTC ISO8601)
+- `producer_version: string` (currently `"unknown"`)
+- `cameras: object`
+- `encoders: object` (added later by encoder worker updates)
+
+`cameras` object:
+- Keys are camera identifiers (usually serial strings, fallback may use camera
+  id string when serial not available).
+- Values are full camera config JSON or `null`.
+
+`encoders` object (current shape):
+- Key: camera identifier string (serial or camera_id string).
+- Value: encoder info object:
+  - `backend: string`
+  - `path: string`
+  - `codec: string`
+  - `preset: string`
+  - `tuning: string`
+  - `gpu_id: integer`
+  - `color: boolean`
+  - `resolution.width: integer`
+  - `resolution.height: integer`
+  - `fps: integer`
+  - `gop_length: integer`
+  - `frame_interval_p: integer`
+  - `idr_period: integer`
+  - Optional:
+    - `refs.max_num_ref_frames: integer` (if > 0)
+    - `refs.max_num_ref_frames_in_dpb: integer` (if > 0)
+  - `rc.mode: string`
+  - `rc.mode_value: integer`
+  - `rc.average_bitrate: integer`
+  - `rc.max_bitrate: integer`
+  - `rc.vbv_buffer_size: integer`
+  - `aq.enable_aq: integer`
+  - `aq.enable_temporal_aq: integer`
+  - `lookahead.enable: integer`
+  - `low_delay_keyframe_scale: integer`
+  - `strict_gop_target: integer`
+  - `enable_non_ref_p: integer`
+  - `repeat_sps_pps: integer`
+  - `enable_ptd: integer`
+
+Important:
+- Current runtime snapshot shape is legacy/single-level encoder info.
+- Do not assume `encoders[serial].outputs` or `models` exists.
+
+## CSV Contracts
+
+### Main Metadata CSV (`Cam<serial>_meta.csv`)
+
+Header (exact):
+
+```text
+frame_id,timestamp,timestamp_sys
+```
+
+Field semantics:
+- `frame_id`: recording-frame counter (`recording_frame_id`, uint64), not the
+  absolute camera frame counter.
+- `timestamp`: camera SDK timestamp (`uint64`, unit not explicitly documented
+  in code contract).
+- `timestamp_sys`: system wall-clock timestamp from `CLOCK_REALTIME` in
+  nanoseconds (`uint64`).
+
+### Crop Metadata CSV (`Cam<serial>_crop_meta.csv`)
+
+Header (exact):
+
+```text
+frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h
+```
+
+Field semantics:
+- `frame_id`: recording-frame counter (`uint64`).
+- `timestamp`: camera SDK timestamp (`uint64`, unit not explicitly documented).
+- `timestamp_sys`: realtime nanoseconds (`uint64`).
+- `detection_confidence`: detection confidence (`float`).
+- `crop_x,crop_y,crop_w,crop_h`: crop rectangle in source-frame pixels.
+
+Behavior note:
+- Blank crop frames may still be encoded when no detection exists.
+- Metadata row is only appended when detection exists.
+
+### YOLO Perf CSV (`Cam<serial>_yolo_perf.csv`)
+
+Header (exact order):
+
+```text
+frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,fps,ok,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,cpu_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms
+```
+
+Field semantics:
+- ID/timestamp fields: integer counters/timestamps.
+- `ok`: integer success flag.
+- `*_ms` and fps fields: floating-point timing/throughput metrics.
+
+Gate:
+- Disabled when `ORANGE_YOLO_PERF_LOG=0`.
+- Sampling controlled by `ORANGE_YOLO_PERF_SAMPLE`.
+
+## Keyframe Sidecar JSON Contract
+
+Path:
+- Derived from configured keyframe sidecar path; normalized to `.json`.
+
+Current emitted shape:
+
+```json
+{
+  "codec": "h264|hevc|unknown",
+  "fps": 120,
+  "total_frames": 12345,
+  "keyframe_frames": [0, 30, 60]
+}
+```
+
+Field semantics:
+- `codec`: encoder codec label.
+- `fps`: configured frame rate integer.
+- `total_frames`: total packets written.
+- `keyframe_frames`: append-order packet indices flagged as keyframes.
+
+Detection notes:
+- H.264 keyframe detection uses IDR NAL type `5`.
+- HEVC keyframe detection uses IRAP NAL types `19`/`20`.
+- Parser handles Annex-B and length-prefixed bitstreams.
+
+Important:
+- Keyframe indices are sequential packet indices and can differ from metadata
+  CSV `frame_id` values.
+
+## Shared-Memory IPC Contract
+
+Queue name:
+- `/shm_cam_<camera_serial>`
+
+Queue characteristics:
+- Ring slots: `8`
+- Max objects per slot: `100`
+- Max keypoint floats/object: `32`
+
+Slot payload (`VectorSlot`) fields:
+- `count: size_t`
+- `objects[count]` where each object has:
+  - `rect.x: float`
+  - `rect.y: float`
+  - `rect.width: float`
+  - `rect.height: float`
+  - `label: int`
+  - `prob: float`
+  - `kps[32]: float`
+  - `num_kps: size_t`
+- `timestamp_us: uint64` (producer local `steady_clock` microseconds at push)
+- `frame_id: uint64`
+- `camera_id: uint32` (camera index, not serial)
+- `yolo_enabled: bool`
+
+Emission behavior:
+- Base frame event may be emitted with empty detections.
+- Detection update emitted when YOLO produces detections.
+- During recording, IPC `frame_id` uses `recording_frame_id`.
+- Outside recording, IPC `frame_id` uses absolute camera `frame_id`.
+
+## ENet / FlatBuffer Payload Contract
+
+### Control/State Payloads (currently emitted)
+
+Current emitters send `FetchGame.Server` root payloads with fields such as:
+- `signal_type`
+- `server_state`
+- `control`
+- `record_folder`
+- `config_folder`
+- `ptp_global_time`
+
+### Wrapped ORNG Payloads
+
+Schema for wrapped payloads exists via:
+- `message_wrapper.fbs` (`file_identifier "ORNG"`)
+- `yolo_payload.fbs` (`YoloFrameDetections`)
+
+Current runtime note:
+- Receive path validates wrapped ORNG payloads.
+- YOLO ENet send block is presently inactive (schema exists; emitter is not
+  actively producing wrapped YOLO packets).
+
+## Timestamp and Frame Identity Rules
+
+- `frame_id` (camera-local absolute) and `recording_frame_id` (session-local)
+  are distinct.
+- Main/crop metadata CSV `frame_id` currently means `recording_frame_id`.
+- `timestamp_sys` in metadata rows is realtime nanoseconds.
+- IPC `timestamp_us` is enqueue-time steady-clock microseconds, not camera SDK
+  timestamp.
+- Camera SDK `timestamp` units are not explicitly specified by the runtime
+  contract and should be treated as source-native ticks.
+
+## Known Inconsistencies and Caveats
+
+1. Queue naming differs across code paths/docs in places (`serial` vs camera
+   index formatting). Treat `/shm_cam_<camera_serial>` as producer contract.
+2. Snapshot docs may describe richer target structures not currently emitted.
+3. Still-image save path is not a reliable consumer contract at present.
+4. Keyframe sidecar index space is packet-index based and may not align with
+   metadata CSV `frame_id`.
+
+## Parse Guidance for Downstream Consumers
+
+- Prefer defensive parsing:
+  - tolerate absent optional artifacts
+  - treat snapshot extra fields as forward-compatible
+  - do not assume target/TODO-only fields are present
+- Join timing streams using explicit key choice:
+  - use `recording_frame_id` semantics for metadata CSV `frame_id`
+  - do not directly equate keyframe sidecar index with metadata `frame_id`

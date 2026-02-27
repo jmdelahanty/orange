@@ -3,6 +3,11 @@
 This document describes where the producer writes recording metadata and how
 consumers should parse it.
 
+For a full current-runtime artifact and schema contract (including CSV, video
+sidecars, IPC payloads, and known caveats), see:
+
+- `docs/output_artifacts_contract.md`
+
 ## Where to look
 
 The producer writes pointer files at recording start:
@@ -60,7 +65,8 @@ Top-level fields:
   "timestamp_utc": "...",
   "producer_version": "...",
   "cameras": { ... },
-  "encoders": { ... }
+  "encoders": { ... },
+  "models": { ... }
 }
 ```
 
@@ -68,13 +74,158 @@ Top-level fields:
 value is the full camera config JSON used at recording start (or `null` if missing).
 
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value
-captures resolved encoder parameters for that camera at recording start (HW NVENC
-path only).
+captures resolved runtime encoder parameters for one or more outputs for that
+camera.
 
-Note: if we add multiple encoder outputs per camera (e.g., full-res + crop),
-consider nesting by path (e.g., `encoders[serial].hw`, `encoders[serial].crop`) or
-switching `encoders[serial]` to a list of encoder objects with a unique
-`encoder_id`.
+Preferred multi-output shape (full + crop):
+
+```json
+{
+  "encoders": {
+    "02010093": {
+      "schema_version": 2,
+      "outputs": {
+        "full": { "...": "encoder_info" },
+        "crop": { "...": "encoder_info" }
+      }
+    }
+  }
+}
+```
+
+Output key semantics:
+
+- `full`: full-frame recording encoder.
+- `crop`: crop recording encoder (for example 256x256 detection/pose-driven ROI
+  path).
+
+Compatibility rule:
+
+- During migration, producers may still emit legacy shape:
+  - `encoders[serial] = <encoder_info>`
+- Consumers should support both shapes:
+  - if `encoders[serial].outputs` exists, use that;
+  - otherwise treat `encoders[serial]` as the `full` encoder entry.
+
+`models` is an optional dictionary keyed by camera serial number (as a string).
+Each value captures resolved runtime model metadata (for example detect TRT model
+and pose TRT model/skeleton) so downstream consumers can reproduce interpretation
+of outputs.
+
+Per-output `encoder_info` should include at least:
+
+- current encoder fields (`backend`, `path`, `codec`, `preset`, `tuning`,
+  `resolution`, `fps`, GOP/RC fields).
+- output identity (`output` = `full|crop`).
+- artifact linkage (for example `video_file`, `metadata_file`, `keyframe_file`
+  basenames) so downstream systems can map encoder config to generated files.
+
+## Model Metadata Source of Truth
+
+Recommended source-of-truth split:
+
+- Camera config JSON stores operator intent and defaults (for example model path,
+  skeleton id, enable flags, UI defaults).
+- Recording snapshot stores resolved runtime values actually used for that run.
+
+Consumer rule:
+
+- Consumers should read detect/pose model details from
+  `recording_snapshot.json` first, not directly from static camera config files.
+
+## Detect Model Metadata
+
+`models[serial].detect` should capture the resolved detect runtime, including:
+
+- `enabled`
+- source provenance (`camera_config_path` and/or UI-driven selection metadata)
+- runtime identifiers:
+  - `backend`, `engine_path`, `engine_sha256`
+  - optional class mapping identifiers (for example `classes_path`,
+    `classes_sha256`, `label_space`)
+  - input/output interpretation fields used by downstream consumers
+
+Suggested snapshot shape:
+
+```json
+{
+  "models": {
+    "02010093": {
+      "detect": {
+        "enabled": true,
+        "source": {
+          "camera_config_path": "/abs/path/config/local/02010093.json",
+          "ui_selected": true
+        },
+        "runtime": {
+          "backend": "tensorrt",
+          "engine_path": "/abs/path/models/fish_jinyao.engine",
+          "engine_sha256": "123abc...",
+          "classes_path": "/abs/path/models/fish_classes.txt",
+          "classes_sha256": "789xyz...",
+          "input": {"width": 640, "height": 640, "format": "rgb8"},
+          "output": {
+            "bbox_layout": "x,y,w,h",
+            "score_field": "prob",
+            "class_count": 1
+          }
+        }
+      },
+      "pose": {
+        "enabled": true,
+        "source": {
+          "camera_config_path": "/abs/path/config/local/02010093.json"
+        },
+        "runtime": {
+          "backend": "tensorrt",
+          "engine_path": "/abs/path/models/rat_pose.engine",
+          "engine_sha256": "abc123...",
+          "skeleton_id": "rat_v1_8pt",
+          "skeleton_path": "/abs/path/models/rat_v1_8pt.json",
+          "skeleton_sha256": "def456...",
+          "input": {"width": 256, "height": 256, "format": "mono8"},
+          "output": {"kps_layout": "x,y,s", "max_kps_floats": 32},
+          "execution": {
+            "inference_path": "cuda_graph",
+            "cuda_graph_requested": true,
+            "cuda_graph_captured": true
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## Pose Model and Skeleton Metadata
+
+`models[serial].pose` should capture the resolved pose runtime, including
+model+skeleton identifiers and output interpretation fields.
+
+## Pose Execution Metadata (CUDA Graph / Enqueue)
+
+For reproducibility, pose runtime metadata should also include the effective
+execution mode used during that recording run.
+
+Recommended fields under `models[serial].pose.runtime.execution`:
+
+- `inference_path`: `cuda_graph` or `enqueue`.
+- `cuda_graph_requested`: whether graph mode was requested by runtime config.
+- `cuda_graph_captured`: whether graph capture succeeded for this worker/model.
+- `fallback_reason` (optional): one-line reason when requested graph mode falls
+  back to enqueue path.
+
+Notes:
+
+- If runtime overrides are applied, snapshot must record the override result.
+- If detect is disabled for a camera, either omit `models[serial].detect` or set
+  `"enabled": false`.
+- If pose is disabled for a camera, either omit `models[serial].pose` or set
+  `"enabled": false`.
+- If pose graph capture is disabled or fails, snapshot should still record
+  execution mode (`enqueue`) and fallback reason when available.
+- If detect model, pose model, or skeleton changes during a recording,
+  append/update with an effective frame range marker.
 
 ## Keyframe sidecar
 
@@ -102,7 +253,7 @@ Important: these camera configs are read from the static JSON config files at
 recording start. The snapshot does not query live camera state from the SDK, and
 does not reflect any runtime UI tweaks applied after recording starts.
 
-Example:
+Legacy single-output example (currently emitted for full-frame HW encoder):
 
 ```
 {
@@ -140,6 +291,37 @@ Example:
       "enable_non_ref_p": 0,
       "repeat_sps_pps": 1,
       "enable_ptd": 1
+    }
+  }
+}
+```
+
+Target multi-output example (full + crop):
+
+```json
+{
+  "encoders": {
+    "02010093": {
+      "schema_version": 2,
+      "outputs": {
+        "full": {
+          "output": "full",
+          "backend": "nvenc",
+          "path": "hw",
+          "codec": "hevc",
+          "resolution": {"width": 4512, "height": 4512}
+        },
+        "crop": {
+          "output": "crop",
+          "backend": "nvenc",
+          "path": "crop",
+          "codec": "hevc",
+          "resolution": {"width": 256, "height": 256},
+          "video_file": "Cam02010093_crop.mp4",
+          "metadata_file": "Cam02010093_crop_meta.csv",
+          "keyframe_file": "Cam02010093_crop_keyframe.json"
+        }
+      }
     }
   }
 }
