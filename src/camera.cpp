@@ -1,6 +1,278 @@
 #include "camera.h"
 #include <iostream>
 
+namespace {
+constexpr useconds_t kFocusPollIntervalUs = 200 * 1000;  // 200ms
+constexpr int kFocusPollAttemptsBeforeUart = 5;          // 1s total
+constexpr int kFocusPollAttemptsAfterUart = 10;          // 2s total
+
+bool has_param(Emergent::CEmergentCamera* camera, const char* name)
+{
+    EvtParamAttribute attr{};
+    return EVT_CameraGetParamAttr(camera, name, &attr) == EVT_SUCCESS;
+}
+
+bool refresh_focus_range(Emergent::CEmergentCamera* camera, CameraParams* camera_params)
+{
+    EVT_ERROR max_err = EVT_CameraGetUInt32ParamMax(camera, "Focus", &camera_params->focus_max);
+    EVT_ERROR min_err = EVT_CameraGetUInt32ParamMin(camera, "Focus", &camera_params->focus_min);
+    EVT_ERROR inc_err = EVT_CameraGetUInt32ParamInc(camera, "Focus", &camera_params->focus_inc);
+    return max_err == EVT_SUCCESS && min_err == EVT_SUCCESS && inc_err == EVT_SUCCESS;
+}
+
+bool has_usable_focus_range(const CameraParams* camera_params)
+{
+    return camera_params->focus_max > camera_params->focus_min;
+}
+
+void log_uart_step_result(const std::string& camera_serial, const char* context, const char* step, EVT_ERROR err)
+{
+    if (err == EVT_SUCCESS)
+    {
+        std::cout << camera_serial
+                  << " [" << context << "] " << step << " ok"
+                  << std::endl;
+    }
+    else
+    {
+        std::cout << camera_serial
+                  << " [" << context << "] " << step << " failed: " << get_evt_error_string(err)
+                  << std::endl;
+    }
+}
+
+void try_enable_lens_uart_path(Emergent::CEmergentCamera* camera, CameraParams* camera_params, const char* context)
+{
+    const bool has_uart_nodes =
+        has_param(camera, "UartEnable") &&
+        has_param(camera, "UartBaud") &&
+        has_param(camera, "UartDataBits") &&
+        has_param(camera, "UartStopBits") &&
+        has_param(camera, "GPO_3_Mode");
+
+    if (!has_uart_nodes)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus range is degenerate and UART nodes are unavailable."
+                  << std::endl;
+        return;
+    }
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Focus range is degenerate. Attempting UART lens bootstrap."
+              << std::endl;
+
+    EVT_ERROR err = EVT_CameraSetEnumParam(camera, "GPO_3_Mode", "Test_Gen_Uart_Txd");
+    log_uart_step_result(camera_params->camera_serial, context, "GPO_3_Mode=Test_Gen_Uart_Txd", err);
+
+    err = EVT_CameraSetBoolParam(camera, "UartEnable", true);
+    log_uart_step_result(camera_params->camera_serial, context, "UartEnable=true", err);
+
+    err = EVT_CameraSetEnumParam(camera, "UartBaud", "B_9600");
+    log_uart_step_result(camera_params->camera_serial, context, "UartBaud=B_9600", err);
+
+    err = EVT_CameraSetUInt32Param(camera, "UartDataBits", 8);
+    log_uart_step_result(camera_params->camera_serial, context, "UartDataBits=8", err);
+
+    err = EVT_CameraSetUInt32Param(camera, "UartStopBits", 1);
+    log_uart_step_result(camera_params->camera_serial, context, "UartStopBits=1", err);
+}
+
+void ensure_focus_range_ready(Emergent::CEmergentCamera* camera, CameraParams* camera_params, const char* context)
+{
+    if (!refresh_focus_range(camera, camera_params))
+    {
+        return;
+    }
+
+    if (has_usable_focus_range(camera_params))
+    {
+        return;
+    }
+
+    // Lens initialization can lag camera open.
+    for (int i = 0; i < kFocusPollAttemptsBeforeUart; ++i)
+    {
+        usleep(kFocusPollIntervalUs);
+        if (refresh_focus_range(camera, camera_params) && has_usable_focus_range(camera_params))
+        {
+            std::cout << camera_params->camera_serial
+                      << " [" << context << "] Focus range became available without UART bootstrap: ["
+                      << camera_params->focus_min << "," << camera_params->focus_max << "]"
+                      << std::endl;
+            return;
+        }
+    }
+
+    if (!camera_params->focus_uart_bootstrap)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus range remained [" << camera_params->focus_min
+                  << "," << camera_params->focus_max
+                  << "] and focus_uart_bootstrap is disabled."
+                  << std::endl;
+        return;
+    }
+
+    bool lens_mount_present = false;
+    bool lens_present = false;
+    EVT_CameraGetBoolParam(camera, "LensMountPresent", &lens_mount_present);
+    EVT_CameraGetBoolParam(camera, "LensPresent", &lens_present);
+
+    if (!lens_mount_present || !lens_present)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus range remained [" << camera_params->focus_min
+                  << "," << camera_params->focus_max << "] with no detected lens/mount."
+                  << std::endl;
+        return;
+    }
+
+    try_enable_lens_uart_path(camera, camera_params, context);
+
+    for (int i = 0; i < kFocusPollAttemptsAfterUart; ++i)
+    {
+        usleep(kFocusPollIntervalUs);
+        if (refresh_focus_range(camera, camera_params) && has_usable_focus_range(camera_params))
+        {
+            std::cout << camera_params->camera_serial
+                      << " [" << context << "] Focus range after UART bootstrap: ["
+                      << camera_params->focus_min << "," << camera_params->focus_max << "]"
+                      << std::endl;
+            return;
+        }
+    }
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Focus range still degenerate after bootstrap: ["
+              << camera_params->focus_min << "," << camera_params->focus_max << "]"
+              << std::endl;
+}
+
+bool set_focus_value_checked(
+    Emergent::CEmergentCamera* camera,
+    int focus_value,
+    CameraParams* camera_params,
+    const char* context)
+{
+    ensure_focus_range_ready(camera, camera_params, context);
+    if (!refresh_focus_range(camera, camera_params))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus set FAIL: unable to query focus range."
+                  << std::endl;
+        return false;
+    }
+
+    if (focus_value < static_cast<int>(camera_params->focus_min) ||
+        focus_value > static_cast<int>(camera_params->focus_max))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus set FAIL: target=" << focus_value
+                  << " out of range=[" << camera_params->focus_min << "," << camera_params->focus_max << "]"
+                  << std::endl;
+        return false;
+    }
+
+    EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "Focus", static_cast<unsigned int>(focus_value));
+    if (set_err != EVT_SUCCESS)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus set FAIL: " << get_evt_error_string(set_err)
+                  << std::endl;
+        return false;
+    }
+
+    camera_params->focus = static_cast<unsigned int>(focus_value);
+
+    unsigned int readback = 0;
+    EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, "Focus", &readback);
+    if (get_err != EVT_SUCCESS)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus set WARN: set ok, readback failed: "
+                  << get_evt_error_string(get_err)
+                  << std::endl;
+        return false;
+    }
+
+    if (readback != static_cast<unsigned int>(focus_value))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Focus set WARN: target=" << focus_value
+                  << " readback=" << readback
+                  << std::endl;
+        return false;
+    }
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Focus set PASS: target=" << focus_value
+              << " readback=" << readback
+              << " range=[" << camera_params->focus_min << "," << camera_params->focus_max << "]"
+              << std::endl;
+    return true;
+}
+
+bool set_iris_value_checked(
+    Emergent::CEmergentCamera* camera,
+    int iris_value,
+    CameraParams* camera_params,
+    const char* context)
+{
+    EVT_CameraGetUInt32ParamMax(camera, "Iris", &camera_params->iris_max);
+    EVT_CameraGetUInt32ParamMin(camera, "Iris", &camera_params->iris_min);
+    EVT_CameraGetUInt32ParamInc(camera, "Iris", &camera_params->iris_inc);
+
+    if (iris_value < static_cast<int>(camera_params->iris_min) ||
+        iris_value > static_cast<int>(camera_params->iris_max))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris set FAIL: target=" << iris_value
+                  << " out of range=[" << camera_params->iris_min << "," << camera_params->iris_max << "]"
+                  << std::endl;
+        return false;
+    }
+
+    EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "Iris", static_cast<unsigned int>(iris_value));
+    if (set_err != EVT_SUCCESS)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris set FAIL: " << get_evt_error_string(set_err)
+                  << std::endl;
+        return false;
+    }
+
+    camera_params->iris = static_cast<unsigned int>(iris_value);
+
+    unsigned int readback = 0;
+    EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, "Iris", &readback);
+    if (get_err != EVT_SUCCESS)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris set WARN: set ok, readback failed: "
+                  << get_evt_error_string(get_err)
+                  << std::endl;
+        return false;
+    }
+
+    if (readback != static_cast<unsigned int>(iris_value))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris set WARN: target=" << iris_value
+                  << " readback=" << readback
+                  << std::endl;
+        return false;
+    }
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Iris set PASS: target=" << iris_value
+              << " readback=" << readback
+              << " range=[" << camera_params->iris_min << "," << camera_params->iris_max << "]"
+              << std::endl;
+    return true;
+}
+}  // namespace
+
 std::string get_evt_error_string(EVT_ERROR error)
 {
     std::string error_string; 
@@ -173,26 +445,12 @@ void update_color_temperature(Emergent::CEmergentCamera *camera, std::string col
 
 void update_focus_value(Emergent::CEmergentCamera *camera, int focus_value, CameraParams *camera_params)
 {
-    EVT_CameraGetUInt32ParamMax(camera, "Focus", &camera_params->focus_max);
-    EVT_CameraGetUInt32ParamMin(camera, "Focus", &camera_params->focus_min);
-    EVT_CameraGetUInt32ParamInc(camera, "Focus", &camera_params->focus_inc);
-    if (focus_value >= camera_params->focus_min && focus_value <= camera_params->focus_max)
-    {
-        EVT_CameraSetUInt32Param(camera, "Focus", focus_value);
-        camera_params->focus = focus_value;
-    }
+    (void)set_focus_value_checked(camera, focus_value, camera_params, "update_focus_value");
 }
 
 void update_iris_value(Emergent::CEmergentCamera *camera, int iris_value, CameraParams *camera_params)
 {
-    EVT_CameraGetUInt32ParamMax(camera, "Iris", &camera_params->iris_max);
-    EVT_CameraGetUInt32ParamMin(camera, "Iris", &camera_params->iris_min);
-    EVT_CameraGetUInt32ParamInc(camera, "Iris", &camera_params->iris_inc);
-    if (iris_value >= camera_params->iris_min && iris_value <= camera_params->iris_max)
-    {
-        EVT_CameraSetUInt32Param(camera, "Iris", iris_value);
-        camera_params->iris = iris_value;
-    }
+    (void)set_iris_value_checked(camera, iris_value, camera_params, "update_iris_value");
 }
 
 
@@ -295,7 +553,7 @@ void update_offsetX_value(Emergent::CEmergentCamera *camera, int OFFSET_X_VAL, C
 
 void update_offsetY_value(Emergent::CEmergentCamera *camera, int OFFSET_Y_VAL, CameraParams *camera_params)
 {
-    // Set ROI OffsetX. Now that Width changed we need to check new OffsetX limits
+    // Set ROI OffsetY. Now that Height changed we need to check new OffsetY limits
     EVT_CameraGetUInt32ParamMax(camera, "OffsetY", &camera_params->offsety_max);
     printf("OffsetY Max: \t\t%d\n", camera_params->offsety_max);
     EVT_CameraGetUInt32ParamMin(camera, "OffsetY", &camera_params->offsety_min);
@@ -307,7 +565,7 @@ void update_offsetY_value(Emergent::CEmergentCamera *camera, int OFFSET_Y_VAL, C
     {
         EVT_CameraSetUInt32Param(camera, "OffsetY", OFFSET_Y_VAL);
         camera_params->offsety = OFFSET_Y_VAL;
-        printf("OffsetX Set: \t\t%d\n", OFFSET_Y_VAL);
+        printf("OffsetY Set: \t\t%d\n", OFFSET_Y_VAL);
     }
 }
 
@@ -358,8 +616,12 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera, GigEVisionDevice
     // check_camera_errors(EVT_CameraSetUInt32Param(camera, "FrameRate", camera_params->frame_rate));
     // printf("FrameRate Set to: \t%d\n", camera_params.frame_rate);
     update_frame_rate_value(camera, camera_params->frame_rate, camera_params);
-    update_focus_value(camera, camera_params->focus, camera_params);
-    update_iris_value(camera, camera_params->iris, camera_params);
+    const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
+    const bool iris_ok = set_iris_value_checked(camera, static_cast<int>(camera_params->iris), camera_params, "open_camera_with_params");
+    std::cout << camera_params->camera_serial
+              << " [open_camera_with_params] Lens init summary: focus=" << (focus_ok ? "PASS" : "FAIL")
+              << " iris=" << (iris_ok ? "PASS" : "FAIL")
+              << std::endl;
 }
 
 void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInfo *device_info, CameraParams *camera_params)
@@ -403,10 +665,18 @@ void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInf
     std::cout << "Iris min: " << camera_params->iris_min << std::endl;
     EVT_CameraGetUInt32ParamInc(camera, "Iris", &camera_params->iris_inc);
     std::cout << "Iris inc: " << camera_params->iris_inc << std::endl;
+    ensure_focus_range_ready(camera, camera_params, "update_camera_params");
     check_camera_errors(Emergent::EVT_CameraGetUInt32Param(camera, "Focus", &camera_params->focus), camera_params->camera_serial.c_str());
     EVT_CameraGetUInt32ParamMax(camera, "Focus", &camera_params->focus_max);
     EVT_CameraGetUInt32ParamMin(camera, "Focus", &camera_params->focus_min);
     EVT_CameraGetUInt32ParamInc(camera, "Focus", &camera_params->focus_inc);
+    std::cout << camera_params->camera_serial
+              << " [update_camera_params] Lens range summary: focus=[" << camera_params->focus_min
+              << "," << camera_params->focus_max
+              << "] iris=[" << camera_params->iris_min
+              << "," << camera_params->iris_max
+              << "] focus_uart_bootstrap=" << (camera_params->focus_uart_bootstrap ? "true" : "false")
+              << std::endl;
 
     check_camera_errors(Emergent::EVT_CameraGetUInt32Param(camera, "OffsetY", &camera_params->offsety), camera_params->camera_serial.c_str());
     EVT_CameraGetUInt32ParamMax(camera, "OffsetY", &camera_params->offsety_max);

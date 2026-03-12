@@ -149,6 +149,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->color_temp = camera_config["color_temp"];
     camera_params->gpu_id = camera_config["gpu_id"];
     camera_params->gpu_direct = camera_config["gpu_direct"];
+    camera_params->focus_uart_bootstrap = camera_config.value("focus_uart_bootstrap", false);
     camera_params->color = camera_config["color"];
     camera_params->focus = camera_config["focus"];
     camera_params->iris = camera_config["iris"];
@@ -356,6 +357,7 @@ void init_galvo_camera_params(CameraParams* camera_params, int camera_id, int nu
     camera_params->gpu_id = 1;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
+    camera_params->focus_uart_bootstrap = false;
     camera_params->need_reorder = false;
     camera_params->color = true;
     camera_params->iris = 0;
@@ -373,6 +375,7 @@ void init_65MP_camera_params_mono(CameraParams* camera_params, int camera_id, in
     camera_params->gpu_id = gpu_id;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
+    camera_params->focus_uart_bootstrap = false;
     camera_params->need_reorder = false;
     camera_params->focus = 4311;
     camera_params->camera_id = camera_id;
@@ -392,6 +395,7 @@ void init_65MP_camera_params_color(CameraParams* camera_params, int camera_id, i
     camera_params->gpu_id = gpu_id;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
+    camera_params->focus_uart_bootstrap = false;
     camera_params->need_reorder = false;
     camera_params->focus = 4419;
     camera_params->camera_id = camera_id;
@@ -413,6 +417,7 @@ void init_7MP_camera_params_color(CameraParams* camera_params, int camera_id, in
     camera_params->gpu_id = gpu_id;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
+    camera_params->focus_uart_bootstrap = false;
     camera_params->need_reorder = false;
     camera_params->focus = 345;
     camera_params->camera_id = camera_id;
@@ -433,6 +438,7 @@ void init_7MP_camera_params_mono(CameraParams* camera_params, int camera_id, int
     camera_params->gpu_id = gpu_id;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
+    camera_params->focus_uart_bootstrap = false;
     camera_params->need_reorder = false;
     camera_params->focus = 4700;
     camera_params->camera_id = camera_id;

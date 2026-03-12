@@ -39,7 +39,6 @@ set(ORANGE_CLIENT_SOURCES
     src/video_capture.cpp
     src/offthreadmachine.cpp
     src/acquire_frames_headless.cpp
-    src/threadworker.cpp
     src/gpu_video_encoder.cpp
         src/global.cpp
     ${NVENCODER_SOURCES}
@@ -123,6 +122,10 @@ add_executable(yolo_offline
     ${CUDA_SOURCES}
 )
 
+add_executable(evt_lens_probe
+    tools/evt_lens_probe.cpp
+)
+
 # Link libraries
 target_link_libraries(orange
     pthread
@@ -194,6 +197,14 @@ target_link_libraries(yolo_offline
     nppc
     nppig
     nppial
+)
+
+target_link_libraries(evt_lens_probe
+    EmergentCamera
+    EmergentGenICam
+    EmergentGigEVision
+    pthread
+    m
 )
 
 # Link pkg-config libraries

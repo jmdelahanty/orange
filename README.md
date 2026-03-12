@@ -33,6 +33,9 @@ Encoding performance using GPU A6000 with 7MP Emergent camera
 ## Build instructions 
 0. If you wish to skip the build process, an Ubuntu image is available with preinstalled `orange` and the labeling app `red`. Please contact the developer for accessing the image and follow instructions [here](docs/clonezilla_image.md). 
 
+Build-system migration plan (from custom shell scripts to a mature CMake flow):
+[`docs/build_system_migration_todo.md`](docs/build_system_migration_todo.md)
+
 1. Install CUDA (the software has been tested with version 12.x) and Emergent camera SDK. Follow instructions in [`docs/install_linux_cuda_eSDK.md`](docs/install_linux_cuda_eSDK.md). Make sure you can stream all cameras individually with Emergent `eCapture`.  
 
 2. Install FFmpeg 4.4
@@ -74,6 +77,14 @@ Once built, it will make a folder called `targets`. The executable `orange` is t
 ```
 ./run.sh
 ```
+
+## Lens diagnostics (EVT EF/UART)
+For EF mount focus troubleshooting, use the standalone probe utility:
+
+- Runbook and commands: [`docs/evt_lens_probe.md`](docs/evt_lens_probe.md)
+- Investigation checklist: [`docs/evt_ef_lens_focus_investigation_todo.md`](docs/evt_ef_lens_focus_investigation_todo.md)
+- Post-patch validation steps: see `Validation Procedure After App Patch` in [`docs/evt_lens_probe.md`](docs/evt_lens_probe.md)
+- Per-camera control: set `focus_uart_bootstrap` in camera JSON to explicitly enable/disable UART focus bootstrap.
 
 ## Use the Application
 When first time open the program, `orange` creates folders with the following structure
@@ -128,10 +139,9 @@ The recorded videos are saved at `orange_data/exp/unsorted` by default. But it c
 
 ### PTP setting
 Please refer to [`docs/ptp.md`](docs/ptp.md) for detailed instruction for configure PTP. 
+For local reliability, use the helper script documented there: `scripts/ptp_stack.sh`.
 
 
 ## Contribute
 
 Please open an issue for bug fix or feature request. If you wish to make changes to the source code, you can fork the repo. To contribute to the project, please create a [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request).
-
-

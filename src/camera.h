@@ -33,6 +33,7 @@ struct CameraParams{
     std::string camera_serial;
     int num_cameras;
     bool gpu_direct;
+    bool focus_uart_bootstrap = false;
     bool need_reorder;
     unsigned int gain_max; 
     unsigned int gain_min;
