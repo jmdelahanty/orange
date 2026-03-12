@@ -292,6 +292,9 @@ void acquire_frames(
         camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
 
         if (camera_state.camera_return == EVT_SUCCESS) {
+            if (camera_control->sync_camera) {
+                PTP_timestamp_checking(&ptp_state, ecam, &camera_state);
+            }
 
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
@@ -511,6 +514,39 @@ void acquire_frames(
 
             std::chrono::duration<double> direct_elapsed = now - last_gpu_direct_log_time;
             if (direct_elapsed.count() >= 1.0) {
+                if (camera_control->sync_camera && camera_state.frame_count > 0) {
+                    const int64_t latch_minus_frame_ns =
+                        static_cast<int64_t>(ptp_state.ptp_time) - static_cast<int64_t>(ptp_state.frame_ts);
+                    const uint64_t delta_samples =
+                        (camera_state.frame_count > 1) ? (camera_state.frame_count - 1) : 0;
+                    const uint64_t avg_frame_delta_ns =
+                        (delta_samples > 0) ? (ptp_state.frame_ts_delta_sum / delta_samples) : 0;
+                    const uint64_t avg_latch_delta_ns =
+                        (delta_samples > 0) ? (ptp_state.ptp_time_delta_sum / delta_samples) : 0;
+                    int32_t current_ptp_offset = 0;
+                    EVT_ERROR ptp_offset_ret = EVT_CameraGetInt32Param(&ecam->camera, "PtpOffset", &current_ptp_offset);
+                    if (ptp_offset_ret == EVT_SUCCESS) {
+                        std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial
+                                  << " frame=" << camera_state.frame_count
+                                  << " ptp_offset_ns=" << current_ptp_offset
+                                  << " latch_minus_frame_ns=" << latch_minus_frame_ns
+                                  << " frame_delta_ns=" << ptp_state.frame_ts_delta
+                                  << " latch_delta_ns=" << ptp_state.ptp_time_delta
+                                  << " avg_frame_delta_ns=" << avg_frame_delta_ns
+                                  << " avg_latch_delta_ns=" << avg_latch_delta_ns
+                                  << std::endl;
+                    } else {
+                        std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial
+                                  << " frame=" << camera_state.frame_count
+                                  << " ptp_offset_ns=NA"
+                                  << " latch_minus_frame_ns=" << latch_minus_frame_ns
+                                  << " frame_delta_ns=" << ptp_state.frame_ts_delta
+                                  << " latch_delta_ns=" << ptp_state.ptp_time_delta
+                                  << " avg_frame_delta_ns=" << avg_frame_delta_ns
+                                  << " avg_latch_delta_ns=" << avg_latch_delta_ns
+                                  << std::endl;
+                    }
+                }
                 std::cout << "[GPU_DIRECT] Cam " << camera_params->camera_serial
                           << " GPU " << camera_params->gpu_id
                           << " direct=" << gpu_direct_frames
