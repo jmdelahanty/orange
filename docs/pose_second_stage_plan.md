@@ -78,6 +78,24 @@ Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
 - Keep queue sizes bounded and drop pose when overloaded.
 - Avoid extra GPU->CPU copies; only copy results.
 
+## CUDA Graph Capture (Pose TRT)
+- Prefer CUDA Graph launch for steady-state pose inference to reduce host enqueue
+  overhead and internal TRT contention.
+- Proposed behavior:
+  - default graph-capture enabled (with runtime opt-out flag),
+  - warmup once, capture once per pose worker/model instance, then launch graph
+    per frame.
+- Required fallback:
+  - if capture fails or unsupported path is detected, continue with normal TRT
+    enqueue path (no pipeline interruption).
+- Recapture triggers:
+  - model/engine swap,
+  - input tensor shape/layout change.
+- Instrumentation:
+  - capture success/failure counters,
+  - graph launch vs enqueue timing,
+  - end-to-end pose latency and drop impact.
+
 ## Risks / Unknowns
 - Crop buffer lifetime (must be pooled to avoid overwrite).
 - TRT engine latency may compete with YOLO on GPU.
