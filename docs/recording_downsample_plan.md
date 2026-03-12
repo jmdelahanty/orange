@@ -1,48 +1,92 @@
-# Recording Downsample Plan (Future Work)
+# Recording Downsample TODO
 
-Goal: allow users to configure a recording downsample factor (e.g., 2x) so
-recorded videos are smaller than the live stream resolution. Default should
-remain full resolution.
+Date: 2026-02-25
+Scope: add an opt-in recording downsample mode so users can write smaller video
+files at runtime without affecting capture timing or stream behavior.
 
-## Proposed behavior
+## Decision: Allowed Factors
 
-- Add a `record_downsample` factor (integer >= 1).
-- Default `record_downsample = 1` (no downsample).
-- Optionally allow per‑camera override in each camera config JSON.
-- Encoder output resolution is `camera_width / record_downsample` and
-  `camera_height / record_downsample` (rounded down to an even number).
+- Use power-of-two factors only: `1`, `2`, `4`, `8` (and optionally `16` only
+  when camera resolution remains practical).
+- Keep `1` as default (no downsample).
+- This is mainly a pipeline safety/consistency rule, not a strict CUDA memory
+  allocator requirement.
+- Hard requirement is that encoded dimensions are even for NV12/chroma 4:2:0.
+  The current RGB->NV12 kernel also assumes 2x2 chroma blocks, so odd width or
+  odd height is unsafe.
 
-## Config options
+## Current State
 
-Two possible placements:
+- There is an existing UI control for `downsample streaming` that only affects
+  display path scaling.
+- Recording pipeline currently encodes at camera native resolution.
+- Existing notes for recording downsample are conceptual and need concrete
+  implementation tasks.
 
-1) Global (encoder config)
-   - `record_downsample` in the encoder config JSON
-2) Per‑camera (camera config JSON)
-   - `record_downsample` in each camera JSON
+## TODO Plan
 
-If both exist, per‑camera overrides global.
+## Phase 1: User Controls and Config
 
-## Pipeline changes (high level)
+- [ ] Add explicit `record_downsample` control in recording settings (separate
+  from `downsample streaming`).
+- [ ] Allowed choices in UI: `1x`, `2x`, `4x`, `8x` (optional `16x` behind
+  validation).
+- [ ] Define config source and precedence:
+  - global encoder config default,
+  - optional per-camera override,
+  - per-camera overrides global.
+- [ ] Keep feature opt-in: default remains full-resolution recording (`1x`).
 
-- `EncoderPreprocessWorker`
-  - Allocate a downsample buffer sized to the target resolution.
-  - Resize the RGBA image before NV12 conversion (use NPP resize).
-  - Convert the resized image to NV12 for encoding.
-- `EncoderHwWorker`
-  - Initialize NVENC with downsampled width/height.
-  - Update metadata tags to report the downsampled resolution.
-- `GPUVideoEncoder` (headless path)
-  - Mirror the same downsample logic and encoder dimensions.
+## Phase 2: Validation and Dimension Policy
 
-## Constraints / validation
+- [ ] Validate `record_downsample` as power-of-two and `>= 1`.
+- [ ] Compute target dimensions from source camera dimensions and factor.
+- [ ] Enforce even output width and height before NV12 conversion.
+- [ ] Enforce minimum output dimension threshold (for example >= 64) to avoid
+  unusable recordings.
+- [ ] On invalid settings, block start with clear UI error or auto-fallback to
+  `1x` with explicit warning (choose one policy and keep consistent).
 
-- `record_downsample` must be integer >= 1.
-- Output width/height must be even (NV12 requirement).
-- If the factor yields invalid dimensions, log and fall back to `1`.
+## Phase 3: Preprocess Pipeline Changes
 
-## Testing ideas
+- [ ] In `EncoderPreprocessWorker`, add downsample stage before NV12 conversion:
+  - allocate per-camera downsample intermediate buffers,
+  - resize on GPU (NPP),
+  - convert resized image to NV12.
+- [ ] Keep mono path correct:
+  - downsample luma source,
+  - generate/fill UV plane consistently for NV12 output.
+- [ ] Ensure buffer pool sizing and event reuse reflect downsampled dimensions.
 
-- Record with `record_downsample=2`, verify output resolution and playback.
-- Confirm metadata tags match the downsampled size.
-- Confirm frames are not dropped and the output starts with a valid keyframe.
+## Phase 4: Encoder Initialization and Metadata
+
+- [ ] In `EncoderHwWorker`, initialize NVENC using downsampled
+  `encodeWidth/encodeHeight`.
+- [ ] Update metadata tags and encoder snapshot fields to include:
+  - `downsample_factor`,
+  - resolved output resolution.
+- [ ] Include downsample info in `recording_snapshot.json` encoder metadata so
+  downstream consumers know recorded geometry.
+- [ ] Mirror behavior in headless path (`GPUVideoEncoder`) for parity.
+
+## Phase 5: Runtime Behavior and Lifecycle
+
+- [ ] Lock `record_downsample` for active recording session:
+  - changing value during recording should apply to next recording segment only.
+- [ ] Keep startup/stop/drain behavior unchanged relative to current encoder
+  lifecycle.
+- [ ] Verify no additional backpressure in acquisition/YOLO/pose paths.
+
+## Phase 6: Validation
+
+- [ ] Functional test:
+  - `record_downsample=1` unchanged behavior,
+  - `record_downsample=2/4/8` output dimensions and playback validity.
+- [ ] Metadata test:
+  - encoder snapshot reports correct `downsample_factor` and dimensions.
+- [ ] Performance test:
+  - verify FPS/drop behavior remains within acceptable range under long runs.
+- [ ] Edge-case tests:
+  - invalid factors,
+  - small source resolutions near min threshold,
+  - mono and color camera paths.
