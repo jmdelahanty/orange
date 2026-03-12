@@ -1,42 +1,132 @@
-## Configure PTP 
+## Configure PTP
 
-### Local PTP 
+### Local PTP (reliable setup)
 
-0. install Linux PTP package
+#### 0. Install linuxptp
 
-```
+```bash
 sudo apt install linuxptp
 ```
 
-1. set boundary clock 
+#### 1. Configure `/etc/ptp4l.conf`
 
-If you don't have to `ptp4l.conf` file, create it first `/etc/ptp4l.conf`, and edit the file
+Create `/etc/ptp4l.conf` if needed:
 
-```
+```ini
 [global]
 verbose 1
 boundary_clock_jbod 1
+logSyncInterval -4
+tx_timestamp_timeout 50
 ```
 
-2. Synchronize NICs
+`boundary_clock_jbod 1` requires `phc2sys` to keep PHCs and system time aligned.
 
-If you only using one NIC card, then
+#### 2. Disable competing system time sync while using PTP
 
+```bash
+sudo timedatectl set-ntp false
 ```
-sudo ptp4l -i enp66s0f0np0 -i enp66s0f1np1 -f /etc/ptp4l.conf
-```
-This will sync the ports of the NIC. `enp66s0f0np0, enp66s0f1np1` are the names of the port for instance, you will need to change them to your port name. 
 
-If you need to sync multiple NICs, you not only need to sync all the ports on the NIC, but across NICs, for intance,  
+If you later stop using PTP, you can re-enable with:
 
+```bash
+sudo timedatectl set-ntp true
 ```
-sudo ptp4l -i enp66s0f0np0 -i enp66s0f1np1 -i enp97s0f0np0 -i enp97s0f1np1 -f /etc/ptp4l.conf
+
+#### 3. Start `ptp4l` and `phc2sys` (recommended helper script)
+
+Use the helper at `scripts/ptp_stack.sh`:
+
+```bash
+./scripts/ptp_stack.sh start
+./scripts/ptp_stack.sh status
+./scripts/ptp_stack.sh logs
 ```
-in another termial, run
+
+Stop:
+
+```bash
+./scripts/ptp_stack.sh stop
 ```
-sudo phc2sys -a -rr -m
+
+Optional shell alias:
+
+```bash
+alias ptp-stack='~/orange-jeremy/scripts/ptp_stack.sh'
 ```
-this will sync the computer time and consider it as a time source
+
+Then use:
+
+```bash
+ptp-stack start
+ptp-stack status
+ptp-stack logs
+ptp-stack stop
+```
+
+#### 4. Manual commands (without helper script)
+
+Start `ptp4l` with all camera NIC ports:
+
+```bash
+sudo ptp4l -i mlnx1_p1_25g -i mlnx1_p2_25g -i mlnx1_p3_25g -i mlnx1_p4_25g -f /etc/ptp4l.conf -m
+```
+
+In another terminal, start `phc2sys`:
+
+```bash
+sudo phc2sys -a -rr -z /var/run/ptp4l -m
+```
+
+Important: on some linuxptp versions, `-w` is not compatible with `-a`. If you see:
+`autoconfiguration cannot be mixed with manual config options`, remove `-w`.
+
+#### 5. Verify
+
+```bash
+pgrep -af "ptp4l|phc2sys"
+sudo pmc -u -b 0 -s /var/run/ptp4l "GET TIME_STATUS_NP" "GET CURRENT_DATA_SET" "GET PORT_DATA_SET"
+```
+
+Healthy indicators:
+- `ptp4l` ports stay in expected role (`MASTER` or `SLAVE` based on topology)
+- `phc2sys` offsets are small and stable
+- no other service is trying to discipline system time at the same time
+
+#### 6. Compare recorded camera timestamps
+
+Use:
+
+```bash
+./scripts/compare_camera_timestamps.py <recording_folder>
+```
+
+Example:
+
+```bash
+./scripts/compare_camera_timestamps.py /home/jeremy/orange_data/exp/unsorted/<session>/<recording_id>
+```
+
+This compares `Cam*_meta.csv` files in the folder and prints per-camera skew
+relative to a reference camera.
+
+Useful options:
+
+```bash
+# Use system clock timestamps instead of camera timestamps
+./scripts/compare_camera_timestamps.py <recording_folder> --timestamp-field timestamp_sys
+
+# Pick a specific reference camera
+./scripts/compare_camera_timestamps.py <recording_folder> --reference 2010096
+
+# Save summary CSV
+./scripts/compare_camera_timestamps.py <recording_folder> --summary-out /tmp/ptp_skew_summary.csv
+```
+
+Notes:
+- Positive skew means a camera timestamp is later than the reference.
+- If a folder only has one camera metadata file, skew comparison is not possible.
 
 
 ### Network PTP using switch 
@@ -137,5 +227,3 @@ interface ethernet 1/1-1/16 speed 25G
 interface ethernet 1/1-1/16 no shutdown
 
 ```
-
-
