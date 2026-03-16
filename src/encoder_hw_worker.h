@@ -22,6 +22,8 @@ public:
         const std::string& codec,
         const std::string& preset,
         const std::string& tuning,
+        const std::string& rate_control_mode,
+        int quality_value,
         std::string folder_name,
         EncoderPreprocessWorker* prep_worker,
         CameraControl* camera_control
@@ -51,6 +53,7 @@ private:
         std::string codec;
         std::string preset;
         std::string tuning;
+        std::string rc_strategy;
         uint32_t width = 0;
         uint32_t height = 0;
         uint32_t fps = 0;
@@ -63,6 +66,11 @@ private:
         uint32_t average_bitrate = 0;
         uint32_t max_bitrate = 0;
         uint32_t vbv_buffer_size = 0;
+        uint32_t target_quality = 0;
+        uint32_t target_quality_lsb = 0;
+        uint32_t const_qp_inter_p = 0;
+        uint32_t const_qp_inter_b = 0;
+        uint32_t const_qp_intra = 0;
         uint32_t enable_aq = 0;
         uint32_t enable_temporal_aq = 0;
         uint32_t enable_lookahead = 0;
@@ -80,6 +88,8 @@ private:
     std::string codec_;
     std::string preset_;
     std::string tuning_;
+    std::string rate_control_mode_;
+    int quality_value_ = 20;
     Writer writer_;
     cudaStream_t m_stream = nullptr;
     CameraControl* camera_control_;

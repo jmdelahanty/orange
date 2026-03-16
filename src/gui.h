@@ -14,6 +14,8 @@ struct EncoderConfig {
     std::string encoder_codec;
     std::string encoder_preset;
     std::string tuning_info;
+    std::string rate_control_mode;
+    int quality_value;
     std::string folder_name;
 };
 

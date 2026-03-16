@@ -161,7 +161,10 @@ int main(int argc, char **args) {
     EncoderConfig *encoder_config = new EncoderConfig{
         "h264",
         "p1",
-        "ll"
+        "ll",
+        "vbr",
+        20,
+        ""
     };
     std::vector<std::string> camera_config_files;
 
@@ -315,6 +318,20 @@ int main(int argc, char **args) {
                 if (encoder_config->tuning_info.empty()) {
                     encoder_config->tuning_info = "ll";
                 }
+            }
+            {
+                const char *items[] = {"vbr", "vbr_cq", "cqp"};
+                static int rate_control_current = 0;
+                if (ImGui::Combo("rate control", &rate_control_current, items, IM_ARRAYSIZE(items))) {
+                    encoder_config->rate_control_mode = items[rate_control_current];
+                }
+                if (encoder_config->rate_control_mode.empty()) {
+                    encoder_config->rate_control_mode = "vbr";
+                }
+            }
+            if (encoder_config->rate_control_mode != "vbr") {
+                ImGui::SliderInt("quality value", &encoder_config->quality_value, 1, 51, "%d");
+                ImGui::TextDisabled("Lower values preserve more detail.");
             }
             {
                 const char *items[] = {"1", "2", "4", "8", "16"};
@@ -882,6 +899,8 @@ int main(int argc, char **args) {
                                     encoder_config->encoder_codec,
                                     encoder_config->encoder_preset,
                                     encoder_config->tuning_info,
+                                    encoder_config->rate_control_mode,
+                                    encoder_config->quality_value,
                                     encoder_config->folder_name,
                                     encoderPreprocessWorkers[i], // Link to the preprocess worker
                                     camera_control

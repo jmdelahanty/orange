@@ -19,6 +19,9 @@ constexpr uint64_t kMinQualityBitrate = 20000000ULL;
 constexpr uint64_t kMaxQualityBitrate = 250000000ULL;
 constexpr double kColorTargetBpp = 0.30;
 constexpr double kMonoTargetBpp = 0.20;
+constexpr int kDefaultQualityValue = 20;
+constexpr int kMinQualityValue = 1;
+constexpr int kMaxQualityValue = 51;
 
 uint32_t clamp_bitrate(uint64_t value) {
     if (value < kMinQualityBitrate) {
@@ -48,6 +51,40 @@ bool is_lossless_tuning(const std::string& tuning) {
     return tuning == "lossless";
 }
 
+bool is_vbr_cq_rate_control(const std::string& rate_control_mode) {
+    return rate_control_mode == "vbr_cq";
+}
+
+bool is_cqp_rate_control(const std::string& rate_control_mode) {
+    return rate_control_mode == "cqp";
+}
+
+int clamp_quality_value(int value) {
+    if (value < kMinQualityValue) {
+        return kDefaultQualityValue;
+    }
+    if (value > kMaxQualityValue) {
+        return kMaxQualityValue;
+    }
+    return value;
+}
+
+std::string resolve_rate_control_strategy(
+    const std::string& tuning,
+    const std::string& rate_control_mode
+) {
+    if (is_lossless_tuning(tuning)) {
+        return "lossless";
+    }
+    if (is_cqp_rate_control(rate_control_mode)) {
+        return "cqp";
+    }
+    if (is_vbr_cq_rate_control(rate_control_mode)) {
+        return "vbr_cq";
+    }
+    return "vbr";
+}
+
 const char* rc_mode_to_string(NV_ENC_PARAMS_RC_MODE mode) {
     switch (mode) {
         case NV_ENC_PARAMS_RC_CONSTQP: return "constqp";
@@ -64,12 +101,15 @@ std::vector<std::pair<std::string, std::string>> build_metadata_tags(
     const CameraParams* camera_params,
     const std::string& codec,
     const std::string& preset,
-    const std::string& tuning
+    const std::string& tuning,
+    const std::string& rate_control_mode,
+    int quality_value
 ) {
     std::vector<std::pair<std::string, std::string>> tags;
     tags.emplace_back("title", "Cam" + camera_params->camera_serial);
 
     std::ostringstream comment;
+    const std::string rc_strategy = resolve_rate_control_strategy(tuning, rate_control_mode);
     comment << "nvenc codec=" << codec
             << "; preset=" << preset
             << "; tuning=" << tuning
@@ -77,8 +117,19 @@ std::vector<std::pair<std::string, std::string>> build_metadata_tags(
             << "; fps=" << camera_params->frame_rate
             << "; color=" << (camera_params->color ? 1 : 0);
 
-    if (is_lossless_tuning(tuning)) {
+    if (rc_strategy == "lossless") {
         comment << "; rc=constqp; qp=0";
+    } else if (rc_strategy == "cqp") {
+        comment << "; rc=constqp; qp=" << clamp_quality_value(quality_value);
+    } else if (rc_strategy == "vbr_cq") {
+        const uint32_t target_bps = calculate_quality_bitrate(camera_params);
+        const double actual_bpp = static_cast<double>(target_bps) /
+                                  (static_cast<double>(camera_params->width) *
+                                   static_cast<double>(camera_params->height) *
+                                   static_cast<double>(camera_params->frame_rate));
+        comment << "; rc=vbr; cq=" << clamp_quality_value(quality_value)
+                << "; bpp_cap=" << std::fixed << std::setprecision(3) << actual_bpp
+                << "; target_bps=" << target_bps;
     } else {
         const uint32_t target_bps = calculate_quality_bitrate(camera_params);
         const double actual_bpp = static_cast<double>(target_bps) /
@@ -112,6 +163,35 @@ void apply_quality_recording_profile(
     encodeConfig.rcParams.enableTemporalAQ = 1;
     encodeConfig.rcParams.enableLookahead = low_latency ? 0 : 1;
     encodeConfig.rcParams.lowDelayKeyFrameScale = low_latency ? 1 : 0;
+}
+
+void apply_vbr_cq_recording_profile(
+    NV_ENC_CONFIG& encodeConfig,
+    const CameraParams* camera_params,
+    bool low_latency,
+    int quality_value
+) {
+    apply_quality_recording_profile(encodeConfig, camera_params, low_latency);
+    encodeConfig.rcParams.targetQuality = static_cast<uint8_t>(clamp_quality_value(quality_value));
+    encodeConfig.rcParams.targetQualityLSB = 0;
+}
+
+void apply_cqp_recording_profile(
+    NV_ENC_CONFIG& encodeConfig,
+    int quality_value
+) {
+    const uint8_t qp = static_cast<uint8_t>(clamp_quality_value(quality_value));
+    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+    encodeConfig.rcParams.constQP = {qp, qp, qp};
+    encodeConfig.rcParams.averageBitRate = 0;
+    encodeConfig.rcParams.maxBitRate = 0;
+    encodeConfig.rcParams.vbvBufferSize = 0;
+    encodeConfig.rcParams.targetQuality = 0;
+    encodeConfig.rcParams.targetQualityLSB = 0;
+    encodeConfig.rcParams.enableAQ = 0;
+    encodeConfig.rcParams.enableTemporalAQ = 0;
+    encodeConfig.rcParams.enableLookahead = 0;
+    encodeConfig.rcParams.lowDelayKeyFrameScale = 0;
 }
 } // namespace
 
@@ -160,6 +240,8 @@ EncoderHwWorker::EncoderHwWorker(
     const std::string& codec,
     const std::string& preset,
     const std::string& tuning,
+    const std::string& rate_control_mode,
+    int quality_value,
     std::string base_folder_name,
     EncoderPreprocessWorker* prep_worker,
     CameraControl* camera_control
@@ -170,6 +252,8 @@ EncoderHwWorker::EncoderHwWorker(
   codec_(codec),
   preset_(preset),
   tuning_(tuning),
+  rate_control_mode_(rate_control_mode.empty() ? "vbr" : rate_control_mode),
+  quality_value_(clamp_quality_value(quality_value)),
   m_prep_worker_(prep_worker),
   camera_control_(camera_control),
   encoder_(),
@@ -209,12 +293,21 @@ EncoderHwWorker::EncoderHwWorker(
     if (lossless) {
         encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
         encodeConfig.rcParams.constQP = {0, 0, 0};
+        encodeConfig.rcParams.averageBitRate = 0;
+        encodeConfig.rcParams.maxBitRate = 0;
+        encodeConfig.rcParams.vbvBufferSize = 0;
+        encodeConfig.rcParams.targetQuality = 0;
+        encodeConfig.rcParams.targetQualityLSB = 0;
         encodeConfig.rcParams.enableAQ = 0;
         encodeConfig.rcParams.enableTemporalAQ = 0;
         encodeConfig.rcParams.enableLookahead = 0;
         encodeConfig.rcParams.lowDelayKeyFrameScale = 0;
         encodeConfig.gopLength = 1;
         encodeConfig.frameIntervalP = 1;
+    } else if (is_cqp_rate_control(rate_control_mode_)) {
+        apply_cqp_recording_profile(encodeConfig, quality_value_);
+    } else if (is_vbr_cq_rate_control(rate_control_mode_)) {
+        apply_vbr_cq_recording_profile(encodeConfig, camera_params_, low_latency, quality_value_);
     } else {
         apply_quality_recording_profile(encodeConfig, camera_params_, low_latency);
     }
@@ -267,6 +360,7 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.codec = codec_;
         encoder_snapshot_.preset = preset_;
         encoder_snapshot_.tuning = tuning_;
+        encoder_snapshot_.rc_strategy = resolve_rate_control_strategy(tuning_, rate_control_mode_);
         encoder_snapshot_.width = resolved_params.encodeWidth;
         encoder_snapshot_.height = resolved_params.encodeHeight;
         encoder_snapshot_.fps = resolved_params.frameRateNum;
@@ -276,6 +370,11 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.average_bitrate = resolved_config.rcParams.averageBitRate;
         encoder_snapshot_.max_bitrate = resolved_config.rcParams.maxBitRate;
         encoder_snapshot_.vbv_buffer_size = resolved_config.rcParams.vbvBufferSize;
+        encoder_snapshot_.target_quality = resolved_config.rcParams.targetQuality;
+        encoder_snapshot_.target_quality_lsb = resolved_config.rcParams.targetQualityLSB;
+        encoder_snapshot_.const_qp_inter_p = resolved_config.rcParams.constQP.qpInterP;
+        encoder_snapshot_.const_qp_inter_b = resolved_config.rcParams.constQP.qpInterB;
+        encoder_snapshot_.const_qp_intra = resolved_config.rcParams.constQP.qpIntra;
         encoder_snapshot_.enable_aq = resolved_config.rcParams.enableAQ;
         encoder_snapshot_.enable_temporal_aq = resolved_config.rcParams.enableTemporalAQ;
         encoder_snapshot_.enable_lookahead = resolved_config.rcParams.enableLookahead;
@@ -383,12 +482,25 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     }
 
     info["rc"] = {
+        {"strategy", encoder_snapshot_.rc_strategy},
         {"mode", rc_mode_to_string(static_cast<NV_ENC_PARAMS_RC_MODE>(encoder_snapshot_.rc_mode))},
         {"mode_value", encoder_snapshot_.rc_mode},
         {"average_bitrate", encoder_snapshot_.average_bitrate},
         {"max_bitrate", encoder_snapshot_.max_bitrate},
         {"vbv_buffer_size", encoder_snapshot_.vbv_buffer_size}
     };
+    if (encoder_snapshot_.target_quality > 0 || encoder_snapshot_.target_quality_lsb > 0) {
+        info["rc"]["target_quality"] = encoder_snapshot_.target_quality;
+        info["rc"]["target_quality_lsb"] = encoder_snapshot_.target_quality_lsb;
+    }
+    if (encoder_snapshot_.rc_mode == NV_ENC_PARAMS_RC_CONSTQP ||
+        encoder_snapshot_.rc_strategy == "lossless") {
+        info["rc"]["const_qp"] = {
+            {"p", encoder_snapshot_.const_qp_inter_p},
+            {"b", encoder_snapshot_.const_qp_inter_b},
+            {"i", encoder_snapshot_.const_qp_intra}
+        };
+    }
     info["aq"] = {
         {"enable_aq", encoder_snapshot_.enable_aq},
         {"enable_temporal_aq", encoder_snapshot_.enable_temporal_aq}
@@ -476,7 +588,14 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             (void)fsuid_guard;
             make_folder(current_recording_folder);
 
-            const auto metadata_tags = build_metadata_tags(camera_params_, codec_, preset_, tuning_);
+            const auto metadata_tags = build_metadata_tags(
+                camera_params_,
+                codec_,
+                preset_,
+                tuning_,
+                rate_control_mode_,
+                quality_value_
+            );
             initialize_writer_hw(&writer_, camera_params_, current_recording_folder, codec_, metadata_tags);
         }
         if (encoder_snapshot_valid_) {

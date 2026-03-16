@@ -116,6 +116,10 @@ Per-output `encoder_info` should include at least:
 
 - current encoder fields (`backend`, `path`, `codec`, `preset`, `tuning`,
   `resolution`, `fps`, GOP/RC fields).
+- RC strategy detail for reproducibility:
+  - `rc.strategy` such as `vbr`, `vbr_cq`, `cqp`, or `lossless`
+  - optional `rc.target_quality` for VBR+CQ recordings
+  - optional `rc.const_qp.{p,b,i}` for CONSTQP/lossless recordings
 - output identity (`output` = `full|crop`).
 - artifact linkage (for example `video_file`, `metadata_file`, `keyframe_file`
   basenames) so downstream systems can map encoder config to generated files.
