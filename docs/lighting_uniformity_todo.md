@@ -14,6 +14,12 @@ Reduce per-camera brightness mismatch so all cameras are visually consistent und
   - `2010094/2010095/2010096` iris target were `5`
 - This must be normalized before attributing differences to lighting.
 
+## Audit Update (2026-03-16)
+
+- The tracked repo currently contains only a small sample of committed camera configs, not the full live four-camera rig configuration referenced above.
+- Treat the iris-mismatch note in this TODO as a live-rig observation, not a statement about the committed sample configs in this repo.
+- No lighting-analysis automation or per-camera brightness telemetry has landed in the codebase yet.
+
 ## Phase 1: Lock Software Settings
 
 - [ ] Set identical `iris`, `exposure`, and `gain` in all active camera JSON configs.

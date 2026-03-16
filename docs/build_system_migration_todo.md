@@ -24,6 +24,17 @@ single mature, reproducible CMake-based workflow.
 - Feature flags (`NVTX`, `YOLO_PROFILE`, CUDA debug) are defined via shell flags rather
   than a canonical CMake option model.
 
+## Audit Update (2026-03-16)
+
+- `CMakeLists.txt` already declares all four intended executables (`orange`, `orange_client`, `yolo_offline`, `evt_lens_probe`) as first-class targets, so the migration is not starting from zero.
+- The migration is still incomplete because CMake remains opinionated and local-machine-specific:
+  - `CMAKE_BUILD_TYPE` is hardcoded to `Debug`,
+  - CUDA arch is hardcoded to `sm_80`,
+  - dependency roots still point at `/opt/EVT/eSDK`, `/usr/local/cuda`, and `$HOME/nvidia/...`.
+- No `CMakePresets.json` exists in the repo yet.
+- `build.sh`, `quick_build/*.sh`, and `run.sh` still depend on hardcoded dependency roots and `targets/*` symlink conventions.
+- `README.md` still tells users to edit `build.sh` directly for local installs, so the docs cleanup phase remains outstanding.
+
 ## Migration Plan
 
 ### Phase 0: Baseline and Freeze

@@ -27,6 +27,16 @@ That means pose is attached to update payload objects (for example keypoints in
 - Contract currently documents only base + YOLO update semantics:
   - `../agent_contracts/orange_jeremy_ipc_contract.md`
 
+## Audit Update (2026-03-16)
+
+- The shared-memory object shape can already carry pose-like data (`Object.kps[]` and `num_kps`), so the storage substrate is available.
+- Current producer behavior is still detection-only:
+  - `FrameIPCManager` models base frame + detection update flows only,
+  - no pose-specific update helper or merge policy exists,
+  - current YOLO result production in the repo does not populate keypoints into IPC payloads.
+- No pose worker lifecycle, per-camera pose enable control, or Citrus-side pose consumer landed yet.
+- The target rule "recording state should not be required for pose IPC emission" is still future-state only.
+
 ## Recommendation
 
 Use single-queue update extension first:

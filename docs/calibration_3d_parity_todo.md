@@ -29,6 +29,19 @@ Refs:
 - `/home/jeremy/orange-jeremy/src/acquire_frames.cpp:466`
 - `/home/jeremy/orange-jeremy/src/project.cpp:64`
 
+## Audit Update (2026-03-16)
+
+- Re-checked current repo state:
+  - calibration image-capture flow is still present in the GUI,
+  - calibration directory creation still exists in project startup,
+  - async image writing exists via `ImageWriterWorker`,
+  - CMake already links OpenCV SFM.
+- The core parity gap remains unchanged:
+  - no calibration artifact schema/loader in `src/`,
+  - no runtime 3D join/triangulation module,
+  - no reprojection overlay path driven by persisted calibration data.
+- The related `docs/3d_ptp_coupling_contract.md` remains a contract-only document for now and still depends on unresolved PTP hardening work.
+
 ## Goal
 
 Support these capabilities in `orange-jeremy`:

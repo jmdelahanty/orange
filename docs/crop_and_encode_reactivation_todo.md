@@ -22,6 +22,18 @@ Scope: make `CropAndEncodeWorker` practically usable again in `orange-jeremy` wi
 
 `CropAndEncodeWorker` is present but effectively dormant from normal operator flow because there is no clear control path to enable `crop_and_encode` per camera.
 
+## Audit Update (2026-03-16)
+
+- Re-checked current runtime wiring:
+  - worker creation/start/flush still exists,
+  - worker creation is already gated by `crop_and_encode=true`,
+  - crop file creation is therefore already gated once that flag is set.
+- The practical blocker is still operator reachability:
+  - the camera control table has no crop toggle,
+  - the flag is not persisted or surfaced clearly.
+- Crop dispatch is still gated by `camera_control_->record_video`, so this path is not yet usable for non-recording crop/pose consumers.
+- No explicit crop observability, dynamic runtime toggle behavior, or lifecycle hardening has been added since this TODO was written.
+
 ## TODO Plan
 
 ## Phase 1: Re-expose Enablement Path

@@ -39,6 +39,14 @@ Refs:
 - `src/crop_and_encode_worker.cpp:202`
 - `src/gpu_video_encoder.cpp:383`
 
+## Audit Update (2026-03-16)
+
+- Re-checked current runtime behavior: rollover is still not implemented.
+- Recording remains one session-level start/stop toggle driven from the UI in `src/orange.cpp`.
+- Each recorder still opens one writer set when recording starts and finalizes only when recording stops.
+- No session manifest, segment index, rollover timer, or cross-camera boundary coordinator exists in the current code.
+- Note: comments in some encoder paths refer to a new "recording segment", but today that means a fresh manual recording session, not timed rollover during a continuous run.
+
 ## Implementation Plan
 
 ## Phase 0: Requirements and Semantics

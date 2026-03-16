@@ -36,6 +36,16 @@ Cut user-visible startup time (open cameras + start streaming) while preserving 
 5. PTP sync setup loop is sequential in both paths.
    - Refs: `src/orange.cpp:941`, `src/orange_headless_client.cpp:74`
 
+## Audit Update (2026-03-16)
+
+- Re-checked against current code: startup is still fully serialized in both GUI and headless paths.
+- Verified serialized stages still include:
+  - camera open/configure,
+  - stream open + frame-buffer allocation,
+  - PTP mode setup.
+- No startup executor, feature flag, or per-stage timing instrumentation exists yet.
+- The newer focus-bootstrap logic in `src/camera.cpp` adds more per-camera work during open/configure, which increases the value of baseline timing before parallelization.
+
 ## Parallelization Plan
 
 ## Phase 0: Baseline and Safety Checks

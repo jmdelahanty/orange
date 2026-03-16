@@ -45,6 +45,21 @@ Add reliable autofocus for fish so focus can track real scene changes without co
 - Per-frame acquisition loop in `src/acquire_frames.cpp` where autofocus decisions can run.
 - Optional YOLO pipeline that can provide fish bounding boxes for ROI-based focus metrics.
 
+## Audit Update (2026-03-16)
+
+- Lens-control readiness is stronger than when this TODO was first drafted:
+  - focus writes now go through checked setter logic in `src/camera.cpp`,
+  - focus-range readiness can optionally use UART bootstrap for affected EF setups,
+  - probe tooling exists in `tools/evt_lens_probe.cpp`.
+- No autofocus runtime exists yet:
+  - no autofocus module/class,
+  - no focus metric kernels,
+  - no controlled autofocus cadence logic,
+  - no autofocus telemetry or runtime config block,
+  - no dish-mask parser or sidecar loader in the repo.
+- `src/acquire_frames.cpp` still has no autofocus calls wired into the live acquisition loop.
+- The tracked sample configs in `config/*.json` still default `focus_uart_bootstrap` to `false`; actual bootstrap enablement remains deployment-specific.
+
 ## Phase 0: Prerequisites and Baseline
 
 - [ ] Confirm all cameras have stable focus range at startup (`focus_uart_bootstrap` as needed).
@@ -110,6 +125,84 @@ Add reliable autofocus for fish so focus can track real scene changes without co
 - [ ] Upload mask once to GPU memory and reuse for all frames.
 - [ ] Runtime ROI rule: `af_roi = fish_roi INTERSECT dish_mask`.
 - [ ] If `af_roi` is too small, skip autofocus update and hold last focus.
+
+### Dish Mask JSON Example
+
+Use either a sidecar file (recommended) or embed this block in each camera config.
+
+```json
+{
+  "dish_mask": {
+    "schema_version": 1,
+    "camera_serial": "2010093",
+    "width": 4512,
+    "height": 4512,
+    "cx": 2254.0,
+    "cy": 2256.0,
+    "r": 2060.0,
+    "rim_margin_px": 140.0,
+    "r_valid": 1920.0,
+    "calibration_timestamp": "2026-02-23T12:45:00Z",
+    "source": "manual"
+  }
+}
+```
+
+### Sidecar File Convention (Recommended)
+
+Keep dish-mask calibration in dedicated per-camera sidecar files:
+
+- Directory: `config/dish_masks/`
+- Filename: `dish_mask_<camera_serial>.json` (example: `dish_mask_2010093.json`)
+- One file per camera/serial.
+- Commit calibration files if they are stable for a rig; otherwise keep in local config storage.
+- Prefer loading by serial first; if missing, fall back to embedded `dish_mask` block in camera JSON.
+
+Startup validation rules:
+
+- `camera_serial` must match active camera.
+- `width`/`height` must match active stream dimensions.
+- `cx` and `cy` must be inside frame bounds.
+- `r_valid` must be positive and `< r`.
+- `r` must be reasonable for image size (non-zero and not larger than frame diagonal).
+- On validation failure, autofocus must run without dish mask and print a clear warning.
+
+### C++ Mapping (Docs-Only)
+
+Proposed config object shape for runtime use:
+
+```cpp
+struct DishMaskConfig {
+    int schema_version = 1;
+    std::string camera_serial;
+    int width = 0;
+    int height = 0;
+    float cx = 0.0f;
+    float cy = 0.0f;
+    float r = 0.0f;
+    float rim_margin_px = 0.0f;
+    float r_valid = 0.0f;
+    std::string calibration_timestamp;
+    std::string source; // "manual" or "auto"
+    bool enabled = false; // true only after successful parse + validation
+};
+```
+
+Parser/validation checklist:
+
+- [ ] Parse `dish_mask` object from per-camera JSON or sidecar.
+- [ ] Require `schema_version == 1` (warn and disable otherwise).
+- [ ] Require all core geometry fields (`cx, cy, r`, plus `width, height`).
+- [ ] If `r_valid` missing, derive as `r - rim_margin_px`.
+- [ ] Validate geometry against active camera stream dimensions at startup.
+- [ ] Set `enabled=false` on any parse/validation failure.
+- [ ] Emit startup log: `serial`, `source`, `cx/cy/r/r_valid`, `enabled`.
+- [ ] Keep autofocus functional when mask is disabled (fallback path).
+
+Suggested parser entry points:
+
+- `bool load_dish_mask_config(const nlohmann::json& camera_json, DishMaskConfig* out);`
+- `bool validate_dish_mask_config(const DishMaskConfig& cfg, int active_width, int active_height);`
 
 ### Optional Auto-Calibration Path
 

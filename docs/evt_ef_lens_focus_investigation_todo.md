@@ -33,6 +33,11 @@
 - Bootstrap logic is used from `update_focus_value`.
 - Bootstrap logic is used from `update_camera_params`.
 
+## Audit Update (2026-03-16)
+- App-side mitigation and probe tooling are present in the tracked repo and match this investigation summary.
+- Important caveat: the tracked sample configs in `config/2002496.json` and `config/local/2002496.json` still ship with `"focus_uart_bootstrap": false`.
+- The `~/orange_data/config/local/60_4/` deployment state described above is external to this repo and still needs runtime validation in the full app workflow.
+
 ## Outcome Summary
 - Root cause is now reproducible: focus can remain unavailable until UART-related lens path is initialized.
 - Immediate mitigation is implemented in app startup/control path.
@@ -44,7 +49,7 @@
 - Repo iris writes go through `EVT_CameraSetUInt32Param(camera, "Iris", value)` in `src/camera.cpp`.
 - UI slider limits come from runtime node attributes (`FocusMin/Max/Inc`, `IrisMin/Max/Inc`) loaded in `update_camera_params` (`src/camera.cpp`).
 - Startup path applies configured `focus` and `iris` immediately when opening a camera (`src/camera.cpp`, `open_camera_with_params`).
-- Startup/default configuration does not currently set UART/GPIO nodes (`UARTEnable`, line mode, baud, etc.).
+- Tracked repo configs do not enable UART bootstrap by default; the app only touches UART/GPIO nodes when `focus_uart_bootstrap=true` and focus range remains degenerate.
 - EVT UART docs/examples indicate UART requires explicit enable/config (`UartEnable`, `UartBaud`, `UartDataBits`, `UartStopBits`) and line routing mode.
 - EVT SDK headers/examples note focus-related writes can be slow enough to cause stale GVCP reply behavior if not handled carefully.
 

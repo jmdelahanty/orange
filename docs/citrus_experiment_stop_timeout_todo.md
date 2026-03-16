@@ -54,6 +54,16 @@ Refs:
 - `src/protocols/stimulus_protocol.cpp:345` (Citrus protocol stop)
 - `src/enet_thread.cpp:74` (Orange message handling)
 
+## Audit Update (2026-03-16)
+
+- Re-checked the current repo: this control path still does not exist.
+- `orange-jeremy` ENet receive handling still only covers:
+  - client bringup/state updates,
+  - INDIGO peer registration,
+  - calibration pose signals.
+- No Citrus-side emission hook, no Orange-side delayed-stop scheduler, and no drain-timeout policy are implemented yet.
+- Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
+
 ## Desired Behavior
 
 1. Citrus emits one "experiment ended" stop request to `orange-jeremy`.

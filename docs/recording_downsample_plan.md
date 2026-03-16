@@ -23,6 +23,15 @@ files at runtime without affecting capture timing or stream behavior.
 - Existing notes for recording downsample are conceptual and need concrete
   implementation tasks.
 
+## Audit Update (2026-03-16)
+
+- Re-checked current code: display downsample exists, recording downsample does not.
+- `CameraEachSelect.downsample` still feeds the display path only.
+- Encoder initialization still uses native camera dimensions in both:
+  - `EncoderHwWorker` (GUI/full-frame path),
+  - `GPUVideoEncoder` (headless/legacy path).
+- No `record_downsample` config, runtime control, or recording metadata field exists yet.
+
 ## TODO Plan
 
 ## Phase 1: User Controls and Config

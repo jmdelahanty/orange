@@ -20,6 +20,17 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
 5. Reset logic is tied to success path, so stale state can leak into next session after a failure.
    - Refs: `src/orange.cpp:980`, `src/orange_headless_client.cpp:175`.
 
+## Audit Update (2026-03-16)
+
+- Recent March 12 work improved observability, not start/stop barrier semantics:
+  - `scripts/ptp_stack.sh` now manages the local linuxptp stack.
+  - `scripts/compare_camera_timestamps.py` now summarizes per-camera skew from recording metadata.
+  - `src/acquire_frames.cpp` now emits `[PTP_LIVE]` diagnostics once per second during GUI acquisition.
+- Shared synchronization state is still the plain `PTPParams` struct in `src/camera.h`, with direct cross-thread reads/writes.
+- Unbounded spin-wait barriers are still present in `src/video_capture.cpp` and `src/acquire_frames_headless.cpp`.
+- GUI and headless still use different stop/session-reset paths.
+- Treat this TODO as still open; recent code landed diagnostics and runbook improvements only.
+
 ## Hardening Plan
 
 ## Phase 1: Make Shared State Thread-Safe
@@ -82,6 +93,7 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
 
 ## Phase 6: Observability
 
+- [x] Add live per-camera PTP diagnostics in GUI acquisition logs (`[PTP_LIVE]` with offset and latch/frame delta snapshots).
 - [ ] Add structured logs for each barrier transition:
   - `session_id`, `camera_serial`, `command_id`, `state`, `deadline`, `elapsed_ms`.
 - [ ] Add counters/metrics:
