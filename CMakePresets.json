@@ -1,0 +1,180 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 19,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Unix Makefiles",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ORANGE_ENABLE_CUDA_DEBUG": "OFF",
+        "ORANGE_ENABLE_NVTX": "OFF",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "debug",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ORANGE_ENABLE_CUDA_DEBUG": "OFF",
+        "ORANGE_ENABLE_NVTX": "OFF",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "release_cuda",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/release_cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ORANGE_ENABLE_CUDA_DEBUG": "ON",
+        "ORANGE_ENABLE_NVTX": "OFF",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "debug_cuda",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/debug_cuda",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ORANGE_ENABLE_CUDA_DEBUG": "ON",
+        "ORANGE_ENABLE_NVTX": "OFF",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "release_nvtx",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/release_nvtx",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ORANGE_ENABLE_CUDA_DEBUG": "OFF",
+        "ORANGE_ENABLE_NVTX": "ON",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "debug_nvtx",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/debug_nvtx",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ORANGE_ENABLE_CUDA_DEBUG": "OFF",
+        "ORANGE_ENABLE_NVTX": "ON",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "release_cuda_nvtx",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/release_cuda_nvtx",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ORANGE_ENABLE_CUDA_DEBUG": "ON",
+        "ORANGE_ENABLE_NVTX": "ON",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "debug_cuda_nvtx",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/debug_cuda_nvtx",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ORANGE_ENABLE_CUDA_DEBUG": "ON",
+        "ORANGE_ENABLE_NVTX": "ON",
+        "ORANGE_ENABLE_YOLO_PROFILE": "OFF"
+      }
+    },
+    {
+      "name": "release_yolo_profile",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/release_yolo_profile",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "ORANGE_ENABLE_CUDA_DEBUG": "OFF",
+        "ORANGE_ENABLE_NVTX": "OFF",
+        "ORANGE_ENABLE_YOLO_PROFILE": "ON"
+      }
+    },
+    {
+      "name": "debug_yolo_profile",
+      "inherits": "base",
+      "binaryDir": "${sourceDir}/targets/debug_yolo_profile",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "ORANGE_ENABLE_CUDA_DEBUG": "OFF",
+        "ORANGE_ENABLE_NVTX": "OFF",
+        "ORANGE_ENABLE_YOLO_PROFILE": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "release",
+      "configurePreset": "release",
+      "targets": ["orange"]
+    },
+    {
+      "name": "debug",
+      "configurePreset": "debug",
+      "targets": ["orange"]
+    },
+    {
+      "name": "release_cuda",
+      "configurePreset": "release_cuda",
+      "targets": ["orange"]
+    },
+    {
+      "name": "debug_cuda",
+      "configurePreset": "debug_cuda",
+      "targets": ["orange"]
+    },
+    {
+      "name": "release_nvtx",
+      "configurePreset": "release_nvtx",
+      "targets": ["orange"]
+    },
+    {
+      "name": "debug_nvtx",
+      "configurePreset": "debug_nvtx",
+      "targets": ["orange"]
+    },
+    {
+      "name": "release_cuda_nvtx",
+      "configurePreset": "release_cuda_nvtx",
+      "targets": ["orange"]
+    },
+    {
+      "name": "debug_cuda_nvtx",
+      "configurePreset": "debug_cuda_nvtx",
+      "targets": ["orange"]
+    },
+    {
+      "name": "release_yolo_profile",
+      "configurePreset": "release_yolo_profile",
+      "targets": ["orange"]
+    },
+    {
+      "name": "debug_yolo_profile",
+      "configurePreset": "debug_yolo_profile",
+      "targets": ["orange"]
+    }
+  ]
+}

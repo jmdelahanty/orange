@@ -116,6 +116,11 @@ Per-output `encoder_info` should include at least:
 
 - current encoder fields (`backend`, `path`, `codec`, `preset`, `tuning`,
   `resolution`, `fps`, GOP/RC fields).
+- source/output geometry detail:
+  - `source_resolution`
+  - `output.mode`
+  - `output.resize_enabled`
+  - `output.downsample_factor` or `output.requested_output_size`
 - RC strategy detail for reproducibility:
   - `rc.strategy` such as `vbr`, `vbr_cq`, `cqp`, or `lossless`
   - optional `rc.target_quality` for VBR+CQ recordings
@@ -275,7 +280,14 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
       "tuning": "ll",
       "gpu_id": 0,
       "color": true,
-      "resolution": {"width": 4512, "height": 4512},
+      "resolution": {"width": 2256, "height": 2256},
+      "source_resolution": {"width": 4512, "height": 4512},
+      "output": {
+        "mode": "factor",
+        "resize_enabled": true,
+        "resolved_resolution": {"width": 2256, "height": 2256},
+        "downsample_factor": 2
+      },
       "fps": 60,
       "gop_length": 120,
       "frame_interval_p": 1,

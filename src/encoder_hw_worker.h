@@ -19,6 +19,7 @@ public:
     EncoderHwWorker(
         const char* name,
         CameraParams* camera_params,
+        const RecordingOutputConfig& recording_output_config,
         const std::string& codec,
         const std::string& preset,
         const std::string& tuning,
@@ -54,9 +55,15 @@ private:
         std::string preset;
         std::string tuning;
         std::string rc_strategy;
+        std::string output_mode;
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t source_width = 0;
+        uint32_t source_height = 0;
         uint32_t fps = 0;
+        uint32_t downsample_factor = 1;
+        uint32_t requested_output_width = 0;
+        uint32_t requested_output_height = 0;
         uint32_t gop_length = 0;
         uint32_t frame_interval_p = 0;
         uint32_t idr_period = 0;
@@ -84,6 +91,7 @@ private:
     };
 
     CameraParams* camera_params_;
+    RecordingOutputConfig recording_output_config_;
     std::string base_folder_name_;
     std::string codec_;
     std::string preset_;

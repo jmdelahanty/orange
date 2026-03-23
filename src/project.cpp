@@ -68,6 +68,14 @@ void prepare_application_folders(std::string orange_root_dir_str)
             std::cout << "Create calibration folder..." << std::endl;
         }
     }
+
+    std::string calibration_artifacts_str = orange_root_dir_str + "/calibrations/artifacts";
+    std::filesystem::path calibration_artifacts_path(calibration_artifacts_str);
+    if (!std::filesystem::exists(calibration_artifacts_path)) {
+        if (std::filesystem::create_directories(calibration_artifacts_path)) {
+            std::cout << "Create calibration artifacts folder..." << std::endl;
+        }
+    }
 }
 
 void intialize_servers(ConnectedServer* my_servers)
@@ -155,7 +163,6 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->iris = camera_config["iris"];
 }
 
-namespace {
 std::string get_current_utc_timestamp() {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -165,7 +172,16 @@ std::string get_current_utc_timestamp() {
     return oss.str();
 }
 
+namespace {
+constexpr const char* kCalibrationRegistrySchemaId = "orange.calibration.registry";
+constexpr int kCalibrationRegistrySchemaVersion = 1;
+
 std::mutex& recording_snapshot_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::mutex& calibration_registry_mutex() {
     static std::mutex m;
     return m;
 }
@@ -649,6 +665,146 @@ bool update_recording_snapshot_encoder(const std::string& recording_folder,
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
     if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
+    }
+
+    return true;
+}
+
+bool read_camera_config_snapshot(const CameraParams& camera_params,
+                                 std::string* config_contents,
+                                 std::string* error_out) {
+    if (config_contents) {
+        config_contents->clear();
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    if (camera_params.config_path.empty()) {
+        if (error_out) {
+            *error_out = "config path missing";
+        }
+        return false;
+    }
+
+    std::string read_error;
+    const std::string contents = read_file_to_string(camera_params.config_path, &read_error);
+    if (contents.empty()) {
+        if (error_out) {
+            *error_out = read_error.empty() ? "config file empty" : read_error;
+        }
+        return false;
+    }
+
+    if (config_contents) {
+        *config_contents = contents;
+    }
+    return true;
+}
+
+bool update_calibration_artifact_registry(const std::string& artifact_root_dir,
+                                          const nlohmann::json& manifest,
+                                          std::string* error_out) {
+    if (artifact_root_dir.empty()) {
+        if (error_out) {
+            *error_out = "Calibration artifact root is empty.";
+        }
+        return false;
+    }
+    if (!manifest.is_object()) {
+        if (error_out) {
+            *error_out = "Calibration manifest is not a JSON object.";
+        }
+        return false;
+    }
+    if (!manifest.contains("artifact_id") || !manifest["artifact_id"].is_string()) {
+        if (error_out) {
+            *error_out = "Calibration manifest is missing artifact_id.";
+        }
+        return false;
+    }
+    if (!manifest.contains("artifact_schema_id") || !manifest["artifact_schema_id"].is_string()) {
+        if (error_out) {
+            *error_out = "Calibration manifest is missing artifact_schema_id.";
+        }
+        return false;
+    }
+
+    const std::string artifact_id = manifest["artifact_id"].get<std::string>();
+    const std::string artifact_schema_id = manifest["artifact_schema_id"].get<std::string>();
+    const std::filesystem::path registry_path = std::filesystem::path(artifact_root_dir) / "index.json";
+
+    std::lock_guard<std::mutex> lock(calibration_registry_mutex());
+
+    nlohmann::json registry;
+    if (std::filesystem::exists(registry_path)) {
+        std::string read_error;
+        const std::string existing = read_file_to_string(registry_path.string(), &read_error);
+        if (existing.empty()) {
+            if (error_out) {
+                *error_out = "Failed to read calibration registry: " +
+                             (read_error.empty() ? registry_path.string() : read_error);
+            }
+            return false;
+        }
+        try {
+            registry = nlohmann::json::parse(existing);
+        } catch (const std::exception& ex) {
+            if (error_out) {
+                *error_out = std::string("Failed to parse calibration registry: ") + ex.what();
+            }
+            return false;
+        }
+    }
+
+    if (!registry.is_object()) {
+        registry = nlohmann::json::object();
+    }
+    registry["schema_id"] = kCalibrationRegistrySchemaId;
+    registry["schema_version"] = kCalibrationRegistrySchemaVersion;
+    registry["artifact_root"] = artifact_root_dir;
+    registry["updated_utc"] = get_current_utc_timestamp();
+    if (!registry.contains("artifacts_by_id") || !registry["artifacts_by_id"].is_object()) {
+        registry["artifacts_by_id"] = nlohmann::json::object();
+    }
+    if (!registry.contains("latest_by_schema") || !registry["latest_by_schema"].is_object()) {
+        registry["latest_by_schema"] = nlohmann::json::object();
+    }
+
+    std::string fingerprint;
+    if (manifest.contains("calibration_ref") && manifest["calibration_ref"].is_object()) {
+        fingerprint = manifest["calibration_ref"].value("fingerprint", "");
+    }
+
+    nlohmann::json entry;
+    entry["artifact_id"] = artifact_id;
+    entry["artifact_schema_id"] = artifact_schema_id;
+    entry["artifact_schema_version"] = manifest.value("artifact_schema_version", 0);
+    entry["created_utc"] = manifest.value("created_utc", "");
+    entry["fingerprint"] = fingerprint;
+    entry["relative_manifest_path"] =
+        (std::filesystem::path(artifact_id) / "manifest.json").generic_string();
+    if (manifest.contains("producer")) {
+        entry["producer"] = manifest["producer"];
+    }
+    if (manifest.contains("compatibility")) {
+        entry["compatibility"] = manifest["compatibility"];
+    }
+    if (manifest.contains("summary")) {
+        entry["summary"] = manifest["summary"];
+    }
+
+    registry["artifacts_by_id"][artifact_id] = entry;
+    registry["latest_by_schema"][artifact_schema_id] = artifact_id;
+    registry["artifact_count"] = registry["artifacts_by_id"].size();
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(registry_path, registry, std::filesystem::perms::unknown, false,
+                           "calibration registry")) {
+        if (error_out) {
+            *error_out = "Failed to write calibration registry: " + registry_path.string();
+        }
         return false;
     }
 

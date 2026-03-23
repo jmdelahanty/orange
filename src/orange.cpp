@@ -24,10 +24,2223 @@
 #include "yolov8_det.h"
 #include "crop_and_encode_worker.h"
 #include "frame_ipc_manager.h"
+#include "fsuid_guard.h"
+#include "aperture_characterization.h"
+#include <opencv2/opencv.hpp>
+
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <limits>
+#include <sstream>
 
 std::vector<YOLOv8Worker*> yolo_workers; // For managing YOLO workers
 ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
 std::vector<SpeedTrackingData> speed_tracking_data;
+
+namespace {
+
+enum class RulerAlignmentOrientation {
+    kHorizontal = 0,
+    kVertical = 1
+};
+
+struct RulerAlignmentMetrics {
+    bool has_detected_line = false;
+    double line_angle_deg = 0.0;
+    double angle_error_deg = 0.0;
+    double center_offset_px = 0.0;
+    double center_offset_fraction = 0.0;
+    int x0 = 0;
+    int y0 = 0;
+    int x1 = 0;
+    int y1 = 0;
+};
+
+struct FovCaptureSnapshot {
+    bool available = false;
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> rgb;
+    RulerAlignmentMetrics metrics;
+};
+
+struct LiveFovPreviewState {
+    bool available = false;
+    int width = 0;
+    int height = 0;
+    uint64_t frame_serial = 0;
+    std::vector<unsigned char> rgba;
+    std::vector<unsigned char> raw_rgb;
+    RulerAlignmentMetrics metrics;
+    std::string status_message = "Idle";
+    std::string error_message;
+};
+
+struct ApertureCharacterizationUiState {
+    bool show_window = false;
+    int selected_camera = 0;
+    int configured_camera_index = -1;
+    bool use_explicit_iris_values = false;
+    char iris_values_csv[256] = "";
+    int iris_start = 0;
+    int iris_stop = 0;
+    int iris_step_multiple = 1;
+    int frames_per_step = 3;
+    int settle_frames = 30;
+    int buffer_count = 4;
+    int grab_timeout_ms = 1000;
+    int grid_rows = 8;
+    int grid_cols = 8;
+    bool restore_original_iris = true;
+    bool save_representative_frames = true;
+    bool use_reference_iris = false;
+    int reference_iris = 0;
+    bool use_reference_f_number = false;
+    float reference_f_number = 2.8f;
+    bool enable_fov_calibration = false;
+    float working_distance_mm = 700.0f;
+    float pixel_pitch_um = 2.74f;
+    float field_width_mm = 0.0f;
+    float field_height_mm = 0.0f;
+    int alignment_preview_fps = 20;
+    float saturated_white_fraction = 0.001f;
+    float saturated_p99_min = 254.0f;
+    float dim_mean_max = 10.0f;
+    float dim_p95_max = 20.0f;
+    float dim_black_fraction_min = 0.80f;
+    char output_dir[512] = "";
+    char output_prefix[128] = "aperture_characterization";
+    std::thread worker;
+    std::atomic<bool> running{false};
+    std::atomic<int> progress_completed_steps{0};
+    std::atomic<int> progress_total_steps{0};
+    std::atomic<int> progress_iris{0};
+    std::mutex mutex;
+    std::string status_message = "Idle";
+    std::string error_message;
+    std::string output_artifact_id;
+    std::string output_artifact_dir;
+    std::string output_manifest_path;
+    std::string output_fingerprint;
+    std::string output_json_path;
+    std::string output_steps_csv_path;
+    std::string output_frames_csv_path;
+    std::string output_frame_image_dir;
+    GLuint preview_texture = 0;
+    int preview_texture_width = 0;
+    int preview_texture_height = 0;
+    std::string preview_texture_path;
+    std::string preview_texture_error;
+    std::thread alignment_worker;
+    std::atomic<bool> alignment_running{false};
+    std::atomic<bool> alignment_stop_requested{false};
+    std::atomic<int> alignment_orientation{static_cast<int>(RulerAlignmentOrientation::kHorizontal)};
+    std::mutex alignment_mutex;
+    LiveFovPreviewState live_fov_preview;
+    GLuint alignment_texture = 0;
+    int alignment_texture_width = 0;
+    int alignment_texture_height = 0;
+    uint64_t alignment_uploaded_serial = 0;
+    FovCaptureSnapshot horizontal_capture;
+    FovCaptureSnapshot vertical_capture;
+    bool has_result = false;
+    int selected_heatmap_step = 0;
+    ApertureCharacterizationResult last_result;
+    FovCalibrationData last_fov_calibration;
+    std::string last_camera_serial;
+    unsigned int last_focus = 0;
+    unsigned int last_exposure = 0;
+};
+
+template <size_t N>
+void copy_string_to_buffer(char (&buffer)[N], const std::string& value)
+{
+    std::snprintf(buffer, N, "%s", value.c_str());
+}
+
+bool parse_uint_csv_text(const char* text, std::vector<unsigned int>* out_values, std::string* error_out)
+{
+    std::stringstream ss(text == nullptr ? "" : text);
+    std::string item;
+    while (std::getline(ss, item, ',')) {
+        std::string trimmed;
+        for (char c : item) {
+            if (!std::isspace(static_cast<unsigned char>(c))) {
+                trimmed.push_back(c);
+            }
+        }
+        if (trimmed.empty()) {
+            continue;
+        }
+        try {
+            size_t consumed = 0;
+            unsigned long value = std::stoul(trimmed, &consumed, 10);
+            if (consumed != trimmed.size() || value > std::numeric_limits<unsigned int>::max()) {
+                if (error_out) {
+                    *error_out = "Invalid iris value in CSV: " + trimmed;
+                }
+                return false;
+            }
+            out_values->push_back(static_cast<unsigned int>(value));
+        } catch (...) {
+            if (error_out) {
+                *error_out = "Invalid iris value in CSV: " + trimmed;
+            }
+            return false;
+        }
+    }
+
+    if (out_values->empty()) {
+        if (error_out) {
+            *error_out = "Explicit iris list is empty.";
+        }
+        return false;
+    }
+    return true;
+}
+
+const char* ruler_alignment_orientation_label(RulerAlignmentOrientation orientation)
+{
+    switch (orientation) {
+        case RulerAlignmentOrientation::kVertical:
+            return "vertical";
+        case RulerAlignmentOrientation::kHorizontal:
+        default:
+            return "horizontal";
+    }
+}
+
+size_t preview_frame_byte_count(int pixel_type, unsigned int width, unsigned int height)
+{
+    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
+    switch (pixel_type) {
+        case GVSP_PIX_MONO8:
+        case GVSP_PIX_BAYRG8:
+        case GVSP_PIX_BAYGB8:
+            return pixel_count;
+        case GVSP_PIX_RGB8:
+        case GVSP_PIX_BGR8:
+            return pixel_count * 3U;
+        default:
+            return 0;
+    }
+}
+
+constexpr int kMinRecordingOutputDimension = 64;
+
+bool is_supported_record_output_factor(int factor)
+{
+    return factor == 1 || factor == 2 || factor == 4 || factor == 8 || factor == 16;
+}
+
+void sanitize_record_output_config(std::string* mode, int* factor, int* width, int* height)
+{
+    if (*mode != "exact_size") {
+        *mode = "factor";
+    }
+    if (!is_supported_record_output_factor(*factor)) {
+        *factor = 1;
+    }
+    if (*width < 1) {
+        *width = 1024;
+    }
+    if (*height < 1) {
+        *height = 1024;
+    }
+}
+
+std::string record_output_summary(const std::string& mode, int factor, int width, int height)
+{
+    if (mode == "exact_size") {
+        return std::string("exact ") + std::to_string(width) + "x" + std::to_string(height);
+    }
+    return std::string("factor ") + std::to_string(factor) + "x";
+}
+
+RecordingOutputConfig resolve_recording_output_config(
+    const CameraParams& camera_params,
+    const EncoderConfig& encoder_config,
+    const CameraEachSelect& camera_select,
+    std::string* warning_out)
+{
+    std::string mode = camera_select.record_output_override
+        ? camera_select.record_output_mode
+        : encoder_config.record_output_mode;
+    int factor = camera_select.record_output_override
+        ? camera_select.record_downsample_factor
+        : encoder_config.record_downsample_factor;
+    int width = camera_select.record_output_override
+        ? camera_select.record_output_width
+        : encoder_config.record_output_width;
+    int height = camera_select.record_output_override
+        ? camera_select.record_output_height
+        : encoder_config.record_output_height;
+    sanitize_record_output_config(&mode, &factor, &width, &height);
+
+    RecordingOutputConfig output;
+    output.mode = mode;
+    output.downsample_factor = factor;
+    output.requested_width = width;
+    output.requested_height = height;
+    output.resolved_width = static_cast<int>(camera_params.width);
+    output.resolved_height = static_cast<int>(camera_params.height);
+    output.resize_enabled = false;
+
+    auto fallback_to_native = [&](const std::string& warning) {
+        if (warning_out) {
+            *warning_out = warning;
+        }
+        output.mode = "factor";
+        output.downsample_factor = 1;
+        output.requested_width = static_cast<int>(camera_params.width);
+        output.requested_height = static_cast<int>(camera_params.height);
+        output.resolved_width = static_cast<int>(camera_params.width);
+        output.resolved_height = static_cast<int>(camera_params.height);
+        output.resize_enabled = false;
+    };
+
+    if (mode == "exact_size") {
+        if (width < kMinRecordingOutputDimension || height < kMinRecordingOutputDimension) {
+            fallback_to_native("requested output size is smaller than the minimum supported recording dimension");
+            return output;
+        }
+        if ((width % 2) != 0 || (height % 2) != 0) {
+            fallback_to_native("requested output size must have even width and height for NV12");
+            return output;
+        }
+        if (width > static_cast<int>(camera_params.width) || height > static_cast<int>(camera_params.height)) {
+            fallback_to_native("requested output size cannot upscale beyond the camera source dimensions");
+            return output;
+        }
+        const int64_t lhs = static_cast<int64_t>(width) * static_cast<int64_t>(camera_params.height);
+        const int64_t rhs = static_cast<int64_t>(height) * static_cast<int64_t>(camera_params.width);
+        if (lhs != rhs) {
+            fallback_to_native("requested output size must preserve the source aspect ratio");
+            return output;
+        }
+
+        output.resolved_width = width;
+        output.resolved_height = height;
+        output.resize_enabled =
+            output.resolved_width != static_cast<int>(camera_params.width) ||
+            output.resolved_height != static_cast<int>(camera_params.height);
+        return output;
+    }
+
+    if (!is_supported_record_output_factor(factor)) {
+        fallback_to_native("recording downsample factor must be one of 1, 2, 4, 8, or 16");
+        return output;
+    }
+    if ((camera_params.width % static_cast<unsigned int>(factor)) != 0 ||
+        (camera_params.height % static_cast<unsigned int>(factor)) != 0) {
+        fallback_to_native("recording downsample factor must evenly divide the source dimensions");
+        return output;
+    }
+
+    const int resolved_width = static_cast<int>(camera_params.width / static_cast<unsigned int>(factor));
+    const int resolved_height = static_cast<int>(camera_params.height / static_cast<unsigned int>(factor));
+    if (resolved_width < kMinRecordingOutputDimension || resolved_height < kMinRecordingOutputDimension) {
+        fallback_to_native("recording downsample result is below the minimum supported output dimension");
+        return output;
+    }
+    if ((resolved_width % 2) != 0 || (resolved_height % 2) != 0) {
+        fallback_to_native("recording downsample result must have even width and height for NV12");
+        return output;
+    }
+
+    output.resolved_width = resolved_width;
+    output.resolved_height = resolved_height;
+    output.resize_enabled = factor != 1;
+    return output;
+}
+
+class ScopedPreviewCudaDevice {
+public:
+    explicit ScopedPreviewCudaDevice(int target_device)
+    {
+        cudaError_t get_err = cudaGetDevice(&previous_device_);
+        had_previous_device_ = (get_err == cudaSuccess);
+        if (target_device >= 0 && (!had_previous_device_ || previous_device_ != target_device)) {
+            const cudaError_t set_err = cudaSetDevice(target_device);
+            if (set_err != cudaSuccess) {
+                std::ostringstream oss;
+                oss << "cudaSetDevice(" << target_device << ") failed: " << cudaGetErrorString(set_err);
+                throw std::runtime_error(oss.str());
+            }
+            switched_ = true;
+        }
+    }
+
+    ~ScopedPreviewCudaDevice()
+    {
+        if (switched_ && had_previous_device_) {
+            cudaSetDevice(previous_device_);
+        }
+    }
+
+private:
+    int previous_device_ = -1;
+    bool had_previous_device_ = false;
+    bool switched_ = false;
+};
+
+bool extract_frame_host_bytes_preview(
+    const Emergent::CEmergentFrame& frame,
+    std::vector<unsigned char>* host_bytes,
+    const unsigned char** data_out,
+    std::string* error_out)
+{
+    if (data_out == nullptr) {
+        if (error_out) {
+            *error_out = "extract_frame_host_bytes_preview requires a non-null data_out pointer.";
+        }
+        return false;
+    }
+    if (frame.imagePtr == nullptr || frame.size_x == 0 || frame.size_y == 0) {
+        if (error_out) {
+            *error_out = "Frame image pointer is null or dimensions are zero.";
+        }
+        return false;
+    }
+
+    cudaPointerAttributes attrs{};
+    const cudaError_t attr_status = cudaPointerGetAttributes(&attrs, frame.imagePtr);
+    if (attr_status == cudaSuccess && attrs.type == cudaMemoryTypeDevice) {
+        const size_t byte_count = preview_frame_byte_count(frame.pixel_type, frame.size_x, frame.size_y);
+        if (byte_count == 0) {
+            if (error_out) {
+                *error_out = "Unsupported pixel format for preview extraction.";
+            }
+            return false;
+        }
+        try {
+            ScopedPreviewCudaDevice guard(attrs.device);
+            host_bytes->resize(byte_count);
+            const cudaError_t copy_err =
+                cudaMemcpy(host_bytes->data(), frame.imagePtr, byte_count, cudaMemcpyDeviceToHost);
+            if (copy_err != cudaSuccess) {
+                if (error_out) {
+                    std::ostringstream oss;
+                    oss << "cudaMemcpy(DeviceToHost) failed: " << cudaGetErrorString(copy_err);
+                    *error_out = oss.str();
+                }
+                return false;
+            }
+        } catch (const std::exception& ex) {
+            if (error_out) {
+                *error_out = ex.what();
+            }
+            return false;
+        }
+        *data_out = host_bytes->data();
+        return true;
+    }
+
+    if (attr_status != cudaSuccess) {
+        cudaGetLastError();
+    }
+
+    host_bytes->clear();
+    *data_out = static_cast<const unsigned char*>(frame.imagePtr);
+    return true;
+}
+
+bool convert_frame_bytes_to_bgr(
+    int pixel_type,
+    unsigned int width,
+    unsigned int height,
+    const unsigned char* frame_bytes,
+    cv::Mat* bgr_out,
+    std::string* error_out)
+{
+    if (bgr_out == nullptr || frame_bytes == nullptr || width == 0 || height == 0) {
+        if (error_out) {
+            *error_out = "Invalid frame buffer for BGR conversion.";
+        }
+        return false;
+    }
+
+    switch (pixel_type) {
+        case GVSP_PIX_MONO8: {
+            cv::Mat gray(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
+                         const_cast<unsigned char*>(frame_bytes));
+            cv::cvtColor(gray, *bgr_out, cv::COLOR_GRAY2BGR);
+            return true;
+        }
+        case GVSP_PIX_BAYRG8: {
+            cv::Mat raw(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
+                        const_cast<unsigned char*>(frame_bytes));
+            cv::cvtColor(raw, *bgr_out, cv::COLOR_BayerRG2BGR);
+            return true;
+        }
+        case GVSP_PIX_BAYGB8: {
+            cv::Mat raw(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
+                        const_cast<unsigned char*>(frame_bytes));
+            cv::cvtColor(raw, *bgr_out, cv::COLOR_BayerGB2BGR);
+            return true;
+        }
+        case GVSP_PIX_RGB8: {
+            cv::Mat rgb(static_cast<int>(height), static_cast<int>(width), CV_8UC3,
+                        const_cast<unsigned char*>(frame_bytes));
+            cv::cvtColor(rgb, *bgr_out, cv::COLOR_RGB2BGR);
+            return true;
+        }
+        case GVSP_PIX_BGR8: {
+            cv::Mat bgr(static_cast<int>(height), static_cast<int>(width), CV_8UC3,
+                        const_cast<unsigned char*>(frame_bytes));
+            *bgr_out = bgr.clone();
+            return true;
+        }
+        default:
+            if (error_out) {
+                *error_out = "Preview conversion does not support this pixel format.";
+            }
+            return false;
+    }
+}
+
+RulerAlignmentMetrics detect_ruler_alignment(
+    const cv::Mat& gray,
+    RulerAlignmentOrientation orientation)
+{
+    RulerAlignmentMetrics best;
+    if (gray.empty()) {
+        return best;
+    }
+
+    auto detect_boundary_anchor = [&](const cv::Mat& source_gray) -> int {
+        cv::Mat directionally_smoothed;
+        if (orientation == RulerAlignmentOrientation::kHorizontal) {
+            cv::GaussianBlur(source_gray, directionally_smoothed, cv::Size(61, 7), 0.0, 0.0, cv::BORDER_REPLICATE);
+        } else {
+            cv::GaussianBlur(source_gray, directionally_smoothed, cv::Size(7, 61), 0.0, 0.0, cv::BORDER_REPLICATE);
+        }
+
+        cv::Mat gradient;
+        if (orientation == RulerAlignmentOrientation::kHorizontal) {
+            cv::Sobel(directionally_smoothed, gradient, CV_32F, 0, 1, 3);
+        } else {
+            cv::Sobel(directionally_smoothed, gradient, CV_32F, 1, 0, 3);
+        }
+        cv::Mat abs_gradient = cv::abs(gradient);
+
+        cv::Mat profile;
+        if (orientation == RulerAlignmentOrientation::kHorizontal) {
+            cv::reduce(abs_gradient, profile, 1, cv::REDUCE_AVG, CV_32F);
+            cv::GaussianBlur(profile, profile, cv::Size(1, 31), 0.0, 0.0, cv::BORDER_REPLICATE);
+        } else {
+            cv::reduce(abs_gradient, profile, 0, cv::REDUCE_AVG, CV_32F);
+            cv::GaussianBlur(profile, profile, cv::Size(31, 1), 0.0, 0.0, cv::BORDER_REPLICATE);
+        }
+
+        const int profile_length =
+            orientation == RulerAlignmentOrientation::kHorizontal ? profile.rows : profile.cols;
+        if (profile_length <= 0) {
+            return -1;
+        }
+
+        const int margin = std::max(4, profile_length / 40);
+        int best_index = -1;
+        double best_score = -1.0;
+        for (int i = margin; i < profile_length - margin; ++i) {
+            const float response =
+                orientation == RulerAlignmentOrientation::kHorizontal ? profile.at<float>(i, 0) : profile.at<float>(0, i);
+            const double boundary_preference =
+                1.0 - std::clamp(static_cast<double>(i) / std::max(1.0, static_cast<double>(profile_length - 1)), 0.0, 1.0);
+            const double score = static_cast<double>(response) * (0.35 + 0.65 * boundary_preference);
+            if (score > best_score) {
+                best_score = score;
+                best_index = i;
+            }
+        }
+        return best_index;
+    };
+
+    const int boundary_anchor = detect_boundary_anchor(gray);
+
+    cv::Mat blurred;
+    cv::GaussianBlur(gray, blurred, cv::Size(5, 5), 0.0);
+    cv::Mat edges;
+    cv::Canny(blurred, edges, 60.0, 180.0, 3);
+
+    cv::Rect search_roi(0, 0, gray.cols, gray.rows);
+    if (boundary_anchor >= 0) {
+        const int search_half_band = std::max(16, static_cast<int>(std::round(
+            0.04 * static_cast<double>(
+                orientation == RulerAlignmentOrientation::kHorizontal ? gray.rows : gray.cols))));
+        if (orientation == RulerAlignmentOrientation::kHorizontal) {
+            const int y0 = std::max(0, boundary_anchor - search_half_band);
+            const int y1 = std::min(gray.rows, boundary_anchor + search_half_band + 1);
+            search_roi = cv::Rect(0, y0, gray.cols, std::max(1, y1 - y0));
+        } else {
+            const int x0 = std::max(0, boundary_anchor - search_half_band);
+            const int x1 = std::min(gray.cols, boundary_anchor + search_half_band + 1);
+            search_roi = cv::Rect(x0, 0, std::max(1, x1 - x0), gray.rows);
+        }
+    }
+
+    std::vector<cv::Vec4i> lines;
+    cv::HoughLinesP(
+        edges(search_roi),
+        lines,
+        1.0,
+        CV_PI / 180.0,
+        80,
+        std::max(search_roi.width, search_roi.height) / 5.0,
+        20.0);
+    const double center_x = 0.5 * static_cast<double>(gray.cols);
+    const double center_y = 0.5 * static_cast<double>(gray.rows);
+    double best_score = -1.0;
+
+    for (const cv::Vec4i& local_line : lines) {
+        const cv::Vec4i line(
+            local_line[0] + search_roi.x,
+            local_line[1] + search_roi.y,
+            local_line[2] + search_roi.x,
+            local_line[3] + search_roi.y);
+        const double dx = static_cast<double>(line[2] - line[0]);
+        const double dy = static_cast<double>(line[3] - line[1]);
+        const double length = std::hypot(dx, dy);
+        if (length < std::max(gray.cols, gray.rows) * 0.15) {
+            continue;
+        }
+
+        double angle = std::atan2(dy, dx) * 180.0 / CV_PI;
+        while (angle > 90.0) angle -= 180.0;
+        while (angle <= -90.0) angle += 180.0;
+
+        double angle_error = 0.0;
+        double center_offset_px = 0.0;
+        double boundary_preference = 0.0;
+        double anchor_distance_px = 0.0;
+        if (orientation == RulerAlignmentOrientation::kHorizontal) {
+            angle_error = std::abs(angle);
+            const double line_center_y = (static_cast<double>(line[1]) + static_cast<double>(line[3])) * 0.5;
+            center_offset_px = line_center_y - center_y;
+            boundary_preference = 1.0 - std::clamp(line_center_y / std::max(1.0, static_cast<double>(gray.rows - 1)), 0.0, 1.0);
+            anchor_distance_px = boundary_anchor >= 0 ? std::abs(line_center_y - static_cast<double>(boundary_anchor)) : 0.0;
+        } else {
+            angle_error = std::abs(90.0 - std::abs(angle));
+            const double line_center_x = (static_cast<double>(line[0]) + static_cast<double>(line[2])) * 0.5;
+            center_offset_px = line_center_x - center_x;
+            boundary_preference = 1.0 - std::clamp(line_center_x / std::max(1.0, static_cast<double>(gray.cols - 1)), 0.0, 1.0);
+            anchor_distance_px = boundary_anchor >= 0 ? std::abs(line_center_x - static_cast<double>(boundary_anchor)) : 0.0;
+        }
+        if (angle_error > 25.0) {
+            continue;
+        }
+
+        const double center_extent =
+            orientation == RulerAlignmentOrientation::kHorizontal ? center_y : center_x;
+        const double angle_score = 1.0 - std::min(angle_error / 25.0, 1.0);
+        const double anchor_score =
+            boundary_anchor >= 0
+                ? 1.0 - std::min(anchor_distance_px /
+                                     std::max(1.0, 0.5 * static_cast<double>(
+                                                       orientation == RulerAlignmentOrientation::kHorizontal
+                                                           ? search_roi.height
+                                                           : search_roi.width)),
+                                 1.0)
+                : 1.0;
+        const double score =
+            length * (0.15 + 0.85 * angle_score) * (0.25 + 0.75 * boundary_preference) * (0.20 + 0.80 * anchor_score);
+        if (score > best_score) {
+            best_score = score;
+            best.has_detected_line = true;
+            best.line_angle_deg = angle;
+            best.angle_error_deg = angle_error;
+            best.center_offset_px = center_offset_px;
+            best.center_offset_fraction = center_extent > 0.0 ? center_offset_px / center_extent : 0.0;
+            best.x0 = line[0];
+            best.y0 = line[1];
+            best.x1 = line[2];
+            best.y1 = line[3];
+        }
+    }
+
+    if (!best.has_detected_line && boundary_anchor >= 0) {
+        best.has_detected_line = true;
+        best.line_angle_deg = orientation == RulerAlignmentOrientation::kHorizontal ? 0.0 : 90.0;
+        best.angle_error_deg = 0.0;
+        if (orientation == RulerAlignmentOrientation::kHorizontal) {
+            best.center_offset_px = static_cast<double>(boundary_anchor) - center_y;
+            best.center_offset_fraction = center_y > 0.0 ? best.center_offset_px / center_y : 0.0;
+            best.x0 = 0;
+            best.x1 = gray.cols - 1;
+            best.y0 = boundary_anchor;
+            best.y1 = boundary_anchor;
+        } else {
+            best.center_offset_px = static_cast<double>(boundary_anchor) - center_x;
+            best.center_offset_fraction = center_x > 0.0 ? best.center_offset_px / center_x : 0.0;
+            best.x0 = boundary_anchor;
+            best.x1 = boundary_anchor;
+            best.y0 = 0;
+            best.y1 = gray.rows - 1;
+        }
+    }
+
+    return best;
+}
+
+void draw_ruler_alignment_overlay(
+    cv::Mat* bgr_image,
+    const RulerAlignmentMetrics& metrics,
+    RulerAlignmentOrientation orientation)
+{
+    if (bgr_image == nullptr || bgr_image->empty()) {
+        return;
+    }
+
+    const int width = bgr_image->cols;
+    const int height = bgr_image->rows;
+    const cv::Scalar guide_color(255, 255, 0);
+    const cv::Scalar line_color = metrics.has_detected_line
+                                      ? (metrics.angle_error_deg <= 2.0 && std::abs(metrics.center_offset_fraction) <= 0.05
+                                             ? cv::Scalar(0, 220, 0)
+                                             : cv::Scalar(0, 140, 255))
+                                      : cv::Scalar(0, 0, 255);
+
+    if (orientation == RulerAlignmentOrientation::kHorizontal) {
+        cv::line(*bgr_image, cv::Point(0, height / 2), cv::Point(width - 1, height / 2), guide_color, 1, cv::LINE_AA);
+    } else {
+        cv::line(*bgr_image, cv::Point(width / 2, 0), cv::Point(width / 2, height - 1), guide_color, 1, cv::LINE_AA);
+    }
+
+    if (metrics.has_detected_line) {
+        cv::line(*bgr_image,
+                 cv::Point(metrics.x0, metrics.y0),
+                 cv::Point(metrics.x1, metrics.y1),
+                 line_color,
+                 2,
+                 cv::LINE_AA);
+    }
+
+    std::ostringstream oss;
+    if (metrics.has_detected_line) {
+        oss << ruler_alignment_orientation_label(orientation)
+            << " angle_err=" << std::fixed << std::setprecision(2) << metrics.angle_error_deg
+            << "deg offset=" << std::showpos << std::setprecision(1) << metrics.center_offset_px << "px";
+    } else {
+        oss << "No ruler line detected";
+    }
+    cv::putText(*bgr_image, oss.str(), cv::Point(20, 32), cv::FONT_HERSHEY_SIMPLEX, 0.75, line_color, 2, cv::LINE_AA);
+}
+
+bool write_rgb_image_ppm(
+    const std::string& path,
+    const std::vector<unsigned char>& rgb,
+    int width,
+    int height,
+    std::string* error_out)
+{
+    if (width <= 0 || height <= 0 || rgb.size() != static_cast<size_t>(width) * static_cast<size_t>(height) * 3U) {
+        if (error_out) {
+            *error_out = "RGB preview buffer is invalid for PPM write.";
+        }
+        return false;
+    }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        if (error_out) {
+            *error_out = "Failed to open FOV capture output path: " + path;
+        }
+        return false;
+    }
+    out << "P6\n" << width << " " << height << "\n255\n";
+    out.write(reinterpret_cast<const char*>(rgb.data()), static_cast<std::streamsize>(rgb.size()));
+    return static_cast<bool>(out);
+}
+
+bool grab_latest_preview_frame(
+    Emergent::CEmergentCamera* camera,
+    CameraParams* camera_params,
+    unsigned int timeout_ms,
+    Emergent::CEmergentFrame* frame_out,
+    int* dropped_frame_count_out)
+{
+    if (frame_out == nullptr) {
+        return false;
+    }
+
+    Emergent::CEmergentFrame frame{};
+    EVT_ERROR err = EVT_CameraGetFrame(camera, &frame, timeout_ms);
+    if (err != EVT_SUCCESS) {
+        return false;
+    }
+
+    int dropped_frames = 0;
+    while (true) {
+        Emergent::CEmergentFrame newer_frame{};
+        err = EVT_CameraGetFrame(camera, &newer_frame, 0);
+        if (err != EVT_SUCCESS) {
+            break;
+        }
+        check_camera_errors(EVT_CameraQueueFrame(camera, &frame), camera_params->camera_serial.c_str());
+        frame = newer_frame;
+        ++dropped_frames;
+    }
+
+    *frame_out = frame;
+    if (dropped_frame_count_out != nullptr) {
+        *dropped_frame_count_out = dropped_frames;
+    }
+    return true;
+}
+
+bool read_pnm_token(std::istream& input, std::string* token)
+{
+    token->clear();
+    while (true) {
+        int ch = input.peek();
+        if (ch == EOF) {
+            return false;
+        }
+        if (std::isspace(static_cast<unsigned char>(ch))) {
+            input.get();
+            continue;
+        }
+        if (ch == '#') {
+            input.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            continue;
+        }
+        break;
+    }
+
+    while (true) {
+        int ch = input.peek();
+        if (ch == EOF || std::isspace(static_cast<unsigned char>(ch)) || ch == '#') {
+            break;
+        }
+        token->push_back(static_cast<char>(input.get()));
+    }
+    return !token->empty();
+}
+
+bool load_representative_frame_rgba(
+    const std::string& image_path,
+    std::vector<unsigned char>* rgba,
+    int* width,
+    int* height,
+    std::string* error_out)
+{
+    std::ifstream input(image_path, std::ios::binary);
+    if (!input.is_open()) {
+        if (error_out) {
+            *error_out = "Failed to open representative frame: " + image_path;
+        }
+        return false;
+    }
+
+    std::string magic;
+    std::string width_token;
+    std::string height_token;
+    std::string maxval_token;
+    if (!read_pnm_token(input, &magic) ||
+        !read_pnm_token(input, &width_token) ||
+        !read_pnm_token(input, &height_token) ||
+        !read_pnm_token(input, &maxval_token)) {
+        if (error_out) {
+            *error_out = "Failed to parse representative frame header: " + image_path;
+        }
+        return false;
+    }
+
+    if (magic != "P5" && magic != "P6") {
+        if (error_out) {
+            *error_out = "Representative frame is not a binary PGM/PPM file: " + image_path;
+        }
+        return false;
+    }
+
+    const int parsed_width = std::stoi(width_token);
+    const int parsed_height = std::stoi(height_token);
+    const int maxval = std::stoi(maxval_token);
+    if (parsed_width <= 0 || parsed_height <= 0 || maxval != 255) {
+        if (error_out) {
+            *error_out = "Representative frame has unsupported dimensions or max value: " + image_path;
+        }
+        return false;
+    }
+
+    input.get(); // consume the single whitespace byte before raster data
+
+    const int channel_count = magic == "P6" ? 3 : 1;
+    const size_t src_size =
+        static_cast<size_t>(parsed_width) * static_cast<size_t>(parsed_height) * static_cast<size_t>(channel_count);
+    std::vector<unsigned char> src(src_size);
+    input.read(reinterpret_cast<char*>(src.data()), static_cast<std::streamsize>(src_size));
+    if (input.gcount() != static_cast<std::streamsize>(src_size)) {
+        if (error_out) {
+            *error_out = "Representative frame raster is truncated: " + image_path;
+        }
+        return false;
+    }
+
+    rgba->resize(static_cast<size_t>(parsed_width) * static_cast<size_t>(parsed_height) * 4U);
+    for (int i = 0; i < parsed_width * parsed_height; ++i) {
+        const size_t dst_base = static_cast<size_t>(i) * 4U;
+        if (channel_count == 1) {
+            const unsigned char v = src[static_cast<size_t>(i)];
+            (*rgba)[dst_base + 0] = v;
+            (*rgba)[dst_base + 1] = v;
+            (*rgba)[dst_base + 2] = v;
+        } else {
+            const size_t src_base = static_cast<size_t>(i) * 3U;
+            (*rgba)[dst_base + 0] = src[src_base + 0];
+            (*rgba)[dst_base + 1] = src[src_base + 1];
+            (*rgba)[dst_base + 2] = src[src_base + 2];
+        }
+        (*rgba)[dst_base + 3] = 255;
+    }
+
+    *width = parsed_width;
+    *height = parsed_height;
+    return true;
+}
+
+bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
+{
+    int max_length = 0;
+    EVT_ERROR len_err = EVT_CameraGetStringParamMaxLength(camera, name, &max_length);
+    if (len_err != EVT_SUCCESS || max_length <= 0) {
+        max_length = 512;
+    }
+
+    const unsigned long buf_size = static_cast<unsigned long>(std::max(256, max_length + 8));
+    std::vector<char> buffer(buf_size, '\0');
+    unsigned long value_size = 0;
+    EVT_ERROR err = EVT_CameraGetStringParam(camera, name, buffer.data(), buf_size, &value_size, 0);
+    if (err != EVT_SUCCESS) {
+        return false;
+    }
+
+    *out_value = std::string(buffer.data());
+    return true;
+}
+
+void reset_aperture_defaults_for_camera(
+    ApertureCharacterizationUiState* ui_state,
+    const CameraParams& camera_params,
+    int selected_camera,
+    const std::string& default_output_dir)
+{
+    ui_state->selected_camera = selected_camera;
+    ui_state->configured_camera_index = selected_camera;
+    ui_state->use_explicit_iris_values = false;
+    ui_state->iris_values_csv[0] = '\0';
+    ui_state->iris_start = static_cast<int>(camera_params.iris_min);
+    ui_state->iris_stop = static_cast<int>(camera_params.iris_max);
+    ui_state->iris_step_multiple = 1;
+    ui_state->reference_iris = static_cast<int>(camera_params.iris_min);
+    {
+        std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+        ui_state->horizontal_capture = {};
+        ui_state->vertical_capture = {};
+        ui_state->live_fov_preview = {};
+        ui_state->live_fov_preview.status_message = "Idle";
+    }
+    if (ui_state->output_dir[0] == '\0') {
+        copy_string_to_buffer(ui_state->output_dir, default_output_dir);
+    }
+}
+
+void join_aperture_worker_if_finished(ApertureCharacterizationUiState* ui_state)
+{
+    if (!ui_state->running.load(std::memory_order_acquire) && ui_state->worker.joinable()) {
+        ui_state->worker.join();
+    }
+}
+
+void clear_aperture_preview_texture(ApertureCharacterizationUiState* ui_state)
+{
+    if (ui_state->preview_texture != 0) {
+        glDeleteTextures(1, &ui_state->preview_texture);
+        ui_state->preview_texture = 0;
+    }
+    ui_state->preview_texture_width = 0;
+    ui_state->preview_texture_height = 0;
+    ui_state->preview_texture_path.clear();
+    ui_state->preview_texture_error.clear();
+}
+
+void clear_alignment_preview_texture(ApertureCharacterizationUiState* ui_state)
+{
+    if (ui_state->alignment_texture != 0) {
+        glDeleteTextures(1, &ui_state->alignment_texture);
+        ui_state->alignment_texture = 0;
+    }
+    ui_state->alignment_texture_width = 0;
+    ui_state->alignment_texture_height = 0;
+    ui_state->alignment_uploaded_serial = 0;
+}
+
+bool ensure_aperture_preview_texture(
+    ApertureCharacterizationUiState* ui_state,
+    const std::string& image_path)
+{
+    if (image_path.empty()) {
+        clear_aperture_preview_texture(ui_state);
+        ui_state->preview_texture_error = "Selected step has no representative frame.";
+        return false;
+    }
+    if (ui_state->preview_texture != 0 && ui_state->preview_texture_path == image_path) {
+        return true;
+    }
+
+    clear_aperture_preview_texture(ui_state);
+
+    int width = 0;
+    int height = 0;
+    std::vector<unsigned char> rgba;
+    if (!load_representative_frame_rgba(image_path, &rgba, &width, &height, &ui_state->preview_texture_error)) {
+        return false;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    ui_state->preview_texture = texture;
+    ui_state->preview_texture_width = width;
+    ui_state->preview_texture_height = height;
+    ui_state->preview_texture_path = image_path;
+    ui_state->preview_texture_error.clear();
+    return true;
+}
+
+void join_alignment_worker_if_finished(ApertureCharacterizationUiState* ui_state)
+{
+    if (!ui_state->alignment_running.load(std::memory_order_acquire) && ui_state->alignment_worker.joinable()) {
+        ui_state->alignment_worker.join();
+    }
+}
+
+void stop_fov_alignment_worker(ApertureCharacterizationUiState* ui_state)
+{
+    if (ui_state->alignment_running.exchange(false, std::memory_order_acq_rel)) {
+        ui_state->alignment_stop_requested.store(true, std::memory_order_release);
+    }
+    if (ui_state->alignment_worker.joinable()) {
+        ui_state->alignment_worker.join();
+    }
+    ui_state->alignment_stop_requested.store(false, std::memory_order_release);
+}
+
+bool upload_latest_alignment_texture(ApertureCharacterizationUiState* ui_state)
+{
+    std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+    const LiveFovPreviewState& preview = ui_state->live_fov_preview;
+    if (!preview.available || preview.rgba.empty() || preview.frame_serial == ui_state->alignment_uploaded_serial) {
+        return preview.available;
+    }
+
+    if (ui_state->alignment_texture == 0 ||
+        ui_state->alignment_texture_width != preview.width ||
+        ui_state->alignment_texture_height != preview.height) {
+        if (ui_state->alignment_texture != 0) {
+            glDeleteTextures(1, &ui_state->alignment_texture);
+        }
+        glGenTextures(1, &ui_state->alignment_texture);
+        glBindTexture(GL_TEXTURE_2D, ui_state->alignment_texture);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexImage2D(
+            GL_TEXTURE_2D,
+            0,
+            GL_RGBA,
+            preview.width,
+            preview.height,
+            0,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            preview.rgba.data());
+        ui_state->alignment_texture_width = preview.width;
+        ui_state->alignment_texture_height = preview.height;
+    } else {
+        glBindTexture(GL_TEXTURE_2D, ui_state->alignment_texture);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        glTexSubImage2D(
+            GL_TEXTURE_2D,
+            0,
+            0,
+            0,
+            preview.width,
+            preview.height,
+            GL_RGBA,
+            GL_UNSIGNED_BYTE,
+            preview.rgba.data());
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+    ui_state->alignment_uploaded_serial = preview.frame_serial;
+    return true;
+}
+
+bool capture_current_fov_snapshot(
+    ApertureCharacterizationUiState* ui_state,
+    bool horizontal_capture,
+    std::string* error_out)
+{
+    std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+    if (!ui_state->live_fov_preview.available ||
+        ui_state->live_fov_preview.width <= 0 ||
+        ui_state->live_fov_preview.height <= 0 ||
+        ui_state->live_fov_preview.raw_rgb.empty()) {
+        if (error_out) {
+            *error_out = "No live FOV preview frame is available to capture.";
+        }
+        return false;
+    }
+
+    FovCaptureSnapshot snapshot;
+    snapshot.available = true;
+    snapshot.width = ui_state->live_fov_preview.width;
+    snapshot.height = ui_state->live_fov_preview.height;
+    snapshot.rgb = ui_state->live_fov_preview.raw_rgb;
+    snapshot.metrics = ui_state->live_fov_preview.metrics;
+    if (horizontal_capture) {
+        ui_state->horizontal_capture = std::move(snapshot);
+    } else {
+        ui_state->vertical_capture = std::move(snapshot);
+    }
+    return true;
+}
+
+void start_fov_alignment_worker(
+    ApertureCharacterizationUiState* ui_state,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params)
+{
+    join_alignment_worker_if_finished(ui_state);
+    if (ui_state->alignment_running.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    ui_state->alignment_stop_requested.store(false, std::memory_order_release);
+
+    const int selected_camera = ui_state->selected_camera;
+    CameraEmergent* ecam = &ecams[selected_camera];
+    CameraParams* camera_params = &cameras_params[selected_camera];
+    const int preview_target_fps = std::max(1, ui_state->alignment_preview_fps);
+
+    {
+        std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+        ui_state->live_fov_preview = {};
+        ui_state->live_fov_preview.status_message = "Starting live ruler alignment...";
+    }
+
+    ui_state->alignment_worker = std::thread([=]() {
+        constexpr int kAlignmentPreviewBufferCount = 2;
+        Emergent::CEmergentFrame* frames = nullptr;
+        bool stream_opened = false;
+        bool buffers_allocated = false;
+        bool acquisition_started = false;
+        bool frame_rate_changed = false;
+        unsigned int original_frame_rate = camera_params->frame_rate;
+        unsigned int active_preview_fps = static_cast<unsigned int>(preview_target_fps);
+
+        auto publish_error = [&](const std::string& message) {
+            std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+            ui_state->live_fov_preview.error_message = message;
+            ui_state->live_fov_preview.status_message = "Live ruler alignment failed.";
+        };
+
+        try {
+            unsigned int frame_rate_min = camera_params->frame_rate_min;
+            unsigned int frame_rate_max = camera_params->frame_rate_max;
+            EVT_CameraGetUInt32ParamMin(&ecam->camera, "FrameRate", &frame_rate_min);
+            EVT_CameraGetUInt32ParamMax(&ecam->camera, "FrameRate", &frame_rate_max);
+            const unsigned int clamped_preview_fps =
+                std::clamp(static_cast<unsigned int>(preview_target_fps), frame_rate_min, frame_rate_max);
+            active_preview_fps = clamped_preview_fps;
+            if (clamped_preview_fps != original_frame_rate) {
+                check_camera_errors(
+                    EVT_CameraSetUInt32Param(&ecam->camera, "FrameRate", clamped_preview_fps),
+                    camera_params->camera_serial.c_str());
+                camera_params->frame_rate = clamped_preview_fps;
+                frame_rate_changed = true;
+            }
+
+            camera_open_stream(&ecam->camera, camera_params);
+            stream_opened = true;
+
+            frames = new Emergent::CEmergentFrame[kAlignmentPreviewBufferCount]();
+            allocate_frame_buffer(&ecam->camera, frames, camera_params, kAlignmentPreviewBufferCount);
+            buffers_allocated = true;
+
+            check_camera_errors(
+                EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStart"),
+                camera_params->camera_serial.c_str());
+            acquisition_started = true;
+
+            while (!ui_state->alignment_stop_requested.load(std::memory_order_acquire)) {
+                Emergent::CEmergentFrame frame{};
+                int dropped_frames = 0;
+                if (!grab_latest_preview_frame(&ecam->camera, camera_params, 250, &frame, &dropped_frames)) {
+                    continue;
+                }
+
+                std::vector<unsigned char> host_bytes;
+                const unsigned char* frame_bytes = nullptr;
+                std::string extract_error;
+                if (!extract_frame_host_bytes_preview(frame, &host_bytes, &frame_bytes, &extract_error)) {
+                    EVT_CameraQueueFrame(&ecam->camera, &frame);
+                    throw std::runtime_error(extract_error);
+                }
+
+                cv::Mat bgr;
+                std::string convert_error;
+                if (!convert_frame_bytes_to_bgr(frame.pixel_type, frame.size_x, frame.size_y, frame_bytes, &bgr, &convert_error)) {
+                    EVT_CameraQueueFrame(&ecam->camera, &frame);
+                    throw std::runtime_error(convert_error);
+                }
+
+                const int max_preview_dimension = 1920;
+                double scale = 1.0;
+                if (std::max(bgr.cols, bgr.rows) > max_preview_dimension) {
+                    scale = static_cast<double>(max_preview_dimension) /
+                            static_cast<double>(std::max(bgr.cols, bgr.rows));
+                }
+                cv::Mat preview_bgr;
+                if (scale < 1.0) {
+                    cv::resize(bgr, preview_bgr, cv::Size(), scale, scale, cv::INTER_AREA);
+                } else {
+                    preview_bgr = bgr;
+                }
+
+                cv::Mat gray;
+                cv::cvtColor(preview_bgr, gray, cv::COLOR_BGR2GRAY);
+                const RulerAlignmentOrientation orientation =
+                    ui_state->alignment_orientation.load(std::memory_order_acquire) == static_cast<int>(RulerAlignmentOrientation::kVertical)
+                        ? RulerAlignmentOrientation::kVertical
+                        : RulerAlignmentOrientation::kHorizontal;
+                const RulerAlignmentMetrics metrics = detect_ruler_alignment(gray, orientation);
+
+                cv::Mat overlay_bgr = preview_bgr.clone();
+                draw_ruler_alignment_overlay(&overlay_bgr, metrics, orientation);
+                cv::Mat overlay_rgba;
+                cv::cvtColor(overlay_bgr, overlay_rgba, cv::COLOR_BGR2RGBA);
+                cv::Mat preview_rgb;
+                cv::cvtColor(preview_bgr, preview_rgb, cv::COLOR_BGR2RGB);
+
+                {
+                    std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+                    ui_state->live_fov_preview.available = true;
+                    ui_state->live_fov_preview.width = overlay_rgba.cols;
+                    ui_state->live_fov_preview.height = overlay_rgba.rows;
+                    ui_state->live_fov_preview.frame_serial += 1;
+                    ui_state->live_fov_preview.rgba.assign(
+                        overlay_rgba.data,
+                        overlay_rgba.data + overlay_rgba.total() * overlay_rgba.elemSize());
+                    ui_state->live_fov_preview.raw_rgb.assign(
+                        preview_rgb.data,
+                        preview_rgb.data + preview_rgb.total() * preview_rgb.elemSize());
+                    ui_state->live_fov_preview.metrics = metrics;
+                    ui_state->live_fov_preview.error_message.clear();
+                    ui_state->live_fov_preview.status_message =
+                        std::string("Live ") + ruler_alignment_orientation_label(orientation) +
+                        " ruler alignment @ " + std::to_string(active_preview_fps) +
+                        " FPS" + (dropped_frames > 0 ? " (dropped " + std::to_string(dropped_frames) + ")" : "");
+                }
+
+                check_camera_errors(EVT_CameraQueueFrame(&ecam->camera, &frame), camera_params->camera_serial.c_str());
+            }
+        } catch (const std::exception& ex) {
+            publish_error(ex.what());
+        }
+
+        if (acquisition_started) {
+            EVT_CameraExecuteCommand(&ecam->camera, "AcquisitionStop");
+        }
+        if (buffers_allocated && frames != nullptr) {
+            try {
+                destroy_frame_buffer(&ecam->camera, frames, kAlignmentPreviewBufferCount, camera_params);
+            } catch (...) {
+            }
+        }
+        delete[] frames;
+        if (stream_opened) {
+            EVT_CameraCloseStream(&ecam->camera);
+        }
+        if (frame_rate_changed) {
+            EVT_CameraSetUInt32Param(&ecam->camera, "FrameRate", original_frame_rate);
+            camera_params->frame_rate = original_frame_rate;
+        }
+        ui_state->alignment_running.store(false, std::memory_order_release);
+    });
+}
+
+void start_aperture_characterization_worker(
+    ApertureCharacterizationUiState* ui_state,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params)
+{
+    join_aperture_worker_if_finished(ui_state);
+    stop_fov_alignment_worker(ui_state);
+
+    if (ui_state->running.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+
+    const int selected_camera = ui_state->selected_camera;
+    CameraEmergent* ecam = &ecams[selected_camera];
+    CameraParams* camera_params = &cameras_params[selected_camera];
+
+    const bool use_explicit_iris_values = ui_state->use_explicit_iris_values;
+    const std::string iris_values_csv = ui_state->iris_values_csv;
+    const int iris_start = ui_state->iris_start;
+    const int iris_stop = ui_state->iris_stop;
+    const int iris_step_multiple = ui_state->iris_step_multiple;
+    const int frames_per_step = ui_state->frames_per_step;
+    const int settle_frames = ui_state->settle_frames;
+    const int buffer_count = ui_state->buffer_count;
+    const int grab_timeout_ms = ui_state->grab_timeout_ms;
+    const int grid_rows = ui_state->grid_rows;
+    const int grid_cols = ui_state->grid_cols;
+    const bool restore_original_iris = ui_state->restore_original_iris;
+    const bool save_representative_frames = ui_state->save_representative_frames;
+    const bool use_reference_iris = ui_state->use_reference_iris;
+    const int reference_iris = ui_state->reference_iris;
+    const bool use_reference_f_number = ui_state->use_reference_f_number;
+    const float reference_f_number = ui_state->reference_f_number;
+    const bool enable_fov_calibration = ui_state->enable_fov_calibration;
+    const float working_distance_mm = ui_state->working_distance_mm;
+    const float pixel_pitch_um = ui_state->pixel_pitch_um;
+    const float field_width_mm = ui_state->field_width_mm;
+    const float field_height_mm = ui_state->field_height_mm;
+    const float saturated_white_fraction = ui_state->saturated_white_fraction;
+    const float saturated_p99_min = ui_state->saturated_p99_min;
+    const float dim_mean_max = ui_state->dim_mean_max;
+    const float dim_p95_max = ui_state->dim_p95_max;
+    const float dim_black_fraction_min = ui_state->dim_black_fraction_min;
+    const std::string output_dir = ui_state->output_dir;
+    const std::string output_prefix_base = ui_state->output_prefix;
+    FovCaptureSnapshot horizontal_capture;
+    FovCaptureSnapshot vertical_capture;
+    {
+        std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+        horizontal_capture = ui_state->horizontal_capture;
+        vertical_capture = ui_state->vertical_capture;
+    }
+
+    ui_state->progress_completed_steps.store(0, std::memory_order_release);
+    ui_state->progress_total_steps.store(0, std::memory_order_release);
+    ui_state->progress_iris.store(0, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(ui_state->mutex);
+        ui_state->status_message = "Preparing aperture characterization...";
+        ui_state->error_message.clear();
+        ui_state->output_artifact_id.clear();
+        ui_state->output_artifact_dir.clear();
+        ui_state->output_manifest_path.clear();
+        ui_state->output_fingerprint.clear();
+        ui_state->output_json_path.clear();
+        ui_state->output_steps_csv_path.clear();
+        ui_state->output_frames_csv_path.clear();
+        ui_state->output_frame_image_dir.clear();
+        ui_state->has_result = false;
+    }
+
+    ui_state->worker = std::thread([=]() {
+        auto finish = [&]() {
+            ui_state->running.store(false, std::memory_order_release);
+        };
+
+        try {
+            std::vector<unsigned int> iris_values;
+            if (use_explicit_iris_values) {
+                std::string error;
+                if (!parse_uint_csv_text(iris_values_csv.c_str(), &iris_values, &error)) {
+                    throw std::runtime_error(error);
+                }
+            } else {
+                if (iris_start < static_cast<int>(camera_params->iris_min) ||
+                    iris_stop > static_cast<int>(camera_params->iris_max) ||
+                    iris_start > iris_stop) {
+                    throw std::runtime_error("Generated iris sweep range is invalid for the selected camera.");
+                }
+                iris_values = build_iris_sweep(
+                    static_cast<unsigned int>(iris_start),
+                    static_cast<unsigned int>(iris_stop),
+                    camera_params->iris_inc,
+                    static_cast<unsigned int>(std::max(1, iris_step_multiple)));
+            }
+
+            if (iris_values.empty()) {
+                throw std::runtime_error("No iris values were generated for this run.");
+            }
+
+            for (unsigned int iris_value : iris_values) {
+                if (iris_value < camera_params->iris_min || iris_value > camera_params->iris_max) {
+                    throw std::runtime_error("One or more requested iris values are outside the camera range.");
+                }
+            }
+
+            ui_state->progress_total_steps.store(static_cast<int>(iris_values.size()), std::memory_order_release);
+
+            const std::filesystem::path artifact_root_dir(output_dir);
+            {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                std::filesystem::create_directories(artifact_root_dir);
+            }
+            const std::string timestamp = get_current_date_time();
+            const std::string created_utc = get_current_utc_timestamp();
+            const std::string artifact_id =
+                build_aperture_characterization_artifact_id(output_prefix_base, *camera_params, timestamp);
+            const ApertureCharacterizationArtifactPaths artifact_paths =
+                make_aperture_characterization_artifact_paths(artifact_root_dir.string(), artifact_id);
+            {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                std::filesystem::create_directories(artifact_paths.artifact_dir);
+            }
+            std::string write_error;
+            CameraConfigSnapshotProvenance camera_config_snapshot;
+            if (!camera_params->config_path.empty()) {
+                camera_config_snapshot.has_source_path = true;
+                camera_config_snapshot.source_path = camera_params->config_path;
+            } else {
+                camera_config_snapshot.error = "config path missing";
+            }
+
+            if (camera_config_snapshot.has_source_path) {
+                std::string config_snapshot_contents;
+                std::string config_snapshot_error;
+                if (!read_camera_config_snapshot(*camera_params, &config_snapshot_contents, &config_snapshot_error)) {
+                    camera_config_snapshot.error = config_snapshot_error;
+                } else {
+                    orange::ScopedFsuid fsuid_guard;
+                    (void)fsuid_guard;
+                    std::ofstream config_out(
+                        artifact_paths.camera_config_snapshot_path,
+                        std::ios::out | std::ios::binary | std::ios::trunc);
+                    if (!config_out.is_open()) {
+                        camera_config_snapshot.error =
+                            "Failed to open camera config snapshot output path: " +
+                            artifact_paths.camera_config_snapshot_path;
+                    } else {
+                        config_out.write(
+                            config_snapshot_contents.data(),
+                            static_cast<std::streamsize>(config_snapshot_contents.size()));
+                        config_out.close();
+                        if (!config_out) {
+                            camera_config_snapshot.error =
+                                "Failed to write camera config snapshot output path: " +
+                                artifact_paths.camera_config_snapshot_path;
+                        } else {
+                            camera_config_snapshot.has_snapshot = true;
+                            camera_config_snapshot.snapshot_path = artifact_paths.camera_config_snapshot_path;
+                            camera_config_snapshot.error.clear();
+                        }
+                    }
+                }
+            }
+
+            FovCalibrationData fov_calibration;
+            fov_calibration.enabled = enable_fov_calibration;
+            if (enable_fov_calibration) {
+                fov_calibration.working_distance_mm = std::max(0.0f, working_distance_mm);
+                fov_calibration.pixel_pitch_um = std::max(0.0f, pixel_pitch_um);
+                fov_calibration.sensor_width_mm =
+                    static_cast<double>(camera_params->width) * static_cast<double>(fov_calibration.pixel_pitch_um) / 1000.0;
+                fov_calibration.sensor_height_mm =
+                    static_cast<double>(camera_params->height) * static_cast<double>(fov_calibration.pixel_pitch_um) / 1000.0;
+                if (field_width_mm > 0.0f) {
+                    fov_calibration.has_field_width_mm = true;
+                    fov_calibration.field_width_mm = field_width_mm;
+                }
+                if (field_height_mm > 0.0f) {
+                    fov_calibration.has_field_height_mm = true;
+                    fov_calibration.field_height_mm = field_height_mm;
+                }
+                if (fov_calibration.has_field_width_mm && fov_calibration.field_width_mm > 0.0) {
+                    fov_calibration.has_magnification_x = true;
+                    fov_calibration.magnification_x =
+                        fov_calibration.sensor_width_mm / fov_calibration.field_width_mm;
+                }
+                if (fov_calibration.has_field_height_mm && fov_calibration.field_height_mm > 0.0) {
+                    fov_calibration.has_magnification_y = true;
+                    fov_calibration.magnification_y =
+                        fov_calibration.sensor_height_mm / fov_calibration.field_height_mm;
+                }
+                if (fov_calibration.has_magnification_x || fov_calibration.has_magnification_y) {
+                    const double mag_sum =
+                        (fov_calibration.has_magnification_x ? fov_calibration.magnification_x : 0.0) +
+                        (fov_calibration.has_magnification_y ? fov_calibration.magnification_y : 0.0);
+                    const double mag_count =
+                        (fov_calibration.has_magnification_x ? 1.0 : 0.0) +
+                        (fov_calibration.has_magnification_y ? 1.0 : 0.0);
+                    fov_calibration.has_mean_magnification = mag_count > 0.0;
+                    fov_calibration.mean_magnification = mag_count > 0.0 ? (mag_sum / mag_count) : 0.0;
+                }
+                if (use_reference_f_number && fov_calibration.has_mean_magnification) {
+                    fov_calibration.has_effective_reference_f_number = true;
+                    fov_calibration.effective_reference_f_number =
+                        static_cast<double>(reference_f_number) * (1.0 + fov_calibration.mean_magnification);
+                }
+
+                const bool has_any_fov_capture = horizontal_capture.available || vertical_capture.available;
+                if (has_any_fov_capture) {
+                    orange::ScopedFsuid fsuid_guard;
+                    (void)fsuid_guard;
+                    std::filesystem::create_directories(artifact_paths.fov_reference_frames_dir);
+                }
+                if (horizontal_capture.available) {
+                    if (!write_rgb_image_ppm(
+                            artifact_paths.fov_horizontal_capture_path,
+                            horizontal_capture.rgb,
+                            horizontal_capture.width,
+                            horizontal_capture.height,
+                            &write_error)) {
+                        throw std::runtime_error(write_error);
+                    }
+                    fov_calibration.horizontal_capture.has_capture = true;
+                    fov_calibration.horizontal_capture.capture_path = artifact_paths.fov_horizontal_capture_path;
+                    fov_calibration.horizontal_capture.has_detected_line = horizontal_capture.metrics.has_detected_line;
+                    fov_calibration.horizontal_capture.line_angle_deg = horizontal_capture.metrics.line_angle_deg;
+                    fov_calibration.horizontal_capture.angle_error_deg = horizontal_capture.metrics.angle_error_deg;
+                    fov_calibration.horizontal_capture.center_offset_px = horizontal_capture.metrics.center_offset_px;
+                    fov_calibration.horizontal_capture.center_offset_fraction = horizontal_capture.metrics.center_offset_fraction;
+                }
+                if (vertical_capture.available) {
+                    if (!write_rgb_image_ppm(
+                            artifact_paths.fov_vertical_capture_path,
+                            vertical_capture.rgb,
+                            vertical_capture.width,
+                            vertical_capture.height,
+                            &write_error)) {
+                        throw std::runtime_error(write_error);
+                    }
+                    fov_calibration.vertical_capture.has_capture = true;
+                    fov_calibration.vertical_capture.capture_path = artifact_paths.fov_vertical_capture_path;
+                    fov_calibration.vertical_capture.has_detected_line = vertical_capture.metrics.has_detected_line;
+                    fov_calibration.vertical_capture.line_angle_deg = vertical_capture.metrics.line_angle_deg;
+                    fov_calibration.vertical_capture.angle_error_deg = vertical_capture.metrics.angle_error_deg;
+                    fov_calibration.vertical_capture.center_offset_px = vertical_capture.metrics.center_offset_px;
+                    fov_calibration.vertical_capture.center_offset_fraction = vertical_capture.metrics.center_offset_fraction;
+                }
+            }
+
+            ApertureCharacterizationRequest request;
+            request.iris_values = iris_values;
+            request.frames_per_step = static_cast<unsigned int>(std::max(1, frames_per_step));
+            request.settle_frames = static_cast<unsigned int>(std::max(0, settle_frames));
+            request.grab_timeout_ms = static_cast<unsigned int>(std::max(1, grab_timeout_ms));
+            request.grid_rows = (grid_rows > 0 && grid_cols > 0) ? static_cast<unsigned int>(grid_rows) : 0U;
+            request.grid_cols = (grid_rows > 0 && grid_cols > 0) ? static_cast<unsigned int>(grid_cols) : 0U;
+            request.manage_acquisition = true;
+            request.restore_original_iris = restore_original_iris;
+            request.has_reference_iris = use_reference_iris;
+            request.reference_iris = static_cast<unsigned int>(std::max(0, reference_iris));
+            request.has_reference_f_number = use_reference_f_number;
+            request.reference_f_number = reference_f_number;
+            request.camera_config_snapshot = camera_config_snapshot;
+            request.fov_calibration = fov_calibration;
+            request.thresholds.saturated_white_fraction = saturated_white_fraction;
+            request.thresholds.saturated_p99_min = saturated_p99_min;
+            request.thresholds.dim_mean_max = dim_mean_max;
+            request.thresholds.dim_p95_max = dim_p95_max;
+            request.thresholds.dim_black_fraction_min = dim_black_fraction_min;
+            request.save_representative_frames = save_representative_frames;
+            request.representative_frame_dir = artifact_paths.representative_frames_dir;
+            request.representative_frame_prefix = artifact_id;
+            request.progress_callback = [ui_state](size_t completed_steps, size_t total_steps, unsigned int iris_value) {
+                ui_state->progress_completed_steps.store(static_cast<int>(completed_steps), std::memory_order_release);
+                ui_state->progress_total_steps.store(static_cast<int>(total_steps), std::memory_order_release);
+                ui_state->progress_iris.store(static_cast<int>(iris_value), std::memory_order_release);
+            };
+
+            std::string lens_name;
+            get_camera_string_param(&ecam->camera, "LensName", &lens_name);
+
+            ApertureCharacterizationResult result = characterize_aperture_with_stream(
+                &ecam->camera,
+                camera_params,
+                request,
+                static_cast<unsigned int>(std::max(1, buffer_count)));
+
+            const nlohmann::json measurement_json =
+                aperture_characterization_to_json(
+                    result,
+                    request,
+                    *camera_params,
+                    lens_name,
+                    artifact_id,
+                    created_utc,
+                    "",
+                    artifact_paths);
+            const std::string fingerprint =
+                compute_aperture_characterization_fingerprint(measurement_json, artifact_paths, &write_error);
+            if (fingerprint.empty()) {
+                throw std::runtime_error(write_error.empty()
+                                             ? "Failed to compute aperture artifact fingerprint."
+                                             : write_error);
+            }
+            const nlohmann::json measurement_json_with_fingerprint =
+                aperture_characterization_to_json(
+                    result,
+                    request,
+                    *camera_params,
+                    lens_name,
+                    artifact_id,
+                    created_utc,
+                    fingerprint,
+                    artifact_paths);
+            const nlohmann::json manifest_json =
+                aperture_characterization_manifest_to_json(
+                    result,
+                    request,
+                    *camera_params,
+                    lens_name,
+                    artifact_id,
+                    created_utc,
+                    fingerprint,
+                    artifact_paths);
+            if (!write_aperture_characterization_json(artifact_paths.manifest_path, manifest_json, &write_error) ||
+                !write_aperture_characterization_json(artifact_paths.measurement_json_path, measurement_json_with_fingerprint, &write_error) ||
+                !write_aperture_characterization_step_csv(artifact_paths.steps_csv_path, result, artifact_paths, &write_error) ||
+                !write_aperture_characterization_frame_csv(artifact_paths.frames_csv_path, result, &write_error)) {
+                throw std::runtime_error(write_error);
+            }
+            if (!update_calibration_artifact_registry(artifact_root_dir.string(), manifest_json, &write_error)) {
+                throw std::runtime_error(write_error);
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(ui_state->mutex);
+                ui_state->status_message = "Aperture characterization completed.";
+                ui_state->error_message.clear();
+                ui_state->output_artifact_id = artifact_id;
+                ui_state->output_artifact_dir = artifact_paths.artifact_dir;
+                ui_state->output_manifest_path = artifact_paths.manifest_path;
+                ui_state->output_fingerprint = fingerprint;
+                ui_state->output_json_path = artifact_paths.measurement_json_path;
+                ui_state->output_steps_csv_path = artifact_paths.steps_csv_path;
+                ui_state->output_frames_csv_path = artifact_paths.frames_csv_path;
+                ui_state->output_frame_image_dir = artifact_paths.representative_frames_dir;
+                ui_state->has_result = true;
+                ui_state->selected_heatmap_step = 0;
+                ui_state->last_result = std::move(result);
+                ui_state->last_fov_calibration = request.fov_calibration;
+                ui_state->last_camera_serial = camera_params->camera_serial;
+                ui_state->last_focus = camera_params->focus;
+                ui_state->last_exposure = camera_params->exposure;
+            }
+        } catch (const std::exception& ex) {
+            std::cerr << camera_params->camera_serial
+                      << " [aperture_characterization] Run failed: "
+                      << ex.what() << std::endl;
+            std::lock_guard<std::mutex> lock(ui_state->mutex);
+            ui_state->status_message = "Aperture characterization failed.";
+            ui_state->error_message = ex.what();
+        } catch (...) {
+            std::cerr << camera_params->camera_serial
+                      << " [aperture_characterization] Run failed: unknown error"
+                      << std::endl;
+            std::lock_guard<std::mutex> lock(ui_state->mutex);
+            ui_state->status_message = "Aperture characterization failed.";
+            ui_state->error_message = "Unknown error";
+        }
+
+        finish();
+    });
+}
+
+void render_aperture_characterization_window(
+    ApertureCharacterizationUiState* ui_state,
+    CameraControl* camera_control,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params,
+    int num_cameras,
+    const std::string& default_output_dir)
+{
+    if (!ui_state->show_window) {
+        stop_fov_alignment_worker(ui_state);
+        clear_aperture_preview_texture(ui_state);
+        clear_alignment_preview_texture(ui_state);
+        return;
+    }
+
+    join_aperture_worker_if_finished(ui_state);
+    join_alignment_worker_if_finished(ui_state);
+
+    if (!ImGui::Begin("Aperture Characterization", &ui_state->show_window)) {
+        ImGui::End();
+        return;
+    }
+
+    if (!camera_control->open || num_cameras <= 0 || cameras_params == nullptr || ecams == nullptr) {
+        stop_fov_alignment_worker(ui_state);
+        clear_alignment_preview_texture(ui_state);
+        ImGui::TextDisabled("Open one or more cameras to run aperture characterization.");
+        ImGui::End();
+        return;
+    }
+
+    ui_state->selected_camera = std::clamp(ui_state->selected_camera, 0, num_cameras - 1);
+    if (ui_state->configured_camera_index != ui_state->selected_camera) {
+        reset_aperture_defaults_for_camera(
+            ui_state, cameras_params[ui_state->selected_camera], ui_state->selected_camera, default_output_dir);
+    }
+
+    const bool running = ui_state->running.load(std::memory_order_acquire);
+    const bool alignment_running = ui_state->alignment_running.load(std::memory_order_acquire);
+    if (running) {
+        ImGui::BeginDisabled();
+    }
+
+    std::vector<const char*> camera_labels;
+    camera_labels.reserve(num_cameras);
+    for (int i = 0; i < num_cameras; ++i) {
+        camera_labels.push_back(cameras_params[i].camera_name.c_str());
+    }
+    if (ImGui::Combo("Camera", &ui_state->selected_camera, camera_labels.data(), num_cameras)) {
+        stop_fov_alignment_worker(ui_state);
+        clear_alignment_preview_texture(ui_state);
+        reset_aperture_defaults_for_camera(
+            ui_state, cameras_params[ui_state->selected_camera], ui_state->selected_camera, default_output_dir);
+    }
+
+    CameraParams& selected_camera = cameras_params[ui_state->selected_camera];
+    ImGui::Text("Serial: %s", selected_camera.camera_serial.c_str());
+    ImGui::Text("Focus: %u  Exposure: %u  Gain: %u  PixelFormat: %s",
+                selected_camera.focus,
+                selected_camera.exposure,
+                selected_camera.gain,
+                selected_camera.pixel_format.c_str());
+    ImGui::Text("Iris range: [%u, %u] inc=%u",
+                selected_camera.iris_min,
+                selected_camera.iris_max,
+                selected_camera.iris_inc);
+    ImGui::TextWrapped(
+        "Focus changes the measured transmission on a macro setup. Treat focus as part of the calibration key and rerun if focus changes materially.");
+
+    ImGui::Separator();
+    ImGui::Checkbox("Use explicit iris CSV", &ui_state->use_explicit_iris_values);
+    if (ui_state->use_explicit_iris_values) {
+        ImGui::InputText("Iris CSV", ui_state->iris_values_csv, IM_ARRAYSIZE(ui_state->iris_values_csv));
+    } else {
+        ImGui::InputInt("Iris start", &ui_state->iris_start);
+        ImGui::InputInt("Iris stop", &ui_state->iris_stop);
+        ImGui::InputInt("Iris step multiple", &ui_state->iris_step_multiple);
+        if (ui_state->iris_step_multiple < 1) {
+            ui_state->iris_step_multiple = 1;
+        }
+    }
+
+    ImGui::InputInt("Frames per step", &ui_state->frames_per_step);
+    ImGui::InputInt("Settle frames", &ui_state->settle_frames);
+    ImGui::InputInt("Frame buffer count", &ui_state->buffer_count);
+    ImGui::InputInt("Grab timeout (ms)", &ui_state->grab_timeout_ms);
+    ImGui::InputInt("Grid rows (0=off)", &ui_state->grid_rows);
+    ImGui::InputInt("Grid cols (0=off)", &ui_state->grid_cols);
+    if (ui_state->frames_per_step < 1) ui_state->frames_per_step = 1;
+    if (ui_state->settle_frames < 0) ui_state->settle_frames = 0;
+    if (ui_state->buffer_count < 1) ui_state->buffer_count = 1;
+    if (ui_state->grab_timeout_ms < 1) ui_state->grab_timeout_ms = 1;
+    if (ui_state->grid_rows < 0) ui_state->grid_rows = 0;
+    if (ui_state->grid_cols < 0) ui_state->grid_cols = 0;
+
+    ImGui::Checkbox("Restore original iris", &ui_state->restore_original_iris);
+    ImGui::Checkbox("Save representative frame per iris", &ui_state->save_representative_frames);
+    ImGui::Checkbox("Use reference iris", &ui_state->use_reference_iris);
+    if (ui_state->use_reference_iris) {
+        ImGui::InputInt("Reference iris", &ui_state->reference_iris);
+    }
+    ImGui::Checkbox("Use reference f-number", &ui_state->use_reference_f_number);
+    if (ui_state->use_reference_f_number) {
+        ImGui::InputFloat("Reference f-number", &ui_state->reference_f_number, 0.1f, 1.0f, "%.2f");
+        if (ui_state->reference_f_number <= 0.0f) {
+            ui_state->reference_f_number = 2.8f;
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::Checkbox("Include FOV calibration metadata", &ui_state->enable_fov_calibration);
+    if (ui_state->enable_fov_calibration) {
+        ImGui::InputFloat("Working distance (mm)", &ui_state->working_distance_mm, 5.0f, 25.0f, "%.1f");
+        ImGui::InputFloat("Pixel pitch (um)", &ui_state->pixel_pitch_um, 0.01f, 0.1f, "%.3f");
+        ImGui::InputFloat("Field width (mm)", &ui_state->field_width_mm, 1.0f, 10.0f, "%.2f");
+        ImGui::InputFloat("Field height (mm)", &ui_state->field_height_mm, 1.0f, 10.0f, "%.2f");
+        ImGui::InputInt("Preview FPS", &ui_state->alignment_preview_fps);
+        ui_state->working_distance_mm = std::max(0.0f, ui_state->working_distance_mm);
+        ui_state->pixel_pitch_um = std::max(0.0f, ui_state->pixel_pitch_um);
+        ui_state->field_width_mm = std::max(0.0f, ui_state->field_width_mm);
+        ui_state->field_height_mm = std::max(0.0f, ui_state->field_height_mm);
+        ui_state->alignment_preview_fps = std::clamp(ui_state->alignment_preview_fps, 1, 120);
+
+        const double sensor_width_mm =
+            static_cast<double>(selected_camera.width) * static_cast<double>(ui_state->pixel_pitch_um) / 1000.0;
+        const double sensor_height_mm =
+            static_cast<double>(selected_camera.height) * static_cast<double>(ui_state->pixel_pitch_um) / 1000.0;
+        ImGui::Text("Derived sensor size: %.3f mm x %.3f mm", sensor_width_mm, sensor_height_mm);
+        if (ui_state->field_width_mm > 0.0f) {
+            ImGui::Text("Magnification X: %.4f", sensor_width_mm / static_cast<double>(ui_state->field_width_mm));
+        }
+        if (ui_state->field_height_mm > 0.0f) {
+            ImGui::Text("Magnification Y: %.4f", sensor_height_mm / static_cast<double>(ui_state->field_height_mm));
+        }
+        if (ui_state->use_reference_f_number && (ui_state->field_width_mm > 0.0f || ui_state->field_height_mm > 0.0f)) {
+            double mag_sum = 0.0;
+            double mag_count = 0.0;
+            if (ui_state->field_width_mm > 0.0f) {
+                mag_sum += sensor_width_mm / static_cast<double>(ui_state->field_width_mm);
+                mag_count += 1.0;
+            }
+            if (ui_state->field_height_mm > 0.0f) {
+                mag_sum += sensor_height_mm / static_cast<double>(ui_state->field_height_mm);
+                mag_count += 1.0;
+            }
+            if (mag_count > 0.0) {
+                const double effective_reference_f = static_cast<double>(ui_state->reference_f_number) * (1.0 + (mag_sum / mag_count));
+                ImGui::Text("Approx effective reference f-number: %.3f", effective_reference_f);
+            }
+        }
+
+        ImGui::SeparatorText("Live Ruler Alignment");
+        const bool can_preview = !running && !camera_control->subscribe && !camera_control->record_video;
+        int alignment_orientation = ui_state->alignment_orientation.load(std::memory_order_acquire);
+        const char* orientation_items[] = {"Horizontal ruler", "Vertical ruler"};
+        if (ImGui::Combo("Alignment target", &alignment_orientation, orientation_items, IM_ARRAYSIZE(orientation_items))) {
+            ui_state->alignment_orientation.store(alignment_orientation, std::memory_order_release);
+        }
+
+        if (!can_preview) {
+            ImGui::TextDisabled("Stop streaming and recording before using live ruler alignment.");
+        }
+
+        if (!alignment_running) {
+            if (ImGui::Button("Start live alignment")) {
+                if (can_preview) {
+                    start_fov_alignment_worker(ui_state, ecams, cameras_params);
+                }
+            }
+        } else {
+            if (ImGui::Button("Stop live alignment")) {
+                stop_fov_alignment_worker(ui_state);
+            }
+        }
+        ImGui::SameLine();
+        ImGui::Text("%s", alignment_running ? "Live" : "Stopped");
+
+        std::string fov_status;
+        std::string fov_error;
+        bool preview_available = false;
+        RulerAlignmentMetrics live_metrics;
+        {
+            std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+            fov_status = ui_state->live_fov_preview.status_message;
+            fov_error = ui_state->live_fov_preview.error_message;
+            preview_available = ui_state->live_fov_preview.available;
+            live_metrics = ui_state->live_fov_preview.metrics;
+        }
+        if (!fov_status.empty()) {
+            ImGui::TextWrapped("%s", fov_status.c_str());
+        }
+        if (!fov_error.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", fov_error.c_str());
+        }
+        if (live_metrics.has_detected_line) {
+            ImGui::Text("Line angle %.2f deg, angle error %.2f deg, center offset %.1f px (%.3f)",
+                        live_metrics.line_angle_deg,
+                        live_metrics.angle_error_deg,
+                        live_metrics.center_offset_px,
+                        live_metrics.center_offset_fraction);
+        }
+
+        if (preview_available && upload_latest_alignment_texture(ui_state) && ui_state->alignment_texture != 0) {
+            const float width = static_cast<float>(ui_state->alignment_texture_width);
+            const float height = static_cast<float>(ui_state->alignment_texture_height);
+            const ImVec2 available = ImGui::GetContentRegionAvail();
+            const float width_scale = available.x > 0.0f ? available.x / width : 1.0f;
+            const float height_limit = std::clamp(ImGui::GetIO().DisplaySize.y * 0.55f, 480.0f, 1100.0f);
+            const float height_scale = height_limit / std::max(1.0f, height);
+            const float scale = std::min(1.0f, std::min(width_scale, height_scale));
+            ImGui::Image(
+                (ImTextureID)(intptr_t)ui_state->alignment_texture,
+                ImVec2(width * scale, height * scale));
+        }
+
+        std::string capture_error;
+        if (ImGui::Button("Capture horizontal ruler")) {
+            if (!capture_current_fov_snapshot(ui_state, true, &capture_error)) {
+                std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+                ui_state->live_fov_preview.error_message = capture_error;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Capture vertical ruler")) {
+            if (!capture_current_fov_snapshot(ui_state, false, &capture_error)) {
+                std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+                ui_state->live_fov_preview.error_message = capture_error;
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Clear ruler captures")) {
+            std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+            ui_state->horizontal_capture = {};
+            ui_state->vertical_capture = {};
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(ui_state->alignment_mutex);
+            if (ui_state->horizontal_capture.available) {
+                ImGui::Text("Horizontal capture: %dx%d, angle error %.2f deg, offset %.3f",
+                            ui_state->horizontal_capture.width,
+                            ui_state->horizontal_capture.height,
+                            ui_state->horizontal_capture.metrics.angle_error_deg,
+                            ui_state->horizontal_capture.metrics.center_offset_fraction);
+            }
+            if (ui_state->vertical_capture.available) {
+                ImGui::Text("Vertical capture: %dx%d, angle error %.2f deg, offset %.3f",
+                            ui_state->vertical_capture.width,
+                            ui_state->vertical_capture.height,
+                            ui_state->vertical_capture.metrics.angle_error_deg,
+                            ui_state->vertical_capture.metrics.center_offset_fraction);
+            }
+        }
+    }
+
+    ImGui::Separator();
+    ImGui::InputFloat("Saturated white fraction", &ui_state->saturated_white_fraction, 0.0001f, 0.001f, "%.4f");
+    ImGui::InputFloat("Saturated p99 min", &ui_state->saturated_p99_min, 1.0f, 5.0f, "%.1f");
+    ImGui::InputFloat("Dim mean max", &ui_state->dim_mean_max, 1.0f, 5.0f, "%.1f");
+    ImGui::InputFloat("Dim p95 max", &ui_state->dim_p95_max, 1.0f, 5.0f, "%.1f");
+    ImGui::InputFloat("Dim black fraction min", &ui_state->dim_black_fraction_min, 0.01f, 0.1f, "%.2f");
+
+    ImGui::Separator();
+    ImGui::InputText("Artifact root", ui_state->output_dir, IM_ARRAYSIZE(ui_state->output_dir));
+    ImGui::InputText("Artifact label", ui_state->output_prefix, IM_ARRAYSIZE(ui_state->output_prefix));
+
+    if (running) {
+        ImGui::EndDisabled();
+    }
+
+    const bool can_run = !running && !camera_control->subscribe && !camera_control->record_video;
+    if (!can_run) {
+        ImGui::TextDisabled("Stop streaming and recording before starting characterization.");
+    }
+
+    if (ImGui::Button("Run Characterization")) {
+        if (can_run) {
+            start_aperture_characterization_worker(ui_state, ecams, cameras_params);
+        }
+    }
+
+    if (running) {
+        const int completed_steps = ui_state->progress_completed_steps.load(std::memory_order_acquire);
+        const int total_steps = std::max(1, ui_state->progress_total_steps.load(std::memory_order_acquire));
+        const int current_iris = ui_state->progress_iris.load(std::memory_order_acquire);
+        ImGui::SameLine();
+        ImGui::Text("Running...");
+        ImGui::ProgressBar(static_cast<float>(completed_steps) / static_cast<float>(total_steps), ImVec2(-1.0f, 0.0f));
+        ImGui::Text("Completed %d / %d steps. Last iris=%d", completed_steps, total_steps, current_iris);
+    }
+
+    std::string status_message;
+    std::string error_message;
+    std::string output_artifact_id;
+    std::string output_artifact_dir;
+    std::string output_manifest_path;
+    std::string output_fingerprint;
+    std::string output_json_path;
+    std::string output_steps_csv_path;
+    std::string output_frames_csv_path;
+    std::string output_frame_image_dir;
+    bool has_result = false;
+    ApertureCharacterizationResult last_result;
+    FovCalibrationData last_fov_calibration;
+    std::string last_camera_serial;
+    unsigned int last_focus = 0;
+    unsigned int last_exposure = 0;
+    {
+        std::lock_guard<std::mutex> lock(ui_state->mutex);
+        status_message = ui_state->status_message;
+        error_message = ui_state->error_message;
+        output_artifact_id = ui_state->output_artifact_id;
+        output_artifact_dir = ui_state->output_artifact_dir;
+        output_manifest_path = ui_state->output_manifest_path;
+        output_fingerprint = ui_state->output_fingerprint;
+        output_json_path = ui_state->output_json_path;
+        output_steps_csv_path = ui_state->output_steps_csv_path;
+        output_frames_csv_path = ui_state->output_frames_csv_path;
+        output_frame_image_dir = ui_state->output_frame_image_dir;
+        has_result = ui_state->has_result;
+        last_result = ui_state->last_result;
+        last_fov_calibration = ui_state->last_fov_calibration;
+        last_camera_serial = ui_state->last_camera_serial;
+        last_focus = ui_state->last_focus;
+        last_exposure = ui_state->last_exposure;
+    }
+
+    ImGui::Separator();
+    ImGui::TextWrapped("%s", status_message.c_str());
+    if (!error_message.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", error_message.c_str());
+    }
+
+    if (has_result) {
+        ImGui::Text("Last run: camera=%s focus=%u exposure=%u", last_camera_serial.c_str(), last_focus, last_exposure);
+        ImGui::TextWrapped("Artifact ID: %s", output_artifact_id.c_str());
+        if (ImGui::SmallButton("Copy Artifact ID")) {
+            ImGui::SetClipboardText(output_artifact_id.c_str());
+        }
+        ImGui::TextWrapped("Fingerprint: %s", output_fingerprint.c_str());
+        if (ImGui::SmallButton("Copy Fingerprint")) {
+            ImGui::SetClipboardText(output_fingerprint.c_str());
+        }
+        ImGui::TextWrapped("Artifact dir: %s", output_artifact_dir.c_str());
+        ImGui::TextWrapped("Manifest: %s", output_manifest_path.c_str());
+        if (ImGui::SmallButton("Copy Manifest Path")) {
+            ImGui::SetClipboardText(output_manifest_path.c_str());
+        }
+        ImGui::TextWrapped("Measurement JSON: %s", output_json_path.c_str());
+        ImGui::TextWrapped("Steps CSV: %s", output_steps_csv_path.c_str());
+        ImGui::TextWrapped("Frames CSV: %s", output_frames_csv_path.c_str());
+        if (!output_frame_image_dir.empty()) {
+            ImGui::TextWrapped("Representative frames: %s", output_frame_image_dir.c_str());
+        }
+        if (last_fov_calibration.enabled) {
+            ImGui::Text("FOV metadata: working_distance=%.1f mm pixel_pitch=%.3f um",
+                        last_fov_calibration.working_distance_mm,
+                        last_fov_calibration.pixel_pitch_um);
+            if (last_fov_calibration.has_field_width_mm || last_fov_calibration.has_field_height_mm) {
+                if (last_fov_calibration.has_field_width_mm && last_fov_calibration.has_field_height_mm) {
+                    ImGui::Text("Field size: %.3f mm x %.3f mm",
+                                last_fov_calibration.field_width_mm,
+                                last_fov_calibration.field_height_mm);
+                } else if (last_fov_calibration.has_field_width_mm) {
+                    ImGui::Text("Field width: %.3f mm", last_fov_calibration.field_width_mm);
+                } else {
+                    ImGui::Text("Field height: %.3f mm", last_fov_calibration.field_height_mm);
+                }
+            }
+            if (last_fov_calibration.has_mean_magnification) {
+                ImGui::Text("Mean magnification: %.4f", last_fov_calibration.mean_magnification);
+            }
+            if (last_fov_calibration.has_effective_reference_f_number) {
+                ImGui::Text("Approx effective reference f-number: %.3f",
+                            last_fov_calibration.effective_reference_f_number);
+            }
+        }
+        if (last_result.has_saturation_boundary) {
+            ImGui::Text("Saturation-limited through iris %u", last_result.saturation_limited_through_iris);
+        }
+        if (last_result.has_usable_window) {
+            ImGui::Text("Usable iris range: [%u, %u]", last_result.usable_iris_min, last_result.usable_iris_max);
+        }
+        if (last_result.has_dim_boundary) {
+            ImGui::Text("Too dim from iris %u onward", last_result.dim_limited_from_iris);
+        }
+        for (const std::string& warning : last_result.warnings) {
+            ImGui::TextWrapped("Warning: %s", warning.c_str());
+        }
+
+        std::vector<double> plot_iris;
+        std::vector<double> plot_step_mean;
+        std::vector<double> plot_frame_iris;
+        std::vector<double> plot_frame_mean;
+        plot_iris.reserve(last_result.steps.size());
+        plot_step_mean.reserve(last_result.steps.size());
+        size_t total_samples = 0;
+        for (const ApertureStepResult& step : last_result.steps) {
+            total_samples += step.samples.size();
+        }
+        plot_frame_iris.reserve(total_samples);
+        plot_frame_mean.reserve(total_samples);
+        for (const ApertureStepResult& step : last_result.steps) {
+            plot_iris.push_back(static_cast<double>(step.iris));
+            plot_step_mean.push_back(step.summary.mean);
+            for (const ApertureFrameSample& sample : step.samples) {
+                plot_frame_iris.push_back(static_cast<double>(step.iris));
+                plot_frame_mean.push_back(sample.stats.mean);
+            }
+        }
+
+        if (!plot_iris.empty() && ImPlot::BeginPlot("Aperture Mean Intensity", ImVec2(-1.0f, 260.0f))) {
+            ImPlot::SetupAxes("Iris", "Mean Intensity");
+            ImPlot::SetupAxisLimits(ImAxis_X1,
+                                    plot_iris.front() - 0.5,
+                                    plot_iris.back() + 0.5,
+                                    ImGuiCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, 255.0, ImGuiCond_Always);
+
+            if (!plot_frame_iris.empty()) {
+                ImPlot::SetNextMarkerStyle(ImPlotMarker_Circle, 3.0f, ImVec4(0.75f, 0.75f, 0.75f, 0.55f));
+                ImPlot::PlotScatter("Frame mean", plot_frame_iris.data(), plot_frame_mean.data(),
+                                    static_cast<int>(plot_frame_iris.size()));
+            }
+
+            ImPlot::SetNextLineStyle(ImVec4(0.15f, 0.7f, 0.3f, 1.0f), 2.0f);
+            ImPlot::SetNextMarkerStyle(ImPlotMarker_Square, 4.0f, ImVec4(0.15f, 0.7f, 0.3f, 1.0f));
+            ImPlot::PlotLine("Step mean", plot_iris.data(), plot_step_mean.data(),
+                             static_cast<int>(plot_iris.size()));
+            ImPlot::EndPlot();
+        }
+
+        if (!last_result.steps.empty()) {
+            ui_state->selected_heatmap_step =
+                std::clamp(ui_state->selected_heatmap_step, 0, static_cast<int>(last_result.steps.size()) - 1);
+
+            std::vector<std::string> heatmap_labels_storage;
+            std::vector<const char*> heatmap_labels;
+            heatmap_labels_storage.reserve(last_result.steps.size());
+            heatmap_labels.reserve(last_result.steps.size());
+            for (const ApertureStepResult& step : last_result.steps) {
+                std::ostringstream label;
+                label << "iris " << step.iris << " (" << aperture_classification_to_string(step.classification) << ")";
+                heatmap_labels_storage.push_back(label.str());
+            }
+            for (const std::string& label : heatmap_labels_storage) {
+                heatmap_labels.push_back(label.c_str());
+            }
+
+            ImGui::Separator();
+            ImGui::Combo("Heatmap step", &ui_state->selected_heatmap_step, heatmap_labels.data(),
+                         static_cast<int>(heatmap_labels.size()));
+
+            const ApertureStepResult& heatmap_step =
+                last_result.steps[static_cast<size_t>(ui_state->selected_heatmap_step)];
+            if (heatmap_step.has_grid &&
+                !heatmap_step.grid.tile_relative_mean.empty() &&
+                heatmap_step.grid.rows > 0 &&
+                heatmap_step.grid.cols > 0) {
+                ImGui::Text("Grid uniformity at iris %u: min=%.3fx max=%.3fx cv=%.4f",
+                            heatmap_step.iris,
+                            heatmap_step.grid.min_relative_mean,
+                            heatmap_step.grid.max_relative_mean,
+                            heatmap_step.grid.cv_relative_mean);
+                if (ensure_aperture_preview_texture(ui_state, heatmap_step.representative_frame_path)) {
+                    double scale_min = heatmap_step.grid.min_relative_mean;
+                    double scale_max = heatmap_step.grid.max_relative_mean;
+                    if (scale_max <= scale_min) {
+                        scale_max = scale_min + 1e-6;
+                    }
+                    const double image_width = static_cast<double>(ui_state->preview_texture_width);
+                    const double image_height = static_cast<double>(ui_state->preview_texture_height);
+                    if (ImPlot::BeginPlot("Representative Frame Overlay", ImVec2(-1.0f, 420.0f))) {
+                        ImPlot::SetupAxes("Pixel X", "Pixel Y");
+                        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Invert);
+                        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, image_width, ImGuiCond_Always);
+                        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, image_height, ImGuiCond_Always);
+                        ImPlot::PlotImage("##aperture_preview",
+                                          (void*)(intptr_t)ui_state->preview_texture,
+                                          ImPlotPoint(0, 0),
+                                          ImPlotPoint(image_width, image_height));
+
+                        ImPlot::PushPlotClipRect();
+                        ImDrawList* draw_list = ImPlot::GetPlotDrawList();
+                        for (unsigned int row = 0; row < heatmap_step.grid.rows; ++row) {
+                            const double y0 = (static_cast<double>(row) * image_height) / heatmap_step.grid.rows;
+                            const double y1 = (static_cast<double>(row + 1) * image_height) / heatmap_step.grid.rows;
+                            for (unsigned int col = 0; col < heatmap_step.grid.cols; ++col) {
+                                const double x0 = (static_cast<double>(col) * image_width) / heatmap_step.grid.cols;
+                                const double x1 = (static_cast<double>(col + 1) * image_width) / heatmap_step.grid.cols;
+                                const size_t tile_index = static_cast<size_t>(row) * heatmap_step.grid.cols + col;
+                                const double value = heatmap_step.grid.tile_relative_mean[tile_index];
+                                const float t = static_cast<float>(std::clamp((value - scale_min) / (scale_max - scale_min), 0.0, 1.0));
+                                ImVec4 color = ImPlot::SampleColormap(t, ImPlotColormap_Viridis);
+                                color.w = 0.35f;
+                                const ImVec2 p0 = ImPlot::PlotToPixels(x0, y0);
+                                const ImVec2 p1 = ImPlot::PlotToPixels(x1, y1);
+                                draw_list->AddRectFilled(p0, p1, ImGui::ColorConvertFloat4ToU32(color));
+                                draw_list->AddRect(p0, p1, IM_COL32(255, 255, 255, 70));
+                            }
+                        }
+                        ImPlot::PopPlotClipRect();
+                        ImPlot::EndPlot();
+                    }
+                    ImPlot::ColormapScale("Relative mean scale",
+                                          scale_min,
+                                          scale_max,
+                                          ImVec2(60.0f, 200.0f),
+                                          "%.3f",
+                                          ImPlotColormapScaleFlags_None,
+                                          ImPlotColormap_Viridis);
+                } else if (!ui_state->preview_texture_error.empty()) {
+                    ImGui::TextDisabled("%s", ui_state->preview_texture_error.c_str());
+                }
+            } else {
+                ImGui::TextDisabled("Grid heatmap unavailable for the selected step.");
+            }
+        }
+
+        if (ImGui::BeginTable("ApertureCharacterizationResults", 10,
+                              ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchSame)) {
+            ImGui::TableSetupColumn("Iris");
+            ImGui::TableSetupColumn("RB Set");
+            ImGui::TableSetupColumn("RB End");
+            ImGui::TableSetupColumn("Class");
+            ImGui::TableSetupColumn("Mean");
+            ImGui::TableSetupColumn("P95");
+            ImGui::TableSetupColumn("White%");
+            ImGui::TableSetupColumn("dEV");
+            ImGui::TableSetupColumn("f-num");
+            ImGui::TableSetupColumn("eff f-num");
+            ImGui::TableHeadersRow();
+            for (size_t step_index = 0; step_index < last_result.steps.size(); ++step_index) {
+                const ApertureStepResult& step = last_result.steps[step_index];
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const std::string iris_label = std::to_string(step.iris) + "##aperture_step_" + std::to_string(step_index);
+                if (ImGui::Selectable(iris_label.c_str(), ui_state->selected_heatmap_step == static_cast<int>(step_index))) {
+                    ui_state->selected_heatmap_step = static_cast<int>(step_index);
+                }
+                ImGui::TableNextColumn();
+                if (step.has_iris_readback_after_set) {
+                    ImGui::Text("%u%s",
+                                step.iris_readback_after_set,
+                                step.iris_verified_after_set ? "" : " !");
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+                ImGui::TableNextColumn();
+                if (step.has_iris_readback_after_capture) {
+                    ImGui::Text("%u%s",
+                                step.iris_readback_after_capture,
+                                step.iris_verified_after_capture ? "" : " !");
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+                ImGui::TableNextColumn(); ImGui::Text("%s", aperture_classification_to_string(step.classification));
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", step.summary.mean);
+                ImGui::TableNextColumn(); ImGui::Text("%.1f", step.summary.p95);
+                ImGui::TableNextColumn(); ImGui::Text("%.3f", step.summary.white_fraction);
+                ImGui::TableNextColumn(); ImGui::Text("%.2f", step.delta_ev);
+                ImGui::TableNextColumn();
+                if (step.has_estimated_f_number) {
+                    ImGui::Text("%.2f", step.estimated_f_number);
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+                ImGui::TableNextColumn();
+                if (step.has_estimated_effective_f_number) {
+                    ImGui::Text("%.2f", step.estimated_effective_f_number);
+                } else {
+                    ImGui::TextUnformatted("-");
+                }
+            }
+            ImGui::EndTable();
+        }
+    }
+
+    ImGui::End();
+}
+
+}  // namespace
 
 
 void RenderSpeedGraph(int camera_id, YOLOv8Worker* yolo_worker, SpeedTrackingData& speed_data) {
@@ -136,12 +2349,12 @@ int main(int argc, char **args) {
     std::string yolo_model = yolo_model_folder + "/fish_jinyao.engine";
     
     bool camera_is_selected[cam_count]{0};
-    CameraParams *cameras_params;
-    CameraEachSelect *cameras_select;
-    CameraEmergent *ecams;
+    CameraParams *cameras_params = nullptr;
+    CameraEachSelect *cameras_select = nullptr;
+    CameraEmergent *ecams = nullptr;
     std::vector<std::thread> camera_threads;
-    GL_Texture *tex;
-    GL_Texture* crop_tex;
+    GL_Texture *tex = nullptr;
+    GL_Texture* crop_tex = nullptr;
     int num_cameras = 0;
     int stream_downsample = 1;
     CameraControl *camera_control = new CameraControl();
@@ -164,11 +2377,15 @@ int main(int argc, char **args) {
         "ll",
         "vbr",
         20,
+        "factor",
+        1,
+        1024,
+        1024,
         ""
     };
     std::vector<std::string> camera_config_files;
 
-    ScrollingBuffer *realtime_plot_data;
+    ScrollingBuffer *realtime_plot_data = nullptr;
     bool show_realtime_plot = false;
     bool ptp_stream_sync = false;
 
@@ -202,6 +2419,9 @@ int main(int argc, char **args) {
     }
     std::string picture_save_folder = orange_root_dir_str + "/pictures/" + get_current_date();
     std::string calib_save_folder = orange_root_dir_str + "/exp/calibration/" + get_current_date();
+    std::string aperture_char_output_folder = orange_root_dir_str + "/calibrations/artifacts";
+    ApertureCharacterizationUiState aperture_ui_state;
+    copy_string_to_buffer(aperture_ui_state.output_dir, aperture_char_output_folder);
 
     int local_config_select = 0;
     bool select_all_cameras = false;
@@ -215,6 +2435,11 @@ int main(int argc, char **args) {
     std::vector<std::string> color_temps = { "CT_Off", "CT_2800K", "CT_3000K", "CT_4000K", "CT_5000K", "CT_6500K", "CT_Custom"};
 
     while (!glfwWindowShouldClose(window->render_target)) {
+        join_aperture_worker_if_finished(&aperture_ui_state);
+        join_alignment_worker_if_finished(&aperture_ui_state);
+        const bool aperture_job_running = aperture_ui_state.running.load(std::memory_order_acquire);
+        const bool aperture_alignment_running = aperture_ui_state.alignment_running.load(std::memory_order_acquire);
+        const bool aperture_tool_busy = aperture_job_running || aperture_alignment_running;
         create_new_frame();
         
         if (ImGui::Begin("Orange", nullptr, ImGuiWindowFlags_MenuBar)) {
@@ -294,6 +2519,13 @@ int main(int argc, char **args) {
             ImGui::SameLine();
             ImGui::Text("%s", input_folder.c_str()); 
 
+            sanitize_record_output_config(
+                &encoder_config->record_output_mode,
+                &encoder_config->record_downsample_factor,
+                &encoder_config->record_output_width,
+                &encoder_config->record_output_height
+            );
+
             {
                 const char *items[] = {"h264", "hevc"};
                 static int codec_current = 0;
@@ -343,6 +2575,51 @@ int main(int argc, char **args) {
                     }
                 }
             }
+            ImGui::SeparatorText("Recording Resize");
+            ImGui::BeginDisabled(camera_control->subscribe);
+            {
+                const char* items[] = {"factor", "exact_size"};
+                int record_output_mode_current = (encoder_config->record_output_mode == "exact_size") ? 1 : 0;
+                if (ImGui::Combo("record output mode", &record_output_mode_current, items, IM_ARRAYSIZE(items))) {
+                    encoder_config->record_output_mode = items[record_output_mode_current];
+                }
+            }
+            if (encoder_config->record_output_mode == "exact_size") {
+                ImGui::InputInt("record output width", &encoder_config->record_output_width);
+                ImGui::InputInt("record output height", &encoder_config->record_output_height);
+                sanitize_record_output_config(
+                    &encoder_config->record_output_mode,
+                    &encoder_config->record_downsample_factor,
+                    &encoder_config->record_output_width,
+                    &encoder_config->record_output_height
+                );
+            } else {
+                const char* items[] = {"1", "2", "4", "8", "16"};
+                static const int item_numbers[] = {1, 2, 4, 8, 16};
+                int record_factor_current = 0;
+                for (int i = 0; i < IM_ARRAYSIZE(item_numbers); ++i) {
+                    if (encoder_config->record_downsample_factor == item_numbers[i]) {
+                        record_factor_current = i;
+                        break;
+                    }
+                }
+                if (ImGui::Combo("record downsample", &record_factor_current, items, IM_ARRAYSIZE(items))) {
+                    encoder_config->record_downsample_factor = item_numbers[record_factor_current];
+                }
+            }
+            ImGui::EndDisabled();
+            if (camera_control->subscribe) {
+                ImGui::TextDisabled("Recording resize is locked while streaming is active. Stop streaming to change it.");
+            }
+            ImGui::TextDisabled(
+                "Recording resize applies when recording workers are created. Effective default: %s",
+                record_output_summary(
+                    encoder_config->record_output_mode,
+                    encoder_config->record_downsample_factor,
+                    encoder_config->record_output_width,
+                    encoder_config->record_output_height
+                ).c_str()
+            );
 
             int fps_temp = streaming_target_fps.load(); // get the current atomic value
 
@@ -364,6 +2641,15 @@ int main(int argc, char **args) {
                 }
 
                 ImGui::Checkbox("Show camera temperature", &show_realtime_plot);
+                ImGui::SameLine();
+                if (ImGui::Button("Aperture Characterization")) {
+                    aperture_ui_state.show_window = true;
+                    aperture_ui_state.selected_camera = std::clamp(aperture_ui_state.selected_camera, 0, std::max(0, num_cameras - 1));
+                }
+
+                if (aperture_tool_busy) {
+                    ImGui::BeginDisabled();
+                }
 
                 set_camera_properties(ecams, cameras_params, num_cameras, color_temps);
 
@@ -483,6 +2769,118 @@ int main(int argc, char **args) {
                     ImGui::EndTable();
                 }
 
+                if (ImGui::TreeNode("Recording resize overrides")) {
+                    ImGui::BeginDisabled(camera_control->subscribe);
+                    if (ImGui::BeginTable(
+                            "RecordingResizeOverrides",
+                            5,
+                            ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
+                                ImGuiTableFlags_Borders)) {
+                        ImGui::TableNextRow();
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Serial");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Override");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Mode");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Value");
+                        ImGui::TableNextColumn();
+                        ImGui::Text("Effective");
+
+                        for (int i = 0; i < num_cameras; ++i) {
+                            sanitize_record_output_config(
+                                &cameras_select[i].record_output_mode,
+                                &cameras_select[i].record_downsample_factor,
+                                &cameras_select[i].record_output_width,
+                                &cameras_select[i].record_output_height
+                            );
+
+                            ImGui::PushID(i);
+                            ImGui::TableNextRow();
+                            ImGui::TableNextColumn();
+                            ImGui::Text("%s", cameras_params[i].camera_serial.c_str());
+
+                            ImGui::TableNextColumn();
+                            if (ImGui::Checkbox("##record_output_override", &cameras_select[i].record_output_override) &&
+                                cameras_select[i].record_output_override) {
+                                cameras_select[i].record_output_mode = encoder_config->record_output_mode;
+                                cameras_select[i].record_downsample_factor = encoder_config->record_downsample_factor;
+                                cameras_select[i].record_output_width = encoder_config->record_output_width;
+                                cameras_select[i].record_output_height = encoder_config->record_output_height;
+                            }
+
+                            ImGui::TableNextColumn();
+                            ImGui::BeginDisabled(!cameras_select[i].record_output_override);
+                            {
+                                const char* items[] = {"factor", "exact_size"};
+                                int mode_current = (cameras_select[i].record_output_mode == "exact_size") ? 1 : 0;
+                                if (ImGui::Combo("##record_output_mode", &mode_current, items, IM_ARRAYSIZE(items))) {
+                                    cameras_select[i].record_output_mode = items[mode_current];
+                                }
+                            }
+
+                            ImGui::TableNextColumn();
+                            if (cameras_select[i].record_output_mode == "exact_size") {
+                                ImGui::SetNextItemWidth(80.0f);
+                                ImGui::InputInt("##record_output_width", &cameras_select[i].record_output_width);
+                                ImGui::SameLine();
+                                ImGui::Text("x");
+                                ImGui::SameLine();
+                                ImGui::SetNextItemWidth(80.0f);
+                                ImGui::InputInt("##record_output_height", &cameras_select[i].record_output_height);
+                            } else {
+                                const char* items[] = {"1", "2", "4", "8", "16"};
+                                static const int item_numbers[] = {1, 2, 4, 8, 16};
+                                int factor_current = 0;
+                                for (int item_index = 0; item_index < IM_ARRAYSIZE(item_numbers); ++item_index) {
+                                    if (cameras_select[i].record_downsample_factor == item_numbers[item_index]) {
+                                        factor_current = item_index;
+                                        break;
+                                    }
+                                }
+                                if (ImGui::Combo("##record_downsample_factor", &factor_current, items, IM_ARRAYSIZE(items))) {
+                                    cameras_select[i].record_downsample_factor = item_numbers[factor_current];
+                                }
+                            }
+                            ImGui::EndDisabled();
+
+                            ImGui::TableNextColumn();
+                            const std::string effective_mode = cameras_select[i].record_output_override
+                                ? cameras_select[i].record_output_mode
+                                : encoder_config->record_output_mode;
+                            const int effective_factor = cameras_select[i].record_output_override
+                                ? cameras_select[i].record_downsample_factor
+                                : encoder_config->record_downsample_factor;
+                            const int effective_width = cameras_select[i].record_output_override
+                                ? cameras_select[i].record_output_width
+                                : encoder_config->record_output_width;
+                            const int effective_height = cameras_select[i].record_output_override
+                                ? cameras_select[i].record_output_height
+                                : encoder_config->record_output_height;
+                            ImGui::TextUnformatted(
+                                record_output_summary(
+                                    effective_mode,
+                                    effective_factor,
+                                    effective_width,
+                                    effective_height
+                                ).c_str()
+                            );
+                            ImGui::PopID();
+                        }
+
+                        ImGui::EndTable();
+                    }
+                    ImGui::EndDisabled();
+                    if (camera_control->subscribe) {
+                        ImGui::TextDisabled("Overrides are locked while streaming is active. Stop streaming to edit them.");
+                    }
+                    ImGui::TextDisabled(
+                        "Invalid recording resize settings fall back to native size when workers are created and log a warning."
+                    );
+                    ImGui::TreePop();
+                }
+
                 // NEW: Add Frame IPC status section after the table
                 if (camera_control->subscribe) {
                     bool any_frame_ipc_active = false;
@@ -509,6 +2907,10 @@ int main(int argc, char **args) {
 
                 if (camera_control->subscribe) {
                     // ImGui::EndDisabled();
+                }
+
+                if (aperture_tool_busy) {
+                    ImGui::EndDisabled();
                 }
 
                 if (camera_control->subscribe == true) {
@@ -618,6 +3020,14 @@ int main(int argc, char **args) {
         }
         ImGui::End();
 
+        render_aperture_characterization_window(
+            &aperture_ui_state,
+            camera_control,
+            ecams,
+            cameras_params,
+            num_cameras,
+            aperture_char_output_folder);
+
         // file explorer display
         if (ImGuiFileDialog::Instance()->Display("ChooseYOLOFile")) {
             // => will show a dialog
@@ -670,7 +3080,7 @@ int main(int argc, char **args) {
                 // ImGui::EndDisabled();
             }
 
-            if (camera_control->subscribe) {
+            if (camera_control->subscribe || aperture_tool_busy) {
                 ImGui::BeginDisabled();
             }
 
@@ -756,7 +3166,7 @@ int main(int argc, char **args) {
                     realtime_plot_data = nullptr;
                 }
             }
-            if (camera_control->subscribe) {
+            if (camera_control->subscribe || aperture_tool_busy) {
                 ImGui::EndDisabled();
             }
 
@@ -768,6 +3178,9 @@ int main(int argc, char **args) {
                 ImGui::SameLine();
                 if (camera_control->subscribe) {
                     // ImGui::EndDisabled();
+                }
+                if (aperture_tool_busy) {
+                    ImGui::BeginDisabled();
                 }
                 if (ImGui::Button(camera_control->subscribe ? "Stop streaming" : "Start streaming")) {
                     (camera_control->subscribe) = !(camera_control->subscribe);
@@ -858,6 +3271,21 @@ int main(int argc, char **args) {
                                 }
                             }
                             if (cameras_select[i].record) {
+                                std::string recording_output_warning;
+                                const RecordingOutputConfig recording_output_config =
+                                    resolve_recording_output_config(
+                                        cameras_params[i],
+                                        *encoder_config,
+                                        cameras_select[i],
+                                        &recording_output_warning);
+                                if (!recording_output_warning.empty()) {
+                                    std::cerr << "[record_output] Cam " << cameras_params[i].camera_serial
+                                              << ": " << recording_output_warning
+                                              << ". Falling back to native "
+                                              << cameras_params[i].width << "x" << cameras_params[i].height
+                                              << "." << std::endl;
+                                }
+
                                 // The encoder pitch is required by the preprocess worker to prepare the frame correctly.
                                 // We can get it by creating a temporary encoder instance.
 
@@ -866,7 +3294,11 @@ int main(int argc, char **args) {
                                 ck(cuCtxGetCurrent(&cuContext));
 
                                 // Now, use the local cuContext variable
-                                NvEncoderCuda temp_enc(cuContext, cameras_params[i].width, cameras_params[i].height, NV_ENC_BUFFER_FORMAT_NV12);
+                                NvEncoderCuda temp_enc(
+                                    cuContext,
+                                    recording_output_config.resolved_width,
+                                    recording_output_config.resolved_height,
+                                    NV_ENC_BUFFER_FORMAT_NV12);
 
                                 // --- START: ADDED INITIALIZATION ---
                                 // We must initialize the encoder to get valid parameters from it.
@@ -887,6 +3319,7 @@ int main(int argc, char **args) {
                                 encoderPreprocessWorkers[i] = new EncoderPreprocessWorker(
                                     preprocess_name.c_str(),
                                     &cameras_params[i],
+                                    recording_output_config,
                                     encoder_pitch,
                                     *camera_resources[i].recycle_queue,
                                     camera_control
@@ -896,6 +3329,7 @@ int main(int argc, char **args) {
                                 encoderHWWorkers[i] = new EncoderHwWorker(
                                     hw_encoder_name.c_str(),
                                     &cameras_params[i],
+                                    recording_output_config,
                                     encoder_config->encoder_codec,
                                     encoder_config->encoder_preset,
                                     encoder_config->tuning_info,
@@ -1096,6 +3530,9 @@ int main(int argc, char **args) {
                         std::cout << "Cleaned up all per-camera resources." << std::endl;
                     }
                 }
+                if (aperture_tool_busy) {
+                    ImGui::EndDisabled();
+                }
             }
 
             if (camera_control->stop_record) {
@@ -1110,6 +3547,9 @@ int main(int argc, char **args) {
                     // ImGui::BeginDisabled();
                 }
 
+                if (aperture_tool_busy) {
+                    ImGui::BeginDisabled();
+                }
                 if (ImGui::Button(camera_control->record_video ? ICON_FK_PAUSE : ICON_FK_PLAY)) {
                     if (!camera_control->record_video && camera_control->recording_draining) {
                         std::cout << "Recording is still draining. Please wait..." << std::endl;
@@ -1163,6 +3603,9 @@ int main(int argc, char **args) {
                             std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
                         }
                     }
+                }
+                if (aperture_tool_busy) {
+                    ImGui::EndDisabled();
                 }
                 
                 if (!camera_control->subscribe) {
@@ -1352,6 +3795,13 @@ int main(int argc, char **args) {
 
         render_a_frame(window);
     }
+
+    if (aperture_ui_state.worker.joinable()) {
+        aperture_ui_state.worker.join();
+    }
+    stop_fov_alignment_worker(&aperture_ui_state);
+    clear_aperture_preview_texture(&aperture_ui_state);
+    clear_alignment_preview_texture(&aperture_ui_state);
 
     if (camera_control->open) {
         for (int i = 0; i < num_cameras; i++) {

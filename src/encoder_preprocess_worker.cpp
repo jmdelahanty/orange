@@ -7,6 +7,7 @@
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
+#include <stdexcept>
 
 #ifndef PIPELINE_PROFILE
 #if defined(YOLO_PROFILE) && YOLO_PROFILE
@@ -19,9 +20,19 @@
 static constexpr int kEncProfileLogEvery = 60;
 #endif
 
+namespace {
+void check_npp_status(NppStatus status, const char* operation)
+{
+    if (status != NPP_SUCCESS) {
+        throw std::runtime_error(std::string(operation) + " failed with NPP status " + std::to_string(status));
+    }
+}
+} // namespace
+
 EncoderPreprocessWorker::EncoderPreprocessWorker(
     const char* name,
     CameraParams* cam_params,
+    const RecordingOutputConfig& recording_output_config,
     int encoder_pitch,
     SafeQueue<WORKER_ENTRY*>& recycle_queue,
     CameraControl* camera_control
@@ -33,27 +44,39 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
       m_stream(nullptr),
       m_hw_worker_(nullptr),
       d_rgb_temp_(nullptr),
+      d_rgba_resize_(nullptr),
       d_uv_default_plane_(nullptr),
+      recording_output_config_(recording_output_config),
       encoder_pitch_(encoder_pitch),
+      output_width_(recording_output_config_.resolved_width > 0 ? recording_output_config_.resolved_width : static_cast<int>(camera_params_->width)),
+      output_height_(recording_output_config_.resolved_height > 0 ? recording_output_config_.resolved_height : static_cast<int>(camera_params_->height)),
+      resize_source_size_{static_cast<int>(camera_params_->width), static_cast<int>(camera_params_->height)},
+      resize_source_roi_{0, 0, static_cast<int>(camera_params_->width), static_cast<int>(camera_params_->height)},
+      resize_output_size_{output_width_, output_height_},
+      resize_output_roi_{0, 0, output_width_, output_height_},
       last_fps_update_time_(std::chrono::steady_clock::now())  // Initialize FPS timer
 {
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreate(&m_stream));
 
     // Initialize GPU resources needed for color conversion
-    initalize_gpu_frame(&frame_original_gpu_, camera_params_);
+    frame_original_gpu_.d_orig = nullptr;
+    frame_original_gpu_.size_pic = static_cast<int>(camera_params_->width * camera_params_->height * sizeof(unsigned char));
     initialize_gpu_debayer(&debayer_gpu_, camera_params_);
 
     if (camera_params_->color) {
-        ck(cudaMalloc(&d_rgb_temp_, (size_t)camera_params_->width * camera_params_->height * 3));
+        ck(cudaMalloc(&d_rgb_temp_, static_cast<size_t>(output_width_) * output_height_ * 3));
+        if (recording_output_config_.resize_enabled) {
+            ck(cudaMalloc(&d_rgba_resize_, static_cast<size_t>(output_width_) * output_height_ * 4));
+        }
     } else {
-        size_t uv_plane_size = (size_t)encoder_pitch_ * camera_params_->height / 2;
+        size_t uv_plane_size = static_cast<size_t>(encoder_pitch_) * output_height_ / 2;
         ck(cudaMalloc(&d_uv_default_plane_, uv_plane_size));
         ck(cudaMemset(d_uv_default_plane_, 128, uv_plane_size));
     }
 
     // Create a pool of buffers that will be passed to the hardware encoder
-    size_t prepared_frame_size = (size_t)encoder_pitch_ * camera_params_->height * 3 / 2;
+    size_t prepared_frame_size = static_cast<size_t>(encoder_pitch_) * output_height_ * 3 / 2;
     for (int i = 0; i < ENCODER_ENTRY_POOL_SIZE; ++i) {
         ck(cudaMalloc(&encoder_entry_pool_[i].d_prepared_frame, prepared_frame_size));
         free_encoder_entries_.push(&encoder_entry_pool_[i]);
@@ -81,8 +104,8 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
     }
 
     if (d_rgb_temp_) cudaFree(d_rgb_temp_);
+    if (d_rgba_resize_) cudaFree(d_rgba_resize_);
     if (d_uv_default_plane_) cudaFree(d_uv_default_plane_);
-    if (frame_original_gpu_.d_orig) cudaFree(frame_original_gpu_.d_orig);
     if (debayer_gpu_.d_debayer) cudaFree(debayer_gpu_.d_debayer);
 
     // --- Clean up the Event Pool ---
@@ -273,24 +296,63 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         
         // 1. Debayer RAW Bayer to RGBA
         debayer_frame_gpu(camera_params_, &frame_original_gpu_, &debayer_gpu_);
-        
+
+        unsigned char* rgba_source = debayer_gpu_.d_debayer;
+        if (recording_output_config_.resize_enabled) {
+            check_npp_status(
+                nppiResize_8u_C4R(
+                    debayer_gpu_.d_debayer,
+                    static_cast<int>(camera_params_->width) * 4,
+                    resize_source_size_,
+                    resize_source_roi_,
+                    d_rgba_resize_,
+                    output_width_ * 4,
+                    resize_output_size_,
+                    resize_output_roi_,
+                    NPPI_INTER_SUPER),
+                "nppiResize_8u_C4R");
+            rgba_source = d_rgba_resize_;
+        }
+
         // 2. Convert RGBA to RGB (removes alpha channel)
-        rgba2rgb_convert(d_rgb_temp_, debayer_gpu_.d_debayer, camera_params_->width, camera_params_->height, m_stream);
+        rgba2rgb_convert(d_rgb_temp_, rgba_source, output_width_, output_height_, m_stream);
 
         // 3. Convert RGB to NV12 for the encoder using our new optimized kernel
         launch_rgb_to_nv12_kernel(d_rgb_temp_, encoder_entry->d_prepared_frame,
-                                  camera_params_->width, camera_params_->height,
+                                  output_width_, output_height_,
                                   encoder_pitch_, m_stream);
 
     } else {
         // Monochrome path: Copy Y plane and fill UV planes to create an NV12-compatible frame
         unsigned char* d_y_plane_dst = encoder_entry->d_prepared_frame;
-        unsigned char* d_uv_plane_dst = d_y_plane_dst + ((size_t)encoder_pitch_ * camera_params_->height);
+        unsigned char* d_uv_plane_dst = d_y_plane_dst + (static_cast<size_t>(encoder_pitch_) * output_height_);
 
-        ck(cudaMemcpy2DAsync(d_y_plane_dst, encoder_pitch_, entry->d_image, camera_params_->width, 
-                             camera_params_->width, camera_params_->height, cudaMemcpyDeviceToDevice, m_stream));
-        
-        size_t uv_plane_size = (size_t)encoder_pitch_ * camera_params_->height / 2;
+        if (recording_output_config_.resize_enabled) {
+            check_npp_status(
+                nppiResize_8u_C1R(
+                    entry->d_image,
+                    static_cast<int>(camera_params_->width),
+                    resize_source_size_,
+                    resize_source_roi_,
+                    d_y_plane_dst,
+                    encoder_pitch_,
+                    resize_output_size_,
+                    resize_output_roi_,
+                    NPPI_INTER_SUPER),
+                "nppiResize_8u_C1R");
+        } else {
+            ck(cudaMemcpy2DAsync(
+                d_y_plane_dst,
+                encoder_pitch_,
+                entry->d_image,
+                camera_params_->width,
+                output_width_,
+                output_height_,
+                cudaMemcpyDeviceToDevice,
+                m_stream));
+        }
+
+        size_t uv_plane_size = static_cast<size_t>(encoder_pitch_) * output_height_ / 2;
         ck(cudaMemcpyAsync(d_uv_plane_dst, d_uv_default_plane_, uv_plane_size, cudaMemcpyDeviceToDevice, m_stream));
     }
     

@@ -28,6 +28,7 @@ void intialize_servers(ConnectedServer* my_servers);
 std::vector<std::string> string_split(std::string s, std::string delimiter);
 std::vector<std::string> string_split_char(char* string_c, std::string delimiter);
 void load_camera_json_config_files(std::string file_name, CameraParams* camera_params, int camera_id, int num_cameras);
+std::string get_current_utc_timestamp();
 std::string get_current_time_milliseconds();
 std::string get_current_date();
 std::string get_current_date_time();
@@ -55,5 +56,11 @@ bool write_recording_snapshot(const std::string& recording_folder,
 bool update_recording_snapshot_encoder(const std::string& recording_folder,
                                        const std::string& camera_serial,
                                        const nlohmann::json& encoder_info);
+bool read_camera_config_snapshot(const CameraParams& camera_params,
+                                 std::string* config_contents,
+                                 std::string* error_out);
+bool update_calibration_artifact_registry(const std::string& artifact_root_dir,
+                                          const nlohmann::json& manifest,
+                                          std::string* error_out);
 
 #endif // ORANGE_PROJECT

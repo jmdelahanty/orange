@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <string>
 #include <algorithm>
+#include <stdexcept>
 #include <vector>
 #include <numeric>
 
@@ -78,14 +79,15 @@ std::string get_evt_error_string(EVT_ERROR error);
 
 inline void __check_camera_errors(EVT_ERROR err, const char *camera_serial, const char *file, const int line) {
   if (EVT_SUCCESS != err) {
-    std::string error_string;
-    error_string = get_evt_error_string(err);
-    const char*  errorStr = error_string.c_str();
-    fprintf(stderr,
-            "%s checkCameraErrors() Driver API error = %04d \"%s\" from file <%s>, "
-            "line %i.\n",
-            camera_serial, err, errorStr, file, line);
-    throw(EXIT_FAILURE);
+    const std::string error_string = get_evt_error_string(err);
+    const std::string message =
+        std::string(camera_serial) +
+        " checkCameraErrors() Driver API error = " +
+        std::to_string(static_cast<int>(err)) +
+        " \"" + error_string + "\" from file <" +
+        file + ">, line " + std::to_string(line) + ".";
+    fprintf(stderr, "%s\n", message.c_str());
+    throw std::runtime_error(message);
   }
 }
 
@@ -114,7 +116,12 @@ void configure_factory_defaults(Emergent::CEmergentCamera* camera, CameraParams 
 void close_camera(Emergent::CEmergentCamera* camera, CameraParams *camera_params);
 void open_camera_with_params(Emergent::CEmergentCamera* camera, GigEVisionDeviceInfo* device_info, CameraParams* camera_params);
 void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInfo *device_info, CameraParams *camera_params);
-void allocate_frame_buffer(Emergent::CEmergentCamera* camera, Emergent::CEmergentFrame* evt_frame, CameraParams* camera_params, int buffer_size);
+void allocate_frame_buffer(
+    Emergent::CEmergentCamera* camera,
+    Emergent::CEmergentFrame* evt_frame,
+    CameraParams* camera_params,
+    int buffer_size,
+    int buffer_mode = EVT_FRAME_BUFFER_ZERO_COPY);
 void set_frame_buffer(Emergent::CEmergentFrame* evt_frame, CameraParams* camera_params);
 void destroy_frame_buffer(Emergent::CEmergentCamera* camera, Emergent::CEmergentFrame* evt_frame, int buffer_size, CameraParams *camera_params);
 void ptp_camera_sync(Emergent::CEmergentCamera* camera, CameraParams *camera_params);

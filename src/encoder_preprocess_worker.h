@@ -19,6 +19,7 @@ public:
     EncoderPreprocessWorker(
         const char* name,
         CameraParams* cam_params,
+        const RecordingOutputConfig& recording_output_config,
         int encoder_pitch,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
         CameraControl* camera_control
@@ -54,8 +55,16 @@ private:
     FrameGPU frame_original_gpu_;
     Debayer debayer_gpu_;
     unsigned char* d_rgb_temp_;
+    unsigned char* d_rgba_resize_;
     unsigned char* d_uv_default_plane_;
+    RecordingOutputConfig recording_output_config_;
     int encoder_pitch_;
+    int output_width_;
+    int output_height_;
+    NppiSize resize_source_size_;
+    NppiRect resize_source_roi_;
+    NppiSize resize_output_size_;
+    NppiRect resize_output_roi_;
 
     static const int ENCODER_ENTRY_POOL_SIZE = 120; 
     static const int EVENT_POOL_SIZE = 120;

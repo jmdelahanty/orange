@@ -27,13 +27,16 @@ single mature, reproducible CMake-based workflow.
 ## Audit Update (2026-03-16)
 
 - `CMakeLists.txt` already declares all four intended executables (`orange`, `orange_client`, `yolo_offline`, `evt_lens_probe`) as first-class targets, so the migration is not starting from zero.
-- The migration is still incomplete because CMake remains opinionated and local-machine-specific:
-  - `CMAKE_BUILD_TYPE` is hardcoded to `Debug`,
-  - CUDA arch is hardcoded to `sm_80`,
-  - dependency roots still point at `/opt/EVT/eSDK`, `/usr/local/cuda`, and `$HOME/nvidia/...`.
-- No `CMakePresets.json` exists in the repo yet.
-- `build.sh`, `quick_build/*.sh`, and `run.sh` still depend on hardcoded dependency roots and `targets/*` symlink conventions.
-- `README.md` still tells users to edit `build.sh` directly for local installs, so the docs cleanup phase remains outstanding.
+- The migration now has a working CMake-first path for the main app:
+  - `CMAKE_BUILD_TYPE` is no longer hardcoded,
+  - CUDA arch is configured via `ORANGE_CUDA_ARCHITECTURES`,
+  - dependency roots are configurable through cache variables such as `ORANGE_FFMPEG_ROOT`, `ORANGE_TENSORRT_ROOT`, and `ORANGE_EVT_ROOT`.
+- `CMakePresets.json` now exists for the common app build variants (`release`, `debug`, `*_nvtx`, `*_cuda`, `*_yolo_profile`).
+- `build.sh` is now a thin compatibility wrapper around CMake for the main `orange` target.
+- `run.sh` now resolves built binaries from the CMake output layout instead of assuming only `targets/orange`.
+- The migration is still incomplete for optional non-app targets:
+  - `orange_client` and `yolo_offline` are not built by default because they currently have code drift that should be fixed separately.
+  - `quick_build/*.sh` has not yet been migrated or removed.
 
 ## Migration Plan
 
@@ -51,51 +54,51 @@ single mature, reproducible CMake-based workflow.
 
 ### Phase 1: Normalize CMake Target Definitions
 
-- [ ] Remove global compile/link side effects where possible.
-- [ ] Move to target-scoped settings (`target_compile_definitions`, `target_include_directories`, `target_link_libraries`).
-- [ ] Define explicit CMake options:
-  - [ ] `ORANGE_ENABLE_NVTX`
-  - [ ] `ORANGE_ENABLE_YOLO_PROFILE`
-  - [ ] `ORANGE_ENABLE_CUDA_DEBUG`
-  - [ ] `ORANGE_USE_FAST_MATH`
+- [x] Remove global compile/link side effects where possible.
+- [x] Move to target-scoped settings (`target_compile_definitions`, `target_include_directories`, `target_link_libraries`).
+- [x] Define explicit CMake options:
+  - [x] `ORANGE_ENABLE_NVTX`
+  - [x] `ORANGE_ENABLE_YOLO_PROFILE`
+  - [x] `ORANGE_ENABLE_CUDA_DEBUG`
+  - [x] `ORANGE_USE_FAST_MATH`
 - [ ] Ensure all four executables build from CMake as first-class targets.
-- [ ] Ensure feature options are applied consistently to all relevant targets.
+- [x] Ensure feature options are applied consistently to all relevant targets.
 
 ### Phase 2: Dependency Configuration Hardening
 
-- [ ] Replace hardcoded `$HOME`-based paths with cache variables:
-  - [ ] `ORANGE_FFMPEG_ROOT`
-  - [ ] `ORANGE_TENSORRT_ROOT`
-  - [ ] `ORANGE_EVT_ROOT`
-- [ ] Add configure-time checks with clear failure messages for missing deps.
+- [x] Replace hardcoded `$HOME`-based paths with cache variables:
+  - [x] `ORANGE_FFMPEG_ROOT`
+  - [x] `ORANGE_TENSORRT_ROOT`
+  - [x] `ORANGE_EVT_ROOT`
+- [x] Add configure-time checks with clear failure messages for missing deps.
 - [ ] Define expected include/lib layouts for each external dependency.
-- [ ] Add docs for dependency path overrides via CMake cache or environment.
+- [x] Add docs for dependency path overrides via CMake cache or environment.
 
 ### Phase 3: CMake Presets as Canonical Entry Point
 
-- [ ] Add `CMakePresets.json` with configure presets:
-  - [ ] `dev-debug`
-  - [ ] `release`
-  - [ ] `release-nvtx`
-  - [ ] `debug-cuda`
-  - [ ] `release-yolo-profile`
-- [ ] Add corresponding build presets.
-- [ ] Set standardized output roots (for example `out/build/<preset>`).
-- [ ] Add a single command table in docs for all common workflows.
+- [x] Add `CMakePresets.json` with configure presets:
+  - [x] `debug`
+  - [x] `release`
+  - [x] `release_nvtx`
+  - [x] `debug_cuda`
+  - [x] `release_yolo_profile`
+- [x] Add corresponding build presets.
+- [x] Set standardized output roots (currently `targets/<preset>` for compatibility).
+- [x] Add a single command table in docs for all common workflows.
 
 ### Phase 4: Compatibility Layer for Existing Workflows
 
-- [ ] Convert `build.sh` into a thin compatibility shim:
-  - [ ] parse existing flags
-  - [ ] map flags to CMake presets/options
-  - [ ] print deprecation warning
+- [x] Convert `build.sh` into a thin compatibility shim:
+  - [x] parse existing flags
+  - [x] map flags to CMake presets/options
+  - [x] print deprecation warning
 - [ ] Convert `quick_build/*.sh` to wrappers around `cmake --preset` and `cmake --build --preset`.
-- [ ] Keep temporary compatibility symlinks for `targets/orange*` until runtime scripts are updated.
+- [x] Keep temporary compatibility symlinks for `targets/orange*` until runtime scripts are updated.
 
 ### Phase 5: Runtime Script and Docs Cleanup
 
-- [ ] Update `run.sh` to derive binary path from preset output (or selected default preset).
-- [ ] Remove outdated README instructions that reference manual source edits in `build.sh`.
+- [x] Update `run.sh` to derive binary path from preset output (or selected default preset).
+- [x] Remove outdated README instructions that reference manual source edits in `build.sh`.
 - [ ] Document one standard flow:
   - [ ] configure
   - [ ] build

@@ -33,7 +33,7 @@ Encoding performance using GPU A6000 with 7MP Emergent camera
 ## Build instructions 
 0. If you wish to skip the build process, an Ubuntu image is available with preinstalled `orange` and the labeling app `red`. Please contact the developer for accessing the image and follow instructions [here](docs/clonezilla_image.md). 
 
-Build-system migration plan (from custom shell scripts to a mature CMake flow):
+Build-system migration plan/status:
 [`docs/build_system_migration_todo.md`](docs/build_system_migration_todo.md)
 
 1. Install CUDA (the software has been tested with version 12.x) and Emergent camera SDK. Follow instructions in [`docs/install_linux_cuda_eSDK.md`](docs/install_linux_cuda_eSDK.md). Make sure you can stream all cameras individually with Emergent `eCapture`.  
@@ -42,7 +42,9 @@ Build-system migration plan (from custom shell scripts to a mature CMake flow):
 
 Refer to [`docs/install_ffmpeg.md`](docs/install_ffmpeg.md) for detailed instruction for building FFmpeg 4.4. 
 
-The project build file [`build.sh`](build.sh) assumes FFmpeg is installed at `$HOME/nvidia/ffmpeg`, if you installed it at a different location, please change the `build.sh` `DIR_FFMPEG` to match your install directory. 
+For the CMake build, you can override dependency roots with cache variables such as
+`-DORANGE_FFMPEG_ROOT=/path/to/ffmpeg/build` and
+`-DORANGE_TENSORRT_ROOT=/path/to/TensorRT`.
 
 3. Install OpenGL and GLEW
 ```
@@ -55,7 +57,7 @@ sudo apt-get install libglew-dev
 Refer to [`docs/install_opencv.md`](docs/install_opencv.md) for detailed instruction for building OpenCV. 
 
 5. Install TensorRT 
-Followings instruction: [`docs/install_tensorrt.md`](docs/install_tensorrt.md). The project build assumes TensorRT installed at `$HOME/nvidia/TensorRT`. If you installed in at a different location, please change the [`build.sh`](build.sh) `DIR_TENSORRT` to match your install directory.
+Followings instruction: [`docs/install_tensorrt.md`](docs/install_tensorrt.md). If TensorRT is installed at a non-default location, pass `-DORANGE_TENSORRT_ROOT=/path/to/TensorRT` when configuring CMake.
 
 6. Install ENET
 Follow instruction: http://enet.bespin.org/Installation.html. You might need to run `sudo ldconfig` in terminal after installation, or simply reboot your computer. 
@@ -66,16 +68,32 @@ Follow instruction: http://enet.bespin.org/Installation.html. You might need to 
 git clone --recursive https://github.com/JohnsonLabJanelia/orange.git
 ```
 
-8. If you are building the project for the first time, uncomment [`line 15 ~ line 25`](https://github.com/JohnsonLabJanelia/orange/blob/5d7a1b9ec4738f8075895a2a0b27cff556aca834/build.sh#L15) for building `ImGui` and `ImPlot` object files. Run
+8. Build with CMake. Common preset-driven app builds are:
+```
+cmake --preset release
+cmake --build --preset release
+```
+
+For a debug + NVTX build:
+```
+cmake --preset debug_nvtx
+cmake --build --preset debug_nvtx
+```
+
+The legacy [`build.sh`](build.sh) script is now a thin compatibility wrapper around CMake, so the old workflow still works:
 ```
 ./build.sh
+./build.sh --debug --nvtx
 ```
-Comment out Line 15 ~ line 25 to reduce compiling time afterwards. 
 
-Once built, it will make a folder called `targets`. The executable `orange` is the application. Start the program using the run script. 
-
+The application binary is written under `targets/<variant>/orange`. The run script will look for a compatible binary automatically:
 ```
 ./run.sh
+```
+
+If you want to run a specific binary directly:
+```
+ORANGE_BIN=./targets/debug_nvtx/orange ./run.sh
 ```
 
 ## Lens diagnostics (EVT EF/UART)

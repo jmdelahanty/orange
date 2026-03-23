@@ -836,12 +836,17 @@ void camera_open_stream(Emergent::CEmergentCamera *camera, CameraParams *camera_
     check_camera_errors(EVT_CameraOpenStream(camera), camera_params->camera_serial.c_str());
 }
 
-void allocate_frame_buffer(Emergent::CEmergentCamera *camera, Emergent::CEmergentFrame *evt_frame, CameraParams *camera_params, int buffer_size)
+void allocate_frame_buffer(
+    Emergent::CEmergentCamera *camera,
+    Emergent::CEmergentFrame *evt_frame,
+    CameraParams *camera_params,
+    int buffer_size,
+    int buffer_mode)
 {
     for (int frame_count = 0; frame_count < buffer_size; frame_count++)
     {
         set_frame_buffer(&evt_frame[frame_count], camera_params);
-        check_camera_errors(EVT_AllocateFrameBuffer(camera, &evt_frame[frame_count], EVT_FRAME_BUFFER_ZERO_COPY), camera_params->camera_serial.c_str());
+        check_camera_errors(EVT_AllocateFrameBuffer(camera, &evt_frame[frame_count], buffer_mode), camera_params->camera_serial.c_str());
         check_camera_errors(EVT_CameraQueueFrame(camera, &evt_frame[frame_count]), camera_params->camera_serial.c_str());
     }
 }

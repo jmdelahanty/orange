@@ -204,6 +204,11 @@ struct CameraEachSelect
     bool yolo = false;
     bool crop_and_encode = false;
     int downsample = 1;
+    bool record_output_override = false;
+    std::string record_output_mode = "factor";
+    int record_downsample_factor = 1;
+    int record_output_width = 1024;
+    int record_output_height = 1024;
     PictureSaveState frame_save_state = State_Frame_Idle;
     std::string frame_save_format;
     std::string frame_save_name;
