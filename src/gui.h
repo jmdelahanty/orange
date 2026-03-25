@@ -2,6 +2,7 @@
 #define ORANGE_GUI
 #include "gx_helper.h"
 #include "camera.h"
+#include "project.h"
 #include <math.h>
 #include <thread>
 #include <unordered_map>
@@ -84,6 +85,9 @@ static void set_camera_properties(CameraEmergent* ecams, CameraParams* cameras_p
     {
         static int selected_camera = 0;
         static int slider_gain, slider_exposure, slider_frame_rate, slider_width, slider_height, OffsetX, OffsetY, slider_focus, slider_iris;
+        static std::string config_save_status;
+        static bool config_save_error = false;
+        static int config_save_status_camera = -1;
 
         for (int n = 0; n < num_cameras; n++)
         {
@@ -171,6 +175,34 @@ static void set_camera_properties(CameraEmergent* ecams, CameraParams* cameras_p
         if(ImGui::SliderInt(label, &slider_frame_rate, cameras_params[selected_camera].frame_rate_min, cameras_params[selected_camera].frame_rate_max, "%d"))
         {
             update_frame_rate_value(&ecams[selected_camera].camera, slider_frame_rate, &cameras_params[selected_camera]);
+        }
+
+        ImGui::Separator();
+        const bool has_config_path = !cameras_params[selected_camera].config_path.empty();
+        ImGui::TextWrapped("Config file: %s", has_config_path ? cameras_params[selected_camera].config_path.c_str() : "No loaded config file");
+        if (!has_config_path) {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::Button("Save to config")) {
+            std::string save_error;
+            if (save_camera_json_config(cameras_params[selected_camera], &save_error)) {
+                config_save_status = std::string("Saved camera config: ") + cameras_params[selected_camera].config_path;
+                config_save_error = false;
+            } else {
+                config_save_status = save_error.empty() ? "Failed to save camera config." : save_error;
+                config_save_error = true;
+            }
+            config_save_status_camera = selected_camera;
+        }
+        if (!has_config_path) {
+            ImGui::EndDisabled();
+        }
+        if (config_save_status_camera == selected_camera && !config_save_status.empty()) {
+            if (config_save_error) {
+                ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", config_save_status.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "%s", config_save_status.c_str());
+            }
         }
 
         ImGui::TreePop();

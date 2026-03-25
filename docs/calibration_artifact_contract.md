@@ -16,6 +16,8 @@ Non-scope:
 Interpretation guide:
 - See `docs/aperture_calibration_usage.md` for how to use aperture artifacts,
   how reference f-number anchoring works, and what transfers across exposures.
+- See `docs/target_derived_calibration_plan.md` for the USAF resolution artifact
+  design, the current manual-annotation v1 workflow, and the planned DOF follow-up.
 
 ## Ownership
 
@@ -77,6 +79,24 @@ Notes:
   source camera config path for the run.
 - `measurement.json`, `steps.csv`, and `frames.csv` are the payload files for
   the aperture artifact.
+
+Current USAF 1951 resolution package layout:
+
+```text
+<artifact_id>/
+├── manifest.json
+├── measurement.json
+├── positions.csv
+├── camera_config_snapshot.json
+├── target_reference_frames/
+└── analysis_overlays/
+```
+
+Notes:
+- `target_reference_frames/` contains the raw captured position images.
+- `analysis_overlays/` contains ROI-overlay audit images written from the same captures.
+- USAF v1 uses manual resolved-element annotation per captured field position; it does
+  not yet auto-read the target.
 
 ## Manifest Contract
 
@@ -200,11 +220,25 @@ Current emitted top-level fields include:
 The detailed aperture measurement payload remains defined by the current writer
 in `src/aperture_characterization.cpp`.
 
-Current request fields also include:
+Current aperture request fields also include:
 - `camera_config_snapshot`
 - `fov_calibration`
 - `grid_rows`
 - `grid_cols`
+
+Current USAF measurement payloads include top-level fields such as:
+- `schema_id = "orange.calibration.usaf1951_resolution"`
+- `artifact_id`
+- `compatibility`
+- `request.target_name`
+- `request.target_polarity`
+- `request.illumination_mode`
+- `request.camera_config_snapshot`
+- `request.fov_calibration`
+- `positions[]` with per-position ROI and horizontal/vertical resolved element data
+- `summary.center_single_bar_width_um`
+- `summary.best_field_single_bar_width_um`
+- `summary.worst_field_single_bar_width_um`
 
 Current per-step payloads may include:
 - `has_estimated_effective_f_number`
@@ -232,6 +266,14 @@ Current `request.fov_calibration` fields may include:
 - `effective_reference_f_number`
 - `horizontal_capture`
 - `vertical_capture`
+
+Current emitted schema IDs:
+- `orange.calibration.aperture`
+- `orange.calibration.usaf1951_resolution`
+
+Planned future schema IDs:
+- `orange.calibration.dof_resolution`
+- `orange.calibration.imaging_capability_summary`
 
 ## CalibrationRef Contract
 

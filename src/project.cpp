@@ -161,6 +161,8 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->color = camera_config["color"];
     camera_params->focus = camera_config["focus"];
     camera_params->iris = camera_config["iris"];
+    camera_params->offsetx = camera_config.value("offset_x", 0u);
+    camera_params->offsety = camera_config.value("offset_y", 0u);
 }
 
 std::string get_current_utc_timestamp() {
@@ -184,6 +186,75 @@ std::mutex& recording_snapshot_mutex() {
 std::mutex& calibration_registry_mutex() {
     static std::mutex m;
     return m;
+}
+
+std::mutex& ptp_sync_summary_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+std::mutex& camera_config_mutex() {
+    static std::mutex m;
+    return m;
+}
+
+nlohmann::json build_recording_sync_snapshot(bool sync_camera_enabled,
+                                             const PTPParams* ptp_params,
+                                             int num_cameras) {
+    nlohmann::json sync = nlohmann::json::object();
+    sync["schema_version"] = 1;
+    sync["captured_at_utc"] = get_current_utc_timestamp();
+    sync["camera_sync_enabled"] = sync_camera_enabled;
+    sync["num_cameras_expected"] = num_cameras;
+
+    const bool has_ptp_state = (ptp_params != nullptr);
+    const bool network_sync = has_ptp_state ? ptp_params->network_sync : false;
+    sync["mode"] = !sync_camera_enabled ? "none" : (network_sync ? "ptp_network" : "ptp_local");
+    sync["network_sync"] = network_sync;
+
+    nlohmann::json gate_times = nlohmann::json::object();
+    if (has_ptp_state && ptp_params->ptp_global_time != 0) {
+        gate_times["start_ns"] = ptp_params->ptp_global_time;
+    }
+    if (has_ptp_state && ptp_params->ptp_stop_time != 0) {
+        gate_times["stop_ns"] = ptp_params->ptp_stop_time;
+    }
+    sync["gate_times"] = gate_times;
+
+    sync["barriers"] = {
+        {"start", {
+            {"participants_reached", has_ptp_state ? ptp_params->ptp_counter : 0},
+            {"all_reached", has_ptp_state ? ptp_params->ptp_start_reached : false}
+        }},
+        {"stop", {
+            {"participants_reached", has_ptp_state ? ptp_params->ptp_stop_counter : 0},
+            {"all_reached", has_ptp_state ? ptp_params->ptp_stop_reached : false}
+        }}
+    };
+
+    sync["signals"] = {
+        {"start_observed", has_ptp_state ? ptp_params->network_set_start_ptp : false},
+        {"stop_observed", has_ptp_state ? ptp_params->network_set_stop_ptp : false}
+    };
+
+    return sync;
+}
+
+nlohmann::json build_ptp_sync_summary_base(const std::string& recording_folder,
+                                          const std::string& recording_id,
+                                          int num_cameras,
+                                          bool sync_camera_enabled,
+                                          const PTPParams* ptp_params) {
+    nlohmann::json summary = nlohmann::json::object();
+    summary["schema_version"] = 1;
+    summary["recording_id"] =
+        recording_id.empty() ? std::filesystem::path(recording_folder).filename().string() : recording_id;
+    summary["recording_folder"] = recording_folder;
+    summary["created_at_utc"] = get_current_utc_timestamp();
+    summary["updated_at_utc"] = summary["created_at_utc"];
+    summary["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
+    summary["cameras"] = nlohmann::json::object();
+    return summary;
 }
 
 std::string read_file_to_string(const std::string& path, std::string* error) {
@@ -547,10 +618,14 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const std::string& recording_id,
                               const CameraParams* cameras_params,
                               int num_cameras,
-                              const std::string& base_folder) {
+                              const std::string& base_folder,
+                              bool sync_camera_enabled,
+                              const PTPParams* ptp_params) {
     if (!cameras_params || num_cameras <= 0) {
         return false;
     }
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
 
     nlohmann::json snapshot;
     std::string resolved_recording_id = recording_id.empty() ? get_current_date_time() : recording_id;
@@ -603,6 +678,7 @@ bool write_recording_snapshot(const std::string& recording_folder,
     }
 
     snapshot["cameras"] = cameras;
+    snapshot["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
 
     bool wrote_snapshot = false;
     if (!recording_folder.empty()) {
@@ -622,6 +698,76 @@ bool write_recording_snapshot(const std::string& recording_folder,
     }
 
     return true;
+}
+
+bool initialize_ptp_sync_summary(const std::string& recording_folder,
+                                 const std::string& recording_id,
+                                 int num_cameras,
+                                 bool sync_camera_enabled,
+                                 const PTPParams* ptp_params) {
+    if (recording_folder.empty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(ptp_sync_summary_mutex());
+    const std::filesystem::path summary_path =
+        std::filesystem::path(recording_folder) / "ptp_sync_summary.json";
+    const nlohmann::json summary = build_ptp_sync_summary_base(
+        recording_folder,
+        recording_id,
+        num_cameras,
+        sync_camera_enabled,
+        ptp_params);
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(summary_path, summary, std::filesystem::perms::unknown, false, "ptp sync summary");
+}
+
+bool update_ptp_sync_summary_camera(const std::string& recording_folder,
+                                    const std::string& camera_serial,
+                                    const nlohmann::json& camera_summary) {
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path summary_path =
+        std::filesystem::path(recording_folder) / "ptp_sync_summary.json";
+
+    std::lock_guard<std::mutex> lock(ptp_sync_summary_mutex());
+
+    nlohmann::json summary;
+    std::string error;
+    const std::string contents = read_file_to_string(summary_path.string(), &error);
+    if (!contents.empty()) {
+        try {
+            summary = nlohmann::json::parse(contents);
+        } catch (const std::exception& ex) {
+            std::cerr << "Failed to parse ptp sync summary: " << summary_path.string()
+                      << " (" << ex.what() << ")" << std::endl;
+            summary = nlohmann::json::object();
+        }
+    } else {
+        if (!error.empty() && error != "failed to open file") {
+            std::cerr << "Failed to read ptp sync summary: " << summary_path.string()
+                      << " (" << error << ")" << std::endl;
+        }
+        summary = build_ptp_sync_summary_base(recording_folder, "", 0, false, nullptr);
+    }
+
+    if (!summary.is_object()) {
+        summary = nlohmann::json::object();
+    }
+    if (!summary.contains("cameras") || !summary["cameras"].is_object()) {
+        summary["cameras"] = nlohmann::json::object();
+    }
+
+    summary["updated_at_utc"] = get_current_utc_timestamp();
+    summary["cameras"][camera_serial] = camera_summary;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(summary_path, summary, std::filesystem::perms::unknown, false, "ptp sync summary");
 }
 
 bool update_recording_snapshot_encoder(const std::string& recording_folder,
@@ -687,6 +833,7 @@ bool read_camera_config_snapshot(const CameraParams& camera_params,
         return false;
     }
 
+    std::lock_guard<std::mutex> lock(camera_config_mutex());
     std::string read_error;
     const std::string contents = read_file_to_string(camera_params.config_path, &read_error);
     if (contents.empty()) {
@@ -698,6 +845,78 @@ bool read_camera_config_snapshot(const CameraParams& camera_params,
 
     if (config_contents) {
         *config_contents = contents;
+    }
+    return true;
+}
+
+bool save_camera_json_config(const CameraParams& camera_params,
+                             std::string* error_out) {
+    if (error_out) {
+        error_out->clear();
+    }
+    if (camera_params.config_path.empty()) {
+        if (error_out) {
+            *error_out = "config path missing";
+        }
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(camera_config_mutex());
+    std::string read_error;
+    const std::string contents = read_file_to_string(camera_params.config_path, &read_error);
+    if (contents.empty()) {
+        if (error_out) {
+            *error_out = read_error.empty() ? "config file empty" : read_error;
+        }
+        return false;
+    }
+
+    nlohmann::json camera_config;
+    try {
+        camera_config = nlohmann::json::parse(contents);
+    } catch (const std::exception& ex) {
+        if (error_out) {
+            *error_out = std::string("failed to parse config json: ") + ex.what();
+        }
+        return false;
+    }
+    if (!camera_config.is_object()) {
+        if (error_out) {
+            *error_out = "camera config must be a JSON object";
+        }
+        return false;
+    }
+
+    camera_config["name"] = camera_params.camera_name;
+    camera_config["width"] = camera_params.width;
+    camera_config["height"] = camera_params.height;
+    camera_config["frame_rate"] = camera_params.frame_rate;
+    camera_config["gain"] = camera_params.gain;
+    camera_config["exposure"] = camera_params.exposure;
+    camera_config["pixel_format"] = camera_params.pixel_format;
+    camera_config["color_temp"] = camera_params.color_temp;
+    camera_config["gpu_id"] = camera_params.gpu_id;
+    camera_config["gpu_direct"] = camera_params.gpu_direct;
+    camera_config["focus_uart_bootstrap"] = camera_params.focus_uart_bootstrap;
+    camera_config["color"] = camera_params.color;
+    camera_config["focus"] = camera_params.focus;
+    camera_config["iris"] = camera_params.iris;
+    camera_config["offset_x"] = camera_params.offsetx;
+    camera_config["offset_y"] = camera_params.offsety;
+
+    const std::filesystem::path config_path(camera_params.config_path);
+    std::error_code perms_error;
+    const std::filesystem::file_status status = std::filesystem::status(config_path, perms_error);
+    const bool set_perms = !perms_error;
+    const std::filesystem::perms perms = set_perms ? status.permissions() : std::filesystem::perms::unknown;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(config_path, camera_config, perms, set_perms, "camera config")) {
+        if (error_out) {
+            *error_out = std::string("failed to write camera config: ") + camera_params.config_path;
+        }
+        return false;
     }
     return true;
 }

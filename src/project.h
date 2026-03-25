@@ -52,13 +52,25 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const std::string& recording_id,
                               const CameraParams* cameras_params,
                               int num_cameras,
-                              const std::string& base_folder);
+                              const std::string& base_folder,
+                              bool sync_camera_enabled = false,
+                              const PTPParams* ptp_params = nullptr);
+bool initialize_ptp_sync_summary(const std::string& recording_folder,
+                                 const std::string& recording_id,
+                                 int num_cameras,
+                                 bool sync_camera_enabled,
+                                 const PTPParams* ptp_params);
+bool update_ptp_sync_summary_camera(const std::string& recording_folder,
+                                    const std::string& camera_serial,
+                                    const nlohmann::json& camera_summary);
 bool update_recording_snapshot_encoder(const std::string& recording_folder,
                                        const std::string& camera_serial,
                                        const nlohmann::json& encoder_info);
 bool read_camera_config_snapshot(const CameraParams& camera_params,
                                  std::string* config_contents,
                                  std::string* error_out);
+bool save_camera_json_config(const CameraParams& camera_params,
+                             std::string* error_out);
 bool update_calibration_artifact_registry(const std::string& artifact_root_dir,
                                           const nlohmann::json& manifest,
                                           std::string* error_out);

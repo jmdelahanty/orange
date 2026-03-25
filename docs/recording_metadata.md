@@ -55,6 +55,18 @@ Notes:
 <recording_folder>/recording_snapshot.json
 ```
 
+## PTP Sync Summary sidecar
+
+Orange also writes a per-recording PTP summary sidecar:
+
+```
+<recording_folder>/ptp_sync_summary.json
+```
+
+This file is intended as a low-rate per-camera timing summary for the recording
+session. It is not a per-frame event log. When camera sync is disabled, the
+sidecar still exists and records `mode = "none"`.
+
 ## Snapshot schema
 
 Top-level fields:
@@ -64,6 +76,7 @@ Top-level fields:
   "recording_id": "...",
   "timestamp_utc": "...",
   "producer_version": "...",
+  "sync": { ... },
   "cameras": { ... },
   "encoders": { ... },
   "models": { ... }
@@ -72,6 +85,95 @@ Top-level fields:
 
 `cameras` is a dictionary keyed by camera serial number (as a string), where each
 value is the full camera config JSON used at recording start (or `null` if missing).
+
+`sync` is an optional session-level synchronization snapshot captured when the
+recording starts. It is intended to capture durable run provenance, not every
+internal synchronization flag transition.
+
+Current emitted `sync` shape:
+
+```json
+{
+  "schema_version": 1,
+  "captured_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "camera_sync_enabled": true,
+  "mode": "none|ptp_local|ptp_network",
+  "network_sync": false,
+  "num_cameras_expected": 4,
+  "gate_times": {
+    "start_ns": 1234567890123,
+    "stop_ns": 1234567999999
+  },
+  "barriers": {
+    "start": {
+      "participants_reached": 4,
+      "all_reached": true
+    },
+    "stop": {
+      "participants_reached": 0,
+      "all_reached": false
+    }
+  },
+  "signals": {
+    "start_observed": false,
+    "stop_observed": false
+  }
+}
+```
+
+Notes:
+- `mode` reflects the current recording-time sync mode:
+  - `none`: no camera-side synchronized acquisition was enabled.
+  - `ptp_local`: camera-side PTP sync enabled without network-managed gate state.
+  - `ptp_network`: network-managed gate state present.
+- `gate_times.start_ns` / `gate_times.stop_ns` are only present when the
+  corresponding PTP gate times were populated at snapshot time.
+- `barriers` and `signals` are a best-effort capture of current synchronization
+  state at recording start; they are not a complete event log.
+
+## PTP Sync Summary schema
+
+Current emitted `ptp_sync_summary.json` shape:
+
+```json
+{
+  "schema_version": 1,
+  "recording_id": "YYYY_MM_DD_HH_MM_SS",
+  "recording_folder": "/abs/path/to/recording",
+  "created_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "updated_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+  "sync": { "...": "same session-level sync snapshot shape as recording_snapshot.json" },
+  "cameras": {
+    "02010093": {
+      "camera_serial": "02010093",
+      "camera_id": 0,
+      "gpu_id": 1,
+      "sync_camera_enabled": true,
+      "finalized": true,
+      "updated_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "frame_count": 12345,
+      "frames_received": 12345,
+      "dropped_frames": 0,
+      "last_frame_timestamp_ns": 1234567890,
+      "last_latched_ptp_time_ns": 1234567999,
+      "ptp_offset_ns": {"samples": 20, "min": 500, "max": 900, "last": 700, "mean": 710.5},
+      "latch_minus_frame_ns": {"samples": 20, "min": 9000000, "max": 9300000, "last": 9123456, "mean": 9160000.0},
+      "frame_delta_ns": {"samples": 20, "min": 16666650, "max": 16666680, "last": 16666665, "mean": 16666665.2},
+      "latch_delta_ns": {"samples": 20, "min": 16500000, "max": 16800000, "last": 16670000, "mean": 16666670.1},
+      "delta_samples": 12344,
+      "avg_frame_delta_ns_running": 16666665,
+      "avg_latch_delta_ns_running": 16666670
+    }
+  }
+}
+```
+
+Notes:
+- Per-camera stat blocks are updated at low rate from the live acquisition loop.
+- `finalized=true` indicates the last update written for that camera during the
+  active recording folder lifetime.
+- The summary is intended for session-level diagnostics and cross-camera timing
+  comparisons, not for reconstructing exact per-frame order.
 
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value
 captures resolved runtime encoder parameters for one or more outputs for that

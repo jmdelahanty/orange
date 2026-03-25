@@ -590,8 +590,8 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera, GigEVisionDevice
     update_width_value(camera, camera_params->width, camera_params);
     update_height_value(camera, camera_params->height, camera_params);
 
-    update_offsetX_value(camera, 0, camera_params);
-    update_offsetY_value(camera, 0, camera_params);
+    update_offsetX_value(camera, camera_params->offsetx, camera_params);
+    update_offsetY_value(camera, camera_params->offsety, camera_params);
 
     const char *pixel_format = camera_params->pixel_format.c_str();
     check_camera_errors(EVT_CameraSetEnumParam(camera, "PixelFormat", pixel_format), camera_params->camera_serial.c_str());

@@ -38,6 +38,7 @@ Default configured base path in runtime:
 |---|---|---|---|
 | Recording folder | `<base_folder>/<recording_id>/` | Required for recording sessions | Recording started |
 | Snapshot JSON | `<recording_folder>/recording_snapshot.json` | Required | Recording started |
+| PTP sync summary | `<recording_folder>/ptp_sync_summary.json` | Required | Recording started |
 | Latest pointer (local) | `<base_folder>/.orange/latest_recording.json` | Required | Recording started |
 | Latest pointer (shared) | `/run/orange/latest_recording.json` | Required (best-effort write) | Recording started |
 | Main video | `<recording_folder>/Cam<serial>.mp4` | Typical | Per-camera HW encoding active |
@@ -84,6 +85,7 @@ Current emitted top-level fields:
 - `recording_id: string`
 - `timestamp_utc: string` (UTC ISO8601)
 - `producer_version: string` (currently `"unknown"`)
+- `sync: object` (session-level synchronization provenance)
 - `cameras: object`
 - `encoders: object` (added later by encoder worker updates)
 
@@ -128,6 +130,68 @@ Current emitted top-level fields:
 Important:
 - Current runtime snapshot shape is legacy/single-level encoder info.
 - Do not assume `encoders[serial].outputs` or `models` exists.
+
+`sync` object (current shape):
+- `schema_version: integer`
+- `captured_at_utc: string`
+- `camera_sync_enabled: boolean`
+- `mode: string` in `none|ptp_local|ptp_network`
+- `network_sync: boolean`
+- `num_cameras_expected: integer`
+- `gate_times.start_ns: integer` (optional)
+- `gate_times.stop_ns: integer` (optional)
+- `barriers.start.participants_reached: integer`
+- `barriers.start.all_reached: boolean`
+- `barriers.stop.participants_reached: integer`
+- `barriers.stop.all_reached: boolean`
+- `signals.start_observed: boolean`
+- `signals.stop_observed: boolean`
+
+Contract note:
+- `sync` is a snapshot of synchronization state at recording start.
+- It is intended for session provenance and debugging, not as a full event log
+  or per-frame timing stream.
+
+### PTP Sync Summary JSON
+
+Path:
+- `<recording_folder>/ptp_sync_summary.json`
+
+Current emitted top-level fields:
+- `schema_version: integer`
+- `recording_id: string`
+- `recording_folder: string`
+- `created_at_utc: string`
+- `updated_at_utc: string`
+- `sync: object` (same session-level sync snapshot shape as `recording_snapshot.json`)
+- `cameras: object`
+
+`cameras` object:
+- Key: camera serial string
+- Value: per-camera low-rate timing summary with fields including:
+  - `camera_serial`
+  - `camera_id`
+  - `gpu_id`
+  - `sync_camera_enabled`
+  - `finalized`
+  - `updated_at_utc`
+  - `frame_count`
+  - `frames_received`
+  - `dropped_frames`
+  - `last_frame_timestamp_ns`
+  - `last_latched_ptp_time_ns`
+  - `ptp_offset_ns.{samples,min,max,last,mean}`
+  - `latch_minus_frame_ns.{samples,min,max,last,mean}`
+  - `frame_delta_ns.{samples,min,max,last,mean}`
+  - `latch_delta_ns.{samples,min,max,last,mean}`
+  - `delta_samples`
+  - `avg_frame_delta_ns_running`
+  - `avg_latch_delta_ns_running`
+
+Contract notes:
+- This sidecar is updated during acquisition and finalized when the active
+  recording folder lifetime ends for that camera thread.
+- It is a summarized diagnostic artifact, not a per-frame timing trace.
 
 ## CSV Contracts
 

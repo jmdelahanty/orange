@@ -220,6 +220,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
+    "${SRC_DIR}/usaf_resolution_calibration.cpp"
+    "${SRC_DIR}/usaf_resolution_ui.cpp"
     "${SRC_DIR}/crop_and_encode_worker.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"

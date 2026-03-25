@@ -50,6 +50,17 @@ Stop:
 ./scripts/ptp_stack.sh stop
 ```
 
+If Orange is running with sufficient privileges (for example via `sudo`), the
+main UI now also exposes a `Host PTP Stack` section with:
+
+- `Start PTP stack`
+- `Refresh PTP status`
+- `Stop PTP stack`
+- `Restart PTP stack`
+
+The UI calls `scripts/ptp_stack.sh` directly and shows captured stdout/stderr,
+plus a compact status summary for `ptp4l`, `phc2sys`, and socket presence.
+
 Optional shell alias:
 
 ```bash

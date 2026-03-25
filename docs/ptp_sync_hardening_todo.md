@@ -19,6 +19,9 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
    - Refs: `src/camera.h:100`, `src/orange_headless_client.cpp:282`, `src/video_capture.cpp:40`.
 5. Reset logic is tied to success path, so stale state can leak into next session after a failure.
    - Refs: `src/orange.cpp:980`, `src/orange_headless_client.cpp:175`.
+6. Host linuxptp stack control is still external to Orange.
+   - Users currently have to run `scripts/ptp_stack.sh start|stop|status` from a terminal.
+   - Refs: `docs/ptp.md:39`, `scripts/ptp_stack.sh`, `src/orange.cpp:3206`.
 
 ## Audit Update (2026-03-16)
 
@@ -106,7 +109,23 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
   - per-camera offset/skew snapshot suitable for join-budget enforcement,
   - explicit indicator when strict-PTP gating should disable 3D joins.
 
-## Phase 7: Tests
+## Phase 7: Host Stack UI Controls
+
+- [x] Add a dedicated `PTP Stack` panel in Orange for host-side linuxptp control.
+- [x] Call `scripts/ptp_stack.sh` directly for `start`, `stop`, `restart`, and `status`:
+  - do not rely on shell aliases like `ptp-stack`.
+- [x] Keep host stack state distinct from camera-side `PTP Stream Sync` state in the UI and code.
+- [x] Surface at least these fields in the UI:
+  - `ptp4l` running/not running,
+  - `phc2sys` running/not running,
+  - socket presence for `/var/run/ptp4l`,
+  - latest `TIME_STATUS_NP` output.
+- [ ] Define privilege behavior explicitly:
+  - current implementation: full controls only when Orange has sufficient privileges,
+  - remaining gap: non-root read-only status refresh instead of a disabled panel.
+- [x] Prevent unsafe host-stack shutdown while streaming with PTP sync active unless explicitly confirmed.
+
+## Phase 8: Tests
 
 - [ ] Unit tests for barrier state machine transitions (including invalid transitions).
 - [ ] Unit tests for timeout behavior and reset semantics.

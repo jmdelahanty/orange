@@ -18,7 +18,9 @@
 #include "cuda_context_debug.h"
 #include "encoder_preprocess_worker.h"
 #include "frame_ipc_manager.h"
+#include "project.h"
 #include <cstdlib>
+#include <limits>
 
 #ifndef PIPELINE_PROFILE
 #if defined(YOLO_PROFILE) && YOLO_PROFILE
@@ -30,6 +32,50 @@
 #if PIPELINE_PROFILE
 static constexpr int kCopyProfileLogEvery = 60;
 #endif
+
+namespace {
+struct RunningInt64Stats {
+    int64_t min = std::numeric_limits<int64_t>::max();
+    int64_t max = std::numeric_limits<int64_t>::min();
+    long double sum = 0.0;
+    uint64_t samples = 0;
+    int64_t last = 0;
+
+    void add(int64_t value) {
+        if (value < min) min = value;
+        if (value > max) max = value;
+        sum += static_cast<long double>(value);
+        last = value;
+        ++samples;
+    }
+
+    void reset() {
+        min = std::numeric_limits<int64_t>::max();
+        max = std::numeric_limits<int64_t>::min();
+        sum = 0.0;
+        samples = 0;
+        last = 0;
+    }
+
+    nlohmann::json to_json() const {
+        nlohmann::json out = nlohmann::json::object();
+        out["samples"] = samples;
+        if (samples == 0) {
+            return out;
+        }
+        out["min"] = min;
+        out["max"] = max;
+        out["last"] = last;
+        out["mean"] = static_cast<double>(sum / static_cast<long double>(samples));
+        return out;
+    }
+};
+
+std::string current_recording_folder(CameraControl* camera_control) {
+    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+    return camera_control->recording_folder;
+}
+}
 
 static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *ecam, CameraState *camera_state){
     NVTX_RANGE("PTP_Timestamp_Check");
@@ -98,6 +144,11 @@ void acquire_frames(
     //       << " - camera_state address: " << &camera_state 
     //       << ", frame_count address: " << &camera_state.frame_count << std::endl;
     PTPState ptp_state{};
+    RunningInt64Stats ptp_offset_stats{};
+    RunningInt64Stats latch_minus_frame_stats{};
+    RunningInt64Stats frame_delta_stats{};
+    RunningInt64Stats latch_delta_stats{};
+    std::string ptp_summary_recording_folder;
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
     int frame_counter_for_fps = 0;
@@ -136,6 +187,39 @@ void acquire_frames(
         std::cout << "[YOLO] Cam " << camera_params->camera_serial
                   << " decimate=1/" << yolo_decimate << std::endl;
     }
+
+    auto reset_ptp_summary_stats = [&]() {
+        ptp_offset_stats.reset();
+        latch_minus_frame_stats.reset();
+        frame_delta_stats.reset();
+        latch_delta_stats.reset();
+    };
+
+    auto build_ptp_camera_summary_json = [&](bool finalized) {
+        nlohmann::json summary = nlohmann::json::object();
+        summary["camera_serial"] = camera_params->camera_serial;
+        summary["camera_id"] = camera_params->camera_id;
+        summary["gpu_id"] = camera_params->gpu_id;
+        summary["sync_camera_enabled"] = camera_control->sync_camera;
+        summary["finalized"] = finalized;
+        summary["updated_at_utc"] = get_current_utc_timestamp();
+        summary["frame_count"] = camera_state.frame_count;
+        summary["frames_received"] = camera_state.frames_recd;
+        summary["dropped_frames"] = camera_state.dropped_frames;
+        summary["last_frame_timestamp_ns"] = ptp_state.frame_ts;
+        summary["last_latched_ptp_time_ns"] = ptp_state.ptp_time;
+        summary["ptp_offset_ns"] = ptp_offset_stats.to_json();
+        summary["latch_minus_frame_ns"] = latch_minus_frame_stats.to_json();
+        summary["frame_delta_ns"] = frame_delta_stats.to_json();
+        summary["latch_delta_ns"] = latch_delta_stats.to_json();
+        const uint64_t delta_samples = (camera_state.frame_count > 1) ? (camera_state.frame_count - 1) : 0;
+        summary["delta_samples"] = delta_samples;
+        if (delta_samples > 0) {
+            summary["avg_frame_delta_ns_running"] = ptp_state.frame_ts_delta_sum / delta_samples;
+            summary["avg_latch_delta_ns_running"] = ptp_state.ptp_time_delta_sum / delta_samples;
+        }
+        return summary;
+    };
 
     {
         NVTX_RANGE("Camera_Initialization");
@@ -309,6 +393,18 @@ void acquire_frames(
             } else {
                 current_entry->recording_frame_id = 0; // Or another sentinel value if preferred
                 local_recording_frame_count = 0;
+            }
+
+            const std::string live_recording_folder = current_recording_folder(camera_control);
+            if (live_recording_folder != ptp_summary_recording_folder) {
+                if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                    update_ptp_sync_summary_camera(
+                        ptp_summary_recording_folder,
+                        camera_params->camera_serial,
+                        build_ptp_camera_summary_json(true));
+                }
+                ptp_summary_recording_folder = live_recording_folder;
+                reset_ptp_summary_stats();
             }
 
         //     std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
@@ -526,6 +622,18 @@ void acquire_frames(
                     int32_t current_ptp_offset = 0;
                     EVT_ERROR ptp_offset_ret = EVT_CameraGetInt32Param(&ecam->camera, "PtpOffset", &current_ptp_offset);
                     if (ptp_offset_ret == EVT_SUCCESS) {
+                        ptp_offset_stats.add(current_ptp_offset);
+                    }
+                    latch_minus_frame_stats.add(latch_minus_frame_ns);
+                    frame_delta_stats.add(static_cast<int64_t>(ptp_state.frame_ts_delta));
+                    latch_delta_stats.add(static_cast<int64_t>(ptp_state.ptp_time_delta));
+                    if (!ptp_summary_recording_folder.empty()) {
+                        update_ptp_sync_summary_camera(
+                            ptp_summary_recording_folder,
+                            camera_params->camera_serial,
+                            build_ptp_camera_summary_json(false));
+                    }
+                    if (ptp_offset_ret == EVT_SUCCESS) {
                         std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial
                                   << " frame=" << camera_state.frame_count
                                   << " ptp_offset_ns=" << current_ptp_offset
@@ -595,6 +703,13 @@ void acquire_frames(
         EVT_CameraQueueFrame(pending.camera, pending.frame);
     }
     pending_requeues.clear();
+
+    if (camera_control->sync_camera && !ptp_summary_recording_folder.empty()) {
+        update_ptp_sync_summary_camera(
+            ptp_summary_recording_folder,
+            camera_params->camera_serial,
+            build_ptp_camera_summary_json(true));
+    }
 
     // Cleanup
     {
