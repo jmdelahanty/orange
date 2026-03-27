@@ -14,10 +14,21 @@
 #include <chrono>
 #include <string>  // Added for std::string support
 
-inline uint64_t get_time_us() {
+inline uint64_t get_steady_time_us() {
     return std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now().time_since_epoch()
     ).count();
+}
+
+inline uint64_t get_epoch_time_us() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::system_clock::now().time_since_epoch()
+    ).count();
+}
+
+// Backward-compatible alias for older callers. This is monotonic/steady time, not epoch time.
+inline uint64_t get_time_us() {
+    return get_steady_time_us();
 }
 
 namespace shaman {
@@ -45,7 +56,8 @@ struct Object {
 struct VectorSlot {
     size_t count;
     Object objects[MAX_OBJECTS];
-    uint64_t timestamp_us;
+    uint64_t timestamp_us_epoch;
+    uint64_t timestamp_us_monotonic;
     uint64_t frame_id;
     uint32_t camera_id;  // FIXED: Changed from uint16_t to uint32_t
     bool yolo_enabled;   // Indicates if YOLO processing was active
@@ -165,7 +177,8 @@ public:
             slot.objects[i] = vec[i];
         }
 
-        slot.timestamp_us = get_time_us(); 
+        slot.timestamp_us_epoch = get_epoch_time_us();
+        slot.timestamp_us_monotonic = get_steady_time_us();
         slot.frame_id = frame_id;
         slot.camera_id = camera_id;
         slot.yolo_enabled = yolo_enabled;
@@ -202,7 +215,7 @@ public:
     }
 
     // UPDATED: Pop with timestamp and uint32_t camera_id
-    bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, uint32_t& camera_id) {
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us_monotonic, uint64_t& frame_id, uint32_t& camera_id) {
         if (writer) return false;
 
         size_t h = shared->head.load(std::memory_order_acquire);
@@ -216,7 +229,31 @@ public:
             out[i] = slot.objects[i];
         }
 
-        timestamp_us = slot.timestamp_us;  
+        timestamp_us_monotonic = slot.timestamp_us_monotonic;
+        frame_id = slot.frame_id;
+        camera_id = slot.camera_id;
+
+        shared->tail.store((t + 1) % QUEUE_SIZE, std::memory_order_release);
+        return true;
+    }
+
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us_epoch, uint64_t& timestamp_us_monotonic,
+             uint64_t& frame_id, uint32_t& camera_id) {
+        if (writer) return false;
+
+        size_t h = shared->head.load(std::memory_order_acquire);
+        size_t t = shared->tail.load(std::memory_order_relaxed);
+
+        if (h == t) return false; // empty
+
+        const VectorSlot& slot = shared->queue[t];
+        out.resize(slot.count);
+        for (size_t i = 0; i < slot.count; ++i) {
+            out[i] = slot.objects[i];
+        }
+
+        timestamp_us_epoch = slot.timestamp_us_epoch;
+        timestamp_us_monotonic = slot.timestamp_us_monotonic;
         frame_id = slot.frame_id;
         camera_id = slot.camera_id;
 
@@ -226,16 +263,22 @@ public:
     
     // DEPRECATED: Old pop method with uint16_t - provided for transition period
     [[deprecated("Use pop with uint32_t camera_id instead")]]
-    bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, uint16_t& camera_id) {
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us_monotonic, uint64_t& frame_id, uint16_t& camera_id) {
         uint32_t camera_id_32;
-        bool result = pop(out, timestamp_us, frame_id, camera_id_32);
+        bool result = pop(out, timestamp_us_monotonic, frame_id, camera_id_32);
         camera_id = static_cast<uint16_t>(camera_id_32);  // May truncate!
         return result;
     }
     
     // NEW: Full pop with all info including YOLO flag
-    bool pop(std::vector<Object>& out, uint64_t& timestamp_us, uint64_t& frame_id, 
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us_monotonic, uint64_t& frame_id, 
              uint32_t& camera_id, bool& yolo_enabled) {
+        uint64_t timestamp_us_epoch_discarded = 0;
+        return pop(out, timestamp_us_epoch_discarded, timestamp_us_monotonic, frame_id, camera_id, yolo_enabled);
+    }
+
+    bool pop(std::vector<Object>& out, uint64_t& timestamp_us_epoch, uint64_t& timestamp_us_monotonic,
+             uint64_t& frame_id, uint32_t& camera_id, bool& yolo_enabled) {
         if (writer) return false;
 
         size_t h = shared->head.load(std::memory_order_acquire);
@@ -249,7 +292,8 @@ public:
             out[i] = slot.objects[i];
         }
 
-        timestamp_us = slot.timestamp_us;  
+        timestamp_us_epoch = slot.timestamp_us_epoch;
+        timestamp_us_monotonic = slot.timestamp_us_monotonic;
         frame_id = slot.frame_id;
         camera_id = slot.camera_id;
         yolo_enabled = slot.yolo_enabled;

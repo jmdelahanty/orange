@@ -299,7 +299,8 @@ Slot payload (`VectorSlot`) fields:
   - `prob: float`
   - `kps[32]: float`
   - `num_kps: size_t`
-- `timestamp_us: uint64` (producer local `steady_clock` microseconds at push)
+- `timestamp_us_epoch: uint64` (producer wall-clock `system_clock` microseconds at push)
+- `timestamp_us_monotonic: uint64` (producer local `steady_clock` microseconds at push)
 - `frame_id: uint64`
 - `camera_id: uint32` (camera index, not serial)
 - `yolo_enabled: bool`
@@ -342,8 +343,9 @@ Current runtime note:
   are distinct.
 - Main/crop metadata CSV `frame_id` currently means `recording_frame_id`.
 - `timestamp_sys` in metadata rows is realtime nanoseconds.
-- IPC `timestamp_us` is enqueue-time steady-clock microseconds, not camera SDK
-  timestamp.
+- IPC `timestamp_us_epoch` is enqueue-time epoch microseconds.
+- IPC `timestamp_us_monotonic` is enqueue-time steady-clock microseconds.
+- Neither IPC timestamp field is the camera SDK timestamp.
 - Camera SDK `timestamp` units are not explicitly specified by the runtime
   contract and should be treated as source-native ticks.
 

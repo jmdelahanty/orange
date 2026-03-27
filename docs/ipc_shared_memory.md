@@ -66,6 +66,9 @@ Frame IPC in Orange is a per-camera shared-memory ring:
 - queue name: `/shm_cam_<camera_serial>`
 - writer: Orange `FrameIPCManager`
 - reader: Citrus or another SHM consumer
+- slot timestamps:
+  - `timestamp_us_epoch` = enqueue-time epoch microseconds
+  - `timestamp_us_monotonic` = enqueue-time steady-clock microseconds
 
 The current queue is effectively single-consumer:
 
@@ -103,6 +106,10 @@ Observed recovery procedure:
 
 `root:ipc` and `jeremy:ipc` are both acceptable after recreation as long as the
 mode is `0660`.
+
+If the SHAMAN slot schema changed, restarting only the reader is not enough.
+Restart Orange too so the queue is recreated with the current `VectorSlot`
+layout.
 
 ### Orange shows rising `push_fail` counts
 
