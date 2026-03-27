@@ -26,8 +26,16 @@ public:
             ipc_queue_ = std::make_unique<shaman::SharedBoxQueue>(
                 queue_name_.c_str(), true /* is_writer */);
             enabled_ = true;
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
+            init_error_ = e.what();
             enabled_ = false;
+            std::cerr << "[FrameIPC] Failed to initialize " << queue_name_
+                      << ": " << init_error_ << std::endl;
+        } catch (...) {
+            init_error_ = "unknown exception";
+            enabled_ = false;
+            std::cerr << "[FrameIPC] Failed to initialize " << queue_name_
+                      << ": " << init_error_ << std::endl;
         }
 
         if (enabled_) {
@@ -86,7 +94,13 @@ public:
 
     bool isEnabled() const { return enabled_; }
     const std::string& getQueueName() const { return queue_name_; }
+    const std::string& getInitError() const { return init_error_; }
     uint64_t getFramesSent() const { return frames_sent_; }
+    uint64_t getUpdatesSent() const { return updates_sent_; }
+    uint64_t getBaseQueueDrops() const { return base_queue_drops_; }
+    uint64_t getUpdateQueueDrops() const { return update_queue_drops_; }
+    uint64_t getUpdateStaleDrops() const { return update_stale_drops_; }
+    uint64_t getIpcPushFailures() const { return ipc_push_failures_; }
 
 private:
     struct FrameEvent {
@@ -250,6 +264,7 @@ private:
     bool enabled_ = false;
     std::unique_ptr<shaman::SharedBoxQueue> ipc_queue_;
     std::string queue_name_;
+    std::string init_error_;
 
     BoundedQueue<FrameEvent> frame_queue_;
     BoundedQueue<UpdateEvent> update_queue_;

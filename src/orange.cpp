@@ -2665,6 +2665,7 @@ int main(int argc, char **args) {
 
     std::vector<CameraResources> camera_resources;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
+    std::vector<std::string> frame_ipc_init_errors;
 
     EncoderConfig *encoder_config = new EncoderConfig{
         "h264",
@@ -2686,9 +2687,19 @@ int main(int argc, char **args) {
 
     flatbuffers::FlatBufferBuilder *fb_builder = new flatbuffers::FlatBufferBuilder(1024);
 
+    bool enet_runtime_initialized = false;
+    bool enet_server_initialized = false;
     EnetContext server;
-    if (enet_initialize(&server, 3333, 5)) {
-        printf("Server Initiated\n");
+    if (::enet_initialize() != 0) {
+        std::cerr << "[ENet] Global initialization failed; networking disabled." << std::endl;
+    } else {
+        enet_runtime_initialized = true;
+        if (enet_initialize(&server, 3333, 5)) {
+            enet_server_initialized = true;
+            printf("Server Initiated\n");
+        } else {
+            std::cerr << "[ENet] Host initialization failed; ENet thread not started." << std::endl;
+        }
     }
     ConnectedServer my_servers[2];
     intialize_servers(my_servers);
@@ -2729,8 +2740,11 @@ int main(int argc, char **args) {
     bool save_image_all_ready = true;
     bool quite_enet = false;
 
-    std::thread enet_thread = std::thread(&create_enet_thread, &server, my_servers, &indigo_signal_builder,
-                                          &quite_enet);
+    std::thread enet_thread;
+    if (enet_server_initialized) {
+        enet_thread = std::thread(&create_enet_thread, &server, my_servers, &indigo_signal_builder,
+                                  &quite_enet);
+    }
     std::vector<std::string> color_temps = { "CT_Off", "CT_2800K", "CT_3000K", "CT_4000K", "CT_5000K", "CT_6500K", "CT_Custom"};
 
     while (!glfwWindowShouldClose(window->render_target)) {
@@ -3207,9 +3221,38 @@ int main(int argc, char **args) {
                         ImGui::Text("Frame IPC Status:");
                         for (int i = 0; i < num_cameras; i++) {
                             if (cameras_select[i].send_frame_ipc) {
-                                ImGui::Text("  %s: /shm_cam_%u", 
-                                           cameras_params[i].camera_serial.c_str(), 
-                                           cameras_params[i].camera_id);
+                                FrameIPCManager* ipc_manager =
+                                    (i < static_cast<int>(frame_ipc_managers.size()))
+                                        ? frame_ipc_managers[i].get()
+                                        : nullptr;
+                                const std::string expected_queue_name =
+                                    "/shm_cam_" + cameras_params[i].camera_serial;
+                                if (!ipc_manager) {
+                                    const char* init_error =
+                                        (i < static_cast<int>(frame_ipc_init_errors.size()) &&
+                                         !frame_ipc_init_errors[i].empty())
+                                            ? frame_ipc_init_errors[i].c_str()
+                                            : "init did not complete";
+                                    ImGui::Text(
+                                        "  %s: %s [manager unavailable]",
+                                        cameras_params[i].camera_serial.c_str(),
+                                        expected_queue_name.c_str());
+                                    ImGui::TextDisabled("    init_error=%s", init_error);
+                                    continue;
+                                }
+
+                                ImGui::Text(
+                                    "  %s: %s",
+                                    cameras_params[i].camera_serial.c_str(),
+                                    ipc_manager->getQueueName().c_str());
+                                ImGui::TextDisabled(
+                                    "    base=%llu updates=%llu push_fail=%llu base_drop=%llu update_drop=%llu stale=%llu",
+                                    static_cast<unsigned long long>(ipc_manager->getFramesSent()),
+                                    static_cast<unsigned long long>(ipc_manager->getUpdatesSent()),
+                                    static_cast<unsigned long long>(ipc_manager->getIpcPushFailures()),
+                                    static_cast<unsigned long long>(ipc_manager->getBaseQueueDrops()),
+                                    static_cast<unsigned long long>(ipc_manager->getUpdateQueueDrops()),
+                                    static_cast<unsigned long long>(ipc_manager->getUpdateStaleDrops()));
                             }
                         }
                         ImGui::TextDisabled("  Run './dummy_reader' to monitor");
@@ -3622,6 +3665,8 @@ int main(int argc, char **args) {
                         camera_resources.resize(num_cameras);
                         frame_ipc_managers.clear();
                         frame_ipc_managers.resize(num_cameras);
+                        frame_ipc_init_errors.clear();
+                        frame_ipc_init_errors.resize(num_cameras);
                         size_t max_frame_size_bytes = 0;
                         for (int i = 0; i < num_cameras; ++i) {
                             size_t current_size = (size_t)cameras_params[i].width * (size_t)cameras_params[i].height;
@@ -3635,6 +3680,7 @@ int main(int argc, char **args) {
                             if (cameras_select[i].send_frame_ipc) {
                                 frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
                                 if (!frame_ipc_managers[i]->isEnabled()) {
+                                    frame_ipc_init_errors[i] = frame_ipc_managers[i]->getInitError();
                                     frame_ipc_managers[i].reset();
                                 }
                             }
@@ -3921,6 +3967,7 @@ int main(int argc, char **args) {
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
                         frame_ipc_managers.clear();
+                        frame_ipc_init_errors.clear();
 
                         // 4. Final resource cleanup
                         for (int i = 0; i < num_cameras; i++) {
@@ -4295,6 +4342,13 @@ int main(int argc, char **args) {
         std::cout << "Waiting for ENet thread to finish..." << std::endl;
         enet_thread.join();
         std::cout << "ENet thread joined successfully." << std::endl;
+    }
+
+    if (enet_server_initialized) {
+        enet_release(&server);
+    }
+    if (enet_runtime_initialized) {
+        enet_deinitialize();
     }
 
     // 3. Cleanup any remaining resources

@@ -332,6 +332,9 @@ Current runtime note:
 - Receive path validates wrapped ORNG payloads.
 - YOLO ENet send block is presently inactive (schema exists; emitter is not
   actively producing wrapped YOLO packets).
+- GUI ENet startup now initializes the ENet runtime explicitly and only starts
+  the ENet service thread if host initialization succeeds. See
+  [enet_startup_troubleshooting.md](./enet_startup_troubleshooting.md).
 
 ## Timestamp and Frame Identity Rules
 
