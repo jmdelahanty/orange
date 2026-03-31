@@ -13,6 +13,8 @@ NVENC bit allocation toward the fish without requiring TensorRT.
 - Make TensorRT an optional quality-enhancement signal, not a prerequisite.
 - Standardize dish-mask discovery and metadata so Orange, Citrus, and future
   consumers use the same geometry identity.
+- Support both single-dish and multi-arena camera views under one calibration
+  model.
 - Reuse one dish-mask schema across autofocus, recording-quality priors, and
   downstream experiment metadata.
 
@@ -24,15 +26,20 @@ NVENC bit allocation toward the fish without requiring TensorRT.
 
 ## Design Position
 
-- First shared contract to define is the dish mask.
-- Dish mask is the stable spatial prior for all non-TRT fallback behavior.
+- First shared contracts to define are:
+  - `dish_mask` for the outer valid region
+  - `arena_layout` for zero or more sub-arenas inside that region
+- Dish mask remains the stable outer spatial prior for all non-TRT fallback
+  behavior.
+- Arena layout is the stable inner spatial prior for multi-arena views.
 - Consumer-visible identity should be a calibration artifact reference, not a
   guessed config path.
 - Runtime encoding should accept multiple importance sources, ordered:
   1. detector/tracker bbox when available
-  2. motion/background-subtraction ROI constrained by the dish mask
-  3. static dish prior
-  4. neutral full-frame map
+  2. motion/background-subtraction ROI constrained by dish mask and arena layout
+  3. static arena prior
+  4. static dish prior
+  5. neutral full-frame map
 
 ## Why Dish Mask First
 
@@ -46,6 +53,23 @@ The dish mask is the lowest-risk signal in this system:
 
 Without a stable dish mask, every later fallback becomes noisier and harder to
 reason about.
+
+Multi-arena views do not remove the need for a dish mask. They add a second
+calibration layer on top of it.
+
+## Single-Dish vs Multi-Arena
+
+Keep these concepts separate:
+
+- `dish_mask`: what part of the frame is valid arena-bearing space at all
+- `arena_layout`: one or more named sub-arenas inside that valid region
+
+Rules:
+
+- Single-dish/single-fish views may use only `dish_mask`.
+- Multi-arena views should use both `dish_mask` and `arena_layout`.
+- Do not overload `dish_mask` to mean both outer region and sub-arena list.
+- Runtime importance maps may contain multiple disconnected protected regions.
 
 ## Reuse Existing Dish-Mask Geometry
 
@@ -75,6 +99,78 @@ Future extension may add:
 
 But v1 should stay circle-only so Orange and Citrus can implement it cheaply and
 reliably.
+
+## Arena-Layout Artifact (Planned)
+
+Use a second calibration artifact when a camera view contains multiple stable
+sub-arenas.
+
+Proposed artifact schema id:
+
+```text
+orange.calibration.arena_layout
+```
+
+Planned payload shape:
+
+```json
+{
+  "schema_id": "orange.calibration.arena_layout",
+  "schema_version": 1,
+  "artifact_id": "arenalayout_2026_03_30_...",
+  "created_utc": "2026-03-30T12:00:00Z",
+  "calibration_ref": {
+    "artifact_id": "arenalayout_2026_03_30_...",
+    "artifact_schema_id": "orange.calibration.arena_layout",
+    "artifact_schema_version": 1,
+    "fingerprint": "fnv1a64:..."
+  },
+  "camera": {
+    "serial": "2010093",
+    "width": 4512,
+    "height": 4512,
+    "pixel_format": "Mono8"
+  },
+  "layout": {
+    "coordinate_space": "camera_native_pixels",
+    "arenas": [
+      {
+        "arena_id": "a0",
+        "geometry": {"type": "circle", "cx": 1120.0, "cy": 1120.0, "r": 420.0},
+        "context": {"dish_design_id": "dish4_v1", "arena_index": 0}
+      },
+      {
+        "arena_id": "a1",
+        "geometry": {"type": "circle", "cx": 3392.0, "cy": 1120.0, "r": 420.0},
+        "context": {"dish_design_id": "dish4_v1", "arena_index": 1}
+      },
+      {
+        "arena_id": "a2",
+        "geometry": {"type": "circle", "cx": 1120.0, "cy": 3392.0, "r": 420.0},
+        "context": {"dish_design_id": "dish4_v1", "arena_index": 2}
+      },
+      {
+        "arena_id": "a3",
+        "geometry": {"type": "circle", "cx": 3392.0, "cy": 3392.0, "r": 420.0},
+        "context": {"dish_design_id": "dish4_v1", "arena_index": 3}
+      }
+    ]
+  },
+  "provenance": {
+    "source": "manual",
+    "source_image_kind": "empty_dish_frame"
+  }
+}
+```
+
+Notes:
+
+- `arena_id` must be stable within the layout artifact.
+- `arena_index` is convenience metadata, not identity.
+- v1 should allow disconnected arenas and should not assume only one fish per
+  full camera frame.
+- A single camera may therefore map to several independent “important regions”
+  in the final encoding map.
 
 ## Canonical Consumer-Facing Identity
 
@@ -190,6 +286,25 @@ Planned shape:
           },
           "source": "manual"
         }
+      },
+      "arena_layout": {
+        "calibration_ref": {
+          "artifact_id": "arenalayout_...",
+          "artifact_schema_id": "orange.calibration.arena_layout",
+          "artifact_schema_version": 1,
+          "fingerprint": "fnv1a64:..."
+        },
+        "runtime": {
+          "enabled": true,
+          "coordinate_space": "camera_native_pixels",
+          "arenas": [
+            {"arena_id": "a0", "geometry": {"type": "circle", "cx": 1120.0, "cy": 1120.0, "r": 420.0}},
+            {"arena_id": "a1", "geometry": {"type": "circle", "cx": 3392.0, "cy": 1120.0, "r": 420.0}},
+            {"arena_id": "a2", "geometry": {"type": "circle", "cx": 1120.0, "cy": 3392.0, "r": 420.0}},
+            {"arena_id": "a3", "geometry": {"type": "circle", "cx": 3392.0, "cy": 3392.0, "r": 420.0}}
+          ],
+          "source": "manual"
+        }
       }
     }
   }
@@ -204,16 +319,19 @@ Rules:
   than inventing a second identifier.
 - Citrus may also copy the resolved runtime geometry for convenience, but the
   reference remains authoritative.
+- `dish_mask` and `arena_layout` are independent calibration entries. A camera
+  may emit one, both, or neither.
 
 ## Citrus Consumer Rule
 
-Citrus should resolve dish-mask identity in this order:
+Citrus should resolve spatial-calibration identity in this order:
 
 1. Read `recording_snapshot.json`.
-2. Read `calibrations[serial].dish_mask.calibration_ref`.
-3. Resolve the artifact through the Orange calibration artifact registry.
-4. Copy the same `calibration_ref` into Citrus experiment metadata.
-5. Optionally also copy the resolved `runtime.geometry` block used by Orange.
+2. Read `calibrations[serial].dish_mask.calibration_ref` if present.
+3. Read `calibrations[serial].arena_layout.calibration_ref` if present.
+4. Resolve each artifact through the Orange calibration artifact registry.
+5. Copy the same `calibration_ref` values into Citrus experiment metadata.
+6. Optionally also copy the resolved runtime geometry blocks used by Orange.
 
 Citrus should not:
 
@@ -262,36 +380,74 @@ If validation fails:
 - emit a clear warning,
 - fall back to neutral map or static-default encoding behavior.
 
+## How Orange Should Find the Arena Layout
+
+### Phase 1 Recommendation
+
+Use manual calibration for stable sub-arena geometry.
+
+Store, per arena:
+
+- `arena_id`
+- geometry
+- optional design/context fields
+
+For v1, use stable geometry only. Do not try to infer arena occupancy or fish
+presence from the layout artifact itself.
+
+### Validation Rules
+
+Before Orange uses the layout at runtime:
+
+- `camera_serial` must match active camera
+- `width` and `height` must match active stream dimensions
+- all `arena_id` values must be unique
+- all arena geometries must be in-bounds
+- arenas should either lie inside `dish_mask` or explicitly declare that no
+  outer dish mask applies
+
+If validation fails:
+
+- disable arena-layout use,
+- emit a clear warning,
+- continue using `dish_mask` or neutral behavior if available.
+
 ## Runtime Importance Source Plan
 
 Planned priority order for the future `ImportanceMapBuilder`:
 
-1. `semantic_bbox`
-2. `motion_roi_inside_dish`
-3. `static_dish_prior`
-4. `neutral`
+1. `semantic_bbox_inside_arena`
+2. `motion_roi_inside_arena`
+3. `static_arena_prior`
+4. `static_dish_prior`
+5. `neutral`
 
 Expected behavior:
 
 - bbox expands and smooths over time
-- motion ROI is clipped to `dish_mask`
+- motion ROI is clipped to `dish_mask` and, when present, to the active
+  `arena_layout`
+- static arena prior may create several disconnected protected regions
 - static dish prior gives mild protection even when no motion is detected
 - neutral mode remains available for users who want no special behavior
+- final map may contain multiple simultaneous important regions in one frame
 
 ## TODO Plan
 
 ## Phase 1: Schema and Contracts
 
 - [ ] Define `orange.calibration.dish_mask` artifact schema.
+- [ ] Define `orange.calibration.arena_layout` artifact schema.
 - [ ] Reuse the existing circular dish-mask geometry fields from
   `docs/fish_autofocus_todo.md`.
 - [ ] Decide required versus optional payload fields.
 - [ ] Define `recording_snapshot.json` extension:
   - [ ] top-level `calibrations`
   - [ ] per-camera `dish_mask`
+  - [ ] per-camera `arena_layout`
   - [ ] `calibration_ref`
   - [ ] resolved runtime geometry block
-- [ ] Define Citrus copy-through rule for dish-mask metadata.
+- [ ] Define Citrus copy-through rule for spatial calibration metadata.
 - [ ] Add a short compatibility note to `docs/recording_metadata.md` once the
   planned shape is accepted.
 
@@ -303,20 +459,24 @@ Expected behavior:
 - [ ] Add explicit overwrite/update flow for recalibration.
 - [ ] Add optional auto-fit path later, but keep manual calibration as the first
   supported path.
+- [ ] Implement manual arena-layout calibration for multi-arena views.
+- [ ] Save arena layout as a separate calibration artifact package.
 
 ## Phase 3: Orange Runtime Loading and Emission
 
 - [ ] Load dish-mask artifact reference for each active camera.
+- [ ] Load arena-layout artifact reference for each active camera when present.
 - [ ] Validate artifact geometry against active stream dimensions at startup.
 - [ ] Emit resolved dish-mask ref + runtime geometry into recording snapshot.
+- [ ] Emit resolved arena-layout ref + runtime geometry into recording snapshot.
 - [ ] Add concise startup log line summarizing mask status.
 - [ ] Keep recording functional when no dish mask is available.
 
 ## Phase 4: Citrus Integration
 
-- [ ] Parse dish-mask calibration refs from Orange recording snapshot.
+- [ ] Parse dish-mask and arena-layout calibration refs from Orange recording snapshot.
 - [ ] Resolve artifact refs through the Orange calibration artifact registry.
-- [ ] Copy `calibration_ref` into Citrus experiment metadata.
+- [ ] Copy spatial `calibration_ref` values into Citrus experiment metadata.
 - [ ] Optionally copy Orange-resolved runtime geometry into Citrus metadata for
   convenience.
 - [ ] Avoid any Citrus path-guessing dependency on Orange config layout.
@@ -324,17 +484,19 @@ Expected behavior:
 ## Phase 5: Importance Signals Without TRT
 
 - [ ] Build `static_dish_prior` from the dish mask.
+- [ ] Build `static_arena_prior` from zero or more arena geometries.
 - [ ] Add low-resolution motion/background-subtraction ROI constrained by the
-  dish mask.
+  dish mask and, when present, by the arena layout.
 - [ ] Add temporal smoothing and stale-ROI hold.
 - [ ] Treat motion fallback as a soft prior, not as hard truth.
 - [ ] Prefer recall over precision for fallback ROI generation.
+- [ ] Define how multiple simultaneous active arenas combine into one final map.
 
 ## Phase 6: Optional TRT Integration
 
 - [ ] Add bbox-driven importance source when detector/tracker is available.
 - [ ] Expand bbox before use.
-- [ ] Fuse bbox with dish mask and temporal smoothing.
+- [ ] Fuse bbox with dish mask, arena layout, and temporal smoothing.
 - [ ] Keep TRT optional and degradable to non-TRT fallback modes.
 
 ## Phase 7: NVENC Integration
@@ -348,10 +510,12 @@ Expected behavior:
 ## Phase 8: Validation
 
 - [ ] Validate dish-mask artifact resolution by Orange runtime.
+- [ ] Validate arena-layout artifact resolution by Orange runtime.
 - [ ] Validate Citrus can resolve and copy the same calibration ref.
 - [ ] Validate snapshot round-trip for one full recording session.
 - [ ] Validate non-TRT mode with:
   - [ ] dish prior only
+  - [ ] dish prior + static multi-arena layout
   - [ ] dish prior + motion fallback
 - [ ] Validate TRT mode with bbox + fallbacks.
 - [ ] Compare file size, NVENC utilization, and fish-detail quality against
@@ -365,5 +529,7 @@ Expected behavior:
   runtime geometry block in every experiment record?
 - [ ] Do we want `dish_design_id` to be required in the dish-mask artifact
   context block, or optional for v1?
+- [ ] Should a single-arena view emit only `dish_mask`, or also emit a trivial
+  one-entry `arena_layout` for consistency?
 - [ ] Should the first motion fallback operate on native-size mono frames or a
   dedicated low-resolution scout pass?

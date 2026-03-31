@@ -64,3 +64,5 @@ cuda_debug.log
 third_party/flatbuffers
 *.sqlite
 *.nsys-rep
+__pycache__/
+*.pyc
