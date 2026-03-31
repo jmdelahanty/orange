@@ -1,5 +1,9 @@
 # Encoding Alternatives (Quality vs Seekability)
 
+See also:
+
+- `docs/color_recording_pipeline.md`
+
 ## Current Behavior (HW NVENC path)
 - Rate control: VBR with AQ/Temporal AQ
 - Lookahead: enabled for non-low-latency tuning; disabled for low-latency

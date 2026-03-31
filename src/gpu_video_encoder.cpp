@@ -14,6 +14,33 @@
 #include "nvtx_profiling.h"
 #include "project.h"
 
+namespace {
+constexpr uint64_t kLegacyMinQualityBitrate = 10000000ULL;
+constexpr uint64_t kLegacyMaxQualityBitrate = 150000000ULL;
+constexpr double kLegacyColorTargetBpp = 0.15;
+constexpr double kLegacyMonoTargetBpp = 0.10;
+
+uint32_t clamp_legacy_bitrate(uint64_t value) {
+    if (value < kLegacyMinQualityBitrate) {
+        return static_cast<uint32_t>(kLegacyMinQualityBitrate);
+    }
+    if (value > kLegacyMaxQualityBitrate) {
+        return static_cast<uint32_t>(kLegacyMaxQualityBitrate);
+    }
+    return static_cast<uint32_t>(value);
+}
+
+uint32_t calculate_legacy_quality_bitrate(bool color, int width, int height, int frame_rate) {
+    const double target_bpp = color ? kLegacyColorTargetBpp : kLegacyMonoTargetBpp;
+    const double bits_per_sec =
+        static_cast<double>(width) *
+        static_cast<double>(height) *
+        static_cast<double>(frame_rate) *
+        target_bpp;
+    return clamp_legacy_bitrate(static_cast<uint64_t>(bits_per_sec));
+}
+} // namespace
+
 static std::string NvEncFormatToString(NV_ENC_BUFFER_FORMAT format) {
     switch (format) {
         case NV_ENC_BUFFER_FORMAT_NV12: return "NV12";
@@ -239,9 +266,17 @@ GPUVideoEncoder::GPUVideoEncoder(
         }
 
         encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-        encodeConfig.rcParams.averageBitRate = 20000000;
-        encodeConfig.rcParams.maxBitRate = 25000000;
-        encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.averageBitRate;
+        encodeConfig.rcParams.averageBitRate = calculate_legacy_quality_bitrate(
+            camera_params->color,
+            scaled_width_,
+            scaled_height_,
+            camera_params->frame_rate);
+        uint64_t max_bitrate = static_cast<uint64_t>(encodeConfig.rcParams.averageBitRate) * 3 / 2;
+        if (max_bitrate < encodeConfig.rcParams.averageBitRate) {
+            max_bitrate = encodeConfig.rcParams.averageBitRate;
+        }
+        encodeConfig.rcParams.maxBitRate = clamp_legacy_bitrate(max_bitrate);
+        encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.maxBitRate;
 
         if (!camera_params->color) {
             std::cout << "[GPUVideoEncoder] Mono camera detected, setting monoChromeEncoding to 1" << std::endl;

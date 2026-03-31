@@ -1,0 +1,318 @@
+{
+  "schema_id": "orange.docs.evt_gpio_pinout_map",
+  "schema_version": 1,
+  "vendor": "Emergent Vision Technologies",
+  "source_documents": [
+    {
+      "title": "Camera GPIO Ports and Schematics",
+      "url": "https://docs.emergentvisiontec.com/cameras/gpio-ports-schematics",
+      "updated_on": "2025-03-03"
+    },
+    {
+      "title": "Trigger Modes for Area-Scan Cameras",
+      "url": "https://docs.emergentvisiontec.com/cameras/trigger-modes-for-area-scan-cameras",
+      "updated_on": "2024-11-19"
+    },
+    {
+      "title": "Trigger Modes for Line-Scan Cameras",
+      "url": "https://docs.emergentvisiontec.com/cameras/trigger-modes-for-line-scan-cameras",
+      "updated_on": "2025-10-27"
+    },
+    {
+      "title": "General Purpose Input/Output Control Features and Nodes",
+      "url": "https://docs.emergentvisiontec.com/camera-features/general-purpose-input-output-control-features",
+      "updated_on": "2025-07-24"
+    },
+    {
+      "title": "GPI Start Frame Mode",
+      "url": "https://docs.emergentvisiontec.com/camera-features/gpi-start-frame-mode",
+      "updated_on": "2024-10-22"
+    }
+  ],
+  "notes": [
+    "Official vendor docs list line-scan 12-pin, area-scan 12-pin, and area-scan 8-pin GPIO connector variants.",
+    "Official vendor docs do not list a 7-pin GPIO connector on the GPIO ports and schematics page as of 2025-03-03.",
+    "Feature and node availability varies by camera model."
+  ],
+  "pinout_maps": {
+    "line_scan_12_pin": {
+      "connector_pin_count": 12,
+      "scan_type": "line_scan",
+      "pins": [
+        {
+          "pin": 1,
+          "signal": "VEXT",
+          "kind": "power_in_12v",
+          "notes": "Pins 1 and 2 are internally connected."
+        },
+        {
+          "pin": 2,
+          "signal": "VEXT",
+          "kind": "power_in_12v",
+          "notes": "Pins 1 and 2 are internally connected."
+        },
+        {
+          "pin": 3,
+          "signal": "GPO_0",
+          "kind": "opto_output"
+        },
+        {
+          "pin": 4,
+          "signal": "ENC_A_P",
+          "kind": "encoder_rs422_positive"
+        },
+        {
+          "pin": 5,
+          "signal": "ISO_GND",
+          "kind": "isolated_ground"
+        },
+        {
+          "pin": 6,
+          "signal": "ENC_A_N",
+          "kind": "encoder_rs422_negative"
+        },
+        {
+          "pin": 7,
+          "signal": "GPI_1",
+          "kind": "opto_input"
+        },
+        {
+          "pin": 8,
+          "signal": "GND",
+          "kind": "ground",
+          "notes": "Pins 8 and 9 are internally connected."
+        },
+        {
+          "pin": 9,
+          "signal": "GND",
+          "kind": "ground",
+          "notes": "Pins 8 and 9 are internally connected."
+        },
+        {
+          "pin": 10,
+          "signal": "ENC_B_P",
+          "kind": "encoder_rs422_positive"
+        },
+        {
+          "pin": 11,
+          "signal": "GPI_2",
+          "kind": "opto_input"
+        },
+        {
+          "pin": 12,
+          "signal": "ENC_B_N",
+          "kind": "encoder_rs422_negative"
+        }
+      ]
+    },
+    "area_scan_12_pin": {
+      "connector_pin_count": 12,
+      "scan_type": "area_scan",
+      "pins": [
+        {
+          "pin": 1,
+          "signal": "VEXT",
+          "kind": "power_in_12v",
+          "notes": "Pins 1 and 2 are internally connected."
+        },
+        {
+          "pin": 2,
+          "signal": "VEXT",
+          "kind": "power_in_12v",
+          "notes": "Pins 1 and 2 are internally connected."
+        },
+        {
+          "pin": 3,
+          "signal": "GPO_3",
+          "kind": "opto_output"
+        },
+        {
+          "pin": 4,
+          "signal": "GPI_2",
+          "kind": "opto_input"
+        },
+        {
+          "pin": 5,
+          "signal": "ISO_GND",
+          "kind": "isolated_ground"
+        },
+        {
+          "pin": 6,
+          "signal": "GPO_1",
+          "kind": "opto_output"
+        },
+        {
+          "pin": 7,
+          "signal": "GPO_0",
+          "kind": "ttl_output_0_5v"
+        },
+        {
+          "pin": 8,
+          "signal": "GND",
+          "kind": "ground",
+          "notes": "Pins 8 and 9 are internally connected."
+        },
+        {
+          "pin": 9,
+          "signal": "GND",
+          "kind": "ground",
+          "notes": "Pins 8 and 9 are internally connected."
+        },
+        {
+          "pin": 10,
+          "signal": "DNC",
+          "kind": "do_not_connect"
+        },
+        {
+          "pin": 11,
+          "signal": "GPI_5",
+          "kind": "opto_input"
+        },
+        {
+          "pin": 12,
+          "signal": "GPI_4",
+          "kind": "ttl_input_0_5v"
+        }
+      ]
+    },
+    "area_scan_8_pin": {
+      "connector_pin_count": 8,
+      "scan_type": "area_scan",
+      "pins": [
+        {
+          "pin": 1,
+          "signal": "VEXT",
+          "kind": "power_in_12v"
+        },
+        {
+          "pin": 2,
+          "signal": "GPI_2",
+          "kind": "opto_input"
+        },
+        {
+          "pin": 3,
+          "signal": "GPO_1",
+          "kind": "opto_output"
+        },
+        {
+          "pin": 4,
+          "signal": "GPO_0",
+          "kind": "ttl_output_0_5v"
+        },
+        {
+          "pin": 5,
+          "signal": "GPI_3",
+          "kind": "ttl_input_0_5v"
+        },
+        {
+          "pin": 6,
+          "signal": "VEXT_OUT",
+          "kind": "power_out_12v",
+          "notes": "Output only."
+        },
+        {
+          "pin": 7,
+          "signal": "ISO_GND",
+          "kind": "isolated_ground"
+        },
+        {
+          "pin": 8,
+          "signal": "GND",
+          "kind": "ground"
+        }
+      ]
+    }
+  },
+  "inferred_signal_mapping": [
+    {
+      "use_case": "line_scan_frame_trigger_input",
+      "camera_family": "line_scan",
+      "notes": "Inference from vendor trigger docs plus the physical pinout.",
+      "logical_signals": [
+        {
+          "signal": "GPI_1",
+          "physical_pin": 7
+        },
+        {
+          "signal": "GPI_2",
+          "physical_pin": 11
+        }
+      ],
+      "relevant_feature_nodes": [
+        "GPI_Start_Frame_Mode",
+        "GPI_Start_Frame_Event"
+      ]
+    },
+    {
+      "use_case": "line_scan_encoder_input",
+      "camera_family": "line_scan",
+      "notes": "Inference from vendor encoder feature docs plus the physical pinout.",
+      "logical_signals": [
+        {
+          "signal": "ENC_A_P",
+          "physical_pin": 4
+        },
+        {
+          "signal": "ENC_A_N",
+          "physical_pin": 6
+        },
+        {
+          "signal": "ENC_B_P",
+          "physical_pin": 10
+        },
+        {
+          "signal": "ENC_B_N",
+          "physical_pin": 12
+        }
+      ],
+      "relevant_feature_nodes": [
+        "GP_ENC_MODE",
+        "GP_ENC_TERMINATION",
+        "GP_ENC_DIRECTION",
+        "GP_ENC_LINE_DIVIDER",
+        "GP_ENC_FRAME_DIVIDER"
+      ]
+    },
+    {
+      "use_case": "area_scan_hardware_trigger_input_12_pin",
+      "camera_family": "area_scan",
+      "connector_variant": "12_pin",
+      "notes": "Inference from vendor area-scan trigger examples that use GPI_4.",
+      "logical_signals": [
+        {
+          "signal": "GPI_4",
+          "physical_pin": 12,
+          "kind": "ttl_input_0_5v"
+        },
+        {
+          "signal": "GPI_2",
+          "physical_pin": 4,
+          "kind": "opto_input"
+        },
+        {
+          "signal": "GPI_5",
+          "physical_pin": 11,
+          "kind": "opto_input"
+        }
+      ]
+    },
+    {
+      "use_case": "area_scan_hardware_trigger_input_8_pin",
+      "camera_family": "area_scan",
+      "connector_variant": "8_pin",
+      "notes": "Inference from vendor pinout only. This connector does not expose GPI_4 or GPI_5.",
+      "logical_signals": [
+        {
+          "signal": "GPI_2",
+          "physical_pin": 2,
+          "kind": "opto_input"
+        },
+        {
+          "signal": "GPI_3",
+          "physical_pin": 5,
+          "kind": "ttl_input_0_5v"
+        }
+      ]
+    }
+  ]
+}

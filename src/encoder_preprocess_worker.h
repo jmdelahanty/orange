@@ -54,7 +54,6 @@ private:
 
     FrameGPU frame_original_gpu_;
     Debayer debayer_gpu_;
-    unsigned char* d_rgb_temp_;
     unsigned char* d_rgba_resize_;
     unsigned char* d_uv_default_plane_;
     RecordingOutputConfig recording_output_config_;

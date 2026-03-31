@@ -58,7 +58,18 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads, CameraParams 
 
     camera_control->record_video = true;
     camera_control->subscribe = true;
-    camera_control->sync_camera = true;
+    int ptp_camera_count = 0;
+    for (int i = 0; i < num_cameras; i++) {
+        if (camera_sync_mode_uses_ptp(&cameras_params[i])) {
+            ptp_camera_count++;
+        }
+    }
+    if (ptp_camera_count != 0 && ptp_camera_count != num_cameras) {
+        std::cerr << "Headless mode does not support mixed ptp_gate and non-PTP camera sync modes in one run." << std::endl;
+        return false;
+    }
+    const bool use_ptp_sync = (ptp_camera_count == num_cameras && num_cameras > 0);
+    camera_control->sync_camera = use_ptp_sync;
 
     // Creating a directory to save recorded video;
     if (mkdir(record_folder.c_str(), 0777) == -1)
@@ -71,9 +82,14 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads, CameraParams 
         std::cout << "Recorded video saves to : " << record_folder << std::endl;
     }
 
-    for (int i = 0; i < num_cameras; i++)
-    {
-        ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
+    if (use_ptp_sync) {
+        for (int i = 0; i < num_cameras; i++)
+        {
+            ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
+        }
+        std::cout << "Headless sync mode: ptp_gate" << std::endl;
+    } else {
+        std::cout << "Headless sync mode: free_run / explicit trigger" << std::endl;
     }
 
     for (int i = 0; i < num_cameras; i++)
@@ -87,8 +103,10 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads, CameraParams 
     }
 
     // wait for all camera ready
-    while(ptp_params->ptp_counter!=num_cameras) {
-        usleep(10);
+    if (use_ptp_sync) {
+        while(ptp_params->ptp_counter!=num_cameras) {
+            usleep(10);
+        }
     }
 
     return true;
@@ -167,10 +185,11 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 camera_threads.pop_back();
             }
 
-
-            for (int i = 0; i < *cam_count; i++)
-            {
-                ptp_sync_off(&ecams[i].camera, &cameras_params[i]);
+            if (camera_control->sync_camera) {
+                for (int i = 0; i < *cam_count; i++)
+                {
+                    ptp_sync_off(&ecams[i].camera, &cameras_params[i]);
+                }
             }
             ptp_params->ptp_global_time = 0;
             ptp_params->ptp_stop_time = 0;

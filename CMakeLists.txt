@@ -182,6 +182,7 @@ set(IMGUI_SOURCES
     "${DIR_IMGUI}/imgui_draw.cpp"
     "${DIR_IMGUI}/imgui_tables.cpp"
     "${DIR_IMGUI}/imgui_widgets.cpp"
+    "${DIR_IMGUI}/misc/cpp/imgui_stdlib.cpp"
     "${DIR_IMGUI_BACKEND}/imgui_impl_glfw.cpp"
     "${DIR_IMGUI_BACKEND}/imgui_impl_opengl3.cpp"
 )

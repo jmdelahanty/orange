@@ -13,12 +13,13 @@
 #include "project.h"
 #include <iomanip>
 #include <sstream>
+#include <algorithm>
 
 namespace {
-constexpr uint64_t kMinQualityBitrate = 20000000ULL;
-constexpr uint64_t kMaxQualityBitrate = 250000000ULL;
-constexpr double kColorTargetBpp = 0.30;
-constexpr double kMonoTargetBpp = 0.20;
+constexpr uint64_t kMinQualityBitrate = 10000000ULL;
+constexpr uint64_t kMaxQualityBitrate = 150000000ULL;
+constexpr double kColorTargetBpp = 0.15;
+constexpr double kMonoTargetBpp = 0.10;
 constexpr int kDefaultQualityValue = 20;
 constexpr int kMinQualityValue = 1;
 constexpr int kMaxQualityValue = 51;
@@ -104,19 +105,22 @@ std::vector<std::pair<std::string, std::string>> build_metadata_tags(
     const std::string& preset,
     const std::string& tuning,
     const std::string& rate_control_mode,
-    int quality_value
+    int quality_value,
+    int gop_length
 ) {
     std::vector<std::pair<std::string, std::string>> tags;
     tags.emplace_back("title", "Cam" + camera_params->camera_serial);
 
     std::ostringstream comment;
     const std::string rc_strategy = resolve_rate_control_strategy(tuning, rate_control_mode);
+    const uint32_t resolved_gop_length = resolve_recording_gop_length(*camera_params, tuning, gop_length);
     comment << "nvenc codec=" << codec
             << "; preset=" << preset
             << "; tuning=" << tuning
             << "; res=" << recording_output_config.resolved_width << "x" << recording_output_config.resolved_height
             << "; fps=" << camera_params->frame_rate
             << "; color=" << (camera_params->color ? 1 : 0)
+            << "; gop=" << resolved_gop_length
             << "; output_mode=" << recording_output_config.mode;
 
     if (recording_output_config.resize_enabled) {
@@ -171,18 +175,11 @@ void apply_quality_recording_profile(
     const RecordingOutputConfig& recording_output_config,
     bool low_latency
 ) {
+    const RecordingBitrateEstimate estimate =
+        estimate_recording_bitrate(*camera_params, recording_output_config);
     encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-    encodeConfig.rcParams.averageBitRate = calculate_quality_bitrate(
-        camera_params->color,
-        recording_output_config.resolved_width,
-        recording_output_config.resolved_height,
-        camera_params->frame_rate);
-
-    uint64_t max_bitrate = static_cast<uint64_t>(encodeConfig.rcParams.averageBitRate) * 3 / 2;
-    if (max_bitrate < encodeConfig.rcParams.averageBitRate) {
-        max_bitrate = encodeConfig.rcParams.averageBitRate;
-    }
-    encodeConfig.rcParams.maxBitRate = clamp_bitrate(max_bitrate);
+    encodeConfig.rcParams.averageBitRate = estimate.average_bitrate;
+    encodeConfig.rcParams.maxBitRate = estimate.max_bitrate;
     encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.maxBitRate;
 
     encodeConfig.rcParams.enableAQ = 1;
@@ -221,6 +218,52 @@ void apply_cqp_recording_profile(
     encodeConfig.rcParams.lowDelayKeyFrameScale = 0;
 }
 } // namespace
+
+RecordingBitrateEstimate estimate_recording_bitrate(const CameraParams& camera_params,
+                                                    const RecordingOutputConfig& recording_output_config)
+{
+    RecordingBitrateEstimate estimate;
+    estimate.target_bpp = camera_params.color ? kColorTargetBpp : kMonoTargetBpp;
+
+    const double unclamped_bits_per_sec =
+        static_cast<double>(recording_output_config.resolved_width) *
+        static_cast<double>(recording_output_config.resolved_height) *
+        static_cast<double>(camera_params.frame_rate) *
+        estimate.target_bpp;
+    const uint64_t unclamped_average_bitrate = static_cast<uint64_t>(unclamped_bits_per_sec);
+    estimate.average_clamped_to_min = unclamped_average_bitrate < kMinQualityBitrate;
+    estimate.average_clamped_to_max = unclamped_average_bitrate > kMaxQualityBitrate;
+    estimate.average_bitrate = clamp_bitrate(unclamped_average_bitrate);
+
+    uint64_t unclamped_max_bitrate = static_cast<uint64_t>(estimate.average_bitrate) * 3 / 2;
+    if (unclamped_max_bitrate < estimate.average_bitrate) {
+        unclamped_max_bitrate = estimate.average_bitrate;
+    }
+    estimate.max_clamped_to_max = unclamped_max_bitrate > kMaxQualityBitrate;
+    estimate.max_bitrate = clamp_bitrate(unclamped_max_bitrate);
+    return estimate;
+}
+
+int sanitize_recording_gop_length(int requested_gop_length)
+{
+    return std::max(0, requested_gop_length);
+}
+
+uint32_t resolve_recording_gop_length(const CameraParams& camera_params,
+                                      const std::string& tuning,
+                                      int requested_gop_length)
+{
+    if (is_lossless_tuning(tuning)) {
+        return 1;
+    }
+
+    const int sanitized_gop_length = sanitize_recording_gop_length(requested_gop_length);
+    if (sanitized_gop_length > 0) {
+        return static_cast<uint32_t>(sanitized_gop_length);
+    }
+
+    return std::max<uint32_t>(1u, camera_params.frame_rate);
+}
 
 // Helper to initialize the FFmpeg-based file writer
 static inline void initialize_writer_hw(
@@ -285,6 +328,7 @@ EncoderHwWorker::EncoderHwWorker(
     const std::string& tuning,
     const std::string& rate_control_mode,
     int quality_value,
+    int gop_length,
     std::string base_folder_name,
     EncoderPreprocessWorker* prep_worker,
     CameraControl* camera_control
@@ -298,6 +342,7 @@ EncoderHwWorker::EncoderHwWorker(
   tuning_(tuning),
   rate_control_mode_(rate_control_mode.empty() ? "vbr" : rate_control_mode),
   quality_value_(clamp_quality_value(quality_value)),
+  gop_length_(sanitize_recording_gop_length(gop_length)),
   m_prep_worker_(prep_worker),
   camera_control_(camera_control),
   encoder_(),
@@ -339,7 +384,7 @@ EncoderHwWorker::EncoderHwWorker(
     initializeParams.darWidth = recording_output_config_.resolved_width;
     initializeParams.darHeight = recording_output_config_.resolved_height;
 
-    encodeConfig.gopLength = camera_params_->frame_rate;
+    encodeConfig.gopLength = resolve_recording_gop_length(*camera_params_, tuning_, gop_length_);
     encodeConfig.frameIntervalP = 1;
 
     if (lossless) {
@@ -681,7 +726,8 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 preset_,
                 tuning_,
                 rate_control_mode_,
-                quality_value_
+                quality_value_,
+                gop_length_
             );
             initialize_writer_hw(
                 &writer_,

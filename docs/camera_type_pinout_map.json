@@ -1,0 +1,138 @@
+{
+  "schema_id": "orange.docs.camera_type_pinout_map",
+  "schema_version": 1,
+  "purpose": "Map camera model and scan-type metadata to GPIO connector variants used by Orange config inference.",
+  "source_documents": [
+    {
+      "title": "Emergent Camera Families and Model Prefixes",
+      "url": "https://docs.emergentvisiontec.com/cameras/cameras"
+    },
+    {
+      "title": "Camera Data Interfaces",
+      "url": "https://docs.emergentvisiontec.com/cameras/data-interfaces"
+    },
+    {
+      "title": "Camera GPIO Ports and Schematics",
+      "url": "https://docs.emergentvisiontec.com/cameras/gpio-ports-schematics",
+      "updated_on": "2025-03-03"
+    },
+    {
+      "title": "HE (Eros) Camera Power Accessories",
+      "url": "https://docs.emergentvisiontec.com/accessories/he-eros-camera-power-accessories",
+      "updated_on": "2025-10-09"
+    }
+  ],
+  "notes": [
+    "This file mixes vendor-backed connector facts with repo-local model inference.",
+    "Explicit camera_scan_type and gpio_connector_variant values in config should override inference.",
+    "Repo-local model mappings reflect currently supported models in orange-jeremy, not a complete EVT catalog."
+  ],
+  "vendor_backed_rules": [
+    {
+      "match": {
+        "device_model_prefixes": [
+          "HB",
+          "HZ",
+          "HR",
+          "HT",
+          "HE"
+        ]
+      },
+      "result": {
+        "camera_scan_type": "area_scan"
+      },
+      "basis": "Official EVT camera family naming uses these prefixes for area-scan families."
+    },
+    {
+      "match": {
+        "device_model_prefixes": [
+          "LB",
+          "TLB",
+          "LR",
+          "TLR",
+          "LT",
+          "LZ",
+          "TLZ"
+        ]
+      },
+      "result": {
+        "camera_scan_type": "line_scan"
+      },
+      "basis": "Official EVT camera family naming uses these prefixes for line-scan families."
+    },
+    {
+      "match": {
+        "camera_scan_type": "line_scan"
+      },
+      "result": {
+        "gpio_connector_variant": "line_scan_12_pin"
+      },
+      "basis": "Official GPIO docs list a 12-pin connector for line-scan cameras."
+    },
+    {
+      "match": {
+        "camera_scan_type": "area_scan"
+      },
+      "result": {
+        "gpio_connector_variant": "area_scan_12_pin"
+      },
+      "basis": "Official GPIO docs list a 12-pin connector for area-scan cameras in the general case."
+    },
+    {
+      "match": {
+        "device_model_prefixes": [
+          "HE"
+        ]
+      },
+      "result": {
+        "camera_scan_type": "area_scan",
+        "gpio_connector_variant": "area_scan_8_pin"
+      },
+      "basis": "Official HE (Eros) accessory docs show the M8 8-pin GPIO breakout used by HE/Eros cameras."
+    },
+    {
+      "match": {
+        "device_model_contains_case_insensitive": "Eros"
+      },
+      "result": {
+        "camera_scan_type": "area_scan",
+        "gpio_connector_variant": "area_scan_8_pin"
+      },
+      "basis": "Official HE (Eros) accessory docs show the M8 8-pin GPIO breakout used by Eros cameras."
+    }
+  ],
+  "repo_supported_model_overrides": [
+    {
+      "device_model": "HB-65000GM",
+      "camera_scan_type": "area_scan",
+      "gpio_connector_variant": "area_scan_12_pin",
+      "basis": "Current orange-jeremy supported model list."
+    },
+    {
+      "device_model": "HB-65000GC",
+      "camera_scan_type": "area_scan",
+      "gpio_connector_variant": "area_scan_12_pin",
+      "basis": "Current orange-jeremy supported model list."
+    },
+    {
+      "device_model": "HB-7000SC",
+      "camera_scan_type": "area_scan",
+      "gpio_connector_variant": "area_scan_12_pin",
+      "basis": "Current orange-jeremy supported model list."
+    },
+    {
+      "device_model": "HB-7000SM",
+      "camera_scan_type": "area_scan",
+      "gpio_connector_variant": "area_scan_12_pin",
+      "basis": "Current orange-jeremy supported model list."
+    }
+  ],
+  "runtime_inference_order": [
+    "Use explicit camera_scan_type from config if it is set and supported.",
+    "Use explicit gpio_connector_variant from config if it is set and supported.",
+    "If device_model matches a repo_supported_model_override, apply that scan type and connector.",
+    "If device_model contains 'Eros', infer area_scan_8_pin.",
+    "If camera_scan_type is line_scan and connector is still unknown, infer line_scan_12_pin.",
+    "If camera_scan_type is area_scan and connector is still unknown, infer area_scan_12_pin."
+  ]
+}

@@ -11,6 +11,8 @@
 #include <iomanip>       // For std::put_time, std::setfill, std::setw
 #include <sstream>       // For std::ostringstream
 #include <ctime>         // For std::gmtime
+#include <cctype>
+#include <utility>
 #include <mutex>
 #include "json.hpp"      // For nlohmann::json
 #include "fetch_generated.h" // For FetchGame:: enums and builders
@@ -20,6 +22,8 @@
 
 void prepare_application_folders(std::string orange_root_dir_str)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     // ... (implementation from project.h)
     std::string recordings_str = orange_root_dir_str + "/exp/unsorted";
     std::filesystem::path recordings_path(recordings_str);
@@ -138,6 +142,273 @@ std::vector<std::string> string_split_char(char* string_c, std::string delimiter
     return res;
 }
 
+namespace {
+constexpr const char* kCameraConfigSchemaId = "orange.camera.config";
+constexpr int kCameraConfigSchemaVersion = 1;
+
+std::string lower_ascii_copy(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+std::string normalize_camera_sync_mode_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "ptp_gate" || value == "free_run" || value == "external_trigger" || value == "software_trigger") {
+        return value;
+    }
+    return "free_run";
+}
+
+std::string normalize_camera_scan_type_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "area_scan" || value == "line_scan" || value == "unknown") {
+        return value;
+    }
+    return "unknown";
+}
+
+std::string normalize_gpio_connector_variant_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "area_scan_12_pin" || value == "area_scan_8_pin" ||
+        value == "line_scan_12_pin" || value == "unknown") {
+        return value;
+    }
+    return "unknown";
+}
+
+std::string canonicalize_gpio_recipe_string(std::string value) {
+    const std::string normalized = lower_ascii_copy(value);
+    if (normalized == "area_scan_hw_trigger_internal_gpi4" ||
+        normalized == "area_scan_hw_trigger_external_gpi4" ||
+        normalized == "line_scan_hw_frame_gpi1_internal_line" ||
+        normalized == "line_scan_hw_frame_gpi1_encoder_line" ||
+        normalized == "line_scan_encoder_frame_encoder_line" ||
+        normalized == "line_scan_hw_gate_gpi1_encoder_frame_encoder_line") {
+        return normalized;
+    }
+    return value;
+}
+
+std::string canonicalize_camera_serial_string(std::string value) {
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char c) {
+        return !std::isspace(c);
+    }));
+    value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char c) {
+        return !std::isspace(c);
+    }).base(), value.end());
+
+    if (value.empty()) {
+        return value;
+    }
+
+    const bool is_numeric = std::all_of(value.begin(), value.end(), [](unsigned char c) {
+        return std::isdigit(c) != 0;
+    });
+    if (!is_numeric) {
+        return value;
+    }
+
+    const auto first_non_zero = value.find_first_not_of('0');
+    if (first_non_zero == std::string::npos) {
+        return "0";
+    }
+    return value.substr(first_non_zero);
+}
+
+bool contains_case_insensitive(const std::string& haystack, const std::string& needle) {
+    return lower_ascii_copy(haystack).find(lower_ascii_copy(needle)) != std::string::npos;
+}
+
+bool starts_with_case_insensitive(const std::string& value, const std::string& prefix) {
+    const std::string lower_value = lower_ascii_copy(value);
+    const std::string lower_prefix = lower_ascii_copy(prefix);
+    return lower_value.rfind(lower_prefix, 0) == 0;
+}
+
+bool model_is_area_scan_family(const std::string& model) {
+    return starts_with_case_insensitive(model, "HB") ||
+           starts_with_case_insensitive(model, "HZ") ||
+           starts_with_case_insensitive(model, "HR") ||
+           starts_with_case_insensitive(model, "HT") ||
+           starts_with_case_insensitive(model, "HE");
+}
+
+bool model_is_line_scan_family(const std::string& model) {
+    return starts_with_case_insensitive(model, "LB") ||
+           starts_with_case_insensitive(model, "TLB") ||
+           starts_with_case_insensitive(model, "LR") ||
+           starts_with_case_insensitive(model, "TLR") ||
+           starts_with_case_insensitive(model, "LT") ||
+           starts_with_case_insensitive(model, "LZ") ||
+           starts_with_case_insensitive(model, "TLZ");
+}
+
+bool model_uses_area_scan_8_pin_connector(const std::string& model) {
+    return contains_case_insensitive(model, "eros") || starts_with_case_insensitive(model, "HE");
+}
+
+void infer_camera_gpio_metadata(CameraParams* camera_params) {
+    if (!camera_params) {
+        return;
+    }
+
+    if (camera_params->camera_scan_type == "unknown") {
+        if (camera_params->device_model == "HB-65000GM" ||
+            camera_params->device_model == "HB-65000GC" ||
+            camera_params->device_model == "HB-7000SC" ||
+            camera_params->device_model == "HB-7000SM") {
+            camera_params->camera_scan_type = "area_scan";
+        } else if (model_is_area_scan_family(camera_params->device_model)) {
+            camera_params->camera_scan_type = "area_scan";
+        } else if (model_is_line_scan_family(camera_params->device_model)) {
+            camera_params->camera_scan_type = "line_scan";
+        } else if (contains_case_insensitive(camera_params->device_model, "eros")) {
+            camera_params->camera_scan_type = "area_scan";
+        }
+    }
+
+    if (camera_params->gpio_connector_variant == "unknown") {
+        if (camera_params->camera_scan_type == "line_scan") {
+            camera_params->gpio_connector_variant = "line_scan_12_pin";
+        } else if (camera_params->camera_scan_type == "area_scan") {
+            if (model_uses_area_scan_8_pin_connector(camera_params->device_model)) {
+                camera_params->gpio_connector_variant = "area_scan_8_pin";
+            } else {
+                camera_params->gpio_connector_variant = "area_scan_12_pin";
+            }
+        }
+    }
+}
+
+void reset_camera_config_extensions(CameraParams* camera_params) {
+    camera_params->config_schema_id.clear();
+    camera_params->config_schema_version = 0;
+    camera_params->device_model.clear();
+    camera_params->camera_scan_type = "unknown";
+    camera_params->gpio_connector_variant = "unknown";
+    camera_params->gpio_recipe.clear();
+    camera_params->sync_mode = "free_run";
+    camera_params->trigger_enabled = false;
+    camera_params->trigger_selector = "AcquisitionStart";
+    camera_params->trigger_source = "Software";
+    camera_params->trigger_activation = "RisingEdge";
+    camera_params->ptp_mode.clear();
+    camera_params->gpio_nodes.clear();
+}
+
+void parse_gpio_nodes_from_json(const nlohmann::json& camera_config, CameraParams* camera_params) {
+    if (!camera_config.contains("gpio")) {
+        return;
+    }
+
+    const nlohmann::json* nodes_json = nullptr;
+    const nlohmann::json& gpio = camera_config["gpio"];
+    if (gpio.is_array()) {
+        nodes_json = &gpio;
+    } else if (gpio.is_object() && gpio.contains("nodes") && gpio["nodes"].is_array()) {
+        nodes_json = &gpio["nodes"];
+    }
+
+    if (!nodes_json) {
+        return;
+    }
+
+    for (const auto& node_json : *nodes_json) {
+        if (!node_json.is_object()) {
+            continue;
+        }
+        if (!node_json.contains("name") || !node_json["name"].is_string()) {
+            continue;
+        }
+
+        CameraGpioNodeConfig node;
+        node.name = node_json["name"].get<std::string>();
+        node.type = lower_ascii_copy(node_json.value("type", std::string("enum")));
+
+        if (!node_json.contains("value")) {
+            std::cerr << "Skipping GPIO node without value: " << node.name << std::endl;
+            continue;
+        }
+
+        const nlohmann::json& value = node_json["value"];
+        if (node.type == "enum") {
+            if (!value.is_string()) {
+                std::cerr << "Skipping GPIO enum node with non-string value: " << node.name << std::endl;
+                continue;
+            }
+            node.value_string = value.get<std::string>();
+        } else if (node.type == "bool") {
+            if (!value.is_boolean()) {
+                std::cerr << "Skipping GPIO bool node with non-bool value: " << node.name << std::endl;
+                continue;
+            }
+            node.value_bool = value.get<bool>();
+        } else if (node.type == "uint") {
+            if (!value.is_number_unsigned() && !value.is_number_integer()) {
+                std::cerr << "Skipping GPIO uint node with non-integer value: " << node.name << std::endl;
+                continue;
+            }
+            const auto parsed = value.get<long long>();
+            if (parsed < 0) {
+                std::cerr << "Skipping GPIO uint node with negative value: " << node.name << std::endl;
+                continue;
+            }
+            node.value_uint = static_cast<uint32_t>(parsed);
+        } else {
+            std::cerr << "Skipping GPIO node with unsupported type `" << node.type
+                      << "`: " << node.name << std::endl;
+            continue;
+        }
+
+        camera_params->gpio_nodes.push_back(std::move(node));
+    }
+}
+
+std::string config_filename_stem(const std::string& config_path) {
+    return canonicalize_camera_serial_string(std::filesystem::path(config_path).stem().string());
+}
+
+std::string extract_config_serial_match_key(const std::string& config_path) {
+    std::ifstream f(config_path);
+    if (!f.good()) {
+        return config_filename_stem(config_path);
+    }
+
+    try {
+        nlohmann::json camera_config = nlohmann::json::parse(f);
+        if (camera_config.contains("device_serial_number")) {
+            const nlohmann::json& serial = camera_config["device_serial_number"];
+            if (serial.is_string()) {
+                const std::string value = serial.get<std::string>();
+                if (!value.empty()) {
+                    return canonicalize_camera_serial_string(value);
+                }
+            } else if (serial.is_number_integer() || serial.is_number_unsigned()) {
+                return canonicalize_camera_serial_string(std::to_string(serial.get<long long>()));
+            }
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to parse camera config while matching serial: " << config_path
+                  << " (" << ex.what() << ")" << std::endl;
+    }
+
+    return config_filename_stem(config_path);
+}
+
+std::vector<std::string>::const_iterator find_camera_config_for_serial(
+    const std::vector<std::string>& camera_config_files,
+    const std::string& camera_serial)
+{
+    const std::string canonical_camera_serial = canonicalize_camera_serial_string(camera_serial);
+    return std::find_if(camera_config_files.begin(), camera_config_files.end(),
+                        [&](const std::string& config_path) {
+                            return extract_config_serial_match_key(config_path) == canonical_camera_serial;
+                        });
+}
+} // namespace
+
 void load_camera_json_config_files(std::string file_name, CameraParams* camera_params, int camera_id, int num_cameras) {
     // ... (implementation from project.h)
     std::ifstream f(file_name);
@@ -146,6 +417,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->camera_id = camera_id;
     camera_params->num_cameras = num_cameras;
     camera_params->need_reorder = false;
+    reset_camera_config_extensions(camera_params);
 
     camera_params->camera_name = camera_config["name"];
     camera_params->width = camera_config["width"];
@@ -163,6 +435,61 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->iris = camera_config["iris"];
     camera_params->offsetx = camera_config.value("offset_x", 0u);
     camera_params->offsety = camera_config.value("offset_y", 0u);
+
+    camera_params->config_schema_id = camera_config.value("schema_id", std::string());
+    camera_params->config_schema_version = camera_config.value("schema_version", 0);
+    camera_params->device_model =
+        camera_config.value("device_model",
+            camera_config.value("device_model_name", camera_params->device_model));
+    if (camera_params->camera_serial.empty()) {
+        camera_params->camera_serial = canonicalize_camera_serial_string(
+            camera_config.value("device_serial_number", camera_params->camera_serial));
+    }
+    camera_params->camera_scan_type =
+        normalize_camera_scan_type_string(camera_config.value("camera_scan_type", camera_params->camera_scan_type));
+    camera_params->gpio_connector_variant = normalize_gpio_connector_variant_string(
+        camera_config.value("gpio_connector_variant", camera_params->gpio_connector_variant));
+    camera_params->gpio_recipe = canonicalize_gpio_recipe_string(camera_config.value("gpio_recipe", std::string()));
+    if (!camera_params->config_schema_id.empty() &&
+        camera_params->config_schema_id != kCameraConfigSchemaId) {
+        std::cerr << "Camera config schema_id mismatch for " << file_name
+                  << ": " << camera_params->config_schema_id
+                  << " (expected " << kCameraConfigSchemaId << ")" << std::endl;
+    }
+    if (camera_params->config_schema_version > 0 &&
+        camera_params->config_schema_version != kCameraConfigSchemaVersion) {
+        std::cerr << "Camera config schema_version mismatch for " << file_name
+                  << ": " << camera_params->config_schema_version
+                  << " (expected " << kCameraConfigSchemaVersion << ")" << std::endl;
+    }
+
+    if (camera_config.contains("sync_mode") && camera_config["sync_mode"].is_string()) {
+        camera_params->sync_mode = normalize_camera_sync_mode_string(camera_config["sync_mode"].get<std::string>());
+    }
+
+    if (camera_config.contains("trigger") && camera_config["trigger"].is_object()) {
+        const nlohmann::json& trigger = camera_config["trigger"];
+        camera_params->trigger_enabled = trigger.value("enabled", false);
+        camera_params->trigger_selector = trigger.value("selector", camera_params->trigger_selector);
+        camera_params->trigger_source = trigger.value("source", camera_params->trigger_source);
+        camera_params->trigger_activation = trigger.value("activation", camera_params->trigger_activation);
+    }
+
+    if (camera_config.contains("ptp") && camera_config["ptp"].is_object()) {
+        const nlohmann::json& ptp = camera_config["ptp"];
+        if (ptp.contains("mode") && ptp["mode"].is_string()) {
+            camera_params->ptp_mode = ptp["mode"].get<std::string>();
+        } else if (!ptp.value("enabled", false)) {
+            camera_params->ptp_mode.clear();
+        }
+        if ((!camera_config.contains("sync_mode") || !camera_config["sync_mode"].is_string()) &&
+            ptp.value("enabled", false)) {
+            camera_params->sync_mode = "ptp_gate";
+        }
+    }
+
+    parse_gpio_nodes_from_json(camera_config, camera_params);
+    infer_camera_gpio_metadata(camera_params);
 }
 
 std::string get_current_utc_timestamp() {
@@ -274,12 +601,19 @@ bool write_json_atomic(const std::filesystem::path& path,
                        const nlohmann::json& data,
                        std::filesystem::perms perms,
                        bool set_perms,
-                       const char* label) {
+                       const char* label,
+                       std::string* error_out = nullptr) {
+    if (error_out) {
+        error_out->clear();
+    }
     std::filesystem::path tmp = path;
     tmp += ".tmp";
 
     std::ofstream out(tmp.string(), std::ios::trunc);
     if (!out.is_open()) {
+        if (error_out) {
+            *error_out = std::string("failed to open temp file: ") + tmp.string();
+        }
         std::cerr << "Failed to write " << label << " temp file: " << tmp.string() << std::endl;
         return false;
     }
@@ -290,6 +624,9 @@ bool write_json_atomic(const std::filesystem::path& path,
         std::error_code ec;
         std::filesystem::permissions(tmp, perms, std::filesystem::perm_options::replace, ec);
         if (ec) {
+            if (error_out && error_out->empty()) {
+                *error_out = std::string("failed to set permissions on temp file: ") + ec.message();
+            }
             std::cerr << "Failed to set permissions on " << tmp.string() << " ("
                       << ec.message() << ")" << std::endl;
         }
@@ -298,6 +635,9 @@ bool write_json_atomic(const std::filesystem::path& path,
     std::error_code ec;
     std::filesystem::rename(tmp, path, ec);
     if (ec) {
+        if (error_out) {
+            *error_out = std::string("failed to rename temp file: ") + ec.message();
+        }
         std::cerr << "Failed to rename " << label << " temp file: " << tmp.string()
                   << " -> " << path.string() << " (" << ec.message() << ")" << std::endl;
         std::filesystem::remove(tmp);
@@ -548,6 +888,68 @@ bool make_folder(std::string folder_name)
     return true;
 }
 
+bool ensure_directory_exists(const std::string& folder_name, std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (folder_name.empty()) {
+        if (error_out) {
+            *error_out = "folder path missing";
+        }
+        return false;
+    }
+
+    const std::filesystem::path folder_path(folder_name);
+    std::error_code ec;
+    if (std::filesystem::exists(folder_path, ec)) {
+        if (ec) {
+            if (error_out) {
+                *error_out = std::string("failed to query folder: ") + ec.message();
+            }
+            return false;
+        }
+        if (!std::filesystem::is_directory(folder_path, ec) || ec) {
+            if (error_out) {
+                *error_out = ec ? std::string("failed to inspect folder: ") + ec.message()
+                                : "path exists but is not a directory";
+            }
+            return false;
+        }
+        return true;
+    }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!std::filesystem::create_directories(folder_path, ec) && ec) {
+        if (error_out) {
+            *error_out = std::string("failed to create folder: ") + ec.message();
+        }
+        return false;
+    }
+    return true;
+}
+
+void list_child_directories(const std::string& root_folder, std::vector<std::string>& child_directories)
+{
+    child_directories.clear();
+    std::error_code ec;
+    if (!std::filesystem::exists(root_folder, ec) || ec) {
+        return;
+    }
+
+    for (const auto& entry : std::filesystem::directory_iterator(root_folder, ec)) {
+        if (ec) {
+            child_directories.clear();
+            return;
+        }
+        if (entry.is_directory(ec) && !ec) {
+            child_directories.push_back(entry.path().string());
+        }
+    }
+    std::sort(child_directories.begin(), child_directories.end());
+}
+
 void update_camera_configs(std::vector<std::string>& camera_config_files, std::string input_folder)
 {
     // ... (implementation from project.h)
@@ -562,13 +964,31 @@ void update_camera_configs(std::vector<std::string>& camera_config_files, std::s
     std::sort(camera_config_files.begin(), camera_config_files.end());
 }
 
+std::string build_camera_config_path(const std::string& config_folder, const CameraParams& camera_params)
+{
+    if (config_folder.empty() || camera_params.camera_serial.empty()) {
+        return {};
+    }
+    return (std::filesystem::path(config_folder) /
+            (canonicalize_camera_serial_string(camera_params.camera_serial) + ".json")).string();
+}
+
+void assign_camera_config_paths(CameraParams* cameras_params, int num_cameras, const std::string& config_folder)
+{
+    if (!cameras_params) {
+        return;
+    }
+    for (int i = 0; i < num_cameras; ++i) {
+        cameras_params[i].config_path = build_camera_config_path(config_folder, cameras_params[i]);
+    }
+}
+
 void select_cameras_have_configs(std::vector<std::string>& camera_config_files, GigEVisionDeviceInfo* device_info, bool* check, int cam_count)
 {
     // ... (implementation from project.h)
     for (int i=0; i<cam_count; i++) {
         std::string camera_serial = device_info[i].serialNumber;
-        std::string sub_str = camera_serial + ".json";
-        auto it = std::find_if(camera_config_files.begin(), camera_config_files.end(), [&](const std::string& str) {return str.find(sub_str) != std::string::npos;});
+        auto it = find_camera_config_for_serial(camera_config_files, camera_serial);
         if (it != camera_config_files.end()) {
             check[i] = true;
         } else {
@@ -580,12 +1000,12 @@ void select_cameras_have_configs(std::vector<std::string>& camera_config_files, 
 bool set_camera_params(CameraParams* camera_params, GigEVisionDeviceInfo* device_info, std::vector<std::string>& camera_config_files, int camera_idx, int num_cameras)
 {
     // ... (implementation from project.h)
-    camera_params->camera_serial.append(device_info->serialNumber);
+    camera_params->camera_serial.assign(canonicalize_camera_serial_string(device_info->serialNumber));
+    camera_params->device_model = device_info->modelName;
     camera_params->camera_name = camera_params->camera_serial;
     camera_params->config_path.clear();
 
-    std::string sub_str = camera_params->camera_serial + ".json";
-    auto it = std::find_if(camera_config_files.begin(), camera_config_files.end(), [&](const std::string& str) {return str.find(sub_str) != std::string::npos;});
+    auto it = find_camera_config_for_serial(camera_config_files, camera_params->camera_serial);
 
     if (it == camera_config_files.end())
     {
@@ -606,11 +1026,12 @@ bool set_camera_params(CameraParams* camera_params, GigEVisionDeviceInfo* device
             return false;
         }
     } else {
-        auto config_idx = std::distance(camera_config_files.begin(), it);
+        auto config_idx = std::distance(camera_config_files.cbegin(), it);
         std::cout << "Load camera json file: " << camera_config_files[config_idx] << std::endl;
         camera_params->config_path = camera_config_files[config_idx];
         load_camera_json_config_files(camera_config_files[config_idx], camera_params, camera_idx, num_cameras);
     }
+    infer_camera_gpio_metadata(camera_params);
     return true;
 }
 
@@ -862,23 +1283,36 @@ bool save_camera_json_config(const CameraParams& camera_params,
     }
 
     std::lock_guard<std::mutex> lock(camera_config_mutex());
-    std::string read_error;
-    const std::string contents = read_file_to_string(camera_params.config_path, &read_error);
-    if (contents.empty()) {
+    const std::filesystem::path config_path(camera_params.config_path);
+    std::string mkdir_error;
+    if (!ensure_directory_exists(config_path.parent_path().string(), &mkdir_error)) {
         if (error_out) {
-            *error_out = read_error.empty() ? "config file empty" : read_error;
+            *error_out = mkdir_error.empty() ? "failed to create config folder" : mkdir_error;
         }
         return false;
     }
 
+    std::string read_error;
+    const std::string contents = read_file_to_string(camera_params.config_path, &read_error);
     nlohmann::json camera_config;
-    try {
-        camera_config = nlohmann::json::parse(contents);
-    } catch (const std::exception& ex) {
-        if (error_out) {
-            *error_out = std::string("failed to parse config json: ") + ex.what();
+    if (contents.empty()) {
+        if (read_error == "failed to open file" || read_error.empty()) {
+            camera_config = nlohmann::json::object();
+        } else {
+            if (error_out) {
+                *error_out = read_error;
+            }
+            return false;
         }
-        return false;
+    } else {
+        try {
+            camera_config = nlohmann::json::parse(contents);
+        } catch (const std::exception& ex) {
+            if (error_out) {
+                *error_out = std::string("failed to parse config json: ") + ex.what();
+            }
+            return false;
+        }
     }
     if (!camera_config.is_object()) {
         if (error_out) {
@@ -903,8 +1337,49 @@ bool save_camera_json_config(const CameraParams& camera_params,
     camera_config["iris"] = camera_params.iris;
     camera_config["offset_x"] = camera_params.offsetx;
     camera_config["offset_y"] = camera_params.offsety;
+    camera_config.erase("device_model");
+    camera_config["schema_id"] = kCameraConfigSchemaId;
+    camera_config["schema_version"] = kCameraConfigSchemaVersion;
+    camera_config["device_model_name"] = camera_params.device_model;
+    camera_config["device_serial_number"] = canonicalize_camera_serial_string(camera_params.camera_serial);
+    camera_config["camera_scan_type"] = normalize_camera_scan_type_string(camera_params.camera_scan_type);
+    camera_config["gpio_connector_variant"] =
+        normalize_gpio_connector_variant_string(camera_params.gpio_connector_variant);
+    camera_config["gpio_recipe"] = canonicalize_gpio_recipe_string(camera_params.gpio_recipe);
+    camera_config["sync_mode"] = normalize_camera_sync_mode_string(camera_params.sync_mode);
+    camera_config["trigger"] = {
+        {"enabled", camera_params.trigger_enabled},
+        {"selector", camera_params.trigger_selector},
+        {"source", camera_params.trigger_source},
+        {"activation", camera_params.trigger_activation}
+    };
+    camera_config["ptp"] = {
+        {"enabled", camera_sync_mode_uses_ptp(&camera_params)}
+    };
+    if (camera_sync_mode_uses_ptp(&camera_params)) {
+        camera_config["ptp"]["mode"] = camera_params.ptp_mode.empty() ? "TwoStep" : camera_params.ptp_mode;
+    }
 
-    const std::filesystem::path config_path(camera_params.config_path);
+    nlohmann::json gpio_nodes = nlohmann::json::array();
+    for (const auto& node : camera_params.gpio_nodes) {
+        nlohmann::json node_json;
+        node_json["name"] = node.name;
+        node_json["type"] = lower_ascii_copy(node.type);
+        if (lower_ascii_copy(node.type) == "enum") {
+            node_json["value"] = node.value_string;
+        } else if (lower_ascii_copy(node.type) == "bool") {
+            node_json["value"] = node.value_bool;
+        } else if (lower_ascii_copy(node.type) == "uint") {
+            node_json["value"] = node.value_uint;
+        } else {
+            continue;
+        }
+        gpio_nodes.push_back(std::move(node_json));
+    }
+    camera_config["gpio"] = {
+        {"nodes", std::move(gpio_nodes)}
+    };
+
     std::error_code perms_error;
     const std::filesystem::file_status status = std::filesystem::status(config_path, perms_error);
     const bool set_perms = !perms_error;
@@ -912,9 +1387,15 @@ bool save_camera_json_config(const CameraParams& camera_params,
 
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
-    if (!write_json_atomic(config_path, camera_config, perms, set_perms, "camera config")) {
+    std::string write_error;
+    if (!write_json_atomic(config_path, camera_config, perms, set_perms, "camera config", &write_error)) {
         if (error_out) {
-            *error_out = std::string("failed to write camera config: ") + camera_params.config_path;
+            if (!write_error.empty()) {
+                *error_out = std::string("failed to write camera config: ") + camera_params.config_path +
+                             " (" + write_error + ")";
+            } else {
+                *error_out = std::string("failed to write camera config: ") + camera_params.config_path;
+            }
         }
         return false;
     }

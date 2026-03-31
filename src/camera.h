@@ -12,11 +12,20 @@
 #include <emergentgigevisiondef.h>
 #include <EvtParamAttribute.h>
 #include <unistd.h>
+#include <cstdint>
 #include <string>
 #include <algorithm>
 #include <stdexcept>
 #include <vector>
 #include <numeric>
+
+struct CameraGpioNodeConfig {
+    std::string name;
+    std::string type = "enum";
+    std::string value_string;
+    bool value_bool = false;
+    uint32_t value_uint = 0;
+};
 
 struct CameraParams{
     unsigned int width;
@@ -36,6 +45,19 @@ struct CameraParams{
     bool gpu_direct;
     bool focus_uart_bootstrap = false;
     bool need_reorder;
+    std::string config_schema_id;
+    int config_schema_version = 0;
+    std::string device_model;
+    std::string camera_scan_type = "unknown";
+    std::string gpio_connector_variant = "unknown";
+    std::string gpio_recipe;
+    std::string sync_mode = "free_run";
+    bool trigger_enabled = false;
+    std::string trigger_selector = "AcquisitionStart";
+    std::string trigger_source = "Software";
+    std::string trigger_activation = "RisingEdge";
+    std::string ptp_mode;
+    std::vector<CameraGpioNodeConfig> gpio_nodes;
     unsigned int gain_max; 
     unsigned int gain_min;
     unsigned int gain_inc;
@@ -126,6 +148,10 @@ void set_frame_buffer(Emergent::CEmergentFrame* evt_frame, CameraParams* camera_
 void destroy_frame_buffer(Emergent::CEmergentCamera* camera, Emergent::CEmergentFrame* evt_frame, int buffer_size, CameraParams *camera_params);
 void ptp_camera_sync(Emergent::CEmergentCamera* camera, CameraParams *camera_params);
 void ptp_sync_off(Emergent::CEmergentCamera *camera, CameraParams *camera_params);
+bool camera_sync_mode_uses_ptp(const CameraParams* camera_params);
+bool build_gpio_recipe_preview_nodes(const CameraParams* camera_params,
+                                     std::vector<CameraGpioNodeConfig>* nodes_out,
+                                     std::string* error_out);
 void quick_print_camera(GigEVisionDeviceInfo* device_info, int camera_idx);
 unsigned long long get_current_PTP_time(Emergent::CEmergentCamera* camera);
 void test_gpo_manual_toggle(Emergent::CEmergentCamera* camera);

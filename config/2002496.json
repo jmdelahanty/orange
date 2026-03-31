@@ -1,4 +1,11 @@
 {
+    "schema_id": "orange.camera.config",
+    "schema_version": 1,
+    "device_model_name": "HB-7000SC",
+    "device_serial_number": "2002496",
+    "camera_scan_type": "area_scan",
+    "gpio_connector_variant": "area_scan_12_pin",
+    "gpio_recipe": "",
     "name": "Cam0",
     "width": 3208,
     "height": 2200,
@@ -12,5 +19,21 @@
     "color_temp": "CT_3000K",
     "gpu_direct": false,
     "focus_uart_bootstrap": false,
-    "color": true
+    "color": true,
+    "offset_x": 0,
+    "offset_y": 0,
+    "sync_mode": "free_run",
+    "trigger": {
+        "enabled": false,
+        "selector": "AcquisitionStart",
+        "source": "Software",
+        "activation": "RisingEdge"
+    },
+    "ptp": {
+        "enabled": false,
+        "mode": "TwoStep"
+    },
+    "gpio": {
+        "nodes": []
+    }
 }

@@ -39,9 +39,13 @@ void init_65MP_camera_params_color(CameraParams* camera_params, int camera_id, i
 void init_7MP_camera_params_color(CameraParams* camera_params, int camera_id, int num_cameras, int gain, int exposure, int gpu_id, int frame_rate);
 void init_7MP_camera_params_mono(CameraParams* camera_params, int camera_id, int num_cameras, int gain, int exposure, int gpu_id, int frame_rate);
 bool make_folder(std::string folder_name);
+bool ensure_directory_exists(const std::string& folder_name, std::string* error_out = nullptr);
+void list_child_directories(const std::string& root_folder, std::vector<std::string>& child_directories);
 void update_camera_configs(std::vector<std::string>& camera_config_files, std::string input_folder);
 void select_cameras_have_configs(std::vector<std::string>& camera_config_files, GigEVisionDeviceInfo* device_info, bool* check, int cam_count);
 bool set_camera_params(CameraParams* camera_params, GigEVisionDeviceInfo* device_info, std::vector<std::string>& camera_config_files, int camera_idx, int num_cameras);
+std::string build_camera_config_path(const std::string& config_folder, const CameraParams& camera_params);
+void assign_camera_config_paths(CameraParams* cameras_params, int num_cameras, const std::string& config_folder);
 void allocate_camera_frame_buffers(CameraEmergent* ecams, CameraParams* cameras_params, int evt_buffer_size, int num_cameras);
 void client_send_bringup_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, int cam_count, FetchGame::ManagerState server_state);
 void client_send_state_update_message(EnetContext* enet_context, flatbuffers::FlatBufferBuilder* builder, ENetPeer *server_connection, FetchGame::ManagerState server_state);

@@ -485,3 +485,81 @@ void launch_rgb_to_nv12_kernel(const unsigned char* d_rgb,
     rgb_to_nv12_kernel<<<num_blocks, threads_per_block, 0, stream>>>(
         d_rgb, d_y_plane, d_uv_plane, width, height, pitch, pitch);
 }
+
+__device__ __forceinline__ uint8_t rgb_to_y_bt601(uint8_t r, uint8_t g, uint8_t b)
+{
+    return static_cast<uint8_t>(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16);
+}
+
+__device__ __forceinline__ uint8_t rgb_to_u_bt601(uint8_t r, uint8_t g, uint8_t b)
+{
+    return static_cast<uint8_t>(((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128);
+}
+
+__device__ __forceinline__ uint8_t rgb_to_v_bt601(uint8_t r, uint8_t g, uint8_t b)
+{
+    return static_cast<uint8_t>(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128);
+}
+
+__global__ void rgba_to_nv12_kernel(const uchar4* src_rgba,
+                                    unsigned char* dst_y,
+                                    unsigned char* dst_uv,
+                                    int width,
+                                    int height,
+                                    int y_pitch,
+                                    int uv_pitch)
+{
+    const int block_x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int block_y = blockIdx.y * blockDim.y + threadIdx.y;
+    const int x = block_x * 2;
+    const int y = block_y * 2;
+
+    if ((x + 1) >= width || (y + 1) >= height) {
+        return;
+    }
+
+    const uchar4 p00 = src_rgba[y * width + x];
+    const uchar4 p01 = src_rgba[y * width + (x + 1)];
+    const uchar4 p10 = src_rgba[(y + 1) * width + x];
+    const uchar4 p11 = src_rgba[(y + 1) * width + (x + 1)];
+
+    dst_y[y * y_pitch + x] = rgb_to_y_bt601(p00.x, p00.y, p00.z);
+    dst_y[y * y_pitch + (x + 1)] = rgb_to_y_bt601(p01.x, p01.y, p01.z);
+    dst_y[(y + 1) * y_pitch + x] = rgb_to_y_bt601(p10.x, p10.y, p10.z);
+    dst_y[(y + 1) * y_pitch + (x + 1)] = rgb_to_y_bt601(p11.x, p11.y, p11.z);
+
+    const uint8_t r_avg = static_cast<uint8_t>(
+        (static_cast<int>(p00.x) + static_cast<int>(p01.x) + static_cast<int>(p10.x) + static_cast<int>(p11.x)) / 4);
+    const uint8_t g_avg = static_cast<uint8_t>(
+        (static_cast<int>(p00.y) + static_cast<int>(p01.y) + static_cast<int>(p10.y) + static_cast<int>(p11.y)) / 4);
+    const uint8_t b_avg = static_cast<uint8_t>(
+        (static_cast<int>(p00.z) + static_cast<int>(p01.z) + static_cast<int>(p10.z) + static_cast<int>(p11.z)) / 4);
+
+    const int uv_idx = block_y * uv_pitch + x;
+    dst_uv[uv_idx] = rgb_to_u_bt601(r_avg, g_avg, b_avg);
+    dst_uv[uv_idx + 1] = rgb_to_v_bt601(r_avg, g_avg, b_avg);
+}
+
+void launch_rgba_to_nv12_kernel(const unsigned char* d_rgba,
+                                unsigned char* d_nv12,
+                                int width,
+                                int height,
+                                int pitch,
+                                cudaStream_t stream)
+{
+    unsigned char* d_y_plane = d_nv12;
+    unsigned char* d_uv_plane = d_nv12 + (size_t)pitch * height;
+
+    dim3 threads_per_block(16, 16);
+    dim3 num_blocks((width / 2 + threads_per_block.x - 1) / threads_per_block.x,
+                    (height / 2 + threads_per_block.y - 1) / threads_per_block.y);
+
+    rgba_to_nv12_kernel<<<num_blocks, threads_per_block, 0, stream>>>(
+        reinterpret_cast<const uchar4*>(d_rgba),
+        d_y_plane,
+        d_uv_plane,
+        width,
+        height,
+        pitch,
+        pitch);
+}

@@ -1,5 +1,6 @@
 #include "camera.h"
 #include <iostream>
+#include <cctype>
 
 namespace {
 constexpr useconds_t kFocusPollIntervalUs = 200 * 1000;  // 200ms
@@ -10,6 +11,440 @@ bool has_param(Emergent::CEmergentCamera* camera, const char* name)
 {
     EvtParamAttribute attr{};
     return EVT_CameraGetParamAttr(camera, name, &attr) == EVT_SUCCESS;
+}
+
+std::string lower_ascii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+std::string normalize_sync_mode(const CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return "free_run";
+    }
+
+    const std::string mode = lower_ascii(camera_params->sync_mode);
+    if (mode == "ptp_gate" || mode == "free_run" || mode == "external_trigger" || mode == "software_trigger") {
+        return mode;
+    }
+    return "free_run";
+}
+
+std::string normalize_gpio_connector_variant(const CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return "unknown";
+    }
+    const std::string value = lower_ascii(camera_params->gpio_connector_variant);
+    if (value == "area_scan_12_pin" || value == "area_scan_8_pin" ||
+        value == "line_scan_12_pin" || value == "unknown") {
+        return value;
+    }
+    return "unknown";
+}
+
+std::string normalize_gpio_recipe(const CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return {};
+    }
+    const std::string value = lower_ascii(camera_params->gpio_recipe);
+    if (value == "area_scan_hw_trigger_internal_gpi4" ||
+        value == "area_scan_hw_trigger_external_gpi4" ||
+        value == "line_scan_hw_frame_gpi1_internal_line" ||
+        value == "line_scan_hw_frame_gpi1_encoder_line" ||
+        value == "line_scan_encoder_frame_encoder_line" ||
+        value == "line_scan_hw_gate_gpi1_encoder_frame_encoder_line") {
+        return value;
+    }
+    return {};
+}
+
+std::string resolved_ptp_mode(const CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return "TwoStep";
+    }
+    return camera_params->ptp_mode.empty() ? "TwoStep" : camera_params->ptp_mode;
+}
+
+CameraGpioNodeConfig make_enum_node(const char* name, const char* value)
+{
+    CameraGpioNodeConfig node;
+    node.name = name;
+    node.type = "enum";
+    node.value_string = value;
+    return node;
+}
+
+CameraGpioNodeConfig make_bool_node(const char* name, bool value)
+{
+    CameraGpioNodeConfig node;
+    node.name = name;
+    node.type = "bool";
+    node.value_bool = value;
+    return node;
+}
+
+CameraGpioNodeConfig make_uint_node(const char* name, uint32_t value)
+{
+    CameraGpioNodeConfig node;
+    node.name = name;
+    node.type = "uint";
+    node.value_uint = value;
+    return node;
+}
+
+[[noreturn]] void throw_camera_config_error(
+    const std::string& camera_serial,
+    const std::string& message)
+{
+    const std::string full = camera_serial + " camera config error: " + message;
+    std::cerr << full << std::endl;
+    throw std::runtime_error(full);
+}
+
+void ensure_param_exists(
+    Emergent::CEmergentCamera* camera,
+    const std::string& camera_serial,
+    const char* name,
+    const char* context)
+{
+    if (!has_param(camera, name)) {
+        throw_camera_config_error(
+            camera_serial,
+            std::string("[") + context + "] required GenICam node missing: " + name);
+    }
+}
+
+void apply_trigger_config(Emergent::CEmergentCamera* camera, CameraParams* camera_params, const char* context)
+{
+    if (!camera_params->trigger_enabled) {
+        return;
+    }
+
+    ensure_param_exists(camera, camera_params->camera_serial, "TriggerSelector", context);
+    ensure_param_exists(camera, camera_params->camera_serial, "TriggerSource", context);
+    ensure_param_exists(camera, camera_params->camera_serial, "TriggerMode", context);
+
+    check_camera_errors(
+        EVT_CameraSetEnumParam(camera, "TriggerSelector", camera_params->trigger_selector.c_str()),
+        camera_params->camera_serial.c_str());
+    check_camera_errors(
+        EVT_CameraSetEnumParam(camera, "TriggerSource", camera_params->trigger_source.c_str()),
+        camera_params->camera_serial.c_str());
+    if (has_param(camera, "TriggerActivation")) {
+        check_camera_errors(
+            EVT_CameraSetEnumParam(camera, "TriggerActivation", camera_params->trigger_activation.c_str()),
+            camera_params->camera_serial.c_str());
+    } else {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] TriggerActivation node not present; skipping activation config."
+                  << std::endl;
+    }
+    check_camera_errors(
+        EVT_CameraSetEnumParam(camera, "TriggerMode", "On"),
+        camera_params->camera_serial.c_str());
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Applied trigger config: selector=" << camera_params->trigger_selector
+              << " source=" << camera_params->trigger_source
+              << " activation=" << camera_params->trigger_activation
+              << std::endl;
+}
+
+void apply_ptp_mode_config(Emergent::CEmergentCamera* camera, CameraParams* camera_params, const char* context)
+{
+    if (!camera_sync_mode_uses_ptp(camera_params)) {
+        return;
+    }
+
+    const std::string ptp_mode = resolved_ptp_mode(camera_params);
+    ensure_param_exists(camera, camera_params->camera_serial, "PtpMode", context);
+    check_camera_errors(
+        EVT_CameraSetEnumParam(camera, "PtpMode", ptp_mode.c_str()),
+        camera_params->camera_serial.c_str());
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Prepared PTP mode: " << ptp_mode
+              << " (gate programming happens when streaming starts)."
+              << std::endl;
+}
+
+void apply_gpio_node_config(
+    Emergent::CEmergentCamera* camera,
+    const CameraParams* camera_params,
+    const CameraGpioNodeConfig& node,
+    const char* context)
+{
+    ensure_param_exists(camera, camera_params->camera_serial, node.name.c_str(), context);
+
+    const std::string node_type = lower_ascii(node.type);
+    if (node_type == "enum") {
+        check_camera_errors(
+            EVT_CameraSetEnumParam(camera, node.name.c_str(), node.value_string.c_str()),
+            camera_params->camera_serial.c_str());
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] GPIO enum " << node.name
+                  << "=" << node.value_string
+                  << std::endl;
+        return;
+    }
+    if (node_type == "bool") {
+        check_camera_errors(
+            EVT_CameraSetBoolParam(camera, node.name.c_str(), node.value_bool),
+            camera_params->camera_serial.c_str());
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] GPIO bool " << node.name
+                  << "=" << (node.value_bool ? "true" : "false")
+                  << std::endl;
+        return;
+    }
+    if (node_type == "uint") {
+        check_camera_errors(
+            EVT_CameraSetUInt32Param(camera, node.name.c_str(), node.value_uint),
+            camera_params->camera_serial.c_str());
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] GPIO uint " << node.name
+                  << "=" << node.value_uint
+                  << std::endl;
+        return;
+    }
+
+    throw_camera_config_error(
+        camera_params->camera_serial,
+        std::string("[") + context + "] unsupported GPIO node type `" + node.type +
+            "` for node `" + node.name + "`");
+}
+
+void apply_gpio_node_configs(Emergent::CEmergentCamera* camera, const CameraParams* camera_params, const char* context)
+{
+    for (const auto& node : camera_params->gpio_nodes) {
+        apply_gpio_node_config(camera, camera_params, node, context);
+    }
+}
+
+void apply_gpio_recipe_nodes(
+    Emergent::CEmergentCamera* camera,
+    const CameraParams* camera_params,
+    const std::vector<CameraGpioNodeConfig>& nodes,
+    const char* context)
+{
+    for (const auto& node : nodes) {
+        apply_gpio_node_config(camera, camera_params, node, context);
+    }
+}
+
+bool build_gpio_recipe_preview_nodes_impl(const CameraParams* camera_params,
+                                          std::vector<CameraGpioNodeConfig>* nodes_out,
+                                          std::string* error_out)
+{
+    if (nodes_out) {
+        nodes_out->clear();
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!camera_params) {
+        if (error_out) {
+            *error_out = "camera params missing";
+        }
+        return false;
+    }
+
+    const std::string recipe = normalize_gpio_recipe(camera_params);
+    if (recipe.empty()) {
+        if (!camera_params->gpio_recipe.empty()) {
+            if (error_out) {
+                *error_out = std::string("unsupported gpio_recipe `") + camera_params->gpio_recipe + "`";
+            }
+        }
+        return false;
+    }
+
+    if (camera_sync_mode_uses_ptp(camera_params)) {
+        if (error_out) {
+            *error_out = std::string("gpio_recipe `") + recipe + "` conflicts with sync_mode=ptp_gate";
+        }
+        return false;
+    }
+
+    const std::string connector_variant = normalize_gpio_connector_variant(camera_params);
+    const std::string scan_type = lower_ascii(camera_params->camera_scan_type);
+    std::vector<CameraGpioNodeConfig> nodes;
+
+    if (recipe == "area_scan_hw_trigger_internal_gpi4") {
+        if (scan_type != "area_scan" || connector_variant != "area_scan_12_pin") {
+            if (error_out) {
+                *error_out = std::string("gpio_recipe `") + recipe +
+                             "` requires camera_scan_type=area_scan and gpio_connector_variant=area_scan_12_pin";
+            }
+            return false;
+        }
+        nodes = {
+            make_enum_node("AcquisitionMode", "MultiFrame"),
+            make_enum_node("TriggerMode", "On"),
+            make_enum_node("TriggerSource", "Hardware"),
+            make_enum_node("GPI_Start_Exp_Mode", "GPI_4"),
+            make_enum_node("GPI_Start_Exp_Event", "Rising_Edge"),
+            make_uint_node("GPI_4_Debounce_Count", 50),
+            make_enum_node("GPI_End_Exp_Mode", "Internal")
+        };
+    } else if (recipe == "area_scan_hw_trigger_external_gpi4") {
+        if (scan_type != "area_scan" || connector_variant != "area_scan_12_pin") {
+            if (error_out) {
+                *error_out = std::string("gpio_recipe `") + recipe +
+                             "` requires camera_scan_type=area_scan and gpio_connector_variant=area_scan_12_pin";
+            }
+            return false;
+        }
+        nodes = {
+            make_enum_node("AcquisitionMode", "MultiFrame"),
+            make_enum_node("TriggerMode", "On"),
+            make_enum_node("TriggerSource", "Hardware"),
+            make_enum_node("GPI_Start_Exp_Mode", "GPI_4"),
+            make_enum_node("GPI_Start_Exp_Event", "Rising_Edge"),
+            make_uint_node("GPI_4_Debounce_Count", 50),
+            make_enum_node("GPI_End_Exp_Mode", "GPI_4"),
+            make_enum_node("GPI_End_Exp_Event", "Falling_Edge")
+        };
+    } else if (recipe == "line_scan_hw_frame_gpi1_internal_line") {
+        if (scan_type != "line_scan" || connector_variant != "line_scan_12_pin") {
+            if (error_out) {
+                *error_out = std::string("gpio_recipe `") + recipe +
+                             "` requires camera_scan_type=line_scan and gpio_connector_variant=line_scan_12_pin";
+            }
+            return false;
+        }
+        nodes = {
+            make_enum_node("TriggerMode", "On"),
+            make_enum_node("TriggerSource", "Hardware"),
+            make_enum_node("GPI_Start_Frame_Mode", "GPI_1"),
+            make_enum_node("GPI_Start_Frame_Event", "Rising_Edge"),
+            make_uint_node("GPI_1_Debounce_Count", 50),
+            make_uint_node("LineTime", 1000)
+        };
+    } else if (recipe == "line_scan_hw_frame_gpi1_encoder_line") {
+        if (scan_type != "line_scan" || connector_variant != "line_scan_12_pin") {
+            if (error_out) {
+                *error_out = std::string("gpio_recipe `") + recipe +
+                             "` requires camera_scan_type=line_scan and gpio_connector_variant=line_scan_12_pin";
+            }
+            return false;
+        }
+        nodes = {
+            make_enum_node("TriggerMode", "On"),
+            make_enum_node("TriggerSource", "Hardware"),
+            make_enum_node("GPI_Start_Frame_Mode", "GPI_1"),
+            make_enum_node("GPI_Start_Frame_Event", "Rising_Edge"),
+            make_uint_node("GPI_1_Debounce_Count", 50),
+            make_bool_node("GP_ENC_MODE", true),
+            make_uint_node("GP_ENC_LINE_Multiplier", 1),
+            make_uint_node("GP_ENC_LINE_DIVIDER", 4)
+        };
+    } else if (recipe == "line_scan_encoder_frame_encoder_line") {
+        if (scan_type != "line_scan" || connector_variant != "line_scan_12_pin") {
+            if (error_out) {
+                *error_out = std::string("gpio_recipe `") + recipe +
+                             "` requires camera_scan_type=line_scan and gpio_connector_variant=line_scan_12_pin";
+            }
+            return false;
+        }
+        nodes = {
+            make_enum_node("TriggerMode", "On"),
+            make_enum_node("TriggerSource", "Hardware"),
+            make_enum_node("GPI_Start_Frame_Event", "Encoder_Frame_Divider"),
+            make_bool_node("GP_ENC_MODE", true),
+            make_uint_node("GP_ENC_LINE_Multiplier", 1),
+            make_uint_node("GP_ENC_LINE_DIVIDER", 4),
+            make_uint_node("GP_ENC_FRAME_DIVIDER", 24000)
+        };
+    } else if (recipe == "line_scan_hw_gate_gpi1_encoder_frame_encoder_line") {
+        if (scan_type != "line_scan" || connector_variant != "line_scan_12_pin") {
+            if (error_out) {
+                *error_out = std::string("gpio_recipe `") + recipe +
+                             "` requires camera_scan_type=line_scan and gpio_connector_variant=line_scan_12_pin";
+            }
+            return false;
+        }
+        nodes = {
+            make_enum_node("TriggerMode", "On"),
+            make_enum_node("TriggerSource", "Hardware"),
+            make_enum_node("GPI_Start_Frame_Mode", "GPI_1"),
+            make_enum_node("GPI_Start_Frame_Event", "Pulse_High"),
+            make_uint_node("GPI_1_Debounce_Count", 50),
+            make_bool_node("GP_ENC_MODE", true),
+            make_uint_node("GP_ENC_LINE_Multiplier", 1),
+            make_uint_node("GP_ENC_LINE_DIVIDER", 4),
+            make_uint_node("GP_ENC_FRAME_DIVIDER", 24000)
+        };
+    }
+
+    if (nodes.empty()) {
+        if (error_out) {
+            *error_out = std::string("gpio_recipe `") + recipe + "` did not resolve to any node writes";
+        }
+        return false;
+    }
+
+    if (nodes_out) {
+        *nodes_out = std::move(nodes);
+    }
+    return true;
+}
+
+bool apply_configured_gpio_recipe(Emergent::CEmergentCamera* camera, CameraParams* camera_params, const char* context)
+{
+    std::vector<CameraGpioNodeConfig> nodes;
+    std::string recipe_error;
+    if (!build_gpio_recipe_preview_nodes_impl(camera_params, &nodes, &recipe_error)) {
+        if (!camera_params->gpio_recipe.empty() && !recipe_error.empty()) {
+            throw_camera_config_error(
+                camera_params->camera_serial,
+                std::string("[") + context + "] " + recipe_error);
+        }
+        return false;
+    }
+
+    const std::string recipe = normalize_gpio_recipe(camera_params);
+    const std::string connector_variant = normalize_gpio_connector_variant(camera_params);
+
+    std::cout << camera_params->camera_serial
+              << " [" << context << "] Applying gpio_recipe=" << recipe
+              << " for device_model=" << (camera_params->device_model.empty() ? "unknown" : camera_params->device_model)
+              << " scan_type=" << (camera_params->camera_scan_type.empty() ? "unknown" : camera_params->camera_scan_type)
+              << " connector=" << connector_variant
+              << std::endl;
+    apply_gpio_recipe_nodes(camera, camera_params, nodes, context);
+    return true;
+}
+
+void apply_configured_runtime_mode(Emergent::CEmergentCamera* camera, CameraParams* camera_params, const char* context)
+{
+    const bool recipe_applied = apply_configured_gpio_recipe(camera, camera_params, context);
+    const std::string sync_mode = normalize_sync_mode(camera_params);
+    if (sync_mode == "ptp_gate") {
+        apply_ptp_mode_config(camera, camera_params, context);
+    } else if (sync_mode == "free_run") {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Sync mode=free_run"
+                  << std::endl;
+    } else {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Sync mode=" << sync_mode
+                  << " using explicit trigger/GPIO config."
+                  << std::endl;
+    }
+
+    if (!camera_sync_mode_uses_ptp(camera_params) && !recipe_applied) {
+        apply_trigger_config(camera, camera_params, context);
+    }
+
+    apply_gpio_node_configs(camera, camera_params, context);
 }
 
 bool refresh_focus_range(Emergent::CEmergentCamera* camera, CameraParams* camera_params)
@@ -272,6 +707,13 @@ bool set_iris_value_checked(
     return true;
 }
 }  // namespace
+
+bool build_gpio_recipe_preview_nodes(const CameraParams* camera_params,
+                                     std::vector<CameraGpioNodeConfig>* nodes_out,
+                                     std::string* error_out)
+{
+    return build_gpio_recipe_preview_nodes_impl(camera_params, nodes_out, error_out);
+}
 
 std::string get_evt_error_string(EVT_ERROR error)
 {
@@ -622,6 +1064,8 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera, GigEVisionDevice
               << " [open_camera_with_params] Lens init summary: focus=" << (focus_ok ? "PASS" : "FAIL")
               << " iris=" << (iris_ok ? "PASS" : "FAIL")
               << std::endl;
+
+    apply_configured_runtime_mode(camera, camera_params, "open_camera_with_params");
 }
 
 void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInfo *device_info, CameraParams *camera_params)
@@ -714,14 +1158,21 @@ void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInf
 }
 
 // **********************************************sync*****************************************************
+bool camera_sync_mode_uses_ptp(const CameraParams* camera_params)
+{
+    return normalize_sync_mode(camera_params) == "ptp_gate";
+}
+
 void ptp_camera_sync(Emergent::CEmergentCamera *camera, CameraParams *camera_params)
 {
     // ptp triggering configuration settings
+    const std::string ptp_mode = resolved_ptp_mode(camera_params);
+    check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerSelector", camera_params->trigger_selector.c_str()), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerSource", "Software"), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "AcquisitionMode", "MultiFrame"), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetUInt32Param(camera, "AcquisitionFrameCount", 1), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerMode", "On"), camera_params->camera_serial.c_str());
-    check_camera_errors(EVT_CameraSetEnumParam(camera, "PtpMode", "TwoStep"), camera_params->camera_serial.c_str());
+    check_camera_errors(EVT_CameraSetEnumParam(camera, "PtpMode", ptp_mode.c_str()), camera_params->camera_serial.c_str());
 }
 
 void ptp_sync_off(Emergent::CEmergentCamera *camera, CameraParams *camera_params)

@@ -549,6 +549,14 @@ std::string record_output_summary(const std::string& mode, int factor, int width
     return std::string("factor ") + std::to_string(factor) + "x";
 }
 
+std::string format_bitrate_mbps(uint32_t bitrate_bps)
+{
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1)
+        << (static_cast<double>(bitrate_bps) / 1000000.0);
+    return oss.str();
+}
+
 RecordingOutputConfig resolve_recording_output_config(
     const CameraParams& camera_params,
     const EncoderConfig& encoder_config,
@@ -2673,6 +2681,7 @@ int main(int argc, char **args) {
         "ll",
         "vbr",
         20,
+        0,
         "factor",
         1,
         1024,
@@ -2720,9 +2729,7 @@ int main(int argc, char **args) {
 
     std::vector<std::string> local_config_folders;
     std::string local_start_folder_name = orange_root_dir_str + "/config/local";
-    for (const auto &entry: std::filesystem::directory_iterator(local_start_folder_name)) {
-        local_config_folders.push_back(entry.path().string());
-    }
+    list_child_directories(local_start_folder_name, local_config_folders);
     std::string picture_save_folder = orange_root_dir_str + "/pictures/" + get_current_date();
     std::string calib_save_folder = orange_root_dir_str + "/exp/calibration/" + get_current_date();
     std::string aperture_char_output_folder = orange_root_dir_str + "/calibrations/artifacts";
@@ -2734,6 +2741,9 @@ int main(int argc, char **args) {
     std::snprintf(usaf_ui_state.output_dir, sizeof(usaf_ui_state.output_dir), "%s", usaf_output_folder.c_str());
 
     int local_config_select = 0;
+    char new_local_config_folder_name[128] = "";
+    std::string local_config_status;
+    bool local_config_status_error = false;
     bool select_all_cameras = false;
     char *temp_string = (char *) malloc(64);
     *temp_string = '\0';
@@ -2746,6 +2756,12 @@ int main(int argc, char **args) {
                                   &quite_enet);
     }
     std::vector<std::string> color_temps = { "CT_Off", "CT_2800K", "CT_3000K", "CT_4000K", "CT_5000K", "CT_6500K", "CT_Custom"};
+    auto refresh_local_config_folders = [&]() {
+        list_child_directories(local_start_folder_name, local_config_folders);
+        if (local_config_select > static_cast<int>(local_config_folders.size())) {
+            local_config_select = static_cast<int>(local_config_folders.size());
+        }
+    };
 
     while (!glfwWindowShouldClose(window->render_target)) {
         reap_host_ptp_stack_worker(&host_ptp_stack_ui);
@@ -2886,6 +2902,39 @@ int main(int argc, char **args) {
                 ImGui::TextDisabled("Lower values preserve more detail.");
             }
             {
+                encoder_config->gop_length = sanitize_recording_gop_length(encoder_config->gop_length);
+                ImGui::BeginDisabled(encoder_config->tuning_info == "lossless");
+                if (ImGui::InputInt("gop length (frames)", &encoder_config->gop_length)) {
+                    encoder_config->gop_length = sanitize_recording_gop_length(encoder_config->gop_length);
+                }
+                ImGui::EndDisabled();
+
+                if (encoder_config->tuning_info == "lossless") {
+                    ImGui::TextDisabled("Lossless tuning forces GOP length 1.");
+                } else if (encoder_config->gop_length == 0) {
+                    if (camera_control->open && cameras_params != nullptr && num_cameras > 0) {
+                        std::ostringstream auto_gop_summary;
+                        auto_gop_summary << "Auto GOP by camera: ";
+                        for (int i = 0; i < num_cameras; ++i) {
+                            if (i > 0) {
+                                auto_gop_summary << ", ";
+                            }
+                            auto_gop_summary << cameras_params[i].camera_serial
+                                             << "="
+                                             << resolve_recording_gop_length(
+                                                    cameras_params[i],
+                                                    encoder_config->tuning_info,
+                                                    encoder_config->gop_length);
+                        }
+                        ImGui::TextDisabled("%s", auto_gop_summary.str().c_str());
+                    } else {
+                        ImGui::TextDisabled("0 = auto (uses camera FPS, about 1 second between IDRs).");
+                    }
+                } else {
+                    ImGui::TextDisabled("IDR period follows the selected GOP length.");
+                }
+            }
+            {
                 const char *items[] = {"1", "2", "4", "8", "16"};
                 static const int item_numbers[] = {1, 2, 4, 8, 16};
                 static int downsample_current = 0;
@@ -2940,6 +2989,60 @@ int main(int argc, char **args) {
                     encoder_config->record_output_height
                 ).c_str()
             );
+            if (camera_control->open && cameras_params != nullptr && cameras_select != nullptr && num_cameras > 0) {
+                ImGui::SeparatorText("Estimated Recording Bitrate");
+                for (int i = 0; i < num_cameras; ++i) {
+                    std::string output_warning;
+                    const RecordingOutputConfig recording_output_config =
+                        resolve_recording_output_config(
+                            cameras_params[i],
+                            *encoder_config,
+                            cameras_select[i],
+                            &output_warning);
+                    const RecordingBitrateEstimate bitrate_estimate =
+                        estimate_recording_bitrate(cameras_params[i], recording_output_config);
+
+                    std::ostringstream line;
+                    line << cameras_params[i].camera_serial
+                         << ": "
+                         << recording_output_config.resolved_width
+                         << "x"
+                         << recording_output_config.resolved_height
+                         << " @ "
+                         << cameras_params[i].frame_rate
+                         << " fps";
+
+                    if (encoder_config->rate_control_mode == "cqp") {
+                        line << " -> CQP mode (no fixed bitrate target).";
+                    } else {
+                        line << " -> avg "
+                             << format_bitrate_mbps(bitrate_estimate.average_bitrate)
+                             << " Mbps, max "
+                             << format_bitrate_mbps(bitrate_estimate.max_bitrate)
+                             << " Mbps";
+                        if (encoder_config->rate_control_mode == "vbr_cq") {
+                            line << ", CQ=" << encoder_config->quality_value;
+                        }
+                        line << " (" << std::fixed << std::setprecision(2) << bitrate_estimate.target_bpp << " bpp";
+                        if (bitrate_estimate.average_clamped_to_min) {
+                            line << ", floor-clamped";
+                        } else if (bitrate_estimate.average_clamped_to_max) {
+                            line << ", avg-capped";
+                        }
+                        if (bitrate_estimate.max_clamped_to_max) {
+                            line << ", max-capped";
+                        }
+                        line << ")";
+                    }
+
+                    ImGui::TextWrapped("%s", line.str().c_str());
+                    if (!output_warning.empty()) {
+                        ImGui::TextDisabled("  output fallback: %s", output_warning.c_str());
+                    }
+                }
+            } else {
+                ImGui::TextDisabled("Estimated bitrate becomes available once cameras are open.");
+            }
 
             int fps_temp = streaming_target_fps.load(); // get the current atomic value
 
@@ -2976,7 +3079,12 @@ int main(int argc, char **args) {
                     ImGui::BeginDisabled();
                 }
 
-                set_camera_properties(ecams, cameras_params, num_cameras, color_temps);
+                const std::string selected_local_config_folder =
+                    (local_config_select >= 0 &&
+                     local_config_select < static_cast<int>(local_config_folders.size()))
+                        ? local_config_folders[local_config_select]
+                        : std::string();
+                set_camera_properties(ecams, cameras_params, num_cameras, color_temps, selected_local_config_folder);
 
                 if (camera_control->record_video) {
                     // ImGui::EndDisabled();
@@ -3437,6 +3545,61 @@ int main(int argc, char **args) {
                 ImGui::SameLine();
             }
             ImGui::RadioButton("Null", &local_config_select, local_config_folders.size());
+            const bool has_selected_local_folder =
+                local_config_select >= 0 && local_config_select < static_cast<int>(local_config_folders.size());
+            const std::string selected_local_config_folder =
+                has_selected_local_folder ? local_config_folders[local_config_select] : std::string();
+
+            ImGui::Separator();
+            ImGui::TextWrapped("Selected local folder: %s",
+                               has_selected_local_folder ? selected_local_config_folder.c_str() : "Null");
+            ImGui::InputText("New local folder", new_local_config_folder_name, IM_ARRAYSIZE(new_local_config_folder_name));
+            ImGui::SameLine();
+            if (ImGui::Button("Create folder")) {
+                const std::string folder_name = trim_ascii_whitespace(new_local_config_folder_name);
+                if (folder_name.empty()) {
+                    local_config_status = "Folder name is empty.";
+                    local_config_status_error = true;
+                } else if (folder_name == "." || folder_name == ".." ||
+                           folder_name.find('/') != std::string::npos ||
+                           folder_name.find('\\') != std::string::npos) {
+                    local_config_status = "Folder name must not contain path separators or relative path tokens.";
+                    local_config_status_error = true;
+                } else {
+                    const std::string new_folder_path =
+                        (std::filesystem::path(local_start_folder_name) / folder_name).string();
+                    std::string ensure_error;
+                    if (ensure_directory_exists(new_folder_path, &ensure_error)) {
+                        refresh_local_config_folders();
+                        auto it = std::find(local_config_folders.begin(), local_config_folders.end(), new_folder_path);
+                        if (it != local_config_folders.end()) {
+                            local_config_select = static_cast<int>(std::distance(local_config_folders.begin(), it));
+                        }
+                        new_local_config_folder_name[0] = '\0';
+                        local_config_status = std::string("Ready: ") + new_folder_path;
+                        local_config_status_error = false;
+                    } else {
+                        local_config_status = ensure_error.empty() ? "Failed to create local config folder." : ensure_error;
+                        local_config_status_error = true;
+                    }
+                }
+            }
+
+            if (camera_control->open && has_selected_local_folder) {
+                if (ImGui::Button("Use selected folder for open cameras")) {
+                    assign_camera_config_paths(cameras_params, num_cameras, selected_local_config_folder);
+                    local_config_status = std::string("Open cameras now save into ") + selected_local_config_folder;
+                    local_config_status_error = false;
+                }
+            }
+
+            if (!local_config_status.empty()) {
+                if (local_config_status_error) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "%s", local_config_status.c_str());
+                } else {
+                    ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f), "%s", local_config_status.c_str());
+                }
+            }
 
             if (camera_control->open) {
                 // ImGui::EndDisabled();
@@ -3450,7 +3613,12 @@ int main(int argc, char **args) {
                 if (!camera_control->open) {
                     if (local_config_select < local_config_folders.size()) {
                         update_camera_configs(camera_config_files, local_config_folders[local_config_select]);
-                        select_cameras_have_configs(camera_config_files, device_info, camera_is_selected, cam_count);
+                        if (!camera_config_files.empty()) {
+                            select_cameras_have_configs(camera_config_files, device_info, camera_is_selected, cam_count);
+                        } else {
+                            std::cout << "[GUI] Selected local config folder is empty; preserving current camera selection."
+                                      << std::endl;
+                        }
                     }
 
                     num_cameras = 0;
@@ -3510,11 +3678,27 @@ int main(int argc, char **args) {
                             }
 
                         }
+                        int ptp_config_count = 0;
+                        for (int i = 0; i < num_cameras; i++) {
+                            if (camera_sync_mode_uses_ptp(&cameras_params[i])) {
+                                ptp_config_count++;
+                            }
+                        }
+                        if (ptp_config_count == num_cameras && num_cameras > 0) {
+                            ptp_stream_sync = true;
+                        } else {
+                            if (ptp_config_count > 0) {
+                                std::cout << "[GUI] Mixed ptp_gate/non-PTP camera configs loaded; leaving PTP Stream Sync unchecked."
+                                          << std::endl;
+                            }
+                            ptp_stream_sync = false;
+                        }
                         realtime_plot_data = new ScrollingBuffer[num_cameras];
 
                     }
                 } else {
                     camera_control->open = false;
+                    ptp_stream_sync = false;
                     for (int i = 0; i < num_cameras; i++) {
                         close_camera(&ecams[i].camera, &cameras_params[i]);
                     }
@@ -3805,6 +3989,7 @@ int main(int argc, char **args) {
                                     encoder_config->tuning_info,
                                     encoder_config->rate_control_mode,
                                     encoder_config->quality_value,
+                                    encoder_config->gop_length,
                                     encoder_config->folder_name,
                                     encoderPreprocessWorkers[i], // Link to the preprocess worker
                                     camera_control

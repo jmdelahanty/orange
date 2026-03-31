@@ -13,6 +13,22 @@
 
 class EncoderPreprocessWorker; // Forward declaration
 
+struct RecordingBitrateEstimate {
+    uint32_t average_bitrate = 0;
+    uint32_t max_bitrate = 0;
+    double target_bpp = 0.0;
+    bool average_clamped_to_min = false;
+    bool average_clamped_to_max = false;
+    bool max_clamped_to_max = false;
+};
+
+RecordingBitrateEstimate estimate_recording_bitrate(const CameraParams& camera_params,
+                                                    const RecordingOutputConfig& recording_output_config);
+int sanitize_recording_gop_length(int requested_gop_length);
+uint32_t resolve_recording_gop_length(const CameraParams& camera_params,
+                                      const std::string& tuning,
+                                      int requested_gop_length);
+
 class EncoderHwWorker : public CThreadWorker<ENCODER_WORKER_ENTRY>
 {
 public:
@@ -25,6 +41,7 @@ public:
         const std::string& tuning,
         const std::string& rate_control_mode,
         int quality_value,
+        int gop_length,
         std::string folder_name,
         EncoderPreprocessWorker* prep_worker,
         CameraControl* camera_control
@@ -98,6 +115,7 @@ private:
     std::string tuning_;
     std::string rate_control_mode_;
     int quality_value_ = 20;
+    int gop_length_ = 0;
     Writer writer_;
     cudaStream_t m_stream = nullptr;
     CameraControl* camera_control_;

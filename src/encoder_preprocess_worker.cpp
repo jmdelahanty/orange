@@ -43,7 +43,6 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
       camera_control_(camera_control),
       m_stream(nullptr),
       m_hw_worker_(nullptr),
-      d_rgb_temp_(nullptr),
       d_rgba_resize_(nullptr),
       d_uv_default_plane_(nullptr),
       recording_output_config_(recording_output_config),
@@ -65,7 +64,6 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     initialize_gpu_debayer(&debayer_gpu_, camera_params_);
 
     if (camera_params_->color) {
-        ck(cudaMalloc(&d_rgb_temp_, static_cast<size_t>(output_width_) * output_height_ * 3));
         if (recording_output_config_.resize_enabled) {
             ck(cudaMalloc(&d_rgba_resize_, static_cast<size_t>(output_width_) * output_height_ * 4));
         }
@@ -103,7 +101,6 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
         }
     }
 
-    if (d_rgb_temp_) cudaFree(d_rgb_temp_);
     if (d_rgba_resize_) cudaFree(d_rgba_resize_);
     if (d_uv_default_plane_) cudaFree(d_uv_default_plane_);
     if (debayer_gpu_.d_debayer) cudaFree(debayer_gpu_.d_debayer);
@@ -291,7 +288,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 
     // --- Perform the copy and color conversion ---
     if (camera_params_->color) {
-        // Full Color Pipeline: RAW -> RGBA -> RGB -> NV12 (Planar YUV with interleaved UV)
+        // Full Color Pipeline: RAW -> RGBA -> NV12
         frame_original_gpu_.d_orig = entry->d_image;
         
         // 1. Debayer RAW Bayer to RGBA
@@ -314,13 +311,14 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             rgba_source = d_rgba_resize_;
         }
 
-        // 2. Convert RGBA to RGB (removes alpha channel)
-        rgba2rgb_convert(d_rgb_temp_, rgba_source, output_width_, output_height_, m_stream);
-
-        // 3. Convert RGB to NV12 for the encoder using our new optimized kernel
-        launch_rgb_to_nv12_kernel(d_rgb_temp_, encoder_entry->d_prepared_frame,
-                                  output_width_, output_height_,
-                                  encoder_pitch_, m_stream);
+        // 2. Convert RGBA directly to NV12 for the encoder.
+        launch_rgba_to_nv12_kernel(
+            rgba_source,
+            encoder_entry->d_prepared_frame,
+            output_width_,
+            output_height_,
+            encoder_pitch_,
+            m_stream);
 
     } else {
         // Monochrome path: Copy Y plane and fill UV planes to create an NV12-compatible frame
