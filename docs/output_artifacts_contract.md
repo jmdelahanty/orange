@@ -152,6 +152,7 @@ Important:
   - `fps.acquisition|preprocess|encode: object`
   - `queue_depth.display|yolo|preprocess|encode|pending_requeues: object`
   - `resource_availability.acquire_entries|acquire_entries_low_watermark|acquire_events|acquire_events_low_watermark|yolo_events|yolo_events_low_watermark|preprocess_buffers|preprocess_events: object`
+  - `totals.acquisition_resource_starvations: integer` (optional)
   - `totals.preprocess_resource_waits: integer` (optional)
   - `totals.preprocess_frames_dropped: integer` (optional)
   - `totals.encode_failures: integer` (optional)
@@ -213,7 +214,7 @@ Current emitted top-level fields:
   - `updated_at_utc`
   - `frame_count`
   - `frames_received`
-  - `dropped_frames`
+  - `dropped_frames` (camera-side frame-ID gaps and `EVT_CameraGetFrame` errors)
   - `last_frame_timestamp_ns`
   - `last_latched_ptp_time_ns`
   - `ptp_offset_ns.{samples,min,max,last,mean}`
@@ -288,7 +289,7 @@ Gate:
 Header (exact order):
 
 ```text
-timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,enc_fps,display_q,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,gpu_direct,gpu_ring,gpu_copy
+timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,enc_fps,display_q,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,gpu_direct,gpu_ring,gpu_copy
 ```
 
 Field semantics:
@@ -301,6 +302,7 @@ Field semantics:
 - `acq_free_events`, `acq_free_events_low`: available acquire completion events and the interval low-water mark.
 - `yolo_events`, `yolo_events_low`: available YOLO completion events and the interval low-water mark.
 - `pending_requeues`: camera buffers still waiting for safe requeue after GPU work.
+- `acq_starve`: cumulative count of acquisition-loop iterations that could not reserve the required work entry or events before attempting to fetch another camera frame.
 - `pre_buffers`, `pre_events`: available preprocess NV12 buffers and CUDA events.
 - `pre_waits`, `pre_drops`: cumulative preprocess resource-wait and drop counters.
 - `enc_fail`, `enc_slow`: cumulative encode-failure and slow-frame counters.

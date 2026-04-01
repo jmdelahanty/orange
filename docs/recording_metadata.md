@@ -256,6 +256,7 @@ Current emitted shape:
         "preprocess_events": {"samples": 57, "min": 85, "max": 120, "last": 112, "mean": 108.7}
       },
       "totals": {
+        "acquisition_resource_starvations": 0,
         "preprocess_resource_waits": 0,
         "preprocess_frames_dropped": 0,
         "encode_failures": 0,

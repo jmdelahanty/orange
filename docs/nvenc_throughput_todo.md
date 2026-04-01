@@ -8,6 +8,7 @@ multi-GPU options.
 See also:
 
 - `docs/nvenc_direct_input_plan.md`
+- `docs/nvenc_benchmark_runsheet.md`
 - `docs/color_recording_pipeline.md`
 - `docs/encoding_alternatives.md`
 
@@ -39,12 +40,14 @@ Implementation priority should be:
      - encode failures / slow-frame count.
    - still needs runtime validation on target hardware.
 
-2. [ ] Run the minimum benchmark matrix on:
+2. [ ] Run the benchmark matrix on:
    - `RTX A6000`,
    - one GPU on an `A16`.
    Goal:
    - confirm whether the current limit is mostly hardware,
    - identify whether `h264`, `hevc`, `p1`, or `p3` is the real boundary.
+   Use:
+   - `docs/nvenc_benchmark_runsheet.md`
 
 3. [ ] Implement direct registered NV12 input behind a fallback switch.
    Goal:
@@ -72,8 +75,8 @@ Implementation priority should be:
   - output resolution,
   - target FPS,
   - GPU id.
-- [ ] Run the minimum benchmark matrix documented in
-  `docs/nvenc_direct_input_plan.md`.
+- [ ] Run the benchmark matrix documented in
+  `docs/nvenc_benchmark_runsheet.md`.
 - [ ] Compare single-session results on:
   - `RTX A6000`,
   - one GPU on an `A16` board.
@@ -90,8 +93,20 @@ Implementation priority should be:
   - still valid for production-style output.
 - [ ] Benchmark `h264` vs `hevc` under the same operating points.
 - [ ] Benchmark current default RC path vs CQP vs cheapest LL path.
+- [ ] Benchmark `AQ/TemporalAQ on` vs `AQ/TemporalAQ off` on representative
+  large-frame recordings with mostly static background.
+  Goal:
+  - determine whether generic perceptual AQ is helping or misallocating bits for
+    this scene class,
+  - determine whether AQ cost is meaningful for throughput.
 - [ ] Verify whether display / YOLO / multi-consumer fan-out materially changes
   encode throughput for the target runs.
+- [ ] Add a short pre-encoder reference-capture mode for codec comparisons.
+  Goal:
+  - compare candidate codec settings against the frame representation actually
+    seen by the encoder,
+  - separate codec loss from upstream debayer / resize / colorspace choices,
+  - avoid using long uncompressed capture as a default recording mode.
 
 ## Phase 3: Direct Registered NV12 Input
 
@@ -185,6 +200,8 @@ This phase is intentionally later.
 - [ ] The team can state with evidence whether the throughput ceiling is mostly
   hardware or software.
 - [ ] The single-GPU path has been cleaned up and benchmarked with direct input.
+- [ ] The team has evidence for whether generic `AQ/TemporalAQ` helps, hurts, or
+  is neutral for the target scene class and downstream tasks.
 - [ ] The recommended production operating points are documented for:
   - full-resolution recording,
   - high-FPS lower-resolution recording,

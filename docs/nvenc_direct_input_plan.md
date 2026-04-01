@@ -435,6 +435,146 @@ Official sources:
   https://www.nvidia.com/en-sg/data-center/products/a16-gpu/
   https://images.nvidia.com/content/Solutions/data-center/vgpu-a16-datasheet.pdf
 
+## Preset / Tuning Primer
+
+NVIDIA's preset and tuning controls are both performance / quality knobs, but
+they operate at different levels.
+
+From the NVIDIA programming guide:
+
+- presets run from `P1` to `P7`,
+- `P1` is the highest-performance end of the range,
+- `P7` is the lowest-performance / highest-quality end of the range,
+- tuning info selects the broader use-case bias such as `High Quality`,
+  `Low Latency`, `Ultra Low Latency`, or `Lossless`.
+
+Primary source:
+- NVIDIA Video Codec SDK, NVENC Video Encoder API Programming Guide:
+  https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-video-encoder-api-prog-guide/index.html
+
+Practical reading:
+
+- moving from `P1` to `P3` means spending more encoder work per frame for
+  quality,
+- moving from `LL` to `HQ` means choosing a latency-tolerant, quality-oriented
+  operating mode instead of a speed / latency-oriented mode,
+- so `p3 hq` is expected to be slower than `p1 ll` even before any repo-specific
+  overhead is considered.
+
+NVIDIA's own recommended-settings table reinforces this split:
+
+- `High Quality` / `Ultra High Quality` are recommended for
+  recording, archiving, and latency-tolerant transcoding,
+- `Low Latency` / `Ultra Low Latency` are recommended for streaming,
+  conferencing, and other encode paths where response time matters more.
+
+This does not mean `HQ` always turns on every expensive feature, but it does
+mean the preset+tuning combination should be understood as a quality/performance
+tradeoff, not just a cosmetic label.
+
+## What That Means In This Repo
+
+The current encoder setup still simplifies some parts of the default NVENC
+quality guidance:
+
+- `frameIntervalP = 1`, so the current path is effectively running without
+  B-frames,
+- reference-frame counts are kept low,
+- GOP structure is constrained for recording simplicity and low-latency
+  behavior.
+
+Code references:
+
+- preset/tuning selection:
+  - `CreateDefaultEncoderParams(...)` with `presetGuid` and `tuningInfo`
+- GOP / P-frame interval:
+  - `encodeConfig.gopLength = ...`
+  - `encodeConfig.frameIntervalP = 1`
+
+Even with those simplifications, the current code still makes quality-oriented
+paths more expensive than the cheapest low-latency path:
+
+- the quality recording profile uses `VBR`,
+- it enables `AQ`,
+- it enables `TemporalAQ`,
+- it enables `Lookahead` whenever the tuning is not low latency.
+
+Code reference:
+- `apply_quality_recording_profile(...)` in `src/encoder_hw_worker.cpp`
+
+That means there are two overlapping reasons `p3 hq` can fall behind where
+`p1 ll` survives:
+
+1. NVENC preset/tuning themselves are explicitly designed to trade throughput
+   for quality.
+2. In this repo, non-low-latency quality paths also enable additional features
+   that can raise encode cost further.
+
+So the right mental model is:
+
+- `p1 ll` = closest thing to the fast end of the current NVENC operating space,
+- `p3 ll` = still latency-oriented, but not the fastest preset,
+- `p3 hq` = a more quality-oriented encode mode that should be expected to need
+  materially more encode budget per frame.
+
+## AQ Caveat For Our Imaging Regime
+
+The built-in AQ heuristics are designed around generic perceptual video quality,
+not around "preserve the fish at all costs" or "optimize downstream scientific
+analysis."
+
+That matters for this project because the common scene structure is often:
+
+- very large frame sizes,
+- mostly static background,
+- large low-contrast / low-complexity regions,
+- relatively small biologically important regions that may not dominate the
+  frame.
+
+NVIDIA's own AQ guidance implies a potential mismatch with that scene type:
+
+- Spatial AQ allocates extra bits to flat regions because compression artifacts
+  are more visible there to a human viewer.
+- Temporal AQ favors regions that are low-motion across frames but still carry
+  high spatial detail, especially when they are useful as future references.
+- NVIDIA explicitly notes that temporal AQ benefits the most when much of the
+  frame is a detailed non-moving background.
+
+For our imagery, that means:
+
+- Spatial AQ may spend bits protecting smooth background regions that are
+  perceptually sensitive but not biologically important.
+- Temporal AQ may spend bits preserving static background structure if that
+  structure is detailed and persistent across frames.
+- Neither heuristic inherently knows that a fish or animal body is the region
+  that matters most to us.
+
+So the practical risk is real:
+
+- generic AQ may improve human-perceived whole-frame "cleanliness,"
+- while still failing to preserve the task-critical subject detail as well as a
+  more task-aware scheme would.
+
+That is one reason the planned importance-map / delta-QP path is attractive:
+
+- use cheap spatial priors such as dish mask and arena layout first,
+- optionally fuse motion or detector/tracker boxes,
+- then tell the encoder where higher quality actually matters instead of relying
+  only on generic perceptual heuristics.
+
+Recommended benchmarking rule:
+
+- compare `AQ on` vs `AQ off`,
+- compare generic AQ against any future mask-informed delta-QP / importance-map
+  path,
+- evaluate not only file size and human visual quality, but also subject-detail
+  retention and downstream task quality.
+
+The right mental model is:
+
+- generic AQ = "better-looking video for a generic viewer,"
+- task-aware maps = "better bit allocation for this domain."
+
 ## Rough Pixel-Rate Budgeting
 
 Useful approximation:
@@ -691,6 +831,10 @@ If pursued later, one design adjustment should be considered first:
   splitting, so the added buffering penalty is less severe.
 
 ## Benchmarking Plan
+
+For the concrete currently-runnable matrix, see:
+
+- `docs/nvenc_benchmark_runsheet.md`
 
 The goal of benchmarking is to separate:
 

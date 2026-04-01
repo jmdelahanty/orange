@@ -41,6 +41,54 @@ NVENC bit allocation toward the fish without requiring TensorRT.
   4. static dish prior
   5. neutral full-frame map
 
+## Latency Position
+
+Spatial encoding guidance should not be treated as a look-ahead feature by
+default.
+
+Working assumption:
+
+- a per-frame importance map or delta-QP map should not inherently add fixed
+  encoder latency the way look-ahead does,
+- the bigger latency risks are upstream map generation and downstream throughput
+  loss,
+- therefore the feature should be designed so that it can run from current or
+  past-frame signals only, without waiting on future frames.
+
+Practical implications:
+
+- safe-ish latency profile:
+  - static dish prior
+  - static arena prior
+  - cheap motion ROI
+  - detector/tracker bbox when already available in time
+  - reuse last-good map when the newest signal is missing
+- risky latency profile:
+  - blocking encode on same-frame TRT if TRT is not already on budget
+  - temporal smoothing that requires future frames
+  - enabling quality modes that already queue frames internally, such as
+    look-ahead
+  - any importance-map path that makes encode throughput fall below input rate
+
+Design rule:
+
+- importance-map generation should degrade to stale or simpler maps rather than
+  blocking the encode path,
+- future-frame dependence should be treated as a separate feature and justified
+  explicitly,
+- validation should distinguish:
+  - direct added frame latency,
+  - throughput loss that causes queue growth,
+  - and subjective/objective quality gain.
+
+This is consistent with the current NVENC reading:
+
+- NVIDIA explicitly documents look-ahead as buffering future frames and queuing
+  input,
+- the planned importance-map path should be treated instead as per-picture
+  guidance unless benchmarking shows a real throughput penalty large enough to
+  create backlog.
+
 ## Why Dish Mask First
 
 The dish mask is the lowest-risk signal in this system:
@@ -506,9 +554,26 @@ Expected behavior:
 - [ ] Start with mild default deltas and validate visually plus downstream-task
   quality.
 - [ ] Keep the feature opt-in.
+- [ ] Benchmark future map-guided encoding against generic `AQ/TemporalAQ`, not
+  just against neutral encoding.
 
 ## Phase 8: Validation
 
+- [ ] Define a short reference-capture mode for codec comparisons.
+- [ ] Keep reference capture bounded by duration or frame count; do not treat
+  uncompressed capture as the default long-run recording mode.
+- [ ] Decide which ground-truth layer is being measured:
+  - [ ] sensor-native raw / mono / Bayer frames
+  - [ ] pre-encoder frames after resize / color conversion
+  - [ ] decoded frames from candidate codecs
+- [ ] Compare codec outputs against the matching reference layer rather than
+  against an unrelated source representation.
+- [ ] Use the same short clips to compare:
+  - [ ] live-looking / pre-encoder detail
+  - [ ] current compressed output
+  - [ ] lossless codec output
+  - [ ] generic `AQ/TemporalAQ`
+  - [ ] future mask-informed delta-QP / importance-map output
 - [ ] Validate dish-mask artifact resolution by Orange runtime.
 - [ ] Validate arena-layout artifact resolution by Orange runtime.
 - [ ] Validate Citrus can resolve and copy the same calibration ref.
@@ -520,6 +585,87 @@ Expected behavior:
 - [ ] Validate TRT mode with bbox + fallbacks.
 - [ ] Compare file size, NVENC utilization, and fish-detail quality against
   neutral encoding.
+- [ ] Compare downstream segmentation / keypoint / labeling quality against the
+  same pre-encoder reference clips, not only against human visual judgment.
+
+## Reference Baseline Position
+
+For downstream segmentation / labeling / keypoint evaluation, a short
+uncompressed reference clip is valuable.
+
+Rationale:
+
+- lossless and high-quality codec modes are still codec decisions,
+- they may preserve detail very well, but they do not give a perfect "no codec
+  damage" baseline,
+- a bounded uncompressed reference makes it possible to measure what the codec
+  itself is removing.
+
+Important distinction:
+
+- sensor-native raw / mono / Bayer reference answers:
+  - "what information came from the camera before our local preprocessing?"
+- pre-encoder reference answers:
+  - "what information did the codec see before compression?"
+
+For codec-strategy benchmarking, the pre-encoder reference is usually the most
+direct comparator.
+
+That is because it isolates codec damage from:
+
+- debayer choices,
+- resize choices,
+- color-space conversion choices,
+- and any future importance-map / delta-QP decisions.
+
+Terminology clarification:
+
+- "pre-encoder reference" here means the prepared recording-path frame
+  immediately before compression,
+- it does not mean every live consumer in the system sees the exact same frame
+  representation.
+
+In particular:
+
+- the recording path sees the prepared encoder input,
+- display and other live branches may tap earlier or different
+  representations,
+- so it is expected that a live view can preserve more visible detail than the
+  saved compressed video.
+
+That is not, by itself, evidence that acquisition lost detail.
+It is often evidence that the codec path introduced the visible loss.
+
+This makes the benchmark ladder clearer:
+
+1. compare live-looking / pre-encoder detail against the compressed output,
+2. confirm that the loss first appears at the codec boundary,
+3. then compare codec strategies against the same pre-encoder baseline.
+
+Recommended position:
+
+- support a short explicit reference-capture mode for experiments,
+- keep it bounded to small windows such as a few seconds or a fixed frame
+  count,
+- store enough metadata to reconstruct exact source format and preprocessing
+  state,
+- do not assume the right answer is a general-purpose "raw video recording
+  mode" for all sessions.
+
+Why bounded only:
+
+- the data rate at Orange resolutions is extremely high,
+- uncompressed capture can become an I/O benchmark instead of a codec
+  benchmark,
+- a long-run raw mode can distort the rest of the pipeline and make results
+  harder to interpret.
+
+So the intended ladder is:
+
+1. short uncompressed reference clip,
+2. same clip encoded with candidate strategies,
+3. visual + downstream-task comparison against the reference,
+4. only then decide which codec strategy is worth using at scale.
 
 ## Open Questions
 

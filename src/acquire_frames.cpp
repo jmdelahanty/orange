@@ -129,6 +129,7 @@ struct PipelinePerfSample {
     int yolo_events_available = -1;
     int yolo_events_low_watermark = -1;
     int pending_requeues = -1;
+    uint64_t acquisition_resource_starvations = 0;
     int preprocess_buffers_available = -1;
     int preprocess_events_available = -1;
     uint64_t preprocess_resource_waits = 0;
@@ -185,6 +186,7 @@ public:
               << sample.yolo_events_available << ","
               << sample.yolo_events_low_watermark << ","
               << sample.pending_requeues << ","
+              << sample.acquisition_resource_starvations << ","
               << sample.preprocess_buffers_available << ","
               << sample.preprocess_events_available << ","
               << sample.preprocess_resource_waits << ","
@@ -244,7 +246,7 @@ private:
                  "display_q,yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
-                 "pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[PIPELINE] Cam " << serial
@@ -332,6 +334,7 @@ private:
 
         nlohmann::json totals = nlohmann::json::object();
         if (have_last_sample_) {
+            totals["acquisition_resource_starvations"] = last_sample_.acquisition_resource_starvations;
             totals["preprocess_resource_waits"] = last_sample_.preprocess_resource_waits;
             totals["preprocess_frames_dropped"] = last_sample_.preprocess_frames_dropped;
             totals["encode_failures"] = last_sample_.encode_failures;
@@ -462,6 +465,7 @@ void acquire_frames(
     double current_acquisition_fps = 0.0;
     uint64_t local_recording_frame_count = 0;
     uint64_t last_recording_frame_count = 0;
+    uint64_t acquisition_resource_starvations = 0;
     uint64_t gpu_direct_frames = 0;
     uint64_t gpu_ring_copy_frames = 0;
     uint64_t gpu_copy_frames = 0;
@@ -553,6 +557,7 @@ void acquire_frames(
         sample.yolo_events_available = yolo_events_available;
         sample.yolo_events_low_watermark = yolo_events_low;
         sample.pending_requeues = static_cast<int>(pending_requeues.size());
+        sample.acquisition_resource_starvations = acquisition_resource_starvations;
         sample.preprocess_buffers_available = encoder_preprocess_worker ? encoder_preprocess_worker->available_buffers_.load() : -1;
         sample.preprocess_events_available = encoder_preprocess_worker ? encoder_preprocess_worker->available_events_.load() : -1;
         sample.preprocess_resource_waits = encoder_preprocess_worker ? encoder_preprocess_worker->get_resource_waits() : 0;
@@ -700,6 +705,7 @@ void acquire_frames(
         }
 
         if (!got_entry || !got_event || !got_yolo_event) {
+            acquisition_resource_starvations++;
             if (got_entry) {
                 resources->free_entries_queue->push(current_entry);
                 free_entries_available++;
@@ -727,6 +733,10 @@ void acquire_frames(
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
+            camera_state.dropped_frames += count_camera_frame_id_gaps(
+                camera_state.id_prev,
+                ecam->frame_recv.frame_id);
+            camera_state.id_prev = next_camera_frame_id_prev(ecam->frame_recv.frame_id);
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
@@ -1032,6 +1042,7 @@ void acquire_frames(
                           << " yev=" << pipeline_sample.yolo_events_available
                           << "/" << pipeline_sample.yolo_events_low_watermark
                           << " pend=" << pipeline_sample.pending_requeues
+                          << " acq_starve=" << pipeline_sample.acquisition_resource_starvations
                           << " q(d/y/p/e)="
                           << pipeline_sample.display_queue_depth << "/"
                           << pipeline_sample.yolo_queue_depth << "/"
@@ -1054,6 +1065,22 @@ void acquire_frames(
                 free_entries_low = free_entries_available;
                 free_events_low = free_events_available;
                 yolo_events_low = yolo_events_available;
+            }
+        } else {
+            camera_state.dropped_frames++;
+            std::cerr << "EVT_CameraGetFrame Error, " << camera_state.camera_return
+                      << ", camera serial, " << camera_params->camera_serial << std::endl;
+            if (current_event) {
+                resources->free_events_queue->push(current_event);
+                free_events_available++;
+            }
+            if (yolo_event) {
+                resources->yolo_events_queue->push(yolo_event);
+                yolo_events_available++;
+            }
+            if (current_entry) {
+                resources->free_entries_queue->push(current_entry);
+                free_entries_available++;
             }
         }
         NVTX_RANGE_POP();

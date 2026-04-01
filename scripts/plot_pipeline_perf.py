@@ -42,6 +42,7 @@ DEFAULT_RESOURCE_FIELDS = [
 ]
 
 DEFAULT_COUNTER_FIELDS = [
+    "acq_starve",
     "pre_waits",
     "pre_drops",
     "enc_fail",
