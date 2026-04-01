@@ -226,6 +226,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/crop_and_encode_worker.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
+    "${SRC_DIR}/modern_recording_pipeline.cpp"
     ${NVENCODER_SOURCES}
     ${IMGUI_SOURCES}
     ${IMPLOT_SOURCES}
@@ -239,8 +240,11 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/FFmpegWriter.cpp"
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/video_capture.cpp"
+    "${SRC_DIR}/acquire_frames.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
-    "${SRC_DIR}/acquire_frames_headless.cpp"
+    "${SRC_DIR}/encoder_preprocess_worker.cpp"
+    "${SRC_DIR}/encoder_hw_worker.cpp"
+    "${SRC_DIR}/modern_recording_pipeline.cpp"
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
@@ -338,6 +342,8 @@ target_link_libraries(orange_client PRIVATE
     ${CUDA_NPPICC_LIBRARY}
     ${CUDA_NPPIDEI_LIBRARY}
     ${CUDA_NPPC_LIBRARY}
+    ${CUDA_NPPIG_LIBRARY}
+    ${CUDA_NPPIAL_LIBRARY}
     ${NVIDIA_ENCODE_LIBRARY}
     ${AVFORMAT_LIBRARY}
     ${SWSCALE_LIBRARY}

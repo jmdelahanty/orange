@@ -1,7 +1,11 @@
-#include <iostream>
-#include <thread>
+#include <chrono>
+#include <cctype>
+#include <cerrno>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
+#include <thread>
 #include "network_base.h"
 #include "thread.h"
 #include "types.h"
@@ -11,13 +15,221 @@
 #include "project.h"
 #include "video_capture.h"
 #include "fetch_generated.h"
-#include "acquire_frames_headless.h"
+#include "acquire_frames.h"
+#include "modern_recording_pipeline.h"
 #include <signal.h>
 
 #define evt_buffer_size 100
 #define max_cameras 20
 
 simplelogger::Logger *logger = simplelogger::LoggerFactory::CreateConsoleLogger();
+
+namespace {
+
+struct HeadlessEncoderSettings {
+    std::string codec = "h264";
+    std::string preset = "p1";
+    std::string tuning = "ll";
+    std::string rate_control_mode = "vbr";
+    int quality_value = 20;
+    int gop_length = 0;
+};
+
+std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
+{
+    std::vector<std::string> tokens;
+    std::string current;
+    for (char ch : setup) {
+        if (std::isspace(static_cast<unsigned char>(ch)) || ch == ',' || ch == ';' || ch == '|') {
+            if (!current.empty()) {
+                tokens.push_back(current);
+                current.clear();
+            }
+            continue;
+        }
+        current.push_back(ch);
+    }
+    if (!current.empty()) {
+        tokens.push_back(current);
+    }
+    return tokens;
+}
+
+HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
+{
+    HeadlessEncoderSettings settings;
+    const std::vector<std::string> tokens = split_headless_encoder_setup(setup);
+
+    int positional_index = 0;
+    auto assign_positional = [&](const std::string& token) {
+        switch (positional_index++) {
+            case 0: settings.codec = token; break;
+            case 1: settings.preset = token; break;
+            case 2: settings.tuning = token; break;
+            case 3: settings.rate_control_mode = token; break;
+            case 4: settings.quality_value = std::atoi(token.c_str()); break;
+            case 5: settings.gop_length = std::atoi(token.c_str()); break;
+            default: break;
+        }
+    };
+
+    for (const std::string& token : tokens) {
+        const std::size_t equals = token.find('=');
+        if (equals == std::string::npos) {
+            assign_positional(token);
+            continue;
+        }
+
+        const std::string key = token.substr(0, equals);
+        const std::string value = token.substr(equals + 1);
+        if (value.empty()) {
+            continue;
+        }
+
+        if (key == "codec") {
+            settings.codec = value;
+        } else if (key == "preset") {
+            settings.preset = value;
+        } else if (key == "tuning" || key == "tune") {
+            settings.tuning = value;
+        } else if (key == "rc" || key == "rate_control" || key == "rate_control_mode") {
+            settings.rate_control_mode = value;
+        } else if (key == "quality" || key == "cq" || key == "qp") {
+            settings.quality_value = std::atoi(value.c_str());
+        } else if (key == "gop" || key == "gop_length") {
+            settings.gop_length = std::atoi(value.c_str());
+        }
+    }
+
+    if (settings.codec.empty()) {
+        settings.codec = "h264";
+    }
+    if (settings.preset.empty()) {
+        settings.preset = "p1";
+    }
+    if (settings.tuning.empty()) {
+        settings.tuning = "ll";
+    }
+    if (settings.rate_control_mode.empty()) {
+        settings.rate_control_mode = "vbr";
+    }
+    if (settings.quality_value < 1) {
+        settings.quality_value = 20;
+    }
+    if (settings.gop_length < 0) {
+        settings.gop_length = 0;
+    }
+
+    return settings;
+}
+
+RecordingOutputConfig build_native_recording_output_config(const CameraParams& camera_params)
+{
+    RecordingOutputConfig output;
+    output.mode = "factor";
+    output.downsample_factor = 1;
+    output.requested_width = static_cast<int>(camera_params.width);
+    output.requested_height = static_cast<int>(camera_params.height);
+    output.resolved_width = static_cast<int>(camera_params.width);
+    output.resolved_height = static_cast<int>(camera_params.height);
+    output.resize_enabled = false;
+    return output;
+}
+
+bool prepare_headless_recording_artifacts(const std::string& record_folder,
+                                          CameraControl* camera_control,
+                                          CameraParams* cameras_params,
+                                          int num_cameras,
+                                          PTPParams* ptp_params)
+{
+    if (record_folder.empty()) {
+        std::cerr << "Headless recording folder is empty." << std::endl;
+        return false;
+    }
+
+    if (mkdir(record_folder.c_str(), 0777) == -1 && errno != EEXIST) {
+        std::cerr << "Error : " << std::strerror(errno) << std::endl;
+        return false;
+    }
+
+    const std::filesystem::path recording_path(record_folder);
+    const std::string recording_id = recording_path.filename().string();
+    const std::filesystem::path base_path = recording_path.parent_path().empty()
+        ? recording_path
+        : recording_path.parent_path();
+
+    {
+        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+        camera_control->recording_folder = record_folder;
+    }
+
+    if (!write_recording_snapshot(
+            record_folder,
+            recording_id,
+            cameras_params,
+            num_cameras,
+            base_path.string(),
+            camera_control->sync_camera,
+            ptp_params)) {
+        std::cerr << "Failed to write headless recording snapshot for " << record_folder << std::endl;
+        return false;
+    }
+
+    if (!initialize_ptp_sync_summary(
+            record_folder,
+            recording_id,
+            num_cameras,
+            camera_control->sync_camera,
+            ptp_params)) {
+        std::cerr << "Failed to initialize headless PTP summary for " << record_folder << std::endl;
+        return false;
+    }
+
+    std::cout << "Recorded video saves to : " << record_folder << std::endl;
+    return true;
+}
+
+void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+                                  CameraControl* camera_control)
+{
+    camera_control->record_video = false;
+    camera_control->recording_draining = true;
+    camera_control->stop_record = true;
+
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (camera_control->active_recorders.load(std::memory_order_relaxed) > 0 &&
+           std::chrono::steady_clock::now() < drain_deadline) {
+        usleep(1000);
+    }
+
+    if (camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
+        std::cerr << "Headless recording drain timed out with "
+                  << camera_control->active_recorders.load(std::memory_order_relaxed)
+                  << " active recorder(s)." << std::endl;
+    }
+
+    for (auto& pipeline : recording_pipelines) {
+        if (!pipeline) {
+            continue;
+        }
+        pipeline->request_stop();
+    }
+
+    for (auto& pipeline : recording_pipelines) {
+        if (!pipeline) {
+            continue;
+        }
+        pipeline->shutdown();
+        pipeline.reset();
+    }
+
+    camera_control->recording_draining = false;
+    camera_control->stop_record = false;
+    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+    camera_control->recording_folder.clear();
+}
+
+} // namespace
 
 void quit_process(bool error = false, const std::string &reason = "")
 {
@@ -45,7 +257,10 @@ bool open_cameras(CameraParams *cameras_params, CameraEmergent *ecams, CameraEac
 }
 
 
-bool start_camera_thread(std::vector<std::thread> &camera_threads, CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select, 
+bool start_camera_thread(std::vector<std::thread> &camera_threads,
+    std::vector<CameraResources>& camera_resources,
+    std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+    CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select,
     GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params, std::string record_folder, std::string encoder_basic_setup)
 {
     std::cout << "start camera sthread..." << std::endl;
@@ -70,16 +285,72 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads, CameraParams 
     }
     const bool use_ptp_sync = (ptp_camera_count == num_cameras && num_cameras > 0);
     camera_control->sync_camera = use_ptp_sync;
+    camera_control->recording_draining = false;
+    camera_control->stop_record = false;
 
-    // Creating a directory to save recorded video;
-    if (mkdir(record_folder.c_str(), 0777) == -1)
-    {
-        std::cerr << "Error :  " << std::strerror(errno) << std::endl;
+    if (!prepare_headless_recording_artifacts(
+            record_folder,
+            camera_control,
+            cameras_params,
+            num_cameras,
+            ptp_params)) {
         return false;
     }
-    else
-    {
-        std::cout << "Recorded video saves to : " << record_folder << std::endl;
+
+    const HeadlessEncoderSettings encoder_settings = parse_headless_encoder_setup(encoder_basic_setup);
+    std::cout << "Headless encoder config: codec=" << encoder_settings.codec
+              << " preset=" << encoder_settings.preset
+              << " tuning=" << encoder_settings.tuning
+              << " rc=" << encoder_settings.rate_control_mode
+              << " quality=" << encoder_settings.quality_value
+              << " gop=" << encoder_settings.gop_length
+              << std::endl;
+
+    size_t max_frame_size_bytes = 0;
+    for (int i = 0; i < num_cameras; ++i) {
+        const size_t current_size =
+            static_cast<size_t>(cameras_params[i].width) * static_cast<size_t>(cameras_params[i].height);
+        if (current_size > max_frame_size_bytes) {
+            max_frame_size_bytes = current_size;
+        }
+    }
+
+    camera_resources.clear();
+    camera_resources.resize(num_cameras);
+    recording_pipelines.clear();
+    recording_pipelines.resize(num_cameras);
+
+    try {
+        for (int i = 0; i < num_cameras; ++i) {
+            camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
+            cameras_select[i].stream_on = false;
+            cameras_select[i].record = true;
+            cameras_select[i].yolo = false;
+            cameras_select[i].crop_and_encode = false;
+            cameras_select[i].send_frame_ipc = false;
+
+            recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
+                &cameras_params[i],
+                build_native_recording_output_config(cameras_params[i]),
+                encoder_settings.codec,
+                encoder_settings.preset,
+                encoder_settings.tuning,
+                encoder_settings.rate_control_mode,
+                encoder_settings.quality_value,
+                encoder_settings.gop_length,
+                record_folder,
+                *camera_resources[i].recycle_queue,
+                camera_control);
+            recording_pipelines[i]->start();
+        }
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
+        drain_and_shutdown_recording(recording_pipelines, camera_control);
+        for (auto& resources : camera_resources) {
+            resources.cleanup();
+        }
+        camera_resources.clear();
+        return false;
     }
 
     if (use_ptp_sync) {
@@ -94,12 +365,20 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads, CameraParams 
 
     for (int i = 0; i < num_cameras; i++)
     {
-        cameras_select->stream_on = false;
-    }
-
-    for (int i = 0; i < num_cameras; i++)
-    {
-        camera_threads.push_back(std::thread(&acquire_frames_headless, &ecams[i], &cameras_params[i], &cameras_select[i], camera_control, encoder_basic_setup, record_folder, ptp_params));
+        camera_threads.push_back(std::thread(
+            &acquire_frames,
+            &ecams[i],
+            &cameras_params[i],
+            &cameras_select[i],
+            camera_control,
+            ptp_params,
+            nullptr,
+            nullptr,
+            recording_pipelines[i] ? recording_pipelines[i]->preprocess_worker() : nullptr,
+            nullptr,
+            nullptr,
+            &camera_resources[i],
+            nullptr));
     }
 
     // wait for all camera ready
@@ -139,6 +418,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     CameraEmergent *ecams;
     CameraParams *cameras_params;
     std::vector<std::thread> camera_threads;
+    std::vector<CameraResources> camera_resources;
+    std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     CameraEachSelect *cameras_select;
     CameraControl *camera_control = new CameraControl;
 
@@ -163,7 +444,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 }
                 break;
             case FetchGame::ManagerState_STARTCAMTHREAD:
-                if (start_camera_thread(camera_threads, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, recording_setup->record_folder, recording_setup->encoder_basic_setup))
+                if (start_camera_thread(camera_threads, camera_resources, recording_pipelines, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, recording_setup->record_folder, recording_setup->encoder_basic_setup))
                 {
                     manager_context->state = FetchGame::ManagerState_THREADREADY;
                 } else {
@@ -184,6 +465,9 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
             {
                 camera_threads.pop_back();
             }
+
+            drain_and_shutdown_recording(recording_pipelines, camera_control);
+            recording_pipelines.clear();
 
             if (camera_control->sync_camera) {
                 for (int i = 0; i < *cam_count; i++)
@@ -207,7 +491,9 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 delete[] ecams[i].evt_frame;
                 check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
                 close_camera(&ecams[i].camera, &cameras_params[i]);
+                camera_resources[i].cleanup();
             }
+            camera_resources.clear();
             delete[] ecams;
             delete[] cameras_params;
             delete[] cameras_select;

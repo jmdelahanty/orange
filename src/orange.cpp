@@ -21,6 +21,7 @@
 #include "global.h"
 #include "encoder_preprocess_worker.h"
 #include "encoder_hw_worker.h"
+#include "modern_recording_pipeline.h"
 #include "opengldisplay.h"
 #include "image_writer_worker.h"
 #include "yolov8_det.h"
@@ -2665,13 +2666,12 @@ int main(int argc, char **args) {
     int evt_buffer_size{100};
     PTPParams *ptp_params = new PTPParams{0, 0, 0, 0, false, false, false, false};
     COpenGLDisplay** openGLDisplayWorkers = nullptr;
-    EncoderPreprocessWorker** encoderPreprocessWorkers = nullptr;
-    EncoderHwWorker** encoderHWWorkers = nullptr;
     CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
 
     std::vector<CameraResources> camera_resources;
+    std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
 
@@ -3871,18 +3871,16 @@ int main(int argc, char **args) {
                         }
                         // Create worker thread objects and GPU textures
                         openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
-                        encoderPreprocessWorkers = new EncoderPreprocessWorker*[num_cameras]();
-                        encoderHWWorkers = new EncoderHwWorker*[num_cameras]();
                         cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
                         tex = new GL_Texture[num_cameras];
                         crop_tex = new GL_Texture[num_cameras];
                         yolo_workers.assign(num_cameras, nullptr);
+                        recording_pipelines.clear();
+                        recording_pipelines.resize(num_cameras);
 
                         // Initialize all worker pointers to nullptr
                         for(int i = 0; i < num_cameras; ++i) {
                             openGLDisplayWorkers[i] = nullptr;
-                            encoderPreprocessWorkers[i] = nullptr;
-                            encoderHWWorkers[i] = nullptr;
                             cropAndEncodeWorkers[i] = nullptr;
                         }
                         cudaSetDevice(display_gpu_id);
@@ -3939,49 +3937,7 @@ int main(int argc, char **args) {
                                               << cameras_params[i].width << "x" << cameras_params[i].height
                                               << "." << std::endl;
                                 }
-
-                                // The encoder pitch is required by the preprocess worker to prepare the frame correctly.
-                                // We can get it by creating a temporary encoder instance.
-
-                                // Get the current CUDA context for this thread
-                                CUcontext cuContext;
-                                ck(cuCtxGetCurrent(&cuContext));
-
-                                // Now, use the local cuContext variable
-                                NvEncoderCuda temp_enc(
-                                    cuContext,
-                                    recording_output_config.resolved_width,
-                                    recording_output_config.resolved_height,
-                                    NV_ENC_BUFFER_FORMAT_NV12);
-
-                                // --- START: ADDED INITIALIZATION ---
-                                // We must initialize the encoder to get valid parameters from it.
-                                NV_ENC_INITIALIZE_PARAMS initializeParams = {NV_ENC_INITIALIZE_PARAMS_VER};
-                                NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
-                                initializeParams.encodeConfig = &encodeConfig;
-
-                                // Use placeholder settings; we only need the pitch which is determined by resolution and format.
-                                temp_enc.CreateDefaultEncoderParams(&initializeParams, NV_ENC_CODEC_HEVC_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY);
-                                temp_enc.CreateEncoder(&initializeParams);
-                                // --- END: ADDED INITIALIZATION ---
-
-                                const NvEncInputFrame* temp_frame = temp_enc.GetNextInputFrame();
-                                int encoder_pitch = temp_frame->pitch;
-                                temp_enc.DestroyEncoder();
-
-                                std::string preprocess_name = "Preprocess_Cam_" + cameras_params[i].camera_serial;
-                                encoderPreprocessWorkers[i] = new EncoderPreprocessWorker(
-                                    preprocess_name.c_str(),
-                                    &cameras_params[i],
-                                    recording_output_config,
-                                    encoder_pitch,
-                                    *camera_resources[i].recycle_queue,
-                                    camera_control
-                                );
-
-                                std::string hw_encoder_name = "HW_Encoder_Cam_" + cameras_params[i].camera_serial;
-                                encoderHWWorkers[i] = new EncoderHwWorker(
-                                    hw_encoder_name.c_str(),
+                                recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
                                     &cameras_params[i],
                                     recording_output_config,
                                     encoder_config->encoder_codec,
@@ -3991,12 +3947,8 @@ int main(int argc, char **args) {
                                     encoder_config->quality_value,
                                     encoder_config->gop_length,
                                     encoder_config->folder_name,
-                                    encoderPreprocessWorkers[i], // Link to the preprocess worker
-                                    camera_control
-                                );
-                                
-                                // CRITICAL STEP: Link the two stages together
-                                encoderPreprocessWorkers[i]->SetHwWorker(encoderHWWorkers[i]);
+                                    *camera_resources[i].recycle_queue,
+                                    camera_control);
                             }
 
                             if (cameras_select[i].crop_and_encode) {
@@ -4026,13 +3978,8 @@ int main(int argc, char **args) {
                                 yolo_workers[i]->SetMaxQueueSize(240);
                                 yolo_workers[i]->StartThread();
                             }
-                            if (encoderPreprocessWorkers[i]) {
-                                encoderPreprocessWorkers[i]->SetMaxQueueSize(240);
-                                encoderPreprocessWorkers[i]->StartThread();
-                            }
-                            if (encoderHWWorkers[i]) {
-                                encoderHWWorkers[i]->SetMaxQueueSize(240);
-                                encoderHWWorkers[i]->StartThread();
+                            if (recording_pipelines[i]) {
+                                recording_pipelines[i]->start();
                             }
                             if (cropAndEncodeWorkers[i]) {
                                 cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
@@ -4064,7 +4011,7 @@ int main(int argc, char **args) {
                                 ptp_params,
                                 &indigo_signal_builder,
                                 openGLDisplayWorkers[i],
-                                encoderPreprocessWorkers[i],
+                                recording_pipelines[i] ? recording_pipelines[i]->preprocess_worker() : nullptr,
                                 yolo_workers[i],
                                 image_writer,
                                 &camera_resources[i],
@@ -4103,8 +4050,7 @@ int main(int argc, char **args) {
                             if (yolo_workers[i]) yolo_workers[i]->StopThread();
                             if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
-                            if (encoderHWWorkers[i]) encoderHWWorkers[i]->StopThread();
-                            if (encoderPreprocessWorkers[i]) encoderPreprocessWorkers[i]->StopThread();
+                            if (recording_pipelines[i]) recording_pipelines[i]->request_stop();
                         }
                         std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
 
@@ -4124,31 +4070,22 @@ int main(int argc, char **args) {
                             }
                             
                             // Now the hardware encoder, which is fed by the preprocessor.
-                            if (encoderHWWorkers[i]) {
-                                std::cout << "Flushing final packets for main HW encoder " << cameras_params[i].camera_serial << "..." << std::endl;
-                                encoderHWWorkers[i]->flush_and_close(); // Ensure it has a flush_and_close method
-                                delete encoderHWWorkers[i];
-                                encoderHWWorkers[i] = nullptr;
-                            }
-
                             // The YOLO worker can be deleted now.
                             if (yolo_workers[i]) {
                                 delete yolo_workers[i];
                                 yolo_workers[i] = nullptr;
                             }
 
-                            // Finally, the preprocess worker which is at the start of the encoding pipeline.
-                            if (encoderPreprocessWorkers[i]) {
-                                delete encoderPreprocessWorkers[i];
-                                encoderPreprocessWorkers[i] = nullptr;
+                            if (recording_pipelines[i]) {
+                                recording_pipelines[i]->shutdown();
+                                recording_pipelines[i].reset();
                             }
                         }
                         
                         // Clear the worker pointer vectors
                         yolo_workers.clear();
+                        recording_pipelines.clear();
                         if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
-                        if(encoderPreprocessWorkers) { delete[] encoderPreprocessWorkers; encoderPreprocessWorkers = nullptr; }
-                        if(encoderHWWorkers) { delete[] encoderHWWorkers; encoderHWWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
                         frame_ipc_managers.clear();

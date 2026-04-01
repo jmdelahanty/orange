@@ -1,0 +1,49 @@
+// src/modern_recording_pipeline.h
+
+#ifndef ORANGE_MODERN_RECORDING_PIPELINE_H
+#define ORANGE_MODERN_RECORDING_PIPELINE_H
+
+#include <memory>
+#include <string>
+
+#include "encoder_pipeline.h"
+#include "video_capture.h"
+
+class EncoderPreprocessWorker;
+class EncoderHwWorker;
+
+class ModernRecordingPipeline {
+public:
+    ModernRecordingPipeline(
+        CameraParams* camera_params,
+        const RecordingOutputConfig& recording_output_config,
+        const std::string& codec,
+        const std::string& preset,
+        const std::string& tuning,
+        const std::string& rate_control_mode,
+        int quality_value,
+        int gop_length,
+        const std::string& base_folder_name,
+        SafeQueue<WORKER_ENTRY*>& recycle_queue,
+        CameraControl* camera_control
+    );
+    ~ModernRecordingPipeline();
+
+    void start();
+    void request_stop();
+    void shutdown();
+
+    EncoderPreprocessWorker* preprocess_worker() const { return preprocess_worker_.get(); }
+    EncoderHwWorker* hw_worker() const { return hw_worker_.get(); }
+    const RecordingOutputConfig& recording_output_config() const { return recording_output_config_; }
+
+private:
+    int determine_encoder_pitch() const;
+
+    CameraParams* camera_params_ = nullptr;
+    RecordingOutputConfig recording_output_config_;
+    std::unique_ptr<EncoderPreprocessWorker> preprocess_worker_;
+    std::unique_ptr<EncoderHwWorker> hw_worker_;
+};
+
+#endif
