@@ -350,7 +350,6 @@ EncoderHwWorker::EncoderHwWorker(
   last_recording_frame_id_(0),
   last_fps_update_time_(std::chrono::steady_clock::now()),
   frame_counter_(0),
-  current_fps_(0.0),
   is_recording_(false) // Initialize recording state
 {
     ck(cudaSetDevice(camera_params_->gpu_id));
@@ -764,20 +763,11 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     frame_counter_++;
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = now - last_fps_update_time_;
-    // if (elapsed.count() >= 1.0) {
-    //     current_fps_ = frame_counter_ / elapsed.count();
-    //     std::cout << "[" << threadName << "] GPU " << camera_params_->gpu_id
-    //               << " Camera " << camera_params_->camera_serial
-    //               << " | FPS: " << std::fixed << std::setprecision(1) << current_fps_
-    //               << " | Queue: " << this->GetCountQueueInSize()
-    //               << " | Packets: " << encoder_.vPacket.size()
-    //               << " | Slow frames: " << slow_frames_
-    //               << " | Encode fails: " << encode_failures_
-    //               << std::endl;
-    //     frame_counter_ = 0;
-    //     slow_frames_ = 0;
-    //     last_fps_update_time_ = now;
-    // }
+    if (elapsed.count() >= 1.0) {
+        current_fps_.store(frame_counter_ / elapsed.count(), std::memory_order_relaxed);
+        frame_counter_ = 0;
+        last_fps_update_time_ = now;
+    }
 
     ck(cudaSetDevice(camera_params_->gpu_id));
 

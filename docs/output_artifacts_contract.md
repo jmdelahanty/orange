@@ -44,6 +44,7 @@ Default configured base path in runtime:
 | Main video | `<recording_folder>/Cam<serial>.mp4` | Typical | Per-camera HW encoding active |
 | Main metadata CSV | `<recording_folder>/Cam<serial>_meta.csv` | Typical | Per-camera HW encoding active |
 | Main keyframe sidecar | `<recording_folder>/Cam<serial>_keyframe.json` | Typical | Per-camera HW encoding active |
+| Pipeline perf CSV | `<recording_folder>/Cam<serial>_pipeline_perf.csv` | Optional | Per-camera recording folder active |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
 | Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
@@ -88,6 +89,7 @@ Current emitted top-level fields:
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
 - `encoders: object` (added later by encoder worker updates)
+- `pipeline_metrics: object` (optional, added when acquisition worker finalizes per-camera pipeline summaries)
 
 `cameras` object:
 - Keys are camera identifiers (usually serial strings, fallback may use camera
@@ -130,6 +132,40 @@ Current emitted top-level fields:
 Important:
 - Current runtime snapshot shape is legacy/single-level encoder info.
 - Do not assume `encoders[serial].outputs` or `models` exists.
+
+`pipeline_metrics` object (current shape):
+- Key: camera identifier string (serial or camera_id string).
+- Value: pipeline summary object:
+  - `schema_version: integer`
+  - `camera_serial: string`
+  - `camera_id: integer`
+  - `gpu_id: integer`
+  - `updated_at_utc: string`
+  - `artifact_path: string`
+  - `period_seconds: integer` (currently `1`)
+  - `samples: integer`
+  - `finalized: boolean`
+  - Optional:
+    - `last_sample_at_utc: string`
+    - `last_frame_id: integer`
+    - `last_recording_frame_id: integer`
+  - `fps.acquisition|preprocess|encode: object`
+  - `queue_depth.display|yolo|preprocess|encode|pending_requeues: object`
+  - `resource_availability.acquire_entries|acquire_entries_low_watermark|acquire_events|acquire_events_low_watermark|yolo_events|yolo_events_low_watermark|preprocess_buffers|preprocess_events: object`
+  - `totals.preprocess_resource_waits: integer` (optional)
+  - `totals.preprocess_frames_dropped: integer` (optional)
+  - `totals.encode_failures: integer` (optional)
+  - `totals.encode_slow_frames: integer` (optional)
+  - `totals.gpu_direct_frames: integer` (optional)
+  - `totals.gpu_ring_copy_frames: integer` (optional)
+  - `totals.gpu_copy_frames: integer` (optional)
+
+Stats object shape used above:
+- `samples: integer`
+- `min: number` (omitted when `samples == 0`)
+- `max: number` (omitted when `samples == 0`)
+- `last: number` (omitted when `samples == 0`)
+- `mean: number` (omitted when `samples == 0`)
 
 `sync` object (current shape):
 - `schema_version: integer`
@@ -246,6 +282,33 @@ Field semantics:
 Gate:
 - Disabled when `ORANGE_YOLO_PERF_LOG=0`.
 - Sampling controlled by `ORANGE_YOLO_PERF_SAMPLE`.
+
+### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
+
+Header (exact order):
+
+```text
+timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,enc_fps,display_q,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,gpu_direct,gpu_ring,gpu_copy
+```
+
+Field semantics:
+- `timestamp_utc`: UTC ISO8601 timestamp for the sample row.
+- `frame_id`: absolute camera frame counter at sample time.
+- `recording_frame_id`: last seen recording-frame counter for the active recording folder.
+- `acq_fps`, `pre_fps`, `enc_fps`: current acquisition, preprocess, and encode FPS estimates.
+- `display_q`, `yolo_q`, `pre_q`, `enc_q`: instantaneous queue depths for display, YOLO, preprocess, and HW encode stages.
+- `acq_free_entries`, `acq_free_entries_low`: available acquire work entries and the interval low-water mark.
+- `acq_free_events`, `acq_free_events_low`: available acquire completion events and the interval low-water mark.
+- `yolo_events`, `yolo_events_low`: available YOLO completion events and the interval low-water mark.
+- `pending_requeues`: camera buffers still waiting for safe requeue after GPU work.
+- `pre_buffers`, `pre_events`: available preprocess NV12 buffers and CUDA events.
+- `pre_waits`, `pre_drops`: cumulative preprocess resource-wait and drop counters.
+- `enc_fail`, `enc_slow`: cumulative encode-failure and slow-frame counters.
+- `gpu_direct`, `gpu_ring`, `gpu_copy`: cumulative counts since the current recording folder opened for direct camera-pointer use, direct-pointer ring-copy fallback, and ordinary device copies.
+
+Behavior notes:
+- Emitted at approximately one row per second while the camera has a non-empty recording folder.
+- Short recordings may create the file with only the header if no one-second sample boundary is crossed.
 
 ## Keyframe Sidecar JSON Contract
 

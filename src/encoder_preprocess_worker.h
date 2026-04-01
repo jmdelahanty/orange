@@ -40,6 +40,10 @@ public:
     double get_fps() const { return current_fps_.load(); }
     uint64_t get_frames_dropped() const { return frames_dropped_.load(); }
     uint64_t get_resource_waits() const { return resource_waits_.load(); }
+    double get_hw_fps() const;
+    uint64_t get_hw_encode_failures() const;
+    uint64_t get_hw_slow_frames() const;
+    int get_hw_queue_depth() const;
     bool IsDrained();
 
 protected:

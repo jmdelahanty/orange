@@ -50,9 +50,11 @@ public:
 
     void flush_and_close();
 
-    double get_fps() const { return current_fps_; }
+    double get_fps() const { return current_fps_.load(std::memory_order_relaxed); }
     uint64_t get_total_packets() const { return total_packets_.load(); }
     uint64_t get_encode_failures() const { return encode_failures_.load(); }
+    uint64_t get_slow_frames() const { return slow_frames_.load(); }
+    int get_queue_depth() const { return const_cast<EncoderHwWorker*>(this)->GetCountQueueInSize(); }
 
     EncoderContext encoder_;
     EncoderPreprocessWorker* m_prep_worker_;
@@ -127,7 +129,7 @@ private:
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;
     int frame_counter_;
-    double current_fps_;
+    std::atomic<double> current_fps_{0.0};
     std::atomic<uint64_t> slow_frames_{0};
     std::atomic<uint64_t> total_packets_{0};
     std::atomic<uint64_t> encode_failures_{0};

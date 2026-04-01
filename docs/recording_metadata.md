@@ -79,6 +79,7 @@ Top-level fields:
   "sync": { ... },
   "cameras": { ... },
   "encoders": { ... },
+  "pipeline_metrics": { ... },
   "models": { ... }
 }
 ```
@@ -208,6 +209,73 @@ Compatibility rule:
 - Consumers should support both shapes:
   - if `encoders[serial].outputs` exists, use that;
   - otherwise treat `encoders[serial]` as the `full` encoder entry.
+
+`pipeline_metrics` is an optional dictionary keyed by camera serial number (as a
+string). Each value captures a condensed per-recording summary of the live
+pipeline telemetry written by acquisition, plus a link to the corresponding
+per-camera periodic CSV artifact.
+
+Current emitted shape:
+
+```json
+{
+  "pipeline_metrics": {
+    "02010093": {
+      "schema_version": 1,
+      "camera_serial": "02010093",
+      "camera_id": 0,
+      "gpu_id": 1,
+      "updated_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "artifact_path": "/abs/path/to/recording/Cam02010093_pipeline_perf.csv",
+      "period_seconds": 1,
+      "samples": 57,
+      "finalized": true,
+      "last_sample_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "last_frame_id": 12345,
+      "last_recording_frame_id": 12000,
+      "fps": {
+        "acquisition": {"samples": 57, "min": 58.9, "max": 60.1, "last": 60.0, "mean": 59.8},
+        "preprocess": {"samples": 57, "min": 58.1, "max": 60.0, "last": 59.7, "mean": 59.1},
+        "encode": {"samples": 57, "min": 54.3, "max": 60.0, "last": 58.8, "mean": 57.9}
+      },
+      "queue_depth": {
+        "display": {"samples": 57, "min": 0, "max": 2, "last": 0, "mean": 0.3},
+        "yolo": {"samples": 57, "min": -1, "max": -1, "last": -1, "mean": -1.0},
+        "preprocess": {"samples": 57, "min": 0, "max": 8, "last": 2, "mean": 2.1},
+        "encode": {"samples": 57, "min": 0, "max": 4, "last": 1, "mean": 1.2},
+        "pending_requeues": {"samples": 57, "min": 0, "max": 3, "last": 0, "mean": 0.1}
+      },
+      "resource_availability": {
+        "acquire_entries": {"samples": 57, "min": 18, "max": 32, "last": 29, "mean": 27.6},
+        "acquire_entries_low_watermark": {"samples": 57, "min": 12, "max": 30, "last": 21, "mean": 20.4},
+        "acquire_events": {"samples": 57, "min": 20, "max": 64, "last": 59, "mean": 51.0},
+        "acquire_events_low_watermark": {"samples": 57, "min": 14, "max": 60, "last": 42, "mean": 39.7},
+        "yolo_events": {"samples": 57, "min": 64, "max": 64, "last": 64, "mean": 64.0},
+        "yolo_events_low_watermark": {"samples": 57, "min": 64, "max": 64, "last": 64, "mean": 64.0},
+        "preprocess_buffers": {"samples": 57, "min": 85, "max": 120, "last": 112, "mean": 108.7},
+        "preprocess_events": {"samples": 57, "min": 85, "max": 120, "last": 112, "mean": 108.7}
+      },
+      "totals": {
+        "preprocess_resource_waits": 0,
+        "preprocess_frames_dropped": 0,
+        "encode_failures": 0,
+        "encode_slow_frames": 3,
+        "gpu_direct_frames": 0,
+        "gpu_ring_copy_frames": 57,
+        "gpu_copy_frames": 0
+      }
+    }
+  }
+}
+```
+
+Notes:
+- Stats objects use the same `{samples,min,max,last,mean}` shape already used by
+  other summary sidecars.
+- `artifact_path` points at the per-camera periodic CSV artifact for that
+  recording.
+- The summary is finalized when the acquisition worker rotates away from the
+  recording folder or shuts down.
 
 `models` is an optional dictionary keyed by camera serial number (as a string).
 Each value captures resolved runtime model metadata (for example detect TRT model

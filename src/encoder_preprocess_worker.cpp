@@ -117,6 +117,26 @@ void EncoderPreprocessWorker::SetHwWorker(EncoderHwWorker* hw_worker)
     m_hw_worker_ = hw_worker;
 }
 
+double EncoderPreprocessWorker::get_hw_fps() const
+{
+    return m_hw_worker_ ? m_hw_worker_->get_fps() : 0.0;
+}
+
+uint64_t EncoderPreprocessWorker::get_hw_encode_failures() const
+{
+    return m_hw_worker_ ? m_hw_worker_->get_encode_failures() : 0;
+}
+
+uint64_t EncoderPreprocessWorker::get_hw_slow_frames() const
+{
+    return m_hw_worker_ ? m_hw_worker_->get_slow_frames() : 0;
+}
+
+int EncoderPreprocessWorker::get_hw_queue_depth() const
+{
+    return m_hw_worker_ ? m_hw_worker_->get_queue_depth() : -1;
+}
+
 bool EncoderPreprocessWorker::IsDrained()
 {
     return (in_flight_.load(std::memory_order_relaxed) == 0) &&
@@ -148,27 +168,16 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     in_flight_.fetch_add(1, std::memory_order_relaxed);
 
     // Track successful frame processing
-    frame_counter_++;
+    frame_counter_.fetch_add(1, std::memory_order_relaxed);
     
     // FPS calculation and logging every second
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> elapsed = now - last_fps_update_time_;
-    // if (elapsed.count() >= 1.0) {
-    //     current_fps_ = frame_counter_.load() / elapsed.count();
-        
-    //     std::cout << "[" << threadName << "] GPU " << camera_params_->gpu_id 
-    //               << " Camera " << camera_params_->camera_serial
-    //               << " | FPS: " << std::fixed << std::setprecision(1) << current_fps_
-    //               << " | Queue: " << GetCountQueueInSize()
-    //               << " | Free Buffers: " << available_buffers_.load()
-    //               << " | Free Events: " << available_events_.load()
-    //               << " | Dropped: " << frames_dropped_
-    //               << " | Waits: " << resource_waits_
-    //               << std::endl;
-                  
-    //     frame_counter_ = 0;
-    //     last_fps_update_time_ = now;
-    // }
+    if (elapsed.count() >= 1.0) {
+        const int frames = frame_counter_.exchange(0, std::memory_order_relaxed);
+        current_fps_.store(frames / elapsed.count(), std::memory_order_relaxed);
+        last_fps_update_time_ = now;
+    }
 
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);

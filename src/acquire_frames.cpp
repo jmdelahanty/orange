@@ -18,8 +18,11 @@
 #include "cuda_context_debug.h"
 #include "encoder_preprocess_worker.h"
 #include "frame_ipc_manager.h"
+#include "fsuid_guard.h"
 #include "project.h"
 #include <cstdlib>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 
 #ifndef PIPELINE_PROFILE
@@ -69,6 +72,310 @@ struct RunningInt64Stats {
         out["mean"] = static_cast<double>(sum / static_cast<long double>(samples));
         return out;
     }
+};
+
+struct RunningDoubleStats {
+    double min = std::numeric_limits<double>::infinity();
+    double max = -std::numeric_limits<double>::infinity();
+    long double sum = 0.0;
+    uint64_t samples = 0;
+    double last = 0.0;
+
+    void add(double value) {
+        if (value < min) min = value;
+        if (value > max) max = value;
+        sum += static_cast<long double>(value);
+        last = value;
+        ++samples;
+    }
+
+    void reset() {
+        min = std::numeric_limits<double>::infinity();
+        max = -std::numeric_limits<double>::infinity();
+        sum = 0.0;
+        samples = 0;
+        last = 0.0;
+    }
+
+    nlohmann::json to_json() const {
+        nlohmann::json out = nlohmann::json::object();
+        out["samples"] = samples;
+        if (samples == 0) {
+            return out;
+        }
+        out["min"] = min;
+        out["max"] = max;
+        out["last"] = last;
+        out["mean"] = static_cast<double>(sum / static_cast<long double>(samples));
+        return out;
+    }
+};
+
+struct PipelinePerfSample {
+    std::string timestamp_utc;
+    uint64_t frame_id = 0;
+    uint64_t recording_frame_id = 0;
+    double acquisition_fps = 0.0;
+    double preprocess_fps = 0.0;
+    double encode_fps = 0.0;
+    int display_queue_depth = -1;
+    int yolo_queue_depth = -1;
+    int preprocess_queue_depth = -1;
+    int encode_queue_depth = -1;
+    int free_entries_available = -1;
+    int free_entries_low_watermark = -1;
+    int free_events_available = -1;
+    int free_events_low_watermark = -1;
+    int yolo_events_available = -1;
+    int yolo_events_low_watermark = -1;
+    int pending_requeues = -1;
+    int preprocess_buffers_available = -1;
+    int preprocess_events_available = -1;
+    uint64_t preprocess_resource_waits = 0;
+    uint64_t preprocess_frames_dropped = 0;
+    uint64_t encode_failures = 0;
+    uint64_t encode_slow_frames = 0;
+    uint64_t gpu_direct_frames = 0;
+    uint64_t gpu_ring_copy_frames = 0;
+    uint64_t gpu_copy_frames = 0;
+};
+
+class PipelinePerfRecorder {
+public:
+    explicit PipelinePerfRecorder(const CameraParams* camera_params)
+        : camera_params_(camera_params) {}
+
+    ~PipelinePerfRecorder() {
+        Close();
+    }
+
+    const std::string& current_folder() const {
+        return current_folder_;
+    }
+
+    void Rotate(const std::string& folder) {
+        if (folder == current_folder_) {
+            return;
+        }
+        CloseCurrent();
+        if (!folder.empty()) {
+            OpenFile(folder);
+        }
+    }
+
+    void Record(const PipelinePerfSample& sample) {
+        if (!file_.is_open()) {
+            return;
+        }
+
+        file_ << sample.timestamp_utc << ","
+              << sample.frame_id << ","
+              << sample.recording_frame_id << ","
+              << sample.acquisition_fps << ","
+              << sample.preprocess_fps << ","
+              << sample.encode_fps << ","
+              << sample.display_queue_depth << ","
+              << sample.yolo_queue_depth << ","
+              << sample.preprocess_queue_depth << ","
+              << sample.encode_queue_depth << ","
+              << sample.free_entries_available << ","
+              << sample.free_entries_low_watermark << ","
+              << sample.free_events_available << ","
+              << sample.free_events_low_watermark << ","
+              << sample.yolo_events_available << ","
+              << sample.yolo_events_low_watermark << ","
+              << sample.pending_requeues << ","
+              << sample.preprocess_buffers_available << ","
+              << sample.preprocess_events_available << ","
+              << sample.preprocess_resource_waits << ","
+              << sample.preprocess_frames_dropped << ","
+              << sample.encode_failures << ","
+              << sample.encode_slow_frames << ","
+              << sample.gpu_direct_frames << ","
+              << sample.gpu_ring_copy_frames << ","
+              << sample.gpu_copy_frames << "\n";
+        file_.flush();
+
+        acquisition_fps_.add(sample.acquisition_fps);
+        preprocess_fps_.add(sample.preprocess_fps);
+        encode_fps_.add(sample.encode_fps);
+        display_queue_depth_.add(sample.display_queue_depth);
+        yolo_queue_depth_.add(sample.yolo_queue_depth);
+        preprocess_queue_depth_.add(sample.preprocess_queue_depth);
+        encode_queue_depth_.add(sample.encode_queue_depth);
+        free_entries_available_.add(sample.free_entries_available);
+        free_entries_low_watermark_.add(sample.free_entries_low_watermark);
+        free_events_available_.add(sample.free_events_available);
+        free_events_low_watermark_.add(sample.free_events_low_watermark);
+        yolo_events_available_.add(sample.yolo_events_available);
+        yolo_events_low_watermark_.add(sample.yolo_events_low_watermark);
+        pending_requeues_.add(sample.pending_requeues);
+        preprocess_buffers_available_.add(sample.preprocess_buffers_available);
+        preprocess_events_available_.add(sample.preprocess_events_available);
+        last_sample_ = sample;
+        have_last_sample_ = true;
+        ++samples_;
+    }
+
+    void Close() {
+        CloseCurrent();
+    }
+
+private:
+    void OpenFile(const std::string& folder) {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(folder);
+
+        current_folder_ = folder;
+        const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
+        file_path_ = (std::filesystem::path(current_folder_) /
+                      ("Cam" + serial + "_pipeline_perf.csv")).string();
+        file_.open(file_path_, std::ios::out | std::ios::trunc);
+        if (!file_) {
+            std::cerr << "[PIPELINE] Cam " << serial
+                      << " failed to open " << file_path_ << std::endl;
+            current_folder_.clear();
+            file_path_.clear();
+            return;
+        }
+        ResetStats();
+        file_ << "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,enc_fps,"
+                 "display_q,yolo_q,pre_q,enc_q,"
+                 "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
+                 "yolo_events,yolo_events_low,pending_requeues,"
+                 "pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "gpu_direct,gpu_ring,gpu_copy\n";
+        file_ << std::fixed << std::setprecision(6);
+        std::cout << "[PIPELINE] Cam " << serial
+                  << " logging to " << file_path_ << std::endl;
+    }
+
+    void CloseCurrent() {
+        if (!current_folder_.empty()) {
+            PersistSummary();
+        }
+        if (file_.is_open()) {
+            file_.close();
+        }
+        current_folder_.clear();
+        file_path_.clear();
+        ResetStats();
+    }
+
+    void ResetStats() {
+        samples_ = 0;
+        have_last_sample_ = false;
+        last_sample_ = PipelinePerfSample{};
+        acquisition_fps_.reset();
+        preprocess_fps_.reset();
+        encode_fps_.reset();
+        display_queue_depth_.reset();
+        yolo_queue_depth_.reset();
+        preprocess_queue_depth_.reset();
+        encode_queue_depth_.reset();
+        free_entries_available_.reset();
+        free_entries_low_watermark_.reset();
+        free_events_available_.reset();
+        free_events_low_watermark_.reset();
+        yolo_events_available_.reset();
+        yolo_events_low_watermark_.reset();
+        pending_requeues_.reset();
+        preprocess_buffers_available_.reset();
+        preprocess_events_available_.reset();
+    }
+
+    void PersistSummary() {
+        if (current_folder_.empty()) {
+            return;
+        }
+
+        nlohmann::json summary = nlohmann::json::object();
+        summary["schema_version"] = 1;
+        summary["camera_serial"] = camera_params_ ? camera_params_->camera_serial : "";
+        summary["camera_id"] = camera_params_ ? camera_params_->camera_id : -1;
+        summary["gpu_id"] = camera_params_ ? camera_params_->gpu_id : -1;
+        summary["updated_at_utc"] = get_current_utc_timestamp();
+        summary["artifact_path"] = file_path_;
+        summary["period_seconds"] = 1;
+        summary["samples"] = samples_;
+        summary["finalized"] = true;
+
+        if (have_last_sample_) {
+            summary["last_sample_at_utc"] = last_sample_.timestamp_utc;
+            summary["last_frame_id"] = last_sample_.frame_id;
+            summary["last_recording_frame_id"] = last_sample_.recording_frame_id;
+        }
+
+        summary["fps"] = {
+            {"acquisition", acquisition_fps_.to_json()},
+            {"preprocess", preprocess_fps_.to_json()},
+            {"encode", encode_fps_.to_json()},
+        };
+        summary["queue_depth"] = {
+            {"display", display_queue_depth_.to_json()},
+            {"yolo", yolo_queue_depth_.to_json()},
+            {"preprocess", preprocess_queue_depth_.to_json()},
+            {"encode", encode_queue_depth_.to_json()},
+            {"pending_requeues", pending_requeues_.to_json()},
+        };
+        summary["resource_availability"] = {
+            {"acquire_entries", free_entries_available_.to_json()},
+            {"acquire_entries_low_watermark", free_entries_low_watermark_.to_json()},
+            {"acquire_events", free_events_available_.to_json()},
+            {"acquire_events_low_watermark", free_events_low_watermark_.to_json()},
+            {"yolo_events", yolo_events_available_.to_json()},
+            {"yolo_events_low_watermark", yolo_events_low_watermark_.to_json()},
+            {"preprocess_buffers", preprocess_buffers_available_.to_json()},
+            {"preprocess_events", preprocess_events_available_.to_json()},
+        };
+
+        nlohmann::json totals = nlohmann::json::object();
+        if (have_last_sample_) {
+            totals["preprocess_resource_waits"] = last_sample_.preprocess_resource_waits;
+            totals["preprocess_frames_dropped"] = last_sample_.preprocess_frames_dropped;
+            totals["encode_failures"] = last_sample_.encode_failures;
+            totals["encode_slow_frames"] = last_sample_.encode_slow_frames;
+            totals["gpu_direct_frames"] = last_sample_.gpu_direct_frames;
+            totals["gpu_ring_copy_frames"] = last_sample_.gpu_ring_copy_frames;
+            totals["gpu_copy_frames"] = last_sample_.gpu_copy_frames;
+        }
+        summary["totals"] = totals;
+
+        if (!update_recording_snapshot_pipeline_metrics(
+                current_folder_,
+                camera_params_ ? camera_params_->camera_serial : "",
+                summary)) {
+            std::cerr << "[PIPELINE] Cam "
+                      << (camera_params_ ? camera_params_->camera_serial : "unknown")
+                      << " failed to update recording snapshot with pipeline metrics"
+                      << std::endl;
+        }
+    }
+
+    const CameraParams* camera_params_ = nullptr;
+    std::string current_folder_;
+    std::string file_path_;
+    std::ofstream file_;
+    uint64_t samples_ = 0;
+    bool have_last_sample_ = false;
+    PipelinePerfSample last_sample_;
+    RunningDoubleStats acquisition_fps_{};
+    RunningDoubleStats preprocess_fps_{};
+    RunningDoubleStats encode_fps_{};
+    RunningInt64Stats display_queue_depth_{};
+    RunningInt64Stats yolo_queue_depth_{};
+    RunningInt64Stats preprocess_queue_depth_{};
+    RunningInt64Stats encode_queue_depth_{};
+    RunningInt64Stats free_entries_available_{};
+    RunningInt64Stats free_entries_low_watermark_{};
+    RunningInt64Stats free_events_available_{};
+    RunningInt64Stats free_events_low_watermark_{};
+    RunningInt64Stats yolo_events_available_{};
+    RunningInt64Stats yolo_events_low_watermark_{};
+    RunningInt64Stats pending_requeues_{};
+    RunningInt64Stats preprocess_buffers_available_{};
+    RunningInt64Stats preprocess_events_available_{};
 };
 
 std::string current_recording_folder(CameraControl* camera_control) {
@@ -152,10 +459,15 @@ void acquire_frames(
     StopWatch w;
     auto last_fps_update_time = std::chrono::steady_clock::now();
     int frame_counter_for_fps = 0;
+    double current_acquisition_fps = 0.0;
     uint64_t local_recording_frame_count = 0;
+    uint64_t last_recording_frame_count = 0;
     uint64_t gpu_direct_frames = 0;
     uint64_t gpu_ring_copy_frames = 0;
     uint64_t gpu_copy_frames = 0;
+    uint64_t gpu_direct_frames_total = 0;
+    uint64_t gpu_ring_copy_frames_total = 0;
+    uint64_t gpu_copy_frames_total = 0;
     uint64_t gpu_direct_attr_errors = 0;
     uint64_t gpu_direct_non_device = 0;
     uint64_t gpu_direct_wrong_device = 0;
@@ -183,6 +495,7 @@ void acquire_frames(
     }
     uint64_t yolo_decimate_counter = 0;
     bool last_yolo_enabled = false;
+    PipelinePerfRecorder pipeline_perf_recorder(camera_params);
     if (yolo_decimate > 1) {
         std::cout << "[YOLO] Cam " << camera_params->camera_serial
                   << " decimate=1/" << yolo_decimate << std::endl;
@@ -219,6 +532,37 @@ void acquire_frames(
             summary["avg_latch_delta_ns_running"] = ptp_state.ptp_time_delta_sum / delta_samples;
         }
         return summary;
+    };
+
+    auto build_pipeline_perf_sample = [&]() {
+        PipelinePerfSample sample;
+        sample.timestamp_utc = get_current_utc_timestamp();
+        sample.frame_id = camera_state.frame_count;
+        sample.recording_frame_id = last_recording_frame_count;
+        sample.acquisition_fps = current_acquisition_fps;
+        sample.preprocess_fps = encoder_preprocess_worker ? encoder_preprocess_worker->get_fps() : 0.0;
+        sample.encode_fps = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_fps() : 0.0;
+        sample.display_queue_depth = openGLDisplay ? openGLDisplay->GetCountQueueInSize() : -1;
+        sample.yolo_queue_depth = yolo_worker ? yolo_worker->GetCountQueueInSize() : -1;
+        sample.preprocess_queue_depth = encoder_preprocess_worker ? encoder_preprocess_worker->GetCountQueueInSize() : -1;
+        sample.encode_queue_depth = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_queue_depth() : -1;
+        sample.free_entries_available = free_entries_available;
+        sample.free_entries_low_watermark = free_entries_low;
+        sample.free_events_available = free_events_available;
+        sample.free_events_low_watermark = free_events_low;
+        sample.yolo_events_available = yolo_events_available;
+        sample.yolo_events_low_watermark = yolo_events_low;
+        sample.pending_requeues = static_cast<int>(pending_requeues.size());
+        sample.preprocess_buffers_available = encoder_preprocess_worker ? encoder_preprocess_worker->available_buffers_.load() : -1;
+        sample.preprocess_events_available = encoder_preprocess_worker ? encoder_preprocess_worker->available_events_.load() : -1;
+        sample.preprocess_resource_waits = encoder_preprocess_worker ? encoder_preprocess_worker->get_resource_waits() : 0;
+        sample.preprocess_frames_dropped = encoder_preprocess_worker ? encoder_preprocess_worker->get_frames_dropped() : 0;
+        sample.encode_failures = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_encode_failures() : 0;
+        sample.encode_slow_frames = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_slow_frames() : 0;
+        sample.gpu_direct_frames = gpu_direct_frames_total;
+        sample.gpu_ring_copy_frames = gpu_ring_copy_frames_total;
+        sample.gpu_copy_frames = gpu_copy_frames_total;
+        return sample;
     };
 
     {
@@ -390,12 +734,14 @@ void acquire_frames(
             // If recording is active, increment and assign the recording-specific frame ID
             if (camera_control->record_video) {
                 current_entry->recording_frame_id = ++local_recording_frame_count;
+                last_recording_frame_count = current_entry->recording_frame_id;
             } else {
                 current_entry->recording_frame_id = 0; // Or another sentinel value if preferred
                 local_recording_frame_count = 0;
             }
 
             const std::string live_recording_folder = current_recording_folder(camera_control);
+            pipeline_perf_recorder.Rotate(live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
                     update_ptp_sync_summary_camera(
@@ -459,6 +805,7 @@ void acquire_frames(
 
             if (use_direct_pointer && !use_ring_copy) {
                 gpu_direct_frames++;
+                gpu_direct_frames_total++;
                 current_entry->d_image = static_cast<unsigned char*>(ecam->frame_recv.imagePtr);
                 current_entry->gpu_direct_mode = true;
                 current_entry->owns_memory = false;
@@ -475,8 +822,10 @@ void acquire_frames(
 #endif
                 if (use_ring_copy) {
                     gpu_ring_copy_frames++;
+                    gpu_ring_copy_frames_total++;
                 } else {
                     gpu_copy_frames++;
+                    gpu_copy_frames_total++;
                 }
                 ck(cudaMemcpyAsync(current_entry->d_image, ecam->frame_recv.imagePtr, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToDevice, stream));
 #if PIPELINE_PROFILE
@@ -603,7 +952,8 @@ void acquire_frames(
             auto now = std::chrono::steady_clock::now();
             std::chrono::duration<double> elapsed = now - last_fps_update_time;
             if (elapsed.count() >= 1.0) {
-                streaming_fps.store(frame_counter_for_fps / elapsed.count());
+                current_acquisition_fps = frame_counter_for_fps / elapsed.count();
+                streaming_fps.store(current_acquisition_fps);
                 frame_counter_for_fps = 0;
                 last_fps_update_time = now;
             }
@@ -667,21 +1017,32 @@ void acquire_frames(
                           << " yolo=" << (camera_select->yolo ? "on" : "off")
                           << " record=" << (camera_control->record_video ? "on" : "off")
                           << std::endl;
-                int display_q = openGLDisplay ? openGLDisplay->GetCountQueueInSize() : -1;
-                int yolo_q = yolo_worker ? yolo_worker->GetCountQueueInSize() : -1;
-                int preprocess_q = encoder_preprocess_worker ? encoder_preprocess_worker->GetCountQueueInSize() : -1;
-                int enc_buffers = encoder_preprocess_worker ? encoder_preprocess_worker->available_buffers_.load() : -1;
-                int enc_events = encoder_preprocess_worker ? encoder_preprocess_worker->available_events_.load() : -1;
-                uint64_t enc_waits = encoder_preprocess_worker ? encoder_preprocess_worker->get_resource_waits() : 0;
+                const PipelinePerfSample pipeline_sample = build_pipeline_perf_sample();
+                if (!live_recording_folder.empty()) {
+                    pipeline_perf_recorder.Record(pipeline_sample);
+                }
                 std::cout << "[PIPELINE] Cam " << camera_params->camera_serial
-                          << " free=" << free_entries_available << "/" << free_entries_low
-                          << " ev=" << free_events_available << "/" << free_events_low
-                          << " yev=" << yolo_events_available << "/" << yolo_events_low
-                          << " pend=" << pending_requeues.size()
-                          << " q(d/y/p)=" << display_q << "/" << yolo_q << "/" << preprocess_q
-                          << " enc_buf=" << enc_buffers
-                          << " enc_evt=" << enc_events
-                          << " enc_waits=" << enc_waits
+                          << " acq_fps=" << pipeline_sample.acquisition_fps
+                          << " pre_fps=" << pipeline_sample.preprocess_fps
+                          << " enc_fps=" << pipeline_sample.encode_fps
+                          << " free=" << pipeline_sample.free_entries_available
+                          << "/" << pipeline_sample.free_entries_low_watermark
+                          << " ev=" << pipeline_sample.free_events_available
+                          << "/" << pipeline_sample.free_events_low_watermark
+                          << " yev=" << pipeline_sample.yolo_events_available
+                          << "/" << pipeline_sample.yolo_events_low_watermark
+                          << " pend=" << pipeline_sample.pending_requeues
+                          << " q(d/y/p/e)="
+                          << pipeline_sample.display_queue_depth << "/"
+                          << pipeline_sample.yolo_queue_depth << "/"
+                          << pipeline_sample.preprocess_queue_depth << "/"
+                          << pipeline_sample.encode_queue_depth
+                          << " enc_buf=" << pipeline_sample.preprocess_buffers_available
+                          << " enc_evt=" << pipeline_sample.preprocess_events_available
+                          << " enc_waits=" << pipeline_sample.preprocess_resource_waits
+                          << " pre_drop=" << pipeline_sample.preprocess_frames_dropped
+                          << " enc_fail=" << pipeline_sample.encode_failures
+                          << " enc_slow=" << pipeline_sample.encode_slow_frames
                           << std::endl;
                 gpu_direct_frames = 0;
                 gpu_ring_copy_frames = 0;
@@ -710,6 +1071,7 @@ void acquire_frames(
             camera_params->camera_serial,
             build_ptp_camera_summary_json(true));
     }
+    pipeline_perf_recorder.Close();
 
     // Cleanup
     {
