@@ -11,6 +11,7 @@ See also:
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/experiment_runner_plan.md`
 - `docs/headless_experiment_backend.md`
+- `docs/headless_cli_design.md`
 - `docs/color_recording_pipeline.md`
 - `docs/encoding_alternatives.md`
 

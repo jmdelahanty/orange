@@ -15,6 +15,7 @@ See also:
 
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/headless_experiment_backend.md`
+- `docs/headless_cli_design.md`
 - `docs/nvenc_throughput_todo.md`
 - `docs/output_artifacts_contract.md`
 - `src/orange.cpp`
@@ -294,6 +295,12 @@ Selection rules for the first version:
 - Each run manifest should capture both numeric `gpu_id` and resolved GPU
   hardware metadata so `GPU 0` can be interpreted later as a concrete device
   such as `NVIDIA RTX A6000`.
+
+Temporary compatibility note:
+
+- Until the structured experiment runner exists, the current headless backend
+  accepts camera selection through `encoder_basic_setup` using tokens like
+  `camera=all`, `camera=02010093`, or `camera=02010093+02010094`.
 
 The first version should only support the current practical dimensions:
 

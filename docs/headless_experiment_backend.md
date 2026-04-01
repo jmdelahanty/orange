@@ -8,6 +8,7 @@ architecture to build on.
 See also:
 
 - `docs/experiment_runner_plan.md`
+- `docs/headless_cli_design.md`
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/nvenc_throughput_todo.md`
 - `src/orange_headless_client.cpp`
@@ -69,6 +70,17 @@ For benchmarking, the intended operating mode is narrow:
 - native recording output geometry unless the remote control contract is
   extended,
 - one run per recording folder.
+
+Current temporary selection syntax:
+
+- `camera=all` or omit camera selection entirely to use every camera visible to
+  that headless client.
+- `camera=02010093` to run a single serial.
+- `camera=02010093+02010094` or repeated `camera=...` tokens to run a subset.
+
+Today this selection is parsed from the loose `encoder_basic_setup` string used
+by the remote control contract. That is a stopgap until the structured
+experiment spec / runner replaces it.
 
 This is the right shape for throughput testing because it minimizes unrelated
 consumers and keeps the benchmark focused on acquisition -> preprocess ->
