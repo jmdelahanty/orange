@@ -133,7 +133,7 @@ struct CameraResources {
         return *this;
     }
 
-    void initialize(int gpu_id, size_t frame_size) {
+    void initialize(int gpu_id, size_t frame_size, bool enable_yolo_events = true) {
         ck(cudaSetDevice(gpu_id));
         
         worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX];
@@ -159,11 +159,13 @@ struct CameraResources {
             free_events_queue->push(&event_pool[i]);
         }
 
-        yolo_event_pool.resize(EVENT_POOL_SIZE);
-        yolo_events_queue = new SafeQueue<cudaEvent_t*>();
-        for (int i = 0; i < EVENT_POOL_SIZE; ++i) {
-            ck(cudaEventCreateWithFlags(&yolo_event_pool[i], cudaEventDisableTiming));
-            yolo_events_queue->push(&yolo_event_pool[i]);
+        if (enable_yolo_events) {
+            yolo_event_pool.resize(EVENT_POOL_SIZE);
+            yolo_events_queue = new SafeQueue<cudaEvent_t*>();
+            for (int i = 0; i < EVENT_POOL_SIZE; ++i) {
+                ck(cudaEventCreateWithFlags(&yolo_event_pool[i], cudaEventDisableTiming));
+                yolo_events_queue->push(&yolo_event_pool[i]);
+            }
         }
     }
 

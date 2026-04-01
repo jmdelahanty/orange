@@ -3860,7 +3860,10 @@ int main(int argc, char **args) {
                         }
                         for (int i = 0; i < num_cameras; ++i) {
                             std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
-                            camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
+                            camera_resources[i].initialize(
+                                cameras_params[i].gpu_id,
+                                max_frame_size_bytes,
+                                cameras_select[i].yolo);
                             if (cameras_select[i].send_frame_ipc) {
                                 frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
                                 if (!frame_ipc_managers[i]->isEnabled()) {

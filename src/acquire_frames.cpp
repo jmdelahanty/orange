@@ -478,7 +478,8 @@ void acquire_frames(
     auto last_gpu_direct_log_time = std::chrono::steady_clock::now();
     int free_entries_available = CameraResources::ACQUIRE_WORK_ENTRIES_MAX;
     int free_events_available = CameraResources::EVENT_POOL_SIZE;
-    int yolo_events_available = CameraResources::EVENT_POOL_SIZE;
+    int yolo_events_available =
+        resources->yolo_events_queue ? CameraResources::EVENT_POOL_SIZE : 0;
     int free_entries_low = free_entries_available;
     int free_events_low = free_events_available;
     int yolo_events_low = yolo_events_available;
@@ -677,8 +678,10 @@ void acquire_frames(
                     free_events_available++;
                 }
                 if (recycled_entry->yolo_completion_event) {
-                    resources->yolo_events_queue->push(recycled_entry->yolo_completion_event);
-                    yolo_events_available++;
+                    if (resources->yolo_events_queue) {
+                        resources->yolo_events_queue->push(recycled_entry->yolo_completion_event);
+                        yolo_events_available++;
+                    }
                 }
                 resources->free_entries_queue->push(recycled_entry);
                 free_entries_available++;
@@ -761,6 +764,17 @@ void acquire_frames(
             }
 
             if (will_yolo) {
+                if (!resources->yolo_events_queue) {
+                    acquisition_resource_starvations++;
+                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
+                    resources->free_events_queue->push(current_event);
+                    resources->free_entries_queue->push(current_entry);
+                    free_events_available++;
+                    free_entries_available++;
+                    NVTX_RANGE_POP();
+                    usleep(100);
+                    continue;
+                }
                 const bool got_yolo_event = resources->yolo_events_queue->pop(yolo_event);
                 if (!got_yolo_event) {
                     acquisition_resource_starvations++;

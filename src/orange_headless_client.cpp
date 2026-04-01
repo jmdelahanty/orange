@@ -322,7 +322,10 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
     try {
         for (int i = 0; i < num_cameras; ++i) {
-            camera_resources[i].initialize(cameras_params[i].gpu_id, max_frame_size_bytes);
+            camera_resources[i].initialize(
+                cameras_params[i].gpu_id,
+                max_frame_size_bytes,
+                cameras_select[i].yolo);
             cameras_select[i].stream_on = false;
             cameras_select[i].record = true;
             cameras_select[i].yolo = false;
