@@ -12,12 +12,21 @@ See also:
 - `docs/nvenc_benchmark_runsheet.md`
 - `src/orange_headless_client.cpp`
 
-## Why This Is Needed
+## Current Status
 
-The current `orange_client` binary is launched from the command line, but it is
-not yet a real local experiment CLI.
+`orange_client` now has a real local single-run CLI:
 
-Today it behaves primarily as a remote-controlled network agent:
+- `--mode local`
+- direct recording flags
+- explicit `--camera`
+- `--list-cameras`
+
+But it is still incomplete relative to the full design:
+
+- `--experiment-spec` is not implemented yet
+- remote mode still uses the old loose network control contract
+
+Remote behavior still remains primarily that of a network-controlled agent:
 
 - it starts ENet,
 - waits for host control messages,
@@ -27,8 +36,11 @@ Today it behaves primarily as a remote-controlled network agent:
 That is fine for distributed capture, but it is the wrong UX for a user running
 benchmarks on a machine with cameras attached directly to that same machine.
 
-For local experiments, requiring a separate host/controller adds unnecessary
-control-plane complexity and makes one-off testing slower.
+So the remaining need is not "make local CLI exist at all." It is:
+
+- harden the new local path,
+- add spec-driven local runs,
+- and converge remote mode onto the same structured config model.
 
 ## Design Goals
 

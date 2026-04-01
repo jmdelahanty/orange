@@ -51,6 +51,15 @@ artifacts:
 - `Cam*_pipeline_perf.csv`
 - encoded video + metadata sidecars
 
+Current invocation modes:
+
+- local single-run CLI:
+  - `orange_client --mode local --record-folder /abs/path/to/run --camera 02010093 --codec hevc --preset p1 --tuning ll`
+- local discovery:
+  - `orange_client --mode local --list-cameras`
+- remote/network-controlled mode:
+  - `orange_client --mode remote`
+
 ## What This Is Good For Right Now
 
 The current headless implementation is a good base for:
@@ -81,6 +90,13 @@ Current temporary selection syntax:
 Today this selection is parsed from the loose `encoder_basic_setup` string used
 by the remote control contract. That is a stopgap until the structured
 experiment spec / runner replaces it.
+
+Local CLI note:
+
+- local single-run mode now accepts direct flags instead of requiring
+  `encoder_basic_setup`
+- `--experiment-spec` is still deferred and currently returns a clear
+  "not implemented yet" error
 
 This is the right shape for throughput testing because it minimizes unrelated
 consumers and keeps the benchmark focused on acquisition -> preprocess ->
