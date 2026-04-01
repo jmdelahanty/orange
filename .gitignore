@@ -66,4 +66,5 @@ third_party/flatbuffers
 *.nsys-rep
 __pycache__/
 *.pyc
+.codex
 .codex/
