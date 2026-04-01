@@ -14,6 +14,7 @@ Status:
 See also:
 
 - `docs/nvenc_benchmark_runsheet.md`
+- `docs/headless_experiment_backend.md`
 - `docs/nvenc_throughput_todo.md`
 - `docs/output_artifacts_contract.md`
 - `src/orange.cpp`
@@ -52,7 +53,35 @@ Instead:
 - and add an experiment runner that configures, starts, stops, evaluates, and
   summarizes runs.
 
-## Why Headless Must Be Updated
+## Current Implementation Status
+
+As of the current branch state:
+
+- GUI recording uses `ModernRecordingPipeline`
+- headless recording now also uses `ModernRecordingPipeline`
+- headless launches `acquire_frames(...)` instead of the old
+  `GPUVideoEncoder`-driven path
+- headless pre-creates the standard recording snapshot / summary artifacts
+
+That means backend parity is much better than before, and this plan is no
+longer theoretical.
+
+However, this is still not the final session abstraction.
+
+The important remaining gaps are:
+
+- there is still no real `RecordingSession` type
+- GUI and headless still duplicate lifecycle code above the worker pair
+- the remote control contract still uses a loose `encoder_basic_setup` string
+- the legacy remote stop semantics have not been cleanly migrated onto the
+  modern `acquire_frames(...)` path yet
+
+So the correct reading is:
+
+- shared data-plane parity is partially in place
+- control-plane unification is not done yet
+
+## Why Headless Had To Be Updated
 
 Today the main GUI path uses the modern worker pipeline:
 
@@ -76,14 +105,16 @@ See:
 - `src/acquire_frames_headless.cpp:95`
 - `src/orange_headless_client.cpp:165`
 
-That means a benchmark runner built directly on current headless would measure a
+That meant a benchmark runner built directly on headless would measure a
 different backend than the shipping GUI recording path. For NVENC throughput and
-artifact-based evaluation, that is the wrong abstraction boundary.
+artifact-based evaluation, that was the wrong abstraction boundary.
 
-So the first architectural requirement is:
+That requirement is now partially satisfied:
 
-- headless must gain access to the same worker-based recording backend used by
-  the main app.
+- headless now has access to the same worker-based recording backend used by the
+  main app.
+
+What remains is making the control-plane lifecycle equally shared and reliable.
 
 ## Proposed Architecture
 
@@ -361,6 +392,12 @@ Goal:
 
 - make the modern worker pipeline reusable outside the GUI start/stop block
 
+Current status:
+
+- partially done
+- `ModernRecordingPipeline` now exists for the per-camera recording worker pair
+- full session ownership is still missing
+
 Tasks:
 
 - extract worker/session construction from `src/orange.cpp`
@@ -378,6 +415,12 @@ Goal:
 
 - make headless distributed capture use the same worker-based recording backend
 
+Current status:
+
+- partially done
+- headless now records through the modern worker pair
+- stop/drain coordination and full runtime validation are still pending
+
 Tasks:
 
 - replace `GPUVideoEncoder` usage in headless recording mode
@@ -385,6 +428,13 @@ Tasks:
   headless acquisition loop for recording runs
 - preserve existing ENet control flow and distributed startup/stop semantics
 - ensure snapshot / pipeline artifact generation works in headless sessions
+
+Additional required cleanup:
+
+- migrate the legacy remote stop semantics onto the modern acquisition path
+- remove or bypass unused fanout bookkeeping in record-only benchmark mode
+- replace the loose `encoder_basic_setup` string contract with structured run
+  config
 
 Definition of done:
 
@@ -513,10 +563,10 @@ Mitigation:
 
 ## Recommendation
 
-Implementation priority should be:
+Implementation priority should now be:
 
-1. extract shared recording session backend,
-2. move headless recording onto the modern worker backend,
+1. finish control-plane unification with `RecordingSession`,
+2. fix modern headless stop/drain coordination,
 3. add single-host experiment runner,
 4. only after that, reconsider distributed headless orchestration.
 

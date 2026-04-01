@@ -10,6 +10,7 @@ See also:
 - `docs/nvenc_direct_input_plan.md`
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/experiment_runner_plan.md`
+- `docs/headless_experiment_backend.md`
 - `docs/color_recording_pipeline.md`
 - `docs/encoding_alternatives.md`
 
@@ -88,6 +89,11 @@ Implementation priority should be:
 
 ## Phase 2: Current Path Cleanup
 
+- [ ] If headless is going to be used for automated benchmarks, validate and fix
+  modern headless stop/drain semantics first.
+  Goal:
+  - make repeated remote start/stop runs trustworthy,
+  - avoid benchmarking a path that still has legacy-control-plane mismatch.
 - [ ] Add an explicit "throughput-first" encode configuration option for tests:
   - lowest-overhead RC path supported by current code,
   - minimal extra quality features,
@@ -102,6 +108,11 @@ Implementation priority should be:
   - determine whether AQ cost is meaningful for throughput.
 - [ ] Verify whether display / YOLO / multi-consumer fan-out materially changes
   encode throughput for the target runs.
+- [ ] Measure whether the generic fan-out bookkeeping adds measurable overhead
+  even in record-only benchmark mode.
+  Goal:
+  - determine whether record-only experiments need a narrower acquisition path,
+  - especially around unused YOLO-event and multi-consumer bookkeeping.
 - [ ] Add a short pre-encoder reference-capture mode for codec comparisons.
   Goal:
   - compare candidate codec settings against the frame representation actually
