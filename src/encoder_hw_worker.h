@@ -106,6 +106,7 @@ private:
         uint32_t repeat_sps_pps = 0;
         uint32_t enable_ptd = 0;
         int gpu_id = -1;
+        nlohmann::json gpu = nlohmann::json::object();
         bool color = false;
     };
 

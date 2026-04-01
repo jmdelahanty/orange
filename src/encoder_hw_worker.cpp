@@ -490,6 +490,7 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.enable_non_ref_p = resolved_config.rcParams.enableNonRefP;
         encoder_snapshot_.enable_ptd = resolved_params.enablePTD;
         encoder_snapshot_.gpu_id = camera_params_->gpu_id;
+        encoder_snapshot_.gpu = build_gpu_runtime_info(camera_params_->gpu_id);
         encoder_snapshot_.color = camera_params_->color;
 
         if (codec_ == "hevc") {
@@ -567,6 +568,7 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     info["preset"] = encoder_snapshot_.preset;
     info["tuning"] = encoder_snapshot_.tuning;
     info["gpu_id"] = encoder_snapshot_.gpu_id;
+    info["gpu"] = encoder_snapshot_.gpu;
     info["color"] = encoder_snapshot_.color;
     info["resolution"] = {
         {"width", encoder_snapshot_.width},

@@ -12,8 +12,11 @@
 #include <sstream>       // For std::ostringstream
 #include <ctime>         // For std::gmtime
 #include <cctype>
+#include <cstring>
 #include <utility>
 #include <mutex>
+#include <set>
+#include <cuda_runtime.h>
 #include "json.hpp"      // For nlohmann::json
 #include "fetch_generated.h" // For FetchGame:: enums and builders
 #include "flatbuffers/flatbuffers.h" // For flatbuffers::FlatBufferBuilder
@@ -123,6 +126,40 @@ std::vector<std::string> string_split(std::string s, std::string delimiter) {
 
     res.push_back (s.substr (pos_start));
     return res;
+}
+
+nlohmann::json build_gpu_runtime_info(int gpu_id) {
+    nlohmann::json info = nlohmann::json::object();
+    info["id"] = gpu_id;
+
+    if (gpu_id < 0) {
+        info["lookup_error"] = "invalid gpu id";
+        return info;
+    }
+
+    cudaDeviceProp props{};
+    const cudaError_t props_status = cudaGetDeviceProperties(&props, gpu_id);
+    if (props_status != cudaSuccess) {
+        info["lookup_error"] = cudaGetErrorString(props_status);
+        return info;
+    }
+
+    info["name"] = std::string(props.name);
+    info["compute_capability"] = {
+        {"major", props.major},
+        {"minor", props.minor},
+    };
+    info["total_global_mem_bytes"] = static_cast<uint64_t>(props.totalGlobalMem);
+
+    char pci_bus_id[32] = {0};
+    const cudaError_t pci_status = cudaDeviceGetPCIBusId(pci_bus_id, sizeof(pci_bus_id), gpu_id);
+    if (pci_status == cudaSuccess && pci_bus_id[0] != '\0') {
+        info["pci_bus_id"] = std::string(pci_bus_id);
+    } else if (pci_status != cudaSuccess) {
+        info["pci_bus_id_lookup_error"] = cudaGetErrorString(pci_status);
+    }
+
+    return info;
 }
 
 std::vector<std::string> string_split_char(char* string_c, std::string delimiter) {
@@ -1100,6 +1137,17 @@ bool write_recording_snapshot(const std::string& recording_folder,
 
     snapshot["cameras"] = cameras;
     snapshot["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
+
+    nlohmann::json gpu_inventory = nlohmann::json::object();
+    std::set<int> seen_gpu_ids;
+    for (int i = 0; i < num_cameras; ++i) {
+        const int gpu_id = cameras_params[i].gpu_id;
+        if (!seen_gpu_ids.insert(gpu_id).second) {
+            continue;
+        }
+        gpu_inventory[std::to_string(gpu_id)] = build_gpu_runtime_info(gpu_id);
+    }
+    snapshot["gpu_inventory"] = gpu_inventory;
 
     bool wrote_snapshot = false;
     if (!recording_folder.empty()) {

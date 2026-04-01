@@ -88,6 +88,7 @@ Current emitted top-level fields:
 - `producer_version: string` (currently `"unknown"`)
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
+- `gpu_inventory: object` (runtime GPU metadata keyed by GPU id string)
 - `encoders: object` (added later by encoder worker updates)
 - `pipeline_metrics: object` (optional, added when acquisition worker finalizes per-camera pipeline summaries)
 
@@ -95,6 +96,18 @@ Current emitted top-level fields:
 - Keys are camera identifiers (usually serial strings, fallback may use camera
   id string when serial not available).
 - Values are full camera config JSON or `null`.
+
+`gpu_inventory` object:
+- Keys are GPU id strings such as `"0"`.
+- Values are runtime GPU metadata objects:
+  - `id: integer`
+  - `name: string` (when lookup succeeds)
+  - `pci_bus_id: string` (when lookup succeeds)
+  - `compute_capability.major: integer` (when lookup succeeds)
+  - `compute_capability.minor: integer` (when lookup succeeds)
+  - `total_global_mem_bytes: integer` (when lookup succeeds)
+  - `lookup_error: string` (optional, when lookup fails)
+  - `pci_bus_id_lookup_error: string` (optional, when bus-id lookup fails)
 
 `encoders` object (current shape):
 - Key: camera identifier string (serial or camera_id string).
@@ -105,6 +118,7 @@ Current emitted top-level fields:
   - `preset: string`
   - `tuning: string`
   - `gpu_id: integer`
+  - `gpu: object` (optional runtime GPU metadata matching `gpu_inventory[gpu_id]`)
   - `color: boolean`
   - `resolution.width: integer`
   - `resolution.height: integer`
@@ -140,6 +154,7 @@ Important:
   - `camera_serial: string`
   - `camera_id: integer`
   - `gpu_id: integer`
+  - `gpu: object` (optional runtime GPU metadata matching `gpu_inventory[gpu_id]`)
   - `updated_at_utc: string`
   - `artifact_path: string`
   - `period_seconds: integer` (currently `1`)

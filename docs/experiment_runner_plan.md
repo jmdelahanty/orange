@@ -283,6 +283,18 @@ Example shape:
 }
 ```
 
+Selection rules for the first version:
+
+- `selection.camera_serials` should be the primary selector for acquisition
+  experiments.
+- The runner should fail the run if the requested serial set is missing or
+  ambiguous.
+- `selection.gpu_ids` should be treated as an explicit placement constraint,
+  not a descriptive note.
+- Each run manifest should capture both numeric `gpu_id` and resolved GPU
+  hardware metadata so `GPU 0` can be interpreted later as a concrete device
+  such as `NVIDIA RTX A6000`.
+
 The first version should only support the current practical dimensions:
 
 - GPU id
@@ -337,6 +349,8 @@ Suggested experiment-level row fields:
 - `run_id`
 - `camera_serial`
 - `gpu_id`
+- `gpu_name`
+- `gpu_pci_bus_id`
 - `codec`
 - `preset`
 - `tuning`

@@ -316,6 +316,8 @@ def load_snapshot_metadata(path):
         "recording_id": "",
         "camera_serial": camera_serial,
         "gpu_id": "",
+        "gpu_name": "",
+        "gpu_pci_bus_id": "",
         "codec": "",
         "preset": "",
         "tuning": "",
@@ -338,11 +340,25 @@ def load_snapshot_metadata(path):
 
     metadata["recording_id"] = str(snapshot.get("recording_id", "") or "")
 
+    def merge_gpu_info(gpu_info):
+        if not isinstance(gpu_info, dict):
+            return
+        gpu_id = gpu_info.get("id")
+        if gpu_id is not None and metadata["gpu_id"] == "":
+            metadata["gpu_id"] = str(gpu_id)
+        name = gpu_info.get("name")
+        if name and metadata["gpu_name"] == "":
+            metadata["gpu_name"] = str(name)
+        pci_bus_id = gpu_info.get("pci_bus_id")
+        if pci_bus_id and metadata["gpu_pci_bus_id"] == "":
+            metadata["gpu_pci_bus_id"] = str(pci_bus_id)
+
     pipeline_info = snapshot.get("pipeline_metrics", {}).get(camera_serial, {})
     if isinstance(pipeline_info, dict):
         gpu_id = pipeline_info.get("gpu_id")
         if gpu_id is not None:
             metadata["gpu_id"] = str(gpu_id)
+        merge_gpu_info(pipeline_info.get("gpu"))
 
     encoder_info = snapshot.get("encoders", {}).get(camera_serial, {})
     if isinstance(encoder_info, dict) and "outputs" in encoder_info:
@@ -356,6 +372,7 @@ def load_snapshot_metadata(path):
         gpu_id = encoder_info.get("gpu_id")
         if gpu_id is not None and metadata["gpu_id"] == "":
             metadata["gpu_id"] = str(gpu_id)
+        merge_gpu_info(encoder_info.get("gpu"))
         resolution = encoder_info.get("resolution", {})
         if isinstance(resolution, dict):
             width = resolution.get("width")
@@ -368,6 +385,11 @@ def load_snapshot_metadata(path):
         if fps is not None:
             metadata["target_fps"] = str(fps)
 
+    if metadata["gpu_id"]:
+        gpu_inventory = snapshot.get("gpu_inventory", {})
+        if isinstance(gpu_inventory, dict):
+            merge_gpu_info(gpu_inventory.get(metadata["gpu_id"]))
+
     return metadata
 
 
@@ -378,7 +400,10 @@ def make_title(path, metadata):
 
     detail_parts = []
     if metadata["gpu_id"]:
-        detail_parts.append(f"GPU {metadata['gpu_id']}")
+        gpu_detail = f"GPU {metadata['gpu_id']}"
+        if metadata["gpu_name"]:
+            gpu_detail += f" {metadata['gpu_name']}"
+        detail_parts.append(gpu_detail)
     if metadata["codec"]:
         codec = metadata["codec"]
         if metadata["preset"]:
@@ -411,7 +436,10 @@ def emit_stats(path, metadata, stats_rows, stats_out, print_stats):
         if metadata["camera_serial"]:
             meta_parts.append(f"camera={metadata['camera_serial']}")
         if metadata["gpu_id"]:
-            meta_parts.append(f"gpu={metadata['gpu_id']}")
+            gpu_meta = f"gpu={metadata['gpu_id']}"
+            if metadata["gpu_name"]:
+                gpu_meta += f" ({metadata['gpu_name']})"
+            meta_parts.append(gpu_meta)
         if metadata["codec"]:
             meta_parts.append(f"codec={metadata['codec']}")
         if metadata["preset"]:
@@ -453,6 +481,8 @@ def emit_stats(path, metadata, stats_rows, stats_out, print_stats):
                     "recording_id",
                     "camera_serial",
                     "gpu_id",
+                    "gpu_name",
+                    "gpu_pci_bus_id",
                     "codec",
                     "preset",
                     "tuning",
@@ -481,6 +511,8 @@ def emit_stats(path, metadata, stats_rows, stats_out, print_stats):
                     metadata["recording_id"],
                     metadata["camera_serial"],
                     metadata["gpu_id"],
+                    metadata["gpu_name"],
+                    metadata["gpu_pci_bus_id"],
                     metadata["codec"],
                     metadata["preset"],
                     metadata["tuning"],

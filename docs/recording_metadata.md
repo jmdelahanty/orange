@@ -78,6 +78,7 @@ Top-level fields:
   "producer_version": "...",
   "sync": { ... },
   "cameras": { ... },
+  "gpu_inventory": { ... },
   "encoders": { ... },
   "pipeline_metrics": { ... },
   "models": { ... }
@@ -86,6 +87,11 @@ Top-level fields:
 
 `cameras` is a dictionary keyed by camera serial number (as a string), where each
 value is the full camera config JSON used at recording start (or `null` if missing).
+
+`gpu_inventory` is an optional dictionary keyed by GPU id string. It records the
+resolved runtime device identity for the GPUs used in that recording, so a later
+consumer can tell that `gpu_id = 0` mapped to a concrete device such as
+`NVIDIA RTX A6000` on that host.
 
 `sync` is an optional session-level synchronization snapshot captured when the
 recording starts. It is intended to capture durable run provenance, not every
@@ -225,6 +231,11 @@ Current emitted shape:
       "camera_serial": "02010093",
       "camera_id": 0,
       "gpu_id": 1,
+      "gpu": {
+        "id": 1,
+        "name": "NVIDIA RTX A6000",
+        "pci_bus_id": "0000:65:00.0"
+      },
       "updated_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
       "artifact_path": "/abs/path/to/recording/Cam02010093_pipeline_perf.csv",
       "period_seconds": 1,
@@ -450,6 +461,11 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
       "preset": "p1",
       "tuning": "ll",
       "gpu_id": 0,
+      "gpu": {
+        "id": 0,
+        "name": "NVIDIA RTX A6000",
+        "pci_bus_id": "0000:65:00.0"
+      },
       "color": true,
       "resolution": {"width": 2256, "height": 2256},
       "source_resolution": {"width": 4512, "height": 4512},

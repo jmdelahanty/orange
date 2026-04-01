@@ -65,6 +65,7 @@ For benchmarking, the intended operating mode is narrow:
 - display off,
 - YOLO off,
 - record on,
+- explicit camera serial selection instead of "first available camera",
 - native recording output geometry unless the remote control contract is
   extended,
 - one run per recording folder.
@@ -73,27 +74,28 @@ This is the right shape for throughput testing because it minimizes unrelated
 consumers and keeps the benchmark focused on acquisition -> preprocess ->
 encode.
 
+For experiment artifacts, each run should also preserve GPU identity in a human
+readable way. Numeric `gpu_id` alone is not enough when later comparing runs
+across machines. The snapshot should make it possible to tell that, for
+example, `gpu_id = 0` mapped to `NVIDIA RTX A6000` on a given host.
+
 ## Important Current Limitation
 
-The headless path is backend-aligned, but it is not yet fully experiment-ready.
-
-The main blocker is stop coordination.
-
-The old legacy headless acquisition loop implemented network/PTP-driven stop
-behavior directly inside `acquire_frames_headless(...)`. The new headless path
-now launches `acquire_frames(...)`, but that function does not currently own the
-same remote stop protocol. The manager thread in `orange_headless_client.cpp`
-still waits for the old `ptp_stop_reached` style signaling before cleanup.
+The previous stop/drain mismatch on the modern headless path has now been
+closed: `acquire_frames(...)` once again participates in the PTP stop barrier
+and signals `ptp_stop_reached` so the headless manager can drain cleanly.
 
 So the current state is:
 
 - compile-time parity is good,
-- artifact parity is much closer,
-- but repeated remote start/stop automation should not be considered validated
-  yet.
+- artifact parity is good enough for local and single-host automated runs,
+- repeated remote start/stop automation is now plausible on the modern path,
+  but still worth validating with a few controlled runs before treating it as a
+  hardened distributed benchmark harness.
 
-Before trusting remote automated experiments, the stop/drain behavior needs to
-be migrated cleanly onto the modern path.
+That means the main remaining gaps are no longer basic stop coordination. They
+are experiment-runner control-plane work, explicit camera selection, and better
+run manifest/reporting.
 
 ## Critical Assessment Of The Worker / Fanout Strategy
 

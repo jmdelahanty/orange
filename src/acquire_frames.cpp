@@ -297,6 +297,7 @@ private:
         summary["camera_serial"] = camera_params_ ? camera_params_->camera_serial : "";
         summary["camera_id"] = camera_params_ ? camera_params_->camera_id : -1;
         summary["gpu_id"] = camera_params_ ? camera_params_->gpu_id : -1;
+        summary["gpu"] = build_gpu_runtime_info(camera_params_ ? camera_params_->gpu_id : -1);
         summary["updated_at_utc"] = get_current_utc_timestamp();
         summary["artifact_path"] = file_path_;
         summary["period_seconds"] = 1;
