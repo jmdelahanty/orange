@@ -9,6 +9,7 @@ See also:
 
 - `docs/nvenc_direct_input_plan.md`
 - `docs/nvenc_benchmark_runsheet.md`
+- `docs/experiment_runner_plan.md`
 - `docs/color_recording_pipeline.md`
 - `docs/encoding_alternatives.md`
 
