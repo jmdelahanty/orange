@@ -199,7 +199,10 @@ The correct near-term sequence is:
 2. Extract a real `RecordingSession` abstraction so GUI and headless stop
    duplicating lifecycle code.
 3. Replace the loose `encoder_basic_setup` string with a structured run config.
-4. Add a record-only acquisition fast path, or at minimum skip YOLO-event
+4. Refactor per-frame resource reservation so mandatory resources are always
+   acquired, but consumer-specific resources are only acquired when that
+   consumer is enabled for the frame.
+5. Add a record-only acquisition fast path, or at minimum skip YOLO-event
    handling when YOLO is disabled.
-5. Build the experiment runner on top of that narrower session abstraction, not
+6. Build the experiment runner on top of that narrower session abstraction, not
    directly on GUI/headless code.

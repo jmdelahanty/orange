@@ -113,6 +113,12 @@ Implementation priority should be:
   Goal:
   - determine whether record-only experiments need a narrower acquisition path,
   - especially around unused YOLO-event and multi-consumer bookkeeping.
+- [ ] Refactor acquisition resource reservation so it matches enabled consumers.
+  Goal:
+  - allocate mandatory per-frame resources unconditionally,
+  - allocate consumer-specific resources only when that consumer is active,
+  - stop reserving YOLO resources on frames where YOLO is disabled,
+  - improve both benchmark cleanliness and general main-path clarity.
 - [ ] Add a short pre-encoder reference-capture mode for codec comparisons.
   Goal:
   - compare candidate codec settings against the frame representation actually
