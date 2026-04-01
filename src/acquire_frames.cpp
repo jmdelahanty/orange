@@ -699,13 +699,8 @@ void acquire_frames(
             free_events_available--;
             if (free_events_available < free_events_low) free_events_low = free_events_available;
         }
-        bool got_yolo_event = resources->yolo_events_queue->pop(yolo_event);
-        if (got_yolo_event) {
-            yolo_events_available--;
-            if (yolo_events_available < yolo_events_low) yolo_events_low = yolo_events_available;
-        }
 
-        if (!got_entry || !got_event || !got_yolo_event) {
+        if (!got_entry || !got_event) {
             acquisition_resource_starvations++;
             if (got_entry) {
                 resources->free_entries_queue->push(current_entry);
@@ -714,10 +709,6 @@ void acquire_frames(
             if (got_event) {
                 resources->free_events_queue->push(current_event);
                 free_events_available++;
-            }
-            if (got_yolo_event) {
-                resources->yolo_events_queue->push(yolo_event);
-                yolo_events_available++;
             }
             NVTX_RANGE_POP();
             usleep(100);
@@ -741,28 +732,6 @@ void acquire_frames(
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
-
-            // If recording is active, increment and assign the recording-specific frame ID
-            if (camera_control->record_video) {
-                current_entry->recording_frame_id = ++local_recording_frame_count;
-                last_recording_frame_count = current_entry->recording_frame_id;
-            } else {
-                current_entry->recording_frame_id = 0; // Or another sentinel value if preferred
-                local_recording_frame_count = 0;
-            }
-
-            const std::string live_recording_folder = current_recording_folder(camera_control);
-            pipeline_perf_recorder.Rotate(live_recording_folder);
-            if (live_recording_folder != ptp_summary_recording_folder) {
-                if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
-                    update_ptp_sync_summary_camera(
-                        ptp_summary_recording_folder,
-                        camera_params->camera_serial,
-                        build_ptp_camera_summary_json(true));
-                }
-                ptp_summary_recording_folder = live_recording_folder;
-                reset_ptp_summary_stats();
-            }
 
         //     std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
         //   << " incremented to frame_count=" << camera_state.frame_count 
@@ -790,6 +759,48 @@ void acquire_frames(
                     will_yolo = false;
                 }
             }
+
+            if (will_yolo) {
+                const bool got_yolo_event = resources->yolo_events_queue->pop(yolo_event);
+                if (!got_yolo_event) {
+                    acquisition_resource_starvations++;
+                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
+                    resources->free_events_queue->push(current_event);
+                    resources->free_entries_queue->push(current_entry);
+                    free_events_available++;
+                    free_entries_available++;
+                    NVTX_RANGE_POP();
+                    usleep(100);
+                    continue;
+                }
+                yolo_events_available--;
+                if (yolo_events_available < yolo_events_low) {
+                    yolo_events_low = yolo_events_available;
+                }
+            }
+
+            // If recording is active, increment and assign the recording-specific frame ID
+            if (camera_control->record_video) {
+                current_entry->recording_frame_id = ++local_recording_frame_count;
+                last_recording_frame_count = current_entry->recording_frame_id;
+            } else {
+                current_entry->recording_frame_id = 0;
+                local_recording_frame_count = 0;
+            }
+
+            const std::string live_recording_folder = current_recording_folder(camera_control);
+            pipeline_perf_recorder.Rotate(live_recording_folder);
+            if (live_recording_folder != ptp_summary_recording_folder) {
+                if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
+                    update_ptp_sync_summary_camera(
+                        ptp_summary_recording_folder,
+                        camera_params->camera_serial,
+                        build_ptp_camera_summary_json(true));
+                }
+                ptp_summary_recording_folder = live_recording_folder;
+                reset_ptp_summary_stats();
+            }
+
             int dispatch_count = 0;
             if (will_display) dispatch_count++;
             if (will_record) dispatch_count++;
@@ -856,11 +867,6 @@ void acquire_frames(
             }
 
             current_entry->event_ptr = current_event;
-            if (!will_yolo && yolo_event) {
-                resources->yolo_events_queue->push(yolo_event);
-                yolo_events_available++;
-                yolo_event = nullptr;
-            }
             current_entry->yolo_completion_event = yolo_event;
             ck(cudaEventRecord(*current_entry->event_ptr, stream));
             if (use_ring_copy) {
