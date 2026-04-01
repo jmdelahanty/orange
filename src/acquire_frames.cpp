@@ -591,6 +591,7 @@ void acquire_frames(
         }
     }
 
+    ptp_params->ptp_start_reached = true;
     w.Start();
 
 #if PIPELINE_PROFILE
@@ -1065,6 +1066,24 @@ void acquire_frames(
                 free_entries_low = free_entries_available;
                 free_events_low = free_events_available;
                 yolo_events_low = yolo_events_available;
+            }
+            if (ptp_params->network_sync &&
+                ptp_params->network_set_stop_ptp &&
+                camera_control->sync_camera &&
+                ptp_state.ptp_time > ptp_params->ptp_stop_time) {
+                uint64_t ptp_stop_counter = sync_fetch_and_add(&ptp_params->ptp_stop_counter, 1);
+                std::cout << "[PTP_STOP] Cam " << camera_params->camera_serial
+                          << " reached stop gate count=" << ptp_stop_counter
+                          << " target_ns=" << ptp_params->ptp_stop_time
+                          << " observed_ns=" << ptp_state.ptp_time
+                          << std::endl;
+                while (ptp_params->ptp_stop_counter != camera_params->num_cameras) {
+                    usleep(10);
+                }
+                ptp_params->ptp_stop_reached = true;
+                camera_control->subscribe = false;
+                NVTX_RANGE_POP();
+                break;
             }
         } else {
             camera_state.dropped_frames++;
