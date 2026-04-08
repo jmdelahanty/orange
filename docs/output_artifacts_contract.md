@@ -90,6 +90,7 @@ Current emitted top-level fields:
 - `producer_version: string` (currently `"unknown"`)
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
+- `camera_runtime: object` (resolved per-recording camera config keyed by camera id/serial)
 - `gpu_inventory: object` (runtime GPU metadata keyed by GPU id string)
 - `gpu_monitoring: object` (optional host-level GPU monitor sidecars keyed by monitor name)
 - `encoders: object` (added later by encoder worker updates)
@@ -99,6 +100,15 @@ Current emitted top-level fields:
 - Keys are camera identifiers (usually serial strings, fallback may use camera
   id string when serial not available).
 - Values are full camera config JSON or `null`.
+
+`camera_runtime` object:
+- Keys are camera identifiers (usually serial strings, fallback may use camera
+  id string when serial not available).
+- Values are resolved runtime camera config snapshots:
+  - `source.camera_config_path: string`
+  - `source.configured_gpu_id: integer`
+  - `source.gpu_id_runtime_overridden: boolean`
+  - `runtime: object` (full resolved camera config JSON actually used for the run)
 
 `gpu_inventory` object:
 - Keys are GPU id strings such as `"0"`.

@@ -444,6 +444,81 @@ std::vector<std::string>::const_iterator find_camera_config_for_serial(
                             return extract_config_serial_match_key(config_path) == canonical_camera_serial;
                         });
 }
+
+nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_params)
+{
+    nlohmann::json camera_config = nlohmann::json::object();
+    camera_config["name"] = camera_params.camera_name;
+    camera_config["width"] = camera_params.width;
+    camera_config["height"] = camera_params.height;
+    camera_config["frame_rate"] = camera_params.frame_rate;
+    camera_config["gain"] = camera_params.gain;
+    camera_config["exposure"] = camera_params.exposure;
+    camera_config["pixel_format"] = camera_params.pixel_format;
+    camera_config["color_temp"] = camera_params.color_temp;
+    camera_config["gpu_id"] = camera_params.gpu_id;
+    camera_config["gpu_direct"] = camera_params.gpu_direct;
+    camera_config["focus_uart_bootstrap"] = camera_params.focus_uart_bootstrap;
+    camera_config["color"] = camera_params.color;
+    camera_config["focus"] = camera_params.focus;
+    camera_config["iris"] = camera_params.iris;
+    camera_config["offset_x"] = camera_params.offsetx;
+    camera_config["offset_y"] = camera_params.offsety;
+    camera_config["schema_id"] = kCameraConfigSchemaId;
+    camera_config["schema_version"] = kCameraConfigSchemaVersion;
+    camera_config["device_model_name"] = camera_params.device_model;
+    camera_config["device_serial_number"] = canonicalize_camera_serial_string(camera_params.camera_serial);
+    camera_config["camera_scan_type"] = normalize_camera_scan_type_string(camera_params.camera_scan_type);
+    camera_config["gpio_connector_variant"] =
+        normalize_gpio_connector_variant_string(camera_params.gpio_connector_variant);
+    camera_config["gpio_recipe"] = canonicalize_gpio_recipe_string(camera_params.gpio_recipe);
+    camera_config["sync_mode"] = normalize_camera_sync_mode_string(camera_params.sync_mode);
+    camera_config["trigger"] = {
+        {"enabled", camera_params.trigger_enabled},
+        {"selector", camera_params.trigger_selector},
+        {"source", camera_params.trigger_source},
+        {"activation", camera_params.trigger_activation}
+    };
+    camera_config["ptp"] = {
+        {"enabled", camera_sync_mode_uses_ptp(&camera_params)}
+    };
+    if (camera_sync_mode_uses_ptp(&camera_params)) {
+        camera_config["ptp"]["mode"] = camera_params.ptp_mode.empty() ? "TwoStep" : camera_params.ptp_mode;
+    }
+
+    nlohmann::json gpio_nodes = nlohmann::json::array();
+    for (const auto& node : camera_params.gpio_nodes) {
+        nlohmann::json node_json;
+        node_json["name"] = node.name;
+        node_json["type"] = lower_ascii_copy(node.type);
+        if (lower_ascii_copy(node.type) == "enum") {
+            node_json["value"] = node.value_string;
+        } else if (lower_ascii_copy(node.type) == "bool") {
+            node_json["value"] = node.value_bool;
+        } else if (lower_ascii_copy(node.type) == "uint") {
+            node_json["value"] = node.value_uint;
+        } else {
+            continue;
+        }
+        gpio_nodes.push_back(std::move(node_json));
+    }
+    camera_config["gpio"] = {
+        {"nodes", std::move(gpio_nodes)}
+    };
+    return camera_config;
+}
+
+nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
+{
+    nlohmann::json snapshot = nlohmann::json::object();
+    snapshot["source"] = {
+        {"camera_config_path", camera_params.config_path},
+        {"configured_gpu_id", camera_params.configured_gpu_id},
+        {"gpu_id_runtime_overridden", camera_params.gpu_id_runtime_overridden}
+    };
+    snapshot["runtime"] = build_camera_config_json_from_params(camera_params);
+    return snapshot;
+}
 } // namespace
 
 void load_camera_json_config_files(std::string file_name, CameraParams* camera_params, int camera_id, int num_cameras) {
@@ -464,7 +539,9 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->exposure = camera_config["exposure"];
     camera_params->pixel_format = camera_config["pixel_format"];
     camera_params->color_temp = camera_config["color_temp"];
-    camera_params->gpu_id = camera_config["gpu_id"];
+    camera_params->configured_gpu_id = camera_config["gpu_id"];
+    camera_params->gpu_id = camera_params->configured_gpu_id;
+    camera_params->gpu_id_runtime_overridden = false;
     camera_params->gpu_direct = camera_config["gpu_direct"];
     camera_params->focus_uart_bootstrap = camera_config.value("focus_uart_bootstrap", false);
     camera_params->color = camera_config["color"];
@@ -819,6 +896,8 @@ void init_galvo_camera_params(CameraParams* camera_params, int camera_id, int nu
     camera_params->color_temp = "CT_3000K";
     camera_params->camera_id = camera_id;
     camera_params->gpu_id = 1;
+    camera_params->configured_gpu_id = camera_params->gpu_id;
+    camera_params->gpu_id_runtime_overridden = false;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
@@ -837,6 +916,8 @@ void init_65MP_camera_params_mono(CameraParams* camera_params, int camera_id, in
     camera_params->exposure = exposure;
     camera_params->pixel_format = "Mono8";
     camera_params->gpu_id = gpu_id;
+    camera_params->configured_gpu_id = camera_params->gpu_id;
+    camera_params->gpu_id_runtime_overridden = false;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
@@ -857,6 +938,8 @@ void init_65MP_camera_params_color(CameraParams* camera_params, int camera_id, i
     camera_params->exposure = exposure;
     camera_params->pixel_format = "BayerGB8";
     camera_params->gpu_id = gpu_id;
+    camera_params->configured_gpu_id = camera_params->gpu_id;
+    camera_params->gpu_id_runtime_overridden = false;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
@@ -879,6 +962,8 @@ void init_7MP_camera_params_color(CameraParams* camera_params, int camera_id, in
     camera_params->pixel_format = "BayerRG8";
     camera_params->color_temp = "CT_3000K";
     camera_params->gpu_id = gpu_id;
+    camera_params->configured_gpu_id = camera_params->gpu_id;
+    camera_params->gpu_id_runtime_overridden = false;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
@@ -900,6 +985,8 @@ void init_7MP_camera_params_mono(CameraParams* camera_params, int camera_id, int
     camera_params->pixel_format = "Mono8";
     camera_params->color_temp = "CT_3000K";
     camera_params->gpu_id = gpu_id;
+    camera_params->configured_gpu_id = camera_params->gpu_id;
+    camera_params->gpu_id_runtime_overridden = false;
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
@@ -1093,6 +1180,7 @@ bool write_recording_snapshot(const std::string& recording_folder,
     snapshot["producer_version"] = "unknown";
 
     nlohmann::json cameras = nlohmann::json::object();
+    nlohmann::json camera_runtime = nlohmann::json::object();
 
     for (int i = 0; i < num_cameras; ++i) {
         const CameraParams& params = cameras_params[i];
@@ -1133,9 +1221,11 @@ bool write_recording_snapshot(const std::string& recording_folder,
                 std::cerr << "Camera " << params.camera_id << " config missing: " << config_error << std::endl;
             }
         }
+        camera_runtime[camera_key] = build_camera_runtime_snapshot(params);
     }
 
     snapshot["cameras"] = cameras;
+    snapshot["camera_runtime"] = camera_runtime;
     snapshot["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
 
     nlohmann::json gpu_inventory = nlohmann::json::object();
@@ -1463,64 +1553,7 @@ bool save_camera_json_config(const CameraParams& camera_params,
         return false;
     }
 
-    camera_config["name"] = camera_params.camera_name;
-    camera_config["width"] = camera_params.width;
-    camera_config["height"] = camera_params.height;
-    camera_config["frame_rate"] = camera_params.frame_rate;
-    camera_config["gain"] = camera_params.gain;
-    camera_config["exposure"] = camera_params.exposure;
-    camera_config["pixel_format"] = camera_params.pixel_format;
-    camera_config["color_temp"] = camera_params.color_temp;
-    camera_config["gpu_id"] = camera_params.gpu_id;
-    camera_config["gpu_direct"] = camera_params.gpu_direct;
-    camera_config["focus_uart_bootstrap"] = camera_params.focus_uart_bootstrap;
-    camera_config["color"] = camera_params.color;
-    camera_config["focus"] = camera_params.focus;
-    camera_config["iris"] = camera_params.iris;
-    camera_config["offset_x"] = camera_params.offsetx;
-    camera_config["offset_y"] = camera_params.offsety;
-    camera_config.erase("device_model");
-    camera_config["schema_id"] = kCameraConfigSchemaId;
-    camera_config["schema_version"] = kCameraConfigSchemaVersion;
-    camera_config["device_model_name"] = camera_params.device_model;
-    camera_config["device_serial_number"] = canonicalize_camera_serial_string(camera_params.camera_serial);
-    camera_config["camera_scan_type"] = normalize_camera_scan_type_string(camera_params.camera_scan_type);
-    camera_config["gpio_connector_variant"] =
-        normalize_gpio_connector_variant_string(camera_params.gpio_connector_variant);
-    camera_config["gpio_recipe"] = canonicalize_gpio_recipe_string(camera_params.gpio_recipe);
-    camera_config["sync_mode"] = normalize_camera_sync_mode_string(camera_params.sync_mode);
-    camera_config["trigger"] = {
-        {"enabled", camera_params.trigger_enabled},
-        {"selector", camera_params.trigger_selector},
-        {"source", camera_params.trigger_source},
-        {"activation", camera_params.trigger_activation}
-    };
-    camera_config["ptp"] = {
-        {"enabled", camera_sync_mode_uses_ptp(&camera_params)}
-    };
-    if (camera_sync_mode_uses_ptp(&camera_params)) {
-        camera_config["ptp"]["mode"] = camera_params.ptp_mode.empty() ? "TwoStep" : camera_params.ptp_mode;
-    }
-
-    nlohmann::json gpio_nodes = nlohmann::json::array();
-    for (const auto& node : camera_params.gpio_nodes) {
-        nlohmann::json node_json;
-        node_json["name"] = node.name;
-        node_json["type"] = lower_ascii_copy(node.type);
-        if (lower_ascii_copy(node.type) == "enum") {
-            node_json["value"] = node.value_string;
-        } else if (lower_ascii_copy(node.type) == "bool") {
-            node_json["value"] = node.value_bool;
-        } else if (lower_ascii_copy(node.type) == "uint") {
-            node_json["value"] = node.value_uint;
-        } else {
-            continue;
-        }
-        gpio_nodes.push_back(std::move(node_json));
-    }
-    camera_config["gpio"] = {
-        {"nodes", std::move(gpio_nodes)}
-    };
+    camera_config = build_camera_config_json_from_params(camera_params);
 
     std::error_code perms_error;
     const std::filesystem::file_status status = std::filesystem::status(config_path, perms_error);

@@ -82,6 +82,7 @@ Top-level fields:
   "producer_version": "...",
   "sync": { ... },
   "cameras": { ... },
+  "camera_runtime": { ... },
   "calibrations": { ... },
   "gpu_inventory": { ... },
   "gpu_monitoring": { ... },
@@ -92,7 +93,12 @@ Top-level fields:
 ```
 
 `cameras` is a dictionary keyed by camera serial number (as a string), where each
-value is the full camera config JSON used at recording start (or `null` if missing).
+value is the original camera config JSON loaded at recording start (or `null` if missing).
+
+`camera_runtime` is an optional dictionary keyed by camera serial number (as a
+string). It records the resolved runtime camera config actually used for that
+run, including runtime placement overrides such as a different `gpu_id` than
+the one stored in `config/local/...`.
 
 `gpu_inventory` is an optional dictionary keyed by GPU id string. It records the
 resolved runtime device identity for the GPUs used in that recording, so a later
@@ -183,6 +189,31 @@ Notes:
 - It is currently emitted by the headless recording path used for experiments.
 - `artifact_path` and `stderr_path` are useful even when the monitor fails to
   start, because the stderr log often explains driver or CLI issues.
+
+Current `camera_runtime` shape:
+
+```json
+{
+  "camera_runtime": {
+    "02010093": {
+      "source": {
+        "camera_config_path": "/abs/path/config/local/default/02010093.json",
+        "configured_gpu_id": 0,
+        "gpu_id_runtime_overridden": true
+      },
+      "runtime": {
+        "name": "cam02010093",
+        "width": 2256,
+        "height": 2256,
+        "frame_rate": 400,
+        "pixel_format": "BayerRG8",
+        "gpu_id": 8,
+        "gpu_direct": true
+      }
+    }
+  }
+}
+```
 
 Notes:
 - `mode` reflects the current recording-time sync mode:

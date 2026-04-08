@@ -38,6 +38,8 @@ struct CameraParams{
     std::string pixel_format;
     std::string color_temp;
     int gpu_id;
+    int configured_gpu_id = -1;
+    bool gpu_id_runtime_overridden = false;
     int camera_id;
     std::string camera_name;
     std::string camera_serial;
@@ -96,6 +98,12 @@ struct CameraParams{
 
 
 std::string get_evt_error_string(EVT_ERROR error);
+bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value);
+bool get_camera_uint32_param_range(Emergent::CEmergentCamera* camera,
+                                   const char* name,
+                                   unsigned int* min_out,
+                                   unsigned int* max_out,
+                                   unsigned int* inc_out = nullptr);
 
 #define check_camera_errors(err, camera_serial) __check_camera_errors(err, camera_serial, __FILE__, __LINE__)
 

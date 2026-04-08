@@ -29,6 +29,7 @@
 #include "fetch_generated.h"
 #include "acquire_frames.h"
 #include "modern_recording_pipeline.h"
+#include "fsuid_guard.h"
 #include <signal.h>
 
 #define evt_buffer_size 100
@@ -127,6 +128,8 @@ struct HeadlessGpuDmonMonitor {
     std::string error;
 };
 
+using CameraGpuOverrideMap = std::unordered_map<std::string, int>;
+
 constexpr int kGpuDmonStartupPollMs = 200;
 constexpr int kGpuDmonShutdownWaitMs = 2000;
 
@@ -136,6 +139,33 @@ void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
                                      const std::string& recording_folder,
                                      const std::vector<int>& gpu_ids);
 void stop_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor);
+
+std::string canonicalize_headless_camera_serial(std::string value)
+{
+    value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char c) {
+        return !std::isspace(c);
+    }));
+    value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char c) {
+        return !std::isspace(c);
+    }).base(), value.end());
+
+    if (value.empty()) {
+        return value;
+    }
+
+    const bool is_numeric = std::all_of(value.begin(), value.end(), [](unsigned char c) {
+        return std::isdigit(c) != 0;
+    });
+    if (!is_numeric) {
+        return value;
+    }
+
+    const std::size_t first_non_zero = value.find_first_not_of('0');
+    if (first_non_zero == std::string::npos) {
+        return "0";
+    }
+    return value.substr(first_non_zero);
+}
 
 std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
 {
@@ -174,7 +204,8 @@ void append_camera_selection(HeadlessEncoderSettings* settings, const std::strin
     std::size_t start = 0;
     while (start <= value.size()) {
         const std::size_t plus = value.find('+', start);
-        const std::string serial = value.substr(start, plus == std::string::npos ? std::string::npos : plus - start);
+        const std::string serial = canonicalize_headless_camera_serial(
+            value.substr(start, plus == std::string::npos ? std::string::npos : plus - start));
         if (!serial.empty()) {
             settings->camera_serials.push_back(serial);
         }
@@ -294,7 +325,7 @@ void print_headless_usage(const char* argv0)
         << "  " << argv0 << " --mode local --list-cameras\n\n"
         << "Local mode options:\n"
         << "  --camera <serial|all>        Repeatable. Defaults to all.\n"
-        << "  --gpu-id <int>               Optional repeatable GPU filter.\n"
+        << "  --gpu-id <int>               Optional runtime GPU placement input.\n"
         << "  --config-folder <path>       Optional camera config folder.\n"
         << "  --record-folder <path>       Required for local recording runs.\n"
         << "  --codec <h264|hevc>\n"
@@ -581,6 +612,67 @@ std::vector<int> resolve_selected_camera_indices(const CameraParams* cameras_par
     return indices;
 }
 
+bool build_camera_gpu_override_map(const HeadlessEncoderSettings& settings,
+                                   const std::vector<int>& requested_gpu_ids,
+                                   CameraGpuOverrideMap* overrides_out,
+                                   std::string* error_out)
+{
+    if (!overrides_out) {
+        if (error_out) {
+            *error_out = "Internal error: null GPU override destination";
+        }
+        return false;
+    }
+
+    overrides_out->clear();
+    if (requested_gpu_ids.empty() || settings.select_all_cameras || settings.camera_serials.empty()) {
+        return true;
+    }
+
+    if (requested_gpu_ids.size() != 1 &&
+        requested_gpu_ids.size() != settings.camera_serials.size()) {
+        if (error_out) {
+            *error_out =
+                "For explicit camera selection, gpu_ids must contain either one shared GPU id "
+                "or exactly one GPU id per selected camera.";
+        }
+        return false;
+    }
+
+    if (requested_gpu_ids.size() == 1) {
+        for (const std::string& serial : settings.camera_serials) {
+            (*overrides_out)[serial] = requested_gpu_ids.front();
+        }
+        return true;
+    }
+
+    for (std::size_t i = 0; i < settings.camera_serials.size(); ++i) {
+        (*overrides_out)[settings.camera_serials[i]] = requested_gpu_ids[i];
+    }
+    return true;
+}
+
+void apply_camera_gpu_overrides(CameraParams* cameras_params,
+                                int num_cameras,
+                                const CameraGpuOverrideMap& overrides)
+{
+    if (!cameras_params || num_cameras <= 0 || overrides.empty()) {
+        return;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        const auto it = overrides.find(cameras_params[i].camera_serial);
+        if (it == overrides.end()) {
+            continue;
+        }
+
+        cameras_params[i].gpu_id = it->second;
+        cameras_params[i].gpu_id_runtime_overridden =
+            (cameras_params[i].configured_gpu_id >= 0 &&
+             cameras_params[i].configured_gpu_id != cameras_params[i].gpu_id);
+    }
+}
+
 void allocate_selected_camera_frame_buffers(CameraEmergent* ecams,
                                             CameraParams* cameras_params,
                                             const std::vector<int>& selected_indices)
@@ -725,6 +817,8 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
         return false;
     }
 
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     const std::filesystem::path recording_path(record_folder);
     std::error_code create_error;
     std::filesystem::create_directories(recording_path, create_error);
@@ -823,7 +917,13 @@ void quit_process(bool error = false, const std::string &reason = "")
     }
 }
 
-bool open_cameras(CameraParams *cameras_params, CameraEmergent *ecams, CameraEachSelect *cameras_select, GigEVisionDeviceInfo *device_info, int num_cameras, std::string config_folder)
+bool open_cameras(CameraParams *cameras_params,
+                  CameraEmergent *ecams,
+                  CameraEachSelect *cameras_select,
+                  GigEVisionDeviceInfo *device_info,
+                  int num_cameras,
+                  std::string config_folder,
+                  const CameraGpuOverrideMap& camera_gpu_overrides = {})
 {
     std::vector<std::string> camera_config_files;
     if (!config_folder.empty()) {
@@ -838,6 +938,7 @@ bool open_cameras(CameraParams *cameras_params, CameraEmergent *ecams, CameraEac
     {
         ecams[i].evt_frame = nullptr;
         set_camera_params(&cameras_params[i], &device_info[i], camera_config_files, i, num_cameras);
+        apply_camera_gpu_overrides(&cameras_params[i], 1, camera_gpu_overrides);
         open_camera_with_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id], &cameras_params[i]);
     }
     return true;
@@ -1201,6 +1302,8 @@ bool read_json_file(const std::filesystem::path& path, nlohmann::json* json_out,
 
 bool write_json_file(const std::filesystem::path& path, const nlohmann::json& value, std::string* error_out)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::error_code create_error;
     std::filesystem::create_directories(path.parent_path(), create_error);
     if (create_error && !std::filesystem::exists(path.parent_path())) {
@@ -1968,11 +2071,29 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 0;
     }
 
+    CameraGpuOverrideMap camera_gpu_overrides;
+    std::string override_error;
+    if (!build_camera_gpu_override_map(
+            options.encoder_settings,
+            options.required_gpu_ids,
+            &camera_gpu_overrides,
+            &override_error)) {
+        std::cerr << override_error << std::endl;
+        return 2;
+    }
+
     std::unique_ptr<CameraEmergent[]> ecams(new CameraEmergent[cam_count]);
     std::unique_ptr<CameraParams[]> cameras_params(new CameraParams[cam_count]);
     std::unique_ptr<CameraEachSelect[]> cameras_select(new CameraEachSelect[cam_count]);
 
-    if (!open_cameras(cameras_params.get(), ecams.get(), cameras_select.get(), device_info, cam_count, options.config_folder)) {
+    if (!open_cameras(
+            cameras_params.get(),
+            ecams.get(),
+            cameras_select.get(),
+            device_info,
+            cam_count,
+            options.config_folder,
+            camera_gpu_overrides)) {
         std::cerr << "Failed to open cameras." << std::endl;
         return 1;
     }
@@ -2239,6 +2360,8 @@ int run_local_experiment(const HeadlessCliOptions& options)
 
     const std::filesystem::path experiment_root =
         std::filesystem::path(spec.output_root) / spec.experiment_id;
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::error_code create_error;
     std::filesystem::create_directories(experiment_root, create_error);
     if (create_error && !std::filesystem::exists(experiment_root)) {

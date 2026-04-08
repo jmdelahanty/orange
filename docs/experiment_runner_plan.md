@@ -290,8 +290,12 @@ Selection rules for the first version:
   experiments.
 - The runner should fail the run if the requested serial set is missing or
   ambiguous.
-- `selection.gpu_ids` should be treated as an explicit placement constraint,
+- `selection.gpu_ids` should be treated as an explicit runtime placement input,
   not a descriptive note.
+- When `selection.camera_serials` is explicit, `selection.gpu_ids` should map
+  onto those cameras as runtime `gpu_id` overrides before camera open.
+- When camera selection is `all`, `selection.gpu_ids` can still act as an
+  allowed-GPU filter.
 - Each run manifest should capture both numeric `gpu_id` and resolved GPU
   hardware metadata so `GPU 0` can be interpreted later as a concrete device
   such as `NVIDIA RTX A6000`.

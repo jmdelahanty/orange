@@ -111,6 +111,8 @@ Recommended direct flags:
 
 - `--mode local|remote`
 - `--camera <serial|all>` (repeatable)
+- `--gpu-id <int>` (repeatable; explicit placement override for selected cameras,
+  allowed-GPU filter for `--camera all`)
 - `--config-folder <path>`
 - `--record-folder <path>`
 - `--codec <h264|hevc>`
