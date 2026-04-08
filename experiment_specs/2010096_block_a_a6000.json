@@ -1,9 +1,9 @@
 {
   "experiment_id": "2026_04_08_block_a_2010096_a6000",
-  "notes": "Block A core encoder sweep for camera 2010096 on gpu_id=8 (A6000 expected).",
+  "notes": "Block A core encoder sweep for camera 2010096 on gpu_id=0 (A6000 expected).",
   "selection": {
     "camera_serials": ["2010096"],
-    "gpu_ids": [8]
+    "gpu_ids": [0]
   },
   "fixed": {
     "duration_s": 30,
@@ -11,7 +11,7 @@
     "display": false,
     "yolo": false,
     "sync_mode": "free_run",
-    "config_folder": "/home/jeremy/orange_data/config/local/default",
+    "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
     "output_root": "/home/jeremy/orange_data/exp/unsorted"
   },
   "matrix": {

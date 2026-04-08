@@ -59,10 +59,13 @@ struct HeadlessCliOptions {
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
     bool list_cameras = false;
+    bool stream_only = false;
     std::string config_folder;
     std::string record_folder;
     std::string experiment_spec_path;
     int duration_seconds = 0;
+    int stream_start_delay_seconds = 0;
+    int record_start_delay_seconds = 0;
     std::vector<int> required_gpu_ids;
     HeadlessEncoderSettings encoder_settings;
 };
@@ -76,6 +79,7 @@ struct ExperimentSpec {
     std::string config_folder;
     int duration_s = 0;
     int warmup_s = 0;
+    int stream_start_delay_s = 0;
     double target_fps_tolerance_pct = 1.0;
     bool require_zero_acq_starve = true;
     bool require_zero_pre_drops = true;
@@ -322,9 +326,11 @@ void print_headless_usage(const char* argv0)
         << "Usage:\n"
         << "  " << argv0 << " --mode remote\n"
         << "  " << argv0 << " --mode local --record-folder <path> [options]\n"
+        << "  " << argv0 << " --mode local --stream-only [options]\n"
         << "  " << argv0 << " --mode local --list-cameras\n\n"
         << "Local mode options:\n"
         << "  --camera <serial|all>        Repeatable. Defaults to all.\n"
+        << "  --stream-only                Open stream and run acquisition without recording.\n"
         << "  --gpu-id <int>               Optional runtime GPU placement input.\n"
         << "  --config-folder <path>       Optional camera config folder.\n"
         << "  --record-folder <path>       Required for local recording runs.\n"
@@ -335,6 +341,8 @@ void print_headless_usage(const char* argv0)
         << "  --quality <int>\n"
         << "  --gop <int>\n"
         << "  --duration <seconds>         Optional. Otherwise runs until Ctrl+C.\n"
+        << "  --stream-start-delay <sec>   Optional. Wait after camera open before stream open.\n"
+        << "  --record-delay <seconds>     Optional. Stream first, then arm recording.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
@@ -523,8 +531,38 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             }
             continue;
         }
+        if (arg == "--stream-start-delay") {
+            const std::string value = consume_value("--stream-start-delay");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->stream_start_delay_seconds)) {
+                if (error_out) {
+                    *error_out = "Invalid --stream-start-delay value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--record-delay") {
+            const std::string value = consume_value("--record-delay");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->record_start_delay_seconds)) {
+                if (error_out) {
+                    *error_out = "Invalid --record-delay value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
         if (arg == "--list-cameras") {
             options->list_cameras = true;
+            continue;
+        }
+        if (arg == "--stream-only") {
+            options->stream_only = true;
             continue;
         }
         if (arg == "--experiment-spec") {
@@ -678,7 +716,7 @@ void allocate_selected_camera_frame_buffers(CameraEmergent* ecams,
                                             const std::vector<int>& selected_indices)
 {
     for (int idx : selected_indices) {
-        camera_open_stream(&ecams[idx].camera, &cameras_params[idx]);
+        camera_open_stream(&ecams[idx].camera, &cameras_params[idx], "headless_start_camera_thread");
         ecams[idx].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
         allocate_frame_buffer(&ecams[idx].camera, ecams[idx].evt_frame, &cameras_params[idx], evt_buffer_size);
         if (cameras_params[idx].need_reorder && cameras_params[idx].gpu_direct) {
@@ -697,6 +735,54 @@ void print_available_cameras(GigEVisionDeviceInfo* device_info, int cam_count)
                   << " model=" << device_info[i].modelName
                   << std::endl;
     }
+}
+
+std::vector<int> resolve_selected_device_inventory_indices(const GigEVisionDeviceInfo* device_info,
+                                                           int cam_count,
+                                                           const HeadlessEncoderSettings& settings)
+{
+    std::vector<int> indices;
+    if (!device_info || cam_count <= 0) {
+        return indices;
+    }
+
+    if (settings.select_all_cameras || settings.camera_serials.empty()) {
+        indices.reserve(cam_count);
+        for (int i = 0; i < cam_count; ++i) {
+            indices.push_back(i);
+        }
+        return indices;
+    }
+
+    std::unordered_map<std::string, int> index_by_serial;
+    index_by_serial.reserve(static_cast<std::size_t>(cam_count));
+    for (int i = 0; i < cam_count; ++i) {
+        index_by_serial.emplace(
+            canonicalize_headless_camera_serial(device_info[i].serialNumber),
+            i);
+    }
+
+    std::unordered_set<int> seen_indices;
+    for (const std::string& serial : settings.camera_serials) {
+        auto it = index_by_serial.find(serial);
+        if (it == index_by_serial.end()) {
+            std::ostringstream available;
+            for (int i = 0; i < cam_count; ++i) {
+                if (i != 0) {
+                    available << ",";
+                }
+                available << canonicalize_headless_camera_serial(device_info[i].serialNumber);
+            }
+            throw std::runtime_error(
+                "Requested camera serial " + serial +
+                " was not found on this host. Available serials: " + available.str());
+        }
+        if (seen_indices.insert(it->second).second) {
+            indices.push_back(it->second);
+        }
+    }
+
+    return indices;
 }
 
 void cleanup_selected_camera_buffers(const std::vector<int>& active_camera_indices,
@@ -723,6 +809,15 @@ void close_all_cameras(CameraEmergent* ecams,
 {
     for (int i = 0; i < num_cameras; ++i) {
         close_camera(&ecams[i].camera, &cameras_params[i]);
+    }
+}
+
+void close_selected_cameras(const std::vector<int>& selected_indices,
+                            CameraEmergent* ecams,
+                            CameraParams* cameras_params)
+{
+    for (int idx : selected_indices) {
+        close_camera(&ecams[idx].camera, &cameras_params[idx]);
     }
 }
 
@@ -753,6 +848,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            CameraEmergent* ecams,
                            CameraParams* cameras_params,
                            int num_cameras,
+                           const std::vector<int>* opened_camera_indices,
                            CameraControl* camera_control,
                            PTPParams* ptp_params,
                            bool reset_ptp_state)
@@ -790,7 +886,11 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
         reset_ptp_params(ptp_params);
     }
 
-    close_all_cameras(ecams, cameras_params, num_cameras);
+    if (opened_camera_indices && !opened_camera_indices->empty()) {
+        close_selected_cameras(*opened_camera_indices, ecams, cameras_params);
+    } else {
+        close_all_cameras(ecams, cameras_params, num_cameras);
+    }
 }
 
 RecordingOutputConfig build_native_recording_output_config(const CameraParams& camera_params)
@@ -923,7 +1023,8 @@ bool open_cameras(CameraParams *cameras_params,
                   GigEVisionDeviceInfo *device_info,
                   int num_cameras,
                   std::string config_folder,
-                  const CameraGpuOverrideMap& camera_gpu_overrides = {})
+                  const CameraGpuOverrideMap& camera_gpu_overrides = {},
+                  const std::vector<int>* selected_indices = nullptr)
 {
     std::vector<std::string> camera_config_files;
     if (!config_folder.empty()) {
@@ -934,12 +1035,28 @@ bool open_cameras(CameraParams *cameras_params,
         update_camera_configs(camera_config_files, config_folder);
     }
 
+    std::vector<bool> should_open(static_cast<std::size_t>(num_cameras), true);
+    if (selected_indices) {
+        std::fill(should_open.begin(), should_open.end(), false);
+        for (int idx : *selected_indices) {
+            if (idx >= 0 && idx < num_cameras) {
+                should_open[static_cast<std::size_t>(idx)] = true;
+            }
+        }
+    }
+
     for (int i = 0; i < num_cameras; i++)
     {
         ecams[i].evt_frame = nullptr;
         set_camera_params(&cameras_params[i], &device_info[i], camera_config_files, i, num_cameras);
         apply_camera_gpu_overrides(&cameras_params[i], 1, camera_gpu_overrides);
-        open_camera_with_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id], &cameras_params[i]);
+        if (!should_open[static_cast<std::size_t>(i)]) {
+            continue;
+        }
+        open_camera_with_params(&ecams[i].camera,
+                                &device_info[i],
+                                &cameras_params[i],
+                                "headless_open_cameras");
     }
     return true;
 }
@@ -953,7 +1070,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select,
     GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params,
     const std::vector<int>& required_gpu_ids,
-    std::string record_folder, std::string encoder_basic_setup)
+    std::string record_folder, std::string encoder_basic_setup,
+    int record_start_delay_seconds = 0,
+    bool enable_recording = true)
 {
     std::cout << "start camera sthread..." << std::endl;
     const HeadlessEncoderSettings encoder_settings = parse_headless_encoder_setup(encoder_basic_setup);
@@ -967,6 +1086,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
               << std::endl;
 
     std::vector<int> selected_indices;
+    size_t max_frame_size_bytes = 0;
     try {
         selected_indices = resolve_selected_camera_indices(
             cameras_params,
@@ -976,14 +1096,36 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         if (selected_indices.empty()) {
             throw std::runtime_error("No cameras selected for headless run.");
         }
-        allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
+        for (int idx : selected_indices) {
+            const size_t current_size =
+                static_cast<size_t>(cameras_params[idx].width) * static_cast<size_t>(cameras_params[idx].height);
+            if (current_size > max_frame_size_bytes) {
+                max_frame_size_bytes = current_size;
+            }
+        }
+
+        camera_resources.clear();
+        camera_resources.resize(num_cameras);
+        for (int idx : selected_indices) {
+            cameras_select[idx].stream_on = false;
+            cameras_select[idx].record = enable_recording;
+            cameras_select[idx].yolo = false;
+            cameras_select[idx].crop_and_encode = false;
+            cameras_select[idx].send_frame_ipc = false;
+            camera_resources[idx].initialize(
+                cameras_params[idx].gpu_id,
+                max_frame_size_bytes,
+                false);
+        }
+
     } catch (const std::exception& ex) {
         std::cerr << "Failed to start thread: " << ex.what() << std::endl;
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+        camera_resources.clear();
         return false;
     }
 
-    camera_control->record_video = true;
+    camera_control->record_video = enable_recording && (record_start_delay_seconds <= 0);
     camera_control->subscribe = true;
     int ptp_camera_count = 0;
     for (int idx : selected_indices) {
@@ -1008,65 +1150,52 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         selected_camera_params.push_back(cameras_params[idx]);
     }
 
-    if (!prepare_headless_recording_artifacts(
-            record_folder,
-            camera_control,
-            selected_camera_params.data(),
-            static_cast<int>(selected_camera_params.size()),
-            ptp_params)) {
-        cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
-        return false;
-    }
-
-    start_headless_gpu_dmon_monitor(
-        gpu_dmon_monitor,
-        record_folder,
-        collect_unique_gpu_ids(cameras_params, selected_indices));
-
-    size_t max_frame_size_bytes = 0;
-    for (int idx : selected_indices) {
-        const size_t current_size =
-            static_cast<size_t>(cameras_params[idx].width) * static_cast<size_t>(cameras_params[idx].height);
-        if (current_size > max_frame_size_bytes) {
-            max_frame_size_bytes = current_size;
-        }
-    }
-
-    camera_resources.clear();
-    camera_resources.resize(num_cameras);
     recording_pipelines.clear();
     recording_pipelines.resize(num_cameras);
 
     try {
-        for (int idx : selected_indices) {
-            camera_resources[idx].initialize(
-                cameras_params[idx].gpu_id,
-                max_frame_size_bytes,
-                cameras_select[idx].yolo);
-            cameras_select[idx].stream_on = false;
-            cameras_select[idx].record = true;
-            cameras_select[idx].yolo = false;
-            cameras_select[idx].crop_and_encode = false;
-            cameras_select[idx].send_frame_ipc = false;
+        if (enable_recording) {
+            if (!prepare_headless_recording_artifacts(
+                    record_folder,
+                    camera_control,
+                    selected_camera_params.data(),
+                    static_cast<int>(selected_camera_params.size()),
+                    ptp_params)) {
+                cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+                return false;
+            }
 
-            recording_pipelines[idx] = std::make_unique<ModernRecordingPipeline>(
-                &cameras_params[idx],
-                build_native_recording_output_config(cameras_params[idx]),
-                encoder_settings.codec,
-                encoder_settings.preset,
-                encoder_settings.tuning,
-                encoder_settings.rate_control_mode,
-                encoder_settings.quality_value,
-                encoder_settings.gop_length,
+            start_headless_gpu_dmon_monitor(
+                gpu_dmon_monitor,
                 record_folder,
-                *camera_resources[idx].recycle_queue,
-                camera_control);
-            recording_pipelines[idx]->start();
+                collect_unique_gpu_ids(cameras_params, selected_indices));
+
+            for (int idx : selected_indices) {
+                recording_pipelines[idx] = std::make_unique<ModernRecordingPipeline>(
+                    &cameras_params[idx],
+                    build_native_recording_output_config(cameras_params[idx]),
+                    encoder_settings.codec,
+                    encoder_settings.preset,
+                    encoder_settings.tuning,
+                    encoder_settings.rate_control_mode,
+                    encoder_settings.quality_value,
+                    encoder_settings.gop_length,
+                    record_folder,
+                    *camera_resources[idx].recycle_queue,
+                    camera_control);
+                recording_pipelines[idx]->start();
+            }
         }
+
+        // Match the GUI path: build the recording pipeline first, then open the
+        // camera stream and allocate EVT frame buffers against the active GPU.
+        allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
-        drain_and_shutdown_recording(recording_pipelines, camera_control);
-        stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
+        if (enable_recording) {
+            drain_and_shutdown_recording(recording_pipelines, camera_control);
+            stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
+        }
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
         camera_resources.clear();
         return false;
@@ -1165,7 +1294,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 }
                 break;
             case FetchGame::ManagerState_STARTCAMTHREAD:
-                if (start_camera_thread(camera_threads, camera_resources, active_camera_indices, recording_pipelines, &gpu_dmon_monitor, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, {}, recording_setup->record_folder, recording_setup->encoder_basic_setup))
+                if (start_camera_thread(camera_threads, camera_resources, active_camera_indices, recording_pipelines, &gpu_dmon_monitor, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, {}, recording_setup->record_folder, recording_setup->encoder_basic_setup, 0))
                 {
                     manager_context->state = FetchGame::ManagerState_THREADREADY;
                 } else {
@@ -1183,6 +1312,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         ecams,
                         cameras_params,
                         *cam_count,
+                        nullptr,
                         camera_control,
                         ptp_params,
                         true);
@@ -1208,6 +1338,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 ecams,
                 cameras_params,
                 *cam_count,
+                nullptr,
                 camera_control,
                 ptp_params,
                 true);
@@ -1229,8 +1360,10 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
 {
     if (options.mode == HeadlessMode::Remote) {
         if (!options.record_folder.empty() || !options.config_folder.empty() ||
-            options.list_cameras || !options.experiment_spec_path.empty() ||
-            options.duration_seconds > 0 || !options.required_gpu_ids.empty() ||
+            options.list_cameras || options.stream_only || !options.experiment_spec_path.empty() ||
+            options.duration_seconds > 0 || options.stream_start_delay_seconds > 0 ||
+            options.record_start_delay_seconds > 0 ||
+            !options.required_gpu_ids.empty() ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
             !options.encoder_settings.select_all_cameras ||
             !options.encoder_settings.camera_serials.empty()) {
@@ -1245,16 +1378,19 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
     }
 
     if (!options.experiment_spec_path.empty()) {
-        if (options.list_cameras ||
+        if (options.list_cameras || options.stream_only ||
             !options.record_folder.empty() ||
             options.duration_seconds > 0 ||
+            options.stream_start_delay_seconds > 0 ||
+            options.record_start_delay_seconds > 0 ||
             !options.required_gpu_ids.empty() ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
             if (error_out) {
                 *error_out =
                     "When --experiment-spec is provided, per-run flags like "
-                    "--list-cameras, --record-folder, --camera, --codec, --preset, --tuning, "
-                    "--rate-control, --quality, --gop, --duration, and --gpu-id "
+                    "--list-cameras, --stream-only, --record-folder, --camera, --codec, --preset, --tuning, "
+                    "--rate-control, --quality, --gop, --duration, --stream-start-delay, "
+                    "--record-delay, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
             return false;
@@ -1262,9 +1398,9 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
         return true;
     }
 
-    if (!options.list_cameras && options.record_folder.empty()) {
+    if (!options.list_cameras && !options.stream_only && options.record_folder.empty()) {
         if (error_out) {
-            *error_out = "--record-folder is required in --mode local unless using --list-cameras.";
+            *error_out = "--record-folder is required in --mode local unless using --list-cameras or --stream-only.";
         }
         return false;
     }
@@ -1926,6 +2062,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         : cli_options.config_folder;
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
+    spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
     if (spec->output_root.empty()) {
         if (error_out) {
             *error_out = "Experiment spec requires fixed.output_root";
@@ -1941,6 +2078,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->warmup_s < 0) {
         if (error_out) {
             *error_out = "Experiment spec fixed.warmup_s must be >= 0";
+        }
+        return false;
+    }
+    if (spec->stream_start_delay_s < 0) {
+        if (error_out) {
+            *error_out = "Experiment spec fixed.stream_start_delay_s must be >= 0";
         }
         return false;
     }
@@ -2019,6 +2162,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                             run.options.config_folder = spec.config_folder;
                             run.options.record_folder = run.recording_folder;
                             run.options.duration_seconds = spec.duration_s + spec.warmup_s;
+                            run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
+                            run.options.record_start_delay_seconds = 0;
                             run.options.required_gpu_ids = spec.gpu_ids;
                             run.options.encoder_settings = spec.selection;
                             run.options.encoder_settings.codec = codec;
@@ -2040,6 +2185,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                 {"gpu_ids", spec.gpu_ids},
                                 {"duration_s", spec.duration_s},
                                 {"warmup_s", spec.warmup_s},
+                                {"stream_start_delay_s", spec.stream_start_delay_s},
+                                {"record_start_delay_s", 0},
                                 {"recording_folder", run.recording_folder},
                             };
                             runs.push_back(std::move(run));
@@ -2055,16 +2202,16 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
 int run_local_recording_session(const HeadlessCliOptions& options, bool print_inventory)
 {
     GigEVisionDeviceInfo unsorted_device_info[max_cameras];
-    const int cam_count = scan_cameras(max_cameras, unsorted_device_info);
-    if (cam_count <= 0) {
+    const int discovered_cam_count = scan_cameras(max_cameras, unsorted_device_info);
+    if (discovered_cam_count <= 0) {
         std::cerr << "No cameras found." << std::endl;
         return 1;
     }
 
     GigEVisionDeviceInfo device_info[max_cameras];
-    sort_cameras_ip(unsorted_device_info, device_info, cam_count);
+    sort_cameras_ip(unsorted_device_info, device_info, discovered_cam_count);
     if (print_inventory) {
-        print_available_cameras(device_info, cam_count);
+        print_available_cameras(device_info, discovered_cam_count);
     }
 
     if (options.list_cameras) {
@@ -2082,20 +2229,51 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 2;
     }
 
-    std::unique_ptr<CameraEmergent[]> ecams(new CameraEmergent[cam_count]);
-    std::unique_ptr<CameraParams[]> cameras_params(new CameraParams[cam_count]);
-    std::unique_ptr<CameraEachSelect[]> cameras_select(new CameraEachSelect[cam_count]);
+    std::vector<int> selected_inventory_indices;
+    try {
+        selected_inventory_indices = resolve_selected_device_inventory_indices(
+            device_info,
+            discovered_cam_count,
+            options.encoder_settings);
+    } catch (const std::exception& ex) {
+        std::cerr << ex.what() << std::endl;
+        return 1;
+    }
+    if (selected_inventory_indices.empty()) {
+        std::cerr << "No cameras selected for local headless run." << std::endl;
+        return 1;
+    }
+
+    std::unique_ptr<CameraEmergent[]> ecams(new CameraEmergent[discovered_cam_count]);
+    std::unique_ptr<CameraParams[]> cameras_params(new CameraParams[discovered_cam_count]);
+    std::unique_ptr<CameraEachSelect[]> cameras_select(new CameraEachSelect[discovered_cam_count]);
 
     if (!open_cameras(
             cameras_params.get(),
             ecams.get(),
             cameras_select.get(),
             device_info,
-            cam_count,
+            discovered_cam_count,
             options.config_folder,
-            camera_gpu_overrides)) {
+            camera_gpu_overrides,
+            &selected_inventory_indices)) {
         std::cerr << "Failed to open cameras." << std::endl;
         return 1;
+    }
+
+    if (options.stream_start_delay_seconds > 0) {
+        std::cout << "Local headless camera-open settle delay started."
+                  << " stream_start_delay_s=" << options.stream_start_delay_seconds
+                  << std::endl;
+        const auto stream_start_deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(options.stream_start_delay_seconds);
+        while (!quit_server && std::chrono::steady_clock::now() < stream_start_deadline) {
+            usleep(100000);
+        }
+        if (quit_server) {
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
     }
 
     CameraControl camera_control;
@@ -2105,6 +2283,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
+    const bool enable_recording = !options.stream_only;
+    const std::string active_record_folder = enable_recording ? options.record_folder : std::string();
 
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool started = start_camera_thread(
@@ -2118,27 +2298,51 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &camera_control,
         cameras_select.get(),
         device_info,
-        cam_count,
+        discovered_cam_count,
         &ptp_params,
         options.required_gpu_ids,
-        options.record_folder,
-        encoder_setup);
+        active_record_folder,
+        encoder_setup,
+        options.record_start_delay_seconds,
+        enable_recording);
 
     if (!started) {
-        close_all_cameras(ecams.get(), cameras_params.get(), cam_count);
+        close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
         return 1;
     }
 
-    std::cout << "Local headless run started."
-              << " folder=" << options.record_folder
+    std::cout << "Local headless " << (enable_recording ? "recording" : "stream-only")
+              << " run started."
+              << " folder=" << (enable_recording ? options.record_folder : "<none>")
               << " cameras=" << format_selected_camera_serials(options.encoder_settings)
               << std::endl;
 
+    const auto run_start_time = std::chrono::steady_clock::now();
+    const auto record_arm_time = run_start_time + std::chrono::seconds(options.record_start_delay_seconds);
+    bool recording_armed = !enable_recording || camera_control.record_video;
+    if (enable_recording && !recording_armed && options.record_start_delay_seconds > 0) {
+        std::cout << "Local headless stream warmup started."
+                  << " record_arm_delay_s=" << options.record_start_delay_seconds
+                  << std::endl;
+    }
+
     const auto deadline = (options.duration_seconds > 0)
-        ? std::chrono::steady_clock::now() + std::chrono::seconds(options.duration_seconds)
+        ? run_start_time + std::chrono::seconds(options.duration_seconds)
         : std::chrono::steady_clock::time_point::max();
 
     while (!quit_server && std::chrono::steady_clock::now() < deadline) {
+        if (enable_recording &&
+            !recording_armed &&
+            options.record_start_delay_seconds > 0 &&
+            std::chrono::steady_clock::now() >= record_arm_time) {
+            camera_control.recording_draining = false;
+            camera_control.stop_record = false;
+            camera_control.record_video = true;
+            recording_armed = true;
+            std::cout << "Local headless recording armed after warmup."
+                      << " folder=" << options.record_folder
+                      << std::endl;
+        }
         usleep(100000);
     }
 
@@ -2150,7 +2354,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &gpu_dmon_monitor,
         ecams.get(),
         cameras_params.get(),
-        cam_count,
+        discovered_cam_count,
+        &selected_inventory_indices,
         &camera_control,
         &ptp_params,
         false);
@@ -2307,6 +2512,8 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         return false;
     }
 
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::ofstream csv(experiment_root / "runs.csv");
     if (!csv) {
         if (error_out) {
@@ -2360,10 +2567,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
 
     const std::filesystem::path experiment_root =
         std::filesystem::path(spec.output_root) / spec.experiment_id;
-    orange::ScopedFsuid fsuid_guard;
-    (void)fsuid_guard;
     std::error_code create_error;
-    std::filesystem::create_directories(experiment_root, create_error);
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::filesystem::create_directories(experiment_root, create_error);
+    }
     if (create_error && !std::filesystem::exists(experiment_root)) {
         std::cerr << "Failed to create experiment root " << experiment_root
                   << ": " << create_error.message() << std::endl;
@@ -2404,7 +2613,11 @@ int run_local_experiment(const HeadlessCliOptions& options)
                       << run.recording_folder << std::endl;
             return 1;
         }
-        std::filesystem::create_directories(run_path, create_error);
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            std::filesystem::create_directories(run_path, create_error);
+        }
         if (create_error && !std::filesystem::exists(run_path)) {
             std::cerr << "[EXPERIMENT] Failed to create run folder "
                       << run.recording_folder << ": " << create_error.message() << std::endl;

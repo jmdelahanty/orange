@@ -1,6 +1,9 @@
 #include "camera.h"
 #include <iostream>
 #include <cctype>
+#include <cstdlib>
+#include <sstream>
+#include <cuda_runtime_api.h>
 
 namespace {
 constexpr useconds_t kFocusPollIntervalUs = 200 * 1000;  // 200ms
@@ -64,12 +67,83 @@ std::string normalize_gpio_recipe(const CameraParams* camera_params)
     return {};
 }
 
+std::string abbreviate_env_value(const char* value, std::size_t max_len = 240)
+{
+    if (!value) {
+        return {};
+    }
+    std::string s(value);
+    if (s.size() <= max_len) {
+        return s;
+    }
+    return s.substr(0, max_len) + "...";
+}
+
 std::string resolved_ptp_mode(const CameraParams* camera_params)
 {
     if (!camera_params) {
         return "TwoStep";
     }
     return camera_params->ptp_mode.empty() ? "TwoStep" : camera_params->ptp_mode;
+}
+
+void log_camera_gpudirect_state(const char* stage,
+                                const char* context,
+                                Emergent::CEmergentCamera* camera,
+                                const CameraParams* camera_params,
+                                EVT_ERROR err = EVT_SUCCESS)
+{
+    const char* safe_stage = stage ? stage : "unknown_stage";
+    const char* safe_context = context ? context : "unspecified";
+    const char* sudo_uid = std::getenv("SUDO_UID");
+    const char* sudo_gid = std::getenv("SUDO_GID");
+    const char* emergent_dir = std::getenv("EMERGENT_DIR");
+    const char* ld_library_path = std::getenv("LD_LIBRARY_PATH");
+    const char* path_env = std::getenv("PATH");
+    const char* rivermax_log_level = std::getenv("RIVERMAX_LOG_LEVEL");
+    const char* vma_tracelevel = std::getenv("VMA_TRACELEVEL");
+
+    std::ostringstream out;
+    out << "[CAMERA][GPUDIRECT]"
+        << " stage=" << safe_stage
+        << " context=" << safe_context;
+    if (camera_params) {
+        out << " serial=" << camera_params->camera_serial
+            << " name=" << camera_params->camera_name
+            << " camera_id=" << camera_params->camera_id
+            << " gpu_direct=" << (camera_params->gpu_direct ? "true" : "false")
+            << " runtime_gpu_id=" << camera_params->gpu_id
+            << " configured_gpu_id=" << camera_params->configured_gpu_id
+            << " overridden=" << (camera_params->gpu_id_runtime_overridden ? "true" : "false")
+            << " resolution=" << camera_params->width << "x" << camera_params->height
+            << " pixel_format=" << camera_params->pixel_format
+            << " sync_mode=" << camera_params->sync_mode;
+    }
+    if (camera) {
+        out << " sdk_gpu_direct_device_id=" << camera->gpuDirectDeviceId;
+    }
+    int current_cuda_device = -1;
+    const cudaError_t cuda_device_err = cudaGetDevice(&current_cuda_device);
+    out << " current_cuda_device=";
+    if (cuda_device_err == cudaSuccess) {
+        out << current_cuda_device;
+    } else {
+        out << "err(" << cudaGetErrorString(cuda_device_err) << ")";
+    }
+    out << " uid=" << getuid()
+        << " euid=" << geteuid()
+        << " sudo_uid=" << (sudo_uid ? sudo_uid : "")
+        << " sudo_gid=" << (sudo_gid ? sudo_gid : "")
+        << " emergent_dir=" << abbreviate_env_value(emergent_dir)
+        << " ld_library_path=" << abbreviate_env_value(ld_library_path)
+        << " path_env=" << abbreviate_env_value(path_env)
+        << " rivermax_log_level=" << (rivermax_log_level ? rivermax_log_level : "")
+        << " vma_tracelevel=" << (vma_tracelevel ? vma_tracelevel : "");
+    if (err != EVT_SUCCESS) {
+        out << " evt_error=" << static_cast<int>(err)
+            << " evt_error_string=\"" << get_evt_error_string(err) << "\"";
+    }
+    std::cout << out.str() << std::endl;
 }
 
 CameraGpioNodeConfig make_enum_node(const char* name, const char* value)
@@ -708,6 +782,59 @@ bool set_iris_value_checked(
 }
 }  // namespace
 
+bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
+{
+    if (camera == nullptr || name == nullptr || out_value == nullptr) {
+        return false;
+    }
+
+    int max_length = 0;
+    EVT_ERROR len_err = EVT_CameraGetStringParamMaxLength(camera, name, &max_length);
+    if (len_err != EVT_SUCCESS || max_length <= 0) {
+        max_length = 512;
+    }
+
+    const unsigned long buf_size = static_cast<unsigned long>(std::max(256, max_length + 8));
+    std::vector<char> buffer(buf_size, '\0');
+    unsigned long value_size = 0;
+    EVT_ERROR err = EVT_CameraGetStringParam(camera, name, buffer.data(), buf_size, &value_size, 0);
+    if (err != EVT_SUCCESS) {
+        return false;
+    }
+
+    *out_value = std::string(buffer.data());
+    return true;
+}
+
+bool get_camera_uint32_param_range(Emergent::CEmergentCamera* camera,
+                                   const char* name,
+                                   unsigned int* min_out,
+                                   unsigned int* max_out,
+                                   unsigned int* inc_out)
+{
+    if (camera == nullptr || name == nullptr || min_out == nullptr || max_out == nullptr) {
+        return false;
+    }
+
+    unsigned int min_value = 0;
+    unsigned int max_value = 0;
+    EVT_ERROR min_err = EVT_CameraGetUInt32ParamMin(camera, name, &min_value);
+    EVT_ERROR max_err = EVT_CameraGetUInt32ParamMax(camera, name, &max_value);
+    if (min_err != EVT_SUCCESS || max_err != EVT_SUCCESS) {
+        return false;
+    }
+
+    *min_out = min_value;
+    *max_out = max_value;
+    if (inc_out != nullptr) {
+        unsigned int inc_value = 0;
+        if (EVT_CameraGetUInt32ParamInc(camera, name, &inc_value) == EVT_SUCCESS) {
+            *inc_out = inc_value;
+        }
+    }
+    return true;
+}
+
 bool build_gpio_recipe_preview_nodes(const CameraParams* camera_params,
                                      std::vector<CameraGpioNodeConfig>* nodes_out,
                                      std::string* error_out)
@@ -937,9 +1064,12 @@ void update_exposure_value(Emergent::CEmergentCamera *camera, int exposure_val, 
 
 void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int exposure_val, int* frame_rate_val, CameraParams *camera_params)
 {
-    EVT_CameraGetUInt32ParamMax(camera, "Exposure", &camera_params->exposure_max);
-    EVT_CameraGetUInt32ParamMin(camera, "Exposure", &camera_params->exposure_min);
-    EVT_CameraGetUInt32ParamInc(camera, "Exposure", &camera_params->exposure_inc);
+    get_camera_uint32_param_range(
+        camera,
+        "Exposure",
+        &camera_params->exposure_min,
+        &camera_params->exposure_max,
+        &camera_params->exposure_inc);
 
     if (exposure_val >= camera_params->exposure_min && exposure_val <= camera_params->exposure_max)
     {
@@ -947,9 +1077,12 @@ void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int expo
         camera_params->exposure = exposure_val;
     
         // framerate is correlated with exposure
-        EVT_CameraGetUInt32ParamMax(camera, "FrameRate", &camera_params->frame_rate_max);
-        EVT_CameraGetUInt32ParamMin(camera, "FrameRate", &camera_params->frame_rate_min);
-        EVT_CameraGetUInt32ParamInc(camera, "FrameRate", &camera_params->frame_rate_inc);
+        get_camera_uint32_param_range(
+            camera,
+            "FrameRate",
+            &camera_params->frame_rate_min,
+            &camera_params->frame_rate_max,
+            &camera_params->frame_rate_inc);
 
         if (*frame_rate_val < camera_params->frame_rate_min) {
             *frame_rate_val = camera_params->frame_rate_min;
@@ -965,9 +1098,12 @@ void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int expo
 
 void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_val, CameraParams *camera_params)
 {
-    EVT_CameraGetUInt32ParamMax(camera, "FrameRate", &camera_params->frame_rate_max);
-    EVT_CameraGetUInt32ParamMin(camera, "FrameRate", &camera_params->frame_rate_min);
-    EVT_CameraGetUInt32ParamInc(camera, "FrameRate", &camera_params->frame_rate_inc);
+    get_camera_uint32_param_range(
+        camera,
+        "FrameRate",
+        &camera_params->frame_rate_min,
+        &camera_params->frame_rate_max,
+        &camera_params->frame_rate_inc);
     if (frame_rate_val >= camera_params->frame_rate_min && frame_rate_val <= camera_params->frame_rate_max)
     {
         EVT_CameraSetUInt32Param(camera, "FrameRate", frame_rate_val);
@@ -1011,7 +1147,10 @@ void update_offsetY_value(Emergent::CEmergentCamera *camera, int OFFSET_Y_VAL, C
     }
 }
 
-void open_camera_with_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInfo *device_info, CameraParams *camera_params)
+void open_camera_with_params(Emergent::CEmergentCamera *camera,
+                             GigEVisionDeviceInfo *device_info,
+                             CameraParams *camera_params,
+                             const char* context)
 {
     // TODO: open camera using xml file after explored on camera settings
     // EVT_CameraOpen(&camera, &deviceInfo[camera_index], XML_FILE);
@@ -1019,6 +1158,8 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera, GigEVisionDevice
     if(camera_params->gpu_direct){
         camera->gpuDirectDeviceId = camera_params->gpu_id;
     }
+
+    log_camera_gpudirect_state("camera_open", context, camera, camera_params);
 
     check_camera_errors(EVT_CameraOpen(camera, device_info), camera_params->camera_serial.c_str());
 
@@ -1282,9 +1423,36 @@ void set_frame_buffer(Emergent::CEmergentFrame *evt_frame, CameraParams *camera_
     }
 }
 
-void camera_open_stream(Emergent::CEmergentCamera *camera, CameraParams *camera_params)
+void camera_open_stream(Emergent::CEmergentCamera *camera, CameraParams *camera_params, const char* context)
 {
-    check_camera_errors(EVT_CameraOpenStream(camera), camera_params->camera_serial.c_str());
+    if (camera_params && camera_params->gpu_direct) {
+        const cudaError_t set_device_err = cudaSetDevice(camera_params->gpu_id);
+        if (set_device_err != cudaSuccess) {
+            std::cerr << "[CAMERA][GPUDIRECT] failed to set CUDA device "
+                      << camera_params->gpu_id
+                      << " before stream open: "
+                      << cudaGetErrorString(set_device_err)
+                      << std::endl;
+        } else {
+            // Force the primary context to exist on the thread that opens the
+            // GPUDirect stream, matching the GUI's main-thread CUDA setup more
+            // closely.
+            const cudaError_t init_err = cudaFree(nullptr);
+            if (init_err != cudaSuccess) {
+                std::cerr << "[CAMERA][GPUDIRECT] failed to initialize CUDA context on device "
+                          << camera_params->gpu_id
+                          << " before stream open: "
+                          << cudaGetErrorString(init_err)
+                          << std::endl;
+            }
+        }
+    }
+    log_camera_gpudirect_state("camera_open_stream_attempt", context, camera, camera_params);
+    const EVT_ERROR err = EVT_CameraOpenStream(camera);
+    if (err != EVT_SUCCESS) {
+        log_camera_gpudirect_state("camera_open_stream_failure", context, camera, camera_params, err);
+    }
+    check_camera_errors(err, camera_params->camera_serial.c_str());
 }
 
 void allocate_frame_buffer(

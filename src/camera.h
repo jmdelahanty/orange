@@ -144,7 +144,10 @@ struct PTPParams{
 void print_camera_device_struct(GigEVisionDeviceInfo* device_info, int camera_idx);
 void configure_factory_defaults(Emergent::CEmergentCamera* camera, CameraParams *camera_params);
 void close_camera(Emergent::CEmergentCamera* camera, CameraParams *camera_params);
-void open_camera_with_params(Emergent::CEmergentCamera* camera, GigEVisionDeviceInfo* device_info, CameraParams* camera_params);
+void open_camera_with_params(Emergent::CEmergentCamera* camera,
+                             GigEVisionDeviceInfo* device_info,
+                             CameraParams* camera_params,
+                             const char* context = nullptr);
 void update_camera_params(Emergent::CEmergentCamera *camera, GigEVisionDeviceInfo *device_info, CameraParams *camera_params);
 void allocate_frame_buffer(
     Emergent::CEmergentCamera* camera,
@@ -177,7 +180,9 @@ void update_focus_value(Emergent::CEmergentCamera* camera, int focus_value, Came
 void update_iris_value(Emergent::CEmergentCamera* camera, int iris_value, CameraParams* camera_params);
 int scan_cameras(int max_cameras, GigEVisionDeviceInfo *device_info);
 void allocate_frame_reorder_buffer(Emergent::CEmergentCamera* camera, Emergent::CEmergentFrame* frame_reorder, CameraParams* camera_params);
-void camera_open_stream(Emergent::CEmergentCamera* camera, CameraParams *camera_params);
+void camera_open_stream(Emergent::CEmergentCamera* camera,
+                        CameraParams *camera_params,
+                        const char* context = nullptr);
 void sort_cameras_ip(GigEVisionDeviceInfo *device_info, GigEVisionDeviceInfo *sorted_device_info, int cam_count);
 void get_senstemp_value(Emergent::CEmergentCamera *camera, CameraParams *camera_params);
 #endif
