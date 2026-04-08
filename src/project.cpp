@@ -1333,6 +1333,53 @@ bool update_recording_snapshot_pipeline_metrics(const std::string& recording_fol
     return true;
 }
 
+bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folder,
+                                              const std::string& monitor_name,
+                                              const nlohmann::json& monitor_info) {
+    if (recording_folder.empty() || monitor_name.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    std::string error;
+    std::string contents = read_file_to_string(snapshot_path.string(), &error);
+    if (contents.empty()) {
+        std::cerr << "Failed to read recording snapshot: " << snapshot_path.string()
+                  << " (" << (error.empty() ? "empty file" : error) << ")" << std::endl;
+        return false;
+    }
+
+    nlohmann::json snapshot;
+    try {
+        snapshot = nlohmann::json::parse(contents);
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to parse recording snapshot: " << snapshot_path.string()
+                  << " (" << ex.what() << ")" << std::endl;
+        return false;
+    }
+
+    if (!snapshot.is_object()) {
+        snapshot = nlohmann::json::object();
+    }
+    if (!snapshot.contains("gpu_monitoring") || !snapshot["gpu_monitoring"].is_object()) {
+        snapshot["gpu_monitoring"] = nlohmann::json::object();
+    }
+
+    snapshot["gpu_monitoring"][monitor_name] = monitor_info;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
+    }
+
+    return true;
+}
+
 bool read_camera_config_snapshot(const CameraParams& camera_params,
                                  std::string* config_contents,
                                  std::string* error_out) {

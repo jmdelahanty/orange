@@ -45,6 +45,8 @@ Default configured base path in runtime:
 | Main metadata CSV | `<recording_folder>/Cam<serial>_meta.csv` | Typical | Per-camera HW encoding active |
 | Main keyframe sidecar | `<recording_folder>/Cam<serial>_keyframe.json` | Typical | Per-camera HW encoding active |
 | Pipeline perf CSV | `<recording_folder>/Cam<serial>_pipeline_perf.csv` | Optional | Per-camera recording folder active |
+| GPU dmon CSV | `<recording_folder>/nvidia_smi_dmon.csv` | Optional | Headless recording session with best-effort GPU monitoring |
+| GPU dmon stderr log | `<recording_folder>/nvidia_smi_dmon.stderr.log` | Optional | Headless recording session with best-effort GPU monitoring |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
 | Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
@@ -89,6 +91,7 @@ Current emitted top-level fields:
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
 - `gpu_inventory: object` (runtime GPU metadata keyed by GPU id string)
+- `gpu_monitoring: object` (optional host-level GPU monitor sidecars keyed by monitor name)
 - `encoders: object` (added later by encoder worker updates)
 - `pipeline_metrics: object` (optional, added when acquisition worker finalizes per-camera pipeline summaries)
 
@@ -146,6 +149,25 @@ Current emitted top-level fields:
 Important:
 - Current runtime snapshot shape is legacy/single-level encoder info.
 - Do not assume `encoders[serial].outputs` or `models` exists.
+
+`gpu_monitoring` object (current headless shape):
+- Key: monitor name string (currently `nvidia_smi_dmon`)
+- Value: monitor info object:
+  - `schema_version: integer`
+  - `tool: string`
+  - `status: string`
+  - `sample_period_seconds: integer`
+  - `gpu_ids: integer[]`
+  - `artifact_path: string`
+  - `stderr_path: string`
+  - Optional:
+    - `started_at_utc: string`
+    - `stopped_at_utc: string`
+    - `pid: integer` (while running)
+    - `exit_code: integer`
+    - `signal: integer`
+    - `error: string`
+  - `command: string[]`
 
 `pipeline_metrics` object (current shape):
 - Key: camera identifier string (serial or camera_id string).

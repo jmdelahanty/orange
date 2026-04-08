@@ -8,6 +8,10 @@ sidecars, IPC payloads, and known caveats), see:
 
 - `docs/output_artifacts_contract.md`
 
+For field-level spatial-calibration schema details, see:
+
+- `docs/spatial_layout_schema.md`
+
 ## Where to look
 
 The producer writes pointer files at recording start:
@@ -78,7 +82,9 @@ Top-level fields:
   "producer_version": "...",
   "sync": { ... },
   "cameras": { ... },
+  "calibrations": { ... },
   "gpu_inventory": { ... },
+  "gpu_monitoring": { ... },
   "encoders": { ... },
   "pipeline_metrics": { ... },
   "models": { ... }
@@ -93,9 +99,19 @@ resolved runtime device identity for the GPUs used in that recording, so a later
 consumer can tell that `gpu_id = 0` mapped to a concrete device such as
 `NVIDIA RTX A6000` on that host.
 
+`gpu_monitoring` is an optional dictionary keyed by monitor name. It currently
+records best-effort host-level GPU sidecars such as `nvidia-smi dmon` for
+headless benchmark runs.
+
 `sync` is an optional session-level synchronization snapshot captured when the
 recording starts. It is intended to capture durable run provenance, not every
 internal synchronization flag transition.
+
+`calibrations` is a planned optional dictionary keyed by camera serial number
+(as a string). It is intended to carry resolved per-recording spatial
+calibration outputs such as `dish_mask`, canonical `arena_layout` references,
+registration metadata, and resolved camera-pixel zone overlays. This block is
+not emitted today.
 
 Current emitted `sync` shape:
 
@@ -128,6 +144,46 @@ Current emitted `sync` shape:
 }
 ```
 
+Current headless `gpu_monitoring` shape:
+
+```json
+{
+  "gpu_monitoring": {
+    "nvidia_smi_dmon": {
+      "schema_version": 1,
+      "tool": "nvidia-smi dmon",
+      "status": "running|completed|failed_to_start|stopped_with_signal|killed|exited_with_error",
+      "sample_period_seconds": 1,
+      "gpu_ids": [0],
+      "artifact_path": "/abs/path/to/recording/nvidia_smi_dmon.csv",
+      "stderr_path": "/abs/path/to/recording/nvidia_smi_dmon.stderr.log",
+      "started_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "stopped_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
+      "command": [
+        "nvidia-smi",
+        "dmon",
+        "-i",
+        "0",
+        "-s",
+        "putcm",
+        "-d",
+        "1",
+        "-o",
+        "DT",
+        "--format",
+        "csv,nounit"
+      ]
+    }
+  }
+}
+```
+
+Notes:
+- This sidecar is host-level, not Orange-process-only.
+- It is currently emitted by the headless recording path used for experiments.
+- `artifact_path` and `stderr_path` are useful even when the monitor fails to
+  start, because the stderr log often explains driver or CLI issues.
+
 Notes:
 - `mode` reflects the current recording-time sync mode:
   - `none`: no camera-side synchronized acquisition was enabled.
@@ -137,6 +193,147 @@ Notes:
   corresponding PTP gate times were populated at snapshot time.
 - `barriers` and `signals` are a best-effort capture of current synchronization
   state at recording start; they are not a complete event log.
+
+## Planned Spatial Calibration Extension
+
+This section documents the intended `recording_snapshot.json` surface for
+per-recording spatial calibration outputs consumed by Citrus and other
+downstream tools. This section is planned design only and is not currently
+emitted.
+
+Recommended top-level placement:
+
+```json
+{
+  "calibrations": {
+    "02010093": {
+      "dish_mask": { "...": "resolved per-recording dish geometry" },
+      "arena_layout": { "...": "canonical ref plus resolved per-recording overlays" }
+    }
+  }
+}
+```
+
+Recommended rules:
+
+- key by camera serial string, matching `cameras`, `encoders`, and `models`
+- keep canonical identity in artifact refs, not only in runtime geometry
+- keep resolved runtime overlay geometry in `camera_native_pixels`
+- allow `dish_mask` without `arena_layout`
+- treat `layout_id` + `zone_id` as authoritative identity when `arena_layout` is
+  present
+
+Suggested shape:
+
+```json
+{
+  "calibrations": {
+    "02010093": {
+      "dish_mask": {
+        "calibration_ref": {
+          "artifact_id": "dishmask_...",
+          "artifact_schema_id": "orange.calibration.dish_mask",
+          "artifact_schema_version": 1,
+          "fingerprint": "fnv1a64:..."
+        },
+        "runtime": {
+          "schema_version": 1,
+          "enabled": true,
+          "geometry": {
+            "coordinate_space": "camera_native_pixels",
+            "outer_geometry": {
+              "type": "circle",
+              "cx": 2254.0,
+              "cy": 2256.0,
+              "r": 2060.0
+            },
+            "valid_geometry": {
+              "type": "circle",
+              "cx": 2254.0,
+              "cy": 2256.0,
+              "r": 1920.0
+            },
+            "edge_margin_px": 140.0
+          },
+          "source": "manual"
+        }
+      },
+      "arena_layout": {
+        "calibration_ref": {
+          "artifact_id": "arenalayout_...",
+          "artifact_schema_id": "orange.calibration.arena_layout",
+          "artifact_schema_version": 1,
+          "fingerprint": "fnv1a64:..."
+        },
+        "runtime": {
+          "schema_version": 1,
+          "enabled": true,
+          "layout_id": "bank4_circle_v1",
+          "coordinate_space": "camera_native_pixels",
+          "registration": {
+            "type": "similarity",
+            "layout_coordinate_space": "layout_mm",
+            "source": "manual_fit",
+            "layout_to_camera_matrix": [
+              52.0, 0.0, 100.0,
+              0.0, 52.0, 120.0,
+              0.0, 0.0, 1.0
+            ],
+            "camera_to_layout_matrix": [
+              0.0192307692, 0.0, -1.9230769231,
+              0.0, 0.0192307692, -2.3076923077,
+              0.0, 0.0, 1.0
+            ],
+            "fit_point_count": 8,
+            "residual_px": 1.8
+          },
+          "visible_zone_ids": ["z0", "z1", "z2", "z3"],
+          "zones": [
+            {
+              "zone_id": "z0",
+              "zone_index": 0,
+              "visibility_status": "full",
+              "geometry": {
+                "type": "circle",
+                "cx": 1120.0,
+                "cy": 1120.0,
+                "r": 420.0
+              }
+            },
+            {
+              "zone_id": "z1",
+              "zone_index": 1,
+              "visibility_status": "full",
+              "geometry": {
+                "type": "circle",
+                "cx": 3392.0,
+                "cy": 1120.0,
+                "r": 420.0
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `dish_mask` and `arena_layout` runtime payloads are convenience outputs for
+  this recording; the corresponding `calibration_ref` objects identify the
+  canonical calibration artifacts.
+- `registration.layout_to_camera_matrix` maps canonical layout coordinates into
+  camera pixels. If `camera_to_layout_matrix` is emitted, it should be the
+  inverse convenience transform for mapping detections back into canonical
+  layout space.
+- Consumers may draw or log `runtime.zones[*].geometry` directly, but should use
+  `layout_id` + `zone_id` as the stable identity.
+- For the broader design rationale and canonical artifact contract, see
+  `docs/spatial_layout_contract.md`.
+- For field-by-field spatial payload definitions, see
+  `docs/spatial_layout_schema.md`.
 
 ## PTP Sync Summary schema
 

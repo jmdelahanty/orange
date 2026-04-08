@@ -95,8 +95,13 @@ Local CLI note:
 
 - local single-run mode now accepts direct flags instead of requiring
   `encoder_basic_setup`
-- `--experiment-spec` is still deferred and currently returns a clear
-  "not implemented yet" error
+- local mode now also accepts `--experiment-spec <path>` for single-host matrix
+  runs
+- the first experiment-spec implementation is intentionally constrained to:
+  - `display=false`
+  - `yolo=false`
+  - `sync_mode=free_run`
+  - explicit local runs only, not remote orchestration
 
 This is the right shape for throughput testing because it minimizes unrelated
 consumers and keeps the benchmark focused on acquisition -> preprocess ->
@@ -122,8 +127,8 @@ So the current state is:
   hardened distributed benchmark harness.
 
 That means the main remaining gaps are no longer basic stop coordination. They
-are experiment-runner control-plane work, explicit camera selection, and better
-run manifest/reporting.
+are mostly remote control-plane work and deeper session cleanup, not the basic
+single-host runner.
 
 ## Critical Assessment Of The Worker / Fanout Strategy
 

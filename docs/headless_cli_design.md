@@ -14,17 +14,23 @@ See also:
 
 ## Current Status
 
-`orange_client` now has a real local single-run CLI:
+`orange_client` now has a real local headless CLI:
 
 - `--mode local`
 - direct recording flags
 - explicit `--camera`
 - `--list-cameras`
+- `--experiment-spec`
 
 But it is still incomplete relative to the full design:
 
-- `--experiment-spec` is not implemented yet
 - remote mode still uses the old loose network control contract
+- the first `--experiment-spec` implementation is intentionally narrow:
+  - local mode only
+  - `display=false`
+  - `yolo=false`
+  - `sync_mode=free_run`
+  - direct per-run flags are rejected when a spec is provided
 
 Remote behavior still remains primarily that of a network-controlled agent:
 
@@ -164,9 +170,10 @@ Recommended first implementation:
 - allow only:
   - `--mode`
   - `--experiment-spec`
-  - maybe `--config-folder`
+  - `--config-folder`
 
-That keeps the first CLI predictable.
+That is now the implemented behavior because it keeps the first experiment CLI
+predictable.
 
 ## Internal Architecture
 
@@ -208,6 +215,14 @@ Add local `--experiment-spec`.
 - single-host matrix automation
 - artifact collection and evaluation
 - no network orchestration required
+
+Status:
+
+- implemented for local runs
+- evaluates per-camera run results from `recording_snapshot.json`,
+  `ptp_sync_summary.json`, and `Cam*_pipeline_perf.csv`
+- current evaluation trims the first `warmup_s` periodic CSV samples when
+  computing encode FPS and counter deltas
 
 ### Phase 3
 

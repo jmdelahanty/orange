@@ -72,6 +72,7 @@ For each run, keep:
 
 - the output video file
 - `Cam*_pipeline_perf.csv`
+- `nvidia_smi_dmon.csv` and `nvidia_smi_dmon.stderr.log` when available
 - `recording_snapshot.json`
 - plot + summary output from `scripts/plot_pipeline_perf.py`
 

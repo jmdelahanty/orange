@@ -1,15 +1,23 @@
+#include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cerrno>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <memory>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <fcntl.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include "network_base.h"
 #include "thread.h"
 #include "types.h"
@@ -54,8 +62,80 @@ struct HeadlessCliOptions {
     std::string record_folder;
     std::string experiment_spec_path;
     int duration_seconds = 0;
+    std::vector<int> required_gpu_ids;
     HeadlessEncoderSettings encoder_settings;
 };
+
+struct ExperimentSpec {
+    std::string source_path;
+    nlohmann::json source_json = nlohmann::json::object();
+    std::string experiment_id;
+    std::string notes;
+    std::string output_root;
+    std::string config_folder;
+    int duration_s = 0;
+    int warmup_s = 0;
+    double target_fps_tolerance_pct = 1.0;
+    bool require_zero_acq_starve = true;
+    bool require_zero_pre_drops = true;
+    bool require_zero_enc_fail = true;
+    std::vector<int> gpu_ids;
+    HeadlessEncoderSettings selection;
+    std::vector<std::string> codecs;
+    std::vector<std::string> presets;
+    std::vector<std::string> tunings;
+    std::vector<std::string> rate_control_modes;
+    std::vector<int> quality_values;
+    std::vector<int> gop_lengths;
+};
+
+struct ExperimentRunPlan {
+    int run_index = 0;
+    std::string run_id;
+    std::string recording_folder;
+    int duration_s = 0;
+    int warmup_s = 0;
+    HeadlessCliOptions options;
+    nlohmann::json config_json = nlohmann::json::object();
+};
+
+struct ExperimentCsvWindowStats {
+    bool ok = false;
+    std::size_t total_rows = 0;
+    std::size_t included_rows = 0;
+    double enc_fps_mean = 0.0;
+    double enc_fps_p95 = 0.0;
+    uint64_t acq_starve_delta = 0;
+    uint64_t pre_drops_delta = 0;
+    uint64_t enc_fail_delta = 0;
+    std::string error;
+};
+
+struct HeadlessGpuDmonMonitor {
+    bool active = false;
+    pid_t pid = -1;
+    int sample_period_seconds = 1;
+    std::vector<int> gpu_ids;
+    std::string recording_folder;
+    std::string artifact_path;
+    std::string stderr_path;
+    std::string started_at_utc;
+    std::string stopped_at_utc;
+    std::string status = "not_started";
+    int exit_code = -1;
+    int term_signal = 0;
+    std::string error;
+};
+
+constexpr int kGpuDmonStartupPollMs = 200;
+constexpr int kGpuDmonShutdownWaitMs = 2000;
+
+std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
+                                        const std::vector<int>& selected_indices);
+void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
+                                     const std::string& recording_folder,
+                                     const std::vector<int>& gpu_ids);
+void stop_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor);
 
 std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
 {
@@ -214,6 +294,7 @@ void print_headless_usage(const char* argv0)
         << "  " << argv0 << " --mode local --list-cameras\n\n"
         << "Local mode options:\n"
         << "  --camera <serial|all>        Repeatable. Defaults to all.\n"
+        << "  --gpu-id <int>               Optional repeatable GPU filter.\n"
         << "  --config-folder <path>       Optional camera config folder.\n"
         << "  --record-folder <path>       Required for local recording runs.\n"
         << "  --codec <h264|hevc>\n"
@@ -223,7 +304,7 @@ void print_headless_usage(const char* argv0)
         << "  --quality <int>\n"
         << "  --gop <int>\n"
         << "  --duration <seconds>         Optional. Otherwise runs until Ctrl+C.\n"
-        << "  --experiment-spec <path>     Reserved for future work.\n"
+        << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
 }
@@ -240,6 +321,18 @@ bool parse_non_negative_int(const std::string& value, int* out)
     }
     *out = static_cast<int>(parsed);
     return true;
+}
+
+bool headless_encoder_settings_is_default(const HeadlessEncoderSettings& settings)
+{
+    return settings.codec == "h264" &&
+           settings.preset == "p1" &&
+           settings.tuning == "ll" &&
+           settings.rate_control_mode == "vbr" &&
+           settings.quality_value == 20 &&
+           settings.gop_length == 0 &&
+           settings.select_all_cameras &&
+           settings.camera_serials.empty();
 }
 
 bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* options, std::string* error_out)
@@ -300,6 +393,21 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
                 return false;
             }
             append_camera_selection(&options->encoder_settings, value);
+            continue;
+        }
+        if (arg == "--gpu-id") {
+            const std::string value = consume_value("--gpu-id");
+            int gpu_id = -1;
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &gpu_id)) {
+                if (error_out) {
+                    *error_out = "Invalid --gpu-id value: " + value;
+                }
+                return false;
+            }
+            options->required_gpu_ids.push_back(gpu_id);
             continue;
         }
         if (arg == "--config-folder") {
@@ -407,7 +515,8 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
 
 std::vector<int> resolve_selected_camera_indices(const CameraParams* cameras_params,
                                                  int num_cameras,
-                                                 const HeadlessEncoderSettings& settings)
+                                                 const HeadlessEncoderSettings& settings,
+                                                 const std::vector<int>& allowed_gpu_ids = {})
 {
     std::vector<int> indices;
     if (!cameras_params || num_cameras <= 0) {
@@ -419,32 +528,53 @@ std::vector<int> resolve_selected_camera_indices(const CameraParams* cameras_par
         for (int i = 0; i < num_cameras; ++i) {
             indices.push_back(i);
         }
-        return indices;
-    }
-
-    std::unordered_map<std::string, int> index_by_serial;
-    index_by_serial.reserve(static_cast<std::size_t>(num_cameras));
-    for (int i = 0; i < num_cameras; ++i) {
-        index_by_serial.emplace(cameras_params[i].camera_serial, i);
-    }
-
-    std::unordered_set<int> seen_indices;
-    for (const std::string& serial : settings.camera_serials) {
-        auto it = index_by_serial.find(serial);
-        if (it == index_by_serial.end()) {
-            std::ostringstream available;
-            for (int i = 0; i < num_cameras; ++i) {
-                if (i != 0) {
-                    available << ",";
-                }
-                available << cameras_params[i].camera_serial;
-            }
-            throw std::runtime_error(
-                "Requested camera serial " + serial +
-                " was not found on this host. Available serials: " + available.str());
+    } else {
+        std::unordered_map<std::string, int> index_by_serial;
+        index_by_serial.reserve(static_cast<std::size_t>(num_cameras));
+        for (int i = 0; i < num_cameras; ++i) {
+            index_by_serial.emplace(cameras_params[i].camera_serial, i);
         }
-        if (seen_indices.insert(it->second).second) {
-            indices.push_back(it->second);
+
+        std::unordered_set<int> seen_indices;
+        for (const std::string& serial : settings.camera_serials) {
+            auto it = index_by_serial.find(serial);
+            if (it == index_by_serial.end()) {
+                std::ostringstream available;
+                for (int i = 0; i < num_cameras; ++i) {
+                    if (i != 0) {
+                        available << ",";
+                    }
+                    available << cameras_params[i].camera_serial;
+                }
+                throw std::runtime_error(
+                    "Requested camera serial " + serial +
+                    " was not found on this host. Available serials: " + available.str());
+            }
+            if (seen_indices.insert(it->second).second) {
+                indices.push_back(it->second);
+            }
+        }
+    }
+
+    if (!allowed_gpu_ids.empty()) {
+        std::unordered_set<int> allowed(allowed_gpu_ids.begin(), allowed_gpu_ids.end());
+        std::vector<int> filtered;
+        filtered.reserve(indices.size());
+        for (int idx : indices) {
+            if (allowed.count(cameras_params[idx].gpu_id) > 0) {
+                filtered.push_back(idx);
+                continue;
+            }
+            if (!settings.select_all_cameras && !settings.camera_serials.empty()) {
+                throw std::runtime_error(
+                    "Requested camera serial " + cameras_params[idx].camera_serial +
+                    " resolved to gpu_id=" + std::to_string(cameras_params[idx].gpu_id) +
+                    ", which is not in the allowed gpu_ids set.");
+            }
+        }
+        indices.swap(filtered);
+        if (indices.empty()) {
+            throw std::runtime_error("No selected cameras matched the requested gpu_ids filter.");
         }
     }
 
@@ -527,6 +657,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            std::vector<CameraResources>& camera_resources,
                            std::vector<int>& active_camera_indices,
                            std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+                           HeadlessGpuDmonMonitor* gpu_dmon_monitor,
                            CameraEmergent* ecams,
                            CameraParams* cameras_params,
                            int num_cameras,
@@ -547,12 +678,15 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
 
     if (camera_control) {
         drain_and_shutdown_recording(recording_pipelines, camera_control);
+        stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
         if (camera_control->sync_camera) {
             for (int idx : active_camera_indices) {
                 ptp_sync_off(&ecams[idx].camera, &cameras_params[idx]);
             }
         }
         camera_control->sync_camera = false;
+    } else {
+        stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
     }
     recording_pipelines.clear();
 
@@ -685,8 +819,7 @@ void quit_process(bool error = false, const std::string &reason = "")
     if (error)
     {
         std::cout << reason << std::endl;
-        system("PAUSE");
-        exit(-1);
+        std::exit(EXIT_FAILURE);
     }
 }
 
@@ -715,8 +848,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     std::vector<CameraResources>& camera_resources,
     std::vector<int>& active_camera_indices,
     std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+    HeadlessGpuDmonMonitor* gpu_dmon_monitor,
     CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select,
-    GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params, std::string record_folder, std::string encoder_basic_setup)
+    GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params,
+    const std::vector<int>& required_gpu_ids,
+    std::string record_folder, std::string encoder_basic_setup)
 {
     std::cout << "start camera sthread..." << std::endl;
     const HeadlessEncoderSettings encoder_settings = parse_headless_encoder_setup(encoder_basic_setup);
@@ -731,7 +867,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
     std::vector<int> selected_indices;
     try {
-        selected_indices = resolve_selected_camera_indices(cameras_params, num_cameras, encoder_settings);
+        selected_indices = resolve_selected_camera_indices(
+            cameras_params,
+            num_cameras,
+            encoder_settings,
+            required_gpu_ids);
         if (selected_indices.empty()) {
             throw std::runtime_error("No cameras selected for headless run.");
         }
@@ -777,6 +917,11 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         return false;
     }
 
+    start_headless_gpu_dmon_monitor(
+        gpu_dmon_monitor,
+        record_folder,
+        collect_unique_gpu_ids(cameras_params, selected_indices));
+
     size_t max_frame_size_bytes = 0;
     for (int idx : selected_indices) {
         const size_t current_size =
@@ -820,6 +965,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
         drain_and_shutdown_recording(recording_pipelines, camera_control);
+        stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
         camera_resources.clear();
         return false;
@@ -893,6 +1039,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    HeadlessGpuDmonMonitor gpu_dmon_monitor;
     CameraEachSelect *cameras_select = nullptr;
     CameraControl *camera_control = new CameraControl;
 
@@ -917,7 +1064,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 }
                 break;
             case FetchGame::ManagerState_STARTCAMTHREAD:
-                if (start_camera_thread(camera_threads, camera_resources, active_camera_indices, recording_pipelines, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, recording_setup->record_folder, recording_setup->encoder_basic_setup))
+                if (start_camera_thread(camera_threads, camera_resources, active_camera_indices, recording_pipelines, &gpu_dmon_monitor, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, {}, recording_setup->record_folder, recording_setup->encoder_basic_setup))
                 {
                     manager_context->state = FetchGame::ManagerState_THREADREADY;
                 } else {
@@ -931,6 +1078,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         camera_resources,
                         active_camera_indices,
                         recording_pipelines,
+                        &gpu_dmon_monitor,
                         ecams,
                         cameras_params,
                         *cam_count,
@@ -955,6 +1103,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 camera_resources,
                 active_camera_indices,
                 recording_pipelines,
+                &gpu_dmon_monitor,
                 ecams,
                 cameras_params,
                 *cam_count,
@@ -980,7 +1129,9 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
     if (options.mode == HeadlessMode::Remote) {
         if (!options.record_folder.empty() || !options.config_folder.empty() ||
             options.list_cameras || !options.experiment_spec_path.empty() ||
-            options.duration_seconds > 0 || !options.encoder_settings.select_all_cameras ||
+            options.duration_seconds > 0 || !options.required_gpu_ids.empty() ||
+            !headless_encoder_settings_is_default(options.encoder_settings) ||
+            !options.encoder_settings.select_all_cameras ||
             !options.encoder_settings.camera_serials.empty()) {
             if (error_out) {
                 *error_out =
@@ -993,11 +1144,21 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
     }
 
     if (!options.experiment_spec_path.empty()) {
-        if (error_out) {
-            *error_out =
-                "--experiment-spec is not implemented yet. Use direct local flags for now.";
+        if (options.list_cameras ||
+            !options.record_folder.empty() ||
+            options.duration_seconds > 0 ||
+            !options.required_gpu_ids.empty() ||
+            !headless_encoder_settings_is_default(options.encoder_settings)) {
+            if (error_out) {
+                *error_out =
+                    "When --experiment-spec is provided, per-run flags like "
+                    "--list-cameras, --record-folder, --camera, --codec, --preset, --tuning, "
+                    "--rate-control, --quality, --gop, --duration, and --gpu-id "
+                    "must be omitted. Use the spec file instead.";
+            }
+            return false;
         }
-        return false;
+        return true;
     }
 
     if (!options.list_cameras && options.record_folder.empty()) {
@@ -1010,7 +1171,785 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
     return true;
 }
 
-int run_local_mode(const HeadlessCliOptions& options)
+bool read_json_file(const std::filesystem::path& path, nlohmann::json* json_out, std::string* error_out)
+{
+    if (!json_out) {
+        if (error_out) {
+            *error_out = "Internal error: null JSON destination";
+        }
+        return false;
+    }
+
+    std::ifstream input(path);
+    if (!input) {
+        if (error_out) {
+            *error_out = "Failed to open " + path.string();
+        }
+        return false;
+    }
+
+    try {
+        input >> *json_out;
+    } catch (const std::exception& ex) {
+        if (error_out) {
+            *error_out = "Failed to parse " + path.string() + ": " + ex.what();
+        }
+        return false;
+    }
+    return true;
+}
+
+bool write_json_file(const std::filesystem::path& path, const nlohmann::json& value, std::string* error_out)
+{
+    std::error_code create_error;
+    std::filesystem::create_directories(path.parent_path(), create_error);
+    if (create_error && !std::filesystem::exists(path.parent_path())) {
+        if (error_out) {
+            *error_out = "Failed to create parent directory for " + path.string() + ": " + create_error.message();
+        }
+        return false;
+    }
+
+    std::ofstream output(path);
+    if (!output) {
+        if (error_out) {
+            *error_out = "Failed to open " + path.string() + " for writing";
+        }
+        return false;
+    }
+    output << value.dump(2) << "\n";
+    return true;
+}
+
+std::vector<std::string> parse_string_list_field(const nlohmann::json& node,
+                                                 const char* key,
+                                                 bool* found = nullptr)
+{
+    if (found) {
+        *found = false;
+    }
+    std::vector<std::string> values;
+    if (!node.is_object() || !node.contains(key)) {
+        return values;
+    }
+    if (found) {
+        *found = true;
+    }
+    const nlohmann::json& field = node.at(key);
+    if (field.is_string()) {
+        values.push_back(field.get<std::string>());
+        return values;
+    }
+    if (field.is_array()) {
+        for (const auto& item : field) {
+            if (item.is_string()) {
+                values.push_back(item.get<std::string>());
+            }
+        }
+    }
+    return values;
+}
+
+std::vector<int> parse_int_list_field(const nlohmann::json& node,
+                                      const char* key,
+                                      bool* found = nullptr)
+{
+    if (found) {
+        *found = false;
+    }
+    std::vector<int> values;
+    if (!node.is_object() || !node.contains(key)) {
+        return values;
+    }
+    if (found) {
+        *found = true;
+    }
+    const nlohmann::json& field = node.at(key);
+    if (field.is_number_integer()) {
+        values.push_back(field.get<int>());
+        return values;
+    }
+    if (field.is_array()) {
+        for (const auto& item : field) {
+            if (item.is_number_integer()) {
+                values.push_back(item.get<int>());
+            }
+        }
+    }
+    return values;
+}
+
+std::vector<std::string> split_csv_line_simple(const std::string& line)
+{
+    std::vector<std::string> cells;
+    std::stringstream stream(line);
+    std::string cell;
+    while (std::getline(stream, cell, ',')) {
+        cells.push_back(cell);
+    }
+    return cells;
+}
+
+std::string sanitize_run_component(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size());
+    for (char ch : value) {
+        if (std::isalnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '_') {
+            out.push_back(ch);
+        } else {
+            out.push_back('_');
+        }
+    }
+    while (!out.empty() && out.back() == '_') {
+        out.pop_back();
+    }
+    if (out.empty()) {
+        out = "value";
+    }
+    return out;
+}
+
+namespace {
+
+std::string join_ints_csv(const std::vector<int>& values)
+{
+    std::ostringstream out;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (i != 0) {
+            out << ",";
+        }
+        out << values[i];
+    }
+    return out.str();
+}
+
+std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
+                                        const std::vector<int>& selected_indices)
+{
+    std::vector<int> gpu_ids;
+    std::unordered_set<int> seen;
+    for (int idx : selected_indices) {
+        if (!cameras_params) {
+            continue;
+        }
+        const int gpu_id = cameras_params[idx].gpu_id;
+        if (seen.insert(gpu_id).second) {
+            gpu_ids.push_back(gpu_id);
+        }
+    }
+    std::sort(gpu_ids.begin(), gpu_ids.end());
+    return gpu_ids;
+}
+
+nlohmann::json build_headless_gpu_dmon_snapshot_json(const HeadlessGpuDmonMonitor& monitor)
+{
+    nlohmann::json info;
+    info["schema_version"] = 1;
+    info["tool"] = "nvidia-smi dmon";
+    info["status"] = monitor.status;
+    info["sample_period_seconds"] = monitor.sample_period_seconds;
+    info["gpu_ids"] = monitor.gpu_ids;
+    info["artifact_path"] = monitor.artifact_path;
+    info["stderr_path"] = monitor.stderr_path;
+    if (!monitor.started_at_utc.empty()) {
+        info["started_at_utc"] = monitor.started_at_utc;
+    }
+    if (!monitor.stopped_at_utc.empty()) {
+        info["stopped_at_utc"] = monitor.stopped_at_utc;
+    }
+    if (monitor.pid > 0 && monitor.active) {
+        info["pid"] = static_cast<int>(monitor.pid);
+    }
+    if (monitor.exit_code >= 0) {
+        info["exit_code"] = monitor.exit_code;
+    }
+    if (monitor.term_signal > 0) {
+        info["signal"] = monitor.term_signal;
+    }
+    if (!monitor.error.empty()) {
+        info["error"] = monitor.error;
+    }
+
+    info["command"] = nlohmann::json::array({
+        "nvidia-smi",
+        "dmon",
+        "-i",
+        join_ints_csv(monitor.gpu_ids),
+        "-s",
+        "putcm",
+        "-d",
+        std::to_string(monitor.sample_period_seconds),
+        "-o",
+        "DT",
+        "--format",
+        "csv,nounit"
+    });
+    return info;
+}
+
+void update_headless_gpu_dmon_snapshot(const HeadlessGpuDmonMonitor& monitor)
+{
+    if (monitor.recording_folder.empty()) {
+        return;
+    }
+    if (!update_recording_snapshot_gpu_monitoring(
+            monitor.recording_folder,
+            "nvidia_smi_dmon",
+            build_headless_gpu_dmon_snapshot_json(monitor))) {
+        std::cerr << "Failed to update recording snapshot with nvidia-smi dmon metadata for "
+                  << monitor.recording_folder << std::endl;
+    }
+}
+
+void stop_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor)
+{
+    if (!monitor) {
+        return;
+    }
+
+    if (!monitor->active || monitor->pid <= 0) {
+        if (monitor->status != "not_started") {
+            monitor->stopped_at_utc = get_current_utc_timestamp();
+            update_headless_gpu_dmon_snapshot(*monitor);
+        }
+        return;
+    }
+
+    kill(monitor->pid, SIGTERM);
+
+    int wait_status = 0;
+    int waited_ms = 0;
+    while (waited_ms < kGpuDmonShutdownWaitMs) {
+        const pid_t wait_result = waitpid(monitor->pid, &wait_status, WNOHANG);
+        if (wait_result == monitor->pid) {
+            break;
+        }
+        if (wait_result < 0) {
+            monitor->error = "waitpid failed while stopping nvidia-smi dmon";
+            wait_status = 0;
+            break;
+        }
+        usleep(10000);
+        waited_ms += 10;
+    }
+
+    if (waited_ms >= kGpuDmonShutdownWaitMs) {
+        kill(monitor->pid, SIGKILL);
+        if (waitpid(monitor->pid, &wait_status, 0) < 0) {
+            monitor->error = "waitpid failed after SIGKILL while stopping nvidia-smi dmon";
+        }
+    }
+
+    monitor->active = false;
+    monitor->stopped_at_utc = get_current_utc_timestamp();
+    if (WIFEXITED(wait_status)) {
+        monitor->exit_code = WEXITSTATUS(wait_status);
+        monitor->status = (monitor->exit_code == 0) ? "completed" : "exited_with_error";
+    } else if (WIFSIGNALED(wait_status)) {
+        monitor->term_signal = WTERMSIG(wait_status);
+        monitor->status = (monitor->term_signal == SIGKILL) ? "killed" : "stopped_with_signal";
+    } else if (monitor->status == "running") {
+        monitor->status = "stopped";
+    }
+    update_headless_gpu_dmon_snapshot(*monitor);
+}
+
+void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
+                                     const std::string& recording_folder,
+                                     const std::vector<int>& gpu_ids)
+{
+    if (!monitor) {
+        return;
+    }
+
+    monitor->recording_folder = recording_folder;
+    monitor->gpu_ids = gpu_ids;
+    monitor->artifact_path = (std::filesystem::path(recording_folder) / "nvidia_smi_dmon.csv").string();
+    monitor->stderr_path = (std::filesystem::path(recording_folder) / "nvidia_smi_dmon.stderr.log").string();
+    monitor->sample_period_seconds = 1;
+    monitor->started_at_utc = get_current_utc_timestamp();
+    monitor->stopped_at_utc.clear();
+    monitor->exit_code = -1;
+    monitor->term_signal = 0;
+    monitor->error.clear();
+    monitor->status = "not_started";
+    monitor->active = false;
+    monitor->pid = -1;
+
+    if (recording_folder.empty()) {
+        monitor->status = "failed_to_start";
+        monitor->error = "recording folder is empty";
+        update_headless_gpu_dmon_snapshot(*monitor);
+        return;
+    }
+    if (gpu_ids.empty()) {
+        monitor->status = "failed_to_start";
+        monitor->error = "no gpu ids resolved for dmon monitoring";
+        update_headless_gpu_dmon_snapshot(*monitor);
+        return;
+    }
+
+    const int stdout_fd = ::open(monitor->artifact_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (stdout_fd < 0) {
+        monitor->status = "failed_to_start";
+        monitor->error = "failed to open dmon artifact for writing";
+        update_headless_gpu_dmon_snapshot(*monitor);
+        return;
+    }
+    const int stderr_fd = ::open(monitor->stderr_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (stderr_fd < 0) {
+        ::close(stdout_fd);
+        monitor->status = "failed_to_start";
+        monitor->error = "failed to open dmon stderr log for writing";
+        update_headless_gpu_dmon_snapshot(*monitor);
+        return;
+    }
+
+    const pid_t pid = fork();
+    if (pid < 0) {
+        ::close(stdout_fd);
+        ::close(stderr_fd);
+        monitor->status = "failed_to_start";
+        monitor->error = "fork failed for nvidia-smi dmon";
+        update_headless_gpu_dmon_snapshot(*monitor);
+        return;
+    }
+
+    if (pid == 0) {
+        dup2(stdout_fd, STDOUT_FILENO);
+        dup2(stderr_fd, STDERR_FILENO);
+        ::close(stdout_fd);
+        ::close(stderr_fd);
+
+        const std::string gpu_ids_arg = join_ints_csv(gpu_ids);
+        const std::string sample_arg = std::to_string(monitor->sample_period_seconds);
+        execlp("nvidia-smi",
+               "nvidia-smi",
+               "dmon",
+               "-i", gpu_ids_arg.c_str(),
+               "-s", "putcm",
+               "-d", sample_arg.c_str(),
+               "-o", "DT",
+               "--format", "csv,nounit",
+               static_cast<char*>(nullptr));
+        std::fprintf(stderr, "Failed to exec nvidia-smi dmon: %s\n", std::strerror(errno));
+        _exit(127);
+    }
+
+    ::close(stdout_fd);
+    ::close(stderr_fd);
+
+    monitor->pid = pid;
+    monitor->active = true;
+    monitor->status = "running";
+    update_headless_gpu_dmon_snapshot(*monitor);
+
+    usleep(kGpuDmonStartupPollMs * 1000);
+    int wait_status = 0;
+    const pid_t wait_result = waitpid(pid, &wait_status, WNOHANG);
+    if (wait_result == pid) {
+        monitor->active = false;
+        monitor->stopped_at_utc = get_current_utc_timestamp();
+        if (WIFEXITED(wait_status)) {
+            monitor->exit_code = WEXITSTATUS(wait_status);
+            monitor->status = "failed_to_start";
+        } else if (WIFSIGNALED(wait_status)) {
+            monitor->term_signal = WTERMSIG(wait_status);
+            monitor->status = "failed_to_start";
+        } else {
+            monitor->status = "failed_to_start";
+        }
+        monitor->error = "nvidia-smi dmon exited immediately after launch";
+        update_headless_gpu_dmon_snapshot(*monitor);
+    } else if (wait_result < 0) {
+        monitor->active = false;
+        monitor->stopped_at_utc = get_current_utc_timestamp();
+        monitor->status = "failed_to_start";
+        monitor->error = "waitpid failed while polling nvidia-smi dmon startup";
+        update_headless_gpu_dmon_snapshot(*monitor);
+    }
+}
+
+} // namespace
+
+double compute_percentile(std::vector<double> values, double percentile)
+{
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    if (values.size() == 1) {
+        return values.front();
+    }
+    const double clamped = std::min(100.0, std::max(0.0, percentile));
+    const double rank = (clamped / 100.0) * static_cast<double>(values.size() - 1);
+    const std::size_t lower = static_cast<std::size_t>(rank);
+    const std::size_t upper = std::min(values.size() - 1, lower + 1);
+    const double fraction = rank - static_cast<double>(lower);
+    return values[lower] * (1.0 - fraction) + values[upper] * fraction;
+}
+
+double compute_csv_field_p95(const std::filesystem::path& csv_path, const std::string& field_name)
+{
+    std::ifstream input(csv_path);
+    if (!input) {
+        return 0.0;
+    }
+
+    std::string header_line;
+    if (!std::getline(input, header_line)) {
+        return 0.0;
+    }
+
+    std::vector<std::string> headers;
+    {
+        std::stringstream header_stream(header_line);
+        std::string cell;
+        while (std::getline(header_stream, cell, ',')) {
+            headers.push_back(cell);
+        }
+    }
+
+    int field_index = -1;
+    for (std::size_t i = 0; i < headers.size(); ++i) {
+        if (headers[i] == field_name) {
+            field_index = static_cast<int>(i);
+            break;
+        }
+    }
+    if (field_index < 0) {
+        return 0.0;
+    }
+
+    std::vector<double> values;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        std::stringstream line_stream(line);
+        std::string cell;
+        int index = 0;
+        while (std::getline(line_stream, cell, ',')) {
+            if (index == field_index) {
+                try {
+                    values.push_back(std::stod(cell));
+                } catch (...) {
+                }
+                break;
+            }
+            ++index;
+        }
+    }
+    return compute_percentile(values, 95.0);
+}
+
+ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& csv_path, int warmup_rows)
+{
+    ExperimentCsvWindowStats stats;
+    std::ifstream input(csv_path);
+    if (!input) {
+        stats.error = "Failed to open " + csv_path.string();
+        return stats;
+    }
+
+    std::string header_line;
+    if (!std::getline(input, header_line)) {
+        stats.error = "Missing CSV header in " + csv_path.string();
+        return stats;
+    }
+
+    const std::vector<std::string> headers = split_csv_line_simple(header_line);
+    std::unordered_map<std::string, int> header_index;
+    for (std::size_t i = 0; i < headers.size(); ++i) {
+        header_index.emplace(headers[i], static_cast<int>(i));
+    }
+
+    auto required_index = [&](const char* field_name) -> int {
+        auto it = header_index.find(field_name);
+        return it == header_index.end() ? -1 : it->second;
+    };
+
+    const int enc_fps_index = required_index("enc_fps");
+    const int acq_starve_index = required_index("acq_starve");
+    const int pre_drops_index = required_index("pre_drops");
+    const int enc_fail_index = required_index("enc_fail");
+    if (enc_fps_index < 0 || acq_starve_index < 0 || pre_drops_index < 0 || enc_fail_index < 0) {
+        stats.error = "CSV is missing one or more required fields in " + csv_path.string();
+        return stats;
+    }
+
+    auto parse_double_cell = [](const std::vector<std::string>& cells, int index, double* out) -> bool {
+        if (!out || index < 0 || index >= static_cast<int>(cells.size())) {
+            return false;
+        }
+        try {
+            *out = std::stod(cells[static_cast<std::size_t>(index)]);
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    auto parse_u64_cell = [](const std::vector<std::string>& cells, int index, uint64_t* out) -> bool {
+        if (!out || index < 0 || index >= static_cast<int>(cells.size())) {
+            return false;
+        }
+        try {
+            *out = static_cast<uint64_t>(std::stoull(cells[static_cast<std::size_t>(index)]));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    std::vector<double> enc_fps_values;
+    uint64_t baseline_acq_starve = 0;
+    uint64_t baseline_pre_drops = 0;
+    uint64_t baseline_enc_fail = 0;
+    uint64_t last_acq_starve = 0;
+    uint64_t last_pre_drops = 0;
+    uint64_t last_enc_fail = 0;
+
+    std::string line;
+    std::size_t row_index = 0;
+    const std::size_t warmup_row_count = static_cast<std::size_t>(std::max(0, warmup_rows));
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+
+        const std::vector<std::string> cells = split_csv_line_simple(line);
+        double enc_fps = 0.0;
+        uint64_t acq_starve = 0;
+        uint64_t pre_drops = 0;
+        uint64_t enc_fail = 0;
+        if (!parse_double_cell(cells, enc_fps_index, &enc_fps) ||
+            !parse_u64_cell(cells, acq_starve_index, &acq_starve) ||
+            !parse_u64_cell(cells, pre_drops_index, &pre_drops) ||
+            !parse_u64_cell(cells, enc_fail_index, &enc_fail)) {
+            continue;
+        }
+
+        ++stats.total_rows;
+        last_acq_starve = acq_starve;
+        last_pre_drops = pre_drops;
+        last_enc_fail = enc_fail;
+
+        if (row_index < warmup_row_count) {
+            baseline_acq_starve = acq_starve;
+            baseline_pre_drops = pre_drops;
+            baseline_enc_fail = enc_fail;
+        } else {
+            enc_fps_values.push_back(enc_fps);
+            ++stats.included_rows;
+        }
+        ++row_index;
+    }
+
+    if (stats.included_rows == 0) {
+        stats.error = "No post-warmup samples found in " + csv_path.string();
+        return stats;
+    }
+
+    const double enc_fps_sum =
+        std::accumulate(enc_fps_values.begin(), enc_fps_values.end(), 0.0);
+    stats.enc_fps_mean = enc_fps_sum / static_cast<double>(enc_fps_values.size());
+    stats.enc_fps_p95 = compute_percentile(enc_fps_values, 95.0);
+    stats.acq_starve_delta =
+        (last_acq_starve >= baseline_acq_starve) ? (last_acq_starve - baseline_acq_starve) : last_acq_starve;
+    stats.pre_drops_delta =
+        (last_pre_drops >= baseline_pre_drops) ? (last_pre_drops - baseline_pre_drops) : last_pre_drops;
+    stats.enc_fail_delta =
+        (last_enc_fail >= baseline_enc_fail) ? (last_enc_fail - baseline_enc_fail) : last_enc_fail;
+    stats.ok = true;
+    return stats;
+}
+
+bool load_experiment_spec(const HeadlessCliOptions& cli_options,
+                          ExperimentSpec* spec,
+                          std::string* error_out)
+{
+    if (!spec) {
+        if (error_out) {
+            *error_out = "Internal error: null experiment spec destination";
+        }
+        return false;
+    }
+
+    nlohmann::json root;
+    if (!read_json_file(cli_options.experiment_spec_path, &root, error_out)) {
+        return false;
+    }
+    if (!root.is_object()) {
+        if (error_out) {
+            *error_out = "Experiment spec root must be a JSON object";
+        }
+        return false;
+    }
+
+    spec->source_path = cli_options.experiment_spec_path;
+    spec->source_json = root;
+    spec->experiment_id = root.value("experiment_id", "");
+    spec->notes = root.value("notes", "");
+    if (spec->experiment_id.empty()) {
+        if (error_out) {
+            *error_out = "Experiment spec requires a non-empty experiment_id";
+        }
+        return false;
+    }
+
+    const nlohmann::json selection = root.value("selection", nlohmann::json::object());
+    const nlohmann::json fixed = root.value("fixed", nlohmann::json::object());
+    const nlohmann::json matrix = root.value("matrix", nlohmann::json::object());
+    const nlohmann::json policy = root.value("policy", nlohmann::json::object());
+
+    bool found_camera_serials = false;
+    const std::vector<std::string> camera_serials =
+        parse_string_list_field(selection, "camera_serials", &found_camera_serials);
+    if (found_camera_serials) {
+        spec->selection.select_all_cameras = false;
+        spec->selection.camera_serials.clear();
+        for (const std::string& serial : camera_serials) {
+            append_camera_selection(&spec->selection, serial);
+        }
+    }
+
+    spec->gpu_ids = parse_int_list_field(selection, "gpu_ids");
+    spec->output_root = fixed.value("output_root", "");
+    spec->config_folder = cli_options.config_folder.empty()
+        ? fixed.value("config_folder", "")
+        : cli_options.config_folder;
+    spec->duration_s = fixed.value("duration_s", 0);
+    spec->warmup_s = fixed.value("warmup_s", 0);
+    if (spec->output_root.empty()) {
+        if (error_out) {
+            *error_out = "Experiment spec requires fixed.output_root";
+        }
+        return false;
+    }
+    if (spec->duration_s <= 0) {
+        if (error_out) {
+            *error_out = "Experiment spec requires fixed.duration_s > 0";
+        }
+        return false;
+    }
+    if (spec->warmup_s < 0) {
+        if (error_out) {
+            *error_out = "Experiment spec fixed.warmup_s must be >= 0";
+        }
+        return false;
+    }
+
+    if (fixed.contains("display") && fixed["display"].is_boolean() && fixed["display"].get<bool>()) {
+        if (error_out) {
+            *error_out = "Local experiment runner only supports display=false for now";
+        }
+        return false;
+    }
+    if (fixed.contains("yolo") && fixed["yolo"].is_boolean() && fixed["yolo"].get<bool>()) {
+        if (error_out) {
+            *error_out = "Local experiment runner only supports yolo=false for now";
+        }
+        return false;
+    }
+    const std::string sync_mode = fixed.value("sync_mode", "free_run");
+    if (sync_mode != "free_run") {
+        if (error_out) {
+            *error_out = "Local experiment runner currently only supports fixed.sync_mode=free_run";
+        }
+        return false;
+    }
+
+    spec->target_fps_tolerance_pct = policy.value("target_fps_tolerance_pct", 1.0);
+    spec->require_zero_acq_starve = policy.value("require_zero_acq_starve", true);
+    spec->require_zero_pre_drops = policy.value("require_zero_pre_drops", true);
+    spec->require_zero_enc_fail = policy.value("require_zero_enc_fail", true);
+
+    spec->codecs = parse_string_list_field(matrix, "codec");
+    spec->presets = parse_string_list_field(matrix, "preset");
+    spec->tunings = parse_string_list_field(matrix, "tuning");
+    spec->rate_control_modes = parse_string_list_field(matrix, "rate_control_mode");
+    spec->quality_values = parse_int_list_field(matrix, "quality_value");
+    spec->gop_lengths = parse_int_list_field(matrix, "gop_length");
+
+    if (spec->codecs.empty()) spec->codecs.push_back("h264");
+    if (spec->presets.empty()) spec->presets.push_back("p1");
+    if (spec->tunings.empty()) spec->tunings.push_back("ll");
+    if (spec->rate_control_modes.empty()) spec->rate_control_modes.push_back("vbr");
+    if (spec->quality_values.empty()) spec->quality_values.push_back(20);
+    if (spec->gop_lengths.empty()) spec->gop_lengths.push_back(0);
+
+    return true;
+}
+
+std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& spec)
+{
+    std::vector<ExperimentRunPlan> runs;
+    const std::filesystem::path experiment_root =
+        std::filesystem::path(spec.output_root) / spec.experiment_id;
+
+    int run_index = 0;
+    for (const std::string& codec : spec.codecs) {
+        for (const std::string& preset : spec.presets) {
+            for (const std::string& tuning : spec.tunings) {
+                for (const std::string& rc_mode : spec.rate_control_modes) {
+                    for (int quality_value : spec.quality_values) {
+                        for (int gop_length : spec.gop_lengths) {
+                            ++run_index;
+                            ExperimentRunPlan run;
+                            run.run_index = run_index;
+                            std::ostringstream run_id;
+                            run_id << "run_" << std::setw(4) << std::setfill('0') << run_index
+                                   << "__codec_" << sanitize_run_component(codec)
+                                   << "__preset_" << sanitize_run_component(preset)
+                                   << "__tuning_" << sanitize_run_component(tuning)
+                                   << "__rc_" << sanitize_run_component(rc_mode)
+                                   << "__q_" << quality_value
+                                   << "__gop_" << gop_length;
+                            run.run_id = run_id.str();
+                            run.recording_folder = (experiment_root / run.run_id).string();
+                            run.duration_s = spec.duration_s;
+                            run.warmup_s = spec.warmup_s;
+                            run.options.mode = HeadlessMode::Local;
+                            run.options.config_folder = spec.config_folder;
+                            run.options.record_folder = run.recording_folder;
+                            run.options.duration_seconds = spec.duration_s + spec.warmup_s;
+                            run.options.required_gpu_ids = spec.gpu_ids;
+                            run.options.encoder_settings = spec.selection;
+                            run.options.encoder_settings.codec = codec;
+                            run.options.encoder_settings.preset = preset;
+                            run.options.encoder_settings.tuning = tuning;
+                            run.options.encoder_settings.rate_control_mode = rc_mode;
+                            run.options.encoder_settings.quality_value = quality_value;
+                            run.options.encoder_settings.gop_length = gop_length;
+                            run.config_json = {
+                                {"codec", codec},
+                                {"preset", preset},
+                                {"tuning", tuning},
+                                {"rate_control_mode", rc_mode},
+                                {"quality_value", quality_value},
+                                {"gop_length", gop_length},
+                                {"camera_serials", run.options.encoder_settings.select_all_cameras
+                                                       ? nlohmann::json::array({"all"})
+                                                       : nlohmann::json(run.options.encoder_settings.camera_serials)},
+                                {"gpu_ids", spec.gpu_ids},
+                                {"duration_s", spec.duration_s},
+                                {"warmup_s", spec.warmup_s},
+                                {"recording_folder", run.recording_folder},
+                            };
+                            runs.push_back(std::move(run));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return runs;
+}
+
+int run_local_recording_session(const HeadlessCliOptions& options, bool print_inventory)
 {
     GigEVisionDeviceInfo unsorted_device_info[max_cameras];
     const int cam_count = scan_cameras(max_cameras, unsorted_device_info);
@@ -1021,7 +1960,9 @@ int run_local_mode(const HeadlessCliOptions& options)
 
     GigEVisionDeviceInfo device_info[max_cameras];
     sort_cameras_ip(unsorted_device_info, device_info, cam_count);
-    print_available_cameras(device_info, cam_count);
+    if (print_inventory) {
+        print_available_cameras(device_info, cam_count);
+    }
 
     if (options.list_cameras) {
         return 0;
@@ -1042,6 +1983,7 @@ int run_local_mode(const HeadlessCliOptions& options)
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    HeadlessGpuDmonMonitor gpu_dmon_monitor;
 
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool started = start_camera_thread(
@@ -1049,6 +1991,7 @@ int run_local_mode(const HeadlessCliOptions& options)
         camera_resources,
         active_camera_indices,
         recording_pipelines,
+        &gpu_dmon_monitor,
         cameras_params.get(),
         ecams.get(),
         &camera_control,
@@ -1056,6 +1999,7 @@ int run_local_mode(const HeadlessCliOptions& options)
         device_info,
         cam_count,
         &ptp_params,
+        options.required_gpu_ids,
         options.record_folder,
         encoder_setup);
 
@@ -1082,6 +2026,7 @@ int run_local_mode(const HeadlessCliOptions& options)
         camera_resources,
         active_camera_indices,
         recording_pipelines,
+        &gpu_dmon_monitor,
         ecams.get(),
         cameras_params.get(),
         cam_count,
@@ -1090,6 +2035,394 @@ int run_local_mode(const HeadlessCliOptions& options)
         false);
 
     return 0;
+}
+
+nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
+                                             const ExperimentRunPlan& run,
+                                             const nlohmann::json& snapshot,
+                                             const std::string& camera_serial)
+{
+    nlohmann::json row = nlohmann::json::object();
+    row["experiment_id"] = spec.experiment_id;
+    row["run_id"] = run.run_id;
+    row["camera_serial"] = camera_serial;
+    row["codec"] = run.options.encoder_settings.codec;
+    row["preset"] = run.options.encoder_settings.preset;
+    row["tuning"] = run.options.encoder_settings.tuning;
+    row["rate_control_mode"] = run.options.encoder_settings.rate_control_mode;
+    row["quality_value"] = run.options.encoder_settings.quality_value;
+    row["gop_length"] = run.options.encoder_settings.gop_length;
+    row["duration_s"] = run.duration_s;
+    row["warmup_s"] = run.warmup_s;
+    row["display"] = false;
+    row["yolo"] = false;
+    row["recording_folder"] = run.recording_folder;
+    row["status"] = "completed";
+    row["pass_fail"] = "marginal";
+    row["reason"] = "not_evaluated";
+    row["gpu_id"] = -1;
+    row["gpu_name"] = "";
+    row["gpu_pci_bus_id"] = "";
+    row["enc_fps_mean"] = 0.0;
+    row["enc_fps_p95"] = 0.0;
+    row["acq_starve_final"] = 0;
+    row["pre_drops_final"] = 0;
+    row["enc_fail_final"] = 0;
+    row["dropped_frames_camera"] = -1;
+
+    const nlohmann::json pipeline_info = snapshot.value("pipeline_metrics", nlohmann::json::object())
+                                          .value(camera_serial, nlohmann::json::object());
+    const nlohmann::json encoder_info = snapshot.value("encoders", nlohmann::json::object())
+                                          .value(camera_serial, nlohmann::json::object());
+    const nlohmann::json ptp_summary = [&]() {
+        nlohmann::json out = nlohmann::json::object();
+        std::string error;
+        read_json_file(std::filesystem::path(run.recording_folder) / "ptp_sync_summary.json", &out, &error);
+        return out;
+    }();
+
+    if (!pipeline_info.is_object()) {
+        row["status"] = "failed";
+        row["pass_fail"] = "fail";
+        row["reason"] = "missing pipeline summary";
+        return row;
+    }
+
+    row["gpu_id"] = pipeline_info.value("gpu_id", row["gpu_id"]);
+    const nlohmann::json gpu = pipeline_info.value("gpu", nlohmann::json::object());
+    if (gpu.is_object()) {
+        row["gpu_name"] = gpu.value("name", "");
+        row["gpu_pci_bus_id"] = gpu.value("pci_bus_id", "");
+    }
+
+    const std::string artifact_path = pipeline_info.value("artifact_path", "");
+    if (artifact_path.empty()) {
+        row["status"] = "failed";
+        row["pass_fail"] = "fail";
+        row["reason"] = "missing pipeline perf artifact";
+        return row;
+    }
+
+    const ExperimentCsvWindowStats csv_stats = compute_csv_window_stats(artifact_path, run.warmup_s);
+    if (!csv_stats.ok) {
+        row["status"] = "failed";
+        row["pass_fail"] = "fail";
+        row["reason"] = csv_stats.error;
+        return row;
+    }
+
+    row["enc_fps_mean"] = csv_stats.enc_fps_mean;
+    row["enc_fps_p95"] = csv_stats.enc_fps_p95;
+    row["acq_starve_final"] = csv_stats.acq_starve_delta;
+    row["pre_drops_final"] = csv_stats.pre_drops_delta;
+    row["enc_fail_final"] = csv_stats.enc_fail_delta;
+
+    if (encoder_info.is_object()) {
+        if (row["gpu_id"].get<int>() < 0) {
+            row["gpu_id"] = encoder_info.value("gpu_id", -1);
+        }
+        if (row["gpu_name"].get<std::string>().empty()) {
+            const nlohmann::json gpu = encoder_info.value("gpu", nlohmann::json::object());
+            if (gpu.is_object()) {
+                row["gpu_name"] = gpu.value("name", "");
+                row["gpu_pci_bus_id"] = gpu.value("pci_bus_id", "");
+            }
+        }
+        const double target_fps = static_cast<double>(encoder_info.value("fps", 0));
+        const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
+        const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
+        const uint64_t enc_fail = row["enc_fail_final"].get<uint64_t>();
+        const double enc_fps_mean = row["enc_fps_mean"].get<double>();
+        const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
+        const bool fps_ok = (target_fps <= 0.0) || (enc_fps_mean + tolerance >= target_fps);
+
+        if ((spec.require_zero_acq_starve && acq_starve > 0) ||
+            (spec.require_zero_pre_drops && pre_drops > 0) ||
+            (spec.require_zero_enc_fail && enc_fail > 0)) {
+            row["pass_fail"] = "fail";
+            if (spec.require_zero_acq_starve && acq_starve > 0) {
+                row["reason"] = "nonzero acquisition starvation";
+            } else if (spec.require_zero_pre_drops && pre_drops > 0) {
+                row["reason"] = "nonzero preprocess drops";
+            } else {
+                row["reason"] = "nonzero encode failures";
+            }
+        } else if (!fps_ok) {
+            row["pass_fail"] = "marginal";
+            row["reason"] = "encode fps below target tolerance";
+        } else {
+            row["pass_fail"] = "pass";
+            row["reason"] = "meets current policy";
+        }
+    } else {
+        row["status"] = "failed";
+        row["pass_fail"] = "fail";
+        row["reason"] = "missing encoder snapshot";
+    }
+
+    if (ptp_summary.is_object()) {
+        const nlohmann::json cameras = ptp_summary.value("cameras", nlohmann::json::object());
+        if (cameras.is_object()) {
+            const nlohmann::json camera_summary = cameras.value(camera_serial, nlohmann::json::object());
+            if (camera_summary.is_object()) {
+                row["dropped_frames_camera"] = camera_summary.value("dropped_frames", -1LL);
+            }
+        }
+    }
+
+    return row;
+}
+
+bool write_experiment_manifests(const ExperimentSpec& spec,
+                                const std::filesystem::path& experiment_root,
+                                const nlohmann::json& runs_json,
+                                const nlohmann::json& summary_json,
+                                std::string* error_out)
+{
+    if (!write_json_file(experiment_root / "runs.json", runs_json, error_out)) {
+        return false;
+    }
+    if (!write_json_file(experiment_root / "summary.json", summary_json, error_out)) {
+        return false;
+    }
+
+    std::ofstream csv(experiment_root / "runs.csv");
+    if (!csv) {
+        if (error_out) {
+            *error_out = "Failed to open runs.csv for writing";
+        }
+        return false;
+    }
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_starve_final,pre_drops_final,enc_fail_final,dropped_frames_camera\n";
+    for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
+        const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
+        for (const auto& row : cameras) {
+            csv << row.value("experiment_id", "") << ","
+                << row.value("run_id", "") << ","
+                << row.value("camera_serial", "") << ","
+                << row.value("gpu_id", -1) << ","
+                << "\"" << row.value("gpu_name", "") << "\","
+                << "\"" << row.value("gpu_pci_bus_id", "") << "\","
+                << row.value("codec", "") << ","
+                << row.value("preset", "") << ","
+                << row.value("tuning", "") << ","
+                << row.value("rate_control_mode", "") << ","
+                << row.value("quality_value", 0) << ","
+                << row.value("gop_length", 0) << ","
+                << row.value("duration_s", 0) << ","
+                << row.value("warmup_s", 0) << ","
+                << (row.value("display", false) ? "true" : "false") << ","
+                << (row.value("yolo", false) ? "true" : "false") << ","
+                << "\"" << row.value("recording_folder", "") << "\","
+                << row.value("status", "") << ","
+                << row.value("pass_fail", "") << ","
+                << "\"" << row.value("reason", "") << "\","
+                << row.value("enc_fps_mean", 0.0) << ","
+                << row.value("enc_fps_p95", 0.0) << ","
+                << row.value("acq_starve_final", 0ULL) << ","
+                << row.value("pre_drops_final", 0ULL) << ","
+                << row.value("enc_fail_final", 0ULL) << ","
+                << row.value("dropped_frames_camera", -1) << "\n";
+        }
+    }
+    return true;
+}
+
+int run_local_experiment(const HeadlessCliOptions& options)
+{
+    ExperimentSpec spec;
+    std::string error;
+    if (!load_experiment_spec(options, &spec, &error)) {
+        std::cerr << error << std::endl;
+        return 2;
+    }
+
+    const std::filesystem::path experiment_root =
+        std::filesystem::path(spec.output_root) / spec.experiment_id;
+    std::error_code create_error;
+    std::filesystem::create_directories(experiment_root, create_error);
+    if (create_error && !std::filesystem::exists(experiment_root)) {
+        std::cerr << "Failed to create experiment root " << experiment_root
+                  << ": " << create_error.message() << std::endl;
+        return 1;
+    }
+
+    if (!write_json_file(experiment_root / "experiment_spec.json", spec.source_json, &error)) {
+        std::cerr << error << std::endl;
+        return 1;
+    }
+
+    const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);
+    if (runs.empty()) {
+        std::cerr << "Experiment spec produced zero runs." << std::endl;
+        return 1;
+    }
+
+    nlohmann::json runs_json = {
+        {"experiment_id", spec.experiment_id},
+        {"notes", spec.notes},
+        {"created_at_utc", get_current_utc_timestamp()},
+        {"runs", nlohmann::json::array()}
+    };
+
+    std::cout << "[EXPERIMENT] " << spec.experiment_id
+              << " runs=" << runs.size()
+              << " output_root=" << experiment_root.string()
+              << std::endl;
+
+    int run_failures = 0;
+    for (const ExperimentRunPlan& run : runs) {
+        if (quit_server) {
+            break;
+        }
+        const std::filesystem::path run_path(run.recording_folder);
+        if (std::filesystem::exists(run_path) && !std::filesystem::is_empty(run_path)) {
+            std::cerr << "[EXPERIMENT] Refusing to reuse non-empty run folder: "
+                      << run.recording_folder << std::endl;
+            return 1;
+        }
+        std::filesystem::create_directories(run_path, create_error);
+        if (create_error && !std::filesystem::exists(run_path)) {
+            std::cerr << "[EXPERIMENT] Failed to create run folder "
+                      << run.recording_folder << ": " << create_error.message() << std::endl;
+            return 1;
+        }
+        if (!write_json_file(run_path / "run_config.json", run.config_json, &error)) {
+            std::cerr << error << std::endl;
+            return 1;
+        }
+
+        std::cout << "[EXPERIMENT] starting " << run.run_id
+                  << " codec=" << run.options.encoder_settings.codec
+                  << " preset=" << run.options.encoder_settings.preset
+                  << " tuning=" << run.options.encoder_settings.tuning
+                  << " rc=" << run.options.encoder_settings.rate_control_mode
+                  << " q=" << run.options.encoder_settings.quality_value
+                  << " gop=" << run.options.encoder_settings.gop_length
+                  << " warmup=" << run.warmup_s
+                  << " duration=" << run.duration_s
+                  << std::endl;
+
+        const std::string started_at_utc = get_current_utc_timestamp();
+        const int rc = run_local_recording_session(run.options, false);
+        bool run_failed = (rc != 0);
+        nlohmann::json run_entry = {
+            {"run_id", run.run_id},
+            {"run_index", run.run_index},
+            {"recording_folder", run.recording_folder},
+            {"config", run.config_json},
+            {"started_at_utc", started_at_utc},
+            {"status", rc == 0 ? "completed" : "failed"},
+            {"camera_results", nlohmann::json::array()}
+        };
+        if (rc != 0) {
+            run_entry["reason"] = "recording session returned nonzero exit code";
+        }
+
+        nlohmann::json snapshot;
+        std::string snapshot_error;
+        const std::filesystem::path snapshot_path =
+            std::filesystem::path(run.recording_folder) / "recording_snapshot.json";
+        if (!read_json_file(snapshot_path, &snapshot, &snapshot_error)) {
+            run_entry["status"] = "failed";
+            if (!run_entry.contains("reason")) {
+                run_entry["reason"] = snapshot_error;
+            }
+            run_failed = true;
+        } else {
+            std::vector<std::string> camera_serials;
+            if (run.options.encoder_settings.select_all_cameras ||
+                run.options.encoder_settings.camera_serials.empty()) {
+                const nlohmann::json pipeline_metrics =
+                    snapshot.value("pipeline_metrics", nlohmann::json::object());
+                if (pipeline_metrics.is_object()) {
+                    for (auto it = pipeline_metrics.begin(); it != pipeline_metrics.end(); ++it) {
+                        camera_serials.push_back(it.key());
+                    }
+                }
+                if (camera_serials.empty()) {
+                    const nlohmann::json encoders =
+                        snapshot.value("encoders", nlohmann::json::object());
+                    if (encoders.is_object()) {
+                        for (auto it = encoders.begin(); it != encoders.end(); ++it) {
+                            camera_serials.push_back(it.key());
+                        }
+                    }
+                }
+            } else {
+                camera_serials = run.options.encoder_settings.camera_serials;
+            }
+            std::sort(camera_serials.begin(), camera_serials.end());
+            camera_serials.erase(std::unique(camera_serials.begin(), camera_serials.end()),
+                                 camera_serials.end());
+
+            if (camera_serials.empty()) {
+                run_entry["status"] = "failed";
+                run_entry["reason"] = "No camera results found in snapshot";
+                run_failed = true;
+            } else {
+                bool any_fail = false;
+                bool any_marginal = false;
+                for (const std::string& camera_serial : camera_serials) {
+                    const nlohmann::json row =
+                        build_experiment_camera_result(spec, run, snapshot, camera_serial);
+                    if (row.value("pass_fail", "") == "fail") {
+                        any_fail = true;
+                    } else if (row.value("pass_fail", "") == "marginal") {
+                        any_marginal = true;
+                    }
+                    run_entry["camera_results"].push_back(row);
+                }
+                run_entry["pass_fail"] = any_fail ? "fail" : (any_marginal ? "marginal" : "pass");
+                run_failed = run_failed || any_fail;
+            }
+        }
+
+        run_entry["finished_at_utc"] = get_current_utc_timestamp();
+        if (run_entry.value("status", "") == "failed" && !run_entry.contains("pass_fail")) {
+            run_entry["pass_fail"] = "fail";
+        }
+        runs_json["runs"].push_back(run_entry);
+        if (run_failed) {
+            ++run_failures;
+        }
+
+        int pass_count = 0;
+        int marginal_count = 0;
+        int fail_count = 0;
+        for (const auto& completed_run : runs_json["runs"]) {
+            const std::string pass_fail = completed_run.value("pass_fail", "");
+            if (pass_fail == "pass") {
+                ++pass_count;
+            } else if (pass_fail == "marginal") {
+                ++marginal_count;
+            } else if (pass_fail == "fail") {
+                ++fail_count;
+            }
+        }
+        const nlohmann::json summary_json = {
+            {"experiment_id", spec.experiment_id},
+            {"notes", spec.notes},
+            {"updated_at_utc", get_current_utc_timestamp()},
+            {"total_runs", runs.size()},
+            {"completed_runs", runs_json["runs"].size()},
+            {"pass_runs", pass_count},
+            {"marginal_runs", marginal_count},
+            {"fail_runs", fail_count},
+            {"interrupted", quit_server},
+        };
+        if (!write_experiment_manifests(spec, experiment_root, runs_json, summary_json, &error)) {
+            std::cerr << error << std::endl;
+            return 1;
+        }
+    }
+
+    return run_failures == 0 ? 0 : 1;
+}
+
+int run_local_mode(const HeadlessCliOptions& options)
+{
+    return run_local_recording_session(options, true);
 }
 
 int run_remote_mode()
@@ -1146,10 +2479,11 @@ int run_remote_mode()
                 //Server has sent us a new packet
                 case ENET_EVENT_TYPE_RECEIVE:
                     {
-                        printf ("\n A packet of length %u was received from %s on channel %u.\n",
-                            evnt.packet -> dataLength,
-                            evnt.peer -> data,
-                            evnt.channelID);
+                        std::cout << "\nA packet of length "
+                                  << evnt.packet->dataLength
+                                  << " was received on channel "
+                                  << static_cast<unsigned int>(evnt.channelID)
+                                  << ".\n";
 
                         uint8_t* buffer_pointer = evnt.packet->data;
                         auto server_control = FetchGame::GetServer(buffer_pointer);
@@ -1279,6 +2613,9 @@ int main(int argc, char *argv[])
     }
 
     if (options.mode == HeadlessMode::Local) {
+        if (!options.experiment_spec_path.empty()) {
+            return run_local_experiment(options);
+        }
         return run_local_mode(options);
     }
 

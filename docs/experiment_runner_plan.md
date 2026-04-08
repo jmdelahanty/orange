@@ -298,9 +298,11 @@ Selection rules for the first version:
 
 Temporary compatibility note:
 
-- Until the structured experiment runner exists, the current headless backend
-  accepts camera selection through `encoder_basic_setup` using tokens like
-  `camera=all`, `camera=02010093`, or `camera=02010093+02010094`.
+- The local runner now accepts structured selection through
+  `--experiment-spec`.
+- The remote compatibility path still accepts camera selection through
+  `encoder_basic_setup` using tokens like `camera=all`, `camera=02010093`, or
+  `camera=02010093+02010094`.
 
 The first version should only support the current practical dimensions:
 
@@ -438,9 +440,11 @@ Goal:
 
 Current status:
 
-- partially done
+- substantially done
 - headless now records through the modern worker pair
-- stop/drain coordination and full runtime validation are still pending
+- stop/drain coordination is restored on the modern path
+- the remaining gap is structured remote control parity, not local recording
+  backend parity
 
 Tasks:
 
@@ -476,6 +480,16 @@ Tasks:
 - add artifact verification
 - add pass/fail evaluation
 - add experiment summary writing
+
+Current status:
+
+- implemented in the local headless CLI
+- current limitations are intentionally narrow:
+  - local mode only
+  - `display=false`
+  - `yolo=false`
+  - `sync_mode=free_run`
+  - remote orchestration remains deferred
 
 Definition of done:
 
@@ -516,7 +530,7 @@ Goal:
 
 Tasks:
 
-- add a CLI entry point such as `--experiment-spec <path>`
+- keep `--experiment-spec <path>` as the main entry point
 - optionally add a small GUI launcher later
 - auto-run `plot_pipeline_perf.py`
 - produce experiment summary table and plots
