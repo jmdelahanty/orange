@@ -110,9 +110,17 @@ struct ExperimentCsvWindowStats {
     std::size_t included_rows = 0;
     double enc_fps_mean = 0.0;
     double enc_fps_p95 = 0.0;
+    int acq_free_entries_min = -1;
+    int acq_free_events_min = -1;
+    int yolo_events_min = -1;
     uint64_t acq_starve_delta = 0;
+    uint64_t pre_waits_delta = 0;
     uint64_t pre_drops_delta = 0;
     uint64_t enc_fail_delta = 0;
+    uint64_t enc_slow_delta = 0;
+    uint64_t camera_dropped_frames_delta = 0;
+    int pre_buffers_min = -1;
+    int pre_events_min = -1;
     std::string error;
 };
 
@@ -189,6 +197,31 @@ std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
         tokens.push_back(current);
     }
     return tokens;
+}
+
+std::string normalize_headless_sync_mode_label(const CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return "free_run";
+    }
+
+    std::string mode = camera_params->sync_mode;
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (mode == "ptp_gate") {
+        return "ptp_gate";
+    }
+    return "free_run";
+}
+
+std::string resolved_headless_ptp_mode_label(const CameraParams* camera_params)
+{
+    if (!camera_params || camera_params->ptp_mode.empty()) {
+        return "TwoStep";
+    }
+    return camera_params->ptp_mode;
 }
 
 void append_camera_selection(HeadlessEncoderSettings* settings, const std::string& value)
@@ -1206,9 +1239,17 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         {
             ptp_camera_sync(&ecams[idx].camera, &cameras_params[idx]);
         }
-        std::cout << "Headless sync mode: ptp_gate" << std::endl;
+        const CameraParams* representative_camera =
+            selected_indices.empty() ? nullptr : &cameras_params[selected_indices.front()];
+        std::cout << "Headless sync mode: ptp_gate"
+                  << " (PTP " << resolved_headless_ptp_mode_label(representative_camera) << ")"
+                  << std::endl;
     } else {
-        std::cout << "Headless sync mode: free_run / explicit trigger" << std::endl;
+        const CameraParams* representative_camera =
+            selected_indices.empty() ? nullptr : &cameras_params[selected_indices.front()];
+        std::cout << "Headless sync mode: "
+                  << normalize_headless_sync_mode_label(representative_camera)
+                  << std::endl;
     }
 
     for (int idx : selected_indices)
@@ -1911,9 +1952,17 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     };
 
     const int enc_fps_index = required_index("enc_fps");
+    const int acq_free_entries_index = required_index("acq_free_entries");
+    const int acq_free_events_index = required_index("acq_free_events");
+    const int yolo_events_index = required_index("yolo_events");
     const int acq_starve_index = required_index("acq_starve");
+    const int pre_buffers_index = required_index("pre_buffers");
+    const int pre_events_index = required_index("pre_events");
+    const int pre_waits_index = required_index("pre_waits");
     const int pre_drops_index = required_index("pre_drops");
     const int enc_fail_index = required_index("enc_fail");
+    const int enc_slow_index = required_index("enc_slow");
+    const int camera_dropped_frames_index = required_index("camera_dropped_frames");
     if (enc_fps_index < 0 || acq_starve_index < 0 || pre_drops_index < 0 || enc_fail_index < 0) {
         stats.error = "CSV is missing one or more required fields in " + csv_path.string();
         return stats;
@@ -1944,12 +1993,23 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     };
 
     std::vector<double> enc_fps_values;
+    int post_warmup_acq_free_entries_min = std::numeric_limits<int>::max();
+    int post_warmup_acq_free_events_min = std::numeric_limits<int>::max();
+    int post_warmup_yolo_events_min = std::numeric_limits<int>::max();
+    int post_warmup_pre_buffers_min = std::numeric_limits<int>::max();
+    int post_warmup_pre_events_min = std::numeric_limits<int>::max();
     uint64_t baseline_acq_starve = 0;
+    uint64_t baseline_pre_waits = 0;
     uint64_t baseline_pre_drops = 0;
     uint64_t baseline_enc_fail = 0;
+    uint64_t baseline_enc_slow = 0;
+    uint64_t baseline_camera_dropped_frames = 0;
     uint64_t last_acq_starve = 0;
+    uint64_t last_pre_waits = 0;
     uint64_t last_pre_drops = 0;
     uint64_t last_enc_fail = 0;
+    uint64_t last_enc_slow = 0;
+    uint64_t last_camera_dropped_frames = 0;
 
     std::string line;
     std::size_t row_index = 0;
@@ -1961,28 +2021,96 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
 
         const std::vector<std::string> cells = split_csv_line_simple(line);
         double enc_fps = 0.0;
+        int acq_free_entries = -1;
+        int acq_free_events = -1;
+        int yolo_events = -1;
+        int pre_buffers = -1;
+        int pre_events = -1;
         uint64_t acq_starve = 0;
+        uint64_t pre_waits = 0;
         uint64_t pre_drops = 0;
         uint64_t enc_fail = 0;
+        uint64_t enc_slow = 0;
+        uint64_t camera_dropped_frames = 0;
         if (!parse_double_cell(cells, enc_fps_index, &enc_fps) ||
             !parse_u64_cell(cells, acq_starve_index, &acq_starve) ||
             !parse_u64_cell(cells, pre_drops_index, &pre_drops) ||
             !parse_u64_cell(cells, enc_fail_index, &enc_fail)) {
             continue;
         }
+        if (acq_free_entries_index >= 0) {
+            uint64_t acq_free_entries_u64 = 0;
+            if (parse_u64_cell(cells, acq_free_entries_index, &acq_free_entries_u64)) {
+                acq_free_entries = static_cast<int>(acq_free_entries_u64);
+            }
+        }
+        if (acq_free_events_index >= 0) {
+            uint64_t acq_free_events_u64 = 0;
+            if (parse_u64_cell(cells, acq_free_events_index, &acq_free_events_u64)) {
+                acq_free_events = static_cast<int>(acq_free_events_u64);
+            }
+        }
+        if (yolo_events_index >= 0) {
+            uint64_t yolo_events_u64 = 0;
+            if (parse_u64_cell(cells, yolo_events_index, &yolo_events_u64)) {
+                yolo_events = static_cast<int>(yolo_events_u64);
+            }
+        }
+        if (pre_buffers_index >= 0) {
+            uint64_t pre_buffers_u64 = 0;
+            if (parse_u64_cell(cells, pre_buffers_index, &pre_buffers_u64)) {
+                pre_buffers = static_cast<int>(pre_buffers_u64);
+            }
+        }
+        if (pre_events_index >= 0) {
+            uint64_t pre_events_u64 = 0;
+            if (parse_u64_cell(cells, pre_events_index, &pre_events_u64)) {
+                pre_events = static_cast<int>(pre_events_u64);
+            }
+        }
+        if (pre_waits_index >= 0) {
+            parse_u64_cell(cells, pre_waits_index, &pre_waits);
+        }
+        if (enc_slow_index >= 0) {
+            parse_u64_cell(cells, enc_slow_index, &enc_slow);
+        }
+        if (camera_dropped_frames_index >= 0) {
+            parse_u64_cell(cells, camera_dropped_frames_index, &camera_dropped_frames);
+        }
 
         ++stats.total_rows;
         last_acq_starve = acq_starve;
+        last_pre_waits = pre_waits;
         last_pre_drops = pre_drops;
         last_enc_fail = enc_fail;
+        last_enc_slow = enc_slow;
+        last_camera_dropped_frames = camera_dropped_frames;
 
         if (row_index < warmup_row_count) {
             baseline_acq_starve = acq_starve;
+            baseline_pre_waits = pre_waits;
             baseline_pre_drops = pre_drops;
             baseline_enc_fail = enc_fail;
+            baseline_enc_slow = enc_slow;
+            baseline_camera_dropped_frames = camera_dropped_frames;
         } else {
             enc_fps_values.push_back(enc_fps);
             ++stats.included_rows;
+            if (acq_free_entries >= 0) {
+                post_warmup_acq_free_entries_min = std::min(post_warmup_acq_free_entries_min, acq_free_entries);
+            }
+            if (acq_free_events >= 0) {
+                post_warmup_acq_free_events_min = std::min(post_warmup_acq_free_events_min, acq_free_events);
+            }
+            if (yolo_events >= 0) {
+                post_warmup_yolo_events_min = std::min(post_warmup_yolo_events_min, yolo_events);
+            }
+            if (pre_buffers >= 0) {
+                post_warmup_pre_buffers_min = std::min(post_warmup_pre_buffers_min, pre_buffers);
+            }
+            if (pre_events >= 0) {
+                post_warmup_pre_events_min = std::min(post_warmup_pre_events_min, pre_events);
+            }
         }
         ++row_index;
     }
@@ -1998,10 +2126,33 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     stats.enc_fps_p95 = compute_percentile(enc_fps_values, 95.0);
     stats.acq_starve_delta =
         (last_acq_starve >= baseline_acq_starve) ? (last_acq_starve - baseline_acq_starve) : last_acq_starve;
+    stats.pre_waits_delta =
+        (last_pre_waits >= baseline_pre_waits) ? (last_pre_waits - baseline_pre_waits) : last_pre_waits;
     stats.pre_drops_delta =
         (last_pre_drops >= baseline_pre_drops) ? (last_pre_drops - baseline_pre_drops) : last_pre_drops;
     stats.enc_fail_delta =
         (last_enc_fail >= baseline_enc_fail) ? (last_enc_fail - baseline_enc_fail) : last_enc_fail;
+    stats.enc_slow_delta =
+        (last_enc_slow >= baseline_enc_slow) ? (last_enc_slow - baseline_enc_slow) : last_enc_slow;
+    stats.camera_dropped_frames_delta =
+        (last_camera_dropped_frames >= baseline_camera_dropped_frames)
+            ? (last_camera_dropped_frames - baseline_camera_dropped_frames)
+            : last_camera_dropped_frames;
+    if (post_warmup_acq_free_entries_min != std::numeric_limits<int>::max()) {
+        stats.acq_free_entries_min = post_warmup_acq_free_entries_min;
+    }
+    if (post_warmup_acq_free_events_min != std::numeric_limits<int>::max()) {
+        stats.acq_free_events_min = post_warmup_acq_free_events_min;
+    }
+    if (post_warmup_yolo_events_min != std::numeric_limits<int>::max()) {
+        stats.yolo_events_min = post_warmup_yolo_events_min;
+    }
+    if (post_warmup_pre_buffers_min != std::numeric_limits<int>::max()) {
+        stats.pre_buffers_min = post_warmup_pre_buffers_min;
+    }
+    if (post_warmup_pre_events_min != std::numeric_limits<int>::max()) {
+        stats.pre_events_min = post_warmup_pre_events_min;
+    }
     stats.ok = true;
     return stats;
 }
@@ -2391,9 +2542,16 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["gpu_pci_bus_id"] = "";
     row["enc_fps_mean"] = 0.0;
     row["enc_fps_p95"] = 0.0;
+    row["acq_free_entries_min"] = -1;
+    row["acq_free_events_min"] = -1;
+    row["yolo_events_min"] = -1;
+    row["pre_buffers_min"] = -1;
+    row["pre_events_min"] = -1;
     row["acq_starve_final"] = 0;
+    row["pre_waits_final"] = 0;
     row["pre_drops_final"] = 0;
     row["enc_fail_final"] = 0;
+    row["enc_slow_final"] = 0;
     row["dropped_frames_camera"] = -1;
 
     const nlohmann::json pipeline_info = snapshot.value("pipeline_metrics", nlohmann::json::object())
@@ -2439,9 +2597,17 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
 
     row["enc_fps_mean"] = csv_stats.enc_fps_mean;
     row["enc_fps_p95"] = csv_stats.enc_fps_p95;
+    row["acq_free_entries_min"] = csv_stats.acq_free_entries_min;
+    row["acq_free_events_min"] = csv_stats.acq_free_events_min;
+    row["yolo_events_min"] = csv_stats.yolo_events_min;
+    row["pre_buffers_min"] = csv_stats.pre_buffers_min;
+    row["pre_events_min"] = csv_stats.pre_events_min;
     row["acq_starve_final"] = csv_stats.acq_starve_delta;
+    row["pre_waits_final"] = csv_stats.pre_waits_delta;
     row["pre_drops_final"] = csv_stats.pre_drops_delta;
     row["enc_fail_final"] = csv_stats.enc_fail_delta;
+    row["enc_slow_final"] = csv_stats.enc_slow_delta;
+    row["dropped_frames_camera"] = static_cast<int64_t>(csv_stats.camera_dropped_frames_delta);
 
     if (encoder_info.is_object()) {
         if (row["gpu_id"].get<int>() < 0) {
@@ -2486,7 +2652,14 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         row["reason"] = "missing encoder snapshot";
     }
 
-    if (ptp_summary.is_object()) {
+    if (row["dropped_frames_camera"].get<int64_t>() < 0 && pipeline_info.is_object()) {
+        const nlohmann::json totals = pipeline_info.value("totals", nlohmann::json::object());
+        if (totals.is_object() && totals.contains("camera_dropped_frames")) {
+            row["dropped_frames_camera"] = totals.value("camera_dropped_frames", -1LL);
+        }
+    }
+
+    if (row["dropped_frames_camera"].get<int64_t>() < 0 && ptp_summary.is_object()) {
         const nlohmann::json cameras = ptp_summary.value("cameras", nlohmann::json::object());
         if (cameras.is_object()) {
             const nlohmann::json camera_summary = cameras.value(camera_serial, nlohmann::json::object());
@@ -2521,7 +2694,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_starve_final,pre_drops_final,enc_fail_final,dropped_frames_camera\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -2547,9 +2720,16 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << "\"" << row.value("reason", "") << "\","
                 << row.value("enc_fps_mean", 0.0) << ","
                 << row.value("enc_fps_p95", 0.0) << ","
+                << row.value("acq_free_entries_min", -1) << ","
+                << row.value("acq_free_events_min", -1) << ","
+                << row.value("yolo_events_min", -1) << ","
+                << row.value("pre_buffers_min", -1) << ","
+                << row.value("pre_events_min", -1) << ","
                 << row.value("acq_starve_final", 0ULL) << ","
+                << row.value("pre_waits_final", 0ULL) << ","
                 << row.value("pre_drops_final", 0ULL) << ","
                 << row.value("enc_fail_final", 0ULL) << ","
+                << row.value("enc_slow_final", 0ULL) << ","
                 << row.value("dropped_frames_camera", -1) << "\n";
         }
     }

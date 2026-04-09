@@ -2,13 +2,23 @@
 #include <chrono>
 #include "global.h"
 
-void report_statistics(CameraParams *camera_params, CameraState *camera_state, double time_diff)
+void report_statistics(CameraParams *camera_params,
+                       CameraState *camera_state,
+                       double time_diff,
+                       uint64_t preprocess_resource_waits,
+                       uint64_t preprocess_frames_dropped,
+                       uint64_t encode_failures,
+                       uint64_t encode_slow_frames)
 {
     std::string print_out;
     print_out += "\n" + camera_params->camera_serial;
     print_out += ", Frame count: " + std::to_string(camera_state->frame_count);
     print_out += ", Frame received: " + std::to_string(camera_state->frames_recd);
-    print_out += ", Dropped Frames: " + std::to_string(camera_state->dropped_frames);
+    print_out += ", Camera Dropped Frames: " + std::to_string(camera_state->dropped_frames);
+    print_out += ", Preprocess Waits: " + std::to_string(preprocess_resource_waits);
+    print_out += ", Preprocess Drops: " + std::to_string(preprocess_frames_dropped);
+    print_out += ", Encode Failures: " + std::to_string(encode_failures);
+    print_out += ", Encode Slow Frames: " + std::to_string(encode_slow_frames);
     float calc_frame_rate = camera_state->frames_recd / time_diff;
     print_out += ", Calculated Frame Rate: " + std::to_string(calc_frame_rate);
     std::cout << print_out << std::endl;

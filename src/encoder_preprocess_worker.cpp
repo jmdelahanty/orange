@@ -259,11 +259,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     
     if (!encoder_entry || !event) {
         frames_dropped_++;
-        std::cerr << "[PERF WARNING] " << threadName 
-                  << ": Dropping frame - no resources after " << retry_count << " retries"
-                  << " (Free buffers: ~" << available_buffers_.load() 
-                  << ", Free events: ~" << available_events_.load() << ")" << std::endl;
-                  
+
         if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
             if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
                 EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);

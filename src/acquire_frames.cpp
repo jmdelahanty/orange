@@ -136,6 +136,7 @@ struct PipelinePerfSample {
     uint64_t preprocess_frames_dropped = 0;
     uint64_t encode_failures = 0;
     uint64_t encode_slow_frames = 0;
+    uint64_t camera_dropped_frames = 0;
     uint64_t gpu_direct_frames = 0;
     uint64_t gpu_ring_copy_frames = 0;
     uint64_t gpu_copy_frames = 0;
@@ -193,6 +194,7 @@ public:
               << sample.preprocess_frames_dropped << ","
               << sample.encode_failures << ","
               << sample.encode_slow_frames << ","
+              << sample.camera_dropped_frames << ","
               << sample.gpu_direct_frames << ","
               << sample.gpu_ring_copy_frames << ","
               << sample.gpu_copy_frames << "\n";
@@ -246,7 +248,7 @@ private:
                  "display_q,yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
-                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,camera_dropped_frames,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[PIPELINE] Cam " << serial
@@ -340,6 +342,7 @@ private:
             totals["preprocess_frames_dropped"] = last_sample_.preprocess_frames_dropped;
             totals["encode_failures"] = last_sample_.encode_failures;
             totals["encode_slow_frames"] = last_sample_.encode_slow_frames;
+            totals["camera_dropped_frames"] = last_sample_.camera_dropped_frames;
             totals["gpu_direct_frames"] = last_sample_.gpu_direct_frames;
             totals["gpu_ring_copy_frames"] = last_sample_.gpu_ring_copy_frames;
             totals["gpu_copy_frames"] = last_sample_.gpu_copy_frames;
@@ -566,6 +569,7 @@ void acquire_frames(
         sample.preprocess_frames_dropped = encoder_preprocess_worker ? encoder_preprocess_worker->get_frames_dropped() : 0;
         sample.encode_failures = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_encode_failures() : 0;
         sample.encode_slow_frames = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_slow_frames() : 0;
+        sample.camera_dropped_frames = camera_state.dropped_frames;
         sample.gpu_direct_frames = gpu_direct_frames_total;
         sample.gpu_ring_copy_frames = gpu_ring_copy_frames_total;
         sample.gpu_copy_frames = gpu_copy_frames_total;
@@ -1159,7 +1163,14 @@ void acquire_frames(
             try_stop_timer();
         }
         double time_diff = w.Stop();
-        report_statistics(camera_params, &camera_state, time_diff);
+        report_statistics(
+            camera_params,
+            &camera_state,
+            time_diff,
+            encoder_preprocess_worker ? encoder_preprocess_worker->get_resource_waits() : 0,
+            encoder_preprocess_worker ? encoder_preprocess_worker->get_frames_dropped() : 0,
+            encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_encode_failures() : 0,
+            encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_slow_frames() : 0);
 
         {
             NVTX_RANGE("Memory_Cleanup");

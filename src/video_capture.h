@@ -287,7 +287,13 @@ struct PTPState
     unsigned int ptp_time_plus_delta_to_start_uint;
 };
 
-void report_statistics(CameraParams *camera_params, CameraState *camera_state, double time_diff);
+void report_statistics(CameraParams *camera_params,
+                       CameraState *camera_state,
+                       double time_diff,
+                       uint64_t preprocess_resource_waits = 0,
+                       uint64_t preprocess_frames_dropped = 0,
+                       uint64_t encode_failures = 0,
+                       uint64_t encode_slow_frames = 0);
 void show_ptp_offset(PTPState *ptp_state, CameraEmergent *ecam);
 void start_ptp_sync(PTPState *ptp_state, PTPParams *ptp_params, CameraParams *camera_params, CameraEmergent *ecam, unsigned int delay_in_second);
 void grab_frames_after_countdown(PTPState *ptp_state, CameraEmergent *ecam);
