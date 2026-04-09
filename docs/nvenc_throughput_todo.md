@@ -132,10 +132,15 @@ Implementation priority should be:
 - [ ] Extend the local NVENC wrapper to support external CUDA input buffers
   instead of always allocating its own internal input pool.
 - [ ] Register a ring of externally managed CUDA NV12 surfaces with NVENC.
+- [ ] Size that registered ring from NVENC's true encoder buffer count rather
+  than the current arbitrary preprocess pool depth.
 - [ ] Change `EncoderPreprocessWorker` so its prepared-frame pool becomes the
   registered encoder-input ring.
 - [ ] Carry slot identity and pitch through the preprocess -> hardware worker
   handoff.
+- [ ] Keep raw-frame refcounting separate from encoder-slot availability;
+  implement explicit slot lifecycle and retirement instead of extending
+  `WORKER_ENTRY::ref_count`.
 - [ ] Remove the explicit `CopyToDeviceFrame(...)` step from the hardware
   encode path when direct-input mode is enabled.
 - [ ] Keep the current copy path available behind a fallback switch during

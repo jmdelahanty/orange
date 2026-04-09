@@ -279,6 +279,19 @@ Implications:
   `120`,
 - the slot identity should travel with the work item into `EncoderHwWorker`.
 
+Important constraint:
+
+- the registered direct-input ring should be sized from the encoder's real
+  buffer count (`m_nEncoderBuffer` / `GetEncoderBufferCount()`), not from the
+  current preprocess pool constant,
+- over-allocating direct-input surfaces beyond the real encoder ring depth does
+  not buy throughput in the current wrapper model,
+- under-allocating below the real encoder ring depth reduces available
+  pipelining and can create avoidable stalls,
+- queue depth and slot depth are separate concerns: it is fine to keep a deeper
+  upstream queue of pending raw frames, but the registered encoder-input
+  surface pool should follow the true encoder ring depth.
+
 `ENCODER_WORKER_ENTRY` should grow from "pointer + timestamps + event" into
 something closer to:
 
@@ -287,6 +300,15 @@ something closer to:
 - pitch,
 - timestamps,
 - preprocess completion event.
+
+Recommended first-pass rule:
+
+- use exactly `GetEncoderBufferCount()` registered input slots for the first
+  implementation,
+- do not add a speculative extra margin until the direct-input path is working
+  and benchmarked,
+- rebuild the direct-input ring if future reconfiguration changes the encoder
+  buffer count.
 
 ## 3. Allocate External Surfaces With Real Pitch
 
@@ -322,6 +344,24 @@ That means:
 
 This is the main reason the change is mostly a buffer-lifecycle refactor rather
 than a codec refactor.
+
+Just as important: this slot lifecycle should stay separate from the raw-frame
+reference count.
+
+Recommended ownership split:
+
+- keep `WORKER_ENTRY::ref_count` responsible only for camera/raw-frame lifetime
+  across acquisition, preview, YOLO, recording, and any other upstream
+  consumers,
+- do not extend the raw-frame refcount so it waits for NVENC encode completion,
+- model encoder-slot availability separately as explicit slot state:
+  `free -> preprocessing -> submitted -> retired -> free`,
+- carry `slot_id` through the preprocess-to-hardware-worker handoff and return
+  that slot to the free-slot queue only when NVENC has retired it.
+
+This means the direct-input path is not a "bigger refcount" design. It is a
+separate encoder-ring lifecycle layered on top of the existing source-frame
+fan-out model.
 
 ## 5. Keep A Fallback Path During Bring-Up
 
@@ -1055,6 +1095,31 @@ At the end of this plan, the desired state is:
 5. Bring-up safety:
    - keep copy-path fallback enabled until direct input passes long-run testing.
 
+## Recommended Next Implementation
+
+For the next implementation pass, prefer the narrowest change that preserves
+existing worker structure while making slot lifetime explicit.
+
+1. Extend the local NVENC wrapper with an external-input mode that skips
+   internal input-surface allocation, preserves normal bitstream allocation,
+   and exposes the resolved encoder buffer count.
+2. Replace the current arbitrary preprocess prepared-frame pool with a
+   registered NV12 surface ring sized exactly to `GetEncoderBufferCount()`.
+3. Change the preprocess-to-hardware-worker handoff struct so it carries
+   `slot_id`, `surface pointer`, `pitch`, timestamps, and preprocess completion
+   event instead of acting like a generic prepared-frame pointer.
+4. Keep `WORKER_ENTRY::ref_count` unchanged for raw-frame lifetime and add a
+   separate encoder-slot free queue plus in-flight retirement path for direct
+   input.
+5. Recycle direct-input slots only after the wrapper's mapped-resource retire
+   point, not immediately after `EncodeFrame()`.
+6. Remove `CopyToDeviceFrame(...)` only when direct-input mode is active.
+7. Keep the current copy path available behind a fallback switch until long-run
+   correctness and throughput checks pass.
+
+This should be treated as a buffer-lifecycle refactor with a bounded API
+change, not as a broad recording-pipeline rewrite.
+
 ## Recommendation
 
 Recommended order:
@@ -1062,9 +1127,13 @@ Recommended order:
 1. Extend the local NVENC wrapper to support externally registered CUDA input
    buffers.
 2. Change the preprocess buffer pool into a true registered NV12 input ring.
-3. Remove the explicit `CopyToDeviceFrame(...)` step from the hardware worker.
-4. Add minimal slot-lifecycle telemetry so buffer reuse is observable.
-5. Keep the old copy path available until direct registration is proven stable.
+3. Size that ring from `GetEncoderBufferCount()` rather than the current
+   arbitrary preprocess pool depth.
+4. Keep raw-frame refcounting and encoder-slot lifecycle as separate
+   mechanisms.
+5. Remove the explicit `CopyToDeviceFrame(...)` step from the hardware worker.
+6. Add minimal slot-lifecycle telemetry so buffer reuse is observable.
+7. Keep the old copy path available until direct registration is proven stable.
 
 This is the highest-signal next step if the goal is to reduce avoidable encode
 pipeline overhead without rewriting the whole recording architecture.
