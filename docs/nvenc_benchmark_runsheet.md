@@ -8,6 +8,8 @@ See also:
 
 - `docs/nvenc_direct_input_plan.md`
 - `docs/nvenc_throughput_todo.md`
+- `docs/codec_quality_evaluation_protocol.md`
+- `docs/pre_encoder_reference_capture_plan.md`
 - `docs/output_artifacts_contract.md`
 - `scripts/plot_pipeline_perf.py`
 

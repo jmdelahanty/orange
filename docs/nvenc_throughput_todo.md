@@ -9,6 +9,9 @@ See also:
 
 - `docs/nvenc_direct_input_plan.md`
 - `docs/nvenc_benchmark_runsheet.md`
+- `docs/codec_quality_evaluation_protocol.md`
+- `docs/pre_encoder_reference_capture_plan.md`
+- `docs/pre_encoder_reference_capture_todo.md`
 - `docs/experiment_runner_plan.md`
 - `docs/headless_experiment_backend.md`
 - `docs/headless_cli_design.md`
@@ -126,6 +129,9 @@ Implementation priority should be:
     seen by the encoder,
   - separate codec loss from upstream debayer / resize / colorspace choices,
   - avoid using long uncompressed capture as a default recording mode.
+  Use:
+  - `docs/pre_encoder_reference_capture_plan.md`
+  - `docs/pre_encoder_reference_capture_todo.md`
 
 ## Phase 3: Direct Registered NV12 Input
 

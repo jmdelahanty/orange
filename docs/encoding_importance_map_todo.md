@@ -6,6 +6,16 @@ Status: target design, not implemented
 Scope: plan a full-frame recording quality-prioritization system that can steer
 NVENC bit allocation toward the fish without requiring TensorRT.
 
+Note:
+- For the newer draft on canonical `layout_id` / `zone_id`, per-recording
+  registration, and resolved camera-pixel overlays for Citrus, see
+  `docs/spatial_layout_contract.md`.
+- For the field-level schema definition, see `docs/spatial_layout_schema.md`.
+- For the concrete codec-comparison workflow, see
+  `docs/codec_quality_evaluation_protocol.md`.
+- For the planned pre-compression reference-capture slice, see
+  `docs/pre_encoder_reference_capture_plan.md`.
+
 ## Goals
 
 - Keep full-frame recording usable without forcing crop-only or lossless-crop
@@ -88,6 +98,75 @@ This is consistent with the current NVENC reading:
 - the planned importance-map path should be treated instead as per-picture
   guidance unless benchmarking shows a real throughput penalty large enough to
   create backlog.
+
+## Recommended First Slice
+
+The first runtime prototype should be intentionally boring:
+
+- one static dish-prior map per camera
+- built once from validated dish-mask geometry
+- cached and reused for every frame in the recording session
+- mild deltas only
+- opt-in only
+- no same-frame TRT dependency
+- no encode-path blocking when newer signals are unavailable
+
+This is a coarse prior, not the final fish-aware solution.
+
+It should be treated as:
+
+- the lowest-risk way to validate map plumbing end to end,
+- a way to bias quality toward the biologically relevant arena region before
+  adding motion or detector inputs,
+- and a baseline against which later motion-aware or bbox-aware maps can be
+  judged.
+
+For single-dish views, this will not isolate the zebrafish itself.
+It will only distinguish:
+
+- "inside the valid arena"
+- versus "background / out-of-dish region"
+
+That is still useful because it can stop spending bits outside the dish, while
+keeping latency and implementation risk low.
+
+## Encoder-Speed Position
+
+Importance maps should not be assumed to make NVENC materially "easier" in the
+motion-estimation sense.
+
+Working assumption:
+
+- motion estimation, mode decisions, and reference selection still happen,
+- a delta-QP or emphasis map mainly biases rate-distortion / quantization
+  choices and bit allocation,
+- therefore the map itself is more likely to be throughput-neutral or slightly
+  slower than to produce an intrinsic encoder-speed win.
+
+So any net speed or latency gain is more likely to come from system design
+choices around the map than from the map primitive itself.
+
+Most plausible win paths are:
+
+- the map is static or cheaply reusable, so map generation cost is near zero,
+- the map lets us compare against or replace generic `AQ` / `TemporalAQ`
+  behavior that may be spending bits in the wrong places,
+- the map allows simpler upstream logic than same-frame TRT or expensive motion
+  analysis,
+- the map works without enabling look-ahead.
+
+Design implication:
+
+- do not sell this feature to ourselves as "fewer motion-vector decisions,"
+- instead treat it as "better bit-allocation guidance for a small important ROI
+  inside a mostly static frame."
+
+Benchmarking should separate:
+
+- encoder throughput / utilization,
+- queue growth and end-to-end latency,
+- bitrate / file size,
+- and fish-detail retention or downstream-task quality.
 
 ## Why Dish Mask First
 
@@ -480,6 +559,12 @@ Expected behavior:
 - neutral mode remains available for users who want no special behavior
 - final map may contain multiple simultaneous important regions in one frame
 
+Implementation preference for the first slice:
+
+- start with `static_dish_prior` only,
+- prove map wiring and benchmarking on that baseline,
+- add motion or semantic ROI only after the static-prior path is understood.
+
 ## TODO Plan
 
 ## Phase 1: Schema and Contracts
@@ -531,6 +616,9 @@ Expected behavior:
 
 ## Phase 5: Importance Signals Without TRT
 
+- [ ] Implement a dish-prior-only prototype before motion or TRT-driven signals.
+- [ ] Cache one static dish-prior map per camera / recording session and reuse
+  it for every frame.
 - [ ] Build `static_dish_prior` from the dish mask.
 - [ ] Build `static_arena_prior` from zero or more arena geometries.
 - [ ] Add low-resolution motion/background-subtraction ROI constrained by the
@@ -549,6 +637,7 @@ Expected behavior:
 
 ## Phase 7: NVENC Integration
 
+- [ ] Start NVENC map integration with static dish-prior input only.
 - [ ] Convert importance sources into a codec-ready map primitive.
 - [ ] Prefer HEVC delta-QP map path for full-frame recording.
 - [ ] Start with mild default deltas and validate visually plus downstream-task
@@ -556,6 +645,8 @@ Expected behavior:
 - [ ] Keep the feature opt-in.
 - [ ] Benchmark future map-guided encoding against generic `AQ/TemporalAQ`, not
   just against neutral encoding.
+- [ ] Measure real throughput impact; do not assume map guidance reduces motion
+  estimation work.
 
 ## Phase 8: Validation
 
@@ -573,6 +664,7 @@ Expected behavior:
   - [ ] current compressed output
   - [ ] lossless codec output
   - [ ] generic `AQ/TemporalAQ`
+  - [ ] static dish-prior-only map output
   - [ ] future mask-informed delta-QP / importance-map output
 - [ ] Validate dish-mask artifact resolution by Orange runtime.
 - [ ] Validate arena-layout artifact resolution by Orange runtime.
@@ -585,6 +677,8 @@ Expected behavior:
 - [ ] Validate TRT mode with bbox + fallbacks.
 - [ ] Compare file size, NVENC utilization, and fish-detail quality against
   neutral encoding.
+- [ ] Compare static dish-prior-only output against current `AQ/TemporalAQ`
+  settings with the same clips.
 - [ ] Compare downstream segmentation / keypoint / labeling quality against the
   same pre-encoder reference clips, not only against human visual judgment.
 
