@@ -9,6 +9,7 @@ See also:
 
 - `docs/experiment_runner_plan.md`
 - `docs/headless_cli_design.md`
+- `docs/headless_codec_quality_test_handoff.md`
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/nvenc_throughput_todo.md`
 - `src/orange_headless_client.cpp`

@@ -16,6 +16,7 @@ See also:
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/headless_experiment_backend.md`
 - `docs/headless_cli_design.md`
+- `docs/headless_codec_quality_test_handoff.md`
 - `docs/nvenc_throughput_todo.md`
 - `docs/output_artifacts_contract.md`
 - `src/orange.cpp`
