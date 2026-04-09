@@ -129,6 +129,13 @@ def flatten_run(run):
             "enc_fail_final": 0,
             "enc_slow_final": 0,
             "dropped_frames_camera": -1,
+            "pre_encoder_reference_capture_enabled": False,
+            "pre_encoder_reference_capture_status": "disabled",
+            "pre_encoder_reference_frames_captured": 0,
+            "pre_encoder_reference_bytes_written": 0,
+            "pre_encoder_reference_raw_dump_present": False,
+            "pre_encoder_reference_index_present": False,
+            "pre_encoder_reference_metadata_present": False,
             "pass_fail": run.get("pass_fail", ""),
             "status": run.get("status", ""),
             "reason": run.get("reason", ""),
@@ -166,6 +173,27 @@ def flatten_run(run):
             "enc_fail_final": camera_result.get("enc_fail_final", 0),
             "enc_slow_final": camera_result.get("enc_slow_final", 0),
             "dropped_frames_camera": camera_result.get("dropped_frames_camera", -1),
+            "pre_encoder_reference_capture_enabled": camera_result.get(
+                "pre_encoder_reference_capture_enabled", False
+            ),
+            "pre_encoder_reference_capture_status": camera_result.get(
+                "pre_encoder_reference_capture_status", "disabled"
+            ),
+            "pre_encoder_reference_frames_captured": camera_result.get(
+                "pre_encoder_reference_frames_captured", 0
+            ),
+            "pre_encoder_reference_bytes_written": camera_result.get(
+                "pre_encoder_reference_bytes_written", 0
+            ),
+            "pre_encoder_reference_raw_dump_present": camera_result.get(
+                "pre_encoder_reference_raw_dump_present", False
+            ),
+            "pre_encoder_reference_index_present": camera_result.get(
+                "pre_encoder_reference_index_present", False
+            ),
+            "pre_encoder_reference_metadata_present": camera_result.get(
+                "pre_encoder_reference_metadata_present", False
+            ),
             "pass_fail": camera_result.get("pass_fail", run.get("pass_fail", "")),
             "status": camera_result.get("status", run.get("status", "")),
             "reason": camera_result.get("reason", run.get("reason", "")),
@@ -307,6 +335,14 @@ def compact_reason(reason):
         return "enc-fail"
     if "nonzero acquisition starvation" in lowered:
         return "acq-starve"
+    if "missing pre-encoder reference artifacts" in lowered:
+        return "preenc-art"
+    if "pre-encoder reference capture error" in lowered:
+        return "preenc-err"
+    if "pre-encoder reference captured zero frames" in lowered:
+        return "preenc-zero"
+    if "pre-encoder reference capture incomplete" in lowered:
+        return "preenc-inc"
     if "meets current policy" in lowered:
         return "pass"
     return reason[:12]
@@ -381,10 +417,11 @@ def print_top_tables(rows, top_n):
                 f"{float(row.get('enc_fps_p95', 0.0)):.3f}",
                 str(row.get("pre_buffers_min", -1)),
                 str(row.get("pre_events_min", -1)),
+                row.get("pre_encoder_reference_capture_status", ""),
                 row.get("gpu_name", ""),
             ])
         print(format_table(
-            ["run_id", "codec", "preset", "tuning", "rc", "enc_fps_mean", "enc_fps_p95", "pre_buf_min", "pre_evt_min", "gpu"],
+            ["run_id", "codec", "preset", "tuning", "rc", "enc_fps_mean", "enc_fps_p95", "pre_buf_min", "pre_evt_min", "preenc", "gpu"],
             table_rows,
         ))
 
@@ -413,10 +450,18 @@ def print_top_tables(rows, top_n):
                 str(row.get("pre_drops_final", 0)),
                 str(row.get("enc_fail_final", 0)),
                 str(row.get("enc_slow_final", 0)),
+                row.get("pre_encoder_reference_capture_status", ""),
+                "/".join(
+                    [
+                        "1" if row.get("pre_encoder_reference_raw_dump_present", False) else "0",
+                        "1" if row.get("pre_encoder_reference_index_present", False) else "0",
+                        "1" if row.get("pre_encoder_reference_metadata_present", False) else "0",
+                    ]
+                ),
                 row.get("reason", "")[:56],
             ])
         print(format_table(
-            ["run_id", "codec", "preset", "tuning", "status", "pass_fail", "enc_fps", "acq_ent_min", "acq_evt_min", "pre_buf_min", "pre_evt_min", "pre_waits", "pre_drops", "enc_fail", "enc_slow", "reason"],
+            ["run_id", "codec", "preset", "tuning", "status", "pass_fail", "enc_fps", "acq_ent_min", "acq_evt_min", "pre_buf_min", "pre_evt_min", "pre_waits", "pre_drops", "enc_fail", "enc_slow", "preenc", "art", "reason"],
             table_rows,
         ))
 

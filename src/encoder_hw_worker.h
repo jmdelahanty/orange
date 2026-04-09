@@ -7,9 +7,11 @@
 #include "video_capture.h"
 #include "gpu_video_encoder.h"
 #include <chrono>
+#include <deque>
 #include <fstream>
 #include "encoder_pipeline.h"
 #include "json.hpp"
+#include "pre_encoder_reference_writer.h"
 
 class EncoderPreprocessWorker; // Forward declaration
 
@@ -44,10 +46,12 @@ public:
         int gop_length,
         std::string folder_name,
         EncoderPreprocessWorker* prep_worker,
-        CameraControl* camera_control
+        CameraControl* camera_control,
+        const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
     );
     ~EncoderHwWorker() override;
 
+    void SetPreprocessWorker(EncoderPreprocessWorker* prep_worker);
     void flush_and_close();
 
     double get_fps() const { return current_fps_.load(std::memory_order_relaxed); }
@@ -55,6 +59,9 @@ public:
     uint64_t get_encode_failures() const { return encode_failures_.load(); }
     uint64_t get_slow_frames() const { return slow_frames_.load(); }
     int get_queue_depth() const { return const_cast<EncoderHwWorker*>(this)->GetCountQueueInSize(); }
+    bool direct_input_enabled() const { return direct_input_enabled_; }
+    int encoder_input_pitch() const { return encoder_input_pitch_; }
+    int encoder_buffer_count() const { return encoder_buffer_count_; }
 
     EncoderContext encoder_;
     EncoderPreprocessWorker* m_prep_worker_;
@@ -66,6 +73,30 @@ private:
     void finalize_recording();
     bool drain_ready();
     nlohmann::json build_encoder_snapshot_json() const;
+    void initialize_pre_encoder_reference_capture();
+    void finalize_pre_encoder_reference_capture();
+    bool begin_pre_encoder_reference_capture(ENCODER_WORKER_ENTRY* entry,
+                                             size_t* staging_slot_out,
+                                             size_t* frame_size_out);
+    void poll_pre_encoder_reference_captures(bool wait_for_all);
+    void recycle_encoder_entry(ENCODER_WORKER_ENTRY* entry,
+                               const std::vector<uint32_t>& retired_slots);
+    void release_pre_encoder_reference_capture_resources();
+    bool ensure_pre_encoder_reference_staging_slots(size_t frame_size, std::string* error_out);
+
+    struct ReferenceCaptureStagingSlot {
+        unsigned char* host_buffer = nullptr;
+        cudaEvent_t copy_complete_event = nullptr;
+        size_t buffer_size = 0;
+        bool in_use = false;
+    };
+
+    struct PendingReferenceCapture {
+        ENCODER_WORKER_ENTRY* entry = nullptr;
+        size_t staging_slot = 0;
+        size_t frame_size = 0;
+        std::vector<uint32_t> retired_slots;
+    };
 
     struct EncoderSnapshotInfo {
         std::string backend;
@@ -117,10 +148,21 @@ private:
     std::string preset_;
     std::string tuning_;
     std::string rate_control_mode_;
+    PreEncoderReferenceCaptureConfig pre_encoder_reference_capture_config_;
+    bool direct_input_enabled_ = false;
+    bool direct_input_registered_ = false;
+    int encoder_input_pitch_ = 0;
+    int encoder_buffer_count_ = 0;
+    bool pre_encoder_reference_async_enabled_ = false;
     int quality_value_ = 20;
     int gop_length_ = 0;
     Writer writer_;
+    PreEncoderReferenceWriter pre_encoder_reference_writer_;
+    std::vector<ReferenceCaptureStagingSlot> pre_encoder_reference_staging_slots_;
+    std::deque<PendingReferenceCapture> pending_pre_encoder_reference_captures_;
+    std::string active_recording_folder_;
     cudaStream_t m_stream = nullptr;
+    cudaStream_t pre_encoder_reference_stream_ = nullptr;
     CameraControl* camera_control_;
 
     bool is_recording_ = false; // Tracks the local recording state of this worker

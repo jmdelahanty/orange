@@ -227,6 +227,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
     "${SRC_DIR}/modern_recording_pipeline.cpp"
+    "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     ${NVENCODER_SOURCES}
     ${IMGUI_SOURCES}
     ${IMPLOT_SOURCES}
@@ -245,6 +246,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
     "${SRC_DIR}/modern_recording_pipeline.cpp"
+    "${SRC_DIR}/pre_encoder_reference_writer.cpp"
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"

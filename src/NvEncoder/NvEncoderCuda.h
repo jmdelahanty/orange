@@ -83,6 +83,16 @@ public:
     */
     void SetIOCudaStreams(NV_ENC_CUSTREAM_PTR inputStream, NV_ENC_CUSTREAM_PTR outputStream);
 
+    /**
+    *  @brief Enables external-input mode. Must be called before CreateEncoder().
+    */
+    void SetExternalInputBufferMode(bool enable = true) { NvEncoder::SetExternalInputBufferMode(enable); }
+
+    /**
+    *  @brief Registers externally allocated CUDA input surfaces after CreateEncoder().
+    */
+    void RegisterExternalCudaInputBuffers(const std::vector<void*>& inputFrames, uint32_t pitch);
+
 protected:
     /**
     *  @brief This function is used to release the input buffers allocated for encoding.
@@ -108,4 +118,5 @@ protected:
 
 private:
     size_t m_cudaPitch = 0;
+    bool m_bOwnInputFrames = true;
 };

@@ -123,7 +123,8 @@ public:
     *  data, which has been copied to an input buffer obtained from the
     *  GetNextInputFrame() function.
     */
-    virtual void EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams = nullptr);
+    virtual void EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams = nullptr,
+        std::vector<uint32_t>* retiredInputIndices = nullptr);
 
     /**
     *  @brief  This function to flush the encoder queue.
@@ -132,7 +133,7 @@ public:
     *  from the encoder. The application must call this function before destroying
     *  an encoder session.
     */
-    virtual void EndEncode(std::vector<std::vector<uint8_t>> &vPacket);
+    virtual void EndEncode(std::vector<std::vector<uint8_t>> &vPacket, std::vector<uint32_t>* retiredInputIndices = nullptr);
 
     /**
     *  @brief  This function is used to query hardware encoder capabilities.
@@ -253,6 +254,11 @@ public:
     *  @brief This function returns the number of allocated buffers.
     */
     uint32_t GetEncoderBufferCount() const { return m_nEncoderBuffer; }
+
+    /**
+    *  @brief This function returns the next input-frame slot index.
+    */
+    uint32_t GetNextInputFrameIndex() const { return m_nEncoderBuffer > 0 ? static_cast<uint32_t>(m_iToSend % m_nEncoderBuffer) : 0U; }
 protected:
 
     /**
@@ -274,6 +280,11 @@ protected:
     */
     void RegisterInputResources(std::vector<void*> inputframes, NV_ENC_INPUT_RESOURCE_TYPE eResourceType,
         int width, int height, int pitch, NV_ENC_BUFFER_FORMAT bufferFormat, bool bReferenceFrame = false);
+
+    /**
+    *  @brief Enables or disables external-input mode before CreateEncoder().
+    */
+    void SetExternalInputBufferMode(bool enable) { m_bUseExternalInputBuffers = enable; }
 
     /**
     *  @brief This function is used to unregister resources which had been previously registered for encoding
@@ -357,7 +368,8 @@ private:
     *  This is called by DoEncode() function. If there is buffering enabled,
     *  this may return without any output data.
     */
-    void GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, std::vector<std::vector<uint8_t>> &vPacket, bool bOutputDelay);
+    void GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, std::vector<std::vector<uint8_t>> &vPacket,
+        bool bOutputDelay, std::vector<uint32_t>* retiredInputIndices = nullptr);
 
     /**
     *  @brief This is a private function which is used to initialize the bitstream buffers.
@@ -409,6 +421,7 @@ private:
 protected:
     bool m_bMotionEstimationOnly = false;
     bool m_bOutputInVideoMemory = false;
+    bool m_bUseExternalInputBuffers = false;
     bool m_bIsDX12Encode = false;
     void *m_hEncoder = nullptr;
     NV_ENCODE_API_FUNCTION_LIST m_nvenc;

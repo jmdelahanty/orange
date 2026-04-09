@@ -33,7 +33,9 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     const char* name,
     CameraParams* cam_params,
     const RecordingOutputConfig& recording_output_config,
+    bool direct_input_enabled,
     int encoder_pitch,
+    int direct_input_slot_count,
     SafeQueue<WORKER_ENTRY*>& recycle_queue,
     CameraControl* camera_control
 )
@@ -45,8 +47,11 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
       m_hw_worker_(nullptr),
       d_rgba_resize_(nullptr),
       d_uv_default_plane_(nullptr),
+      direct_input_enabled_(direct_input_enabled),
       recording_output_config_(recording_output_config),
       encoder_pitch_(encoder_pitch),
+      direct_input_pitch_(direct_input_enabled ? 0 : encoder_pitch),
+      direct_input_slot_count_(direct_input_enabled ? direct_input_slot_count : 0),
       output_width_(recording_output_config_.resolved_width > 0 ? recording_output_config_.resolved_width : static_cast<int>(camera_params_->width)),
       output_height_(recording_output_config_.resolved_height > 0 ? recording_output_config_.resolved_height : static_cast<int>(camera_params_->height)),
       resize_source_size_{static_cast<int>(camera_params_->width), static_cast<int>(camera_params_->height)},
@@ -58,34 +63,70 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreate(&m_stream));
 
+    if (direct_input_enabled_ && direct_input_slot_count_ <= 0) {
+        throw std::runtime_error("Direct-input mode requires a positive slot count");
+    }
+
     // Initialize GPU resources needed for color conversion
     frame_original_gpu_.d_orig = nullptr;
     frame_original_gpu_.size_pic = static_cast<int>(camera_params_->width * camera_params_->height * sizeof(unsigned char));
     initialize_gpu_debayer(&debayer_gpu_, camera_params_);
+
+    if (direct_input_enabled_) {
+        size_t direct_pitch = 0;
+        direct_input_surfaces_.reserve(static_cast<size_t>(direct_input_slot_count_));
+        for (int i = 0; i < direct_input_slot_count_; ++i) {
+            void* surface = nullptr;
+            size_t slot_pitch = 0;
+            ck(cudaMallocPitch(&surface, &slot_pitch,
+                               static_cast<size_t>(output_width_),
+                               static_cast<size_t>(output_height_) * 3 / 2));
+            if (i == 0) {
+                direct_pitch = slot_pitch;
+                direct_input_pitch_ = static_cast<int>(slot_pitch);
+            } else if (slot_pitch != direct_pitch) {
+                cudaFree(surface);
+                throw std::runtime_error("Direct-input NV12 surface pitch mismatch across slot allocations");
+            }
+            direct_input_surfaces_.push_back(surface);
+            free_direct_input_slots_.push(i);
+        }
+    }
 
     if (camera_params_->color) {
         if (recording_output_config_.resize_enabled) {
             ck(cudaMalloc(&d_rgba_resize_, static_cast<size_t>(output_width_) * output_height_ * 4));
         }
     } else {
-        size_t uv_plane_size = static_cast<size_t>(encoder_pitch_) * output_height_ / 2;
+        const int uv_pitch = direct_input_enabled_ ? direct_input_pitch_ : encoder_pitch_;
+        size_t uv_plane_size = static_cast<size_t>(uv_pitch) * output_height_ / 2;
         ck(cudaMalloc(&d_uv_default_plane_, uv_plane_size));
         ck(cudaMemset(d_uv_default_plane_, 128, uv_plane_size));
     }
 
-    // Create a pool of buffers that will be passed to the hardware encoder
+    const int entry_pool_size = direct_input_enabled_
+        ? direct_input_slot_count_
+        : DEFAULT_ENCODER_ENTRY_POOL_SIZE;
+    encoder_entry_pool_.resize(static_cast<size_t>(entry_pool_size));
+
+    // Create a pool of metadata entries that will be passed to the hardware encoder
     size_t prepared_frame_size = static_cast<size_t>(encoder_pitch_) * output_height_ * 3 / 2;
-    for (int i = 0; i < ENCODER_ENTRY_POOL_SIZE; ++i) {
-        ck(cudaMalloc(&encoder_entry_pool_[i].d_prepared_frame, prepared_frame_size));
+    for (int i = 0; i < entry_pool_size; ++i) {
+        if (!direct_input_enabled_) {
+            ck(cudaMalloc(&encoder_entry_pool_[i].d_prepared_frame, prepared_frame_size));
+            encoder_entry_pool_[i].surface_pitch = static_cast<size_t>(encoder_pitch_);
+        }
         free_encoder_entries_.push(&encoder_entry_pool_[i]);
     }
+    available_buffers_.store(direct_input_enabled_ ? direct_input_slot_count_ : entry_pool_size, std::memory_order_relaxed);
     
     // --- Initialize the Event Pool ---
-    event_pool_.resize(EVENT_POOL_SIZE);
-    for (int i = 0; i < EVENT_POOL_SIZE; ++i) {
+    event_pool_.resize(static_cast<size_t>(entry_pool_size));
+    for (int i = 0; i < entry_pool_size; ++i) {
         ck(cudaEventCreateWithFlags(&event_pool_[i], cudaEventDisableTiming));
         free_events_.push(&event_pool_[i]);
     }
+    available_events_.store(entry_pool_size, std::memory_order_relaxed);
 }
 
 
@@ -95,11 +136,19 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
     if (m_stream) cudaStreamDestroy(m_stream);
 
     // Free all buffers in the pool
-    for (int i = 0; i < ENCODER_ENTRY_POOL_SIZE; ++i) {
-        if (encoder_entry_pool_[i].d_prepared_frame) {
-            cudaFree(encoder_entry_pool_[i].d_prepared_frame);
+    for (auto& encoder_entry : encoder_entry_pool_) {
+        if (encoder_entry.d_prepared_frame && !direct_input_enabled_) {
+            cudaFree(encoder_entry.d_prepared_frame);
         }
     }
+    encoder_entry_pool_.clear();
+
+    for (void* surface : direct_input_surfaces_) {
+        if (surface) {
+            cudaFree(surface);
+        }
+    }
+    direct_input_surfaces_.clear();
 
     if (d_rgba_resize_) cudaFree(d_rgba_resize_);
     if (d_uv_default_plane_) cudaFree(d_uv_default_plane_);
@@ -239,25 +288,31 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     // Acquire resources for the next stage with retry logic
     ENCODER_WORKER_ENTRY* encoder_entry = nullptr;
     cudaEvent_t* event = nullptr;
+    int direct_input_slot_id = -1;
     
     int retry_count = 0;
-    while ((!free_encoder_entries_.pop(encoder_entry) || !free_events_.pop(event)) && retry_count < 3) {
+    while (((!free_encoder_entries_.pop(encoder_entry)) ||
+            (!free_events_.pop(event)) ||
+            (direct_input_enabled_ && !free_direct_input_slots_.pop(direct_input_slot_id))) &&
+           retry_count < 3) {
         if (encoder_entry) {
             free_encoder_entries_.push(encoder_entry);
-            available_buffers_++;
             encoder_entry = nullptr;
         }
         if (event) {
             free_events_.push(event);
-            available_events_++;
             event = nullptr;
+        }
+        if (direct_input_enabled_ && direct_input_slot_id >= 0) {
+            free_direct_input_slots_.push(direct_input_slot_id);
+            direct_input_slot_id = -1;
         }
         resource_waits_++;
         retry_count++;
         std::this_thread::sleep_for(std::chrono::microseconds(100));
     }
     
-    if (!encoder_entry || !event) {
+    if (!encoder_entry || !event || (direct_input_enabled_ && direct_input_slot_id < 0)) {
         frames_dropped_++;
 
         if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
@@ -271,9 +326,17 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
     
     // Successfully acquired resources - update counters
-    available_buffers_--;
+    if (direct_input_enabled_ || encoder_entry->d_prepared_frame) {
+        available_buffers_--;
+    }
     available_events_--;
     encoder_entry->preprocess_complete_event = event;
+    encoder_entry->slot_id = direct_input_slot_id;
+    encoder_entry->direct_input = direct_input_enabled_;
+    encoder_entry->surface_pitch = static_cast<size_t>(direct_input_enabled_ ? direct_input_pitch_ : encoder_pitch_);
+    if (direct_input_enabled_) {
+        encoder_entry->d_prepared_frame = static_cast<unsigned char*>(direct_input_surfaces_[static_cast<size_t>(direct_input_slot_id)]);
+    }
 
 #if PIPELINE_PROFILE
     bool sample_preprocess = false;
@@ -322,13 +385,13 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             encoder_entry->d_prepared_frame,
             output_width_,
             output_height_,
-            encoder_pitch_,
+            static_cast<int>(encoder_entry->surface_pitch),
             m_stream);
 
     } else {
         // Monochrome path: Copy Y plane and fill UV planes to create an NV12-compatible frame
         unsigned char* d_y_plane_dst = encoder_entry->d_prepared_frame;
-        unsigned char* d_uv_plane_dst = d_y_plane_dst + (static_cast<size_t>(encoder_pitch_) * output_height_);
+        unsigned char* d_uv_plane_dst = d_y_plane_dst + (encoder_entry->surface_pitch * output_height_);
 
         if (recording_output_config_.resize_enabled) {
             check_npp_status(
@@ -338,7 +401,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                     resize_source_size_,
                     resize_source_roi_,
                     d_y_plane_dst,
-                    encoder_pitch_,
+                    static_cast<int>(encoder_entry->surface_pitch),
                     resize_output_size_,
                     resize_output_roi_,
                     NPPI_INTER_SUPER),
@@ -346,7 +409,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         } else {
             ck(cudaMemcpy2DAsync(
                 d_y_plane_dst,
-                encoder_pitch_,
+                encoder_entry->surface_pitch,
                 entry->d_image,
                 camera_params_->width,
                 output_width_,
@@ -355,7 +418,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                 m_stream));
         }
 
-        size_t uv_plane_size = static_cast<size_t>(encoder_pitch_) * output_height_ / 2;
+        size_t uv_plane_size = encoder_entry->surface_pitch * output_height_ / 2;
         ck(cudaMemcpyAsync(d_uv_plane_dst, d_uv_default_plane_, uv_plane_size, cudaMemcpyDeviceToDevice, m_stream));
     }
     
@@ -387,7 +450,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         // If there's no hardware worker, recycle the resources.
         free_encoder_entries_.push(encoder_entry);
         free_events_.push(event);
-        available_buffers_++;
+        if (direct_input_enabled_ && direct_input_slot_id >= 0) {
+            free_direct_input_slots_.push(direct_input_slot_id);
+            available_buffers_++;
+        } else {
+            available_buffers_++;
+        }
         available_events_++;
     }
     in_flight_.fetch_sub(1, std::memory_order_relaxed);

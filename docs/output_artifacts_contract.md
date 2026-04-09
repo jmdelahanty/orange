@@ -45,6 +45,9 @@ Default configured base path in runtime:
 | Main metadata CSV | `<recording_folder>/Cam<serial>_meta.csv` | Typical | Per-camera HW encoding active |
 | Main keyframe sidecar | `<recording_folder>/Cam<serial>_keyframe.json` | Typical | Per-camera HW encoding active |
 | Pipeline perf CSV | `<recording_folder>/Cam<serial>_pipeline_perf.csv` | Optional | Per-camera recording folder active |
+| Pre-encoder reference raw dump | `<recording_folder>/Cam<serial>_preenc_ref.bin` | Optional | `pre_encoder_reference_capture.enabled = true` |
+| Pre-encoder reference index | `<recording_folder>/Cam<serial>_preenc_ref_index.csv` | Optional | `pre_encoder_reference_capture.enabled = true` |
+| Pre-encoder reference metadata | `<recording_folder>/Cam<serial>_preenc_ref.json` | Optional | `pre_encoder_reference_capture.enabled = true` |
 | GPU dmon CSV | `<recording_folder>/nvidia_smi_dmon.csv` | Optional | Headless recording session with best-effort GPU monitoring |
 | GPU dmon stderr log | `<recording_folder>/nvidia_smi_dmon.stderr.log` | Optional | Headless recording session with best-effort GPU monitoring |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
@@ -155,6 +158,26 @@ Current emitted top-level fields:
   - `enable_non_ref_p: integer`
   - `repeat_sps_pps: integer`
   - `enable_ptd: integer`
+  - Optional:
+    - `pre_encoder_reference_capture: object`
+      - `capture_mode: string` (currently `pre_encoder_reference`)
+      - `enabled: boolean`
+      - `max_frames: integer`
+      - `max_seconds: integer`
+      - `status: string`
+      - `frames_captured: integer`
+      - `bytes_written: integer`
+      - `budget_reached: boolean`
+      - `started_at_utc: string` (optional)
+      - `stopped_at_utc: string` (optional)
+      - `error: string` (optional)
+      - `output_dir: string` (optional)
+      - `width|height|pitch|frame_size: integer` (optional when capture opened)
+      - `pixel_format: string` (optional, currently `nv12`)
+      - `path_type: string` (optional, currently `copy` or `direct_input`)
+      - `source_path_flavor: string` (optional, currently `color` or `mono`)
+      - `resize_enabled: boolean` (optional)
+      - `artifacts.raw_dump|index|metadata: string`
 
 Important:
 - Current runtime snapshot shape is legacy/single-level encoder info.

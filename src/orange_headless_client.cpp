@@ -68,6 +68,7 @@ struct HeadlessCliOptions {
     int record_start_delay_seconds = 0;
     std::vector<int> required_gpu_ids;
     HeadlessEncoderSettings encoder_settings;
+    PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
 };
 
 struct ExperimentSpec {
@@ -86,6 +87,7 @@ struct ExperimentSpec {
     bool require_zero_enc_fail = true;
     std::vector<int> gpu_ids;
     HeadlessEncoderSettings selection;
+    PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
     std::vector<std::string> codecs;
     std::vector<std::string> presets;
     std::vector<std::string> tunings;
@@ -373,6 +375,8 @@ void print_headless_usage(const char* argv0)
         << "  --rate-control <vbr|cbr|cqp>\n"
         << "  --quality <int>\n"
         << "  --gop <int>\n"
+        << "  --preenc-ref-max-frames <int>\n"
+        << "  --preenc-ref-max-seconds <int>\n"
         << "  --duration <seconds>         Optional. Otherwise runs until Ctrl+C.\n"
         << "  --stream-start-delay <sec>   Optional. Wait after camera open before stream open.\n"
         << "  --record-delay <seconds>     Optional. Stream first, then arm recording.\n"
@@ -392,6 +396,84 @@ bool parse_non_negative_int(const std::string& value, int* out)
         return false;
     }
     *out = static_cast<int>(parsed);
+    return true;
+}
+
+bool pre_encoder_reference_capture_requested(const PreEncoderReferenceCaptureConfig& config)
+{
+    return config.enabled ||
+           config.max_frames > 0 ||
+           config.max_seconds > 0 ||
+           !config.output_dir.empty();
+}
+
+bool validate_pre_encoder_reference_capture_config(const PreEncoderReferenceCaptureConfig& config,
+                                                   std::string* error_out,
+                                                   const std::string& context)
+{
+    if (!pre_encoder_reference_capture_requested(config)) {
+        return true;
+    }
+
+    const std::string prefix = context.empty() ? "" : context + ": ";
+    if (!config.enabled) {
+        if (error_out) {
+            *error_out = prefix +
+                "pre_encoder_reference_capture requires enabled=true when any capture fields are provided";
+        }
+        return false;
+    }
+    if (!config.has_valid_bound()) {
+        if (error_out) {
+            *error_out = prefix +
+                "pre_encoder_reference_capture requires exactly one positive bound: max_frames or max_seconds";
+        }
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json build_pre_encoder_reference_capture_json(const PreEncoderReferenceCaptureConfig& config)
+{
+    nlohmann::json out = {
+        {"enabled", config.enabled},
+        {"max_frames", config.max_frames},
+        {"max_seconds", config.max_seconds}
+    };
+    if (!config.output_dir.empty()) {
+        out["output_dir"] = config.output_dir;
+    }
+    return out;
+}
+
+bool parse_pre_encoder_reference_capture_json(const nlohmann::json& node,
+                                              PreEncoderReferenceCaptureConfig* config_out,
+                                              std::string* error_out,
+                                              const std::string& context)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out = context + ": internal error: null pre-encoder reference config destination";
+        }
+        return false;
+    }
+    if (!node.is_object()) {
+        if (error_out) {
+            *error_out = context + ": pre_encoder_reference_capture must be a JSON object";
+        }
+        return false;
+    }
+
+    PreEncoderReferenceCaptureConfig config;
+    config.enabled = node.value("enabled", true);
+    config.max_frames = node.value("max_frames", 0);
+    config.max_seconds = node.value("max_seconds", 0);
+    config.output_dir = node.value("output_dir", "");
+    if (!validate_pre_encoder_reference_capture_config(config, error_out, context)) {
+        return false;
+    }
+
+    *config_out = config;
     return true;
 }
 
@@ -549,6 +631,36 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
                 }
                 return false;
             }
+            continue;
+        }
+        if (arg == "--preenc-ref-max-frames") {
+            const std::string value = consume_value("--preenc-ref-max-frames");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->pre_encoder_reference_capture.max_frames) ||
+                options->pre_encoder_reference_capture.max_frames <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --preenc-ref-max-frames value: " + value;
+                }
+                return false;
+            }
+            options->pre_encoder_reference_capture.enabled = true;
+            continue;
+        }
+        if (arg == "--preenc-ref-max-seconds") {
+            const std::string value = consume_value("--preenc-ref-max-seconds");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->pre_encoder_reference_capture.max_seconds) ||
+                options->pre_encoder_reference_capture.max_seconds <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --preenc-ref-max-seconds value: " + value;
+                }
+                return false;
+            }
+            options->pre_encoder_reference_capture.enabled = true;
             continue;
         }
         if (arg == "--duration") {
@@ -1104,6 +1216,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params,
     const std::vector<int>& required_gpu_ids,
     std::string record_folder, std::string encoder_basic_setup,
+    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture,
     int record_start_delay_seconds = 0,
     bool enable_recording = true)
 {
@@ -1215,7 +1328,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     encoder_settings.gop_length,
                     record_folder,
                     *camera_resources[idx].recycle_queue,
-                    camera_control);
+                    camera_control,
+                    pre_encoder_reference_capture);
                 recording_pipelines[idx]->start();
             }
         }
@@ -1335,7 +1449,24 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 }
                 break;
             case FetchGame::ManagerState_STARTCAMTHREAD:
-                if (start_camera_thread(camera_threads, camera_resources, active_camera_indices, recording_pipelines, &gpu_dmon_monitor, cameras_params, ecams, camera_control, cameras_select, device_info, *cam_count, ptp_params, {}, recording_setup->record_folder, recording_setup->encoder_basic_setup, 0))
+                if (start_camera_thread(
+                        camera_threads,
+                        camera_resources,
+                        active_camera_indices,
+                        recording_pipelines,
+                        &gpu_dmon_monitor,
+                        cameras_params,
+                        ecams,
+                        camera_control,
+                        cameras_select,
+                        device_info,
+                        *cam_count,
+                        ptp_params,
+                        {},
+                        recording_setup->record_folder,
+                        recording_setup->encoder_basic_setup,
+                        PreEncoderReferenceCaptureConfig{},
+                        0))
                 {
                     manager_context->state = FetchGame::ManagerState_THREADREADY;
                 } else {
@@ -1405,6 +1536,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.duration_seconds > 0 || options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             !options.required_gpu_ids.empty() ||
+            pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
             !options.encoder_settings.select_all_cameras ||
             !options.encoder_settings.camera_serials.empty()) {
@@ -1425,18 +1557,35 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             !options.required_gpu_ids.empty() ||
+            pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
             if (error_out) {
                 *error_out =
                     "When --experiment-spec is provided, per-run flags like "
                     "--list-cameras, --stream-only, --record-folder, --camera, --codec, --preset, --tuning, "
-                    "--rate-control, --quality, --gop, --duration, --stream-start-delay, "
+                    "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
+                    "--preenc-ref-max-seconds, --duration, --stream-start-delay, "
                     "--record-delay, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
             return false;
         }
         return true;
+    }
+
+    if (!validate_pre_encoder_reference_capture_config(
+            options.pre_encoder_reference_capture,
+            error_out,
+            "Local headless CLI")) {
+        return false;
+    }
+
+    if (options.stream_only && options.pre_encoder_reference_capture.enabled) {
+        if (error_out) {
+            *error_out =
+                "pre_encoder_reference_capture requires recording output and is not supported with --stream-only.";
+        }
+        return false;
     }
 
     if (!options.list_cameras && !options.stream_only && options.record_folder.empty()) {
@@ -2214,6 +2363,15 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
+    if (fixed.contains("pre_encoder_reference_capture")) {
+        if (!parse_pre_encoder_reference_capture_json(
+                fixed["pre_encoder_reference_capture"],
+                &spec->pre_encoder_reference_capture,
+                error_out,
+                "Experiment spec fixed.pre_encoder_reference_capture")) {
+            return false;
+        }
+    }
     if (spec->output_root.empty()) {
         if (error_out) {
             *error_out = "Experiment spec requires fixed.output_root";
@@ -2317,6 +2475,18 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                             run.options.record_start_delay_seconds = 0;
                             run.options.required_gpu_ids = spec.gpu_ids;
                             run.options.encoder_settings = spec.selection;
+                            run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
+                            if (run.options.pre_encoder_reference_capture.enabled &&
+                                !run.options.pre_encoder_reference_capture.output_dir.empty()) {
+                                const std::filesystem::path configured_output_dir(
+                                    run.options.pre_encoder_reference_capture.output_dir);
+                                if (!configured_output_dir.is_absolute()) {
+                                    run.options.pre_encoder_reference_capture.output_dir =
+                                        (std::filesystem::path(run.recording_folder) /
+                                         configured_output_dir)
+                                            .string();
+                                }
+                            }
                             run.options.encoder_settings.codec = codec;
                             run.options.encoder_settings.preset = preset;
                             run.options.encoder_settings.tuning = tuning;
@@ -2339,6 +2509,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                 {"stream_start_delay_s", spec.stream_start_delay_s},
                                 {"record_start_delay_s", 0},
                                 {"recording_folder", run.recording_folder},
+                                {"pre_encoder_reference_capture",
+                                 build_pre_encoder_reference_capture_json(
+                                     run.options.pre_encoder_reference_capture)},
                             };
                             runs.push_back(std::move(run));
                         }
@@ -2454,6 +2627,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.required_gpu_ids,
         active_record_folder,
         encoder_setup,
+        options.pre_encoder_reference_capture,
         options.record_start_delay_seconds,
         enable_recording);
 
@@ -2529,6 +2703,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["rate_control_mode"] = run.options.encoder_settings.rate_control_mode;
     row["quality_value"] = run.options.encoder_settings.quality_value;
     row["gop_length"] = run.options.encoder_settings.gop_length;
+    row["nvenc_direct_input"] = false;
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
     row["display"] = false;
@@ -2553,6 +2728,19 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["enc_fail_final"] = 0;
     row["enc_slow_final"] = 0;
     row["dropped_frames_camera"] = -1;
+    row["pre_encoder_reference_capture_enabled"] = run.options.pre_encoder_reference_capture.enabled;
+    row["pre_encoder_reference_capture_max_frames"] = run.options.pre_encoder_reference_capture.max_frames;
+    row["pre_encoder_reference_capture_max_seconds"] = run.options.pre_encoder_reference_capture.max_seconds;
+    row["pre_encoder_reference_capture_status"] =
+        run.options.pre_encoder_reference_capture.enabled ? "not_reported" : "disabled";
+    row["pre_encoder_reference_frames_captured"] = 0ULL;
+    row["pre_encoder_reference_bytes_written"] = 0ULL;
+    row["pre_encoder_reference_raw_dump_path"] = "";
+    row["pre_encoder_reference_index_path"] = "";
+    row["pre_encoder_reference_metadata_path"] = "";
+    row["pre_encoder_reference_raw_dump_present"] = false;
+    row["pre_encoder_reference_index_present"] = false;
+    row["pre_encoder_reference_metadata_present"] = false;
 
     const nlohmann::json pipeline_info = snapshot.value("pipeline_metrics", nlohmann::json::object())
                                           .value(camera_serial, nlohmann::json::object());
@@ -2610,6 +2798,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["dropped_frames_camera"] = static_cast<int64_t>(csv_stats.camera_dropped_frames_delta);
 
     if (encoder_info.is_object()) {
+        row["nvenc_direct_input"] = encoder_info.value("path", "") == "hw_direct_input";
         if (row["gpu_id"].get<int>() < 0) {
             row["gpu_id"] = encoder_info.value("gpu_id", -1);
         }
@@ -2620,6 +2809,38 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 row["gpu_pci_bus_id"] = gpu.value("pci_bus_id", "");
             }
         }
+        const nlohmann::json preenc_capture =
+            encoder_info.value("pre_encoder_reference_capture", nlohmann::json::object());
+        if (preenc_capture.is_object()) {
+            row["pre_encoder_reference_capture_enabled"] =
+                preenc_capture.value("enabled", false);
+            row["pre_encoder_reference_capture_max_frames"] =
+                preenc_capture.value("max_frames", 0);
+            row["pre_encoder_reference_capture_max_seconds"] =
+                preenc_capture.value("max_seconds", 0);
+            row["pre_encoder_reference_capture_status"] =
+                preenc_capture.value("status", "disabled");
+            row["pre_encoder_reference_frames_captured"] =
+                preenc_capture.value("frames_captured", 0ULL);
+            row["pre_encoder_reference_bytes_written"] =
+                preenc_capture.value("bytes_written", 0ULL);
+            const nlohmann::json artifacts =
+                preenc_capture.value("artifacts", nlohmann::json::object());
+            if (artifacts.is_object()) {
+                const std::string raw_dump_path = artifacts.value("raw_dump", "");
+                const std::string index_path = artifacts.value("index", "");
+                const std::string metadata_path = artifacts.value("metadata", "");
+                row["pre_encoder_reference_raw_dump_path"] = raw_dump_path;
+                row["pre_encoder_reference_index_path"] = index_path;
+                row["pre_encoder_reference_metadata_path"] = metadata_path;
+                row["pre_encoder_reference_raw_dump_present"] =
+                    !raw_dump_path.empty() && std::filesystem::exists(raw_dump_path);
+                row["pre_encoder_reference_index_present"] =
+                    !index_path.empty() && std::filesystem::exists(index_path);
+                row["pre_encoder_reference_metadata_present"] =
+                    !metadata_path.empty() && std::filesystem::exists(metadata_path);
+            }
+        }
         const double target_fps = static_cast<double>(encoder_info.value("fps", 0));
         const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
         const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
@@ -2627,24 +2848,64 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         const double enc_fps_mean = row["enc_fps_mean"].get<double>();
         const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
         const bool fps_ok = (target_fps <= 0.0) || (enc_fps_mean + tolerance >= target_fps);
+        const bool preenc_enabled = row["pre_encoder_reference_capture_enabled"].get<bool>();
+        const std::string preenc_status = row["pre_encoder_reference_capture_status"].get<std::string>();
+        const uint64_t preenc_frames = row["pre_encoder_reference_frames_captured"].get<uint64_t>();
+        const bool preenc_artifacts_present =
+            row["pre_encoder_reference_raw_dump_present"].get<bool>() &&
+            row["pre_encoder_reference_index_present"].get<bool>() &&
+            row["pre_encoder_reference_metadata_present"].get<bool>();
 
-        if ((spec.require_zero_acq_starve && acq_starve > 0) ||
-            (spec.require_zero_pre_drops && pre_drops > 0) ||
-            (spec.require_zero_enc_fail && enc_fail > 0)) {
-            row["pass_fail"] = "fail";
-            if (spec.require_zero_acq_starve && acq_starve > 0) {
-                row["reason"] = "nonzero acquisition starvation";
-            } else if (spec.require_zero_pre_drops && pre_drops > 0) {
-                row["reason"] = "nonzero preprocess drops";
+        if (preenc_enabled) {
+            if (preenc_status == "error") {
+                row["pass_fail"] = "fail";
+                row["reason"] = "pre-encoder reference capture error";
+            } else if (!preenc_artifacts_present) {
+                row["pass_fail"] = "fail";
+                row["reason"] = "missing pre-encoder reference artifacts";
+            } else if (preenc_frames == 0) {
+                row["pass_fail"] = "fail";
+                row["reason"] = "pre-encoder reference captured zero frames";
+            } else if (preenc_status != "completed" && preenc_status != "budget_reached") {
+                row["pass_fail"] = "fail";
+                row["reason"] = "pre-encoder reference capture incomplete";
+            } else if ((spec.require_zero_acq_starve && acq_starve > 0) ||
+                       (spec.require_zero_pre_drops && pre_drops > 0) ||
+                       (spec.require_zero_enc_fail && enc_fail > 0)) {
+                row["pass_fail"] = "fail";
+                if (spec.require_zero_acq_starve && acq_starve > 0) {
+                    row["reason"] = "nonzero acquisition starvation";
+                } else if (spec.require_zero_pre_drops && pre_drops > 0) {
+                    row["reason"] = "nonzero preprocess drops";
+                } else {
+                    row["reason"] = "nonzero encode failures";
+                }
+            } else if (!fps_ok) {
+                row["pass_fail"] = "marginal";
+                row["reason"] = "encode fps below target tolerance";
             } else {
-                row["reason"] = "nonzero encode failures";
+                row["pass_fail"] = "pass";
+                row["reason"] = "meets current policy";
             }
-        } else if (!fps_ok) {
-            row["pass_fail"] = "marginal";
-            row["reason"] = "encode fps below target tolerance";
         } else {
-            row["pass_fail"] = "pass";
-            row["reason"] = "meets current policy";
+            if ((spec.require_zero_acq_starve && acq_starve > 0) ||
+                (spec.require_zero_pre_drops && pre_drops > 0) ||
+                (spec.require_zero_enc_fail && enc_fail > 0)) {
+                row["pass_fail"] = "fail";
+                if (spec.require_zero_acq_starve && acq_starve > 0) {
+                    row["reason"] = "nonzero acquisition starvation";
+                } else if (spec.require_zero_pre_drops && pre_drops > 0) {
+                    row["reason"] = "nonzero preprocess drops";
+                } else {
+                    row["reason"] = "nonzero encode failures";
+                }
+            } else if (!fps_ok) {
+                row["pass_fail"] = "marginal";
+                row["reason"] = "encode fps below target tolerance";
+            } else {
+                row["pass_fail"] = "pass";
+                row["reason"] = "meets current policy";
+            }
         }
     } else {
         row["status"] = "failed";
@@ -2694,7 +2955,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -2710,6 +2971,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("rate_control_mode", "") << ","
                 << row.value("quality_value", 0) << ","
                 << row.value("gop_length", 0) << ","
+                << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","
                 << (row.value("display", false) ? "true" : "false") << ","
@@ -2730,7 +2992,19 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("pre_drops_final", 0ULL) << ","
                 << row.value("enc_fail_final", 0ULL) << ","
                 << row.value("enc_slow_final", 0ULL) << ","
-                << row.value("dropped_frames_camera", -1) << "\n";
+                << row.value("dropped_frames_camera", -1) << ","
+                << (row.value("pre_encoder_reference_capture_enabled", false) ? "true" : "false") << ","
+                << row.value("pre_encoder_reference_capture_max_frames", 0) << ","
+                << row.value("pre_encoder_reference_capture_max_seconds", 0) << ","
+                << row.value("pre_encoder_reference_capture_status", "") << ","
+                << row.value("pre_encoder_reference_frames_captured", 0ULL) << ","
+                << row.value("pre_encoder_reference_bytes_written", 0ULL) << ","
+                << (row.value("pre_encoder_reference_raw_dump_present", false) ? "true" : "false") << ","
+                << (row.value("pre_encoder_reference_index_present", false) ? "true" : "false") << ","
+                << (row.value("pre_encoder_reference_metadata_present", false) ? "true" : "false") << ","
+                << "\"" << row.value("pre_encoder_reference_raw_dump_path", "") << "\","
+                << "\"" << row.value("pre_encoder_reference_index_path", "") << "\","
+                << "\"" << row.value("pre_encoder_reference_metadata_path", "") << "\"\n";
         }
     }
     return true;

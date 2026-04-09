@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 #include <atomic>
 #include <chrono>
+#include <vector>
 
 class EncoderHwWorker; // Forward declaration is sufficient here
 
@@ -20,7 +21,9 @@ public:
         const char* name,
         CameraParams* cam_params,
         const RecordingOutputConfig& recording_output_config,
+        bool direct_input_enabled,
         int encoder_pitch,
+        int direct_input_slot_count,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
         CameraControl* camera_control
     );
@@ -31,10 +34,11 @@ public:
     // This queue is public so the HW worker can return buffers
     SafeQueue<ENCODER_WORKER_ENTRY*> free_encoder_entries_;
     SafeQueue<cudaEvent_t*> free_events_;  // Assuming this is also public
+    SafeQueue<int> free_direct_input_slots_;
     
     // Public atomic counters for resource tracking
-    std::atomic<int> available_buffers_{ENCODER_ENTRY_POOL_SIZE};
-    std::atomic<int> available_events_{EVENT_POOL_SIZE};
+    std::atomic<int> available_buffers_{0};
+    std::atomic<int> available_events_{0};
     
     // Performance monitoring getters
     double get_fps() const { return current_fps_.load(); }
@@ -45,6 +49,10 @@ public:
     uint64_t get_hw_slow_frames() const;
     int get_hw_queue_depth() const;
     bool IsDrained();
+    bool direct_input_enabled() const { return direct_input_enabled_; }
+    int direct_input_pitch() const { return direct_input_pitch_; }
+    int direct_input_slot_count() const { return direct_input_slot_count_; }
+    const std::vector<void*>& direct_input_surfaces() const { return direct_input_surfaces_; }
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
@@ -60,8 +68,11 @@ private:
     Debayer debayer_gpu_;
     unsigned char* d_rgba_resize_;
     unsigned char* d_uv_default_plane_;
+    bool direct_input_enabled_;
     RecordingOutputConfig recording_output_config_;
     int encoder_pitch_;
+    int direct_input_pitch_;
+    int direct_input_slot_count_;
     int output_width_;
     int output_height_;
     NppiSize resize_source_size_;
@@ -69,10 +80,10 @@ private:
     NppiSize resize_output_size_;
     NppiRect resize_output_roi_;
 
-    static const int ENCODER_ENTRY_POOL_SIZE = 120; 
-    static const int EVENT_POOL_SIZE = 120;
-    ENCODER_WORKER_ENTRY encoder_entry_pool_[ENCODER_ENTRY_POOL_SIZE];
+    static const int DEFAULT_ENCODER_ENTRY_POOL_SIZE = 120;
+    std::vector<ENCODER_WORKER_ENTRY> encoder_entry_pool_;
     std::vector<cudaEvent_t> event_pool_;
+    std::vector<void*> direct_input_surfaces_;
     
     // Performance monitoring members
     std::chrono::steady_clock::time_point last_fps_update_time_;

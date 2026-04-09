@@ -25,7 +25,8 @@ public:
         int gop_length,
         const std::string& base_folder_name,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
-        CameraControl* camera_control
+        CameraControl* camera_control,
+        const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config = {}
     );
     ~ModernRecordingPipeline();
 
@@ -36,9 +37,6 @@ public:
     EncoderPreprocessWorker* preprocess_worker() const { return preprocess_worker_.get(); }
     EncoderHwWorker* hw_worker() const { return hw_worker_.get(); }
     const RecordingOutputConfig& recording_output_config() const { return recording_output_config_; }
-
-private:
-    int determine_encoder_pitch() const;
 
     CameraParams* camera_params_ = nullptr;
     RecordingOutputConfig recording_output_config_;

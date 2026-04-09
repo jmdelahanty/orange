@@ -109,6 +109,19 @@ consumer can tell that `gpu_id = 0` mapped to a concrete device such as
 records best-effort host-level GPU sidecars such as `nvidia-smi dmon` for
 headless benchmark runs.
 
+When pre-encoder reference capture is enabled, the recording folder may also
+contain:
+
+```text
+Cam<serial>_preenc_ref.bin
+Cam<serial>_preenc_ref_index.csv
+Cam<serial>_preenc_ref.json
+```
+
+These are bounded benchmark artifacts representing the prepared NV12 surface
+after preprocess and before encode submission. They are not sensor-native raw
+recordings.
+
 `sync` is an optional session-level synchronization snapshot captured when the
 recording starts. It is intended to capture durable run provenance, not every
 internal synchronization flag transition.
@@ -189,6 +202,38 @@ Notes:
 - It is currently emitted by the headless recording path used for experiments.
 - `artifact_path` and `stderr_path` are useful even when the monitor fails to
   start, because the stderr log often explains driver or CLI issues.
+
+Current encoder snapshot extension for pre-encoder reference capture:
+
+```json
+{
+  "encoders": {
+    "2010096": {
+      "pre_encoder_reference_capture": {
+        "capture_mode": "pre_encoder_reference",
+        "enabled": true,
+        "max_frames": 120,
+        "max_seconds": 0,
+        "status": "budget_reached|completed|error",
+        "frames_captured": 120,
+        "bytes_written": 1469660160,
+        "budget_reached": true,
+        "artifacts": {
+          "raw_dump": "/abs/path/Cam2010096_preenc_ref.bin",
+          "index": "/abs/path/Cam2010096_preenc_ref_index.csv",
+          "metadata": "/abs/path/Cam2010096_preenc_ref.json"
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+- `path_type` inside this block reflects whether the capture ran on the current
+  copy path or a future direct-input path.
+- Consumers should verify that the three artifact paths actually exist before
+  treating a reference-capture run as valid.
 
 Current `camera_runtime` shape:
 

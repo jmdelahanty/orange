@@ -42,6 +42,7 @@ void NvEncoderCuda::AllocateInputBuffers(int32_t numInputBuffers)
 
     // for MEOnly mode we need to allocate seperate set of buffers for reference frame
     int numCount = m_bMotionEstimationOnly ? 2 : 1;
+    m_bOwnInputFrames = true;
 
     for (int count = 0; count < numCount; count++)
     {
@@ -71,6 +72,43 @@ void NvEncoderCuda::AllocateInputBuffers(int32_t numInputBuffers)
     }
 }
 
+void NvEncoderCuda::RegisterExternalCudaInputBuffers(const std::vector<void*>& inputFrames, uint32_t pitch)
+{
+    if (!IsHWEncoderInitialized())
+    {
+        NVENC_THROW_ERROR("Encoder intialization failed", NV_ENC_ERR_ENCODER_NOT_INITIALIZED);
+    }
+
+    if (!m_bUseExternalInputBuffers)
+    {
+        NVENC_THROW_ERROR("External input buffer mode is not enabled", NV_ENC_ERR_INVALID_PARAM);
+    }
+
+    if (m_bMotionEstimationOnly)
+    {
+        NVENC_THROW_ERROR("External input buffers are not supported for ME-only mode", NV_ENC_ERR_INVALID_PARAM);
+    }
+
+    if (inputFrames.size() != static_cast<size_t>(GetEncoderBufferCount()))
+    {
+        NVENC_THROW_ERROR("External input buffer count does not match encoder buffer count", NV_ENC_ERR_INVALID_PARAM);
+    }
+
+    if (!m_vInputFrames.empty() || !m_vRegisteredResources.empty())
+    {
+        NVENC_THROW_ERROR("Input buffers are already registered", NV_ENC_ERR_INVALID_PARAM);
+    }
+
+    m_bOwnInputFrames = false;
+    RegisterInputResources(inputFrames,
+        NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR,
+        GetMaxEncodeWidth(),
+        GetMaxEncodeHeight(),
+        static_cast<int>(pitch),
+        GetPixelFormat(),
+        false);
+}
+
 void NvEncoderCuda::SetIOCudaStreams(NV_ENC_CUSTREAM_PTR inputStream, NV_ENC_CUSTREAM_PTR outputStream)
 {
     NVENC_API_CALL(m_nvenc.nvEncSetIOCudaStreams(m_hEncoder, inputStream, outputStream));
@@ -97,11 +135,14 @@ void NvEncoderCuda::ReleaseCudaResources()
 
     cuCtxPushCurrent(m_cuContext);
 
-    for (uint32_t i = 0; i < m_vInputFrames.size(); ++i)
+    if (m_bOwnInputFrames)
     {
-        if (m_vInputFrames[i].inputPtr)
+        for (uint32_t i = 0; i < m_vInputFrames.size(); ++i)
         {
-            cuMemFree(reinterpret_cast<CUdeviceptr>(m_vInputFrames[i].inputPtr));
+            if (m_vInputFrames[i].inputPtr)
+            {
+                cuMemFree(reinterpret_cast<CUdeviceptr>(m_vInputFrames[i].inputPtr));
+            }
         }
     }
     m_vInputFrames.clear();
@@ -116,6 +157,7 @@ void NvEncoderCuda::ReleaseCudaResources()
     m_vReferenceFrames.clear();
 
     cuCtxPopCurrent(NULL);
+    m_bOwnInputFrames = true;
     m_cuContext = nullptr;
 }
 

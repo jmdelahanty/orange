@@ -14,6 +14,10 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
+#include <stdexcept>
+#include <string>
 
 namespace {
 constexpr uint64_t kMinQualityBitrate = 10000000ULL;
@@ -23,6 +27,7 @@ constexpr double kMonoTargetBpp = 0.10;
 constexpr int kDefaultQualityValue = 20;
 constexpr int kMinQualityValue = 1;
 constexpr int kMaxQualityValue = 51;
+constexpr size_t kPreEncoderReferenceCaptureRingSize = 3;
 
 uint32_t clamp_bitrate(uint64_t value) {
     if (value < kMinQualityBitrate) {
@@ -68,6 +73,18 @@ int clamp_quality_value(int value) {
         return kMaxQualityValue;
     }
     return value;
+}
+
+bool parse_env_flag(const char* name, bool default_value) {
+    const char* env = std::getenv(name);
+    if (!env || *env == '\0') {
+        return default_value;
+    }
+    if (strcmp(env, "0") == 0 || strcmp(env, "false") == 0 || strcmp(env, "FALSE") == 0 ||
+        strcmp(env, "off") == 0 || strcmp(env, "OFF") == 0) {
+        return false;
+    }
+    return true;
 }
 
 std::string resolve_rate_control_strategy(
@@ -331,7 +348,8 @@ EncoderHwWorker::EncoderHwWorker(
     int gop_length,
     std::string base_folder_name,
     EncoderPreprocessWorker* prep_worker,
-    CameraControl* camera_control
+    CameraControl* camera_control,
+    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
 )
 : CThreadWorker(name),
   camera_params_(camera_params),
@@ -341,6 +359,8 @@ EncoderHwWorker::EncoderHwWorker(
   preset_(preset),
   tuning_(tuning),
   rate_control_mode_(rate_control_mode.empty() ? "vbr" : rate_control_mode),
+  pre_encoder_reference_capture_config_(pre_encoder_reference_capture_config),
+  direct_input_enabled_(parse_env_flag("ORANGE_NVENC_DIRECT_INPUT", false)),
   quality_value_(clamp_quality_value(quality_value)),
   gop_length_(sanitize_recording_gop_length(gop_length)),
   m_prep_worker_(prep_worker),
@@ -352,14 +372,28 @@ EncoderHwWorker::EncoderHwWorker(
   frame_counter_(0),
   is_recording_(false) // Initialize recording state
 {
+    if (!pre_encoder_reference_capture_config_.has_valid_bound()) {
+        throw std::invalid_argument(
+            "pre_encoder_reference_capture requires exactly one positive bound: max_frames or max_seconds");
+    }
+    pre_encoder_reference_writer_.Configure(pre_encoder_reference_capture_config_);
+    pre_encoder_reference_async_enabled_ =
+        pre_encoder_reference_capture_config_.enabled && !direct_input_enabled_;
+
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreate(&m_stream));
+    if (pre_encoder_reference_capture_config_.enabled) {
+        ck(cudaStreamCreate(&pre_encoder_reference_stream_));
+    }
     ck(cuCtxGetCurrent(&encoder_.cuContext));
     encoder_.pEnc = new NvEncoderCuda(
         encoder_.cuContext,
         recording_output_config_.resolved_width,
         recording_output_config_.resolved_height,
         NV_ENC_BUFFER_FORMAT_NV12);
+    if (direct_input_enabled_) {
+        encoder_.pEnc->SetExternalInputBufferMode(true);
+    }
 
     NV_ENC_INITIALIZE_PARAMS initializeParams = { NV_ENC_INITIALIZE_PARAMS_VER };
     NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
@@ -449,6 +483,17 @@ EncoderHwWorker::EncoderHwWorker(
     
     encoder_.pEnc->CreateEncoder(&initializeParams);
     encoder_.pEnc->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
+    encoder_buffer_count_ = static_cast<int>(encoder_.pEnc->GetEncoderBufferCount());
+    if (!direct_input_enabled_) {
+        const NvEncInputFrame* encoder_input_frame = encoder_.pEnc->GetNextInputFrame();
+        if (!encoder_input_frame) {
+            throw std::runtime_error("Failed to get NVENC input frame while initializing hardware worker");
+        }
+        encoder_input_pitch_ = static_cast<int>(encoder_input_frame->pitch);
+    } else {
+        std::cout << "[EncoderHwWorker] Direct NVENC input enabled via ORANGE_NVENC_DIRECT_INPUT=1"
+                  << " (ring slots: " << encoder_buffer_count_ << ")" << std::endl;
+    }
 
     {
         NV_ENC_INITIALIZE_PARAMS resolved_params = { NV_ENC_INITIALIZE_PARAMS_VER };
@@ -457,7 +502,7 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_.pEnc->GetInitializeParams(&resolved_params);
 
         encoder_snapshot_.backend = "nvenc";
-        encoder_snapshot_.path = "hw";
+        encoder_snapshot_.path = direct_input_enabled_ ? "hw_direct_input" : "hw";
         encoder_snapshot_.codec = codec_;
         encoder_snapshot_.preset = preset_;
         encoder_snapshot_.tuning = tuning_;
@@ -516,6 +561,9 @@ EncoderHwWorker::~EncoderHwWorker()
     {
         finalize_recording();
     }
+    poll_pre_encoder_reference_captures(true);
+    finalize_pre_encoder_reference_capture();
+    release_pre_encoder_reference_capture_resources();
     if (encoder_.pEnc) {
         delete encoder_.pEnc;
         encoder_.pEnc = nullptr;
@@ -524,6 +572,340 @@ EncoderHwWorker::~EncoderHwWorker()
         cudaStreamDestroy(m_stream);
         m_stream = nullptr;
     }
+    if (pre_encoder_reference_stream_) {
+        cudaStreamDestroy(pre_encoder_reference_stream_);
+        pre_encoder_reference_stream_ = nullptr;
+    }
+}
+
+void EncoderHwWorker::SetPreprocessWorker(EncoderPreprocessWorker* prep_worker)
+{
+    m_prep_worker_ = prep_worker;
+    if (!direct_input_enabled_ || direct_input_registered_ || !m_prep_worker_ || !encoder_.pEnc) {
+        return;
+    }
+
+    encoder_.pEnc->RegisterExternalCudaInputBuffers(
+        m_prep_worker_->direct_input_surfaces(),
+        static_cast<uint32_t>(m_prep_worker_->direct_input_pitch()));
+    direct_input_registered_ = true;
+    encoder_input_pitch_ = m_prep_worker_->direct_input_pitch();
+}
+
+void EncoderHwWorker::initialize_pre_encoder_reference_capture()
+{
+    if (!pre_encoder_reference_capture_config_.enabled) {
+        return;
+    }
+
+    const size_t pitch = static_cast<size_t>(encoder_input_pitch_);
+    const size_t frame_size =
+        pitch * static_cast<size_t>(recording_output_config_.resolved_height) * 3 / 2;
+
+    if (pitch == 0 || frame_size == 0) {
+        pre_encoder_reference_writer_.SetError(
+            "Pre-encoder reference capture could not resolve a valid NV12 surface pitch");
+        return;
+    }
+
+    std::string staging_error;
+    if (!ensure_pre_encoder_reference_staging_slots(frame_size, &staging_error)) {
+        pre_encoder_reference_writer_.SetError(staging_error);
+        return;
+    }
+
+    PreEncoderReferenceWriter::OpenParams params;
+    params.camera_serial = camera_params_->camera_serial;
+    params.output_dir = pre_encoder_reference_capture_config_.output_dir.empty()
+        ? active_recording_folder_
+        : pre_encoder_reference_capture_config_.output_dir;
+    params.path_type = direct_input_enabled_ ? "direct_input" : "copy";
+    params.source_path_flavor = camera_params_->color ? "color" : "mono";
+    params.resize_enabled = recording_output_config_.resize_enabled;
+    params.width = recording_output_config_.resolved_width;
+    params.height = recording_output_config_.resolved_height;
+    params.pitch = pitch;
+    params.frame_size = frame_size;
+    params.encoder_snapshot = build_encoder_snapshot_json();
+    params.encoder_snapshot.erase("pre_encoder_reference_capture");
+
+    std::string open_error;
+    if (!pre_encoder_reference_writer_.Open(params, &open_error)) {
+        std::cerr << "[" << threadName << "] Warning: failed to open pre-encoder reference capture for camera "
+                  << camera_params_->camera_serial << ": " << open_error << std::endl;
+    }
+}
+
+void EncoderHwWorker::finalize_pre_encoder_reference_capture()
+{
+    poll_pre_encoder_reference_captures(true);
+    pre_encoder_reference_writer_.Close();
+}
+
+bool EncoderHwWorker::begin_pre_encoder_reference_capture(ENCODER_WORKER_ENTRY* entry,
+                                                         size_t* staging_slot_out,
+                                                         size_t* frame_size_out)
+{
+    if (!entry || !pre_encoder_reference_writer_.ShouldCaptureNextFrame()) {
+        return false;
+    }
+
+    const size_t frame_pitch = entry->surface_pitch;
+    const size_t frame_height =
+        static_cast<size_t>(recording_output_config_.resolved_height) * 3 / 2;
+    const size_t frame_size = frame_pitch * frame_height;
+    if (frame_size == 0) {
+        pre_encoder_reference_writer_.SetError("Pre-encoder reference frame size resolved to zero");
+        return false;
+    }
+
+    std::string staging_error;
+    if (!ensure_pre_encoder_reference_staging_slots(frame_size, &staging_error)) {
+        pre_encoder_reference_writer_.SetError(staging_error);
+        return false;
+    }
+
+    auto available_slot = pre_encoder_reference_staging_slots_.end();
+    for (auto it = pre_encoder_reference_staging_slots_.begin();
+         it != pre_encoder_reference_staging_slots_.end();
+         ++it) {
+        if (!it->in_use) {
+            available_slot = it;
+            break;
+        }
+    }
+
+    if (available_slot == pre_encoder_reference_staging_slots_.end()) {
+        if (pre_encoder_reference_async_enabled_) {
+            poll_pre_encoder_reference_captures(true);
+            for (auto it = pre_encoder_reference_staging_slots_.begin();
+                 it != pre_encoder_reference_staging_slots_.end();
+                 ++it) {
+                if (!it->in_use) {
+                    available_slot = it;
+                    break;
+                }
+            }
+        }
+        if (available_slot == pre_encoder_reference_staging_slots_.end()) {
+            pre_encoder_reference_writer_.SetError(
+                "Pre-encoder reference capture staging ring exhausted before copy completion");
+            return false;
+        }
+    }
+
+    const size_t staging_slot = static_cast<size_t>(
+        std::distance(pre_encoder_reference_staging_slots_.begin(), available_slot));
+    available_slot->in_use = true;
+    cudaStream_t capture_stream = pre_encoder_reference_async_enabled_
+        ? pre_encoder_reference_stream_
+        : m_stream;
+    if (pre_encoder_reference_async_enabled_ && entry->preprocess_complete_event) {
+        ck(cudaStreamWaitEvent(capture_stream, *entry->preprocess_complete_event, 0));
+    }
+    cudaError_t copy_status = cudaMemcpy2DAsync(
+        available_slot->host_buffer,
+        frame_pitch,
+        entry->d_prepared_frame,
+        frame_pitch,
+        frame_pitch,
+        frame_height,
+        cudaMemcpyDeviceToHost,
+        capture_stream);
+    if (copy_status != cudaSuccess) {
+        available_slot->in_use = false;
+        pre_encoder_reference_writer_.SetError(
+            std::string("cudaMemcpy2DAsync failed during pre-encoder reference capture: ") +
+            cudaGetErrorString(copy_status));
+        return false;
+    }
+
+    if (pre_encoder_reference_async_enabled_) {
+        ck(cudaEventRecord(available_slot->copy_complete_event, pre_encoder_reference_stream_));
+        if (staging_slot_out) {
+            *staging_slot_out = staging_slot;
+        }
+        if (frame_size_out) {
+            *frame_size_out = frame_size;
+        }
+        return true;
+    }
+
+    cudaError_t sync_status = cudaStreamSynchronize(m_stream);
+    if (sync_status != cudaSuccess) {
+        available_slot->in_use = false;
+        pre_encoder_reference_writer_.SetError(
+            std::string("cudaStreamSynchronize failed during pre-encoder reference capture: ") +
+            cudaGetErrorString(sync_status));
+        return false;
+    }
+
+    std::string append_error;
+    if (!pre_encoder_reference_writer_.AppendFrame(
+            available_slot->host_buffer,
+            frame_size,
+            entry->recording_frame_id,
+            entry->timestamp,
+            entry->timestamp_sys,
+            &append_error)) {
+        available_slot->in_use = false;
+        if (!append_error.empty()) {
+            std::cerr << "[" << threadName << "] Warning: failed to append pre-encoder reference frame for camera "
+                      << camera_params_->camera_serial << ": " << append_error << std::endl;
+        }
+        return false;
+    }
+    available_slot->in_use = false;
+    return true;
+}
+
+void EncoderHwWorker::poll_pre_encoder_reference_captures(bool wait_for_all)
+{
+    while (!pending_pre_encoder_reference_captures_.empty()) {
+        PendingReferenceCapture& pending = pending_pre_encoder_reference_captures_.front();
+        ReferenceCaptureStagingSlot& slot = pre_encoder_reference_staging_slots_[pending.staging_slot];
+        cudaError_t event_status = wait_for_all
+            ? cudaEventSynchronize(slot.copy_complete_event)
+            : cudaEventQuery(slot.copy_complete_event);
+        if (!wait_for_all && event_status == cudaErrorNotReady) {
+            break;
+        }
+        if (event_status != cudaSuccess) {
+            pre_encoder_reference_writer_.SetError(
+                std::string("Pre-encoder reference capture completion failed: ") +
+                cudaGetErrorString(event_status));
+        } else {
+            std::string append_error;
+            if (!pre_encoder_reference_writer_.AppendFrame(
+                    slot.host_buffer,
+                    pending.frame_size,
+                    pending.entry->recording_frame_id,
+                    pending.entry->timestamp,
+                    pending.entry->timestamp_sys,
+                    &append_error) &&
+                !append_error.empty()) {
+                std::cerr << "[" << threadName
+                          << "] Warning: failed to append async pre-encoder reference frame for camera "
+                          << camera_params_->camera_serial << ": " << append_error << std::endl;
+            }
+        }
+
+        slot.in_use = false;
+        recycle_encoder_entry(pending.entry, pending.retired_slots);
+        pending_pre_encoder_reference_captures_.pop_front();
+    }
+}
+
+void EncoderHwWorker::recycle_encoder_entry(ENCODER_WORKER_ENTRY* entry,
+                                           const std::vector<uint32_t>& retired_slots)
+{
+    if (!m_prep_worker_ || !entry) {
+        return;
+    }
+
+    if (entry->preprocess_complete_event) {
+        m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
+        m_prep_worker_->available_events_++;
+    }
+    m_prep_worker_->free_encoder_entries_.push(entry);
+    if (!direct_input_enabled_) {
+        m_prep_worker_->available_buffers_++;
+        return;
+    }
+
+    if (!retired_slots.empty()) {
+        for (uint32_t slot_id : retired_slots) {
+            m_prep_worker_->free_direct_input_slots_.push(static_cast<int>(slot_id));
+            m_prep_worker_->available_buffers_++;
+        }
+        return;
+    }
+
+    if (entry->slot_id >= 0) {
+        m_prep_worker_->free_direct_input_slots_.push(entry->slot_id);
+        m_prep_worker_->available_buffers_++;
+        entry->slot_id = -1;
+    }
+}
+
+void EncoderHwWorker::release_pre_encoder_reference_capture_resources()
+{
+    for (auto& slot : pre_encoder_reference_staging_slots_) {
+        if (slot.copy_complete_event) {
+            cudaEventDestroy(slot.copy_complete_event);
+            slot.copy_complete_event = nullptr;
+        }
+        if (slot.host_buffer) {
+            cudaFreeHost(slot.host_buffer);
+            slot.host_buffer = nullptr;
+        }
+        slot.buffer_size = 0;
+        slot.in_use = false;
+    }
+    pre_encoder_reference_staging_slots_.clear();
+    pending_pre_encoder_reference_captures_.clear();
+}
+
+bool EncoderHwWorker::ensure_pre_encoder_reference_staging_slots(size_t frame_size, std::string* error_out)
+{
+    if (frame_size == 0) {
+        if (error_out) {
+            *error_out = "Pre-encoder reference staging buffer size resolved to zero";
+        }
+        return false;
+    }
+
+    if (!pre_encoder_reference_staging_slots_.empty()) {
+        bool sizes_match = true;
+        for (const auto& slot : pre_encoder_reference_staging_slots_) {
+            if (slot.buffer_size != frame_size) {
+                sizes_match = false;
+                break;
+            }
+        }
+        if (sizes_match) {
+            return true;
+        }
+    }
+
+    if (!pending_pre_encoder_reference_captures_.empty()) {
+        if (error_out) {
+            *error_out =
+                "Cannot resize pre-encoder reference capture staging slots while captures are pending";
+        }
+        return false;
+    }
+
+    release_pre_encoder_reference_capture_resources();
+
+    pre_encoder_reference_staging_slots_.resize(kPreEncoderReferenceCaptureRingSize);
+    for (auto& slot : pre_encoder_reference_staging_slots_) {
+        cudaError_t alloc_status =
+            cudaMallocHost(reinterpret_cast<void**>(&slot.host_buffer), frame_size);
+        if (alloc_status != cudaSuccess) {
+            if (error_out) {
+                *error_out =
+                    std::string("Failed to allocate pre-encoder reference staging buffer: ") +
+                    cudaGetErrorString(alloc_status);
+            }
+            release_pre_encoder_reference_capture_resources();
+            return false;
+        }
+        cudaError_t event_status = cudaEventCreateWithFlags(&slot.copy_complete_event, cudaEventDisableTiming);
+        if (event_status != cudaSuccess) {
+            if (error_out) {
+                *error_out =
+                    std::string("Failed to allocate pre-encoder reference staging event: ") +
+                    cudaGetErrorString(event_status);
+            }
+            release_pre_encoder_reference_capture_resources();
+            return false;
+        }
+        slot.buffer_size = frame_size;
+        slot.in_use = false;
+    }
+
+    return true;
 }
 
 void EncoderHwWorker::finalize_recording()
@@ -533,6 +915,14 @@ void EncoderHwWorker::finalize_recording()
     }
 
     flush_and_close();
+    if (encoder_snapshot_valid_ && !active_recording_folder_.empty()) {
+        const std::string camera_key = camera_params_->camera_serial.empty()
+            ? std::to_string(camera_params_->camera_id)
+            : camera_params_->camera_serial;
+        nlohmann::json encoder_info = build_encoder_snapshot_json();
+        update_recording_snapshot_encoder(active_recording_folder_, camera_key, encoder_info);
+    }
+    active_recording_folder_.clear();
     is_recording_ = false;
 
     if (camera_control_) {
@@ -550,10 +940,14 @@ void EncoderHwWorker::finalize_recording()
 
 bool EncoderHwWorker::drain_ready()
 {
+    poll_pre_encoder_reference_captures(false);
     if (GetCountQueueInSize() > 0) {
         return false;
     }
     if (m_prep_worker_ && !m_prep_worker_->IsDrained()) {
+        return false;
+    }
+    if (!pending_pre_encoder_reference_captures_.empty()) {
         return false;
     }
     return true;
@@ -645,13 +1039,15 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     info["enable_non_ref_p"] = encoder_snapshot_.enable_non_ref_p;
     info["repeat_sps_pps"] = encoder_snapshot_.repeat_sps_pps;
     info["enable_ptd"] = encoder_snapshot_.enable_ptd;
+    info["pre_encoder_reference_capture"] = pre_encoder_reference_writer_.BuildSummaryJson();
     return info;
 }
 
 void EncoderHwWorker::flush_and_close()
 {
     if (encoder_.pEnc) {
-        encoder_.pEnc->EndEncode(encoder_.vPacket);
+        std::vector<uint32_t> retired_slots;
+        encoder_.pEnc->EndEncode(encoder_.vPacket, direct_input_enabled_ ? &retired_slots : nullptr);
         for (auto &packet : encoder_.vPacket)
         {
             if (writer_.video) {
@@ -659,7 +1055,15 @@ void EncoderHwWorker::flush_and_close()
             }
         }
         encoder_.vPacket.clear();
+        if (direct_input_enabled_ && m_prep_worker_) {
+            for (uint32_t slot_id : retired_slots) {
+                m_prep_worker_->free_direct_input_slots_.push(static_cast<int>(slot_id));
+                m_prep_worker_->available_buffers_++;
+            }
+        }
     }
+    finalize_pre_encoder_reference_capture();
+    release_pre_encoder_reference_capture_resources();
 
     if (writer_.video) {
         writer_.video->quit_thread();
@@ -680,17 +1084,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 {
     const bool recording_enabled = camera_control_->record_video;
     const bool draining = camera_control_->recording_draining;
-
-    auto recycle_entry = [&]() {
-        if (m_prep_worker_) {
-            if (entry->preprocess_complete_event) {
-                m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
-                m_prep_worker_->available_events_++;
-            }
-            m_prep_worker_->free_encoder_entries_.push(entry);
-            m_prep_worker_->available_buffers_++;
-        }
-    };
+    poll_pre_encoder_reference_captures(false);
 
     if (!entry) {
         if (!recording_enabled && is_recording_) {
@@ -715,6 +1109,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             }
             current_recording_folder = camera_control_->recording_folder;
         }
+        active_recording_folder_ = current_recording_folder;
         {
             orange::ScopedFsuid fsuid_guard;
             (void)fsuid_guard;
@@ -738,6 +1133,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 codec_,
                 metadata_tags);
         }
+        initialize_pre_encoder_reference_capture();
         if (encoder_snapshot_valid_) {
             const std::string camera_key = camera_params_->camera_serial.empty()
                 ? std::to_string(camera_params_->camera_id)
@@ -751,13 +1147,13 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
     // If recording is globally disabled, skip processing but recycle resources.
     if (!recording_enabled && !draining) {
-        recycle_entry();
+        recycle_encoder_entry(entry, {});
         return false;
     }
 
     if (!is_recording_) {
         std::cerr << "[" << this->threadName << "] Warning: Dropping frame because encoder is not recording." << std::endl;
-        recycle_entry();
+        recycle_encoder_entry(entry, {});
         return false;
     }
 
@@ -772,36 +1168,56 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     }
 
     ck(cudaSetDevice(camera_params_->gpu_id));
+    std::vector<uint32_t> retired_slots;
+    bool capture_scheduled = false;
+    size_t capture_staging_slot = 0;
+    size_t capture_frame_size = 0;
 
     try {
         if (entry->preprocess_complete_event) {
             ck(cudaStreamWaitEvent(m_stream, *entry->preprocess_complete_event, 0));
         }
+        capture_scheduled = begin_pre_encoder_reference_capture(
+            entry, &capture_staging_slot, &capture_frame_size);
 
-        const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
-        
-        if (!encoderInputFrame) {
-            encode_failures_++;
-            std::cerr << "[PERF WARNING] " << threadName
-                      << ": Failed to get encoder input frame!" << std::endl;
-            throw std::runtime_error("No encoder input frame available");
+        if (direct_input_enabled_) {
+            if (!direct_input_registered_) {
+                throw std::runtime_error("Direct NVENC input pool is not registered");
+            }
+            const uint32_t expected_slot = encoder_.pEnc->GetNextInputFrameIndex();
+            if (entry->slot_id < 0 || static_cast<uint32_t>(entry->slot_id) != expected_slot) {
+                std::ostringstream error;
+                error << "Direct-input slot mismatch: expected " << expected_slot
+                      << " but got " << entry->slot_id;
+                throw std::runtime_error(error.str());
+            }
+            encoder_.pEnc->EncodeFrame(encoder_.vPacket, nullptr, &retired_slots);
+        } else {
+            const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
+            
+            if (!encoderInputFrame) {
+                encode_failures_++;
+                std::cerr << "[PERF WARNING] " << threadName
+                          << ": Failed to get encoder input frame!" << std::endl;
+                throw std::runtime_error("No encoder input frame available");
+            }
+
+            NvEncoderCuda::CopyToDeviceFrame(
+                encoder_.cuContext,
+                entry->d_prepared_frame,
+                static_cast<uint32_t>(entry->surface_pitch),
+                (CUdeviceptr)encoderInputFrame->inputPtr,
+                encoderInputFrame->pitch,
+                encoder_.pEnc->GetEncodeWidth(),
+                encoder_.pEnc->GetEncodeHeight(),
+                CU_MEMORYTYPE_DEVICE,
+                encoderInputFrame->bufferFormat,
+                encoderInputFrame->chromaOffsets,
+                encoderInputFrame->numChromaPlanes
+            );
+
+            encoder_.pEnc->EncodeFrame(encoder_.vPacket);
         }
-
-        NvEncoderCuda::CopyToDeviceFrame(
-            encoder_.cuContext,
-            entry->d_prepared_frame,
-            encoderInputFrame->pitch,
-            (CUdeviceptr)encoderInputFrame->inputPtr,
-            encoderInputFrame->pitch,
-            encoder_.pEnc->GetEncodeWidth(),
-            encoder_.pEnc->GetEncodeHeight(),
-            CU_MEMORYTYPE_DEVICE,
-            encoderInputFrame->bufferFormat,
-            encoderInputFrame->chromaOffsets,
-            encoderInputFrame->numChromaPlanes
-        );
-
-        encoder_.pEnc->EncodeFrame(encoder_.vPacket);
 
         size_t packets_generated = encoder_.vPacket.size();
         total_packets_ += packets_generated;
@@ -825,13 +1241,15 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                   << " (Frame " << entry->recording_frame_id << ")" << std::endl;
     }
 
-    if (m_prep_worker_) {
-        if (entry->preprocess_complete_event) {
-            m_prep_worker_->free_events_.push(entry->preprocess_complete_event);
-            m_prep_worker_->available_events_++;
-        }
-        m_prep_worker_->free_encoder_entries_.push(entry);
-        m_prep_worker_->available_buffers_++;
+    if (capture_scheduled && pre_encoder_reference_async_enabled_) {
+        pending_pre_encoder_reference_captures_.push_back(
+            PendingReferenceCapture{
+                entry,
+                capture_staging_slot,
+                capture_frame_size,
+                retired_slots});
+    } else {
+        recycle_encoder_entry(entry, retired_slots);
     }
 
     auto end_time = std::chrono::steady_clock::now();
