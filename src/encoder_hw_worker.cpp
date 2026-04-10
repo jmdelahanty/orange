@@ -30,9 +30,8 @@ constexpr int kMinQualityValue = 1;
 constexpr int kMaxQualityValue = 51;
 constexpr int kMaxLookaheadDepth = 32;
 constexpr size_t kPreEncoderReferenceCaptureRingSize = 3;
-constexpr double kStaticPriorCircleRadiusFraction = 0.35;
-constexpr int8_t kStaticPriorInsideDelta = -3;
-constexpr int8_t kStaticPriorOutsideDelta = 3;
+constexpr int8_t kStaticRoiInsideDelta = -3;
+constexpr int8_t kStaticRoiOutsideDelta = 3;
 
 uint32_t clamp_bitrate(uint64_t value) {
     if (value < kMinQualityBitrate) {
@@ -114,10 +113,15 @@ std::string normalize_importance_map_mode(std::string mode) {
     if (mode.empty() || mode == "off" || mode == "none" || mode == "disabled") {
         return "off";
     }
-    if (mode == "static_prior" || mode == "static-prior" || mode == "static") {
-        return "static_prior";
+    if (mode == "static_roi" || mode == "static-roi" ||
+        mode == "static_prior" || mode == "static-prior" || mode == "static") {
+        return "static_roi";
     }
     return mode;
+}
+
+int normalize_importance_map_roi_size_px(int value) {
+    return value > 0 ? value : ImportanceMapConfig::kDefaultRoiSizePx;
 }
 
 bool importance_map_mode_enabled(const std::string& mode) {
@@ -386,7 +390,9 @@ std::vector<std::pair<std::string, std::string>> build_metadata_tags(
         comment << "; vbv=" << encoder_control_overrides.vbv_buffer_size;
     }
     if (importance_map_mode_enabled(importance_map_config.mode)) {
-        comment << "; importance_map=" << normalize_importance_map_mode(importance_map_config.mode);
+        comment << "; importance_map=" << normalize_importance_map_mode(importance_map_config.mode)
+                << "; importance_map_roi_size_px="
+                << normalize_importance_map_roi_size_px(importance_map_config.roi_size_px);
     }
 
     if (recording_output_config.mode == "factor") {
@@ -742,10 +748,12 @@ EncoderHwWorker::EncoderHwWorker(
     encodeConfig.rcParams.enableNonRefP = 0;
     apply_encoder_control_overrides(encodeConfig, encoder_control_overrides_);
     importance_map_config_.mode = normalize_importance_map_mode(importance_map_config_.mode);
-    if (importance_map_config_.mode != "off" && importance_map_config_.mode != "static_prior") {
+    importance_map_config_.roi_size_px =
+        normalize_importance_map_roi_size_px(importance_map_config_.roi_size_px);
+    if (importance_map_config_.mode != "off" && importance_map_config_.mode != "static_roi") {
         throw std::invalid_argument(
             "Unsupported importance_map_mode: " + importance_map_config_.mode +
-            " (expected off or static_prior)");
+            " (expected off or static_roi)");
     }
     if (importance_map_mode_enabled(importance_map_config_.mode)) {
         encodeConfig.rcParams.qpMapMode = NV_ENC_QP_MAP_DELTA;
@@ -845,6 +853,7 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.requested_max_bitrate_bps = encoder_control_overrides_.max_bitrate_bps;
         encoder_snapshot_.requested_vbv_buffer_size = encoder_control_overrides_.vbv_buffer_size;
         encoder_snapshot_.requested_importance_map_mode = importance_map_config_.mode;
+        encoder_snapshot_.requested_importance_map_roi_size_px = importance_map_config_.roi_size_px;
         encoder_snapshot_.qp_map_mode = resolved_config.rcParams.qpMapMode;
         encoder_snapshot_.gpu_id = camera_params_->gpu_id;
         encoder_snapshot_.gpu = build_gpu_runtime_info(camera_params_->gpu_id);
@@ -922,6 +931,7 @@ void EncoderHwWorker::initialize_importance_map()
     encoder_snapshot_.importance_map_block_size = 0;
     encoder_snapshot_.importance_map_grid_width = 0;
     encoder_snapshot_.importance_map_grid_height = 0;
+    encoder_snapshot_.importance_map_roi_size_px = 0;
     encoder_snapshot_.importance_map_inside_delta = 0;
     encoder_snapshot_.importance_map_outside_delta = 0;
 
@@ -939,10 +949,17 @@ void EncoderHwWorker::initialize_importance_map()
         throw std::runtime_error("Importance map grid dimensions are invalid");
     }
 
+    const uint32_t roi_size_px = static_cast<uint32_t>(std::clamp(
+        importance_map_config_.roi_size_px,
+        1,
+        static_cast<int>(std::min(width, height))));
     const double center_x = static_cast<double>(width) * 0.5;
     const double center_y = static_cast<double>(height) * 0.5;
-    const double radius = static_cast<double>(std::min(width, height)) * kStaticPriorCircleRadiusFraction;
-    const double radius_sq = radius * radius;
+    const double half_extent = static_cast<double>(roi_size_px) * 0.5;
+    const double roi_min_x = center_x - half_extent;
+    const double roi_max_x = center_x + half_extent;
+    const double roi_min_y = center_y - half_extent;
+    const double roi_max_y = center_y + half_extent;
 
     importance_map_qp_delta_.resize(static_cast<std::size_t>(grid_width) * static_cast<std::size_t>(grid_height));
     for (uint32_t y = 0; y < grid_height; ++y) {
@@ -953,11 +970,11 @@ void EncoderHwWorker::initialize_importance_map()
             const double sample_y =
                 std::min(static_cast<double>(height) - 0.5,
                          (static_cast<double>(y) + 0.5) * static_cast<double>(block_size));
-            const double dx = sample_x - center_x;
-            const double dy = sample_y - center_y;
-            const bool inside = (dx * dx + dy * dy) <= radius_sq;
+            const bool inside =
+                sample_x >= roi_min_x && sample_x < roi_max_x &&
+                sample_y >= roi_min_y && sample_y < roi_max_y;
             importance_map_qp_delta_[static_cast<std::size_t>(y) * grid_width + x] =
-                inside ? kStaticPriorInsideDelta : kStaticPriorOutsideDelta;
+                inside ? kStaticRoiInsideDelta : kStaticRoiOutsideDelta;
         }
     }
 
@@ -967,8 +984,9 @@ void EncoderHwWorker::initialize_importance_map()
     encoder_snapshot_.importance_map_block_size = block_size;
     encoder_snapshot_.importance_map_grid_width = grid_width;
     encoder_snapshot_.importance_map_grid_height = grid_height;
-    encoder_snapshot_.importance_map_inside_delta = kStaticPriorInsideDelta;
-    encoder_snapshot_.importance_map_outside_delta = kStaticPriorOutsideDelta;
+    encoder_snapshot_.importance_map_roi_size_px = roi_size_px;
+    encoder_snapshot_.importance_map_inside_delta = kStaticRoiInsideDelta;
+    encoder_snapshot_.importance_map_outside_delta = kStaticRoiOutsideDelta;
 }
 
 bool EncoderHwWorker::importance_map_active() const
@@ -1427,12 +1445,15 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
         {"target_bitrate_bps", encoder_snapshot_.requested_target_bitrate_bps},
         {"max_bitrate_bps", encoder_snapshot_.requested_max_bitrate_bps},
         {"vbv_buffer_size", encoder_snapshot_.requested_vbv_buffer_size},
-        {"importance_map_mode", encoder_snapshot_.requested_importance_map_mode}
+        {"importance_map_mode", encoder_snapshot_.requested_importance_map_mode},
+        {"importance_map_roi_size_px", encoder_snapshot_.requested_importance_map_roi_size_px}
     };
     info["importance_map"] = {
         {"requested_mode", encoder_snapshot_.requested_importance_map_mode},
         {"active_mode", encoder_snapshot_.active_importance_map_mode},
         {"enabled", importance_map_active()},
+        {"shape", "square"},
+        {"roi_size_px", encoder_snapshot_.importance_map_roi_size_px},
         {"block_size", encoder_snapshot_.importance_map_block_size},
         {"grid_width", encoder_snapshot_.importance_map_grid_width},
         {"grid_height", encoder_snapshot_.importance_map_grid_height},

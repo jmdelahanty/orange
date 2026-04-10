@@ -30,7 +30,10 @@ struct PreEncoderReferenceCaptureConfig {
 };
 
 struct ImportanceMapConfig {
+    static constexpr int kDefaultRoiSizePx = 512;
+
     std::string mode = "off";
+    int roi_size_px = kDefaultRoiSizePx;
 
     bool enabled() const { return mode != "off"; }
 };

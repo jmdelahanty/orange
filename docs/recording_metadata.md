@@ -462,6 +462,7 @@ Current headless experiment outputs (`runs.json` / `runs.csv`) also export
 main-video artifact metrics derived from `Cam<serial>.mp4`:
 
 - `importance_map_mode`
+- `importance_map_roi_size_px`
 - `importance_map_enabled`
 - `importance_map_active_mode`
 - `importance_map_block_size`
@@ -475,8 +476,11 @@ main-video artifact metrics derived from `Cam<serial>.mp4`:
 
 Notes:
 
-- `importance_map_mode` is the requested headless mode; `static_prior` is the
-  current plumbing-validation mode that emits a synthetic circular delta-QP map.
+- `importance_map_mode` is the requested headless mode; `static_roi` is the
+  current plumbing-validation mode that emits a synthetic centered square
+  delta-QP map.
+- `importance_map_roi_size_px` is the requested square ROI size in pixels for
+  `static_roi`; the current default is `512`.
 - `importance_map_active_mode` reflects what the encoder snapshot actually used
   after initialization and should match the requested mode on a successful run.
 - `video_duration_s` reflects the actual container duration, not the scored
@@ -802,12 +806,15 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
         "target_bitrate_bps": -1,
         "max_bitrate_bps": -1,
         "vbv_buffer_size": -1,
-        "importance_map_mode": "static_prior"
+        "importance_map_mode": "static_roi",
+        "importance_map_roi_size_px": 512
       },
       "importance_map": {
-        "requested_mode": "static_prior",
-        "active_mode": "static_prior",
+        "requested_mode": "static_roi",
+        "active_mode": "static_roi",
         "enabled": true,
+        "shape": "square",
+        "roi_size_px": 512,
         "block_size": 32,
         "grid_width": 71,
         "grid_height": 71,

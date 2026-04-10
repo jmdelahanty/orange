@@ -1,6 +1,6 @@
 {
-  "experiment_id": "2026_04_10_importance_map_static_prior_vbr_p1_ll_2010096_a6000",
-  "notes": "A/B comparison of off vs static_prior for HEVC p1 ll VBR on camera 2010096 and gpu_id=0.",
+  "experiment_id": "2026_04_10_importance_map_static_roi_vbr_p1_ll_2010096_a6000",
+  "notes": "A/B comparison of off vs static_roi for HEVC p1 ll VBR on camera 2010096 and gpu_id=0.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [0]
@@ -19,7 +19,8 @@
     "preset": ["p1"],
     "tuning": ["ll"],
     "rate_control_mode": ["vbr"],
-    "importance_map_mode": ["off", "static_prior"],
+    "importance_map_mode": ["off", "static_roi"],
+    "importance_map_roi_size_px": [512],
     "quality_value": [20],
     "gop_length": [0]
   },

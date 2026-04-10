@@ -108,6 +108,7 @@ struct ExperimentSpec {
     std::vector<int> max_bitrate_bps_values;
     std::vector<int> vbv_buffer_size_values;
     std::vector<std::string> importance_map_modes;
+    std::vector<int> importance_map_roi_size_px_values;
 };
 
 struct ExperimentRunPlan {
@@ -465,10 +466,16 @@ std::string normalize_importance_map_mode(std::string value)
     if (value.empty() || value == "off" || value == "none" || value == "disabled") {
         return "off";
     }
-    if (value == "static_prior" || value == "static-prior" || value == "static") {
-        return "static_prior";
+    if (value == "static_roi" || value == "static-roi" ||
+        value == "static_prior" || value == "static-prior" || value == "static") {
+        return "static_roi";
     }
     return value;
+}
+
+int normalize_importance_map_roi_size_px(int value)
+{
+    return value > 0 ? value : ImportanceMapConfig::kDefaultRoiSizePx;
 }
 
 bool parse_importance_map_mode(const std::string& value, std::string* out)
@@ -477,7 +484,7 @@ bool parse_importance_map_mode(const std::string& value, std::string* out)
         return false;
     }
     const std::string normalized = normalize_importance_map_mode(value);
-    if (normalized == "off" || normalized == "static_prior") {
+    if (normalized == "off" || normalized == "static_roi") {
         *out = normalized;
         return true;
     }
@@ -569,6 +576,11 @@ HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
             if (parse_importance_map_mode(value, &parsed_mode)) {
                 settings.importance_map.mode = parsed_mode;
             }
+        } else if (key == "importance_map_roi_size_px" ||
+                   key == "importance-map-roi-size-px" ||
+                   key == "imap_size" ||
+                   key == "importance_map_size_px") {
+            settings.importance_map.roi_size_px = std::atoi(value.c_str());
         } else if (key == "quality" || key == "cq" || key == "qp") {
             settings.quality_value = std::atoi(value.c_str());
         } else if (key == "gop" || key == "gop_length") {
@@ -612,6 +624,8 @@ HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
         settings.rate_control_mode = "vbr";
     }
     settings.importance_map.mode = normalize_importance_map_mode(settings.importance_map.mode);
+    settings.importance_map.roi_size_px =
+        normalize_importance_map_roi_size_px(settings.importance_map.roi_size_px);
     if (settings.quality_value < 1) {
         settings.quality_value = 20;
     }
@@ -658,6 +672,7 @@ std::string build_headless_encoder_setup_string(const HeadlessEncoderSettings& s
         << " tuning=" << settings.tuning
         << " rc=" << settings.rate_control_mode
         << " importance_map_mode=" << settings.importance_map.mode
+        << " importance_map_roi_size_px=" << settings.importance_map.roi_size_px
         << " quality=" << settings.quality_value
         << " gop=" << settings.gop_length
         << " camera=" << format_selected_camera_serials(settings);
@@ -704,7 +719,8 @@ void print_headless_usage(const char* argv0)
         << "  --preset <p1..p7>\n"
         << "  --tuning <ull|ll|hq>\n"
         << "  --rate-control <vbr|vbr_cq|cbr|cqp>\n"
-        << "  --importance-map-mode <off|static_prior>\n"
+        << "  --importance-map-mode <off|static_roi>\n"
+        << "  --importance-map-roi-size-px <int>  Default 512. Used by static_roi.\n"
         << "  --quality <int>\n"
         << "  --gop <int>\n"
         << "  --aq <auto|on|off>\n"
@@ -823,6 +839,7 @@ bool headless_encoder_settings_is_default(const HeadlessEncoderSettings& setting
            settings.tuning == "ll" &&
            settings.rate_control_mode == "vbr" &&
            settings.importance_map.mode == "off" &&
+           settings.importance_map.roi_size_px == ImportanceMapConfig::kDefaultRoiSizePx &&
            settings.quality_value == 20 &&
            settings.gop_length == 0 &&
            settings.control_overrides.aq < 0 &&
@@ -965,6 +982,20 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             if (!parse_importance_map_mode(value, &options->encoder_settings.importance_map.mode)) {
                 if (error_out) {
                     *error_out = "Invalid --importance-map-mode value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--importance-map-roi-size-px") {
+            const std::string value = consume_value("--importance-map-roi-size-px");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->encoder_settings.importance_map.roi_size_px) ||
+                options->encoder_settings.importance_map.roi_size_px <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --importance-map-roi-size-px value: " + value;
                 }
                 return false;
             }
@@ -1687,6 +1718,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
               << " tuning=" << encoder_settings.tuning
               << " rc=" << encoder_settings.rate_control_mode
               << " importance_map_mode=" << encoder_settings.importance_map.mode
+              << " importance_map_roi_size_px=" << encoder_settings.importance_map.roi_size_px
               << " quality=" << encoder_settings.quality_value
               << " gop=" << encoder_settings.gop_length
               << " aq=" << format_headless_toggle_override(encoder_settings.control_overrides.aq)
@@ -2960,6 +2992,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->max_bitrate_bps_values = parse_int_list_field(matrix, "max_bitrate_bps");
     spec->vbv_buffer_size_values = parse_int_list_field(matrix, "vbv_buffer_size");
     spec->importance_map_modes = parse_string_list_field(matrix, "importance_map_mode");
+    spec->importance_map_roi_size_px_values = parse_int_list_field(matrix, "importance_map_roi_size_px");
 
     if (spec->codecs.empty()) spec->codecs.push_back("h264");
     if (spec->presets.empty()) spec->presets.push_back("p1");
@@ -2975,6 +3008,9 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->max_bitrate_bps_values.empty()) spec->max_bitrate_bps_values.push_back(-1);
     if (spec->vbv_buffer_size_values.empty()) spec->vbv_buffer_size_values.push_back(-1);
     if (spec->importance_map_modes.empty()) spec->importance_map_modes.push_back("off");
+    if (spec->importance_map_roi_size_px_values.empty()) {
+        spec->importance_map_roi_size_px_values.push_back(ImportanceMapConfig::kDefaultRoiSizePx);
+    }
 
     for (std::string& importance_map_mode : spec->importance_map_modes) {
         if (!parse_importance_map_mode(importance_map_mode, &importance_map_mode)) {
@@ -2984,6 +3020,15 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             }
             return false;
         }
+    }
+    for (int& roi_size_px : spec->importance_map_roi_size_px_values) {
+        if (roi_size_px <= 0) {
+            if (error_out) {
+                *error_out = "Experiment spec matrix.importance_map_roi_size_px must contain positive integers";
+            }
+            return false;
+        }
+        roi_size_px = normalize_importance_map_roi_size_px(roi_size_px);
     }
 
     return true;
@@ -3010,6 +3055,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
         spec.vbv_buffer_size_values.size() > 1 || spec.vbv_buffer_size_values.front() > 0;
     const bool include_importance_map_in_run_id =
         spec.importance_map_modes.size() > 1 || spec.importance_map_modes.front() != "off";
+    const bool include_importance_map_roi_size_in_run_id =
+        spec.importance_map_roi_size_px_values.size() > 1 ||
+        spec.importance_map_roi_size_px_values.front() != ImportanceMapConfig::kDefaultRoiSizePx;
 
     int run_index = 0;
     for (const std::string& codec : spec.codecs) {
@@ -3026,6 +3074,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                 for (int max_bitrate_bps : spec.max_bitrate_bps_values) {
                                                     for (int vbv_buffer_size : spec.vbv_buffer_size_values) {
                                                         for (const std::string& importance_map_mode : spec.importance_map_modes) {
+                                                            for (int importance_map_roi_size_px : spec.importance_map_roi_size_px_values) {
                                                             ++run_index;
                                                             ExperimentRunPlan run;
                                                             run.run_index = run_index;
@@ -3064,6 +3113,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             if (include_importance_map_in_run_id) {
                                                                 run_id << "__imap_" << sanitize_run_component(importance_map_mode);
                                                             }
+                                                            if (include_importance_map_roi_size_in_run_id) {
+                                                                run_id << "__imappx_" << importance_map_roi_size_px;
+                                                            }
                                                             run.run_id = run_id.str();
                                                             run.recording_folder = (experiment_root / run.run_id).string();
                                                             run.duration_s = spec.duration_s;
@@ -3095,6 +3147,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.encoder_settings.rate_control_mode = rc_mode;
                                                             run.options.encoder_settings.importance_map.mode =
                                                                 importance_map_mode;
+                                                            run.options.encoder_settings.importance_map.roi_size_px =
+                                                                importance_map_roi_size_px;
                                                             run.options.encoder_settings.quality_value = quality_value;
                                                             run.options.encoder_settings.gop_length = gop_length;
                                                             run.options.encoder_settings.control_overrides.aq = aq_value;
@@ -3114,6 +3168,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"tuning", tuning},
                                                                 {"rate_control_mode", rc_mode},
                                                                 {"importance_map_mode", importance_map_mode},
+                                                                {"importance_map_roi_size_px", importance_map_roi_size_px},
                                                                 {"quality_value", quality_value},
                                                                 {"gop_length", gop_length},
                                                                 {"aq", format_headless_toggle_override(aq_value)},
@@ -3138,6 +3193,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                      run.options.pre_encoder_reference_capture)},
                                                             };
                                                             runs.push_back(std::move(run));
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -3334,6 +3390,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["tuning"] = run.options.encoder_settings.tuning;
     row["rate_control_mode"] = run.options.encoder_settings.rate_control_mode;
     row["importance_map_mode"] = run.options.encoder_settings.importance_map.mode;
+    row["importance_map_roi_size_px"] = run.options.encoder_settings.importance_map.roi_size_px;
     row["quality_value"] = run.options.encoder_settings.quality_value;
     row["gop_length"] = run.options.encoder_settings.gop_length;
     row["aq_override"] =
@@ -3489,6 +3546,8 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 importance_map.value("grid_width", row["importance_map_grid_width"]);
             row["importance_map_grid_height"] =
                 importance_map.value("grid_height", row["importance_map_grid_height"]);
+            row["importance_map_roi_size_px"] =
+                importance_map.value("roi_size_px", row["importance_map_roi_size_px"]);
         }
         if (preenc_capture.is_object()) {
             row["pre_encoder_reference_capture_enabled"] =
@@ -3640,7 +3699,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -3655,6 +3714,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("tuning", "") << ","
                 << row.value("rate_control_mode", "") << ","
                 << row.value("importance_map_mode", "") << ","
+                << row.value("importance_map_roi_size_px", ImportanceMapConfig::kDefaultRoiSizePx) << ","
                 << row.value("quality_value", 0) << ","
                 << row.value("gop_length", 0) << ","
                 << row.value("aq_override", "") << ","

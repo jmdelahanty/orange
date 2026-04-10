@@ -7,8 +7,10 @@ Scope: plan a full-frame recording quality-prioritization system that can steer
 NVENC bit allocation toward the fish without requiring TensorRT.
 
 Current runtime status:
-- headless recording now supports an opt-in `importance_map_mode=static_prior`
-  smoke path that emits a synthetic circular delta-QP map
+- headless recording now supports an opt-in `importance_map_mode=static_roi`
+  smoke path that emits a synthetic centered square delta-QP map
+- the square size is controlled by `importance_map_roi_size_px` and currently
+  defaults to `512`
 - this v1 path is for plumbing validation only and is not yet dish-geometry
   driven
 - motion ROI, arena priors, and detector-informed maps remain planned work
@@ -182,7 +184,7 @@ Why not chase smaller blocks immediately:
 
 Current Orange position:
 
-- `static_prior` uses the current HEVC/NVENC block grid (`32x32` CTBs).
+- `static_roi` uses the current HEVC/NVENC block grid (`32x32` CTBs).
 - That choice should be treated as "encoder-native and low-risk", not as a
   final claim that `32x32` is always best for fish-aware ROI encoding.
 - Future dish-geometry and fish-aware ROI work should benchmark quality and

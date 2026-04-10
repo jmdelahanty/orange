@@ -1,13 +1,13 @@
 {
-  "experiment_id": "2026_04_10_importance_map_static_prior_vbr_p3_hq_2010096_a6000",
-  "notes": "A/B comparison of off vs static_prior for HEVC p3 hq VBR on camera 2010096 and gpu_id=0.",
+  "experiment_id": "2026_04_10_importance_map_static_roi_smoke_2010096_a6000",
+  "notes": "Smoke test for static_roi importance-map plumbing on camera 2010096 and gpu_id=0.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [0]
   },
   "fixed": {
-    "duration_s": 20,
-    "warmup_s": 5,
+    "duration_s": 10,
+    "warmup_s": 3,
     "display": false,
     "yolo": false,
     "sync_mode": "free_run",
@@ -16,10 +16,11 @@
   },
   "matrix": {
     "codec": ["hevc"],
-    "preset": ["p3"],
-    "tuning": ["hq"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
     "rate_control_mode": ["vbr"],
-    "importance_map_mode": ["off", "static_prior"],
+    "importance_map_mode": ["off", "static_roi"],
+    "importance_map_roi_size_px": [512],
     "quality_value": [20],
     "gop_length": [0]
   },

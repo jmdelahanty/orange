@@ -161,11 +161,14 @@ Current emitted top-level fields:
   - `requested_overrides.target_bitrate_bps: integer` (`-1 auto`)
   - `requested_overrides.max_bitrate_bps: integer` (`-1 auto`)
   - `requested_overrides.vbv_buffer_size: integer` (`-1 auto`)
-  - `requested_overrides.importance_map_mode: string` (`off|static_prior`)
+  - `requested_overrides.importance_map_mode: string` (`off|static_roi`)
+  - `requested_overrides.importance_map_roi_size_px: integer`
   - `importance_map: object`
     - `requested_mode: string`
     - `active_mode: string`
     - `enabled: boolean`
+    - `shape: string` (`square`)
+    - `roi_size_px: integer`
     - `block_size: integer`
     - `grid_width: integer`
     - `grid_height: integer`
@@ -343,6 +346,7 @@ Paths:
 Current per-camera row fields include:
 - `recording_folder: string`
 - `importance_map_mode: string`
+- `importance_map_roi_size_px: integer`
 - `importance_map_enabled: boolean`
 - `importance_map_active_mode: string`
 - `importance_map_block_size: integer`
@@ -356,7 +360,10 @@ Current per-camera row fields include:
 
 Field semantics:
 - `importance_map_mode` is the requested headless importance-map mode for the
-  run (`off` or `static_prior` today).
+  run (`off` or `static_roi` today).
+- `importance_map_roi_size_px` is the requested centered square ROI size in
+  source/output pixels for the synthetic `static_roi` test path. It is ignored
+  when the mode is `off`.
 - `importance_map_active_mode` is what the encoder snapshot reported after
   initialization; it should match the requested mode for a valid importance-map
   smoke run.

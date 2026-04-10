@@ -375,6 +375,7 @@ def flatten_run(run):
             "tuning": run.get("config", {}).get("tuning", ""),
             "rate_control_mode": run.get("config", {}).get("rate_control_mode", ""),
             "importance_map_mode": run.get("config", {}).get("importance_map_mode", "off"),
+            "importance_map_roi_size_px": run.get("config", {}).get("importance_map_roi_size_px", 512),
             "quality_value": run.get("config", {}).get("quality_value", ""),
             "gop_length": run.get("config", {}).get("gop_length", ""),
             "aq_override": run.get("config", {}).get("aq", "auto"),
@@ -437,6 +438,10 @@ def flatten_run(run):
             ),
             "importance_map_mode": camera_result.get(
                 "importance_map_mode", run.get("config", {}).get("importance_map_mode", "off")
+            ),
+            "importance_map_roi_size_px": camera_result.get(
+                "importance_map_roi_size_px",
+                run.get("config", {}).get("importance_map_roi_size_px", 512),
             ),
             "quality_value": camera_result.get(
                 "quality_value", run.get("config", {}).get("quality_value", "")
@@ -725,6 +730,7 @@ def print_video_summary(rows):
             row.get("tuning", ""),
             row.get("rate_control_mode", ""),
             row.get("importance_map_mode", "off"),
+            row.get("importance_map_roi_size_px", 512),
         )
 
     def bitrate_sort_key(row):
@@ -739,10 +745,15 @@ def print_video_summary(rows):
     print("")
     print("Video Output Summary:")
     for key in sorted(grouped.keys()):
-        codec, preset, tuning, rate_control_mode, importance_map_mode = key
+        codec, preset, tuning, rate_control_mode, importance_map_mode, importance_map_roi_size_px = key
+        imap_label = (
+            "off"
+            if importance_map_mode == "off"
+            else f"{importance_map_mode}:{int(importance_map_roi_size_px)}px"
+        )
         print(
             f"  codec={codec} preset={preset} tuning={tuning} rc={rate_control_mode} "
-            f"imap={importance_map_mode}"
+            f"imap={imap_label}"
         )
         table_rows = []
         for row in sorted(grouped[key], key=bitrate_sort_key):
@@ -782,7 +793,11 @@ def print_top_tables(rows, top_n):
                 row.get("preset", ""),
                 row.get("tuning", ""),
                 row.get("rate_control_mode", ""),
-                row.get("importance_map_mode", "off"),
+                (
+                    "off"
+                    if row.get("importance_map_mode", "off") == "off"
+                    else f"{row.get('importance_map_mode', 'off')}:{int(row.get('importance_map_roi_size_px', 512))}px"
+                ),
                 format_target_bitrate(row.get("target_bitrate_bps_override", -1)),
                 format_bps(row.get("video_achieved_bitrate_bps", 0)),
                 format_decimal_bytes(row.get("video_file_size_bytes", 0)),
@@ -817,7 +832,11 @@ def print_top_tables(rows, top_n):
                 row.get("preset", ""),
                 row.get("tuning", ""),
                 row.get("rate_control_mode", ""),
-                row.get("importance_map_mode", "off"),
+                (
+                    "off"
+                    if row.get("importance_map_mode", "off") == "off"
+                    else f"{row.get('importance_map_mode', 'off')}:{int(row.get('importance_map_roi_size_px', 512))}px"
+                ),
                 row.get("status", ""),
                 row.get("pass_fail", ""),
                 format_target_bitrate(row.get("target_bitrate_bps_override", -1)),
@@ -944,6 +963,7 @@ def emit_rerun_specs(experiment_root: Path,
             "tuning": [config.get("tuning", "ll")],
             "rate_control_mode": [config.get("rate_control_mode", "vbr")],
             "importance_map_mode": [config.get("importance_map_mode", "off")],
+            "importance_map_roi_size_px": [config.get("importance_map_roi_size_px", 512)],
             "quality_value": [config.get("quality_value", 20)],
             "gop_length": [config.get("gop_length", 0)],
             "aq": [config.get("aq", config.get("aq_override", "auto"))],

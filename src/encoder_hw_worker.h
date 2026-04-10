@@ -152,11 +152,13 @@ private:
         int requested_max_bitrate_bps = -1;
         int requested_vbv_buffer_size = -1;
         std::string requested_importance_map_mode = "off";
+        int requested_importance_map_roi_size_px = ImportanceMapConfig::kDefaultRoiSizePx;
         std::string active_importance_map_mode = "off";
         uint32_t qp_map_mode = 0;
         uint32_t importance_map_block_size = 0;
         uint32_t importance_map_grid_width = 0;
         uint32_t importance_map_grid_height = 0;
+        uint32_t importance_map_roi_size_px = 0;
         int importance_map_inside_delta = 0;
         int importance_map_outside_delta = 0;
         int gpu_id = -1;
