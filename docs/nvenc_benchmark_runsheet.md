@@ -226,6 +226,65 @@ Important scope note:
 - do not assume every GPU / codec / resolution will show the same ordering
   without checking `resolved_config` and rerunning the point
 
+### Latency vs Throughput
+
+`low latency` and `high throughput` are different goals.
+
+- latency question: how long does one frame take to get from input to encoded
+  output?
+- throughput question: how many frames per second can the full path sustain?
+
+Mermaid sketch:
+
+```mermaid
+flowchart LR
+    A[Camera input<br/>60 FPS target] --> B[Preprocess queue<br/>buffers + events]
+    B --> C[Encoder service]
+    C --> D[Encoded output]
+
+    subgraph HQ["HQ path"]
+      H1[More internal slack<br/>lookahead allowed<br/>less low-delay pressure]
+    end
+
+    subgraph LL["LL / ULL path"]
+      L1[Lower-delay operating mode<br/>less internal slack<br/>more sensitive to bursts]
+    end
+```
+
+Queueing interpretation:
+
+```mermaid
+flowchart TD
+    A[Frames arrive every 16.7 ms] --> B{Can encoder service stay ahead on average?}
+
+    B -->|Yes| C[Resource minima stay above zero]
+    C --> D[pre_waits = 0]
+    D --> E[pre_drops = 0]
+    E --> F[Run passes]
+
+    B -->|No| G[pre_buffers / pre_events drain]
+    G --> H[pre_waits rises]
+    H --> I[pre_drops rises]
+    I --> J[Run fails]
+```
+
+This is why "lower latency" does not automatically mean "more FPS headroom":
+
+- a lower-latency mode may reduce buffering / smoothing delay,
+- but that can also reduce how much service-time variation the pipeline can
+  absorb before upstream queues drain.
+
+In this run sheet, "headroom" means spare throughput margin:
+
+- the gap between incoming frame rate and the maximum sustainable encode path
+  rate under current buffering / scheduling behavior.
+
+So for the `p3` A6000 result:
+
+- `hq` kept enough headroom to avoid upstream pressure,
+- `ll` reduced that headroom,
+- `ull` reduced it further and also enabled quarter-resolution multipass.
+
 ## Run Naming
 
 Use a directory or note format that makes later comparison easy:
@@ -419,6 +478,117 @@ Useful fields to compare:
 - `enc_slow_final`
 - `pre_buffers_min`
 - `pre_events_min`
+
+## Block G: Dmon Throughput Matrix
+
+Purpose:
+
+- correlate Orange's internal pipeline counters with host-level GPU usage
+- separate:
+  - encoder-engine saturation,
+  - SM/preprocess saturation,
+  - memory pressure,
+  - and PCIe / GPUDirect transfer pressure
+
+Use the existing headless sidecar:
+
+- `nvidia_smi_dmon.csv`
+- `nvidia_smi_dmon.stderr.log`
+
+Recommended `dmon` view:
+
+- `p`: power / temperature
+- `u`: utilization (`sm`, `mem`, `enc`, `dec`)
+- `t`: PCIe throughput
+- `c`: clocks
+- `m`: framebuffer / BAR1 memory
+
+Practical run families:
+
+### G1. Stable Throughput Anchors
+
+Run these on each target GPU:
+
+- `hevc p1 ll vbr`
+- `hevc p1 ull vbr`
+- `hevc p3 hq vbr`
+
+Purpose:
+
+- establish what "healthy" `enc/sm/mem/pcie` looks like on stable points
+
+### G2. Near-Boundary / Failing Points
+
+Run these on each target GPU:
+
+- `hevc p3 ll vbr`
+- `hevc p3 ull vbr`
+- one clearly failing higher preset point such as `hevc p5 hq vbr`
+
+Purpose:
+
+- see whether failure corresponds more strongly to:
+  - `enc` saturation,
+  - `sm` saturation,
+  - memory activity,
+  - or PCIe activity
+
+### G3. Direct-Input Pair
+
+Run the same stable anchors twice:
+
+- copy path
+- direct-input path
+
+Purpose:
+
+- see whether removing the extra NV12 input copy changes:
+  - `sm`
+  - `mem`
+  - `pcie rx/tx`
+  - `enc`
+  while Orange's internal counters remain stable
+
+### G4. Long Confirmation
+
+For one stable point and one near-boundary point, run `3-5 min` captures.
+
+Purpose:
+
+- catch slower drift in clocks, thermals, or PCIe behavior that a short run may
+  hide
+
+Recommended summary fields to compare per run:
+
+- Orange internal:
+  - `enc_fps_mean`
+  - `enc_fps_p95`
+  - `pre_waits_final`
+  - `pre_drops_final`
+  - `enc_fail_final`
+  - `enc_slow_final`
+  - `pre_buffers_min`
+  - `pre_events_min`
+- `dmon`:
+  - `enc`
+  - `sm`
+  - `mem`
+  - `rxpci`
+  - `txpci`
+  - relevant clocks
+  - power / temperature
+
+Interpretation guide:
+
+- `enc` high, `sm` moderate:
+  - likely encoder-engine limited
+- `sm` high, `enc` moderate:
+  - likely preprocess / color-conversion / copy-path limited
+- `pcie` high:
+  - likely GPUDirect / transfer-side pressure worth checking
+- `enc` not high, but Orange still drops:
+  - likely queueing / mode-specific behavior rather than raw encoder-engine
+    saturation
 
 Important constraint:
 
