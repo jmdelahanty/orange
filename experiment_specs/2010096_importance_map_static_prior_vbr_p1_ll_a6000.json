@@ -1,0 +1,32 @@
+{
+  "experiment_id": "2026_04_10_importance_map_static_prior_vbr_p1_ll_2010096_a6000",
+  "notes": "A/B comparison of off vs static_prior for HEVC p1 ll VBR on camera 2010096 and gpu_id=0.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [0]
+  },
+  "fixed": {
+    "duration_s": 20,
+    "warmup_s": 5,
+    "display": false,
+    "yolo": false,
+    "sync_mode": "free_run",
+    "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted"
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "importance_map_mode": ["off", "static_prior"],
+    "quality_value": [20],
+    "gop_length": [0]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 1.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}
