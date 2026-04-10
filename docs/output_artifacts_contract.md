@@ -153,11 +153,23 @@ Current emitted top-level fields:
   - `aq.enable_aq: integer`
   - `aq.enable_temporal_aq: integer`
   - `lookahead.enable: integer`
+  - `lookahead.depth: integer`
+  - `rc.multi_pass.value: integer`
+  - `rc.multi_pass.name: string`
   - `low_delay_keyframe_scale: integer`
   - `strict_gop_target: integer`
   - `enable_non_ref_p: integer`
   - `repeat_sps_pps: integer`
   - `enable_ptd: integer`
+  - `resolved_config: object`
+    - normalized resolved NVENC initialize/config snapshot captured after
+      `CreateEncoder()` / `GetInitializeParams()`
+    - includes:
+      - `initialize: object`
+      - `buffers: object`
+      - `common: object`
+      - `rc: object`
+      - `codec: object`
   - Optional:
     - `pre_encoder_reference_capture: object`
       - `capture_mode: string` (currently `pre_encoder_reference`)

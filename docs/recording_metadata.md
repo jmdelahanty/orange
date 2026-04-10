@@ -758,15 +758,59 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
         "mode_value": 1,
         "average_bitrate": 244297728,
         "max_bitrate": 250000000,
-        "vbv_buffer_size": 250000000
+        "vbv_buffer_size": 250000000,
+        "multi_pass": {"value": 0, "name": "disabled"}
       },
       "aq": {"enable_aq": 1, "enable_temporal_aq": 1},
-      "lookahead": {"enable": 0},
+      "lookahead": {"enable": 0, "depth": 0},
       "low_delay_keyframe_scale": 1,
       "strict_gop_target": 0,
       "enable_non_ref_p": 0,
       "repeat_sps_pps": 1,
-      "enable_ptd": 1
+      "enable_ptd": 1,
+      "resolved_config": {
+        "initialize": {
+          "frame_rate_num": 60,
+          "frame_rate_den": 1,
+          "enable_ptd": 1,
+          "enable_weighted_prediction": 0,
+          "enable_output_in_vidmem": 0,
+          "max_encode_width": 2256,
+          "max_encode_height": 2256,
+          "tuning_info": {"value": 2, "name": "low_latency"}
+        },
+        "buffers": {
+          "encoder_buffer_count": 4,
+          "encoder_input_pitch": 2304,
+          "direct_input_enabled": false
+        },
+        "common": {
+          "gop_length": 120,
+          "frame_interval_p": 1,
+          "mono_chrome_encoding": 0
+        },
+        "rc": {
+          "mode": "vbr",
+          "mode_value": 1,
+          "average_bitrate": 244297728,
+          "max_bitrate": 250000000,
+          "vbv_buffer_size": 250000000,
+          "target_quality": 0,
+          "target_quality_lsb": 0,
+          "enable_aq": 1,
+          "enable_temporal_aq": 1,
+          "enable_lookahead": 0,
+          "lookahead_depth": 0,
+          "multi_pass": {"value": 0, "name": "disabled"},
+          "low_delay_keyframe_scale": 1
+        },
+        "codec": {
+          "name": "hevc",
+          "idr_period": 120,
+          "max_num_ref_frames_in_dpb": 1,
+          "repeat_sps_pps": 1
+        }
+      }
     }
   }
 }

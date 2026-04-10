@@ -133,6 +133,8 @@ private:
         uint32_t enable_aq = 0;
         uint32_t enable_temporal_aq = 0;
         uint32_t enable_lookahead = 0;
+        uint32_t lookahead_depth = 0;
+        uint32_t multi_pass = 0;
         uint32_t low_delay_keyframe_scale = 0;
         uint32_t strict_gop_target = 0;
         uint32_t enable_non_ref_p = 0;
@@ -140,6 +142,7 @@ private:
         uint32_t enable_ptd = 0;
         int gpu_id = -1;
         nlohmann::json gpu = nlohmann::json::object();
+        nlohmann::json resolved_config = nlohmann::json::object();
         bool color = false;
     };
 

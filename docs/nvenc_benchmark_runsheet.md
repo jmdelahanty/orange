@@ -13,6 +13,28 @@ See also:
 - `docs/output_artifacts_contract.md`
 - `scripts/plot_pipeline_perf.py`
 
+## Resolved Encoder Config
+
+Do not assume the UI tuning labels map to a simple "faster vs slower" ladder.
+
+`recording_snapshot.json["encoders"][serial]` now records:
+
+- top-level resolved encoder fields
+- `resolved_config`, a normalized post-`CreateEncoder()` snapshot of the actual
+  NVENC initialize/config state used for that run
+
+Useful comparison helper:
+
+```bash
+python scripts/compare_encoder_resolved_configs.py \
+  /path/to/run_a \
+  /path/to/run_b \
+  /path/to/run_c
+```
+
+This is the right tool whenever a result looks counterintuitive, for example
+when `hq` appears to sustain throughput that `ll` or `ull` do not.
+
 ## Goal
 
 Measure the practical single-session recording envelope cleanly before changing
@@ -135,6 +157,53 @@ Interpretation notes:
 - Use pipeline CSV counters for encode-path stability, and use camera
   `dropped_frames` as a separate source-side health signal for frame-ID gaps and
   `EVT_CameraGetFrame` errors.
+
+## Interpreting Tuning Modes
+
+The current headless/GUI controls expose `hq`, `ll`, and `ull`, but these are
+not just cosmetic labels. They resolve to different NVENC operating modes.
+
+Observed on the `RTX A6000` for `hevc p3 vbr` at `4512x4512 @ 60`:
+
+- `p3 hq`
+  - `tuning_info = high_quality`
+  - `enable_lookahead = 1`
+  - `low_delay_keyframe_scale = 0`
+  - `multi_pass = disabled`
+  - run outcome: stable, no preprocess waits/drops
+- `p3 ll`
+  - `tuning_info = low_latency`
+  - `enable_lookahead = 0`
+  - `low_delay_keyframe_scale = 1`
+  - `multi_pass = disabled`
+  - run outcome: preprocess waits/drops and many slow encode frames
+- `p3 ull`
+  - `tuning_info = ultra_low_latency`
+  - `enable_lookahead = 0`
+  - `low_delay_keyframe_scale = 1`
+  - `multi_pass = quarter_resolution`
+  - run outcome: even stronger preprocess waits/drops than `ll`
+
+Practical interpretation:
+
+- `hq` can be faster at a steady-state throughput boundary because it is allowed
+  to use a less latency-constrained encoder operating mode.
+- `ll` and `ull` optimize for low latency, not maximum sustainable throughput.
+- disabling lookahead and enabling low-delay behavior can reduce the encoder's
+  ability to smooth work over time, which increases burstiness seen by the
+  preprocess queue.
+- `ull` may add more work than `ll` because the resolved config can enable
+  quarter-resolution multipass.
+
+So if `hq` passes while `ll` / `ull` fail, do not assume the benchmark is
+wrong. First inspect `resolved_config` and confirm what the SDK actually chose.
+
+Important scope note:
+
+- these differences are measured results for this host, this driver, this
+  camera resolution, and this specific recording workload
+- do not assume every GPU / codec / resolution will show the same ordering
+  without checking `resolved_config` and rerunning the point
 
 ## Run Naming
 

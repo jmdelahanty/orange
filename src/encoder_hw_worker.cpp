@@ -39,6 +39,10 @@ uint32_t clamp_bitrate(uint64_t value) {
     return static_cast<uint32_t>(value);
 }
 
+bool guid_equals(const GUID& lhs, const GUID& rhs) {
+    return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
+}
+
 uint32_t calculate_quality_bitrate(bool color, int width, int height, int frame_rate) {
     const double target_bpp = color ? kColorTargetBpp : kMonoTargetBpp;
     const double bits_per_sec =
@@ -113,6 +117,131 @@ const char* rc_mode_to_string(NV_ENC_PARAMS_RC_MODE mode) {
         case NV_ENC_PARAMS_RC_VBR_HQ: return "vbr_hq";
         default: return "unknown";
     }
+}
+
+const char* tuning_info_to_string(NV_ENC_TUNING_INFO tuning_info) {
+    switch (tuning_info) {
+        case NV_ENC_TUNING_INFO_HIGH_QUALITY: return "high_quality";
+        case NV_ENC_TUNING_INFO_LOW_LATENCY: return "low_latency";
+        case NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY: return "ultra_low_latency";
+        case NV_ENC_TUNING_INFO_LOSSLESS: return "lossless";
+        case NV_ENC_TUNING_INFO_UNDEFINED: return "undefined";
+        default: return "unknown";
+    }
+}
+
+const char* multi_pass_to_string(NV_ENC_MULTI_PASS multi_pass) {
+    switch (multi_pass) {
+        case NV_ENC_MULTI_PASS_DISABLED: return "disabled";
+        case NV_ENC_TWO_PASS_QUARTER_RESOLUTION: return "quarter_resolution";
+        case NV_ENC_TWO_PASS_FULL_RESOLUTION: return "full_resolution";
+        default: return "unknown";
+    }
+}
+
+nlohmann::json build_resolved_encoder_config_json(const NV_ENC_INITIALIZE_PARAMS& initialize_params,
+                                                  const NV_ENC_CONFIG& encode_config,
+                                                  int encoder_buffer_count,
+                                                  int encoder_input_pitch,
+                                                  bool direct_input_enabled)
+{
+    nlohmann::json info = nlohmann::json::object();
+
+    info["initialize"] = {
+        {"encode_width", initialize_params.encodeWidth},
+        {"encode_height", initialize_params.encodeHeight},
+        {"dar_width", initialize_params.darWidth},
+        {"dar_height", initialize_params.darHeight},
+        {"frame_rate_num", initialize_params.frameRateNum},
+        {"frame_rate_den", initialize_params.frameRateDen},
+        {"enable_ptd", initialize_params.enablePTD},
+        {"enable_sub_frame_write", initialize_params.enableSubFrameWrite},
+        {"enable_weighted_prediction", initialize_params.enableWeightedPrediction},
+        {"enable_output_in_vidmem", initialize_params.enableOutputInVidmem},
+        {"max_encode_width", initialize_params.maxEncodeWidth},
+        {"max_encode_height", initialize_params.maxEncodeHeight},
+        {"tuning_info", {
+            {"value", initialize_params.tuningInfo},
+            {"name", tuning_info_to_string(static_cast<NV_ENC_TUNING_INFO>(initialize_params.tuningInfo))}
+        }}
+    };
+
+    info["buffers"] = {
+        {"encoder_buffer_count", encoder_buffer_count},
+        {"encoder_input_pitch", encoder_input_pitch},
+        {"direct_input_enabled", direct_input_enabled}
+    };
+
+    info["common"] = {
+        {"gop_length", encode_config.gopLength},
+        {"frame_interval_p", encode_config.frameIntervalP},
+        {"mono_chrome_encoding", encode_config.monoChromeEncoding}
+    };
+
+    info["rc"] = {
+        {"mode", rc_mode_to_string(static_cast<NV_ENC_PARAMS_RC_MODE>(encode_config.rcParams.rateControlMode))},
+        {"mode_value", encode_config.rcParams.rateControlMode},
+        {"average_bitrate", encode_config.rcParams.averageBitRate},
+        {"max_bitrate", encode_config.rcParams.maxBitRate},
+        {"vbv_buffer_size", encode_config.rcParams.vbvBufferSize},
+        {"target_quality", encode_config.rcParams.targetQuality},
+        {"target_quality_lsb", encode_config.rcParams.targetQualityLSB},
+        {"const_qp", {
+            {"p", encode_config.rcParams.constQP.qpInterP},
+            {"b", encode_config.rcParams.constQP.qpInterB},
+            {"i", encode_config.rcParams.constQP.qpIntra}
+        }},
+        {"enable_min_qp", encode_config.rcParams.enableMinQP},
+        {"enable_max_qp", encode_config.rcParams.enableMaxQP},
+        {"enable_aq", encode_config.rcParams.enableAQ},
+        {"enable_temporal_aq", encode_config.rcParams.enableTemporalAQ},
+        {"enable_lookahead", encode_config.rcParams.enableLookahead},
+        {"lookahead_depth", encode_config.rcParams.lookaheadDepth},
+        {"multi_pass", {
+            {"value", encode_config.rcParams.multiPass},
+            {"name", multi_pass_to_string(static_cast<NV_ENC_MULTI_PASS>(encode_config.rcParams.multiPass))}
+        }},
+        {"low_delay_keyframe_scale", encode_config.rcParams.lowDelayKeyFrameScale},
+        {"strict_gop_target", encode_config.rcParams.strictGOPTarget},
+        {"enable_non_ref_p", encode_config.rcParams.enableNonRefP}
+    };
+
+    info["codec"] = {
+        {"name", "unknown"}
+    };
+
+    if (guid_equals(initialize_params.encodeGUID, NV_ENC_CODEC_HEVC_GUID)) {
+        const auto& hevc = encode_config.encodeCodecConfig.hevcConfig;
+        info["codec"] = {
+            {"name", "hevc"},
+            {"pixel_bit_depth_minus_8", hevc.pixelBitDepthMinus8},
+            {"chroma_format_idc", hevc.chromaFormatIDC},
+            {"idr_period", hevc.idrPeriod},
+            {"slice_mode", hevc.sliceMode},
+            {"slice_mode_data", hevc.sliceModeData},
+            {"max_num_ref_frames_in_dpb", hevc.maxNumRefFramesInDPB},
+            {"repeat_sps_pps", hevc.repeatSPSPPS},
+            {"output_buffering_period_sei", hevc.outputBufferingPeriodSEI},
+            {"output_picture_timing_sei", hevc.outputPictureTimingSEI},
+            {"output_aud", hevc.outputAUD},
+            {"enable_ltr", hevc.enableLTR}
+        };
+    } else if (guid_equals(initialize_params.encodeGUID, NV_ENC_CODEC_H264_GUID)) {
+        const auto& h264 = encode_config.encodeCodecConfig.h264Config;
+        info["codec"] = {
+            {"name", "h264"},
+            {"idr_period", h264.idrPeriod},
+            {"slice_mode", h264.sliceMode},
+            {"slice_mode_data", h264.sliceModeData},
+            {"repeat_sps_pps", h264.repeatSPSPPS},
+            {"max_num_ref_frames", h264.maxNumRefFrames},
+            {"adaptive_transform_mode", h264.adaptiveTransformMode},
+            {"bdirect_mode", h264.bdirectMode},
+            {"entropy_coding_mode", h264.entropyCodingMode}
+        };
+    }
+
+    return info;
 }
 
 std::vector<std::pair<std::string, std::string>> build_metadata_tags(
@@ -530,12 +659,20 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.enable_aq = resolved_config.rcParams.enableAQ;
         encoder_snapshot_.enable_temporal_aq = resolved_config.rcParams.enableTemporalAQ;
         encoder_snapshot_.enable_lookahead = resolved_config.rcParams.enableLookahead;
+        encoder_snapshot_.lookahead_depth = resolved_config.rcParams.lookaheadDepth;
+        encoder_snapshot_.multi_pass = resolved_config.rcParams.multiPass;
         encoder_snapshot_.low_delay_keyframe_scale = resolved_config.rcParams.lowDelayKeyFrameScale;
         encoder_snapshot_.strict_gop_target = resolved_config.rcParams.strictGOPTarget;
         encoder_snapshot_.enable_non_ref_p = resolved_config.rcParams.enableNonRefP;
         encoder_snapshot_.enable_ptd = resolved_params.enablePTD;
         encoder_snapshot_.gpu_id = camera_params_->gpu_id;
         encoder_snapshot_.gpu = build_gpu_runtime_info(camera_params_->gpu_id);
+        encoder_snapshot_.resolved_config = build_resolved_encoder_config_json(
+            resolved_params,
+            resolved_config,
+            encoder_buffer_count_,
+            encoder_input_pitch_,
+            direct_input_enabled_);
         encoder_snapshot_.color = camera_params_->color;
 
         if (codec_ == "hevc") {
@@ -1032,13 +1169,19 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
         {"enable_temporal_aq", encoder_snapshot_.enable_temporal_aq}
     };
     info["lookahead"] = {
-        {"enable", encoder_snapshot_.enable_lookahead}
+        {"enable", encoder_snapshot_.enable_lookahead},
+        {"depth", encoder_snapshot_.lookahead_depth}
+    };
+    info["rc"]["multi_pass"] = {
+        {"value", encoder_snapshot_.multi_pass},
+        {"name", multi_pass_to_string(static_cast<NV_ENC_MULTI_PASS>(encoder_snapshot_.multi_pass))}
     };
     info["low_delay_keyframe_scale"] = encoder_snapshot_.low_delay_keyframe_scale;
     info["strict_gop_target"] = encoder_snapshot_.strict_gop_target;
     info["enable_non_ref_p"] = encoder_snapshot_.enable_non_ref_p;
     info["repeat_sps_pps"] = encoder_snapshot_.repeat_sps_pps;
     info["enable_ptd"] = encoder_snapshot_.enable_ptd;
+    info["resolved_config"] = encoder_snapshot_.resolved_config;
     info["pre_encoder_reference_capture"] = pre_encoder_reference_writer_.BuildSummaryJson();
     return info;
 }
