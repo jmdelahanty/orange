@@ -58,6 +58,17 @@ The current UI exposes these recording controls:
 - rate control: `vbr`, `vbr_cq`, `cqp`
 - quality value: integer `1-51` for `vbr_cq` and `cqp`
 
+The current headless benchmark path now also exposes optional override knobs:
+
+- rate control: `cbr` is now a real encoder mode in headless runs
+- `aq`: `auto|on|off`
+- `temporal_aq`: `auto|on|off`
+- `lookahead`: `auto|on|off`
+- `lookahead_depth`: integer (`-1` / omitted means auto)
+- `target_bitrate_bps`: explicit target bitrate override
+- `max_bitrate_bps`: explicit max bitrate override
+- `vbv_buffer_size`: explicit VBV override
+
 Current code behavior that matters for interpretation:
 
 - `vbr` enables `AQ` and `TemporalAQ`
@@ -68,6 +79,143 @@ Current code behavior that matters for interpretation:
 
 For now, use `quality_value = 20` whenever the matrix calls for `vbr_cq` or
 `cqp`, because that is the current default and keeps the first sweep comparable.
+
+## Current Bitrate Heuristic
+
+The current app does not expose an explicit bitrate target in the UI. Instead,
+the encoder path derives bitrate from a fixed bits-per-pixel heuristic:
+
+- color: `0.15 bpp`
+- mono: `0.10 bpp`
+
+Current runtime formula:
+
+```text
+average_bitrate_bps =
+  clamp(width * height * fps * target_bpp, 10 Mbps, 150 Mbps)
+
+max_bitrate_bps =
+  clamp(1.5 * average_bitrate_bps, average_bitrate_bps, 150 Mbps)
+```
+
+Interpretation by rate-control mode:
+
+- `vbr`
+  - uses the heuristic average bitrate
+  - uses `1.5x` average as the nominal max bitrate, then clamps to `150 Mbps`
+- `vbr_cq`
+  - uses the same bitrate envelope as `vbr`
+  - also sets `target_quality`
+- `cbr`
+  - uses the heuristic average bitrate as both average and max bitrate
+  - also sets `vbv_buffer_size = average_bitrate`
+- `cqp`
+  - does not use a bitrate target
+  - bitrate is an outcome, not an input
+- `lossless`
+  - does not use a bitrate target
+  - bitrate is an outcome, not an input
+
+For the current benchmark camera/workload used in this repo:
+
+- camera: `2010096`
+- mode: mono
+- resolution: `4512x4512`
+- fps: `60`
+
+That yields:
+
+- heuristic average bitrate: about `122.15 Mbps`
+- heuristic VBR max bitrate: about `183.22 Mbps`, but clamped to `150 Mbps`
+- heuristic CBR bitrate: `122.15 Mbps`
+
+So the current default is already relatively aggressive for detail retention on
+this full-resolution mono workload. The open question is not whether the target
+is "tiny"; it is whether this heuristic is the right default for the scene and
+quality goal. That is why the next bitrate sweep should treat bitrate as an
+explicit experiment input and compare it against actual achieved bitrate,
+throughput counters, and `nvidia-smi dmon`.
+
+## Bitrate Sweep Policy
+
+Do not use one giant mixed-purpose bitrate matrix.
+
+Split bitrate work into two different experiment families:
+
+### 1. Throughput / Stability Bitrate Sweep
+
+Use this to answer:
+
+- does requested bitrate change sustainable encode FPS?
+- does requested bitrate change queue pressure or drops?
+- does requested bitrate materially change encoder-engine utilization?
+
+Rules:
+
+- keep `pre_encoder_reference_capture` disabled
+- keep runs long enough to see steady-state behavior
+- compare Orange pipeline counters with `nvidia-smi dmon`
+- treat bitrate as an input for:
+  - `vbr`
+  - `vbr_cq`
+  - `cbr`
+- treat bitrate as an output for:
+  - `cqp`
+  - `lossless`
+
+Recommended measurements:
+
+- requested bitrate settings
+- resolved NVENC bitrate settings from `recording_snapshot.json`
+- achieved bitrate from file size and clip duration
+- `enc_fps_mean`
+- `pre_waits_final`
+- `pre_drops_final`
+- `enc_fail_final`
+- `enc_slow_final`
+- `nvidia-smi dmon` `enc/sm/mem/pcie`
+
+### 2. Quality Bitrate Sweep
+
+Use this to answer:
+
+- what bitrate preserves fish detail well enough?
+- what bitrate is enough for the prepared recording-path representation?
+- which RC/tuning choices give the best quality-per-bit tradeoff?
+
+Rules:
+
+- use bounded `pre_encoder_reference_capture`
+- keep clips short
+- compare encoded/decoded outputs against the same pre-encoder reference
+- do not use long uncompressed capture as the default workflow
+
+Recommended capture budgets:
+
+- `16-64` frames, or
+- about `1-2 s`
+
+This keeps the reference path useful for codec comparison without turning the
+experiment into a raw-dump I/O benchmark.
+
+### Reference Layer Choice
+
+For bitrate quality work, the preferred reference is the pre-encoder frame, not
+sensor-native raw.
+
+Why:
+
+- the pre-encoder reference is the exact prepared representation the encoder
+  actually sees
+- it already includes resize / colorspace / preprocess decisions
+- it isolates codec loss from upstream imaging-pipeline differences
+
+Sensor-native raw answers a different question:
+
+- camera-to-file or end-to-end imaging-pipeline fidelity
+
+That is a valid later study, but it should not be the default reference for the
+first bitrate quality sweep.
 
 ## Fixed Conditions
 

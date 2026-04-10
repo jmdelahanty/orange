@@ -29,6 +29,21 @@ struct PreEncoderReferenceCaptureConfig {
     bool has_valid_bound() const { return !enabled || (has_frame_bound() != has_time_bound()); }
 };
 
+struct EncoderControlOverrides {
+    int aq = -1;
+    int temporal_aq = -1;
+    int lookahead = -1;
+    int lookahead_depth = -1;
+    int target_bitrate_bps = -1;
+    int max_bitrate_bps = -1;
+    int vbv_buffer_size = -1;
+
+    bool has_any_override() const {
+        return aq >= 0 || temporal_aq >= 0 || lookahead >= 0 || lookahead_depth >= 0 ||
+               target_bitrate_bps >= 0 || max_bitrate_bps >= 0 || vbv_buffer_size >= 0;
+    }
+};
+
 // The lightweight struct to pass data from the preprocess worker to the hardware encoder.
 struct ENCODER_WORKER_ENTRY {
     unsigned char* d_prepared_frame;

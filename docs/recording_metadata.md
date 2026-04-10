@@ -188,9 +188,7 @@ Current headless `gpu_monitoring` shape:
         "-d",
         "1",
         "-o",
-        "DT",
-        "--format",
-        "csv,nounit"
+        "DT"
       ]
     }
   }
@@ -200,6 +198,9 @@ Current headless `gpu_monitoring` shape:
 Notes:
 - This sidecar is host-level, not Orange-process-only.
 - It is currently emitted by the headless recording path used for experiments.
+- On older `nvidia-smi` versions, the captured file is `dmon`'s native
+  whitespace-delimited text output even though the artifact filename currently
+  ends in `.csv`.
 - `artifact_path` and `stderr_path` are useful even when the monitor fails to
   start, because the stderr log often explains driver or CLI issues.
 
@@ -762,6 +763,15 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
         "multi_pass": {"value": 0, "name": "disabled"}
       },
       "aq": {"enable_aq": 1, "enable_temporal_aq": 1},
+      "requested_overrides": {
+        "aq": -1,
+        "temporal_aq": -1,
+        "lookahead": -1,
+        "lookahead_depth": -1,
+        "target_bitrate_bps": -1,
+        "max_bitrate_bps": -1,
+        "vbv_buffer_size": -1
+      },
       "lookahead": {"enable": 0, "depth": 0},
       "low_delay_keyframe_scale": 1,
       "strict_gop_target": 0,

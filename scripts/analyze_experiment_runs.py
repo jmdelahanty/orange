@@ -7,6 +7,130 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+DMonCache = {}
+
+
+def percentile(values, pct):
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    rank = (len(ordered) - 1) * pct
+    lower = int(rank)
+    upper = min(lower + 1, len(ordered) - 1)
+    if lower == upper:
+        return float(ordered[lower])
+    fraction = rank - lower
+    return float(ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction)
+
+
+def parse_dmon_number(text):
+    text = text.strip()
+    if not text or text == "-":
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def summarize_dmon_file(path: Path):
+    cache_key = str(path)
+    if cache_key in DMonCache:
+        return DMonCache[cache_key]
+
+    summary = {
+        "dmon_present": False,
+        "dmon_samples": 0,
+        "dmon_enc_mean": 0.0,
+        "dmon_enc_p95": 0.0,
+        "dmon_enc_max": 0.0,
+        "dmon_sm_mean": 0.0,
+        "dmon_sm_p95": 0.0,
+        "dmon_mem_mean": 0.0,
+        "dmon_power_mean": 0.0,
+        "dmon_power_max": 0.0,
+        "dmon_rxpci_mean": 0.0,
+        "dmon_rxpci_max": 0.0,
+        "dmon_txpci_mean": 0.0,
+        "dmon_txpci_max": 0.0,
+    }
+
+    if not path.exists():
+        DMonCache[cache_key] = summary
+        return summary
+
+    lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    header = None
+    rows = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        if not parts:
+            continue
+        if stripped.startswith("#Date"):
+            header = [token.lstrip("#").lower() for token in parts]
+            continue
+        if stripped.startswith("#"):
+            continue
+        if header is None or len(parts) != len(header):
+            continue
+        row = {header[index]: parts[index] for index in range(len(header))}
+        rows.append(row)
+
+    if not rows:
+        DMonCache[cache_key] = summary
+        return summary
+
+    summary["dmon_present"] = True
+    summary["dmon_samples"] = len(rows)
+
+    def collect(metric_name):
+        values = []
+        for row in rows:
+            value = parse_dmon_number(row.get(metric_name, ""))
+            if value is not None:
+                values.append(value)
+        return values
+
+    enc_values = collect("enc")
+    sm_values = collect("sm")
+    mem_values = collect("mem")
+    power_values = collect("pwr")
+    rxpci_values = collect("rxpci")
+    txpci_values = collect("txpci")
+
+    if enc_values:
+        summary["dmon_enc_mean"] = sum(enc_values) / len(enc_values)
+        summary["dmon_enc_p95"] = percentile(enc_values, 0.95)
+        summary["dmon_enc_max"] = max(enc_values)
+    if sm_values:
+        summary["dmon_sm_mean"] = sum(sm_values) / len(sm_values)
+        summary["dmon_sm_p95"] = percentile(sm_values, 0.95)
+    if mem_values:
+        summary["dmon_mem_mean"] = sum(mem_values) / len(mem_values)
+    if power_values:
+        summary["dmon_power_mean"] = sum(power_values) / len(power_values)
+        summary["dmon_power_max"] = max(power_values)
+    if rxpci_values:
+        summary["dmon_rxpci_mean"] = sum(rxpci_values) / len(rxpci_values)
+        summary["dmon_rxpci_max"] = max(rxpci_values)
+    if txpci_values:
+        summary["dmon_txpci_mean"] = sum(txpci_values) / len(txpci_values)
+        summary["dmon_txpci_max"] = max(txpci_values)
+
+    DMonCache[cache_key] = summary
+    return summary
+
+
+def dmon_summary_for_recording_folder(recording_folder):
+    if not recording_folder:
+        return summarize_dmon_file(Path("/nonexistent"))
+    return summarize_dmon_file(Path(recording_folder) / "nvidia_smi_dmon.csv")
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -105,9 +229,12 @@ def flatten_run(run):
     rows = []
     camera_results = run.get("camera_results") or []
     if not camera_results:
+        recording_folder = run.get("recording_folder", "")
+        dmon_summary = dmon_summary_for_recording_folder(recording_folder)
         rows.append({
             "run": run,
             "camera_result": {},
+            "recording_folder": recording_folder,
             "camera_serial": "",
             "codec": run.get("config", {}).get("codec", ""),
             "preset": run.get("config", {}).get("preset", ""),
@@ -115,6 +242,13 @@ def flatten_run(run):
             "rate_control_mode": run.get("config", {}).get("rate_control_mode", ""),
             "quality_value": run.get("config", {}).get("quality_value", ""),
             "gop_length": run.get("config", {}).get("gop_length", ""),
+            "aq_override": run.get("config", {}).get("aq", "auto"),
+            "temporal_aq_override": run.get("config", {}).get("temporal_aq", "auto"),
+            "lookahead_override": run.get("config", {}).get("lookahead", "auto"),
+            "lookahead_depth_override": run.get("config", {}).get("lookahead_depth", -1),
+            "target_bitrate_bps_override": run.get("config", {}).get("target_bitrate_bps", -1),
+            "max_bitrate_bps_override": run.get("config", {}).get("max_bitrate_bps", -1),
+            "vbv_buffer_size_override": run.get("config", {}).get("vbv_buffer_size", -1),
             "gpu_id": "",
             "gpu_name": "",
             "enc_fps_mean": 0.0,
@@ -139,13 +273,17 @@ def flatten_run(run):
             "pass_fail": run.get("pass_fail", ""),
             "status": run.get("status", ""),
             "reason": run.get("reason", ""),
+            **dmon_summary,
         })
         return rows
 
     for camera_result in camera_results:
+        recording_folder = camera_result.get("recording_folder", run.get("recording_folder", ""))
+        dmon_summary = dmon_summary_for_recording_folder(recording_folder)
         rows.append({
             "run": run,
             "camera_result": camera_result,
+            "recording_folder": recording_folder,
             "camera_serial": camera_result.get("camera_serial", ""),
             "codec": camera_result.get("codec", run.get("config", {}).get("codec", "")),
             "preset": camera_result.get("preset", run.get("config", {}).get("preset", "")),
@@ -158,6 +296,25 @@ def flatten_run(run):
             ),
             "gop_length": camera_result.get(
                 "gop_length", run.get("config", {}).get("gop_length", "")
+            ),
+            "aq_override": camera_result.get("aq_override", run.get("config", {}).get("aq", "auto")),
+            "temporal_aq_override": camera_result.get(
+                "temporal_aq_override", run.get("config", {}).get("temporal_aq", "auto")
+            ),
+            "lookahead_override": camera_result.get(
+                "lookahead_override", run.get("config", {}).get("lookahead", "auto")
+            ),
+            "lookahead_depth_override": camera_result.get(
+                "lookahead_depth_override", run.get("config", {}).get("lookahead_depth", -1)
+            ),
+            "target_bitrate_bps_override": camera_result.get(
+                "target_bitrate_bps_override", run.get("config", {}).get("target_bitrate_bps", -1)
+            ),
+            "max_bitrate_bps_override": camera_result.get(
+                "max_bitrate_bps_override", run.get("config", {}).get("max_bitrate_bps", -1)
+            ),
+            "vbv_buffer_size_override": camera_result.get(
+                "vbv_buffer_size_override", run.get("config", {}).get("vbv_buffer_size", -1)
             ),
             "gpu_id": camera_result.get("gpu_id", ""),
             "gpu_name": camera_result.get("gpu_name", ""),
@@ -197,6 +354,7 @@ def flatten_run(run):
             "pass_fail": camera_result.get("pass_fail", run.get("pass_fail", "")),
             "status": camera_result.get("status", run.get("status", "")),
             "reason": camera_result.get("reason", run.get("reason", "")),
+            **dmon_summary,
         })
     return rows
 
@@ -417,11 +575,15 @@ def print_top_tables(rows, top_n):
                 f"{float(row.get('enc_fps_p95', 0.0)):.3f}",
                 str(row.get("pre_buffers_min", -1)),
                 str(row.get("pre_events_min", -1)),
+                f"{float(row.get('dmon_enc_mean', 0.0)):.1f}",
+                f"{float(row.get('dmon_sm_mean', 0.0)):.1f}",
+                f"{float(row.get('dmon_rxpci_mean', 0.0)):.0f}",
+                f"{float(row.get('dmon_power_mean', 0.0)):.0f}",
                 row.get("pre_encoder_reference_capture_status", ""),
                 row.get("gpu_name", ""),
             ])
         print(format_table(
-            ["run_id", "codec", "preset", "tuning", "rc", "enc_fps_mean", "enc_fps_p95", "pre_buf_min", "pre_evt_min", "preenc", "gpu"],
+            ["run_id", "codec", "preset", "tuning", "rc", "enc_fps_mean", "enc_fps_p95", "pre_buf_min", "pre_evt_min", "dmon_enc", "dmon_sm", "rxpci", "power", "preenc", "gpu"],
             table_rows,
         ))
 
@@ -450,6 +612,9 @@ def print_top_tables(rows, top_n):
                 str(row.get("pre_drops_final", 0)),
                 str(row.get("enc_fail_final", 0)),
                 str(row.get("enc_slow_final", 0)),
+                f"{float(row.get('dmon_enc_mean', 0.0)):.1f}",
+                f"{float(row.get('dmon_sm_mean', 0.0)):.1f}",
+                f"{float(row.get('dmon_rxpci_mean', 0.0)):.0f}",
                 row.get("pre_encoder_reference_capture_status", ""),
                 "/".join(
                     [
@@ -461,7 +626,7 @@ def print_top_tables(rows, top_n):
                 row.get("reason", "")[:56],
             ])
         print(format_table(
-            ["run_id", "codec", "preset", "tuning", "status", "pass_fail", "enc_fps", "acq_ent_min", "acq_evt_min", "pre_buf_min", "pre_evt_min", "pre_waits", "pre_drops", "enc_fail", "enc_slow", "preenc", "art", "reason"],
+            ["run_id", "codec", "preset", "tuning", "status", "pass_fail", "enc_fps", "acq_ent_min", "acq_evt_min", "pre_buf_min", "pre_evt_min", "pre_waits", "pre_drops", "enc_fail", "enc_slow", "dmon_enc", "dmon_sm", "rxpci", "preenc", "art", "reason"],
             table_rows,
         ))
 
@@ -560,6 +725,21 @@ def emit_rerun_specs(experiment_root: Path,
             "rate_control_mode": [config.get("rate_control_mode", "vbr")],
             "quality_value": [config.get("quality_value", 20)],
             "gop_length": [config.get("gop_length", 0)],
+            "aq": [config.get("aq", config.get("aq_override", "auto"))],
+            "temporal_aq": [config.get("temporal_aq", config.get("temporal_aq_override", "auto"))],
+            "lookahead": [config.get("lookahead", config.get("lookahead_override", "auto"))],
+            "lookahead_depth": [
+                config.get("lookahead_depth", config.get("lookahead_depth_override", -1))
+            ],
+            "target_bitrate_bps": [
+                config.get("target_bitrate_bps", config.get("target_bitrate_bps_override", -1))
+            ],
+            "max_bitrate_bps": [
+                config.get("max_bitrate_bps", config.get("max_bitrate_bps_override", -1))
+            ],
+            "vbv_buffer_size": [
+                config.get("vbv_buffer_size", config.get("vbv_buffer_size_override", -1))
+            ],
         }
 
         spec_path = rerun_dir / f"{sanitize_component(run.get('run_id', 'run'))}.json"

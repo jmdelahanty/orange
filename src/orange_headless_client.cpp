@@ -51,6 +51,7 @@ struct HeadlessEncoderSettings {
     std::string rate_control_mode = "vbr";
     int quality_value = 20;
     int gop_length = 0;
+    EncoderControlOverrides control_overrides;
     bool select_all_cameras = true;
     std::vector<std::string> camera_serials;
 };
@@ -96,6 +97,13 @@ struct ExperimentSpec {
     std::vector<std::string> rate_control_modes;
     std::vector<int> quality_values;
     std::vector<int> gop_lengths;
+    std::vector<int> aq_values;
+    std::vector<int> temporal_aq_values;
+    std::vector<int> lookahead_values;
+    std::vector<int> lookahead_depth_values;
+    std::vector<int> target_bitrate_bps_values;
+    std::vector<int> max_bitrate_bps_values;
+    std::vector<int> vbv_buffer_size_values;
 };
 
 struct ExperimentRunPlan {
@@ -258,6 +266,41 @@ std::string normalize_headless_sync_mode_label(const CameraParams* camera_params
     return "free_run";
 }
 
+bool parse_headless_toggle_override(const std::string& value, int* out)
+{
+    if (!out) {
+        return false;
+    }
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (normalized == "auto" || normalized.empty()) {
+        *out = -1;
+        return true;
+    }
+    if (normalized == "1" || normalized == "true" || normalized == "on" || normalized == "yes") {
+        *out = 1;
+        return true;
+    }
+    if (normalized == "0" || normalized == "false" || normalized == "off" || normalized == "no") {
+        *out = 0;
+        return true;
+    }
+    return false;
+}
+
+std::string format_headless_toggle_override(int value)
+{
+    if (value > 0) {
+        return "on";
+    }
+    if (value == 0) {
+        return "off";
+    }
+    return "auto";
+}
+
 std::string resolved_headless_ptp_mode_label(const CameraParams* camera_params)
 {
     if (!camera_params || camera_params->ptp_mode.empty()) {
@@ -341,6 +384,29 @@ HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
             settings.quality_value = std::atoi(value.c_str());
         } else if (key == "gop" || key == "gop_length") {
             settings.gop_length = std::atoi(value.c_str());
+        } else if (key == "aq") {
+            int parsed = -1;
+            if (parse_headless_toggle_override(value, &parsed)) {
+                settings.control_overrides.aq = parsed;
+            }
+        } else if (key == "temporal_aq" || key == "temporal-aq") {
+            int parsed = -1;
+            if (parse_headless_toggle_override(value, &parsed)) {
+                settings.control_overrides.temporal_aq = parsed;
+            }
+        } else if (key == "lookahead") {
+            int parsed = -1;
+            if (parse_headless_toggle_override(value, &parsed)) {
+                settings.control_overrides.lookahead = parsed;
+            }
+        } else if (key == "lookahead_depth" || key == "lookahead-depth") {
+            settings.control_overrides.lookahead_depth = std::atoi(value.c_str());
+        } else if (key == "target_bitrate_bps" || key == "target-bitrate-bps" || key == "bitrate") {
+            settings.control_overrides.target_bitrate_bps = std::atoi(value.c_str());
+        } else if (key == "max_bitrate_bps" || key == "max-bitrate-bps") {
+            settings.control_overrides.max_bitrate_bps = std::atoi(value.c_str());
+        } else if (key == "vbv_buffer_size" || key == "vbv-buffer-size" || key == "vbv") {
+            settings.control_overrides.vbv_buffer_size = std::atoi(value.c_str());
         }
     }
 
@@ -361,6 +427,18 @@ HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
     }
     if (settings.gop_length < 0) {
         settings.gop_length = 0;
+    }
+    if (settings.control_overrides.lookahead_depth < -1) {
+        settings.control_overrides.lookahead_depth = -1;
+    }
+    if (settings.control_overrides.target_bitrate_bps == 0) {
+        settings.control_overrides.target_bitrate_bps = -1;
+    }
+    if (settings.control_overrides.max_bitrate_bps == 0) {
+        settings.control_overrides.max_bitrate_bps = -1;
+    }
+    if (settings.control_overrides.vbv_buffer_size == 0) {
+        settings.control_overrides.vbv_buffer_size = -1;
     }
 
     return settings;
@@ -392,6 +470,27 @@ std::string build_headless_encoder_setup_string(const HeadlessEncoderSettings& s
         << " quality=" << settings.quality_value
         << " gop=" << settings.gop_length
         << " camera=" << format_selected_camera_serials(settings);
+    if (settings.control_overrides.aq >= 0) {
+        out << " aq=" << format_headless_toggle_override(settings.control_overrides.aq);
+    }
+    if (settings.control_overrides.temporal_aq >= 0) {
+        out << " temporal_aq=" << format_headless_toggle_override(settings.control_overrides.temporal_aq);
+    }
+    if (settings.control_overrides.lookahead >= 0) {
+        out << " lookahead=" << format_headless_toggle_override(settings.control_overrides.lookahead);
+    }
+    if (settings.control_overrides.lookahead_depth >= 0) {
+        out << " lookahead_depth=" << settings.control_overrides.lookahead_depth;
+    }
+    if (settings.control_overrides.target_bitrate_bps > 0) {
+        out << " target_bitrate_bps=" << settings.control_overrides.target_bitrate_bps;
+    }
+    if (settings.control_overrides.max_bitrate_bps > 0) {
+        out << " max_bitrate_bps=" << settings.control_overrides.max_bitrate_bps;
+    }
+    if (settings.control_overrides.vbv_buffer_size > 0) {
+        out << " vbv_buffer_size=" << settings.control_overrides.vbv_buffer_size;
+    }
     return out.str();
 }
 
@@ -413,9 +512,16 @@ void print_headless_usage(const char* argv0)
         << "  --codec <h264|hevc>\n"
         << "  --preset <p1..p7>\n"
         << "  --tuning <ull|ll|hq>\n"
-        << "  --rate-control <vbr|cbr|cqp>\n"
+        << "  --rate-control <vbr|vbr_cq|cbr|cqp>\n"
         << "  --quality <int>\n"
         << "  --gop <int>\n"
+        << "  --aq <auto|on|off>\n"
+        << "  --temporal-aq <auto|on|off>\n"
+        << "  --lookahead <auto|on|off>\n"
+        << "  --lookahead-depth <int>\n"
+        << "  --target-bitrate-bps <int>\n"
+        << "  --max-bitrate-bps <int>\n"
+        << "  --vbv-buffer-size <int>\n"
         << "  --preenc-ref-max-frames <int>\n"
         << "  --preenc-ref-max-seconds <int>\n"
         << "  --duration <seconds>         Optional. Otherwise runs until Ctrl+C.\n"
@@ -526,6 +632,13 @@ bool headless_encoder_settings_is_default(const HeadlessEncoderSettings& setting
            settings.rate_control_mode == "vbr" &&
            settings.quality_value == 20 &&
            settings.gop_length == 0 &&
+           settings.control_overrides.aq < 0 &&
+           settings.control_overrides.temporal_aq < 0 &&
+           settings.control_overrides.lookahead < 0 &&
+           settings.control_overrides.lookahead_depth < 0 &&
+           settings.control_overrides.target_bitrate_bps < 0 &&
+           settings.control_overrides.max_bitrate_bps < 0 &&
+           settings.control_overrides.vbv_buffer_size < 0 &&
            settings.select_all_cameras &&
            settings.camera_serials.empty();
 }
@@ -673,6 +786,102 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             if (!parse_non_negative_int(value, &options->encoder_settings.gop_length)) {
                 if (error_out) {
                     *error_out = "Invalid --gop value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--aq") {
+            const std::string value = consume_value("--aq");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_headless_toggle_override(value, &options->encoder_settings.control_overrides.aq)) {
+                if (error_out) {
+                    *error_out = "Invalid --aq value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--temporal-aq") {
+            const std::string value = consume_value("--temporal-aq");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_headless_toggle_override(
+                    value, &options->encoder_settings.control_overrides.temporal_aq)) {
+                if (error_out) {
+                    *error_out = "Invalid --temporal-aq value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--lookahead") {
+            const std::string value = consume_value("--lookahead");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_headless_toggle_override(
+                    value, &options->encoder_settings.control_overrides.lookahead)) {
+                if (error_out) {
+                    *error_out = "Invalid --lookahead value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--lookahead-depth") {
+            const std::string value = consume_value("--lookahead-depth");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->encoder_settings.control_overrides.lookahead_depth)) {
+                if (error_out) {
+                    *error_out = "Invalid --lookahead-depth value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--target-bitrate-bps") {
+            const std::string value = consume_value("--target-bitrate-bps");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->encoder_settings.control_overrides.target_bitrate_bps) ||
+                options->encoder_settings.control_overrides.target_bitrate_bps <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --target-bitrate-bps value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--max-bitrate-bps") {
+            const std::string value = consume_value("--max-bitrate-bps");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->encoder_settings.control_overrides.max_bitrate_bps) ||
+                options->encoder_settings.control_overrides.max_bitrate_bps <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --max-bitrate-bps value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--vbv-buffer-size") {
+            const std::string value = consume_value("--vbv-buffer-size");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->encoder_settings.control_overrides.vbv_buffer_size) ||
+                options->encoder_settings.control_overrides.vbv_buffer_size <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --vbv-buffer-size value: " + value;
                 }
                 return false;
             }
@@ -1273,6 +1482,15 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
               << " rc=" << encoder_settings.rate_control_mode
               << " quality=" << encoder_settings.quality_value
               << " gop=" << encoder_settings.gop_length
+              << " aq=" << format_headless_toggle_override(encoder_settings.control_overrides.aq)
+              << " temporal_aq="
+              << format_headless_toggle_override(encoder_settings.control_overrides.temporal_aq)
+              << " lookahead="
+              << format_headless_toggle_override(encoder_settings.control_overrides.lookahead)
+              << " lookahead_depth=" << encoder_settings.control_overrides.lookahead_depth
+              << " target_bitrate_bps=" << encoder_settings.control_overrides.target_bitrate_bps
+              << " max_bitrate_bps=" << encoder_settings.control_overrides.max_bitrate_bps
+              << " vbv_buffer_size=" << encoder_settings.control_overrides.vbv_buffer_size
               << " cameras=" << format_selected_camera_serials(encoder_settings)
               << std::endl;
 
@@ -1371,6 +1589,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     encoder_settings.rate_control_mode,
                     encoder_settings.quality_value,
                     encoder_settings.gop_length,
+                    encoder_settings.control_overrides,
                     record_folder,
                     *camera_resources[idx].recycle_queue,
                     camera_control,
@@ -1755,6 +1974,58 @@ std::vector<int> parse_int_list_field(const nlohmann::json& node,
     return values;
 }
 
+std::vector<int> parse_toggle_override_list_field(const nlohmann::json& node,
+                                                  const char* key,
+                                                  bool* found = nullptr)
+{
+    if (found) {
+        *found = false;
+    }
+    std::vector<int> values;
+    if (!node.is_object() || !node.contains(key)) {
+        return values;
+    }
+    if (found) {
+        *found = true;
+    }
+    auto parse_item = [](const nlohmann::json& item, int* out) -> bool {
+        if (!out) {
+            return false;
+        }
+        if (item.is_boolean()) {
+            *out = item.get<bool>() ? 1 : 0;
+            return true;
+        }
+        if (item.is_number_integer()) {
+            const int value = item.get<int>();
+            if (value == -1 || value == 0 || value == 1) {
+                *out = value;
+                return true;
+            }
+            return false;
+        }
+        if (item.is_string()) {
+            return parse_headless_toggle_override(item.get<std::string>(), out);
+        }
+        return false;
+    };
+
+    const nlohmann::json& field = node.at(key);
+    int parsed = -1;
+    if (parse_item(field, &parsed)) {
+        values.push_back(parsed);
+        return values;
+    }
+    if (field.is_array()) {
+        for (const auto& item : field) {
+            if (parse_item(item, &parsed)) {
+                values.push_back(parsed);
+            }
+        }
+    }
+    return values;
+}
+
 std::vector<std::string> split_csv_line_simple(const std::string& line)
 {
     std::vector<std::string> cells;
@@ -1857,9 +2128,7 @@ nlohmann::json build_headless_gpu_dmon_snapshot_json(const HeadlessGpuDmonMonito
         "-d",
         std::to_string(monitor.sample_period_seconds),
         "-o",
-        "DT",
-        "--format",
-        "csv,nounit"
+        "DT"
     });
     return info;
 }
@@ -2007,7 +2276,6 @@ void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
                "-s", "putcm",
                "-d", sample_arg.c_str(),
                "-o", "DT",
-               "--format", "csv,nounit",
                static_cast<char*>(nullptr));
         std::fprintf(stderr, "Failed to exec nvidia-smi dmon: %s\n", std::strerror(errno));
         _exit(127);
@@ -2476,6 +2744,13 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->rate_control_modes = parse_string_list_field(matrix, "rate_control_mode");
     spec->quality_values = parse_int_list_field(matrix, "quality_value");
     spec->gop_lengths = parse_int_list_field(matrix, "gop_length");
+    spec->aq_values = parse_toggle_override_list_field(matrix, "aq");
+    spec->temporal_aq_values = parse_toggle_override_list_field(matrix, "temporal_aq");
+    spec->lookahead_values = parse_toggle_override_list_field(matrix, "lookahead");
+    spec->lookahead_depth_values = parse_int_list_field(matrix, "lookahead_depth");
+    spec->target_bitrate_bps_values = parse_int_list_field(matrix, "target_bitrate_bps");
+    spec->max_bitrate_bps_values = parse_int_list_field(matrix, "max_bitrate_bps");
+    spec->vbv_buffer_size_values = parse_int_list_field(matrix, "vbv_buffer_size");
 
     if (spec->codecs.empty()) spec->codecs.push_back("h264");
     if (spec->presets.empty()) spec->presets.push_back("p1");
@@ -2483,6 +2758,13 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->rate_control_modes.empty()) spec->rate_control_modes.push_back("vbr");
     if (spec->quality_values.empty()) spec->quality_values.push_back(20);
     if (spec->gop_lengths.empty()) spec->gop_lengths.push_back(0);
+    if (spec->aq_values.empty()) spec->aq_values.push_back(-1);
+    if (spec->temporal_aq_values.empty()) spec->temporal_aq_values.push_back(-1);
+    if (spec->lookahead_values.empty()) spec->lookahead_values.push_back(-1);
+    if (spec->lookahead_depth_values.empty()) spec->lookahead_depth_values.push_back(-1);
+    if (spec->target_bitrate_bps_values.empty()) spec->target_bitrate_bps_values.push_back(-1);
+    if (spec->max_bitrate_bps_values.empty()) spec->max_bitrate_bps_values.push_back(-1);
+    if (spec->vbv_buffer_size_values.empty()) spec->vbv_buffer_size_values.push_back(-1);
 
     return true;
 }
@@ -2492,6 +2774,20 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
     std::vector<ExperimentRunPlan> runs;
     const std::filesystem::path experiment_root =
         std::filesystem::path(spec.output_root) / spec.experiment_id;
+    const bool include_aq_in_run_id =
+        spec.aq_values.size() > 1 || spec.aq_values.front() >= 0;
+    const bool include_temporal_aq_in_run_id =
+        spec.temporal_aq_values.size() > 1 || spec.temporal_aq_values.front() >= 0;
+    const bool include_lookahead_in_run_id =
+        spec.lookahead_values.size() > 1 || spec.lookahead_values.front() >= 0;
+    const bool include_lookahead_depth_in_run_id =
+        spec.lookahead_depth_values.size() > 1 || spec.lookahead_depth_values.front() >= 0;
+    const bool include_target_bitrate_in_run_id =
+        spec.target_bitrate_bps_values.size() > 1 || spec.target_bitrate_bps_values.front() > 0;
+    const bool include_max_bitrate_in_run_id =
+        spec.max_bitrate_bps_values.size() > 1 || spec.max_bitrate_bps_values.front() > 0;
+    const bool include_vbv_in_run_id =
+        spec.vbv_buffer_size_values.size() > 1 || spec.vbv_buffer_size_values.front() > 0;
 
     int run_index = 0;
     for (const std::string& codec : spec.codecs) {
@@ -2500,70 +2796,126 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                 for (const std::string& rc_mode : spec.rate_control_modes) {
                     for (int quality_value : spec.quality_values) {
                         for (int gop_length : spec.gop_lengths) {
-                            ++run_index;
-                            ExperimentRunPlan run;
-                            run.run_index = run_index;
-                            std::ostringstream run_id;
-                            run_id << "run_" << std::setw(4) << std::setfill('0') << run_index
-                                   << "__codec_" << sanitize_run_component(codec)
-                                   << "__preset_" << sanitize_run_component(preset)
-                                   << "__tuning_" << sanitize_run_component(tuning)
-                                   << "__rc_" << sanitize_run_component(rc_mode)
-                                   << "__q_" << quality_value
-                                   << "__gop_" << gop_length;
-                            run.run_id = run_id.str();
-                            run.recording_folder = (experiment_root / run.run_id).string();
-                            run.duration_s = spec.duration_s;
-                            run.warmup_s = spec.warmup_s;
-                            run.options.mode = HeadlessMode::Local;
-                            run.options.config_folder = spec.config_folder;
-                            run.options.record_folder = run.recording_folder;
-                            run.options.duration_seconds = spec.duration_s + spec.warmup_s;
-                            run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
-                            run.options.record_start_delay_seconds = 0;
-                            run.options.nvenc_direct_input = spec.nvenc_direct_input;
-                            run.options.required_gpu_ids = spec.gpu_ids;
-                            run.options.encoder_settings = spec.selection;
-                            run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
-                            if (run.options.pre_encoder_reference_capture.enabled &&
-                                !run.options.pre_encoder_reference_capture.output_dir.empty()) {
-                                const std::filesystem::path configured_output_dir(
-                                    run.options.pre_encoder_reference_capture.output_dir);
-                                if (!configured_output_dir.is_absolute()) {
-                                    run.options.pre_encoder_reference_capture.output_dir =
-                                        (std::filesystem::path(run.recording_folder) /
-                                         configured_output_dir)
-                                            .string();
+                            for (int aq_value : spec.aq_values) {
+                                for (int temporal_aq_value : spec.temporal_aq_values) {
+                                    for (int lookahead_value : spec.lookahead_values) {
+                                        for (int lookahead_depth_value : spec.lookahead_depth_values) {
+                                            for (int target_bitrate_bps : spec.target_bitrate_bps_values) {
+                                                for (int max_bitrate_bps : spec.max_bitrate_bps_values) {
+                                                    for (int vbv_buffer_size : spec.vbv_buffer_size_values) {
+                                                        ++run_index;
+                                                        ExperimentRunPlan run;
+                                                        run.run_index = run_index;
+                                                        std::ostringstream run_id;
+                                                        run_id << "run_" << std::setw(4) << std::setfill('0') << run_index
+                                                               << "__codec_" << sanitize_run_component(codec)
+                                                               << "__preset_" << sanitize_run_component(preset)
+                                                               << "__tuning_" << sanitize_run_component(tuning)
+                                                               << "__rc_" << sanitize_run_component(rc_mode)
+                                                               << "__q_" << quality_value
+                                                               << "__gop_" << gop_length;
+                                                        if (include_aq_in_run_id) {
+                                                            run_id << "__aq_" << sanitize_run_component(
+                                                                format_headless_toggle_override(aq_value));
+                                                        }
+                                                        if (include_temporal_aq_in_run_id) {
+                                                            run_id << "__tempaq_" << sanitize_run_component(
+                                                                format_headless_toggle_override(temporal_aq_value));
+                                                        }
+                                                        if (include_lookahead_in_run_id) {
+                                                            run_id << "__lookahead_" << sanitize_run_component(
+                                                                format_headless_toggle_override(lookahead_value));
+                                                        }
+                                                        if (include_lookahead_depth_in_run_id) {
+                                                            run_id << "__lookdepth_" << lookahead_depth_value;
+                                                        }
+                                                        if (include_target_bitrate_in_run_id) {
+                                                            run_id << "__bitrate_" << target_bitrate_bps;
+                                                        }
+                                                        if (include_max_bitrate_in_run_id) {
+                                                            run_id << "__maxbps_" << max_bitrate_bps;
+                                                        }
+                                                        if (include_vbv_in_run_id) {
+                                                            run_id << "__vbv_" << vbv_buffer_size;
+                                                        }
+                                                        run.run_id = run_id.str();
+                                                        run.recording_folder = (experiment_root / run.run_id).string();
+                                                        run.duration_s = spec.duration_s;
+                                                        run.warmup_s = spec.warmup_s;
+                                                        run.options.mode = HeadlessMode::Local;
+                                                        run.options.config_folder = spec.config_folder;
+                                                        run.options.record_folder = run.recording_folder;
+                                                        run.options.duration_seconds = spec.duration_s + spec.warmup_s;
+                                                        run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
+                                                        run.options.record_start_delay_seconds = 0;
+                                                        run.options.nvenc_direct_input = spec.nvenc_direct_input;
+                                                        run.options.required_gpu_ids = spec.gpu_ids;
+                                                        run.options.encoder_settings = spec.selection;
+                                                        run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
+                                                        if (run.options.pre_encoder_reference_capture.enabled &&
+                                                            !run.options.pre_encoder_reference_capture.output_dir.empty()) {
+                                                            const std::filesystem::path configured_output_dir(
+                                                                run.options.pre_encoder_reference_capture.output_dir);
+                                                            if (!configured_output_dir.is_absolute()) {
+                                                                run.options.pre_encoder_reference_capture.output_dir =
+                                                                    (std::filesystem::path(run.recording_folder) /
+                                                                     configured_output_dir)
+                                                                        .string();
+                                                            }
+                                                        }
+                                                        run.options.encoder_settings.codec = codec;
+                                                        run.options.encoder_settings.preset = preset;
+                                                        run.options.encoder_settings.tuning = tuning;
+                                                        run.options.encoder_settings.rate_control_mode = rc_mode;
+                                                        run.options.encoder_settings.quality_value = quality_value;
+                                                        run.options.encoder_settings.gop_length = gop_length;
+                                                        run.options.encoder_settings.control_overrides.aq = aq_value;
+                                                        run.options.encoder_settings.control_overrides.temporal_aq = temporal_aq_value;
+                                                        run.options.encoder_settings.control_overrides.lookahead = lookahead_value;
+                                                        run.options.encoder_settings.control_overrides.lookahead_depth =
+                                                            lookahead_depth_value;
+                                                        run.options.encoder_settings.control_overrides.target_bitrate_bps =
+                                                            target_bitrate_bps;
+                                                        run.options.encoder_settings.control_overrides.max_bitrate_bps =
+                                                            max_bitrate_bps;
+                                                        run.options.encoder_settings.control_overrides.vbv_buffer_size =
+                                                            vbv_buffer_size;
+                                                        run.config_json = {
+                                                            {"codec", codec},
+                                                            {"preset", preset},
+                                                            {"tuning", tuning},
+                                                            {"rate_control_mode", rc_mode},
+                                                            {"quality_value", quality_value},
+                                                            {"gop_length", gop_length},
+                                                            {"aq", format_headless_toggle_override(aq_value)},
+                                                            {"temporal_aq", format_headless_toggle_override(temporal_aq_value)},
+                                                            {"lookahead", format_headless_toggle_override(lookahead_value)},
+                                                            {"lookahead_depth", lookahead_depth_value},
+                                                            {"target_bitrate_bps", target_bitrate_bps},
+                                                            {"max_bitrate_bps", max_bitrate_bps},
+                                                            {"vbv_buffer_size", vbv_buffer_size},
+                                                            {"camera_serials", run.options.encoder_settings.select_all_cameras
+                                                                                   ? nlohmann::json::array({"all"})
+                                                                                   : nlohmann::json(run.options.encoder_settings.camera_serials)},
+                                                            {"gpu_ids", spec.gpu_ids},
+                                                            {"duration_s", spec.duration_s},
+                                                            {"warmup_s", spec.warmup_s},
+                                                            {"stream_start_delay_s", spec.stream_start_delay_s},
+                                                            {"record_start_delay_s", 0},
+                                                            {"nvenc_direct_input", spec.nvenc_direct_input},
+                                                            {"recording_folder", run.recording_folder},
+                                                            {"pre_encoder_reference_capture",
+                                                             build_pre_encoder_reference_capture_json(
+                                                                 run.options.pre_encoder_reference_capture)},
+                                                        };
+                                                        runs.push_back(std::move(run));
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
-                            run.options.encoder_settings.codec = codec;
-                            run.options.encoder_settings.preset = preset;
-                            run.options.encoder_settings.tuning = tuning;
-                            run.options.encoder_settings.rate_control_mode = rc_mode;
-                            run.options.encoder_settings.quality_value = quality_value;
-                            run.options.encoder_settings.gop_length = gop_length;
-                            run.config_json = {
-                                {"codec", codec},
-                                {"preset", preset},
-                                {"tuning", tuning},
-                                {"rate_control_mode", rc_mode},
-                                {"quality_value", quality_value},
-                                {"gop_length", gop_length},
-                                {"camera_serials", run.options.encoder_settings.select_all_cameras
-                                                       ? nlohmann::json::array({"all"})
-                                                       : nlohmann::json(run.options.encoder_settings.camera_serials)},
-                                {"gpu_ids", spec.gpu_ids},
-                                {"duration_s", spec.duration_s},
-                                {"warmup_s", spec.warmup_s},
-                                {"stream_start_delay_s", spec.stream_start_delay_s},
-                                {"record_start_delay_s", 0},
-                                {"nvenc_direct_input", spec.nvenc_direct_input},
-                                {"recording_folder", run.recording_folder},
-                                {"pre_encoder_reference_capture",
-                                 build_pre_encoder_reference_capture_json(
-                                     run.options.pre_encoder_reference_capture)},
-                            };
-                            runs.push_back(std::move(run));
                         }
                     }
                 }
@@ -2753,6 +3105,20 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["rate_control_mode"] = run.options.encoder_settings.rate_control_mode;
     row["quality_value"] = run.options.encoder_settings.quality_value;
     row["gop_length"] = run.options.encoder_settings.gop_length;
+    row["aq_override"] =
+        format_headless_toggle_override(run.options.encoder_settings.control_overrides.aq);
+    row["temporal_aq_override"] =
+        format_headless_toggle_override(run.options.encoder_settings.control_overrides.temporal_aq);
+    row["lookahead_override"] =
+        format_headless_toggle_override(run.options.encoder_settings.control_overrides.lookahead);
+    row["lookahead_depth_override"] =
+        run.options.encoder_settings.control_overrides.lookahead_depth;
+    row["target_bitrate_bps_override"] =
+        run.options.encoder_settings.control_overrides.target_bitrate_bps;
+    row["max_bitrate_bps_override"] =
+        run.options.encoder_settings.control_overrides.max_bitrate_bps;
+    row["vbv_buffer_size_override"] =
+        run.options.encoder_settings.control_overrides.vbv_buffer_size;
     row["nvenc_direct_input"] = run.options.nvenc_direct_input;
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
@@ -3005,7 +3371,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -3021,6 +3387,13 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("rate_control_mode", "") << ","
                 << row.value("quality_value", 0) << ","
                 << row.value("gop_length", 0) << ","
+                << row.value("aq_override", "") << ","
+                << row.value("temporal_aq_override", "") << ","
+                << row.value("lookahead_override", "") << ","
+                << row.value("lookahead_depth_override", -1) << ","
+                << row.value("target_bitrate_bps_override", -1) << ","
+                << row.value("max_bitrate_bps_override", -1) << ","
+                << row.value("vbv_buffer_size_override", -1) << ","
                 << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","
@@ -3142,6 +3515,22 @@ int run_local_experiment(const HeadlessCliOptions& options)
                   << " rc=" << run.options.encoder_settings.rate_control_mode
                   << " q=" << run.options.encoder_settings.quality_value
                   << " gop=" << run.options.encoder_settings.gop_length
+                  << " aq="
+                  << format_headless_toggle_override(run.options.encoder_settings.control_overrides.aq)
+                  << " temporal_aq="
+                  << format_headless_toggle_override(
+                         run.options.encoder_settings.control_overrides.temporal_aq)
+                  << " lookahead="
+                  << format_headless_toggle_override(
+                         run.options.encoder_settings.control_overrides.lookahead)
+                  << " lookahead_depth="
+                  << run.options.encoder_settings.control_overrides.lookahead_depth
+                  << " target_bitrate_bps="
+                  << run.options.encoder_settings.control_overrides.target_bitrate_bps
+                  << " max_bitrate_bps="
+                  << run.options.encoder_settings.control_overrides.max_bitrate_bps
+                  << " vbv_buffer_size="
+                  << run.options.encoder_settings.control_overrides.vbv_buffer_size
                   << " direct_input=" << (run.options.nvenc_direct_input ? "true" : "false")
                   << " warmup=" << run.warmup_s
                   << " duration=" << run.duration_s

@@ -48,7 +48,7 @@ Default configured base path in runtime:
 | Pre-encoder reference raw dump | `<recording_folder>/Cam<serial>_preenc_ref.bin` | Optional | `pre_encoder_reference_capture.enabled = true` |
 | Pre-encoder reference index | `<recording_folder>/Cam<serial>_preenc_ref_index.csv` | Optional | `pre_encoder_reference_capture.enabled = true` |
 | Pre-encoder reference metadata | `<recording_folder>/Cam<serial>_preenc_ref.json` | Optional | `pre_encoder_reference_capture.enabled = true` |
-| GPU dmon CSV | `<recording_folder>/nvidia_smi_dmon.csv` | Optional | Headless recording session with best-effort GPU monitoring |
+| GPU dmon output | `<recording_folder>/nvidia_smi_dmon.csv` | Optional | Headless recording session with best-effort GPU monitoring |
 | GPU dmon stderr log | `<recording_folder>/nvidia_smi_dmon.stderr.log` | Optional | Headless recording session with best-effort GPU monitoring |
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
@@ -152,6 +152,13 @@ Current emitted top-level fields:
   - `rc.vbv_buffer_size: integer`
   - `aq.enable_aq: integer`
   - `aq.enable_temporal_aq: integer`
+  - `requested_overrides.aq: integer` (`-1 auto`, `0 off`, `1 on`)
+  - `requested_overrides.temporal_aq: integer` (`-1 auto`, `0 off`, `1 on`)
+  - `requested_overrides.lookahead: integer` (`-1 auto`, `0 off`, `1 on`)
+  - `requested_overrides.lookahead_depth: integer` (`-1 auto`)
+  - `requested_overrides.target_bitrate_bps: integer` (`-1 auto`)
+  - `requested_overrides.max_bitrate_bps: integer` (`-1 auto`)
+  - `requested_overrides.vbv_buffer_size: integer` (`-1 auto`)
   - `lookahead.enable: integer`
   - `lookahead.depth: integer`
   - `rc.multi_pass.value: integer`

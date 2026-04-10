@@ -1,0 +1,33 @@
+{
+  "experiment_id": "2026_04_09_bitrate_throughput_2010096_a6000_p1_ll_cbr_4pt",
+  "notes": "Bitrate throughput sweep for camera 2010096 on gpu_id=0 (A6000 expected), HEVC p1 ll CBR, 4 explicit target bitrates, no reference capture.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [0]
+  },
+  "fixed": {
+    "duration_s": 30,
+    "warmup_s": 10,
+    "display": false,
+    "yolo": false,
+    "sync_mode": "free_run",
+    "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["cbr"],
+    "quality_value": [20],
+    "gop_length": [0],
+    "target_bitrate_bps": [80000000, 100000000, 122150707, 140000000]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 1.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}

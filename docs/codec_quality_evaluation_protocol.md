@@ -45,6 +45,15 @@ This protocol is meant to answer questions like:
 
 Use the reference layer that matches the question being asked.
 
+Current runtime status:
+
+- Orange currently supports bounded pre-encoder reference capture to disk via:
+  - `Cam<serial>_preenc_ref.bin`
+  - `Cam<serial>_preenc_ref_index.csv`
+  - `Cam<serial>_preenc_ref.json`
+- Orange does not currently provide a true sensor-native raw / uncompressed
+  recording mode for this workflow.
+
 ### 1. Sensor-Native Reference
 
 Examples:
@@ -80,6 +89,10 @@ codec damage from:
 - resize choices,
 - color-space conversion choices,
 - and any future importance-map or delta-QP decisions.
+
+For current Orange benchmarking, this is the recommended default reference
+layer whenever the question is about codec quality rather than camera-pipeline
+quality.
 
 ### 3. Decoded Candidate Outputs
 
@@ -123,6 +136,53 @@ Preferred reference:
 Fallback reference if needed:
 
 - short lossless clip with tightly controlled scene conditions
+
+## Throughput vs Quality Split
+
+Do not use the same reference-capture policy for both throughput and quality
+studies.
+
+### Throughput / Stability Studies
+
+Goal:
+
+- find sustainable FPS limits
+- find queue/backpressure boundaries
+- correlate Orange counters with `nvidia-smi dmon`
+
+Recommendation:
+
+- disable `pre_encoder_reference_capture`
+- use normal recording runs only
+
+Reason:
+
+- reference capture adds D2H copy and disk I/O overhead
+- that overhead is useful for bounded reference generation, but it confounds a
+  pure throughput measurement
+
+### Codec / Bitrate Quality Studies
+
+Goal:
+
+- determine what the codec removed
+- compare bitrate / RC / tuning choices against the same prepared source
+
+Recommendation:
+
+- enable bounded `pre_encoder_reference_capture`
+- keep captures short and explicit
+
+Recommended capture budgets:
+
+- `16-64` frames, or
+- about `1-2 s`
+
+Reason:
+
+- enough frames for codec comparison
+- avoids turning the run into a long uncompressed I/O workflow
+- keeps the experiment focused on codec effects, not raw-dump throughput
 
 ## Clip Selection
 

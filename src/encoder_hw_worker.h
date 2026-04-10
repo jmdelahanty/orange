@@ -44,6 +44,7 @@ public:
         const std::string& rate_control_mode,
         int quality_value,
         int gop_length,
+        const EncoderControlOverrides& encoder_control_overrides,
         std::string folder_name,
         EncoderPreprocessWorker* prep_worker,
         CameraControl* camera_control,
@@ -140,6 +141,13 @@ private:
         uint32_t enable_non_ref_p = 0;
         uint32_t repeat_sps_pps = 0;
         uint32_t enable_ptd = 0;
+        int requested_aq = -1;
+        int requested_temporal_aq = -1;
+        int requested_lookahead = -1;
+        int requested_lookahead_depth = -1;
+        int requested_target_bitrate_bps = -1;
+        int requested_max_bitrate_bps = -1;
+        int requested_vbv_buffer_size = -1;
         int gpu_id = -1;
         nlohmann::json gpu = nlohmann::json::object();
         nlohmann::json resolved_config = nlohmann::json::object();
@@ -153,6 +161,7 @@ private:
     std::string preset_;
     std::string tuning_;
     std::string rate_control_mode_;
+    EncoderControlOverrides encoder_control_overrides_;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture_config_;
     bool direct_input_enabled_ = false;
     bool direct_input_registered_ = false;
