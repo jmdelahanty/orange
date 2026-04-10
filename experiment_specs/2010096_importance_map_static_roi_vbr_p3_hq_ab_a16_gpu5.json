@@ -1,0 +1,33 @@
+{
+  "experiment_id": "2026_04_10_importance_map_static_roi_vbr_p3_hq_ab_2010096_a16_gpu5",
+  "notes": "A/B comparison of off vs static_roi 512px square for HEVC p3 hq VBR on camera 2010096 and gpu_id=5.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 20,
+    "warmup_s": 5,
+    "display": false,
+    "yolo": false,
+    "sync_mode": "free_run",
+    "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted"
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p3"],
+    "tuning": ["hq"],
+    "rate_control_mode": ["vbr"],
+    "importance_map_mode": ["off", "static_roi"],
+    "importance_map_roi_size_px": [512],
+    "quality_value": [20],
+    "gop_length": [0]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 1.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "experiment_id": "2026_04_10_importance_map_static_roi_cbr122_p1_ll_size_sweep_2010096_a16_gpu1",
+  "notes": "Static ROI size sweep for HEVC p1 ll CBR ~122 Mbps on camera 2010096 and gpu_id=1.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [1]
+  },
+  "fixed": {
+    "duration_s": 20,
+    "warmup_s": 5,
+    "display": false,
+    "yolo": false,
+    "sync_mode": "free_run",
+    "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted"
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["cbr"],
+    "importance_map_mode": ["static_roi"],
+    "importance_map_roi_size_px": [256, 512, 1024],
+    "target_bitrate_bps": [122148864],
+    "quality_value": [20],
+    "gop_length": [0]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 1.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}
