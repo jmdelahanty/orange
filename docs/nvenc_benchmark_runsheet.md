@@ -163,6 +163,27 @@ Interpretation notes:
 The current headless/GUI controls expose `hq`, `ll`, and `ull`, but these are
 not just cosmetic labels. They resolve to different NVENC operating modes.
 
+Vendor guidance matches that distinction:
+
+- NVIDIA documents `high quality` / `ultra high quality` as the recommended
+  tuning info for recording, archiving, and latency-tolerant transcoding.
+- NVIDIA documents `low latency` / `ultra low latency` as the recommended
+  tuning info for low-latency use cases such as game streaming and video
+  conferencing.
+- NVIDIA's low-latency recommendations also assume low-delay rate-control
+  choices such as `CBR`, very small `VBV` buffers, and optional
+  `quarter/full-resolution multipass`.
+
+That matters for interpreting this run sheet:
+
+- Block A keeps `vbr` fixed across `hq`, `ll`, and `ull` to isolate empirical
+  preset/tuning behavior on the current Orange path.
+- That is a valid benchmark, but it is not the same as testing NVIDIA's
+  recommended low-latency operating recipe.
+- So if `hq` wins the `vbr` throughput sweep, that does not contradict the SDK
+  documentation. It means the low-latency tuning modes are not giving more
+  throughput headroom under this particular workload and RC choice.
+
 Observed on the `RTX A6000` for `hevc p3 vbr` at `4512x4512 @ 60`:
 
 - `p3 hq`
