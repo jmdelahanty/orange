@@ -24,6 +24,7 @@ public:
         int quality_value,
         int gop_length,
         const EncoderControlOverrides& encoder_control_overrides,
+        const ImportanceMapConfig& importance_map_config,
         const std::string& base_folder_name,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
         CameraControl* camera_control,

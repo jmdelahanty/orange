@@ -45,6 +45,7 @@ public:
         int quality_value,
         int gop_length,
         const EncoderControlOverrides& encoder_control_overrides,
+        const ImportanceMapConfig& importance_map_config,
         std::string folder_name,
         EncoderPreprocessWorker* prep_worker,
         CameraControl* camera_control,
@@ -85,6 +86,8 @@ private:
                                bool slot_submitted);
     void release_pre_encoder_reference_capture_resources();
     bool ensure_pre_encoder_reference_staging_slots(size_t frame_size, std::string* error_out);
+    void initialize_importance_map();
+    bool importance_map_active() const;
 
     struct ReferenceCaptureStagingSlot {
         unsigned char* host_buffer = nullptr;
@@ -148,6 +151,14 @@ private:
         int requested_target_bitrate_bps = -1;
         int requested_max_bitrate_bps = -1;
         int requested_vbv_buffer_size = -1;
+        std::string requested_importance_map_mode = "off";
+        std::string active_importance_map_mode = "off";
+        uint32_t qp_map_mode = 0;
+        uint32_t importance_map_block_size = 0;
+        uint32_t importance_map_grid_width = 0;
+        uint32_t importance_map_grid_height = 0;
+        int importance_map_inside_delta = 0;
+        int importance_map_outside_delta = 0;
         int gpu_id = -1;
         nlohmann::json gpu = nlohmann::json::object();
         nlohmann::json resolved_config = nlohmann::json::object();
@@ -162,9 +173,11 @@ private:
     std::string tuning_;
     std::string rate_control_mode_;
     EncoderControlOverrides encoder_control_overrides_;
+    ImportanceMapConfig importance_map_config_;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture_config_;
     bool direct_input_enabled_ = false;
     bool direct_input_registered_ = false;
+    bool importance_map_enabled_ = false;
     int encoder_input_pitch_ = 0;
     int encoder_buffer_count_ = 0;
     bool pre_encoder_reference_async_enabled_ = false;
@@ -175,6 +188,8 @@ private:
     std::vector<ReferenceCaptureStagingSlot> pre_encoder_reference_staging_slots_;
     std::deque<PendingReferenceCapture> pending_pre_encoder_reference_captures_;
     std::string active_recording_folder_;
+    std::vector<int8_t> importance_map_qp_delta_;
+    std::size_t importance_map_qp_delta_size_ = 0;
     cudaStream_t m_stream = nullptr;
     cudaStream_t pre_encoder_reference_stream_ = nullptr;
     CameraControl* camera_control_;

@@ -150,6 +150,8 @@ Current emitted top-level fields:
   - `rc.average_bitrate: integer`
   - `rc.max_bitrate: integer`
   - `rc.vbv_buffer_size: integer`
+  - `rc.qp_map_mode.value: integer`
+  - `rc.qp_map_mode.name: string`
   - `aq.enable_aq: integer`
   - `aq.enable_temporal_aq: integer`
   - `requested_overrides.aq: integer` (`-1 auto`, `0 off`, `1 on`)
@@ -159,6 +161,17 @@ Current emitted top-level fields:
   - `requested_overrides.target_bitrate_bps: integer` (`-1 auto`)
   - `requested_overrides.max_bitrate_bps: integer` (`-1 auto`)
   - `requested_overrides.vbv_buffer_size: integer` (`-1 auto`)
+  - `requested_overrides.importance_map_mode: string` (`off|static_prior`)
+  - `importance_map: object`
+    - `requested_mode: string`
+    - `active_mode: string`
+    - `enabled: boolean`
+    - `block_size: integer`
+    - `grid_width: integer`
+    - `grid_height: integer`
+    - `inside_delta_qp: integer`
+    - `outside_delta_qp: integer`
+    - `qp_map_size_bytes: integer`
   - `lookahead.enable: integer`
   - `lookahead.depth: integer`
   - `rc.multi_pass.value: integer`
@@ -320,6 +333,49 @@ Contract notes:
 - It is a summarized diagnostic artifact, not a per-frame timing trace.
 
 ## CSV Contracts
+
+### Headless Experiment Results (`runs.json` / `runs.csv`)
+
+Paths:
+- `<experiment_root>/runs.json`
+- `<experiment_root>/runs.csv`
+
+Current per-camera row fields include:
+- `recording_folder: string`
+- `importance_map_mode: string`
+- `importance_map_enabled: boolean`
+- `importance_map_active_mode: string`
+- `importance_map_block_size: integer`
+- `importance_map_grid_width: integer`
+- `importance_map_grid_height: integer`
+- `video_present: boolean`
+- `video_path: string`
+- `video_file_size_bytes: integer`
+- `video_duration_s: number`
+- `video_achieved_bitrate_bps: integer`
+
+Field semantics:
+- `importance_map_mode` is the requested headless importance-map mode for the
+  run (`off` or `static_prior` today).
+- `importance_map_active_mode` is what the encoder snapshot reported after
+  initialization; it should match the requested mode for a valid importance-map
+  smoke run.
+- `importance_map_block_size`, `importance_map_grid_width`, and
+  `importance_map_grid_height` describe the codec block grid used for the
+  qp-delta map (`32x32` CTBs for current HEVC runs).
+- `video_*` fields describe the main full-frame video artifact
+  `<recording_folder>/Cam<serial>.mp4`.
+- `video_file_size_bytes` is the on-disk MP4 size after the run finalizes.
+- `video_duration_s` is the actual container duration reported by `ffprobe`.
+- `video_achieved_bitrate_bps` is the actual written file bitrate reported by
+  `ffprobe`, or a fallback `size * 8 / duration` calculation when `bit_rate`
+  is not present.
+
+Important:
+- `video_duration_s` includes warmup time in current headless experiment runs,
+  because recording starts immediately and warmup is only excluded from scoring.
+- `video_achieved_bitrate_bps` is an output metric and can differ from
+  requested or resolved encoder bitrate settings.
 
 ### Main Metadata CSV (`Cam<serial>_meta.csv`)
 

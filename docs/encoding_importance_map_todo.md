@@ -1,10 +1,17 @@
 # Recording Importance Map TODO
 
 Date: 2026-03-18
-Status: target design, not implemented
+Status: target design with partial runtime prototype
 
 Scope: plan a full-frame recording quality-prioritization system that can steer
 NVENC bit allocation toward the fish without requiring TensorRT.
+
+Current runtime status:
+- headless recording now supports an opt-in `importance_map_mode=static_prior`
+  smoke path that emits a synthetic circular delta-QP map
+- this v1 path is for plumbing validation only and is not yet dish-geometry
+  driven
+- motion ROI, arena priors, and detector-informed maps remain planned work
 
 Note:
 - For the newer draft on canonical `layout_id` / `zone_id`, per-recording
@@ -129,6 +136,72 @@ It will only distinguish:
 
 That is still useful because it can stop spending bits outside the dish, while
 keeping latency and implementation risk low.
+
+## Block Size Selection Notes
+
+How people choose an importance-map block size is usually constrained in this
+order:
+
+1. encoder/API-supported map granularity
+2. ROI scale
+3. stability vs precision tradeoff
+4. map-generation cost and implementation complexity
+
+Documented facts relevant to the current NVENC path:
+
+- NVIDIA's NVENC API defines `qpDeltaMap` at codec block granularity, not
+  per-pixel:
+  - H.264: one value per macroblock
+  - HEVC: one value per CTB
+- In the SDK header currently used by Orange, `NV_ENC_CONFIG_HEVC::maxCUSize`
+  is documented as only supporting `NV_ENC_HEVC_CUSIZE_32x32` in the current
+  NVENC SDK path.
+- NVIDIA's Jetson encoder docs also describe H.265 motion/block data on a
+  `32x32` coded-tree-block grid, which is consistent with treating a coarse
+  `32x32` grid as the encoder-native control surface for this first slice.
+
+Practical inference for Orange:
+
+- For a static dish prior, start on the encoder-native block grid rather than
+  inventing a finer synthetic grid.
+- A whole-dish prior is spatially coarse, so `32x32` blocks are usually an
+  acceptable first validation surface.
+- Smaller regions, such as individual fish bodies, may later require a finer
+  or more adaptive strategy, but that should only be pursued if:
+  - the encoder path actually supports it,
+  - and benchmarking shows the coarser grid is visibly insufficient.
+
+Why not chase smaller blocks immediately:
+
+- Finer maps increase spatial precision, but also increase the risk of hard
+  ROI boundaries, temporal pumping, and noisy per-frame map changes.
+- A coarse static prior is intentionally "boring" and is less likely to create
+  artifacts while the plumbing is still being validated.
+- For the current goal, proving that NVENC accepts and applies a stable
+  block-level delta-QP map is more important than maximizing spatial precision.
+
+Current Orange position:
+
+- `static_prior` uses the current HEVC/NVENC block grid (`32x32` CTBs).
+- That choice should be treated as "encoder-native and low-risk", not as a
+  final claim that `32x32` is always best for fish-aware ROI encoding.
+- Future dish-geometry and fish-aware ROI work should benchmark quality and
+  stability before changing map granularity.
+
+Sources:
+
+- NVIDIA NVENC Video Encoder API Programming Guide:
+  https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-video-encoder-api-prog-guide/index.html
+  - tuning/preset guidance (`P1` highest performance to `P7` lowest
+    performance) and rate-control behavior
+- NVIDIA Jetson encoder API reference (`MVInfo_`):
+  https://docs.nvidia.com/jetson/archives/r38.2/ApiReference/structMVInfo__.html
+  - H.264 motion vectors per `16x16` block and H.265 per `32x32` CTB
+- Local SDK header used by Orange:
+  - `/usr/local/include/ffnvcodec/nvEncodeAPI.h`
+  - `qpDeltaMap` is per MB for H.264 and per CTB for HEVC
+  - current HEVC `maxCUSize` note says the SDK path only supports
+    `NV_ENC_HEVC_CUSIZE_32x32`
 
 ## Encoder-Speed Position
 

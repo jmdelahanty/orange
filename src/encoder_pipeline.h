@@ -29,6 +29,12 @@ struct PreEncoderReferenceCaptureConfig {
     bool has_valid_bound() const { return !enabled || (has_frame_bound() != has_time_bound()); }
 };
 
+struct ImportanceMapConfig {
+    std::string mode = "off";
+
+    bool enabled() const { return mode != "off"; }
+};
+
 struct EncoderControlOverrides {
     int aq = -1;
     int temporal_aq = -1;

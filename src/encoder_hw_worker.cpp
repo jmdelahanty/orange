@@ -14,6 +14,7 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
@@ -29,6 +30,9 @@ constexpr int kMinQualityValue = 1;
 constexpr int kMaxQualityValue = 51;
 constexpr int kMaxLookaheadDepth = 32;
 constexpr size_t kPreEncoderReferenceCaptureRingSize = 3;
+constexpr double kStaticPriorCircleRadiusFraction = 0.35;
+constexpr int8_t kStaticPriorInsideDelta = -3;
+constexpr int8_t kStaticPriorOutsideDelta = 3;
 
 uint32_t clamp_bitrate(uint64_t value) {
     if (value < kMinQualityBitrate) {
@@ -101,6 +105,38 @@ bool parse_env_flag(const char* name, bool default_value) {
         return false;
     }
     return true;
+}
+
+std::string normalize_importance_map_mode(std::string mode) {
+    std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (mode.empty() || mode == "off" || mode == "none" || mode == "disabled") {
+        return "off";
+    }
+    if (mode == "static_prior" || mode == "static-prior" || mode == "static") {
+        return "static_prior";
+    }
+    return mode;
+}
+
+bool importance_map_mode_enabled(const std::string& mode) {
+    return normalize_importance_map_mode(mode) != "off";
+}
+
+std::string qp_map_mode_to_string(NV_ENC_QP_MAP_MODE mode) {
+    switch (mode) {
+        case NV_ENC_QP_MAP_DISABLED:
+            return "disabled";
+        case NV_ENC_QP_MAP_EMPHASIS:
+            return "emphasis";
+        case NV_ENC_QP_MAP_DELTA:
+            return "delta";
+        case NV_ENC_QP_MAP:
+            return "absolute_qp";
+        default:
+            return "unknown";
+    }
 }
 
 std::string resolve_rate_control_strategy(
@@ -212,6 +248,10 @@ nlohmann::json build_resolved_encoder_config_json(const NV_ENC_INITIALIZE_PARAMS
         {"enable_temporal_aq", encode_config.rcParams.enableTemporalAQ},
         {"enable_lookahead", encode_config.rcParams.enableLookahead},
         {"lookahead_depth", encode_config.rcParams.lookaheadDepth},
+        {"qp_map_mode", {
+            {"value", encode_config.rcParams.qpMapMode},
+            {"name", qp_map_mode_to_string(static_cast<NV_ENC_QP_MAP_MODE>(encode_config.rcParams.qpMapMode))}
+        }},
         {"multi_pass", {
             {"value", encode_config.rcParams.multiPass},
             {"name", multi_pass_to_string(static_cast<NV_ENC_MULTI_PASS>(encode_config.rcParams.multiPass))}
@@ -268,7 +308,8 @@ std::vector<std::pair<std::string, std::string>> build_metadata_tags(
     const std::string& rate_control_mode,
     int quality_value,
     int gop_length,
-    const EncoderControlOverrides& encoder_control_overrides
+    const EncoderControlOverrides& encoder_control_overrides,
+    const ImportanceMapConfig& importance_map_config
 ) {
     std::vector<std::pair<std::string, std::string>> tags;
     tags.emplace_back("title", "Cam" + camera_params->camera_serial);
@@ -343,6 +384,9 @@ std::vector<std::pair<std::string, std::string>> build_metadata_tags(
     }
     if (encoder_control_overrides.vbv_buffer_size > 0) {
         comment << "; vbv=" << encoder_control_overrides.vbv_buffer_size;
+    }
+    if (importance_map_mode_enabled(importance_map_config.mode)) {
+        comment << "; importance_map=" << normalize_importance_map_mode(importance_map_config.mode);
     }
 
     if (recording_output_config.mode == "factor") {
@@ -582,6 +626,7 @@ EncoderHwWorker::EncoderHwWorker(
     int quality_value,
     int gop_length,
     const EncoderControlOverrides& encoder_control_overrides,
+    const ImportanceMapConfig& importance_map_config,
     std::string base_folder_name,
     EncoderPreprocessWorker* prep_worker,
     CameraControl* camera_control,
@@ -596,6 +641,7 @@ EncoderHwWorker::EncoderHwWorker(
   tuning_(tuning),
   rate_control_mode_(rate_control_mode.empty() ? "vbr" : rate_control_mode),
   encoder_control_overrides_(encoder_control_overrides),
+  importance_map_config_(importance_map_config),
   pre_encoder_reference_capture_config_(pre_encoder_reference_capture_config),
   direct_input_enabled_(parse_env_flag("ORANGE_NVENC_DIRECT_INPUT", false)),
   quality_value_(clamp_quality_value(quality_value)),
@@ -695,6 +741,17 @@ EncoderHwWorker::EncoderHwWorker(
     encodeConfig.rcParams.strictGOPTarget = 0;
     encodeConfig.rcParams.enableNonRefP = 0;
     apply_encoder_control_overrides(encodeConfig, encoder_control_overrides_);
+    importance_map_config_.mode = normalize_importance_map_mode(importance_map_config_.mode);
+    if (importance_map_config_.mode != "off" && importance_map_config_.mode != "static_prior") {
+        throw std::invalid_argument(
+            "Unsupported importance_map_mode: " + importance_map_config_.mode +
+            " (expected off or static_prior)");
+    }
+    if (importance_map_mode_enabled(importance_map_config_.mode)) {
+        encodeConfig.rcParams.qpMapMode = NV_ENC_QP_MAP_DELTA;
+    } else {
+        encodeConfig.rcParams.qpMapMode = NV_ENC_QP_MAP_DISABLED;
+    }
     initializeParams.enableWeightedPrediction = 0;
 
     if (codec_ == "hevc") {
@@ -787,6 +844,8 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.requested_target_bitrate_bps = encoder_control_overrides_.target_bitrate_bps;
         encoder_snapshot_.requested_max_bitrate_bps = encoder_control_overrides_.max_bitrate_bps;
         encoder_snapshot_.requested_vbv_buffer_size = encoder_control_overrides_.vbv_buffer_size;
+        encoder_snapshot_.requested_importance_map_mode = importance_map_config_.mode;
+        encoder_snapshot_.qp_map_mode = resolved_config.rcParams.qpMapMode;
         encoder_snapshot_.gpu_id = camera_params_->gpu_id;
         encoder_snapshot_.gpu = build_gpu_runtime_info(camera_params_->gpu_id);
         encoder_snapshot_.resolved_config = build_resolved_encoder_config_json(
@@ -811,6 +870,8 @@ EncoderHwWorker::EncoderHwWorker(
 
         encoder_snapshot_valid_ = true;
     }
+
+    initialize_importance_map();
 }
 
 EncoderHwWorker::~EncoderHwWorker()
@@ -849,6 +910,70 @@ void EncoderHwWorker::SetPreprocessWorker(EncoderPreprocessWorker* prep_worker)
         static_cast<uint32_t>(m_prep_worker_->direct_input_pitch()));
     direct_input_registered_ = true;
     encoder_input_pitch_ = m_prep_worker_->direct_input_pitch();
+}
+
+void EncoderHwWorker::initialize_importance_map()
+{
+    importance_map_enabled_ = false;
+    importance_map_qp_delta_.clear();
+    importance_map_qp_delta_size_ = 0;
+
+    encoder_snapshot_.active_importance_map_mode = "off";
+    encoder_snapshot_.importance_map_block_size = 0;
+    encoder_snapshot_.importance_map_grid_width = 0;
+    encoder_snapshot_.importance_map_grid_height = 0;
+    encoder_snapshot_.importance_map_inside_delta = 0;
+    encoder_snapshot_.importance_map_outside_delta = 0;
+
+    if (!importance_map_mode_enabled(importance_map_config_.mode)) {
+        return;
+    }
+
+    const bool is_hevc = codec_ == "hevc";
+    const uint32_t block_size = is_hevc ? 32U : 16U;
+    const uint32_t width = static_cast<uint32_t>(recording_output_config_.resolved_width);
+    const uint32_t height = static_cast<uint32_t>(recording_output_config_.resolved_height);
+    const uint32_t grid_width = (width + block_size - 1U) / block_size;
+    const uint32_t grid_height = (height + block_size - 1U) / block_size;
+    if (grid_width == 0 || grid_height == 0) {
+        throw std::runtime_error("Importance map grid dimensions are invalid");
+    }
+
+    const double center_x = static_cast<double>(width) * 0.5;
+    const double center_y = static_cast<double>(height) * 0.5;
+    const double radius = static_cast<double>(std::min(width, height)) * kStaticPriorCircleRadiusFraction;
+    const double radius_sq = radius * radius;
+
+    importance_map_qp_delta_.resize(static_cast<std::size_t>(grid_width) * static_cast<std::size_t>(grid_height));
+    for (uint32_t y = 0; y < grid_height; ++y) {
+        for (uint32_t x = 0; x < grid_width; ++x) {
+            const double sample_x =
+                std::min(static_cast<double>(width) - 0.5,
+                         (static_cast<double>(x) + 0.5) * static_cast<double>(block_size));
+            const double sample_y =
+                std::min(static_cast<double>(height) - 0.5,
+                         (static_cast<double>(y) + 0.5) * static_cast<double>(block_size));
+            const double dx = sample_x - center_x;
+            const double dy = sample_y - center_y;
+            const bool inside = (dx * dx + dy * dy) <= radius_sq;
+            importance_map_qp_delta_[static_cast<std::size_t>(y) * grid_width + x] =
+                inside ? kStaticPriorInsideDelta : kStaticPriorOutsideDelta;
+        }
+    }
+
+    importance_map_qp_delta_size_ = importance_map_qp_delta_.size() * sizeof(importance_map_qp_delta_.front());
+    importance_map_enabled_ = true;
+    encoder_snapshot_.active_importance_map_mode = importance_map_config_.mode;
+    encoder_snapshot_.importance_map_block_size = block_size;
+    encoder_snapshot_.importance_map_grid_width = grid_width;
+    encoder_snapshot_.importance_map_grid_height = grid_height;
+    encoder_snapshot_.importance_map_inside_delta = kStaticPriorInsideDelta;
+    encoder_snapshot_.importance_map_outside_delta = kStaticPriorOutsideDelta;
+}
+
+bool EncoderHwWorker::importance_map_active() const
+{
+    return importance_map_enabled_ && !importance_map_qp_delta_.empty() && importance_map_qp_delta_size_ > 0;
 }
 
 void EncoderHwWorker::initialize_pre_encoder_reference_capture()
@@ -1272,7 +1397,11 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
         {"mode_value", encoder_snapshot_.rc_mode},
         {"average_bitrate", encoder_snapshot_.average_bitrate},
         {"max_bitrate", encoder_snapshot_.max_bitrate},
-        {"vbv_buffer_size", encoder_snapshot_.vbv_buffer_size}
+        {"vbv_buffer_size", encoder_snapshot_.vbv_buffer_size},
+        {"qp_map_mode", {
+            {"value", encoder_snapshot_.qp_map_mode},
+            {"name", qp_map_mode_to_string(static_cast<NV_ENC_QP_MAP_MODE>(encoder_snapshot_.qp_map_mode))}
+        }}
     };
     if (encoder_snapshot_.target_quality > 0 || encoder_snapshot_.target_quality_lsb > 0) {
         info["rc"]["target_quality"] = encoder_snapshot_.target_quality;
@@ -1297,7 +1426,19 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
         {"lookahead_depth", encoder_snapshot_.requested_lookahead_depth},
         {"target_bitrate_bps", encoder_snapshot_.requested_target_bitrate_bps},
         {"max_bitrate_bps", encoder_snapshot_.requested_max_bitrate_bps},
-        {"vbv_buffer_size", encoder_snapshot_.requested_vbv_buffer_size}
+        {"vbv_buffer_size", encoder_snapshot_.requested_vbv_buffer_size},
+        {"importance_map_mode", encoder_snapshot_.requested_importance_map_mode}
+    };
+    info["importance_map"] = {
+        {"requested_mode", encoder_snapshot_.requested_importance_map_mode},
+        {"active_mode", encoder_snapshot_.active_importance_map_mode},
+        {"enabled", importance_map_active()},
+        {"block_size", encoder_snapshot_.importance_map_block_size},
+        {"grid_width", encoder_snapshot_.importance_map_grid_width},
+        {"grid_height", encoder_snapshot_.importance_map_grid_height},
+        {"inside_delta_qp", encoder_snapshot_.importance_map_inside_delta},
+        {"outside_delta_qp", encoder_snapshot_.importance_map_outside_delta},
+        {"qp_map_size_bytes", importance_map_qp_delta_size_}
     };
     info["lookahead"] = {
         {"enable", encoder_snapshot_.enable_lookahead},
@@ -1398,7 +1539,8 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 rate_control_mode_,
                 quality_value_,
                 gop_length_,
-                encoder_control_overrides_
+                encoder_control_overrides_,
+                importance_map_config_
             );
             initialize_writer_hw(
                 &writer_,
@@ -1448,6 +1590,14 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     size_t capture_staging_slot = 0;
     size_t capture_frame_size = 0;
     bool slot_submitted = false;
+    NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
+    NV_ENC_PIC_PARAMS* pic_params_ptr = nullptr;
+
+    if (importance_map_active()) {
+        pic_params.qpDeltaMap = importance_map_qp_delta_.data();
+        pic_params.qpDeltaMapSize = static_cast<uint32_t>(importance_map_qp_delta_size_);
+        pic_params_ptr = &pic_params;
+    }
 
     try {
         if (entry->preprocess_complete_event) {
@@ -1467,7 +1617,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                       << " but got " << entry->slot_id;
                 throw std::runtime_error(error.str());
             }
-            encoder_.pEnc->EncodeFrame(encoder_.vPacket, nullptr, &retired_slots);
+            encoder_.pEnc->EncodeFrame(encoder_.vPacket, pic_params_ptr, &retired_slots);
             slot_submitted = true;
         } else {
             const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
@@ -1493,7 +1643,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 encoderInputFrame->numChromaPlanes
             );
 
-            encoder_.pEnc->EncodeFrame(encoder_.vPacket);
+            encoder_.pEnc->EncodeFrame(encoder_.vPacket, pic_params_ptr);
         }
 
         size_t packets_generated = encoder_.vPacket.size();

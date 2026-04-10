@@ -184,6 +184,112 @@ Reason:
 - avoids turning the run into a long uncompressed I/O workflow
 - keeps the experiment focused on codec effects, not raw-dump throughput
 
+## Artifact Taxonomy
+
+Use consistent names for recurring failure or visual-quality modes during
+review. This keeps "the video looked bad" from collapsing several different
+problems into one bucket.
+
+### 1. Keyframe-Recovery Collapse
+
+Typical appearance:
+
+- strong distortion or blockiness appears immediately after a keyframe / IDR
+- quality then improves gradually over the next group of inter frames
+- the pattern repeats at the GOP cadence
+
+Typical causes:
+
+- GOP is too short for the bitrate budget
+- bitrate is too low for the resolution / fps / scene complexity
+- VBV buffer is too small
+- low-latency RC settings leave little rate-control slack
+- lookahead is disabled, so the encoder has less room to budget around
+  expensive keyframes
+
+Interpretation:
+
+- this is a GOP / rate-control / buffer-model problem first
+- it may look like temporal pumping, but the cadence is strongly tied to
+  keyframe placement
+
+### 2. Temporal Pumping
+
+Typical appearance:
+
+- detail, noise, sharpness, or blockiness visibly "breathes" over time
+- the background or ROI alternates between clearer and muddier states
+- the cadence is not necessarily locked to keyframes
+
+Typical causes:
+
+- bitrate allocation changes too aggressively from frame to frame
+- AQ / TemporalAQ or VBR reacts strongly to scene motion or noise
+- an ROI / importance map changes too much from frame to frame
+- the encode path is operating close to saturation and has little slack
+
+Interpretation:
+
+- pumping is quality instability over time, not just "low quality"
+- a clip can have acceptable average quality metrics and still look bad because
+  the quality is unstable
+
+### 3. ROI-Boundary Artifact
+
+Typical appearance:
+
+- a visible ring, edge, or boundary where one region looks protected and the
+  adjacent region looks harsher
+- the boundary may shimmer if the ROI changes over time
+
+Typical causes:
+
+- delta-QP / importance-map steps are too strong
+- the ROI mask is too sharp or too noisy
+- the protected region is small relative to the encoder block grid
+
+Interpretation:
+
+- this is a spatial-guidance artifact, not necessarily an overall bitrate
+  shortage
+
+### 4. Saturation-Driven Drop / Backpressure Failure
+
+Typical appearance:
+
+- encode FPS falls below target
+- Orange shows `pre_waits`, `pre_drops`, `enc_fail`, or `enc_slow`
+- visual output may look okay for the frames that survive, but the run is not
+  sustainable
+
+Typical causes:
+
+- NVENC is near or at throughput saturation
+- the selected preset / tuning / bitrate / resolution point is beyond the
+  stable envelope
+- upstream or downstream pipeline stages are exhausting buffers or events
+
+Interpretation:
+
+- this is a throughput failure first, not a pure visual-quality issue
+- quality review should not treat a dropped-frame run as a clean codec win
+
+### Review Rule
+
+When a clip looks bad, first ask:
+
+1. is the artifact periodic at the GOP/keyframe cadence?
+2. is it a frame-to-frame breathing / pumping issue?
+3. is it localized near an ROI boundary?
+4. or is the pipeline simply no longer sustaining throughput?
+
+Those categories often imply different fixes:
+
+- keyframe-recovery collapse: GOP / bitrate / VBV / lookahead
+- temporal pumping: smoother RC behavior or more stable ROI guidance
+- ROI-boundary artifact: softer or coarser ROI guidance
+- saturation-driven failure: back off the encode point or change the workload
+
 ## Clip Selection
 
 Keep the evaluation set small, repeatable, and representative.

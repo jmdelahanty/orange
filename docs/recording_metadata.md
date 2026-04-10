@@ -456,6 +456,36 @@ Notes:
 - The summary is intended for session-level diagnostics and cross-camera timing
   comparisons, not for reconstructing exact per-frame order.
 
+## Headless Experiment Run Metrics
+
+Current headless experiment outputs (`runs.json` / `runs.csv`) also export
+main-video artifact metrics derived from `Cam<serial>.mp4`:
+
+- `importance_map_mode`
+- `importance_map_enabled`
+- `importance_map_active_mode`
+- `importance_map_block_size`
+- `importance_map_grid_width`
+- `importance_map_grid_height`
+- `video_present`
+- `video_path`
+- `video_file_size_bytes`
+- `video_duration_s`
+- `video_achieved_bitrate_bps`
+
+Notes:
+
+- `importance_map_mode` is the requested headless mode; `static_prior` is the
+  current plumbing-validation mode that emits a synthetic circular delta-QP map.
+- `importance_map_active_mode` reflects what the encoder snapshot actually used
+  after initialization and should match the requested mode on a successful run.
+- `video_duration_s` reflects the actual container duration, not the scored
+  post-warmup window.
+- In current headless runs, recorded file duration includes warmup because
+  recording starts immediately and warmup is applied only during evaluation.
+- `video_achieved_bitrate_bps` reflects the written MP4 output and may differ
+  from requested bitrate overrides or resolved NVENC target bitrate settings.
+
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value
 captures resolved runtime encoder parameters for one or more outputs for that
 camera.
@@ -760,6 +790,7 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
         "average_bitrate": 244297728,
         "max_bitrate": 250000000,
         "vbv_buffer_size": 250000000,
+        "qp_map_mode": {"value": 2, "name": "delta"},
         "multi_pass": {"value": 0, "name": "disabled"}
       },
       "aq": {"enable_aq": 1, "enable_temporal_aq": 1},
@@ -770,7 +801,19 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
         "lookahead_depth": -1,
         "target_bitrate_bps": -1,
         "max_bitrate_bps": -1,
-        "vbv_buffer_size": -1
+        "vbv_buffer_size": -1,
+        "importance_map_mode": "static_prior"
+      },
+      "importance_map": {
+        "requested_mode": "static_prior",
+        "active_mode": "static_prior",
+        "enabled": true,
+        "block_size": 32,
+        "grid_width": 71,
+        "grid_height": 71,
+        "inside_delta_qp": -3,
+        "outside_delta_qp": 3,
+        "qp_map_size_bytes": 5041
       },
       "lookahead": {"enable": 0, "depth": 0},
       "low_delay_keyframe_scale": 1,

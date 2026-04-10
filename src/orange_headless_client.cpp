@@ -1,7 +1,9 @@
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
 #include <cerrno>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -49,6 +51,7 @@ struct HeadlessEncoderSettings {
     std::string preset = "p1";
     std::string tuning = "ll";
     std::string rate_control_mode = "vbr";
+    ImportanceMapConfig importance_map;
     int quality_value = 20;
     int gop_length = 0;
     EncoderControlOverrides control_overrides;
@@ -104,6 +107,7 @@ struct ExperimentSpec {
     std::vector<int> target_bitrate_bps_values;
     std::vector<int> max_bitrate_bps_values;
     std::vector<int> vbv_buffer_size_values;
+    std::vector<std::string> importance_map_modes;
 };
 
 struct ExperimentRunPlan {
@@ -156,6 +160,15 @@ using CameraGpuOverrideMap = std::unordered_map<std::string, int>;
 
 constexpr int kGpuDmonStartupPollMs = 200;
 constexpr int kGpuDmonShutdownWaitMs = 2000;
+constexpr const char* kBundledFfprobePath = "/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe";
+
+struct ExperimentVideoArtifactStats {
+    std::string video_path;
+    bool video_present = false;
+    uint64_t file_size_bytes = 0;
+    double duration_s = 0.0;
+    uint64_t achieved_bitrate_bps = 0;
+};
 
 class ScopedEnvVarOverride {
 public:
@@ -201,6 +214,149 @@ void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
                                      const std::string& recording_folder,
                                      const std::vector<int>& gpu_ids);
 void stop_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor);
+
+std::string shell_single_quote(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size() + 2);
+    out.push_back('\'');
+    for (char c : value) {
+        if (c == '\'') {
+            out += "'\\''";
+        } else {
+            out.push_back(c);
+        }
+    }
+    out.push_back('\'');
+    return out;
+}
+
+bool read_command_stdout(const std::string& command, std::string* stdout_out)
+{
+    if (stdout_out) {
+        stdout_out->clear();
+    }
+
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return false;
+    }
+
+    std::array<char, 4096> buffer{};
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        if (stdout_out) {
+            *stdout_out += buffer.data();
+        }
+    }
+
+    const int status = pclose(pipe);
+    return status == 0;
+}
+
+double json_number_or_default(const nlohmann::json& value, double fallback)
+{
+    if (value.is_number()) {
+        return value.get<double>();
+    }
+    if (value.is_string()) {
+        try {
+            return std::stod(value.get<std::string>());
+        } catch (...) {
+            return fallback;
+        }
+    }
+    return fallback;
+}
+
+uint64_t json_u64_or_default(const nlohmann::json& value, uint64_t fallback)
+{
+    if (value.is_number_unsigned()) {
+        return value.get<uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const auto signed_value = value.get<int64_t>();
+        return signed_value >= 0 ? static_cast<uint64_t>(signed_value) : fallback;
+    }
+    if (value.is_number_float()) {
+        const double floating_value = value.get<double>();
+        return floating_value >= 0.0 ? static_cast<uint64_t>(floating_value) : fallback;
+    }
+    if (value.is_string()) {
+        try {
+            return static_cast<uint64_t>(std::stoull(value.get<std::string>()));
+        } catch (...) {
+            return fallback;
+        }
+    }
+    return fallback;
+}
+
+ExperimentVideoArtifactStats summarize_video_artifact(const std::string& recording_folder,
+                                                      const std::string& camera_serial)
+{
+    ExperimentVideoArtifactStats stats;
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return stats;
+    }
+
+    const std::filesystem::path video_path =
+        std::filesystem::path(recording_folder) / ("Cam" + camera_serial + ".mp4");
+    stats.video_path = video_path.string();
+
+    std::error_code fs_error;
+    if (!std::filesystem::exists(video_path, fs_error) || fs_error) {
+        return stats;
+    }
+
+    stats.video_present = true;
+    stats.file_size_bytes = std::filesystem::file_size(video_path, fs_error);
+    if (fs_error) {
+        stats.file_size_bytes = 0;
+    }
+
+    const std::filesystem::path ffprobe_path =
+        std::filesystem::exists(kBundledFfprobePath)
+            ? std::filesystem::path(kBundledFfprobePath)
+            : std::filesystem::path("ffprobe");
+    const std::string command =
+        shell_single_quote(ffprobe_path.string()) +
+        " -v error -show_entries format=duration,size,bit_rate -of json " +
+        shell_single_quote(video_path.string()) + " 2>/dev/null";
+
+    std::string ffprobe_stdout;
+    if (!read_command_stdout(command, &ffprobe_stdout) || ffprobe_stdout.empty()) {
+        return stats;
+    }
+
+    const nlohmann::json ffprobe_json = nlohmann::json::parse(ffprobe_stdout, nullptr, false);
+    if (!ffprobe_json.is_object()) {
+        return stats;
+    }
+    const nlohmann::json format = ffprobe_json.value("format", nlohmann::json::object());
+    if (!format.is_object()) {
+        return stats;
+    }
+
+    const double duration_s = json_number_or_default(format.value("duration", nlohmann::json()), 0.0);
+    if (duration_s > 0.0) {
+        stats.duration_s = duration_s;
+    }
+
+    const uint64_t size_bytes = json_u64_or_default(format.value("size", nlohmann::json()), 0ULL);
+    if (size_bytes > 0) {
+        stats.file_size_bytes = size_bytes;
+    }
+
+    uint64_t achieved_bitrate_bps =
+        json_u64_or_default(format.value("bit_rate", nlohmann::json()), 0ULL);
+    if (achieved_bitrate_bps == 0 && stats.file_size_bytes > 0 && stats.duration_s > 0.0) {
+        achieved_bitrate_bps = static_cast<uint64_t>(
+            std::llround((static_cast<long double>(stats.file_size_bytes) * 8.0L) / stats.duration_s));
+    }
+    stats.achieved_bitrate_bps = achieved_bitrate_bps;
+
+    return stats;
+}
 
 std::string canonicalize_headless_camera_serial(std::string value)
 {
@@ -301,6 +457,33 @@ std::string format_headless_toggle_override(int value)
     return "auto";
 }
 
+std::string normalize_importance_map_mode(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (value.empty() || value == "off" || value == "none" || value == "disabled") {
+        return "off";
+    }
+    if (value == "static_prior" || value == "static-prior" || value == "static") {
+        return "static_prior";
+    }
+    return value;
+}
+
+bool parse_importance_map_mode(const std::string& value, std::string* out)
+{
+    if (!out) {
+        return false;
+    }
+    const std::string normalized = normalize_importance_map_mode(value);
+    if (normalized == "off" || normalized == "static_prior") {
+        *out = normalized;
+        return true;
+    }
+    return false;
+}
+
 std::string resolved_headless_ptp_mode_label(const CameraParams* camera_params)
 {
     if (!camera_params || camera_params->ptp_mode.empty()) {
@@ -380,6 +563,12 @@ HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
             append_camera_selection(&settings, value);
         } else if (key == "rc" || key == "rate_control" || key == "rate_control_mode") {
             settings.rate_control_mode = value;
+        } else if (key == "importance_map" || key == "importance_map_mode" ||
+                   key == "importance-map" || key == "importance-map-mode") {
+            std::string parsed_mode;
+            if (parse_importance_map_mode(value, &parsed_mode)) {
+                settings.importance_map.mode = parsed_mode;
+            }
         } else if (key == "quality" || key == "cq" || key == "qp") {
             settings.quality_value = std::atoi(value.c_str());
         } else if (key == "gop" || key == "gop_length") {
@@ -422,6 +611,7 @@ HeadlessEncoderSettings parse_headless_encoder_setup(const std::string& setup)
     if (settings.rate_control_mode.empty()) {
         settings.rate_control_mode = "vbr";
     }
+    settings.importance_map.mode = normalize_importance_map_mode(settings.importance_map.mode);
     if (settings.quality_value < 1) {
         settings.quality_value = 20;
     }
@@ -467,6 +657,7 @@ std::string build_headless_encoder_setup_string(const HeadlessEncoderSettings& s
         << " preset=" << settings.preset
         << " tuning=" << settings.tuning
         << " rc=" << settings.rate_control_mode
+        << " importance_map_mode=" << settings.importance_map.mode
         << " quality=" << settings.quality_value
         << " gop=" << settings.gop_length
         << " camera=" << format_selected_camera_serials(settings);
@@ -513,6 +704,7 @@ void print_headless_usage(const char* argv0)
         << "  --preset <p1..p7>\n"
         << "  --tuning <ull|ll|hq>\n"
         << "  --rate-control <vbr|vbr_cq|cbr|cqp>\n"
+        << "  --importance-map-mode <off|static_prior>\n"
         << "  --quality <int>\n"
         << "  --gop <int>\n"
         << "  --aq <auto|on|off>\n"
@@ -630,6 +822,7 @@ bool headless_encoder_settings_is_default(const HeadlessEncoderSettings& setting
            settings.preset == "p1" &&
            settings.tuning == "ll" &&
            settings.rate_control_mode == "vbr" &&
+           settings.importance_map.mode == "off" &&
            settings.quality_value == 20 &&
            settings.gop_length == 0 &&
            settings.control_overrides.aq < 0 &&
@@ -760,6 +953,19 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
         if (arg == "--rate-control" || arg == "--rate-control-mode" || arg == "--rc") {
             options->encoder_settings.rate_control_mode = consume_value("--rate-control");
             if (options->encoder_settings.rate_control_mode.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--importance-map-mode") {
+            const std::string value = consume_value("--importance-map-mode");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_importance_map_mode(value, &options->encoder_settings.importance_map.mode)) {
+                if (error_out) {
+                    *error_out = "Invalid --importance-map-mode value: " + value;
+                }
                 return false;
             }
             continue;
@@ -1480,6 +1686,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
               << " preset=" << encoder_settings.preset
               << " tuning=" << encoder_settings.tuning
               << " rc=" << encoder_settings.rate_control_mode
+              << " importance_map_mode=" << encoder_settings.importance_map.mode
               << " quality=" << encoder_settings.quality_value
               << " gop=" << encoder_settings.gop_length
               << " aq=" << format_headless_toggle_override(encoder_settings.control_overrides.aq)
@@ -1590,6 +1797,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     encoder_settings.quality_value,
                     encoder_settings.gop_length,
                     encoder_settings.control_overrides,
+                    encoder_settings.importance_map,
                     record_folder,
                     *camera_resources[idx].recycle_queue,
                     camera_control,
@@ -2751,6 +2959,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->target_bitrate_bps_values = parse_int_list_field(matrix, "target_bitrate_bps");
     spec->max_bitrate_bps_values = parse_int_list_field(matrix, "max_bitrate_bps");
     spec->vbv_buffer_size_values = parse_int_list_field(matrix, "vbv_buffer_size");
+    spec->importance_map_modes = parse_string_list_field(matrix, "importance_map_mode");
 
     if (spec->codecs.empty()) spec->codecs.push_back("h264");
     if (spec->presets.empty()) spec->presets.push_back("p1");
@@ -2765,6 +2974,17 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->target_bitrate_bps_values.empty()) spec->target_bitrate_bps_values.push_back(-1);
     if (spec->max_bitrate_bps_values.empty()) spec->max_bitrate_bps_values.push_back(-1);
     if (spec->vbv_buffer_size_values.empty()) spec->vbv_buffer_size_values.push_back(-1);
+    if (spec->importance_map_modes.empty()) spec->importance_map_modes.push_back("off");
+
+    for (std::string& importance_map_mode : spec->importance_map_modes) {
+        if (!parse_importance_map_mode(importance_map_mode, &importance_map_mode)) {
+            if (error_out) {
+                *error_out = "Experiment spec matrix.importance_map_mode contains unsupported value: " +
+                             importance_map_mode;
+            }
+            return false;
+        }
+    }
 
     return true;
 }
@@ -2788,6 +3008,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
         spec.max_bitrate_bps_values.size() > 1 || spec.max_bitrate_bps_values.front() > 0;
     const bool include_vbv_in_run_id =
         spec.vbv_buffer_size_values.size() > 1 || spec.vbv_buffer_size_values.front() > 0;
+    const bool include_importance_map_in_run_id =
+        spec.importance_map_modes.size() > 1 || spec.importance_map_modes.front() != "off";
 
     int run_index = 0;
     for (const std::string& codec : spec.codecs) {
@@ -2803,112 +3025,120 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                             for (int target_bitrate_bps : spec.target_bitrate_bps_values) {
                                                 for (int max_bitrate_bps : spec.max_bitrate_bps_values) {
                                                     for (int vbv_buffer_size : spec.vbv_buffer_size_values) {
-                                                        ++run_index;
-                                                        ExperimentRunPlan run;
-                                                        run.run_index = run_index;
-                                                        std::ostringstream run_id;
-                                                        run_id << "run_" << std::setw(4) << std::setfill('0') << run_index
-                                                               << "__codec_" << sanitize_run_component(codec)
-                                                               << "__preset_" << sanitize_run_component(preset)
-                                                               << "__tuning_" << sanitize_run_component(tuning)
-                                                               << "__rc_" << sanitize_run_component(rc_mode)
-                                                               << "__q_" << quality_value
-                                                               << "__gop_" << gop_length;
-                                                        if (include_aq_in_run_id) {
-                                                            run_id << "__aq_" << sanitize_run_component(
-                                                                format_headless_toggle_override(aq_value));
-                                                        }
-                                                        if (include_temporal_aq_in_run_id) {
-                                                            run_id << "__tempaq_" << sanitize_run_component(
-                                                                format_headless_toggle_override(temporal_aq_value));
-                                                        }
-                                                        if (include_lookahead_in_run_id) {
-                                                            run_id << "__lookahead_" << sanitize_run_component(
-                                                                format_headless_toggle_override(lookahead_value));
-                                                        }
-                                                        if (include_lookahead_depth_in_run_id) {
-                                                            run_id << "__lookdepth_" << lookahead_depth_value;
-                                                        }
-                                                        if (include_target_bitrate_in_run_id) {
-                                                            run_id << "__bitrate_" << target_bitrate_bps;
-                                                        }
-                                                        if (include_max_bitrate_in_run_id) {
-                                                            run_id << "__maxbps_" << max_bitrate_bps;
-                                                        }
-                                                        if (include_vbv_in_run_id) {
-                                                            run_id << "__vbv_" << vbv_buffer_size;
-                                                        }
-                                                        run.run_id = run_id.str();
-                                                        run.recording_folder = (experiment_root / run.run_id).string();
-                                                        run.duration_s = spec.duration_s;
-                                                        run.warmup_s = spec.warmup_s;
-                                                        run.options.mode = HeadlessMode::Local;
-                                                        run.options.config_folder = spec.config_folder;
-                                                        run.options.record_folder = run.recording_folder;
-                                                        run.options.duration_seconds = spec.duration_s + spec.warmup_s;
-                                                        run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
-                                                        run.options.record_start_delay_seconds = 0;
-                                                        run.options.nvenc_direct_input = spec.nvenc_direct_input;
-                                                        run.options.required_gpu_ids = spec.gpu_ids;
-                                                        run.options.encoder_settings = spec.selection;
-                                                        run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
-                                                        if (run.options.pre_encoder_reference_capture.enabled &&
-                                                            !run.options.pre_encoder_reference_capture.output_dir.empty()) {
-                                                            const std::filesystem::path configured_output_dir(
-                                                                run.options.pre_encoder_reference_capture.output_dir);
-                                                            if (!configured_output_dir.is_absolute()) {
-                                                                run.options.pre_encoder_reference_capture.output_dir =
-                                                                    (std::filesystem::path(run.recording_folder) /
-                                                                     configured_output_dir)
-                                                                        .string();
+                                                        for (const std::string& importance_map_mode : spec.importance_map_modes) {
+                                                            ++run_index;
+                                                            ExperimentRunPlan run;
+                                                            run.run_index = run_index;
+                                                            std::ostringstream run_id;
+                                                            run_id << "run_" << std::setw(4) << std::setfill('0') << run_index
+                                                                   << "__codec_" << sanitize_run_component(codec)
+                                                                   << "__preset_" << sanitize_run_component(preset)
+                                                                   << "__tuning_" << sanitize_run_component(tuning)
+                                                                   << "__rc_" << sanitize_run_component(rc_mode)
+                                                                   << "__q_" << quality_value
+                                                                   << "__gop_" << gop_length;
+                                                            if (include_aq_in_run_id) {
+                                                                run_id << "__aq_" << sanitize_run_component(
+                                                                    format_headless_toggle_override(aq_value));
                                                             }
+                                                            if (include_temporal_aq_in_run_id) {
+                                                                run_id << "__tempaq_" << sanitize_run_component(
+                                                                    format_headless_toggle_override(temporal_aq_value));
+                                                            }
+                                                            if (include_lookahead_in_run_id) {
+                                                                run_id << "__lookahead_" << sanitize_run_component(
+                                                                    format_headless_toggle_override(lookahead_value));
+                                                            }
+                                                            if (include_lookahead_depth_in_run_id) {
+                                                                run_id << "__lookdepth_" << lookahead_depth_value;
+                                                            }
+                                                            if (include_target_bitrate_in_run_id) {
+                                                                run_id << "__bitrate_" << target_bitrate_bps;
+                                                            }
+                                                            if (include_max_bitrate_in_run_id) {
+                                                                run_id << "__maxbps_" << max_bitrate_bps;
+                                                            }
+                                                            if (include_vbv_in_run_id) {
+                                                                run_id << "__vbv_" << vbv_buffer_size;
+                                                            }
+                                                            if (include_importance_map_in_run_id) {
+                                                                run_id << "__imap_" << sanitize_run_component(importance_map_mode);
+                                                            }
+                                                            run.run_id = run_id.str();
+                                                            run.recording_folder = (experiment_root / run.run_id).string();
+                                                            run.duration_s = spec.duration_s;
+                                                            run.warmup_s = spec.warmup_s;
+                                                            run.options.mode = HeadlessMode::Local;
+                                                            run.options.config_folder = spec.config_folder;
+                                                            run.options.record_folder = run.recording_folder;
+                                                            run.options.duration_seconds = spec.duration_s + spec.warmup_s;
+                                                            run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
+                                                            run.options.record_start_delay_seconds = 0;
+                                                            run.options.nvenc_direct_input = spec.nvenc_direct_input;
+                                                            run.options.required_gpu_ids = spec.gpu_ids;
+                                                            run.options.encoder_settings = spec.selection;
+                                                            run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
+                                                            if (run.options.pre_encoder_reference_capture.enabled &&
+                                                                !run.options.pre_encoder_reference_capture.output_dir.empty()) {
+                                                                const std::filesystem::path configured_output_dir(
+                                                                    run.options.pre_encoder_reference_capture.output_dir);
+                                                                if (!configured_output_dir.is_absolute()) {
+                                                                    run.options.pre_encoder_reference_capture.output_dir =
+                                                                        (std::filesystem::path(run.recording_folder) /
+                                                                         configured_output_dir)
+                                                                            .string();
+                                                                }
+                                                            }
+                                                            run.options.encoder_settings.codec = codec;
+                                                            run.options.encoder_settings.preset = preset;
+                                                            run.options.encoder_settings.tuning = tuning;
+                                                            run.options.encoder_settings.rate_control_mode = rc_mode;
+                                                            run.options.encoder_settings.importance_map.mode =
+                                                                importance_map_mode;
+                                                            run.options.encoder_settings.quality_value = quality_value;
+                                                            run.options.encoder_settings.gop_length = gop_length;
+                                                            run.options.encoder_settings.control_overrides.aq = aq_value;
+                                                            run.options.encoder_settings.control_overrides.temporal_aq = temporal_aq_value;
+                                                            run.options.encoder_settings.control_overrides.lookahead = lookahead_value;
+                                                            run.options.encoder_settings.control_overrides.lookahead_depth =
+                                                                lookahead_depth_value;
+                                                            run.options.encoder_settings.control_overrides.target_bitrate_bps =
+                                                                target_bitrate_bps;
+                                                            run.options.encoder_settings.control_overrides.max_bitrate_bps =
+                                                                max_bitrate_bps;
+                                                            run.options.encoder_settings.control_overrides.vbv_buffer_size =
+                                                                vbv_buffer_size;
+                                                            run.config_json = {
+                                                                {"codec", codec},
+                                                                {"preset", preset},
+                                                                {"tuning", tuning},
+                                                                {"rate_control_mode", rc_mode},
+                                                                {"importance_map_mode", importance_map_mode},
+                                                                {"quality_value", quality_value},
+                                                                {"gop_length", gop_length},
+                                                                {"aq", format_headless_toggle_override(aq_value)},
+                                                                {"temporal_aq", format_headless_toggle_override(temporal_aq_value)},
+                                                                {"lookahead", format_headless_toggle_override(lookahead_value)},
+                                                                {"lookahead_depth", lookahead_depth_value},
+                                                                {"target_bitrate_bps", target_bitrate_bps},
+                                                                {"max_bitrate_bps", max_bitrate_bps},
+                                                                {"vbv_buffer_size", vbv_buffer_size},
+                                                                {"camera_serials", run.options.encoder_settings.select_all_cameras
+                                                                                       ? nlohmann::json::array({"all"})
+                                                                                       : nlohmann::json(run.options.encoder_settings.camera_serials)},
+                                                                {"gpu_ids", spec.gpu_ids},
+                                                                {"duration_s", spec.duration_s},
+                                                                {"warmup_s", spec.warmup_s},
+                                                                {"stream_start_delay_s", spec.stream_start_delay_s},
+                                                                {"record_start_delay_s", 0},
+                                                                {"nvenc_direct_input", spec.nvenc_direct_input},
+                                                                {"recording_folder", run.recording_folder},
+                                                                {"pre_encoder_reference_capture",
+                                                                 build_pre_encoder_reference_capture_json(
+                                                                     run.options.pre_encoder_reference_capture)},
+                                                            };
+                                                            runs.push_back(std::move(run));
                                                         }
-                                                        run.options.encoder_settings.codec = codec;
-                                                        run.options.encoder_settings.preset = preset;
-                                                        run.options.encoder_settings.tuning = tuning;
-                                                        run.options.encoder_settings.rate_control_mode = rc_mode;
-                                                        run.options.encoder_settings.quality_value = quality_value;
-                                                        run.options.encoder_settings.gop_length = gop_length;
-                                                        run.options.encoder_settings.control_overrides.aq = aq_value;
-                                                        run.options.encoder_settings.control_overrides.temporal_aq = temporal_aq_value;
-                                                        run.options.encoder_settings.control_overrides.lookahead = lookahead_value;
-                                                        run.options.encoder_settings.control_overrides.lookahead_depth =
-                                                            lookahead_depth_value;
-                                                        run.options.encoder_settings.control_overrides.target_bitrate_bps =
-                                                            target_bitrate_bps;
-                                                        run.options.encoder_settings.control_overrides.max_bitrate_bps =
-                                                            max_bitrate_bps;
-                                                        run.options.encoder_settings.control_overrides.vbv_buffer_size =
-                                                            vbv_buffer_size;
-                                                        run.config_json = {
-                                                            {"codec", codec},
-                                                            {"preset", preset},
-                                                            {"tuning", tuning},
-                                                            {"rate_control_mode", rc_mode},
-                                                            {"quality_value", quality_value},
-                                                            {"gop_length", gop_length},
-                                                            {"aq", format_headless_toggle_override(aq_value)},
-                                                            {"temporal_aq", format_headless_toggle_override(temporal_aq_value)},
-                                                            {"lookahead", format_headless_toggle_override(lookahead_value)},
-                                                            {"lookahead_depth", lookahead_depth_value},
-                                                            {"target_bitrate_bps", target_bitrate_bps},
-                                                            {"max_bitrate_bps", max_bitrate_bps},
-                                                            {"vbv_buffer_size", vbv_buffer_size},
-                                                            {"camera_serials", run.options.encoder_settings.select_all_cameras
-                                                                                   ? nlohmann::json::array({"all"})
-                                                                                   : nlohmann::json(run.options.encoder_settings.camera_serials)},
-                                                            {"gpu_ids", spec.gpu_ids},
-                                                            {"duration_s", spec.duration_s},
-                                                            {"warmup_s", spec.warmup_s},
-                                                            {"stream_start_delay_s", spec.stream_start_delay_s},
-                                                            {"record_start_delay_s", 0},
-                                                            {"nvenc_direct_input", spec.nvenc_direct_input},
-                                                            {"recording_folder", run.recording_folder},
-                                                            {"pre_encoder_reference_capture",
-                                                             build_pre_encoder_reference_capture_json(
-                                                                 run.options.pre_encoder_reference_capture)},
-                                                        };
-                                                        runs.push_back(std::move(run));
                                                     }
                                                 }
                                             }
@@ -3103,6 +3333,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["preset"] = run.options.encoder_settings.preset;
     row["tuning"] = run.options.encoder_settings.tuning;
     row["rate_control_mode"] = run.options.encoder_settings.rate_control_mode;
+    row["importance_map_mode"] = run.options.encoder_settings.importance_map.mode;
     row["quality_value"] = run.options.encoder_settings.quality_value;
     row["gop_length"] = run.options.encoder_settings.gop_length;
     row["aq_override"] =
@@ -3119,12 +3350,22 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         run.options.encoder_settings.control_overrides.max_bitrate_bps;
     row["vbv_buffer_size_override"] =
         run.options.encoder_settings.control_overrides.vbv_buffer_size;
+    row["importance_map_active_mode"] = "off";
+    row["importance_map_enabled"] = run.options.encoder_settings.importance_map.mode != "off";
+    row["importance_map_block_size"] = 0;
+    row["importance_map_grid_width"] = 0;
+    row["importance_map_grid_height"] = 0;
     row["nvenc_direct_input"] = run.options.nvenc_direct_input;
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
     row["display"] = false;
     row["yolo"] = false;
     row["recording_folder"] = run.recording_folder;
+    row["video_present"] = false;
+    row["video_path"] = "";
+    row["video_file_size_bytes"] = 0ULL;
+    row["video_duration_s"] = 0.0;
+    row["video_achieved_bitrate_bps"] = 0ULL;
     row["status"] = "completed";
     row["pass_fail"] = "marginal";
     row["reason"] = "not_evaluated";
@@ -3168,6 +3409,14 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         read_json_file(std::filesystem::path(run.recording_folder) / "ptp_sync_summary.json", &out, &error);
         return out;
     }();
+    const ExperimentVideoArtifactStats video_stats =
+        summarize_video_artifact(run.recording_folder, camera_serial);
+
+    row["video_present"] = video_stats.video_present;
+    row["video_path"] = video_stats.video_path;
+    row["video_file_size_bytes"] = video_stats.file_size_bytes;
+    row["video_duration_s"] = video_stats.duration_s;
+    row["video_achieved_bitrate_bps"] = video_stats.achieved_bitrate_bps;
 
     if (!pipeline_info.is_object()) {
         row["status"] = "failed";
@@ -3227,6 +3476,20 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         }
         const nlohmann::json preenc_capture =
             encoder_info.value("pre_encoder_reference_capture", nlohmann::json::object());
+        const nlohmann::json importance_map =
+            encoder_info.value("importance_map", nlohmann::json::object());
+        if (importance_map.is_object()) {
+            row["importance_map_active_mode"] =
+                importance_map.value("active_mode", row["importance_map_active_mode"]);
+            row["importance_map_enabled"] =
+                importance_map.value("enabled", row["importance_map_enabled"]);
+            row["importance_map_block_size"] =
+                importance_map.value("block_size", row["importance_map_block_size"]);
+            row["importance_map_grid_width"] =
+                importance_map.value("grid_width", row["importance_map_grid_width"]);
+            row["importance_map_grid_height"] =
+                importance_map.value("grid_height", row["importance_map_grid_height"]);
+        }
         if (preenc_capture.is_object()) {
             row["pre_encoder_reference_capture_enabled"] =
                 preenc_capture.value("enabled", false);
@@ -3264,6 +3527,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         const double enc_fps_mean = row["enc_fps_mean"].get<double>();
         const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
         const bool fps_ok = (target_fps <= 0.0) || (enc_fps_mean + tolerance >= target_fps);
+        const bool importance_map_requested = row["importance_map_mode"].get<std::string>() != "off";
+        const bool importance_map_active =
+            row["importance_map_active_mode"].get<std::string>() == row["importance_map_mode"].get<std::string>();
         const bool preenc_enabled = row["pre_encoder_reference_capture_enabled"].get<bool>();
         const std::string preenc_status = row["pre_encoder_reference_capture_status"].get<std::string>();
         const uint64_t preenc_frames = row["pre_encoder_reference_frames_captured"].get<uint64_t>();
@@ -3272,7 +3538,10 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             row["pre_encoder_reference_index_present"].get<bool>() &&
             row["pre_encoder_reference_metadata_present"].get<bool>();
 
-        if (preenc_enabled) {
+        if (importance_map_requested && !importance_map_active) {
+            row["pass_fail"] = "fail";
+            row["reason"] = "importance map inactive";
+        } else if (preenc_enabled) {
             if (preenc_status == "error") {
                 row["pass_fail"] = "fail";
                 row["reason"] = "pre-encoder reference capture error";
@@ -3371,7 +3640,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -3385,6 +3654,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("preset", "") << ","
                 << row.value("tuning", "") << ","
                 << row.value("rate_control_mode", "") << ","
+                << row.value("importance_map_mode", "") << ","
                 << row.value("quality_value", 0) << ","
                 << row.value("gop_length", 0) << ","
                 << row.value("aq_override", "") << ","
@@ -3394,12 +3664,22 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("target_bitrate_bps_override", -1) << ","
                 << row.value("max_bitrate_bps_override", -1) << ","
                 << row.value("vbv_buffer_size_override", -1) << ","
+                << (row.value("importance_map_enabled", false) ? "true" : "false") << ","
+                << row.value("importance_map_active_mode", "") << ","
+                << row.value("importance_map_block_size", 0) << ","
+                << row.value("importance_map_grid_width", 0) << ","
+                << row.value("importance_map_grid_height", 0) << ","
                 << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","
                 << (row.value("display", false) ? "true" : "false") << ","
                 << (row.value("yolo", false) ? "true" : "false") << ","
                 << "\"" << row.value("recording_folder", "") << "\","
+                << (row.value("video_present", false) ? "true" : "false") << ","
+                << "\"" << row.value("video_path", "") << "\","
+                << row.value("video_file_size_bytes", 0ULL) << ","
+                << row.value("video_duration_s", 0.0) << ","
+                << row.value("video_achieved_bitrate_bps", 0ULL) << ","
                 << row.value("status", "") << ","
                 << row.value("pass_fail", "") << ","
                 << "\"" << row.value("reason", "") << "\","

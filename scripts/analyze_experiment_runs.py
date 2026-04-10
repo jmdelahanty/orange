@@ -3,11 +3,14 @@ import argparse
 import copy
 import json
 import shlex
+import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
 
 DMonCache = {}
+VideoCache = {}
+FFPROBE_PATH = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 
 
 def percentile(values, pct):
@@ -132,6 +135,136 @@ def dmon_summary_for_recording_folder(recording_folder):
     return summarize_dmon_file(Path(recording_folder) / "nvidia_smi_dmon.csv")
 
 
+def summarize_video_artifact(recording_folder, camera_serial):
+    cache_key = f"{recording_folder}|{camera_serial}"
+    if cache_key in VideoCache:
+        return VideoCache[cache_key]
+
+    summary = {
+        "video_present": False,
+        "video_path": "",
+        "video_file_size_bytes": 0,
+        "video_duration_s": 0.0,
+        "video_achieved_bitrate_bps": 0,
+    }
+
+    if not recording_folder:
+        VideoCache[cache_key] = summary
+        return summary
+
+    recording_path = Path(recording_folder)
+    video_path = None
+    if camera_serial:
+        expected = recording_path / f"Cam{camera_serial}.mp4"
+        if expected.exists():
+            video_path = expected
+    else:
+        candidates = sorted(recording_path.glob("Cam*.mp4"))
+        if len(candidates) == 1:
+            video_path = candidates[0]
+
+    if video_path is None or not video_path.exists():
+        VideoCache[cache_key] = summary
+        return summary
+
+    summary["video_present"] = True
+    summary["video_path"] = str(video_path)
+    summary["video_file_size_bytes"] = video_path.stat().st_size
+
+    ffprobe_exe = str(FFPROBE_PATH if FFPROBE_PATH.exists() else "ffprobe")
+    command = [
+        ffprobe_exe,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration,size,bit_rate",
+        "-of",
+        "json",
+        str(video_path),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            payload = json.loads(result.stdout)
+            format_info = payload.get("format", {})
+            duration_s = float(format_info.get("duration", 0.0) or 0.0)
+            size_bytes = int(format_info.get("size", summary["video_file_size_bytes"]) or 0)
+            bit_rate_bps = int(format_info.get("bit_rate", 0) or 0)
+            if duration_s > 0.0:
+                summary["video_duration_s"] = duration_s
+            if size_bytes > 0:
+                summary["video_file_size_bytes"] = size_bytes
+            if bit_rate_bps <= 0 and summary["video_duration_s"] > 0.0 and summary["video_file_size_bytes"] > 0:
+                bit_rate_bps = int(
+                    round((summary["video_file_size_bytes"] * 8.0) / summary["video_duration_s"])
+                )
+            summary["video_achieved_bitrate_bps"] = max(bit_rate_bps, 0)
+    except Exception:
+        pass
+
+    VideoCache[cache_key] = summary
+    return summary
+
+
+def format_decimal_bytes(value):
+    if not value:
+        return "-"
+    value = float(value)
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f} GB"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f} MB"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f} KB"
+    return f"{int(value)} B"
+
+
+def format_bps(value):
+    if not value:
+        return "-"
+    value = float(value)
+    if value >= 1_000_000_000:
+        return f"{value / 1_000_000_000:.2f} Gbps"
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f} Mbps"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f} Kbps"
+    return f"{int(value)} bps"
+
+
+def format_throughput_mb_s(value):
+    if not value:
+        return "-"
+    value = float(value)
+    if value >= 1000.0:
+        return f"{value / 1000.0:.2f} GB/s"
+    return f"{value:.0f} MB/s"
+
+
+def format_power_w(value):
+    if not value:
+        return "-"
+    return f"{float(value):.0f} W"
+
+
+def format_target_bitrate(value):
+    if value is None or int(value) < 0:
+        return "auto"
+    return format_bps(value)
+
+
+def format_duration_s(value):
+    if not value:
+        return "-"
+    return f"{float(value):.1f} s"
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description=(
@@ -231,6 +364,7 @@ def flatten_run(run):
     if not camera_results:
         recording_folder = run.get("recording_folder", "")
         dmon_summary = dmon_summary_for_recording_folder(recording_folder)
+        video_summary = summarize_video_artifact(recording_folder, "")
         rows.append({
             "run": run,
             "camera_result": {},
@@ -240,6 +374,7 @@ def flatten_run(run):
             "preset": run.get("config", {}).get("preset", ""),
             "tuning": run.get("config", {}).get("tuning", ""),
             "rate_control_mode": run.get("config", {}).get("rate_control_mode", ""),
+            "importance_map_mode": run.get("config", {}).get("importance_map_mode", "off"),
             "quality_value": run.get("config", {}).get("quality_value", ""),
             "gop_length": run.get("config", {}).get("gop_length", ""),
             "aq_override": run.get("config", {}).get("aq", "auto"),
@@ -249,6 +384,13 @@ def flatten_run(run):
             "target_bitrate_bps_override": run.get("config", {}).get("target_bitrate_bps", -1),
             "max_bitrate_bps_override": run.get("config", {}).get("max_bitrate_bps", -1),
             "vbv_buffer_size_override": run.get("config", {}).get("vbv_buffer_size", -1),
+            "importance_map_active_mode": "off",
+            "importance_map_enabled": False,
+            "video_present": video_summary["video_present"],
+            "video_path": video_summary["video_path"],
+            "video_file_size_bytes": video_summary["video_file_size_bytes"],
+            "video_duration_s": video_summary["video_duration_s"],
+            "video_achieved_bitrate_bps": video_summary["video_achieved_bitrate_bps"],
             "gpu_id": "",
             "gpu_name": "",
             "enc_fps_mean": 0.0,
@@ -280,16 +422,21 @@ def flatten_run(run):
     for camera_result in camera_results:
         recording_folder = camera_result.get("recording_folder", run.get("recording_folder", ""))
         dmon_summary = dmon_summary_for_recording_folder(recording_folder)
+        camera_serial = camera_result.get("camera_serial", "")
+        video_summary = summarize_video_artifact(recording_folder, camera_serial)
         rows.append({
             "run": run,
             "camera_result": camera_result,
             "recording_folder": recording_folder,
-            "camera_serial": camera_result.get("camera_serial", ""),
+            "camera_serial": camera_serial,
             "codec": camera_result.get("codec", run.get("config", {}).get("codec", "")),
             "preset": camera_result.get("preset", run.get("config", {}).get("preset", "")),
             "tuning": camera_result.get("tuning", run.get("config", {}).get("tuning", "")),
             "rate_control_mode": camera_result.get(
                 "rate_control_mode", run.get("config", {}).get("rate_control_mode", "")
+            ),
+            "importance_map_mode": camera_result.get(
+                "importance_map_mode", run.get("config", {}).get("importance_map_mode", "off")
             ),
             "quality_value": camera_result.get(
                 "quality_value", run.get("config", {}).get("quality_value", "")
@@ -315,6 +462,19 @@ def flatten_run(run):
             ),
             "vbv_buffer_size_override": camera_result.get(
                 "vbv_buffer_size_override", run.get("config", {}).get("vbv_buffer_size", -1)
+            ),
+            "importance_map_active_mode": camera_result.get("importance_map_active_mode", "off"),
+            "importance_map_enabled": camera_result.get("importance_map_enabled", False),
+            "video_present": camera_result.get("video_present", video_summary["video_present"]),
+            "video_path": camera_result.get("video_path", video_summary["video_path"]),
+            "video_file_size_bytes": camera_result.get(
+                "video_file_size_bytes", video_summary["video_file_size_bytes"]
+            ),
+            "video_duration_s": camera_result.get(
+                "video_duration_s", video_summary["video_duration_s"]
+            ),
+            "video_achieved_bitrate_bps": camera_result.get(
+                "video_achieved_bitrate_bps", video_summary["video_achieved_bitrate_bps"]
             ),
             "gpu_id": camera_result.get("gpu_id", ""),
             "gpu_name": camera_result.get("gpu_name", ""),
@@ -553,6 +713,57 @@ def print_matrix(rows):
         print("")
 
 
+def print_video_summary(rows):
+    video_rows = [row for row in rows if row.get("video_present")]
+    if not video_rows:
+        return
+
+    def group_key(row):
+        return (
+            row.get("codec", ""),
+            row.get("preset", ""),
+            row.get("tuning", ""),
+            row.get("rate_control_mode", ""),
+            row.get("importance_map_mode", "off"),
+        )
+
+    def bitrate_sort_key(row):
+        target = int(row.get("target_bitrate_bps_override", -1) or -1)
+        achieved = int(row.get("video_achieved_bitrate_bps", 0) or 0)
+        return (target if target >= 0 else 10**30, achieved, row["run"].get("run_id", ""))
+
+    grouped = {}
+    for row in video_rows:
+        grouped.setdefault(group_key(row), []).append(row)
+
+    print("")
+    print("Video Output Summary:")
+    for key in sorted(grouped.keys()):
+        codec, preset, tuning, rate_control_mode, importance_map_mode = key
+        print(
+            f"  codec={codec} preset={preset} tuning={tuning} rc={rate_control_mode} "
+            f"imap={importance_map_mode}"
+        )
+        table_rows = []
+        for row in sorted(grouped[key], key=bitrate_sort_key):
+            table_rows.append([
+                format_target_bitrate(row.get("target_bitrate_bps_override", -1)),
+                format_bps(row.get("video_achieved_bitrate_bps", 0)),
+                format_decimal_bytes(row.get("video_file_size_bytes", 0)),
+                format_duration_s(row.get("video_duration_s", 0.0)),
+                row.get("pass_fail", ""),
+                compact_reason(row.get("reason", "")),
+                row["run"].get("run_id", ""),
+            ])
+        print(
+            format_table(
+                ["target_br", "video_br", "video_size", "duration", "pass_fail", "reason", "run_id"],
+                table_rows,
+            )
+        )
+        print("")
+
+
 def print_top_tables(rows, top_n):
     
     passing_rows = [
@@ -571,19 +782,23 @@ def print_top_tables(rows, top_n):
                 row.get("preset", ""),
                 row.get("tuning", ""),
                 row.get("rate_control_mode", ""),
+                row.get("importance_map_mode", "off"),
+                format_target_bitrate(row.get("target_bitrate_bps_override", -1)),
+                format_bps(row.get("video_achieved_bitrate_bps", 0)),
+                format_decimal_bytes(row.get("video_file_size_bytes", 0)),
                 f"{float(row.get('enc_fps_mean', 0.0)):.3f}",
                 f"{float(row.get('enc_fps_p95', 0.0)):.3f}",
                 str(row.get("pre_buffers_min", -1)),
                 str(row.get("pre_events_min", -1)),
                 f"{float(row.get('dmon_enc_mean', 0.0)):.1f}",
                 f"{float(row.get('dmon_sm_mean', 0.0)):.1f}",
-                f"{float(row.get('dmon_rxpci_mean', 0.0)):.0f}",
-                f"{float(row.get('dmon_power_mean', 0.0)):.0f}",
+                format_throughput_mb_s(row.get("dmon_rxpci_mean", 0.0)),
+                format_power_w(row.get("dmon_power_mean", 0.0)),
                 row.get("pre_encoder_reference_capture_status", ""),
                 row.get("gpu_name", ""),
             ])
         print(format_table(
-            ["run_id", "codec", "preset", "tuning", "rc", "enc_fps_mean", "enc_fps_p95", "pre_buf_min", "pre_evt_min", "dmon_enc", "dmon_sm", "rxpci", "power", "preenc", "gpu"],
+            ["run_id", "codec", "preset", "tuning", "rc", "imap", "target_br", "video_br", "video_size", "enc_fps_mean", "enc_fps_p95", "pre_buf_min", "pre_evt_min", "dmon_enc", "dmon_sm", "rxpci", "power", "preenc", "gpu"],
             table_rows,
         ))
 
@@ -601,8 +816,13 @@ def print_top_tables(rows, top_n):
                 row.get("codec", ""),
                 row.get("preset", ""),
                 row.get("tuning", ""),
+                row.get("rate_control_mode", ""),
+                row.get("importance_map_mode", "off"),
                 row.get("status", ""),
                 row.get("pass_fail", ""),
+                format_target_bitrate(row.get("target_bitrate_bps_override", -1)),
+                format_bps(row.get("video_achieved_bitrate_bps", 0)),
+                format_decimal_bytes(row.get("video_file_size_bytes", 0)),
                 f"{float(row.get('enc_fps_mean', 0.0)):.1f}",
                 str(row.get("acq_free_entries_min", -1)),
                 str(row.get("acq_free_events_min", -1)),
@@ -614,7 +834,7 @@ def print_top_tables(rows, top_n):
                 str(row.get("enc_slow_final", 0)),
                 f"{float(row.get('dmon_enc_mean', 0.0)):.1f}",
                 f"{float(row.get('dmon_sm_mean', 0.0)):.1f}",
-                f"{float(row.get('dmon_rxpci_mean', 0.0)):.0f}",
+                format_throughput_mb_s(row.get("dmon_rxpci_mean", 0.0)),
                 row.get("pre_encoder_reference_capture_status", ""),
                 "/".join(
                     [
@@ -626,7 +846,7 @@ def print_top_tables(rows, top_n):
                 row.get("reason", "")[:56],
             ])
         print(format_table(
-            ["run_id", "codec", "preset", "tuning", "status", "pass_fail", "enc_fps", "acq_ent_min", "acq_evt_min", "pre_buf_min", "pre_evt_min", "pre_waits", "pre_drops", "enc_fail", "enc_slow", "dmon_enc", "dmon_sm", "rxpci", "preenc", "art", "reason"],
+            ["run_id", "codec", "preset", "tuning", "rc", "imap", "status", "pass_fail", "target_br", "video_br", "video_size", "enc_fps", "acq_ent_min", "acq_evt_min", "pre_buf_min", "pre_evt_min", "pre_waits", "pre_drops", "enc_fail", "enc_slow", "dmon_enc", "dmon_sm", "rxpci", "preenc", "art", "reason"],
             table_rows,
         ))
 
@@ -723,6 +943,7 @@ def emit_rerun_specs(experiment_root: Path,
             "preset": [config.get("preset", "p1")],
             "tuning": [config.get("tuning", "ll")],
             "rate_control_mode": [config.get("rate_control_mode", "vbr")],
+            "importance_map_mode": [config.get("importance_map_mode", "off")],
             "quality_value": [config.get("quality_value", 20)],
             "gop_length": [config.get("gop_length", 0)],
             "aq": [config.get("aq", config.get("aq_override", "auto"))],
@@ -804,6 +1025,7 @@ def main():
     print_analysis(experiment_root, summary_json, runs_json, rows, args.top)
     if not args.no_matrix:
         print_matrix(rows)
+    print_video_summary(rows)
     print_top_tables(rows, args.top)
 
     if args.rerun_mode != "none":
