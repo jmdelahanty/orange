@@ -105,21 +105,21 @@ Status note:
 
 ## Validation
 
-- [ ] Short-run sanity test: recording starts, encodes, and stops cleanly.
+- [x] Short-run sanity test: recording starts, encodes, and stops cleanly.
 - [ ] Long-run stability test: no slot corruption or early reuse.
 - [ ] Downsample mode test.
 - [ ] Mono-camera test if routed through the same direct-input branch.
 - [ ] Drain / stop behavior test.
-- [ ] Compare throughput of:
+- [x] Compare throughput of:
   - current copy path
   - direct registered input path
-- [ ] Run the same `orange_client --mode local --experiment-spec ...` matrix
+- [x] Run the same `orange_client --mode local --experiment-spec ...` matrix
   twice:
   - once with default copy path,
   - once with `ORANGE_NVENC_DIRECT_INPUT=1`.
-- [ ] Keep pre-encoder reference capture out of the first direct-input
+- [x] Keep pre-encoder reference capture out of the first direct-input
   throughput comparison until direct-input capture parity is implemented.
-- [ ] Record and compare:
+- [x] Record and compare:
   - `enc_fps_mean`
   - `enc_fps_p95`
   - `pre_waits_final`
@@ -130,9 +130,18 @@ Status note:
   - `pre_events_min`
   - `nvenc_direct_input`
 
+Current conclusion from `2010096` / `gpu_id=0` (`RTX A6000`) validation:
+
+- stable anchors (`hevc p1 ll`, `p1 ull`, `p3 hq`) pass on both copy path and
+  direct-input path at about `60 FPS`
+- near-boundary points (`p3 ll`, `p3 ull`, `p5 hq`) fail on both paths
+- direct-input does not materially move the failure boundary for this workload
+- direct-input slightly reduces `dmon enc` on failing points, but not enough to
+  change pass/fail outcome
+
 ## Definition Of Done
 
-- [ ] Direct-input mode works in the modern path.
+- [x] Direct-input mode works in the modern path.
 - [x] No extra `CopyToDeviceFrame(...)` is used in the direct-input branch.
 - [x] Raw-frame refcounting behavior is unchanged.
 - [x] Ring size is driven by `GetEncoderBufferCount()`.
@@ -140,5 +149,5 @@ Status note:
 - [x] Copy-path fallback remains available.
 - [ ] Direct-input is the preferred path for validated runs.
 - [ ] Copy path remains available only as fallback / debug / benchmark mode.
-- [ ] We have enough measurements to decide whether direct input should be kept
+- [x] We have enough measurements to decide whether direct input should be kept
   and broadened.

@@ -627,6 +627,20 @@ Useful fields to compare:
 - `pre_buffers_min`
 - `pre_events_min`
 
+Observed on `2010096` / `gpu_id=0` (`RTX A6000`) on `2026-04-10`:
+
+- stable anchors:
+  - `p1 ll`, `p1 ull`, and `p3 hq` all passed on both copy path and
+    direct-input path at about `60 FPS`
+- near-boundary points:
+  - `p3 ll`, `p3 ull`, and `p5 hq` all failed on both paths
+  - direct-input did not materially move the failure boundary
+- interpretation:
+  - direct-input is throughput-equivalent on the validated stable anchors
+  - direct-input is not a meaningful headroom win for this
+    `4512x4512 @ 60` mono HEVC workload on the A6000
+  - keep copy path as the canonical benchmark baseline for now
+
 ## Block G: Dmon Throughput Matrix
 
 Purpose:
@@ -696,6 +710,21 @@ Purpose:
   - `pcie rx/tx`
   - `enc`
   while Orange's internal counters remain stable
+
+Observed on `2010096` / `gpu_id=0` (`RTX A6000`) on `2026-04-10`:
+
+- stable anchors:
+  - `p1 ll`: copy `enc_mean=64.9`, direct-input `64.8`, both pass
+  - `p1 ull`: copy and direct-input both pass cleanly at `~60 FPS`
+  - `p3 hq`: copy and direct-input both pass cleanly at `~60 FPS`
+- near-boundary points:
+  - `p3 ll`: copy `enc_mean=97.6`, direct-input `95.0`, both fail
+  - `p3 ull`: copy `97.0`, direct-input `94.3`, both fail
+  - `p5 hq`: copy `96.6`, direct-input `94.0`, both fail
+- interpretation:
+  - direct-input reduces `dmon enc` slightly on the failing points
+  - that reduction is not large enough to turn the failing modes into passes
+  - the current limit still looks like NVENC saturation, not SM saturation
 
 ### G4. Long Confirmation
 
