@@ -80,7 +80,8 @@ private:
                                              size_t* frame_size_out);
     void poll_pre_encoder_reference_captures(bool wait_for_all);
     void recycle_encoder_entry(ENCODER_WORKER_ENTRY* entry,
-                               const std::vector<uint32_t>& retired_slots);
+                               const std::vector<uint32_t>& retired_slots,
+                               bool slot_submitted);
     void release_pre_encoder_reference_capture_resources();
     bool ensure_pre_encoder_reference_staging_slots(size_t frame_size, std::string* error_out);
 
@@ -96,6 +97,7 @@ private:
         size_t staging_slot = 0;
         size_t frame_size = 0;
         std::vector<uint32_t> retired_slots;
+        bool slot_submitted = false;
     };
 
     struct EncoderSnapshotInfo {

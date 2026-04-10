@@ -284,6 +284,63 @@ Recommended minimum:
 
 - `4` long runs per GPU
 
+## Block F: Direct-Input Compare
+
+Purpose:
+
+- compare the current copy path against the direct-input path without changing
+  the rest of the headless experiment workflow
+- decide whether direct-input should become the preferred path or remain only a
+  fallback experiment
+
+Recommended first points:
+
+- `hevc p1 ll vbr`
+- `hevc p1 ull vbr`
+- `hevc p3 hq vbr`
+
+Run each point twice:
+
+- copy path
+- direct-input path
+
+Run shape:
+
+- use the same experiment spec for both runs
+- first run normally
+- then rerun with `ORANGE_NVENC_DIRECT_INPUT=1`
+- give each run family a fresh `experiment_id`
+
+Current client invocations:
+
+```bash
+sudo ./build/orange_client --mode local --experiment-spec /path/to/spec.json
+sudo env ORANGE_NVENC_DIRECT_INPUT=1 ./build/orange_client --mode local --experiment-spec /path/to/spec.json
+```
+
+Useful fields to compare:
+
+- `nvenc_direct_input`
+- `enc_fps_mean`
+- `enc_fps_p95`
+- `pre_waits_final`
+- `pre_drops_final`
+- `enc_fail_final`
+- `enc_slow_final`
+- `pre_buffers_min`
+- `pre_events_min`
+
+Important constraint:
+
+- keep `pre_encoder_reference_capture` disabled for this first comparison
+- only add reference-capture cross-product runs after direct-input capture
+  parity exists
+
+Helper:
+
+- `scripts/run_direct_input_compare.sh` can clone one spec into copy/direct
+  variants and run both client invocations in sequence
+
 ## Suggested Order
 
 Best-practice order:
@@ -294,7 +351,8 @@ Best-practice order:
 4. Run Block B on both GPUs.
 5. Run Block C on the better single-stream GPU first, then the other GPU.
 6. Run Block D only after a stable point and a marginal point are known.
-7. Run Block E last.
+7. Run Block E on any operating points that matter.
+8. Run Block F once the direct-input path is ready for comparison.
 
 This keeps the early analysis clean and prevents the later blocks from being
 driven by guesses.

@@ -60,6 +60,7 @@ struct HeadlessCliOptions {
     bool show_help = false;
     bool list_cameras = false;
     bool stream_only = false;
+    bool nvenc_direct_input = false;
     std::string config_folder;
     std::string record_folder;
     std::string experiment_spec_path;
@@ -81,6 +82,7 @@ struct ExperimentSpec {
     int duration_s = 0;
     int warmup_s = 0;
     int stream_start_delay_s = 0;
+    bool nvenc_direct_input = false;
     double target_fps_tolerance_pct = 1.0;
     bool require_zero_acq_starve = true;
     bool require_zero_pre_drops = true;
@@ -146,6 +148,44 @@ using CameraGpuOverrideMap = std::unordered_map<std::string, int>;
 
 constexpr int kGpuDmonStartupPollMs = 200;
 constexpr int kGpuDmonShutdownWaitMs = 2000;
+
+class ScopedEnvVarOverride {
+public:
+    ScopedEnvVarOverride(const char* name, const char* value)
+        : name_(name ? name : "")
+    {
+        if (name_.empty()) {
+            return;
+        }
+        const char* existing = std::getenv(name_.c_str());
+        if (existing) {
+            had_original_ = true;
+            original_value_ = existing;
+        }
+        if (value) {
+            setenv(name_.c_str(), value, 1);
+            active_ = true;
+        }
+    }
+
+    ~ScopedEnvVarOverride()
+    {
+        if (!active_ || name_.empty()) {
+            return;
+        }
+        if (had_original_) {
+            setenv(name_.c_str(), original_value_.c_str(), 1);
+        } else {
+            unsetenv(name_.c_str());
+        }
+    }
+
+private:
+    std::string name_;
+    std::string original_value_;
+    bool had_original_ = false;
+    bool active_ = false;
+};
 
 std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
                                         const std::vector<int>& selected_indices);
@@ -366,6 +406,7 @@ void print_headless_usage(const char* argv0)
         << "Local mode options:\n"
         << "  --camera <serial|all>        Repeatable. Defaults to all.\n"
         << "  --stream-only                Open stream and run acquisition without recording.\n"
+        << "  --nvenc-direct-input         Enable direct registered NVENC input path.\n"
         << "  --gpu-id <int>               Optional runtime GPU placement input.\n"
         << "  --config-folder <path>       Optional camera config folder.\n"
         << "  --record-folder <path>       Required for local recording runs.\n"
@@ -547,6 +588,10 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
                 return false;
             }
             append_camera_selection(&options->encoder_settings, value);
+            continue;
+        }
+        if (arg == "--nvenc-direct-input") {
+            options->nvenc_direct_input = true;
             continue;
         }
         if (arg == "--gpu-id") {
@@ -1535,6 +1580,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.list_cameras || options.stream_only || !options.experiment_spec_path.empty() ||
             options.duration_seconds > 0 || options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
+            options.nvenc_direct_input ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
@@ -1556,6 +1602,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.duration_seconds > 0 ||
             options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
+            options.nvenc_direct_input ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
@@ -1564,7 +1611,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
                     "When --experiment-spec is provided, per-run flags like "
                     "--list-cameras, --stream-only, --record-folder, --camera, --codec, --preset, --tuning, "
                     "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
-                    "--preenc-ref-max-seconds, --duration, --stream-start-delay, "
+                    "--preenc-ref-max-seconds, --duration, --stream-start-delay, --nvenc-direct-input, "
                     "--record-delay, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
@@ -2363,6 +2410,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
+    spec->nvenc_direct_input = fixed.value("nvenc_direct_input", false);
     if (fixed.contains("pre_encoder_reference_capture")) {
         if (!parse_pre_encoder_reference_capture_json(
                 fixed["pre_encoder_reference_capture"],
@@ -2473,6 +2521,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                             run.options.duration_seconds = spec.duration_s + spec.warmup_s;
                             run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
                             run.options.record_start_delay_seconds = 0;
+                            run.options.nvenc_direct_input = spec.nvenc_direct_input;
                             run.options.required_gpu_ids = spec.gpu_ids;
                             run.options.encoder_settings = spec.selection;
                             run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
@@ -2508,6 +2557,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                 {"warmup_s", spec.warmup_s},
                                 {"stream_start_delay_s", spec.stream_start_delay_s},
                                 {"record_start_delay_s", 0},
+                                {"nvenc_direct_input", spec.nvenc_direct_input},
                                 {"recording_folder", run.recording_folder},
                                 {"pre_encoder_reference_capture",
                                  build_pre_encoder_reference_capture_json(
@@ -2703,7 +2753,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["rate_control_mode"] = run.options.encoder_settings.rate_control_mode;
     row["quality_value"] = run.options.encoder_settings.quality_value;
     row["gop_length"] = run.options.encoder_settings.gop_length;
-    row["nvenc_direct_input"] = false;
+    row["nvenc_direct_input"] = run.options.nvenc_direct_input;
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
     row["display"] = false;
@@ -3012,6 +3062,9 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
 
 int run_local_experiment(const HeadlessCliOptions& options)
 {
+    ScopedEnvVarOverride direct_input_override(
+        "ORANGE_NVENC_DIRECT_INPUT",
+        options.nvenc_direct_input ? "1" : "0");
     ExperimentSpec spec;
     std::string error;
     if (!load_experiment_spec(options, &spec, &error)) {
@@ -3089,11 +3142,15 @@ int run_local_experiment(const HeadlessCliOptions& options)
                   << " rc=" << run.options.encoder_settings.rate_control_mode
                   << " q=" << run.options.encoder_settings.quality_value
                   << " gop=" << run.options.encoder_settings.gop_length
+                  << " direct_input=" << (run.options.nvenc_direct_input ? "true" : "false")
                   << " warmup=" << run.warmup_s
                   << " duration=" << run.duration_s
                   << std::endl;
 
         const std::string started_at_utc = get_current_utc_timestamp();
+        ScopedEnvVarOverride per_run_direct_input_override(
+            "ORANGE_NVENC_DIRECT_INPUT",
+            run.options.nvenc_direct_input ? "1" : "0");
         const int rc = run_local_recording_session(run.options, false);
         bool run_failed = (rc != 0);
         nlohmann::json run_entry = {
@@ -3212,6 +3269,9 @@ int run_local_experiment(const HeadlessCliOptions& options)
 
 int run_local_mode(const HeadlessCliOptions& options)
 {
+    ScopedEnvVarOverride direct_input_override(
+        "ORANGE_NVENC_DIRECT_INPUT",
+        options.nvenc_direct_input ? "1" : "0");
     return run_local_recording_session(options, true);
 }
 

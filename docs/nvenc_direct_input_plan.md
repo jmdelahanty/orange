@@ -212,6 +212,252 @@ This means the active implementation is built around:
 - NVENC-owned input surfaces,
 - one extra copy between them.
 
+## Current Output Path Is Host-Bitstream Based
+
+The active recording path is GPU-direct on the input side only. It is not
+GPU-resident end to end.
+
+Today the encoded output path is:
+
+1. NVENC produces compressed bitstream output.
+2. The local wrapper calls `nvEncLockBitstream(...)`.
+3. The wrapper copies the locked host-visible bytes into a local
+   `std::vector<uint8_t>`.
+4. `FFmpegWriter::push_packet(...)` copies those bytes again into an
+   `AVPacket`.
+5. FFmpeg muxes and writes MP4 from the CPU side.
+
+So the current writer path is host-bitstream based even when the input frame
+arrives through GPUDirect and even when preprocess stays entirely on GPU.
+
+Important nuance:
+
+- this output-side copying is real,
+- but it is copying compressed packets, not full uncompressed frames,
+- so it is usually a much smaller tax than the current extra NV12 input copy.
+
+The repo does already contain NVIDIA's video-memory-output wrapper:
+
+- `src/NvEncoder/NvEncoderOutputInVidMemCuda.h`
+- `src/NvEncoder/NvEncoderOutputInVidMemCuda.cpp`
+
+But the active application path does not use it today.
+
+## What A Video-Memory Output Version Would Require
+
+There are two different possible goals here, and they should not be confused.
+
+### Goal A: Keep Compressed Output On GPU Longer
+
+This is the smaller architectural change.
+
+The basic shape would be:
+
+1. Replace the host-bitstream wrapper path in `EncoderHwWorker` with
+   `NvEncoderOutputInVidMemCuda` or an equivalent local abstraction.
+2. Treat encoded output as a second ring, analogous to the direct-input ring:
+   - mapped GPU bitstream buffer
+   - output retirement point
+   - explicit reuse rules
+3. Add a dedicated output-transfer stage that copies compressed packets from
+   GPU memory into pinned host buffers before handing them to `FFmpegWriter`.
+
+If we still keep `FFmpegWriter` and CPU-side MP4 muxing, this path does **not**
+remove the device-to-host copy. It only moves it later and gives us better
+control over where it happens.
+
+That version would require:
+
+- a packet abstraction that can represent either:
+  - host bitstream bytes, or
+  - GPU bitstream buffers plus size / lifetime
+- a safe output-buffer retirement rule, analogous to direct-input slot
+  retirement
+- pinned host staging buffers for compressed packets
+- a background transfer / mux handoff so the encode thread is not blocked on
+  packet transfer and CPU mux work
+
+### Goal B: Keep Compressed Output On GPU All The Way To The Sink
+
+This is a much bigger architectural change.
+
+To actually avoid host copies end to end, the next consumer would also need to
+be GPU-capable. In practice that means one of:
+
+- a GPU-resident downstream consumer such as another CUDA pipeline,
+- a GPU-aware network sender,
+- or a GPU-aware storage / mux path such as a GPUDirect Storage style design.
+
+For the current app, a true GPU-resident output path would require:
+
+- replacing the current FFmpeg CPU-packet writer path,
+- a new output abstraction for GPU-owned compressed packets,
+- a mux / container strategy that does not immediately force CPU packet
+  ownership,
+- and validation that the container / storage path actually benefits from
+  staying on GPU.
+
+That is a fundamentally different project from the current direct-input work.
+
+## Architectural Recommendation
+
+The app should treat input-side direct registration and output-side
+video-memory bitstream handling as separate optimizations.
+
+Recommended order:
+
+1. Finish measuring input-side direct-input value first.
+2. Keep the current host-bitstream writer for the main benchmark campaign.
+3. Only consider video-memory output if profiling shows the output path is a
+   meaningful bottleneck.
+4. If output work is justified, start with Goal A:
+   GPU bitstream output + explicit transfer stage + existing FFmpeg writer.
+5. Treat Goal B as a separate future project, not as part of direct-input v1.
+
+## Copy Path Support Policy
+
+The copy path should stay supported for now, but it should not remain a
+first-class peer architecture forever.
+
+Recommended policy:
+
+1. Keep the copy path during direct-input bring-up and validation.
+2. Use the copy path as:
+   - the recovery path when direct-input is not yet trusted,
+   - the debugging baseline,
+   - and the benchmark reference mode.
+3. Promote direct-input to the preferred path only after:
+   - short-run sanity passes,
+   - long-run stability passes,
+   - stop / drain correctness passes,
+   - and benchmark evidence shows it is at least not worse than the copy path.
+4. After that, keep the copy path only as:
+   - explicit fallback,
+   - explicit debug mode,
+   - and explicit benchmark mode.
+
+This keeps the validation path practical without committing the app to carrying
+two equal hot-path architectures indefinitely.
+
+## Recommended Direct-Input Benchmark Suite
+
+The cleanest benchmark shape is to use the same `orange_client` experiment spec
+for both data paths and only vary whether direct-input is enabled.
+
+Recommended first run families:
+
+### 1. Smoke Pair
+
+Run one short stable point twice:
+
+- copy path
+- direct-input path
+
+Recommended setting:
+
+- `hevc p1 ll vbr`
+
+Purpose:
+
+- prove the same camera / GPU / scene can run through both paths,
+- verify `nvenc_direct_input` is recorded correctly in `runs.json` / `runs.csv`,
+- and confirm artifact generation is otherwise unchanged.
+
+### 2. Throughput Pair
+
+Run one clean throughput-oriented matrix twice:
+
+- copy path
+- direct-input path
+
+Recommended initial points:
+
+- `hevc p1 ll vbr`
+- `hevc p1 ull vbr`
+- `hevc p3 hq vbr`
+
+Purpose:
+
+- measure whether removing the extra NV12 copy changes sustainable encode rate,
+- measure whether resource minima and preprocess pressure improve,
+- and determine whether direct-input is worth keeping beyond correctness.
+
+### 3. Long-Run Pair
+
+Run a `3-5 min` confirmation for:
+
+- the fastest stable point,
+- and one near-boundary point
+
+across:
+
+- copy path
+- direct-input path
+
+Purpose:
+
+- catch slot-lifetime issues or slower pool drain that short runs may miss.
+
+### 4. Reference-Capture Pair
+
+Do **not** include this in the first direct-input throughput comparison.
+
+Only add:
+
+- copy path + pre-encoder reference capture
+- direct-input path + pre-encoder reference capture
+
+after direct-input reference-capture parity is implemented. Until then, keep
+reference capture on the copy path when the goal is codec-quality evaluation.
+
+## Client-Run Shape
+
+The current experiment-spec layer does not yet have a committed spec field that
+toggles direct-input directly. The practical comparison shape today is:
+
+- copy path:
+  `sudo ./build/orange_client --mode local --experiment-spec /path/to/spec.json`
+- direct-input path:
+  `sudo env ORANGE_NVENC_DIRECT_INPUT=1 ./build/orange_client --mode local --experiment-spec /path/to/spec.json`
+
+Important rule:
+
+- use a fresh `experiment_id` for each invocation so the output folders do not
+  collide.
+
+The helper script `scripts/run_direct_input_compare.sh` can automate this by
+cloning one spec into `copy` and `direct_input` variants and running both
+client invocations in sequence.
+
+## Where Video-Memory Output Would Pay Off
+
+This work is more likely to pay off when:
+
+- profiling shows CPU-side packet copies or MP4 muxing are a meaningful share
+  of end-to-end recording cost,
+- many concurrent sessions drive high aggregate compressed bitrate,
+- the encode thread is measurably blocked on output handling rather than on
+  preprocess / encode itself,
+- or the next consumer of the compressed bitstream is already GPU-resident.
+
+In those cases, moving compressed output through a GPU-output ring and a
+separate transfer stage may improve thread isolation and overall stability even
+if the final sink is still CPU-side.
+
+## Where Video-Memory Output Would Not Pay Off Much
+
+This work is less likely to pay off when:
+
+- the main bottleneck is still input-side frame movement or NVENC throughput,
+- the workflow still ends in the existing CPU-side FFmpeg writer,
+- there are only one or a few recording sessions,
+- or the main experiment goal is codec-quality comparison rather than absolute
+  host-copy minimization.
+
+It also does not help with pre-encoder reference capture itself, because that
+feature intentionally writes full prepared frames to disk and therefore still
+requires device-to-host copies of uncompressed frame data.
+
 ## Wrapper Findings
 
 The local NVENC wrapper already has most of the primitives needed for direct

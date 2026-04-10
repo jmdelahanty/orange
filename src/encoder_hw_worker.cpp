@@ -791,13 +791,14 @@ void EncoderHwWorker::poll_pre_encoder_reference_captures(bool wait_for_all)
         }
 
         slot.in_use = false;
-        recycle_encoder_entry(pending.entry, pending.retired_slots);
+        recycle_encoder_entry(pending.entry, pending.retired_slots, pending.slot_submitted);
         pending_pre_encoder_reference_captures_.pop_front();
     }
 }
 
 void EncoderHwWorker::recycle_encoder_entry(ENCODER_WORKER_ENTRY* entry,
-                                           const std::vector<uint32_t>& retired_slots)
+                                           const std::vector<uint32_t>& retired_slots,
+                                           bool slot_submitted)
 {
     if (!m_prep_worker_ || !entry) {
         return;
@@ -818,14 +819,13 @@ void EncoderHwWorker::recycle_encoder_entry(ENCODER_WORKER_ENTRY* entry,
             m_prep_worker_->free_direct_input_slots_.push(static_cast<int>(slot_id));
             m_prep_worker_->available_buffers_++;
         }
-        return;
     }
 
-    if (entry->slot_id >= 0) {
+    if (!slot_submitted && entry->slot_id >= 0) {
         m_prep_worker_->free_direct_input_slots_.push(entry->slot_id);
         m_prep_worker_->available_buffers_++;
-        entry->slot_id = -1;
     }
+    entry->slot_id = -1;
 }
 
 void EncoderHwWorker::release_pre_encoder_reference_capture_resources()
@@ -1147,13 +1147,13 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
     // If recording is globally disabled, skip processing but recycle resources.
     if (!recording_enabled && !draining) {
-        recycle_encoder_entry(entry, {});
+        recycle_encoder_entry(entry, {}, false);
         return false;
     }
 
     if (!is_recording_) {
         std::cerr << "[" << this->threadName << "] Warning: Dropping frame because encoder is not recording." << std::endl;
-        recycle_encoder_entry(entry, {});
+        recycle_encoder_entry(entry, {}, false);
         return false;
     }
 
@@ -1172,6 +1172,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     bool capture_scheduled = false;
     size_t capture_staging_slot = 0;
     size_t capture_frame_size = 0;
+    bool slot_submitted = false;
 
     try {
         if (entry->preprocess_complete_event) {
@@ -1192,6 +1193,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 throw std::runtime_error(error.str());
             }
             encoder_.pEnc->EncodeFrame(encoder_.vPacket, nullptr, &retired_slots);
+            slot_submitted = true;
         } else {
             const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
             
@@ -1247,9 +1249,10 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 entry,
                 capture_staging_slot,
                 capture_frame_size,
-                retired_slots});
+                retired_slots,
+                slot_submitted});
     } else {
-        recycle_encoder_entry(entry, retired_slots);
+        recycle_encoder_entry(entry, retired_slots, slot_submitted);
     }
 
     auto end_time = std::chrono::steady_clock::now();
