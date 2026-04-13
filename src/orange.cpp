@@ -29,7 +29,9 @@
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
 #include "aperture_characterization.h"
+#include "camera_preview_utils.h"
 #include "image_canvas.h"
+#include "spatial_layout_ui.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
 
@@ -503,22 +505,6 @@ const char* ruler_alignment_orientation_label(RulerAlignmentOrientation orientat
     }
 }
 
-size_t preview_frame_byte_count(int pixel_type, unsigned int width, unsigned int height)
-{
-    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
-    switch (pixel_type) {
-        case GVSP_PIX_MONO8:
-        case GVSP_PIX_BAYRG8:
-        case GVSP_PIX_BAYGB8:
-            return pixel_count;
-        case GVSP_PIX_RGB8:
-        case GVSP_PIX_BGR8:
-            return pixel_count * 3U;
-        default:
-            return 0;
-    }
-}
-
 constexpr int kMinRecordingOutputDimension = 64;
 
 bool is_supported_record_output_factor(int factor)
@@ -653,151 +639,6 @@ RecordingOutputConfig resolve_recording_output_config(
     output.resolved_height = resolved_height;
     output.resize_enabled = factor != 1;
     return output;
-}
-
-class ScopedPreviewCudaDevice {
-public:
-    explicit ScopedPreviewCudaDevice(int target_device)
-    {
-        cudaError_t get_err = cudaGetDevice(&previous_device_);
-        had_previous_device_ = (get_err == cudaSuccess);
-        if (target_device >= 0 && (!had_previous_device_ || previous_device_ != target_device)) {
-            const cudaError_t set_err = cudaSetDevice(target_device);
-            if (set_err != cudaSuccess) {
-                std::ostringstream oss;
-                oss << "cudaSetDevice(" << target_device << ") failed: " << cudaGetErrorString(set_err);
-                throw std::runtime_error(oss.str());
-            }
-            switched_ = true;
-        }
-    }
-
-    ~ScopedPreviewCudaDevice()
-    {
-        if (switched_ && had_previous_device_) {
-            cudaSetDevice(previous_device_);
-        }
-    }
-
-private:
-    int previous_device_ = -1;
-    bool had_previous_device_ = false;
-    bool switched_ = false;
-};
-
-bool extract_frame_host_bytes_preview(
-    const Emergent::CEmergentFrame& frame,
-    std::vector<unsigned char>* host_bytes,
-    const unsigned char** data_out,
-    std::string* error_out)
-{
-    if (data_out == nullptr) {
-        if (error_out) {
-            *error_out = "extract_frame_host_bytes_preview requires a non-null data_out pointer.";
-        }
-        return false;
-    }
-    if (frame.imagePtr == nullptr || frame.size_x == 0 || frame.size_y == 0) {
-        if (error_out) {
-            *error_out = "Frame image pointer is null or dimensions are zero.";
-        }
-        return false;
-    }
-
-    cudaPointerAttributes attrs{};
-    const cudaError_t attr_status = cudaPointerGetAttributes(&attrs, frame.imagePtr);
-    if (attr_status == cudaSuccess && attrs.type == cudaMemoryTypeDevice) {
-        const size_t byte_count = preview_frame_byte_count(frame.pixel_type, frame.size_x, frame.size_y);
-        if (byte_count == 0) {
-            if (error_out) {
-                *error_out = "Unsupported pixel format for preview extraction.";
-            }
-            return false;
-        }
-        try {
-            ScopedPreviewCudaDevice guard(attrs.device);
-            host_bytes->resize(byte_count);
-            const cudaError_t copy_err =
-                cudaMemcpy(host_bytes->data(), frame.imagePtr, byte_count, cudaMemcpyDeviceToHost);
-            if (copy_err != cudaSuccess) {
-                if (error_out) {
-                    std::ostringstream oss;
-                    oss << "cudaMemcpy(DeviceToHost) failed: " << cudaGetErrorString(copy_err);
-                    *error_out = oss.str();
-                }
-                return false;
-            }
-        } catch (const std::exception& ex) {
-            if (error_out) {
-                *error_out = ex.what();
-            }
-            return false;
-        }
-        *data_out = host_bytes->data();
-        return true;
-    }
-
-    if (attr_status != cudaSuccess) {
-        cudaGetLastError();
-    }
-
-    host_bytes->clear();
-    *data_out = static_cast<const unsigned char*>(frame.imagePtr);
-    return true;
-}
-
-bool convert_frame_bytes_to_bgr(
-    int pixel_type,
-    unsigned int width,
-    unsigned int height,
-    const unsigned char* frame_bytes,
-    cv::Mat* bgr_out,
-    std::string* error_out)
-{
-    if (bgr_out == nullptr || frame_bytes == nullptr || width == 0 || height == 0) {
-        if (error_out) {
-            *error_out = "Invalid frame buffer for BGR conversion.";
-        }
-        return false;
-    }
-
-    switch (pixel_type) {
-        case GVSP_PIX_MONO8: {
-            cv::Mat gray(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                         const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(gray, *bgr_out, cv::COLOR_GRAY2BGR);
-            return true;
-        }
-        case GVSP_PIX_BAYRG8: {
-            cv::Mat raw(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                        const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(raw, *bgr_out, cv::COLOR_BayerRG2BGR);
-            return true;
-        }
-        case GVSP_PIX_BAYGB8: {
-            cv::Mat raw(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                        const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(raw, *bgr_out, cv::COLOR_BayerGB2BGR);
-            return true;
-        }
-        case GVSP_PIX_RGB8: {
-            cv::Mat rgb(static_cast<int>(height), static_cast<int>(width), CV_8UC3,
-                        const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(rgb, *bgr_out, cv::COLOR_RGB2BGR);
-            return true;
-        }
-        case GVSP_PIX_BGR8: {
-            cv::Mat bgr(static_cast<int>(height), static_cast<int>(width), CV_8UC3,
-                        const_cast<unsigned char*>(frame_bytes));
-            *bgr_out = bgr.clone();
-            return true;
-        }
-        default:
-            if (error_out) {
-                *error_out = "Preview conversion does not support this pixel format.";
-            }
-            return false;
-    }
 }
 
 RulerAlignmentMetrics detect_ruler_alignment(
@@ -1055,42 +896,6 @@ bool write_rgb_image_ppm(
     return static_cast<bool>(out);
 }
 
-bool grab_latest_preview_frame(
-    Emergent::CEmergentCamera* camera,
-    CameraParams* camera_params,
-    unsigned int timeout_ms,
-    Emergent::CEmergentFrame* frame_out,
-    int* dropped_frame_count_out)
-{
-    if (frame_out == nullptr) {
-        return false;
-    }
-
-    Emergent::CEmergentFrame frame{};
-    EVT_ERROR err = EVT_CameraGetFrame(camera, &frame, timeout_ms);
-    if (err != EVT_SUCCESS) {
-        return false;
-    }
-
-    int dropped_frames = 0;
-    while (true) {
-        Emergent::CEmergentFrame newer_frame{};
-        err = EVT_CameraGetFrame(camera, &newer_frame, 0);
-        if (err != EVT_SUCCESS) {
-            break;
-        }
-        check_camera_errors(EVT_CameraQueueFrame(camera, &frame), camera_params->camera_serial.c_str());
-        frame = newer_frame;
-        ++dropped_frames;
-    }
-
-    *frame_out = frame;
-    if (dropped_frame_count_out != nullptr) {
-        *dropped_frame_count_out = dropped_frames;
-    }
-    return true;
-}
-
 bool read_pnm_token(std::istream& input, std::string* token)
 {
     token->clear();
@@ -1202,26 +1007,6 @@ bool load_representative_frame_rgba(
     return true;
 }
 
-bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
-{
-    int max_length = 0;
-    EVT_ERROR len_err = EVT_CameraGetStringParamMaxLength(camera, name, &max_length);
-    if (len_err != EVT_SUCCESS || max_length <= 0) {
-        max_length = 512;
-    }
-
-    const unsigned long buf_size = static_cast<unsigned long>(std::max(256, max_length + 8));
-    std::vector<char> buffer(buf_size, '\0');
-    unsigned long value_size = 0;
-    EVT_ERROR err = EVT_CameraGetStringParam(camera, name, buffer.data(), buf_size, &value_size, 0);
-    if (err != EVT_SUCCESS) {
-        return false;
-    }
-
-    *out_value = std::string(buffer.data());
-    return true;
-}
-
 void reset_aperture_defaults_for_camera(
     ApertureCharacterizationUiState* ui_state,
     const CameraParams& camera_params,
@@ -1257,12 +1042,10 @@ void join_aperture_worker_if_finished(ApertureCharacterizationUiState* ui_state)
 
 void clear_aperture_preview_texture(ApertureCharacterizationUiState* ui_state)
 {
-    if (ui_state->preview_texture != 0) {
-        glDeleteTextures(1, &ui_state->preview_texture);
-        ui_state->preview_texture = 0;
-    }
-    ui_state->preview_texture_width = 0;
-    ui_state->preview_texture_height = 0;
+    orange::preview::clear_texture(
+        &ui_state->preview_texture,
+        &ui_state->preview_texture_width,
+        &ui_state->preview_texture_height);
     ui_state->preview_texture_path.clear();
     ui_state->preview_texture_error.clear();
     ui_state->representative_canvas_view.fit_requested = true;
@@ -1272,12 +1055,10 @@ void clear_aperture_preview_texture(ApertureCharacterizationUiState* ui_state)
 
 void clear_alignment_preview_texture(ApertureCharacterizationUiState* ui_state)
 {
-    if (ui_state->alignment_texture != 0) {
-        glDeleteTextures(1, &ui_state->alignment_texture);
-        ui_state->alignment_texture = 0;
-    }
-    ui_state->alignment_texture_width = 0;
-    ui_state->alignment_texture_height = 0;
+    orange::preview::clear_texture(
+        &ui_state->alignment_texture,
+        &ui_state->alignment_texture_width,
+        &ui_state->alignment_texture_height);
     ui_state->alignment_uploaded_serial = 0;
 }
 
@@ -1303,20 +1084,14 @@ bool ensure_aperture_preview_texture(
         return false;
     }
 
-    GLuint texture = 0;
-    glGenTextures(1, &texture);
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    ui_state->preview_texture = texture;
-    ui_state->preview_texture_width = width;
-    ui_state->preview_texture_height = height;
+    orange::preview::update_rgba_texture(
+        &ui_state->preview_texture,
+        &ui_state->preview_texture_width,
+        &ui_state->preview_texture_height,
+        rgba,
+        width,
+        height,
+        &ui_state->preview_texture_error);
     ui_state->preview_texture_path = image_path;
     ui_state->preview_texture_error.clear();
     return true;
@@ -1348,46 +1123,13 @@ bool upload_latest_alignment_texture(ApertureCharacterizationUiState* ui_state)
         return preview.available;
     }
 
-    if (ui_state->alignment_texture == 0 ||
-        ui_state->alignment_texture_width != preview.width ||
-        ui_state->alignment_texture_height != preview.height) {
-        if (ui_state->alignment_texture != 0) {
-            glDeleteTextures(1, &ui_state->alignment_texture);
-        }
-        glGenTextures(1, &ui_state->alignment_texture);
-        glBindTexture(GL_TEXTURE_2D, ui_state->alignment_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(
-            GL_TEXTURE_2D,
-            0,
-            GL_RGBA,
-            preview.width,
-            preview.height,
-            0,
-            GL_RGBA,
-            GL_UNSIGNED_BYTE,
-            preview.rgba.data());
-        ui_state->alignment_texture_width = preview.width;
-        ui_state->alignment_texture_height = preview.height;
-    } else {
-        glBindTexture(GL_TEXTURE_2D, ui_state->alignment_texture);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(
-            GL_TEXTURE_2D,
-            0,
-            0,
-            0,
-            preview.width,
-            preview.height,
-            GL_RGBA,
-            GL_UNSIGNED_BYTE,
-            preview.rgba.data());
-    }
-    glBindTexture(GL_TEXTURE_2D, 0);
+    orange::preview::update_rgba_texture(
+        &ui_state->alignment_texture,
+        &ui_state->alignment_texture_width,
+        &ui_state->alignment_texture_height,
+        preview.rgba,
+        preview.width,
+        preview.height);
     ui_state->alignment_uploaded_serial = preview.frame_serial;
     return true;
 }
@@ -1463,8 +1205,10 @@ void start_fov_alignment_worker(
         try {
             unsigned int frame_rate_min = camera_params->frame_rate_min;
             unsigned int frame_rate_max = camera_params->frame_rate_max;
-            EVT_CameraGetUInt32ParamMin(&ecam->camera, "FrameRate", &frame_rate_min);
-            EVT_CameraGetUInt32ParamMax(&ecam->camera, "FrameRate", &frame_rate_max);
+            if (get_camera_uint32_param_range(&ecam->camera, "FrameRate", &frame_rate_min, &frame_rate_max)) {
+                camera_params->frame_rate_min = frame_rate_min;
+                camera_params->frame_rate_max = frame_rate_max;
+            }
             const unsigned int clamped_preview_fps =
                 std::clamp(static_cast<unsigned int>(preview_target_fps), frame_rate_min, frame_rate_max);
             active_preview_fps = clamped_preview_fps;
@@ -1476,7 +1220,7 @@ void start_fov_alignment_worker(
                 frame_rate_changed = true;
             }
 
-            camera_open_stream(&ecam->camera, camera_params);
+            camera_open_stream(&ecam->camera, camera_params, "gui_alignment_preview");
             stream_opened = true;
 
             frames = new Emergent::CEmergentFrame[kAlignmentPreviewBufferCount]();
@@ -1491,21 +1235,13 @@ void start_fov_alignment_worker(
             while (!ui_state->alignment_stop_requested.load(std::memory_order_acquire)) {
                 Emergent::CEmergentFrame frame{};
                 int dropped_frames = 0;
-                if (!grab_latest_preview_frame(&ecam->camera, camera_params, 250, &frame, &dropped_frames)) {
+                if (!orange::preview::grab_latest_frame(&ecam->camera, camera_params, 250, &frame, &dropped_frames)) {
                     continue;
-                }
-
-                std::vector<unsigned char> host_bytes;
-                const unsigned char* frame_bytes = nullptr;
-                std::string extract_error;
-                if (!extract_frame_host_bytes_preview(frame, &host_bytes, &frame_bytes, &extract_error)) {
-                    EVT_CameraQueueFrame(&ecam->camera, &frame);
-                    throw std::runtime_error(extract_error);
                 }
 
                 cv::Mat bgr;
                 std::string convert_error;
-                if (!convert_frame_bytes_to_bgr(frame.pixel_type, frame.size_x, frame.size_y, frame_bytes, &bgr, &convert_error)) {
+                if (!orange::preview::frame_to_bgr(frame, &bgr, &convert_error)) {
                     EVT_CameraQueueFrame(&ecam->camera, &frame);
                     throw std::runtime_error(convert_error);
                 }
@@ -2739,6 +2475,7 @@ int main(int argc, char **args) {
     copy_string_to_buffer(aperture_ui_state.output_dir, aperture_char_output_folder);
     UsafResolutionUiState usaf_ui_state;
     std::snprintf(usaf_ui_state.output_dir, sizeof(usaf_ui_state.output_dir), "%s", usaf_output_folder.c_str());
+    SpatialLayoutUiState spatial_layout_ui_state;
 
     int local_config_select = 0;
     char new_local_config_folder_name[128] = "";
@@ -3073,6 +2810,12 @@ int main(int argc, char **args) {
                 if (ImGui::Button("USAF Resolution Calibration")) {
                     usaf_ui_state.show_window = true;
                     usaf_ui_state.selected_camera = std::clamp(usaf_ui_state.selected_camera, 0, std::max(0, num_cameras - 1));
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Spatial Layout Registration")) {
+                    spatial_layout_ui_state.show_window = true;
+                    spatial_layout_ui_state.selected_camera =
+                        std::clamp(spatial_layout_ui_state.selected_camera, 0, std::max(0, num_cameras - 1));
                 }
 
                 if (calibration_tool_busy) {
@@ -3498,6 +3241,15 @@ int main(int argc, char **args) {
             num_cameras,
             usaf_output_folder);
 
+        render_spatial_layout_window(
+            &spatial_layout_ui_state,
+            camera_control,
+            ecams,
+            cameras_params,
+            num_cameras,
+            calibration_tool_busy,
+            aperture_char_output_folder);
+
         // file explorer display
         if (ImGuiFileDialog::Instance()->Display("ChooseYOLOFile")) {
             // => will show a dialog
@@ -3671,7 +3423,7 @@ int main(int argc, char **args) {
                         for (int i = 0; i < num_cameras; i++) {
                             if (!skip_setting_params[i]) {
                                 open_camera_with_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id],
-                                                    &cameras_params[i]);
+                                                    &cameras_params[i], "gui_open_selected_cameras");
                             } else {
                                 update_camera_params(&ecams[i].camera, &device_info[cameras_params[i].camera_id],
                                                     &cameras_params[i]);
@@ -3949,6 +3701,8 @@ int main(int argc, char **args) {
                                     encoder_config->rate_control_mode,
                                     encoder_config->quality_value,
                                     encoder_config->gop_length,
+                                    EncoderControlOverrides{},
+                                    ImportanceMapConfig{},
                                     encoder_config->folder_name,
                                     *camera_resources[i].recycle_queue,
                                     camera_control);
@@ -3992,7 +3746,7 @@ int main(int argc, char **args) {
 
                         // PREPARE CAMERAS
                         for (int i = 0; i < num_cameras; i++) {
-                            camera_open_stream(&ecams[i].camera, &cameras_params[i]);
+                            camera_open_stream(&ecams[i].camera, &cameras_params[i], "gui_start_streaming");
                             ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
                             allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
                         }
@@ -4436,6 +4190,7 @@ int main(int argc, char **args) {
     stop_usaf_preview_worker(&usaf_ui_state);
     clear_usaf_preview_texture(&usaf_ui_state);
     clear_usaf_captured_texture(&usaf_ui_state);
+    clear_spatial_layout_texture(&spatial_layout_ui_state);
 
     if (camera_control->open) {
         for (int i = 0; i < num_cameras; i++) {

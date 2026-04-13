@@ -1,11 +1,11 @@
 #include "usaf_resolution_ui.h"
 
+#include "camera_preview_utils.h"
 #include "fsuid_guard.h"
 #include "imgui.h"
 #include "implot.h"
 #include "project.h"
 
-#include <cuda_runtime.h>
 #include <opencv2/opencv.hpp>
 
 #include <algorithm>
@@ -38,227 +38,10 @@ constexpr UsafPreviewAnchor kUsafPreviewAnchors[] = {
 
 constexpr int kUsafPreviewBufferCount = 2;
 
-struct ScopedPreviewCudaDevice {
-public:
-    explicit ScopedPreviewCudaDevice(int target_device)
-    {
-        cudaError_t get_err = cudaGetDevice(&previous_device_);
-        had_previous_device_ = (get_err == cudaSuccess);
-        if (target_device >= 0 && (!had_previous_device_ || previous_device_ != target_device)) {
-            const cudaError_t set_err = cudaSetDevice(target_device);
-            if (set_err != cudaSuccess) {
-                std::ostringstream oss;
-                oss << "cudaSetDevice(" << target_device << ") failed: " << cudaGetErrorString(set_err);
-                throw std::runtime_error(oss.str());
-            }
-            switched_ = true;
-        }
-    }
-
-    ~ScopedPreviewCudaDevice()
-    {
-        if (switched_ && had_previous_device_) {
-            cudaSetDevice(previous_device_);
-        }
-    }
-
-private:
-    int previous_device_ = -1;
-    bool had_previous_device_ = false;
-    bool switched_ = false;
-};
-
 template <size_t N>
 void copy_string_to_buffer(char (&buffer)[N], const std::string& value)
 {
     std::snprintf(buffer, N, "%s", value.c_str());
-}
-
-size_t preview_frame_byte_count(int pixel_type, unsigned int width, unsigned int height)
-{
-    const size_t pixel_count = static_cast<size_t>(width) * static_cast<size_t>(height);
-    switch (pixel_type) {
-        case GVSP_PIX_MONO8:
-        case GVSP_PIX_BAYRG8:
-        case GVSP_PIX_BAYGB8:
-            return pixel_count;
-        case GVSP_PIX_RGB8:
-        case GVSP_PIX_BGR8:
-            return pixel_count * 3U;
-        default:
-            return 0;
-    }
-}
-
-bool extract_frame_host_bytes_preview(
-    const Emergent::CEmergentFrame& frame,
-    std::vector<unsigned char>* host_bytes,
-    const unsigned char** data_out,
-    std::string* error_out)
-{
-    if (data_out == nullptr) {
-        if (error_out) {
-            *error_out = "extract_frame_host_bytes_preview requires a non-null data_out pointer.";
-        }
-        return false;
-    }
-    if (frame.imagePtr == nullptr || frame.size_x == 0 || frame.size_y == 0) {
-        if (error_out) {
-            *error_out = "Frame image pointer is null or dimensions are zero.";
-        }
-        return false;
-    }
-
-    cudaPointerAttributes attrs{};
-    const cudaError_t attr_status = cudaPointerGetAttributes(&attrs, frame.imagePtr);
-    if (attr_status == cudaSuccess && attrs.type == cudaMemoryTypeDevice) {
-        const size_t byte_count = preview_frame_byte_count(frame.pixel_type, frame.size_x, frame.size_y);
-        if (byte_count == 0) {
-            if (error_out) {
-                *error_out = "Unsupported pixel format for preview extraction.";
-            }
-            return false;
-        }
-        try {
-            ScopedPreviewCudaDevice guard(attrs.device);
-            host_bytes->resize(byte_count);
-            const cudaError_t copy_err =
-                cudaMemcpy(host_bytes->data(), frame.imagePtr, byte_count, cudaMemcpyDeviceToHost);
-            if (copy_err != cudaSuccess) {
-                if (error_out) {
-                    std::ostringstream oss;
-                    oss << "cudaMemcpy(DeviceToHost) failed: " << cudaGetErrorString(copy_err);
-                    *error_out = oss.str();
-                }
-                return false;
-            }
-        } catch (const std::exception& ex) {
-            if (error_out) {
-                *error_out = ex.what();
-            }
-            return false;
-        }
-        *data_out = host_bytes->data();
-        return true;
-    }
-
-    if (attr_status != cudaSuccess) {
-        cudaGetLastError();
-    }
-
-    host_bytes->clear();
-    *data_out = static_cast<const unsigned char*>(frame.imagePtr);
-    return true;
-}
-
-bool convert_frame_bytes_to_bgr(
-    int pixel_type,
-    unsigned int width,
-    unsigned int height,
-    const unsigned char* frame_bytes,
-    cv::Mat* bgr_out,
-    std::string* error_out)
-{
-    if (bgr_out == nullptr || frame_bytes == nullptr || width == 0 || height == 0) {
-        if (error_out) {
-            *error_out = "Invalid frame buffer for BGR conversion.";
-        }
-        return false;
-    }
-
-    switch (pixel_type) {
-        case GVSP_PIX_MONO8: {
-            cv::Mat gray(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                         const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(gray, *bgr_out, cv::COLOR_GRAY2BGR);
-            return true;
-        }
-        case GVSP_PIX_BAYRG8: {
-            cv::Mat raw(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                        const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(raw, *bgr_out, cv::COLOR_BayerRG2BGR);
-            return true;
-        }
-        case GVSP_PIX_BAYGB8: {
-            cv::Mat raw(static_cast<int>(height), static_cast<int>(width), CV_8UC1,
-                        const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(raw, *bgr_out, cv::COLOR_BayerGB2BGR);
-            return true;
-        }
-        case GVSP_PIX_RGB8: {
-            cv::Mat rgb(static_cast<int>(height), static_cast<int>(width), CV_8UC3,
-                        const_cast<unsigned char*>(frame_bytes));
-            cv::cvtColor(rgb, *bgr_out, cv::COLOR_RGB2BGR);
-            return true;
-        }
-        case GVSP_PIX_BGR8: {
-            cv::Mat bgr(static_cast<int>(height), static_cast<int>(width), CV_8UC3,
-                        const_cast<unsigned char*>(frame_bytes));
-            *bgr_out = bgr.clone();
-            return true;
-        }
-        default:
-            if (error_out) {
-                *error_out = "Preview conversion does not support this pixel format.";
-            }
-            return false;
-    }
-}
-
-bool grab_latest_preview_frame(
-    Emergent::CEmergentCamera* camera,
-    CameraParams* camera_params,
-    unsigned int timeout_ms,
-    Emergent::CEmergentFrame* frame_out,
-    int* dropped_frame_count_out)
-{
-    if (frame_out == nullptr) {
-        return false;
-    }
-
-    Emergent::CEmergentFrame frame{};
-    EVT_ERROR err = EVT_CameraGetFrame(camera, &frame, timeout_ms);
-    if (err != EVT_SUCCESS) {
-        return false;
-    }
-
-    int dropped_frames = 0;
-    while (true) {
-        Emergent::CEmergentFrame newer_frame{};
-        err = EVT_CameraGetFrame(camera, &newer_frame, 0);
-        if (err != EVT_SUCCESS) {
-            break;
-        }
-        check_camera_errors(EVT_CameraQueueFrame(camera, &frame), camera_params->camera_serial.c_str());
-        frame = newer_frame;
-        ++dropped_frames;
-    }
-
-    *frame_out = frame;
-    if (dropped_frame_count_out != nullptr) {
-        *dropped_frame_count_out = dropped_frames;
-    }
-    return true;
-}
-
-bool get_camera_string_param(Emergent::CEmergentCamera* camera, const char* name, std::string* out_value)
-{
-    int max_length = 0;
-    EVT_ERROR len_err = EVT_CameraGetStringParamMaxLength(camera, name, &max_length);
-    if (len_err != EVT_SUCCESS || max_length <= 0) {
-        max_length = 512;
-    }
-
-    const unsigned long buf_size = static_cast<unsigned long>(std::max(256, max_length + 8));
-    std::vector<char> buffer(buf_size, '\0');
-    unsigned long value_size = 0;
-    EVT_ERROR err = EVT_CameraGetStringParam(camera, name, buffer.data(), buf_size, &value_size, 0);
-    if (err != EVT_SUCCESS) {
-        return false;
-    }
-
-    *out_value = std::string(buffer.data());
-    return true;
 }
 
 bool upload_live_preview_texture(UsafResolutionUiState* ui_state)
@@ -269,28 +52,13 @@ bool upload_live_preview_texture(UsafResolutionUiState* ui_state)
         return preview.available;
     }
 
-    if (ui_state->preview_texture == 0 ||
-        ui_state->preview_texture_width != preview.width ||
-        ui_state->preview_texture_height != preview.height) {
-        if (ui_state->preview_texture != 0) {
-            glDeleteTextures(1, &ui_state->preview_texture);
-        }
-        glGenTextures(1, &ui_state->preview_texture);
-        glBindTexture(GL_TEXTURE_2D, ui_state->preview_texture);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, preview.width, preview.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, preview.rgba.data());
-        ui_state->preview_texture_width = preview.width;
-        ui_state->preview_texture_height = preview.height;
-    } else {
-        glBindTexture(GL_TEXTURE_2D, ui_state->preview_texture);
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, preview.width, preview.height, GL_RGBA, GL_UNSIGNED_BYTE, preview.rgba.data());
-    }
-    glBindTexture(GL_TEXTURE_2D, 0);
+    orange::preview::update_rgba_texture(
+        &ui_state->preview_texture,
+        &ui_state->preview_texture_width,
+        &ui_state->preview_texture_height,
+        preview.rgba,
+        preview.width,
+        preview.height);
     ui_state->preview_uploaded_serial = preview.frame_serial;
     return true;
 }
@@ -312,25 +80,17 @@ bool ensure_captured_texture(UsafResolutionUiState* ui_state, int position_index
         return false;
     }
 
-    std::vector<unsigned char> rgba(static_cast<size_t>(position.width) * static_cast<size_t>(position.height) * 4U);
-    for (int i = 0; i < position.width * position.height; ++i) {
-        const size_t src = static_cast<size_t>(i) * 3U;
-        const size_t dst = static_cast<size_t>(i) * 4U;
-        rgba[dst + 0] = position.rgb[src + 0];
-        rgba[dst + 1] = position.rgb[src + 1];
-        rgba[dst + 2] = position.rgb[src + 2];
-        rgba[dst + 3] = 255;
+    std::vector<unsigned char> rgba;
+    if (!orange::preview::rgb_to_rgba(position.rgb, position.width, position.height, &rgba)) {
+        return false;
     }
-
-    glGenTextures(1, &ui_state->captured_texture);
-    glBindTexture(GL_TEXTURE_2D, ui_state->captured_texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, position.width, position.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    orange::preview::update_rgba_texture(
+        &ui_state->captured_texture,
+        &ui_state->captured_texture_width,
+        &ui_state->captured_texture_height,
+        rgba,
+        position.width,
+        position.height);
     ui_state->captured_texture_width = position.width;
     ui_state->captured_texture_height = position.height;
     ui_state->captured_texture_position_index = position_index;
@@ -503,8 +263,10 @@ void start_usaf_preview_worker(UsafResolutionUiState* ui_state, CameraEmergent* 
         try {
             unsigned int frame_rate_min = camera_params->frame_rate_min;
             unsigned int frame_rate_max = camera_params->frame_rate_max;
-            EVT_CameraGetUInt32ParamMin(&ecam->camera, "FrameRate", &frame_rate_min);
-            EVT_CameraGetUInt32ParamMax(&ecam->camera, "FrameRate", &frame_rate_max);
+            if (get_camera_uint32_param_range(&ecam->camera, "FrameRate", &frame_rate_min, &frame_rate_max)) {
+                camera_params->frame_rate_min = frame_rate_min;
+                camera_params->frame_rate_max = frame_rate_max;
+            }
             const unsigned int clamped_preview_fps =
                 std::clamp(static_cast<unsigned int>(preview_target_fps), frame_rate_min, frame_rate_max);
             active_preview_fps = clamped_preview_fps;
@@ -530,21 +292,13 @@ void start_usaf_preview_worker(UsafResolutionUiState* ui_state, CameraEmergent* 
             while (!ui_state->preview_stop_requested.load(std::memory_order_acquire)) {
                 Emergent::CEmergentFrame frame{};
                 int dropped_frames = 0;
-                if (!grab_latest_preview_frame(&ecam->camera, camera_params, 250, &frame, &dropped_frames)) {
+                if (!orange::preview::grab_latest_frame(&ecam->camera, camera_params, 250, &frame, &dropped_frames)) {
                     continue;
-                }
-
-                std::vector<unsigned char> host_bytes;
-                const unsigned char* frame_bytes = nullptr;
-                std::string extract_error;
-                if (!extract_frame_host_bytes_preview(frame, &host_bytes, &frame_bytes, &extract_error)) {
-                    EVT_CameraQueueFrame(&ecam->camera, &frame);
-                    throw std::runtime_error(extract_error);
                 }
 
                 cv::Mat bgr;
                 std::string convert_error;
-                if (!convert_frame_bytes_to_bgr(frame.pixel_type, frame.size_x, frame.size_y, frame_bytes, &bgr, &convert_error)) {
+                if (!orange::preview::frame_to_bgr(frame, &bgr, &convert_error)) {
                     EVT_CameraQueueFrame(&ecam->camera, &frame);
                     throw std::runtime_error(convert_error);
                 }
@@ -944,12 +698,10 @@ void stop_usaf_preview_worker(UsafResolutionUiState* ui_state)
 
 void clear_usaf_preview_texture(UsafResolutionUiState* ui_state)
 {
-    if (ui_state->preview_texture != 0) {
-        glDeleteTextures(1, &ui_state->preview_texture);
-        ui_state->preview_texture = 0;
-    }
-    ui_state->preview_texture_width = 0;
-    ui_state->preview_texture_height = 0;
+    orange::preview::clear_texture(
+        &ui_state->preview_texture,
+        &ui_state->preview_texture_width,
+        &ui_state->preview_texture_height);
     ui_state->preview_uploaded_serial = 0;
     ui_state->live_canvas_view.fit_requested = true;
     ui_state->live_canvas_view.last_image_width = 0;
@@ -958,12 +710,10 @@ void clear_usaf_preview_texture(UsafResolutionUiState* ui_state)
 
 void clear_usaf_captured_texture(UsafResolutionUiState* ui_state)
 {
-    if (ui_state->captured_texture != 0) {
-        glDeleteTextures(1, &ui_state->captured_texture);
-        ui_state->captured_texture = 0;
-    }
-    ui_state->captured_texture_width = 0;
-    ui_state->captured_texture_height = 0;
+    orange::preview::clear_texture(
+        &ui_state->captured_texture,
+        &ui_state->captured_texture_width,
+        &ui_state->captured_texture_height);
     ui_state->captured_texture_position_index = -1;
     ui_state->captured_canvas_view.fit_requested = true;
     ui_state->captured_canvas_view.last_image_width = 0;

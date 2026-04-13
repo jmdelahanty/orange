@@ -1691,7 +1691,7 @@ void allocate_camera_frame_buffers(CameraEmergent* ecams, CameraParams* cameras_
     // ... (implementation from project.h)
     for (int i = 0; i < num_cameras; i++)
     {
-        camera_open_stream(&ecams[i].camera, &cameras_params[i]);
+        camera_open_stream(&ecams[i].camera, &cameras_params[i], "project_allocate_camera_frame_buffers");
         ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
         allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
         if (cameras_params[i].need_reorder && cameras_params[i].gpu_direct)
