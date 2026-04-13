@@ -5,7 +5,9 @@ reviewing per-recording camera-view overlays before writing any implementation
 code.
 
 Date anchored: 2026-04-06.
-Status: draft UI sketch, not implemented.
+Status: draft UI sketch, partially implemented in Orange. The current UI has
+capture, detection, direct canvas editing, persistence, and Citrus single-circle
+import/seeding, but not snapshot emission yet.
 
 Related documents:
 
@@ -35,7 +37,25 @@ The same canvas interaction model can be reused in both screens.
 - runtime overlays are only `circle` and `oriented_rectangle`
 - registration is only `identity`, `translation`, or `similarity`
 - the operator is expected to work from an empty-dish or low-clutter frame
-- no automatic homography or polygon editing in v1
+- no polygon editing in v1
+- Citrus homography may be used as an import/registration seed, but v1 does not
+  expose a freeform homography editor
+
+## Current Orange Slice
+
+The current Orange implementation already covers:
+
+- frozen-frame capture for the selected camera
+- Hough-circle detection of the visible experimental area
+- direct canvas dragging for registration and selected-zone editing
+- save/load of preview-oriented spatial-layout artifacts
+- Citrus single-circle import for the selected camera
+- optional homography-based preview/seed for imported Citrus circles
+
+The next concrete step is:
+
+- write the accepted fit into `recording_snapshot.json` so Citrus can mirror it
+  into H5
 
 ## Screen 1: Layout Template Editor
 
@@ -93,18 +113,19 @@ Suggested top-level layout:
 | camera [ 02010093 ]  frame [ empty_dish_01.png ]  layout [ bank4_circle_v1 ]  registration [ similarity ]     |
 +----------------------+----------------------------------------------------------------+------------------------+
 | Inputs               | Camera Canvas                                                   | Inspector              |
-| [Load Latest Frame]  |                                                                | registration source    |
-| [Capture Frame]      |   live image / frozen image                                    | residual_px            |
-| [Load Layout]        |                                                                | fit_point_count        |
-| [Detect Experimental |   experimental area + valid mask                               | orientation_status     |
-|  Area Circle]        |                                                                |                        |
-| [Reset Fit]          |                                                                | visible zones          |
-|                      |   transformed z0 / z1 / z2 / z3 overlays                       | selected zone status   |
-|                      |                                                                | selected geometry      |
+| [Capture Frame]      |                                                                | registration source    |
+| [Import Citrus       |   live image / frozen image                                    | residual_px            |
+|  Arena Config]       |                                                                | fit_point_count        |
+| [Use Citrus          |   blue projected Citrus circle                                 | orientation_status     |
+|  Homography Seed]    |                                                                | Citrus import status   |
+| [Detect Experimental |   pink detected proposal                                       | visible zones          |
+|  Area Circle]        |   orange resolved experimental area + valid mask               | selected zone status   |
+| [Reset Fit]          |                                                                | selected geometry      |
+|                      |   transformed z0 / z1 / ... overlays                           |                        |
 +----------------------+----------------------------------------------------------------+------------------------+
 | Tools: [Pan] [Zoom] [Canvas Edit Mode: registration|selected_zone] [Toggle Labels]                                |
 +----------------------------------------------------------------------------------------------------------------+
-| [Save Dish Mask Artifact] [Save Registration Preview] [Write Snapshot Preview]                                 |
+| [Save Arena Layout Artifact] [Load Arena Layout Artifact] [Write Snapshot Preview]                             |
 +----------------------------------------------------------------------------------------------------------------+
 ```
 
@@ -112,6 +133,10 @@ Interaction model:
 
 - the center canvas is a real camera image using the existing
   `orange::ui::begin_image_canvas(...)` pattern
+- the operator may import a Citrus arena config for the selected camera before
+  doing any manual fitting
+- when Citrus homography is present, the canvas can show a projected imported
+  circle in blue and use it as a similarity-fit seed
 - the operator can auto-detect the visible experimental-area circle, then use
   `registration` mode handles to drag the experimental-area center, scale, and
   rotation until zone overlays align with visible chambers
@@ -166,15 +191,14 @@ Recommended checks:
 - registration residual below warning threshold
 - symmetric layout requires `orientation_status != ambiguous`
 
-## Recommended First UI Slice
+## Recommended Next UI/Backend Slice
 
-Keep the initial implementation narrow:
+Keep the next implementation slice narrow:
 
-1. Canonical layout authoring for circle/square dishes only.
-2. Manual dish-mask drawing on a frozen frame.
-3. Manual similarity registration to a saved layout template.
-4. Resolved overlay preview with labels and zone selection.
-5. Save JSON preview before any artifact-writing automation.
-
-That is enough to validate the schema and operator workflow before adding
-auto-fit or persistence plumbing.
+1. Preserve the current capture/detect/Citrus-import registration workflow.
+2. Add a `Write Snapshot Preview` path that serializes the accepted fit into the
+   planned `recording_snapshot.json` `calibrations[serial]` block.
+3. Preserve Citrus provenance alongside that emitted fit, either in schema or
+   in adjacent recording metadata.
+4. Only after snapshot flow is stable, expand template browsing and richer
+   multi-zone authoring.

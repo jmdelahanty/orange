@@ -276,7 +276,8 @@ Notes:
 This section documents the intended `recording_snapshot.json` surface for
 per-recording spatial calibration outputs consumed by Citrus and other
 downstream tools. This section is planned design only and is not currently
-emitted.
+emitted. The immediate Orange/Citrus slice should emit the single-circle subset
+described below first.
 
 Recommended top-level placement:
 
@@ -299,6 +300,17 @@ Recommended rules:
 - allow `dish_mask` without `arena_layout`
 - treat `layout_id` + `zone_id` as authoritative identity when `arena_layout` is
   present
+
+Immediate single-circle Citrus-fed slice:
+
+- Citrus remains the canonical owner of the selected experimental-area template
+- Orange imports the selected Citrus config for the selected camera serial
+- Orange should emit the observed circular fit as `dish_mask.runtime`
+- Orange may also emit a trivial one-zone `arena_layout.runtime` with
+  `zone_id = "z0"` so downstream Citrus/H5 consumers can already use the
+  general runtime contract shape
+- if a Citrus homography seed was accepted, `registration.source` should be
+  `imported`
 
 Suggested shape:
 
@@ -407,10 +419,96 @@ Notes:
   layout space.
 - Consumers may draw or log `runtime.zones[*].geometry` directly, but should use
   `layout_id` + `zone_id` as the stable identity.
+- For the immediate single-circle Citrus-fed path, `layout_id` may be
+  synthesized from the imported Citrus canvas/config pair, and `zone_id` should
+  remain the trivial stable identity `z0`.
+- The current schema does not yet define an explicit `citrus_template_ref`. If
+  downstream Citrus/H5 consumers need exact config/homography provenance in the
+  snapshot, add that field before freezing the contract.
 - For the broader design rationale and canonical artifact contract, see
   `docs/spatial_layout_contract.md`.
 - For field-by-field spatial payload definitions, see
   `docs/spatial_layout_schema.md`.
+
+Suggested single-circle Citrus-fed example:
+
+```json
+{
+  "calibrations": {
+    "2010093": {
+      "dish_mask": {
+        "calibration_ref": {
+          "artifact_id": "dishmask_...",
+          "artifact_schema_id": "orange.calibration.dish_mask",
+          "artifact_schema_version": 1,
+          "fingerprint": "fnv1a64:..."
+        },
+        "runtime": {
+          "schema_version": 1,
+          "enabled": true,
+          "source": "imported",
+          "geometry": {
+            "coordinate_space": "camera_native_pixels",
+            "outer_geometry": {
+              "type": "circle",
+              "cx": 1128.0,
+              "cy": 1125.0,
+              "r": 1004.0
+            },
+            "valid_geometry": {
+              "type": "circle",
+              "cx": 1128.0,
+              "cy": 1125.0,
+              "r": 992.0
+            },
+            "edge_margin_px": 12.0
+          }
+        }
+      },
+      "arena_layout": {
+        "calibration_ref": {
+          "artifact_id": "arenalayout_...",
+          "artifact_schema_id": "orange.calibration.arena_layout",
+          "artifact_schema_version": 1,
+          "fingerprint": "fnv1a64:..."
+        },
+        "runtime": {
+          "schema_version": 1,
+          "enabled": true,
+          "layout_id": "citrus_casper_arena_1",
+          "coordinate_space": "camera_native_pixels",
+          "registration": {
+            "type": "similarity",
+            "layout_coordinate_space": "layout_units",
+            "source": "imported",
+            "fit_point_count": 96,
+            "residual_px": 2.1,
+            "layout_to_camera_matrix": [
+              0.893, 0.0, 121.4,
+              0.0, 0.893, 118.2,
+              0.0, 0.0, 1.0
+            ]
+          },
+          "visible_zone_ids": ["z0"],
+          "zones": [
+            {
+              "zone_id": "z0",
+              "zone_index": 0,
+              "visibility_status": "full",
+              "geometry": {
+                "type": "circle",
+                "cx": 1128.0,
+                "cy": 1125.0,
+                "r": 1004.0
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
+```
 
 ## PTP Sync Summary schema
 

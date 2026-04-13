@@ -5,7 +5,8 @@ recordings while also exposing resolved camera-pixel overlays for each
 recording.
 
 Date anchored: 2026-04-06.
-Status: draft design, not implemented.
+Status: draft design, partially implemented in Orange UI/schema code. The
+recording-snapshot writer and Citrus/H5 consumer path are still pending.
 
 Field-level schema details now live in `docs/spatial_layout_schema.md`.
 
@@ -51,6 +52,27 @@ Recommended naming split:
 - canonical artifact name: `arena_layout`
 - per-recording resolved snapshot block: `calibrations[serial].arena_layout`
 - per-recording transform payload inside that block: `registration`
+
+## Immediate V1 Slice
+
+Although the long-term contract supports multi-zone layouts, the immediate
+Orange/Citrus integration slice should be narrower:
+
+- single circular experimental area only
+- Citrus remains the canonical owner of the selected canvas/dish definition
+- Orange imports that Citrus definition for the selected camera
+- Orange fits the current recording against that imported definition
+- Orange writes the accepted per-recording fit into `recording_snapshot.json`
+- Citrus mirrors that snapshot into H5
+
+Practical consequence:
+
+- for this slice, Orange may materialize a trivial `arena_layout` containing a
+  single circular zone `z0` so downstream consumers can exercise the same
+  runtime contract shape that later multi-zone layouts will use
+- `dish_mask` remains the observed usable circular boundary in camera pixels
+- the single-circle slice should validate ownership and snapshot flow before we
+  expand authoring around multi-zone layouts
 
 ## V1 Geometry Scope
 
@@ -250,6 +272,53 @@ image, it should:
 For current single-circle rigs, a camera-space circle approximation may still be
 acceptable when perspective distortion is small, but the mathematically correct
 cross-space model is boundary-point mapping on the calibrated plane.
+
+Current Orange UI note:
+
+- the current importer samples the Citrus projector-space circle, inverse-projects
+  those points through the homography, and fits an approximate camera-space
+  circle for preview and similarity-seed purposes
+- that approximation is a registration aid only; it is not a claim that
+  projector-space circles remain circles in raw camera pixels
+
+## Citrus Import Surface For Single-Circle V1
+
+For the current v1 slice, Orange should import a selected Citrus arena config
+and match it to the currently selected camera serial.
+
+Required Citrus fields:
+
+- `config_name`
+- `selected_dish_type_name`
+- `experimental_area_shape`
+- `experimental_area_center_x_px`
+- `experimental_area_center_y_px`
+- `experimental_area_radius_px`
+- matching `camera_calibrations[*].camera_id`
+
+Optional Citrus fields:
+
+- `experimental_area_radius_mm`
+- `camera_calibrations[*].pixels_per_mm_projector`
+
+Optional Citrus sidecar:
+
+- `<canvas>/calibration_artifacts/homography_<config_name>_<camera_id>.yml`
+
+V1 rejection rules:
+
+- reject the import if no `camera_calibrations[*].camera_id` matches the
+  selected Orange camera serial
+- reject the import if `experimental_area_shape != CIRCLE`
+- allow the import without a homography sidecar, but in that case skip the
+  homography-seed assist
+
+Next implementation step:
+
+- thread the accepted single-circle fit into `recording_snapshot.json` using the
+  existing `dish_mask.runtime` and `arena_layout.runtime` shapes
+- add an explicit `citrus_template_ref` or equivalent stable provenance field
+  before Citrus H5 consumers depend on exact config/homography identity
 
 ## Runtime Mapping Rule
 

@@ -5,7 +5,8 @@ used to describe `dish_mask`, canonical `arena_layout`, and the resolved
 per-recording camera-view overlays consumed by Citrus.
 
 Date anchored: 2026-04-06.
-Status: draft schema, not implemented.
+Status: draft schema, partially implemented in Orange code. Snapshot emission
+and Citrus-side consumption are still pending.
 
 Related documents:
 
@@ -55,6 +56,17 @@ Embedded runtime payload versions:
   projector-space circle will generally appear as an ellipse in raw camera
   pixels under a general homography, so cross-space fitting should operate on
   sampled or detected boundary points rather than only on `(cx, cy, r)`.
+- The immediate Orange/Citrus integration slice is a single circular
+  experimental area imported from Citrus for the selected camera.
+- Orange may represent that single-circle slice as both a circular `dish_mask`
+  and a trivial one-zone `arena_layout` with `zone_id = "z0"` so downstream
+  consumers can already use the general runtime contract shape.
+- The current Orange UI may use an approximate camera-space circle fit to an
+  inverse-projected Citrus contour as a preview/registration seed when
+  homography is available.
+- The current schema does not yet define an explicit `citrus_template_ref`. If
+  exact Citrus provenance must survive into H5, the schema should be extended
+  or that provenance should live elsewhere in recording metadata.
 
 ## Common Types
 
