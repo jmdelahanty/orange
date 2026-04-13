@@ -969,9 +969,10 @@ External guidance from NVIDIA support indicated the following direction:
 - `L40S` provides `3x NVENC`,
 - `L4` provides `2x NVENC`,
 - both support Split Frame Encoding (SFE),
-- NVIDIA has also developed a sample approach that can split GOP work across
-  multiple GPUs, which could be applied to `A16`, but at the cost of added
-  latency.
+- NVIDIA has also developed a sample approach (`AppEncMultiInstance`) that can
+  split GOP work across multiple encode sessions on a single GPU when that
+  device exposes multiple NVENC engines; adapting the same idea to `A16` would
+  still add latency.
 
 This guidance is consistent with the official NVIDIA documentation.
 
@@ -1038,6 +1039,39 @@ Primary sources:
 - L40S product specifications:
   https://www.nvidia.com/en-eu/data-center/l40s/
 
+## AppEncMultiInstance Clarification
+
+The NVIDIA `AppEncMultiInstance` sample should be treated as a separate
+multi-session scheduling pattern, not as another name for Ada Split Frame
+Encoding.
+
+Per NVIDIA guidance, the sample's encoder-side split-GOP behavior is:
+
+- one CUDA device with multiple NVENCs,
+- multiple independent encode sessions on that device,
+- for the `2 NVENC` case, two full GOPs in flight at a time,
+- input consumed in round robin across the encoder sessions,
+- compressed output accumulated in RAM and concatenated before file write.
+
+Important implication:
+
+- this is GOP-level work partitioning across multiple encoder sessions,
+- it is not strip-based per-frame parallelism like Ada SFE,
+- it still requires GOP buffering and therefore adds latency.
+
+For the local hardware, this distinction matters:
+
+- the local `A16` documentation in this repo already treats the board as a
+  multi-die / multi-GPU platform with separate CUDA devices,
+- the official A16 board-level `4 NVENC` number therefore should not be read as
+  proof that one `A16` CUDA device can directly run the sample's `2 NVENC`
+  single-device path,
+- on `A16`, the likely task is a cross-GPU adaptation of the idea rather than a
+  direct reuse of the sample,
+- on `RTX A6000`, applicability depends on whether that one CUDA device exposes
+  multiple NVENC engines at runtime and should be verified before assuming the
+  sample is directly usable.
+
 ## Why GOP Splitting Across GPUs Is Different
 
 The NVIDIA suggestion about splitting GOP work across multiple GPUs should be
@@ -1061,10 +1095,13 @@ Practical reading:
 
 - if the main goal is maximum single-stream speed with the least extra
   orchestration, Ada SFE is the cleaner path,
+- if the target GPU already exposes `2+ NVENC` on one CUDA device, the
+  `AppEncMultiInstance` style multi-session GOP splitter is a plausible
+  experiment,
 - if the main goal is aggregate throughput and some additional latency is
   acceptable, multi-GPU GOP splitting can be a viable architecture on `A16`.
 
-## Should We Try Multi-GPU GOP Splitting On A16
+## Should We Try GOP Splitting On A16
 
 Answer: yes, but only after the lower-risk single-GPU work is measured and
 exhausted.
@@ -1080,6 +1117,23 @@ Why it is plausible in this codebase:
 
 That means GOP-aligned partitioning and later stitching is much easier than it
 would be with long inter-GOP dependencies or frame reordering.
+
+Why it is still non-trivial in Orange:
+
+- `EncoderHwWorker` currently binds one `NvEncoderCuda` session to one
+  `camera_params_->gpu_id` and configures that session once for the life of the
+  worker,
+- `ENCODER_WORKER_ENTRY` is frame-oriented today, not GOP-oriented,
+- encoded packets are pushed immediately into a single `FFmpegWriter` queue,
+- `FFmpegWriter` assigns output PTS/DTS sequentially as packets arrive.
+
+That means a GOP-splitting prototype is not a small local change inside
+`EncodeFrame(...)`. It needs an orchestration layer that:
+
+- buffers and assigns whole GOPs to session `A` / session `B`,
+- preserves frame-id and timestamp continuity across GOP boundaries,
+- delays mux submission until prior GOP output is ready in order,
+- cleanly handles per-session flush, failure, and final concatenation.
 
 Why it should not be the first implementation target:
 
@@ -1108,13 +1162,16 @@ Recommended policy:
   - best single-GPU placement (`RTX A6000` first).
 - for maximum archival or batch-throughput recording where extra latency is
   acceptable:
-  - multi-GPU GOP splitting on `A16` is worth trying if single-GPU cleanup
-    still cannot sustain the required operating point.
+  - GOP splitting on `A16` is worth trying if single-GPU cleanup still cannot
+    sustain the required operating point.
 
 If pursued later, one design adjustment should be considered first:
 
-- shorten the GOP from the current default before evaluating multi-GPU GOP
-  splitting, so the added buffering penalty is less severe.
+- shorten the GOP from the current default before evaluating GOP splitting, so
+  the added buffering penalty is less severe.
+- first confirm whether the target path is:
+  - direct single-device multi-NVENC reuse,
+  - or cross-GPU adaptation on `A16`.
 
 ## Benchmarking Plan
 

@@ -8,6 +8,7 @@ multi-GPU options.
 See also:
 
 - `docs/nvenc_direct_input_plan.md`
+- `docs/multi_gpu_gop_splitting_design.md`
 - `docs/nvenc_benchmark_runsheet.md`
 - `docs/codec_quality_evaluation_protocol.md`
 - `docs/pre_encoder_reference_capture_plan.md`
@@ -190,13 +191,16 @@ Implementation priority should be:
 - [ ] Only keep this path if it produces a clear throughput benefit without
   unacceptable color or maintenance cost.
 
-## Phase 7: Multi-GPU GOP Splitting On A16
+## Phase 7: GOP-Splitting Prototype
 
 This phase is intentionally later.
 
 - [ ] Decide whether added latency is acceptable for the intended use case.
-- [ ] If latency is acceptable, prototype GOP-aligned work splitting across
-  multiple GPUs on `A16`.
+- [ ] Determine which problem actually exists on the target device:
+  - direct single-device multi-NVENC prototype,
+  - or cross-GPU adaptation on `A16`.
+- [ ] If latency is acceptable, prototype GOP-aligned work splitting for that
+  target path.
 - [ ] Before testing, choose a shorter GOP than the current 1-second default so
   added buffering cost is less severe.
 - [ ] Define the segment ownership and stitching model:
