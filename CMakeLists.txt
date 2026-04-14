@@ -91,8 +91,15 @@ set(DIR_IMGUI_BACKEND "${THIRD_PARTY_DIR}/imgui/backends")
 set(DIR_IMPLOT "${THIRD_PARTY_DIR}/implot")
 set(DIR_FILEBROWSER "${THIRD_PARTY_DIR}/ImGuiFileDialog")
 set(DIR_ICONFONT "${THIRD_PARTY_DIR}/IconFontCppHeaders")
+set(DIR_FLATBUFFERS "${THIRD_PARTY_DIR}/flatbuffers")
 set(DIR_NVENCODER "${SRC_DIR}/NvEncoder")
 set(DIR_NVENC_API "${CMAKE_SOURCE_DIR}/nvenc_api")
+
+if(NOT EXISTS "${DIR_FLATBUFFERS}/include/flatbuffers/flatbuffers.h")
+    message(FATAL_ERROR
+        "Missing third_party/flatbuffers. Run `git submodule update --init --recursive` "
+        "from the repo root, or use ./build.sh so the dependency is bootstrapped automatically.")
+endif()
 
 set(OPENGL_GL_PREFERENCE GLVND)
 find_package(OpenGL REQUIRED)
@@ -163,7 +170,7 @@ set(ORANGE_COMMON_INCLUDE_DIRS
     "${DIR_ICONFONT}"
     "${DIR_NVENCODER}"
     "${DIR_NVENC_API}/include"
-    "${THIRD_PARTY_DIR}/flatbuffers/include"
+    "${DIR_FLATBUFFERS}/include"
     "${ENET_INCLUDE_DIR}"
     "${GLEW_INCLUDE_DIR}"
     "${EVT_INCLUDE_DIR}"

@@ -89,6 +89,15 @@ echo "==> ORANGE_ENABLE_CUDA_DEBUG=${CUDA_DEBUG}"
 echo "==> ORANGE_ENABLE_NVTX=${NVTX_PROFILE}"
 echo "==> ORANGE_ENABLE_YOLO_PROFILE=${YOLO_PROFILE}"
 
+echo "========================================"
+echo "Bootstrapping third-party dependencies"
+echo "========================================"
+if [ -e .git ]; then
+  git submodule update --init --recursive
+else
+  echo "Skipping submodule bootstrap because this tree is not a git checkout."
+fi
+
 if [ "$CLEAN" -eq 1 ]; then
   echo "========================================"
   echo "Cleaning build directory"

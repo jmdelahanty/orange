@@ -61,7 +61,6 @@ imgui.ini
 profile/
 imgui.ini
 cuda_debug.log
-third_party/flatbuffers
 *.sqlite
 *.nsys-rep
 __pycache__/
