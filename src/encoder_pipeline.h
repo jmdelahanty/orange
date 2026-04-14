@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <cuda_runtime.h> // Add this include for cudaEvent_t
 
 struct RecordingOutputConfig {
@@ -53,6 +54,33 @@ struct EncoderControlOverrides {
     }
 };
 
+struct SplitGopWriterQueueConfig {
+    uint64_t max_packets = 0;
+    uint64_t max_bytes = 0;
+    bool fail_on_overflow = true;
+};
+
+struct SplitGopConfig {
+    bool enabled = false;
+    std::string placement = "single_gpu";
+    std::vector<int> encoder_gpu_ids;
+    std::string source_encoder_policy = "local_only";
+    std::string transfer_mode = "auto";
+    uint64_t max_inflight_gops = 0;
+    uint64_t max_buffered_bytes = 0;
+    bool strict = false;
+    SplitGopWriterQueueConfig writer_queue;
+};
+
+struct RecordingStrategyConfig {
+    std::string requested_mode = "single_session";
+    std::string mode = "single_session";
+    std::string resolution_note;
+    SplitGopConfig split_gop;
+
+    bool split_gop_enabled() const { return mode == "split_gop" && split_gop.enabled; }
+};
+
 // The lightweight struct to pass data from the preprocess worker to the hardware encoder.
 struct ENCODER_WORKER_ENTRY {
     unsigned char* d_prepared_frame;
@@ -60,6 +88,9 @@ struct ENCODER_WORKER_ENTRY {
     size_t surface_pitch = 0;
     bool direct_input = false;
     uint64_t recording_frame_id;
+    uint64_t gop_index = 0;
+    uint32_t frame_index_within_gop = 0;
+    bool is_last_frame_in_gop = false;
     uint64_t timestamp;
     uint64_t timestamp_sys;
     cudaEvent_t* preprocess_complete_event; // Add this event pointer

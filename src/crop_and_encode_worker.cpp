@@ -128,10 +128,19 @@ void CropAndEncodeWorker::flush_and_close() {
 
     if (encoder_) {
         std::vector<std::vector<uint8_t>> packets;
-        encoder_->EndEncode(packets);
-        for (auto& p : packets) {
-            // Use the next available frame ID for flushed frames
-            writer_.video->push_packet(p.data(), static_cast<int>(p.size()), ++last_frame_id_used_); // Corrected line
+        std::vector<uint64_t> output_timestamps;
+        encoder_->EndEncode(packets, nullptr, &output_timestamps);
+        for (size_t i = 0; i < packets.size(); ++i) {
+            const int64_t sample_index = i < output_timestamps.size()
+                ? static_cast<int64_t>(output_timestamps[i])
+                : static_cast<int64_t>(last_frame_id_used_);
+            writer_.video->push_packet(
+                packets[i].data(),
+                static_cast<int>(packets[i].size()),
+                sample_index);
+            last_frame_id_used_ = std::max<uint64_t>(
+                last_frame_id_used_,
+                static_cast<uint64_t>(sample_index + 1));
         }
         std::cout << "[CropAndEncodeWorker] Encoder flushed." << std::endl;
     }
@@ -292,6 +301,12 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             if (is_recording_) {
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
                 unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
+                const uint64_t zero_based_recording_frame =
+                    entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
+                NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
+                pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
+                pic_params.inputTimeStamp = zero_based_recording_frame;
+                pic_params.inputDuration = 1;
 
                 ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch, entry->d_image + (iy * entry->width + ix),
                                      entry->width, CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
@@ -301,12 +316,19 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
 
                 // Encode and write the frame to file
                 std::vector<std::vector<uint8_t>> packets;
-                encoder_->EncodeFrame(packets);
-                for (auto& p : packets) {
-                    writer_.video->push_packet(p.data(), static_cast<int>(p.size()), entry->recording_frame_id);
-                    if (entry->recording_frame_id > last_frame_id_used_) {
-                        last_frame_id_used_ = entry->recording_frame_id;
-                    }
+                std::vector<uint64_t> output_timestamps;
+                encoder_->EncodeFrame(packets, &pic_params, nullptr, &output_timestamps);
+                for (size_t i = 0; i < packets.size(); ++i) {
+                    const int64_t sample_index = i < output_timestamps.size()
+                        ? static_cast<int64_t>(output_timestamps[i])
+                        : static_cast<int64_t>(zero_based_recording_frame);
+                    writer_.video->push_packet(
+                        packets[i].data(),
+                        static_cast<int>(packets[i].size()),
+                        sample_index);
+                    last_frame_id_used_ = std::max<uint64_t>(
+                        last_frame_id_used_,
+                        static_cast<uint64_t>(sample_index + 1));
                 }
 
                 // Write metadata to file
@@ -327,17 +349,30 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             // Only encode a blank frame if recording is active
             if (is_recording_) {
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
+                const uint64_t zero_based_recording_frame =
+                    entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
+                NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
+                pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
+                pic_params.inputTimeStamp = zero_based_recording_frame;
+                pic_params.inputDuration = 1;
                 ck(cudaMemcpy2DAsync(encIn->inputPtr, encIn->pitch, d_blank_frame_,
                                      encoder_pitch_, encoder_pitch_, 256 * 3 / 2,
                                      cudaMemcpyDeviceToDevice, m_stream));
 
                 std::vector<std::vector<uint8_t>> packets;
-                encoder_->EncodeFrame(packets);
-                 for (auto& p : packets) {
-                    writer_.video->push_packet(p.data(), static_cast<int>(p.size()), entry->recording_frame_id);
-                    if (entry->recording_frame_id > last_frame_id_used_) {
-                        last_frame_id_used_ = entry->recording_frame_id;
-                    }
+                std::vector<uint64_t> output_timestamps;
+                encoder_->EncodeFrame(packets, &pic_params, nullptr, &output_timestamps);
+                 for (size_t i = 0; i < packets.size(); ++i) {
+                    const int64_t sample_index = i < output_timestamps.size()
+                        ? static_cast<int64_t>(output_timestamps[i])
+                        : static_cast<int64_t>(zero_based_recording_frame);
+                    writer_.video->push_packet(
+                        packets[i].data(),
+                        static_cast<int>(packets[i].size()),
+                        sample_index);
+                    last_frame_id_used_ = std::max<uint64_t>(
+                        last_frame_id_used_,
+                        static_cast<uint64_t>(sample_index + 1));
                 }
             }
         }

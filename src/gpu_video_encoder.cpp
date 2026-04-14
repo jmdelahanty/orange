@@ -7,6 +7,7 @@
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
+#include <algorithm>
 #include <iostream>
 #include "global.h"
 #include "NvEncoder/NvEncoder.h"
@@ -60,14 +61,24 @@ static inline void flush_and_close_writer(EncoderContext *encoder, Writer *write
     if(encoder->pEnc) {
         NVTX_RANGE_PUSH("End_Encode");
         // Flush any remaining frames from the encoder
-        encoder->pEnc->EndEncode(encoder->vPacket);
+        std::vector<uint64_t> output_timestamps;
+        encoder->pEnc->EndEncode(encoder->vPacket, nullptr, &output_timestamps);
         NVTX_RANGE_POP();
         
         NVTX_RANGE_PUSH("Flush_Remaining_Packets");
         // Write any newly flushed packets to the file
-        for (std::vector<uint8_t> &packet : encoder->vPacket)
+        for (size_t i = 0; i < encoder->vPacket.size(); ++i)
         {
-            writer->video->push_packet(packet.data(), (int)packet.size(), ++last_frame_id);
+            const int64_t sample_index = i < output_timestamps.size()
+                ? static_cast<int64_t>(output_timestamps[i])
+                : static_cast<int64_t>(last_frame_id);
+            writer->video->push_packet(
+                encoder->vPacket[i].data(),
+                (int)encoder->vPacket[i].size(),
+                sample_index);
+            last_frame_id = std::max<uint64_t>(
+                last_frame_id,
+                static_cast<uint64_t>(sample_index + 1));
         }
         encoder->vPacket.clear(); // Clear packets after writing
         NVTX_RANGE_POP();
@@ -145,13 +156,23 @@ static inline void close_writer(EncoderContext *encoder, Writer *writer, uint64_
     
     if(encoder->pEnc) {
         NVTX_RANGE_PUSH("End_Encode");
-        encoder->pEnc->EndEncode(encoder->vPacket);
+        std::vector<uint64_t> output_timestamps;
+        encoder->pEnc->EndEncode(encoder->vPacket, nullptr, &output_timestamps);
         NVTX_RANGE_POP();
         
         NVTX_RANGE_PUSH("Flush_Remaining_Packets");
-        for (std::vector<uint8_t> &packet : encoder->vPacket)
+        for (size_t i = 0; i < encoder->vPacket.size(); ++i)
         {
-            writer->video->push_packet(packet.data(), (int)packet.size(), ++last_frame_id);
+            const int64_t sample_index = i < output_timestamps.size()
+                ? static_cast<int64_t>(output_timestamps[i])
+                : static_cast<int64_t>(last_frame_id);
+            writer->video->push_packet(
+                encoder->vPacket[i].data(),
+                (int)encoder->vPacket[i].size(),
+                sample_index);
+            last_frame_id = std::max<uint64_t>(
+                last_frame_id,
+                static_cast<uint64_t>(sample_index + 1));
         }
         NVTX_RANGE_POP();
         
@@ -664,7 +685,14 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 
         NVTX_RANGE_PUSH("Hardware_Encode_Call");
         // Encode the frame
-        encoder.pEnc->EncodeFrame(encoder.vPacket);
+        const uint64_t zero_based_recording_frame =
+            entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
+        NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
+        pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
+        pic_params.inputTimeStamp = zero_based_recording_frame;
+        pic_params.inputDuration = 1;
+        std::vector<uint64_t> output_timestamps;
+        encoder.pEnc->EncodeFrame(encoder.vPacket, &pic_params, nullptr, &output_timestamps);
         NVTX_RANGE_POP();
         
         ENCODER_CTX_LOG("EncodeFrame completed successfully", entry->frame_id);
@@ -672,14 +700,22 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
 
         NVTX_RANGE_PUSH("Process_Encoded_Packets");
         // Push encoded packets to writer
-        for (std::vector<uint8_t> &packet : encoder.vPacket) {
-            writer.video->push_packet(packet.data(), (int)packet.size(), entry->recording_frame_id);
+        for (size_t i = 0; i < encoder.vPacket.size(); ++i) {
+            const int64_t sample_index = i < output_timestamps.size()
+                ? static_cast<int64_t>(output_timestamps[i])
+                : static_cast<int64_t>(zero_based_recording_frame);
+            writer.video->push_packet(
+                encoder.vPacket[i].data(),
+                (int)encoder.vPacket[i].size(),
+                sample_index);
         }
         NVTX_RANGE_POP();
 
         // Increment the recording frame ID so last_recording_frame_id_ is always the last processed frame
         // and make sure that final frames are written to the metadata file and video stream
-        last_recording_frame_id_ = entry->recording_frame_id;
+        last_recording_frame_id_ = std::max<uint64_t>(
+            last_recording_frame_id_,
+            zero_based_recording_frame + 1);
         
         NVTX_RANGE_PUSH("Write_Frame_Metadata");
         ENCODER_CTX_LOG("Writing metadata for frame", entry->recording_frame_id);
@@ -760,11 +796,21 @@ void GPUVideoEncoder::flush_and_close()
 
     if (encoder.pEnc) {
         // Flush any remaining frames from the hardware encoder
-        encoder.pEnc->EndEncode(encoder.vPacket);
-        for (std::vector<uint8_t> &packet : encoder.vPacket)
+        std::vector<uint64_t> output_timestamps;
+        encoder.pEnc->EndEncode(encoder.vPacket, nullptr, &output_timestamps);
+        for (size_t i = 0; i < encoder.vPacket.size(); ++i)
         {
             if (writer.video) {
-                writer.video->push_packet(packet.data(), (int)packet.size(), ++last_recording_frame_id_);
+                const int64_t sample_index = i < output_timestamps.size()
+                    ? static_cast<int64_t>(output_timestamps[i])
+                    : static_cast<int64_t>(last_recording_frame_id_);
+                writer.video->push_packet(
+                    encoder.vPacket[i].data(),
+                    (int)encoder.vPacket[i].size(),
+                    sample_index);
+                last_recording_frame_id_ = std::max<uint64_t>(
+                    last_recording_frame_id_,
+                    static_cast<uint64_t>(sample_index + 1));
             }
         }
         encoder.vPacket.clear();

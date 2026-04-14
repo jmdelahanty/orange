@@ -2,6 +2,7 @@
 
 #include "FFmpegWriter.h"
 #include "fsuid_guard.h"
+#include <algorithm>
 #include <unistd.h>
 #include <filesystem>
 
@@ -24,6 +25,13 @@ uint32_t read_be32(const uint8_t* data) {
            (static_cast<uint32_t>(data[2]) << 8)  |
            static_cast<uint32_t>(data[3]);
 }
+
+void update_peak(std::atomic<size_t>& peak, size_t value) {
+    size_t observed = peak.load(std::memory_order_relaxed);
+    while (value > observed &&
+           !peak.compare_exchange_weak(observed, value, std::memory_order_relaxed)) {
+    }
+}
 } // namespace
 
 FFmpegWriter::FFmpegWriter(
@@ -33,7 +41,8 @@ FFmpegWriter::FFmpegWriter(
     int nFps,
     const char *szOutFilePath,
     const char *metadata_file,
-    const std::vector<std::pair<std::string, std::string>>& metadata_tags) : nFps(nFps)
+    const std::vector<std::pair<std::string, std::string>>& metadata_tags,
+    FFmpegWriterQueueConfig queue_config) : nFps(nFps), queue_config_(queue_config)
 {
     // Ensure output files are created as the invoking user even when running under sudo.
     orange::ScopedFsuid fsuid_guard;
@@ -107,25 +116,64 @@ FFmpegWriter::~FFmpegWriter()
     }
 }
 
-void FFmpegWriter::push_packet(uint8_t* pData, int nBytes, int nPts)
+void FFmpegWriter::push_packet(uint8_t* pData, int nBytes, int64_t nPts)
 {
+    if (nBytes <= 0) {
+        return;
+    }
+
+    const size_t queued_packets = queued_packets_.load(std::memory_order_relaxed);
+    const size_t queued_bytes = queued_bytes_.load(std::memory_order_relaxed);
+    const bool packets_limited = queue_config_.max_queued_packets > 0;
+    const bool bytes_limited = queue_config_.max_queued_bytes > 0;
+    const bool exceeds_packet_limit =
+        packets_limited && queued_packets + 1 > queue_config_.max_queued_packets;
+    const bool exceeds_byte_limit =
+        bytes_limited && queued_bytes + static_cast<size_t>(nBytes) > queue_config_.max_queued_bytes;
+    if (exceeds_packet_limit || exceeds_byte_limit) {
+        const bool first_overflow = !queue_overflowed_.exchange(true, std::memory_order_relaxed);
+        queue_overflow_events_.fetch_add(1, std::memory_order_relaxed);
+        if (first_overflow) {
+            std::cerr << "FFMPEG: packet queue overflow"
+                      << " packets=" << queued_packets
+                      << " bytes=" << queued_bytes
+                      << " limit_packets=" << queue_config_.max_queued_packets
+                      << " limit_bytes=" << queue_config_.max_queued_bytes
+                      << std::endl;
+        }
+        return;
+    }
+
     AVPacket *pkt = av_packet_alloc();
     if (av_new_packet(pkt, nBytes) < 0) {
         std::cout << "Error, av_new_packet..." << std::endl;
+        av_packet_free(&pkt);
         return;
     }
     memcpy(pkt->data, pData, nBytes);
     
-    const int64_t frame_index = sequential_frame_counter_;
-    pkt->pts = av_rescale_q(sequential_frame_counter_++, AVRational{1, nFps}, vs->time_base);
+    const bool has_explicit_pts = nPts >= 0;
+    const int64_t frame_index = has_explicit_pts ? nPts : sequential_frame_counter_;
+    pkt->pts = av_rescale_q(frame_index, AVRational{1, nFps}, vs->time_base);
     pkt->dts = pkt->pts;
     pkt->stream_index = vs->index;
     pkt->duration = av_rescale_q(1, AVRational{1, nFps}, vs->time_base);
+    if (has_explicit_pts) {
+        sequential_frame_counter_ = std::max<int64_t>(sequential_frame_counter_, frame_index + 1);
+    } else {
+        sequential_frame_counter_++;
+    }
 
     if (packet_has_idr(pData, static_cast<size_t>(nBytes))) {
         pkt->flags |= AV_PKT_FLAG_KEY;
         keyframe_frames_.push_back(frame_index);
     }
+    const size_t new_packet_count = queued_packets_.fetch_add(1, std::memory_order_relaxed) + 1;
+    const size_t new_byte_count =
+        queued_bytes_.fetch_add(static_cast<size_t>(pkt->size), std::memory_order_relaxed) +
+        static_cast<size_t>(pkt->size);
+    update_peak(peak_queued_packets_, new_packet_count);
+    update_peak(peak_queued_bytes_, new_byte_count);
     m_queue.push(pkt);
 }
 
@@ -160,6 +208,8 @@ void FFmpegWriter::write_thread()
         AVPacket* pkt = nullptr;
         if (m_queue.pop(pkt)) {
             if (pkt) {
+                queued_packets_.fetch_sub(1, std::memory_order_relaxed);
+                queued_bytes_.fetch_sub(static_cast<size_t>(pkt->size), std::memory_order_relaxed);
                 write_one_pkt(pkt);
                 av_packet_free(&pkt);
             } else {

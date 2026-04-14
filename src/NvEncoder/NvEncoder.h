@@ -124,7 +124,8 @@ public:
     *  GetNextInputFrame() function.
     */
     virtual void EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams = nullptr,
-        std::vector<uint32_t>* retiredInputIndices = nullptr);
+        std::vector<uint32_t>* retiredInputIndices = nullptr,
+        std::vector<uint64_t>* outputTimeStamps = nullptr);
 
     /**
     *  @brief  This function to flush the encoder queue.
@@ -133,7 +134,9 @@ public:
     *  from the encoder. The application must call this function before destroying
     *  an encoder session.
     */
-    virtual void EndEncode(std::vector<std::vector<uint8_t>> &vPacket, std::vector<uint32_t>* retiredInputIndices = nullptr);
+    virtual void EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
+        std::vector<uint32_t>* retiredInputIndices = nullptr,
+        std::vector<uint64_t>* outputTimeStamps = nullptr);
 
     /**
     *  @brief  This function is used to query hardware encoder capabilities.
@@ -369,7 +372,9 @@ private:
     *  this may return without any output data.
     */
     void GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, std::vector<std::vector<uint8_t>> &vPacket,
-        bool bOutputDelay, std::vector<uint32_t>* retiredInputIndices = nullptr);
+        bool bOutputDelay,
+        std::vector<uint32_t>* retiredInputIndices = nullptr,
+        std::vector<uint64_t>* outputTimeStamps = nullptr);
 
     /**
     *  @brief This is a private function which is used to initialize the bitstream buffers.

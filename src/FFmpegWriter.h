@@ -7,6 +7,9 @@ extern "C"
 #include <libswresample/swresample.h>
 };
 #include <iostream>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <fstream>
 #include <thread>
 #include <string>
@@ -14,18 +17,31 @@ extern "C"
 #include <vector>
 #include "thread.h"
 
+struct FFmpegWriterQueueConfig {
+    size_t max_queued_packets = 0;
+    size_t max_queued_bytes = 0;
+};
+
 class FFmpegWriter
 {
 public:
     FFmpegWriter(AVCodecID eCodecId, int nWidth, int nHeight, int nFps, const char *szOutFilePath, const char *metadata_file,
-                 const std::vector<std::pair<std::string, std::string>>& metadata_tags = {});
+                 const std::vector<std::pair<std::string, std::string>>& metadata_tags = {},
+                 FFmpegWriterQueueConfig queue_config = {});
     ~FFmpegWriter();
-    bool write_packet(uint8_t *pData, int nBytes, int nPts);
-    void push_packet(uint8_t* pData, int nBytes, int nPts);
+    bool write_packet(uint8_t *pData, int nBytes, int64_t nPts);
+    void push_packet(uint8_t* pData, int nBytes, int64_t nPts);
     void create_thread();
     void quit_thread();
     void join_thread();
     void write_one_pkt(AVPacket* pkt); 
+    bool has_queue_overflowed() const { return queue_overflowed_.load(std::memory_order_relaxed); }
+    uint64_t queue_overflow_events() const { return queue_overflow_events_.load(std::memory_order_relaxed); }
+    size_t queued_packets() const { return queued_packets_.load(std::memory_order_relaxed); }
+    size_t queued_bytes() const { return queued_bytes_.load(std::memory_order_relaxed); }
+    size_t peak_queued_packets() const { return peak_queued_packets_.load(std::memory_order_relaxed); }
+    size_t peak_queued_bytes() const { return peak_queued_bytes_.load(std::memory_order_relaxed); }
+    const FFmpegWriterQueueConfig& queue_config() const { return queue_config_; }
 private:
     AVFormatContext *oc = NULL;
     AVStream *vs = NULL;
@@ -34,10 +50,17 @@ private:
     std::ofstream *metadata;
     SafeQueue<AVPacket*> m_queue; // Queue for packets to be written
     std::thread m_thread;
-    int sequential_frame_counter_ = 0; // Counter for sequential frame numbers
+    int64_t sequential_frame_counter_ = 0; // Counter for sequential frame numbers
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
     std::string keyframe_file_;
     std::vector<int64_t> keyframe_frames_;
+    FFmpegWriterQueueConfig queue_config_;
+    std::atomic<size_t> queued_packets_{0};
+    std::atomic<size_t> queued_bytes_{0};
+    std::atomic<size_t> peak_queued_packets_{0};
+    std::atomic<size_t> peak_queued_bytes_{0};
+    std::atomic<bool> queue_overflowed_{false};
+    std::atomic<uint64_t> queue_overflow_events_{0};
     void write_thread();
     void write_keyframe_sidecar();
     bool packet_has_idr(const uint8_t* data, size_t size) const;

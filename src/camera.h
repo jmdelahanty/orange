@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <vector>
 #include <numeric>
+#include "encoder_pipeline.h"
 
 struct CameraGpioNodeConfig {
     std::string name;
@@ -60,6 +61,7 @@ struct CameraParams{
     std::string trigger_activation = "RisingEdge";
     std::string ptp_mode;
     std::vector<CameraGpioNodeConfig> gpio_nodes;
+    RecordingStrategyConfig recording_strategy;
     unsigned int gain_max; 
     unsigned int gain_min;
     unsigned int gain_inc;

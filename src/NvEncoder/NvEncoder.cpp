@@ -397,9 +397,12 @@ void NvEncoder::MapResources(uint32_t bfrIdx)
 }
 
 void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams,
-    std::vector<uint32_t>* retiredInputIndices)
+    std::vector<uint32_t>* retiredInputIndices, std::vector<uint64_t>* outputTimeStamps)
 {
     vPacket.clear();
+    if (outputTimeStamps) {
+        outputTimeStamps->clear();
+    }
     if (!IsHWEncoderInitialized())
     {
         NVENC_THROW_ERROR("Encoder device not found", NV_ENC_ERR_NO_ENCODE_DEVICE);
@@ -414,7 +417,7 @@ void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_P
     if (nvStatus == NV_ENC_SUCCESS || nvStatus == NV_ENC_ERR_NEED_MORE_INPUT)
     {
         m_iToSend++;
-        GetEncodedPacket(m_vBitstreamOutputBuffer, vPacket, true, retiredInputIndices);
+        GetEncodedPacket(m_vBitstreamOutputBuffer, vPacket, true, retiredInputIndices, outputTimeStamps);
     }
     else
     {
@@ -507,9 +510,14 @@ void NvEncoder::SendEOS()
     NVENC_API_CALL(m_nvenc.nvEncEncodePicture(m_hEncoder, &picParams));
 }
 
-void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket, std::vector<uint32_t>* retiredInputIndices)
+void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
+    std::vector<uint32_t>* retiredInputIndices,
+    std::vector<uint64_t>* outputTimeStamps)
 {
     vPacket.clear();
+    if (outputTimeStamps) {
+        outputTimeStamps->clear();
+    }
     if (!IsHWEncoderInitialized())
     {
         NVENC_THROW_ERROR("Encoder device not initialized", NV_ENC_ERR_ENCODER_NOT_INITIALIZED);
@@ -517,11 +525,11 @@ void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket, std::vecto
 
     SendEOS();
 
-    GetEncodedPacket(m_vBitstreamOutputBuffer, vPacket, false, retiredInputIndices);
+    GetEncodedPacket(m_vBitstreamOutputBuffer, vPacket, false, retiredInputIndices, outputTimeStamps);
 }
 
 void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, std::vector<std::vector<uint8_t>> &vPacket,
-    bool bOutputDelay, std::vector<uint32_t>* retiredInputIndices)
+    bool bOutputDelay, std::vector<uint32_t>* retiredInputIndices, std::vector<uint64_t>* outputTimeStamps)
 {
     unsigned i = 0;
     int iEnd = bOutputDelay ? m_iToSend - m_nOutputDelay : m_iToSend;
@@ -540,6 +548,9 @@ void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, 
         }
         vPacket[i].clear();
         vPacket[i].insert(vPacket[i].end(), &pData[0], &pData[lockBitstreamData.bitstreamSizeInBytes]);
+        if (outputTimeStamps) {
+            outputTimeStamps->push_back(lockBitstreamData.outputTimeStamp);
+        }
         i++;
 
         NVENC_API_CALL(m_nvenc.nvEncUnlockBitstream(m_hEncoder, lockBitstreamData.outputBitstream));

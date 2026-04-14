@@ -88,6 +88,7 @@ private:
     bool ensure_pre_encoder_reference_staging_slots(size_t frame_size, std::string* error_out);
     void initialize_importance_map();
     bool importance_map_active() const;
+    void refresh_writer_queue_metrics();
 
     struct ReferenceCaptureStagingSlot {
         unsigned char* host_buffer = nullptr;
@@ -165,6 +166,7 @@ private:
         nlohmann::json gpu = nlohmann::json::object();
         nlohmann::json resolved_config = nlohmann::json::object();
         bool color = false;
+        RecordingStrategyConfig recording_strategy;
     };
 
     CameraParams* camera_params_;
@@ -185,6 +187,8 @@ private:
     bool pre_encoder_reference_async_enabled_ = false;
     int quality_value_ = 20;
     int gop_length_ = 0;
+    uint32_t recording_gop_length_ = 1;
+    RecordingStrategyConfig recording_strategy_config_;
     Writer writer_;
     PreEncoderReferenceWriter pre_encoder_reference_writer_;
     std::vector<ReferenceCaptureStagingSlot> pre_encoder_reference_staging_slots_;
@@ -199,6 +203,10 @@ private:
     bool is_recording_ = false; // Tracks the local recording state of this worker
     bool encoder_snapshot_valid_ = false;
     EncoderSnapshotInfo encoder_snapshot_;
+    bool writer_queue_overflowed_ = false;
+    uint64_t writer_queue_overflow_events_ = 0;
+    size_t writer_queue_peak_packets_ = 0;
+    size_t writer_queue_peak_bytes_ = 0;
 
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;
