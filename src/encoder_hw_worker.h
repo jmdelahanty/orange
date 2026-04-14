@@ -9,6 +9,7 @@
 #include <chrono>
 #include <deque>
 #include <fstream>
+#include <map>
 #include "encoder_pipeline.h"
 #include "json.hpp"
 #include "pre_encoder_reference_writer.h"
@@ -89,6 +90,14 @@ private:
     void initialize_importance_map();
     bool importance_map_active() const;
     void refresh_writer_queue_metrics();
+    void reset_pending_gop_state();
+    void buffer_encoded_packets(const std::vector<std::vector<uint8_t>>& packets,
+                                const std::vector<uint64_t>& output_timestamps,
+                                int64_t fallback_sample_index,
+                                uint64_t completion_gop_index,
+                                bool mark_complete);
+    void flush_pending_gops(bool flush_all);
+    int64_t oldest_pending_gop_age_ms() const;
 
     struct ReferenceCaptureStagingSlot {
         unsigned char* host_buffer = nullptr;
@@ -103,6 +112,20 @@ private:
         size_t frame_size = 0;
         std::vector<uint32_t> retired_slots;
         bool slot_submitted = false;
+    };
+
+    struct BufferedEncodedPacket {
+        std::vector<uint8_t> bytes;
+        int64_t sample_index = -1;
+    };
+
+    struct PendingGop {
+        uint64_t gop_index = 0;
+        uint32_t frame_count = 0;
+        bool complete = false;
+        size_t total_bytes = 0;
+        std::chrono::steady_clock::time_point created_at = std::chrono::steady_clock::now();
+        std::vector<BufferedEncodedPacket> packets;
     };
 
     struct EncoderSnapshotInfo {
@@ -207,6 +230,13 @@ private:
     uint64_t writer_queue_overflow_events_ = 0;
     size_t writer_queue_peak_packets_ = 0;
     size_t writer_queue_peak_bytes_ = 0;
+    std::map<uint64_t, PendingGop> pending_gops_;
+    uint64_t next_gop_to_flush_ = 0;
+    size_t pending_gop_buffered_bytes_ = 0;
+    size_t pending_gop_peak_count_ = 0;
+    size_t pending_gop_peak_bytes_ = 0;
+    bool pending_gop_overflowed_ = false;
+    uint64_t pending_gop_overflow_events_ = 0;
 
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;
