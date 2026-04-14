@@ -38,6 +38,7 @@ public:
     EncoderHwWorker(
         const char* name,
         CameraParams* camera_params,
+        int encode_gpu_id,
         const RecordingOutputConfig& recording_output_config,
         const std::string& codec,
         const std::string& preset,
@@ -62,6 +63,7 @@ public:
     uint64_t get_encode_failures() const { return encode_failures_.load(); }
     uint64_t get_slow_frames() const { return slow_frames_.load(); }
     int get_queue_depth() const { return const_cast<EncoderHwWorker*>(this)->GetCountQueueInSize(); }
+    int encode_gpu_id() const { return encode_gpu_id_; }
     bool direct_input_enabled() const { return direct_input_enabled_; }
     int encoder_input_pitch() const { return encoder_input_pitch_; }
     int encoder_buffer_count() const { return encoder_buffer_count_; }
@@ -185,6 +187,8 @@ private:
         uint32_t importance_map_roi_size_px = 0;
         int importance_map_inside_delta = 0;
         int importance_map_outside_delta = 0;
+        int source_gpu_id = -1;
+        int encode_gpu_id = -1;
         int gpu_id = -1;
         nlohmann::json gpu = nlohmann::json::object();
         nlohmann::json resolved_config = nlohmann::json::object();
@@ -193,6 +197,7 @@ private:
     };
 
     CameraParams* camera_params_;
+    int encode_gpu_id_;
     RecordingOutputConfig recording_output_config_;
     std::string base_folder_name_;
     std::string codec_;

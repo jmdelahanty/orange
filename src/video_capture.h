@@ -31,6 +31,7 @@ typedef struct {
     uint64_t recording_frame_id;
     uint64_t ipc_frame_id;
     uint64_t timestamp_sys;
+    int image_gpu_id = -1;
     
     // YOLO detection fields
     std::vector<pose::Object> detections;
@@ -140,6 +141,7 @@ struct CameraResources {
         for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
+            worker_entry_pool[i].image_gpu_id = gpu_id;
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
             worker_entry_pool[i].ipc_frame_id = 0;

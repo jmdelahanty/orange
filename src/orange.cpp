@@ -3694,6 +3694,7 @@ int main(int argc, char **args) {
                                 }
                                 recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
                                     &cameras_params[i],
+                                    cameras_params[i].gpu_id,
                                     recording_output_config,
                                     encoder_config->encoder_codec,
                                     encoder_config->encoder_preset,

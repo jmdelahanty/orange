@@ -10,6 +10,7 @@
 #include <cuda_runtime.h>
 #include <atomic>
 #include <chrono>
+#include <set>
 #include <vector>
 
 class EncoderHwWorker; // Forward declaration is sufficient here
@@ -20,6 +21,7 @@ public:
     EncoderPreprocessWorker(
         const char* name,
         CameraParams* cam_params,
+        int preprocess_gpu_id,
         const RecordingOutputConfig& recording_output_config,
         bool direct_input_enabled,
         int encoder_pitch,
@@ -49,6 +51,7 @@ public:
     uint64_t get_hw_slow_frames() const;
     int get_hw_queue_depth() const;
     bool IsDrained();
+    int preprocess_gpu_id() const { return preprocess_gpu_id_; }
     bool direct_input_enabled() const { return direct_input_enabled_; }
     int direct_input_pitch() const { return direct_input_pitch_; }
     int direct_input_slot_count() const { return direct_input_slot_count_; }
@@ -58,7 +61,9 @@ protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
 
 private:
+    bool ensure_peer_access_enabled(int source_gpu_id);
     CameraParams* camera_params_;
+    int preprocess_gpu_id_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue_;
     CameraControl* camera_control_;
     cudaStream_t m_stream;
@@ -66,6 +71,7 @@ private:
 
     FrameGPU frame_original_gpu_;
     Debayer debayer_gpu_;
+    unsigned char* d_input_staging_;
     unsigned char* d_rgba_resize_;
     unsigned char* d_uv_default_plane_;
     bool direct_input_enabled_;
@@ -84,6 +90,7 @@ private:
     std::vector<ENCODER_WORKER_ENTRY> encoder_entry_pool_;
     std::vector<cudaEvent_t> event_pool_;
     std::vector<void*> direct_input_surfaces_;
+    std::set<int> peer_access_enabled_gpus_;
     
     // Performance monitoring members
     std::chrono::steady_clock::time_point last_fps_update_time_;

@@ -867,6 +867,7 @@ static inline void write_metadata_hw(std::ofstream *metadata, unsigned long long
 EncoderHwWorker::EncoderHwWorker(
     const char* name,
     CameraParams* camera_params,
+    int encode_gpu_id,
     const RecordingOutputConfig& recording_output_config,
     const std::string& codec,
     const std::string& preset,
@@ -883,6 +884,7 @@ EncoderHwWorker::EncoderHwWorker(
 )
 : CThreadWorker(name),
   camera_params_(camera_params),
+  encode_gpu_id_(encode_gpu_id >= 0 ? encode_gpu_id : camera_params->gpu_id),
   recording_output_config_(recording_output_config),
   base_folder_name_(base_folder_name),
   codec_(codec),
@@ -913,7 +915,7 @@ EncoderHwWorker::EncoderHwWorker(
     pre_encoder_reference_async_enabled_ =
         pre_encoder_reference_capture_config_.enabled && !direct_input_enabled_;
 
-    ck(cudaSetDevice(camera_params_->gpu_id));
+    ck(cudaSetDevice(encode_gpu_id_));
     ck(cudaStreamCreate(&m_stream));
     if (pre_encoder_reference_capture_config_.enabled) {
         ck(cudaStreamCreate(&pre_encoder_reference_stream_));
@@ -1100,8 +1102,10 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.requested_importance_map_mode = importance_map_config_.mode;
         encoder_snapshot_.requested_importance_map_roi_size_px = importance_map_config_.roi_size_px;
         encoder_snapshot_.qp_map_mode = resolved_config.rcParams.qpMapMode;
-        encoder_snapshot_.gpu_id = camera_params_->gpu_id;
-        encoder_snapshot_.gpu = build_gpu_runtime_info(camera_params_->gpu_id);
+        encoder_snapshot_.source_gpu_id = camera_params_->gpu_id;
+        encoder_snapshot_.encode_gpu_id = encode_gpu_id_;
+        encoder_snapshot_.gpu_id = encode_gpu_id_;
+        encoder_snapshot_.gpu = build_gpu_runtime_info(encode_gpu_id_);
         encoder_snapshot_.resolved_config = build_resolved_encoder_config_json(
             resolved_params,
             resolved_config,
@@ -1774,6 +1778,8 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     info["codec"] = encoder_snapshot_.codec;
     info["preset"] = encoder_snapshot_.preset;
     info["tuning"] = encoder_snapshot_.tuning;
+    info["source_gpu_id"] = encoder_snapshot_.source_gpu_id;
+    info["encode_gpu_id"] = encoder_snapshot_.encode_gpu_id;
     info["gpu_id"] = encoder_snapshot_.gpu_id;
     info["gpu"] = encoder_snapshot_.gpu;
     info["color"] = encoder_snapshot_.color;
@@ -2064,6 +2070,11 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         recycle_encoder_entry(entry, {}, false);
         return false;
     }
+    if (entry->surface_gpu_id >= 0 && entry->surface_gpu_id != encode_gpu_id_) {
+        throw std::runtime_error(
+            "Encoder worker on GPU " + std::to_string(encode_gpu_id_) +
+            " received a prepared frame resident on GPU " + std::to_string(entry->surface_gpu_id));
+    }
 
     const uint64_t zero_based_recording_frame =
         entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
@@ -2083,7 +2094,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         last_fps_update_time_ = now;
     }
 
-    ck(cudaSetDevice(camera_params_->gpu_id));
+    ck(cudaSetDevice(encode_gpu_id_));
     std::vector<uint32_t> retired_slots;
     bool capture_scheduled = false;
     size_t capture_staging_slot = 0;

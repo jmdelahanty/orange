@@ -16,6 +16,7 @@ class ModernRecordingPipeline {
 public:
     ModernRecordingPipeline(
         CameraParams* camera_params,
+        int recording_gpu_id,
         const RecordingOutputConfig& recording_output_config,
         const std::string& codec,
         const std::string& preset,
@@ -41,6 +42,7 @@ public:
     const RecordingOutputConfig& recording_output_config() const { return recording_output_config_; }
 
     CameraParams* camera_params_ = nullptr;
+    int recording_gpu_id_ = -1;
     RecordingOutputConfig recording_output_config_;
     std::unique_ptr<EncoderPreprocessWorker> preprocess_worker_;
     std::unique_ptr<EncoderHwWorker> hw_worker_;

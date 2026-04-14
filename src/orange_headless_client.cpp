@@ -1821,6 +1821,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             for (int idx : selected_indices) {
                 recording_pipelines[idx] = std::make_unique<ModernRecordingPipeline>(
                     &cameras_params[idx],
+                    cameras_params[idx].gpu_id,
                     build_native_recording_output_config(cameras_params[idx]),
                     encoder_settings.codec,
                     encoder_settings.preset,

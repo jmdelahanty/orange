@@ -32,6 +32,7 @@ void check_npp_status(NppStatus status, const char* operation)
 EncoderPreprocessWorker::EncoderPreprocessWorker(
     const char* name,
     CameraParams* cam_params,
+    int preprocess_gpu_id,
     const RecordingOutputConfig& recording_output_config,
     bool direct_input_enabled,
     int encoder_pitch,
@@ -41,10 +42,12 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
 )
     : CThreadWorker(name),
       camera_params_(cam_params),
+      preprocess_gpu_id_(preprocess_gpu_id >= 0 ? preprocess_gpu_id : cam_params->gpu_id),
       m_recycle_queue_(recycle_queue),
       camera_control_(camera_control),
       m_stream(nullptr),
       m_hw_worker_(nullptr),
+      d_input_staging_(nullptr),
       d_rgba_resize_(nullptr),
       d_uv_default_plane_(nullptr),
       direct_input_enabled_(direct_input_enabled),
@@ -60,7 +63,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
       resize_output_roi_{0, 0, output_width_, output_height_},
       last_fps_update_time_(std::chrono::steady_clock::now())  // Initialize FPS timer
 {
-    ck(cudaSetDevice(camera_params_->gpu_id));
+    ck(cudaSetDevice(preprocess_gpu_id_));
     ck(cudaStreamCreate(&m_stream));
 
     if (direct_input_enabled_ && direct_input_slot_count_ <= 0) {
@@ -132,7 +135,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
 
 EncoderPreprocessWorker::~EncoderPreprocessWorker()
 {
-    ck(cudaSetDevice(camera_params_->gpu_id));
+    ck(cudaSetDevice(preprocess_gpu_id_));
     if (m_stream) cudaStreamDestroy(m_stream);
 
     // Free all buffers in the pool
@@ -150,6 +153,7 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
     }
     direct_input_surfaces_.clear();
 
+    if (d_input_staging_) cudaFree(d_input_staging_);
     if (d_rgba_resize_) cudaFree(d_rgba_resize_);
     if (d_uv_default_plane_) cudaFree(d_uv_default_plane_);
     if (debayer_gpu_.d_debayer) cudaFree(debayer_gpu_.d_debayer);
@@ -192,6 +196,36 @@ bool EncoderPreprocessWorker::IsDrained()
            (GetCountQueueInSize() == 0);
 }
 
+bool EncoderPreprocessWorker::ensure_peer_access_enabled(int source_gpu_id)
+{
+    if (source_gpu_id < 0 || source_gpu_id == preprocess_gpu_id_) {
+        return true;
+    }
+    if (peer_access_enabled_gpus_.count(source_gpu_id) > 0) {
+        return true;
+    }
+
+    int can_access_peer = 0;
+    ck(cudaDeviceCanAccessPeer(&can_access_peer, preprocess_gpu_id_, source_gpu_id));
+    if (!can_access_peer) {
+        return false;
+    }
+
+    ck(cudaSetDevice(preprocess_gpu_id_));
+    cudaError_t enable_status = cudaDeviceEnablePeerAccess(source_gpu_id, 0);
+    if (enable_status == cudaErrorPeerAccessAlreadyEnabled) {
+        cudaGetLastError();
+    } else if (enable_status != cudaSuccess) {
+        throw std::runtime_error(
+            "Failed to enable CUDA peer access from GPU " + std::to_string(preprocess_gpu_id_) +
+            " to GPU " + std::to_string(source_gpu_id) + ": " +
+            cudaGetErrorString(enable_status));
+    }
+
+    peer_access_enabled_gpus_.insert(source_gpu_id);
+    return true;
+}
+
 bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 {
     auto start_time = std::chrono::steady_clock::now();
@@ -228,7 +262,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         last_fps_update_time_ = now;
     }
 
-    ck(cudaSetDevice(camera_params_->gpu_id));
+    ck(cudaSetDevice(preprocess_gpu_id_));
     EnsureNppStream(m_stream);
 
 #if PIPELINE_PROFILE
@@ -264,14 +298,14 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     static thread_local EncProfileEvents enc_prof_events;
     static thread_local bool enc_prof_inflight = false;
     static thread_local int enc_prof_count = 0;
-    enc_prof_events.Init(camera_params_->gpu_id);
+    enc_prof_events.Init(preprocess_gpu_id_);
     if (enc_prof_inflight) {
         cudaError_t enc_status = cudaEventQuery(enc_prof_events.end);
         if (enc_status == cudaSuccess) {
             float enc_ms = 0.0f;
             ck(cudaEventElapsedTime(&enc_ms, enc_prof_events.start, enc_prof_events.end));
             std::cout << "[ENC_PRE_TIME] Cam " << camera_params_->camera_serial
-                      << " GPU " << camera_params_->gpu_id
+                      << " GPU " << preprocess_gpu_id_
                       << " ms=" << enc_ms
                       << " q=" << GetCountQueueInSize()
                       << std::endl;
@@ -334,6 +368,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     encoder_entry->slot_id = direct_input_slot_id;
     encoder_entry->direct_input = direct_input_enabled_;
     encoder_entry->surface_pitch = static_cast<size_t>(direct_input_enabled_ ? direct_input_pitch_ : encoder_pitch_);
+    encoder_entry->surface_gpu_id = preprocess_gpu_id_;
     if (direct_input_enabled_) {
         encoder_entry->d_prepared_frame = static_cast<unsigned char*>(direct_input_surfaces_[static_cast<size_t>(direct_input_slot_id)]);
     }
@@ -354,10 +389,31 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
     }
 
+    unsigned char* input_source = entry->d_image;
+    if (entry->image_gpu_id >= 0 && entry->image_gpu_id != preprocess_gpu_id_) {
+        if (!ensure_peer_access_enabled(entry->image_gpu_id)) {
+            throw std::runtime_error(
+                "Cross-GPU preprocess requested from source GPU " +
+                std::to_string(entry->image_gpu_id) + " to preprocess GPU " +
+                std::to_string(preprocess_gpu_id_) + ", but peer access is unavailable");
+        }
+        if (!d_input_staging_) {
+            ck(cudaMalloc(&d_input_staging_, static_cast<size_t>(frame_original_gpu_.size_pic)));
+        }
+        ck(cudaMemcpyPeerAsync(
+            d_input_staging_,
+            preprocess_gpu_id_,
+            entry->d_image,
+            entry->image_gpu_id,
+            static_cast<size_t>(frame_original_gpu_.size_pic),
+            m_stream));
+        input_source = d_input_staging_;
+    }
+
     // --- Perform the copy and color conversion ---
     if (camera_params_->color) {
         // Full Color Pipeline: RAW -> RGBA -> NV12
-        frame_original_gpu_.d_orig = entry->d_image;
+        frame_original_gpu_.d_orig = input_source;
         
         // 1. Debayer RAW Bayer to RGBA
         debayer_frame_gpu(camera_params_, &frame_original_gpu_, &debayer_gpu_);
@@ -396,7 +452,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         if (recording_output_config_.resize_enabled) {
             check_npp_status(
                 nppiResize_8u_C1R(
-                    entry->d_image,
+                    input_source,
                     static_cast<int>(camera_params_->width),
                     resize_source_size_,
                     resize_source_roi_,
@@ -410,7 +466,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             ck(cudaMemcpy2DAsync(
                 d_y_plane_dst,
                 encoder_entry->surface_pitch,
-                entry->d_image,
+                input_source,
                 camera_params_->width,
                 output_width_,
                 output_height_,

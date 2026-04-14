@@ -87,6 +87,7 @@ struct ENCODER_WORKER_ENTRY {
     int slot_id = -1;
     size_t surface_pitch = 0;
     bool direct_input = false;
+    int surface_gpu_id = -1;
     uint64_t recording_frame_id;
     uint64_t gop_index = 0;
     uint32_t frame_index_within_gop = 0;

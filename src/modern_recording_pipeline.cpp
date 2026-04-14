@@ -9,6 +9,7 @@
 
 ModernRecordingPipeline::ModernRecordingPipeline(
     CameraParams* camera_params,
+    int recording_gpu_id,
     const RecordingOutputConfig& recording_output_config,
     const std::string& codec,
     const std::string& preset,
@@ -24,12 +25,14 @@ ModernRecordingPipeline::ModernRecordingPipeline(
     const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
 )
     : camera_params_(camera_params),
+      recording_gpu_id_(recording_gpu_id >= 0 ? recording_gpu_id : camera_params->gpu_id),
       recording_output_config_(recording_output_config)
 {
     const std::string hw_encoder_name = "HW_Encoder_Cam_" + camera_params_->camera_serial;
     hw_worker_ = std::make_unique<EncoderHwWorker>(
         hw_encoder_name.c_str(),
         camera_params_,
+        recording_gpu_id_,
         recording_output_config_,
         codec,
         preset,
@@ -48,6 +51,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
     preprocess_worker_ = std::make_unique<EncoderPreprocessWorker>(
         preprocess_name.c_str(),
         camera_params_,
+        recording_gpu_id_,
         recording_output_config_,
         hw_worker_->direct_input_enabled(),
         hw_worker_->encoder_input_pitch(),
