@@ -64,6 +64,8 @@ public:
     uint64_t get_slow_frames() const { return slow_frames_.load(); }
     int get_queue_depth() const { return const_cast<EncoderHwWorker*>(this)->GetCountQueueInSize(); }
     int encode_gpu_id() const { return encode_gpu_id_; }
+    uint32_t recording_gop_length() const { return recording_gop_length_; }
+    const RecordingStrategyConfig& recording_strategy_config() const { return recording_strategy_config_; }
     bool direct_input_enabled() const { return direct_input_enabled_; }
     int encoder_input_pitch() const { return encoder_input_pitch_; }
     int encoder_buffer_count() const { return encoder_buffer_count_; }

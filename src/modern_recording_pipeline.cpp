@@ -62,7 +62,12 @@ ModernRecordingPipeline::ModernRecordingPipeline(
 
     preprocess_worker_->SetHwWorker(hw_worker_.get());
     hw_worker_->SetPreprocessWorker(preprocess_worker_.get());
-    recording_ingress_ = std::make_unique<RecordingIngress>(preprocess_worker_.get());
+    recording_ingress_ = std::make_unique<RecordingIngress>(
+        preprocess_worker_.get(),
+        camera_params_->gpu_id,
+        hw_worker_->encode_gpu_id(),
+        hw_worker_->recording_gop_length(),
+        hw_worker_->recording_strategy_config());
 }
 
 ModernRecordingPipeline::~ModernRecordingPipeline()
