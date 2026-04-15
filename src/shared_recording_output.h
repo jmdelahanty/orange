@@ -24,6 +24,13 @@ struct RecordingMetadataRow {
     uint64_t timestamp_sys = 0;
 };
 
+struct RecordingOutputTimingSample {
+    bool has_source_to_helper_copy = false;
+    uint64_t source_to_helper_copy_ns = 0;
+    bool has_bitstream_fetch = false;
+    uint64_t bitstream_fetch_ns = 0;
+};
+
 struct SharedRecordingOutputStats {
     bool is_open = false;
     bool writer_queue_overflowed = false;
@@ -49,6 +56,10 @@ struct SharedRecordingOutputStats {
     bool pending_gop_overflow_frontier_present = false;
     bool pending_gop_overflow_frontier_complete = false;
     std::vector<uint64_t> pending_gop_overflow_pending_keys;
+    LatencyAggregateStats source_to_helper_copy;
+    LatencyAggregateStats bitstream_fetch;
+    LatencyAggregateStats gop_hold_before_release;
+    FFmpegWriterLatencyStats writer_latency;
 };
 
 struct SharedRecordingOutputOpenParams {
@@ -73,7 +84,8 @@ public:
                              int64_t fallback_sample_index,
                              uint64_t completion_gop_index,
                              bool mark_complete,
-                             const std::optional<RecordingMetadataRow>& metadata_row);
+                             const std::optional<RecordingMetadataRow>& metadata_row,
+                             const std::optional<RecordingOutputTimingSample>& timing_sample);
     bool close_worker_session(bool request_close_when_idle);
     void close();
     SharedRecordingOutputStats stats() const;
@@ -92,6 +104,7 @@ private:
         bool complete = false;
         size_t total_bytes = 0;
         std::chrono::steady_clock::time_point created_at = std::chrono::steady_clock::now();
+        uint64_t completed_at_ns = 0;
         std::vector<BufferedEncodedPacket> packets;
         std::vector<RecordingMetadataRow> metadata_rows;
     };
@@ -103,7 +116,8 @@ private:
                                int64_t fallback_sample_index,
                                uint64_t completion_gop_index,
                                bool mark_complete,
-                               const std::optional<RecordingMetadataRow>& metadata_row);
+                               const std::optional<RecordingMetadataRow>& metadata_row,
+                               const std::optional<RecordingOutputTimingSample>& timing_sample);
     void flush_pending_gops_locked(bool flush_all);
     void refresh_writer_queue_metrics_locked();
     void write_metadata_row_locked(const RecordingMetadataRow& metadata_row);
@@ -144,6 +158,10 @@ private:
     uint64_t writer_queue_overflow_events_ = 0;
     size_t writer_queue_peak_packets_ = 0;
     size_t writer_queue_peak_bytes_ = 0;
+    LatencyAggregateStats source_to_helper_copy_latency_;
+    LatencyAggregateStats bitstream_fetch_latency_;
+    LatencyAggregateStats gop_hold_before_release_latency_;
+    FFmpegWriterLatencyStats writer_latency_stats_;
 };
 
 #endif // ORANGE_SHARED_RECORDING_OUTPUT_H

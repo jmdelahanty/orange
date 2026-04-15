@@ -11,6 +11,8 @@
 
 #include "NvEncoder.h"
 
+#include <chrono>
+
 #ifndef _WIN32
 #include <cstring>
 static inline bool operator==(const GUID &guid1, const GUID &guid2) {
@@ -396,8 +398,11 @@ void NvEncoder::MapResources(uint32_t bfrIdx)
     }
 }
 
-void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams,
-    std::vector<uint32_t>* retiredInputIndices, std::vector<uint64_t>* outputTimeStamps)
+void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket,
+    NV_ENC_PIC_PARAMS *pPicParams,
+    std::vector<uint32_t>* retiredInputIndices,
+    std::vector<uint64_t>* outputTimeStamps,
+    uint64_t* bitstreamFetchDurationNs)
 {
     vPacket.clear();
     if (outputTimeStamps) {
@@ -417,7 +422,13 @@ void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_P
     if (nvStatus == NV_ENC_SUCCESS || nvStatus == NV_ENC_ERR_NEED_MORE_INPUT)
     {
         m_iToSend++;
-        GetEncodedPacket(m_vBitstreamOutputBuffer, vPacket, true, retiredInputIndices, outputTimeStamps);
+        GetEncodedPacket(
+            m_vBitstreamOutputBuffer,
+            vPacket,
+            true,
+            retiredInputIndices,
+            outputTimeStamps,
+            bitstreamFetchDurationNs);
     }
     else
     {
@@ -512,11 +523,15 @@ void NvEncoder::SendEOS()
 
 void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
     std::vector<uint32_t>* retiredInputIndices,
-    std::vector<uint64_t>* outputTimeStamps)
+    std::vector<uint64_t>* outputTimeStamps,
+    uint64_t* bitstreamFetchDurationNs)
 {
     vPacket.clear();
     if (outputTimeStamps) {
         outputTimeStamps->clear();
+    }
+    if (bitstreamFetchDurationNs) {
+        *bitstreamFetchDurationNs = 0;
     }
     if (!IsHWEncoderInitialized())
     {
@@ -525,17 +540,29 @@ void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
 
     SendEOS();
 
-    GetEncodedPacket(m_vBitstreamOutputBuffer, vPacket, false, retiredInputIndices, outputTimeStamps);
+    GetEncodedPacket(
+        m_vBitstreamOutputBuffer,
+        vPacket,
+        false,
+        retiredInputIndices,
+        outputTimeStamps,
+        bitstreamFetchDurationNs);
 }
 
-void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, std::vector<std::vector<uint8_t>> &vPacket,
-    bool bOutputDelay, std::vector<uint32_t>* retiredInputIndices, std::vector<uint64_t>* outputTimeStamps)
+void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer,
+    std::vector<std::vector<uint8_t>> &vPacket,
+    bool bOutputDelay,
+    std::vector<uint32_t>* retiredInputIndices,
+    std::vector<uint64_t>* outputTimeStamps,
+    uint64_t* bitstreamFetchDurationNs)
 {
+    uint64_t totalFetchDurationNs = 0;
     unsigned i = 0;
     int iEnd = bOutputDelay ? m_iToSend - m_nOutputDelay : m_iToSend;
     for (; m_iGot < iEnd; m_iGot++)
     {
         WaitForCompletionEvent(m_iGot % m_nEncoderBuffer);
+        const auto fetchStart = std::chrono::steady_clock::now();
         NV_ENC_LOCK_BITSTREAM lockBitstreamData = { NV_ENC_LOCK_BITSTREAM_VER };
         lockBitstreamData.outputBitstream = vOutputBuffer[m_iGot % m_nEncoderBuffer];
         lockBitstreamData.doNotWait = false;
@@ -554,6 +581,9 @@ void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, 
         i++;
 
         NVENC_API_CALL(m_nvenc.nvEncUnlockBitstream(m_hEncoder, lockBitstreamData.outputBitstream));
+        totalFetchDurationNs += static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - fetchStart).count());
 
         if (m_vMappedInputBuffers[m_iGot % m_nEncoderBuffer])
         {
@@ -570,6 +600,9 @@ void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer, 
             NVENC_API_CALL(m_nvenc.nvEncUnmapInputResource(m_hEncoder, m_vMappedRefBuffers[m_iGot % m_nEncoderBuffer]));
             m_vMappedRefBuffers[m_iGot % m_nEncoderBuffer] = nullptr;
         }
+    }
+    if (bitstreamFetchDurationNs) {
+        *bitstreamFetchDurationNs = totalFetchDurationNs;
     }
 }
 

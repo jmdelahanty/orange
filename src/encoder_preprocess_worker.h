@@ -89,6 +89,8 @@ private:
     static const int DEFAULT_ENCODER_ENTRY_POOL_SIZE = 120;
     std::vector<ENCODER_WORKER_ENTRY> encoder_entry_pool_;
     std::vector<cudaEvent_t> event_pool_;
+    std::vector<cudaEvent_t> copy_start_event_pool_;
+    std::vector<cudaEvent_t> copy_end_event_pool_;
     std::vector<void*> direct_input_surfaces_;
     std::set<int> peer_access_enabled_gpus_;
     

@@ -88,6 +88,7 @@ struct ENCODER_WORKER_ENTRY {
     size_t surface_pitch = 0;
     bool direct_input = false;
     int surface_gpu_id = -1;
+    bool cross_gpu_copy_performed = false;
     uint64_t recording_frame_id;
     uint64_t gop_index = 0;
     uint32_t frame_index_within_gop = 0;
@@ -95,6 +96,8 @@ struct ENCODER_WORKER_ENTRY {
     uint64_t timestamp;
     uint64_t timestamp_sys;
     cudaEvent_t* preprocess_complete_event; // Add this event pointer
+    cudaEvent_t copy_start_event = nullptr;
+    cudaEvent_t copy_end_event = nullptr;
 };
 
 #endif // ENCODER_PIPELINE_H

@@ -34,6 +34,12 @@ void update_peak(std::atomic<size_t>& peak, size_t value) {
 }
 } // namespace
 
+FFmpegWriterLatencyStats FFmpegWriter::latency_stats() const
+{
+    std::lock_guard<std::mutex> lock(latency_mutex_);
+    return latency_stats_;
+}
+
 FFmpegWriter::FFmpegWriter(
     AVCodecID eCodecId,
     int nWidth,
@@ -116,7 +122,12 @@ FFmpegWriter::~FFmpegWriter()
     }
 }
 
-void FFmpegWriter::push_packet(uint8_t* pData, int nBytes, int64_t nPts)
+void FFmpegWriter::push_packet(uint8_t* pData,
+                               int nBytes,
+                               int64_t nPts,
+                               uint64_t gop_index,
+                               bool is_last_packet_in_gop,
+                               uint64_t gop_release_started_ns)
 {
     if (nBytes <= 0) {
         return;
@@ -174,7 +185,13 @@ void FFmpegWriter::push_packet(uint8_t* pData, int nBytes, int64_t nPts)
         static_cast<size_t>(pkt->size);
     update_peak(peak_queued_packets_, new_packet_count);
     update_peak(peak_queued_bytes_, new_byte_count);
-    m_queue.push(pkt);
+    QueuedPacket queued_packet;
+    queued_packet.packet = pkt;
+    queued_packet.enqueued_at_ns = steady_clock_now_ns();
+    queued_packet.gop_index = gop_index;
+    queued_packet.is_last_packet_in_gop = is_last_packet_in_gop;
+    queued_packet.gop_release_started_ns = gop_release_started_ns;
+    m_queue.push(queued_packet);
 }
 
 void FFmpegWriter::create_thread()
@@ -184,7 +201,7 @@ void FFmpegWriter::create_thread()
 
 void FFmpegWriter::quit_thread()
 {
-    m_queue.push(nullptr);
+    m_queue.push(QueuedPacket{});
 }
 
 void FFmpegWriter::join_thread()
@@ -205,13 +222,40 @@ void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 void FFmpegWriter::write_thread()
 {
     while (true) {
-        AVPacket* pkt = nullptr;
-        if (m_queue.pop(pkt)) {
-            if (pkt) {
+        QueuedPacket queued_packet;
+        if (m_queue.pop(queued_packet)) {
+            if (queued_packet.packet) {
+                const uint64_t dequeue_started_ns = steady_clock_now_ns();
                 queued_packets_.fetch_sub(1, std::memory_order_relaxed);
-                queued_bytes_.fetch_sub(static_cast<size_t>(pkt->size), std::memory_order_relaxed);
-                write_one_pkt(pkt);
-                av_packet_free(&pkt);
+                queued_bytes_.fetch_sub(
+                    static_cast<size_t>(queued_packet.packet->size),
+                    std::memory_order_relaxed);
+                {
+                    std::lock_guard<std::mutex> lock(latency_mutex_);
+                    if (dequeue_started_ns >= queued_packet.enqueued_at_ns) {
+                        observe_latency_ns(
+                            &latency_stats_.queue_wait,
+                            dequeue_started_ns - queued_packet.enqueued_at_ns);
+                    }
+                }
+
+                const uint64_t write_started_ns = steady_clock_now_ns();
+                write_one_pkt(queued_packet.packet);
+                const uint64_t write_finished_ns = steady_clock_now_ns();
+                {
+                    std::lock_guard<std::mutex> lock(latency_mutex_);
+                    observe_latency_ns(
+                        &latency_stats_.packet_write,
+                        write_finished_ns - write_started_ns);
+                    if (queued_packet.is_last_packet_in_gop &&
+                        queued_packet.gop_release_started_ns > 0 &&
+                        write_finished_ns >= queued_packet.gop_release_started_ns) {
+                        observe_latency_ns(
+                            &latency_stats_.gop_release_to_last_write,
+                            write_finished_ns - queued_packet.gop_release_started_ns);
+                    }
+                }
+                av_packet_free(&queued_packet.packet);
             } else {
                 break;
             }

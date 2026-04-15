@@ -112,6 +112,15 @@ bool env_is_set(const char* name) {
     return env && *env != '\0';
 }
 
+nlohmann::json latency_stats_to_json(const LatencyAggregateStats& stats) {
+    return {
+        {"samples", stats.sample_count},
+        {"mean_ms", stats.mean_ms()},
+        {"max_ms", stats.max_ms()},
+        {"last_ms", stats.last_ms()}
+    };
+}
+
 uint64_t parse_env_u64(const char* name, uint64_t default_value) {
     const char* env = std::getenv(name);
     if (!env || *env == '\0') {
@@ -1765,7 +1774,8 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
                                              int64_t fallback_sample_index,
                                              uint64_t completion_gop_index,
                                              bool mark_complete,
-                                             const std::optional<RecordingMetadataRow>& metadata_row)
+                                             const std::optional<RecordingMetadataRow>& metadata_row,
+                                             const std::optional<RecordingOutputTimingSample>& timing_sample)
 {
     if (shared_output_) {
         shared_output_->submit_frame_output(
@@ -1774,7 +1784,8 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
             fallback_sample_index,
             completion_gop_index,
             mark_complete,
-            metadata_row);
+            metadata_row,
+            timing_sample);
         refresh_writer_queue_metrics();
         return;
     }
@@ -1938,6 +1949,9 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
 {
     const SharedRecordingOutputStats shared_output_stats =
         shared_output_ ? shared_output_->stats() : SharedRecordingOutputStats{};
+    const FFmpegWriterLatencyStats writer_latency =
+        shared_output_ ? shared_output_stats.writer_latency
+                       : (writer_.video ? writer_.video->latency_stats() : FFmpegWriterLatencyStats{});
     nlohmann::json info;
     info["backend"] = encoder_snapshot_.backend;
     info["path"] = encoder_snapshot_.path;
@@ -2121,6 +2135,14 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
             {"pending_keys", shared_output_stats.pending_gop_overflow_pending_keys}
         };
     }
+    info["latency"] = {
+        {"source_to_helper_copy", latency_stats_to_json(shared_output_stats.source_to_helper_copy)},
+        {"bitstream_fetch", latency_stats_to_json(shared_output_stats.bitstream_fetch)},
+        {"gop_hold_before_release", latency_stats_to_json(shared_output_stats.gop_hold_before_release)},
+        {"writer_queue_wait", latency_stats_to_json(writer_latency.queue_wait)},
+        {"packet_mux_write", latency_stats_to_json(writer_latency.packet_write)},
+        {"gop_release_to_last_write", latency_stats_to_json(writer_latency.gop_release_to_last_write)}
+    };
     info["resolved_config"] = encoder_snapshot_.resolved_config;
     info["pre_encoder_reference_capture"] = pre_encoder_reference_writer_.BuildSummaryJson();
     return info;
@@ -2135,10 +2157,12 @@ void EncoderHwWorker::flush_and_close()
         if (encoder_.pEnc) {
             std::vector<uint32_t> retired_slots;
             std::vector<uint64_t> output_timestamps;
+            uint64_t bitstream_fetch_duration_ns = 0;
             encoder_.pEnc->EndEncode(
                 encoder_.vPacket,
                 direct_input_enabled_ ? &retired_slots : nullptr,
-                &output_timestamps);
+                &output_timestamps,
+                &bitstream_fetch_duration_ns);
             const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
                 encoder_.vPacket.size(),
                 output_timestamps,
@@ -2156,7 +2180,15 @@ void EncoderHwWorker::flush_and_close()
                 static_cast<uint64_t>(fallback_sample_index) /
                     std::max<uint32_t>(1u, recording_gop_length_),
                 false,
-                std::nullopt);
+                std::nullopt,
+                bitstream_fetch_duration_ns > 0
+                    ? std::optional<RecordingOutputTimingSample>(
+                          RecordingOutputTimingSample{
+                              false,
+                              0,
+                              true,
+                              bitstream_fetch_duration_ns})
+                    : std::nullopt);
             for (uint64_t completed_gop_index : completed_gops) {
                 buffer_encoded_packets(
                     {},
@@ -2358,12 +2390,22 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
     try {
         std::vector<uint64_t> output_timestamps;
+        RecordingOutputTimingSample timing_sample;
         if (entry->preprocess_complete_event) {
             ck(cudaStreamWaitEvent(m_stream, *entry->preprocess_complete_event, 0));
+        }
+        if (entry->cross_gpu_copy_performed && entry->copy_start_event && entry->copy_end_event) {
+            float copy_ms = 0.0f;
+            ck(cudaEventSynchronize(entry->copy_end_event));
+            ck(cudaEventElapsedTime(&copy_ms, entry->copy_start_event, entry->copy_end_event));
+            timing_sample.has_source_to_helper_copy = true;
+            timing_sample.source_to_helper_copy_ns =
+                static_cast<uint64_t>(copy_ms * 1000000.0f);
         }
         capture_scheduled = begin_pre_encoder_reference_capture(
             entry, &capture_staging_slot, &capture_frame_size);
 
+        uint64_t bitstream_fetch_duration_ns = 0;
         if (direct_input_enabled_) {
             if (!direct_input_registered_) {
                 throw std::runtime_error("Direct NVENC input pool is not registered");
@@ -2379,7 +2421,8 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 encoder_.vPacket,
                 pic_params_ptr,
                 &retired_slots,
-                &output_timestamps);
+                &output_timestamps,
+                &bitstream_fetch_duration_ns);
             slot_submitted = true;
         } else {
             const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
@@ -2409,7 +2452,12 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 encoder_.vPacket,
                 pic_params_ptr,
                 nullptr,
-                &output_timestamps);
+                &output_timestamps,
+                &bitstream_fetch_duration_ns);
+        }
+        if (bitstream_fetch_duration_ns > 0) {
+            timing_sample.has_bitstream_fetch = true;
+            timing_sample.bitstream_fetch_ns = bitstream_fetch_duration_ns;
         }
 
         note_submitted_frame(entry->gop_index, entry->is_last_frame_in_gop);
@@ -2433,7 +2481,10 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             static_cast<int64_t>(zero_based_recording_frame),
             entry->gop_index,
             false,
-            metadata_row);
+            metadata_row,
+            timing_sample.has_source_to_helper_copy || timing_sample.has_bitstream_fetch
+                ? std::optional<RecordingOutputTimingSample>(timing_sample)
+                : std::nullopt);
         for (uint64_t completed_gop_index : completed_gops) {
             buffer_encoded_packets(
                 {},

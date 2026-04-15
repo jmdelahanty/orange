@@ -106,7 +106,8 @@ private:
                                 int64_t fallback_sample_index,
                                 uint64_t completion_gop_index,
                                 bool mark_complete,
-                                const std::optional<RecordingMetadataRow>& metadata_row);
+                                const std::optional<RecordingMetadataRow>& metadata_row,
+                                const std::optional<RecordingOutputTimingSample>& timing_sample = std::nullopt);
     std::vector<uint64_t> resolve_output_sample_indices(
         size_t packet_count,
         const std::vector<uint64_t>& output_timestamps,

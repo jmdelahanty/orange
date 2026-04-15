@@ -11,15 +11,23 @@ extern "C"
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <mutex>
 #include <thread>
 #include <string>
 #include <utility>
 #include <vector>
+#include "latency_stats.h"
 #include "thread.h"
 
 struct FFmpegWriterQueueConfig {
     size_t max_queued_packets = 0;
     size_t max_queued_bytes = 0;
+};
+
+struct FFmpegWriterLatencyStats {
+    LatencyAggregateStats queue_wait;
+    LatencyAggregateStats packet_write;
+    LatencyAggregateStats gop_release_to_last_write;
 };
 
 class FFmpegWriter
@@ -30,7 +38,12 @@ public:
                  FFmpegWriterQueueConfig queue_config = {});
     ~FFmpegWriter();
     bool write_packet(uint8_t *pData, int nBytes, int64_t nPts);
-    void push_packet(uint8_t* pData, int nBytes, int64_t nPts);
+    void push_packet(uint8_t* pData,
+                     int nBytes,
+                     int64_t nPts,
+                     uint64_t gop_index = 0,
+                     bool is_last_packet_in_gop = false,
+                     uint64_t gop_release_started_ns = 0);
     void create_thread();
     void quit_thread();
     void join_thread();
@@ -42,13 +55,22 @@ public:
     size_t peak_queued_packets() const { return peak_queued_packets_.load(std::memory_order_relaxed); }
     size_t peak_queued_bytes() const { return peak_queued_bytes_.load(std::memory_order_relaxed); }
     const FFmpegWriterQueueConfig& queue_config() const { return queue_config_; }
+    FFmpegWriterLatencyStats latency_stats() const;
 private:
+    struct QueuedPacket {
+        AVPacket* packet = nullptr;
+        uint64_t enqueued_at_ns = 0;
+        uint64_t gop_index = 0;
+        bool is_last_packet_in_gop = false;
+        uint64_t gop_release_started_ns = 0;
+    };
+
     AVFormatContext *oc = NULL;
     AVStream *vs = NULL;
     int nFps = 0;
     int nPts = 0;
     std::ofstream *metadata;
-    SafeQueue<AVPacket*> m_queue; // Queue for packets to be written
+    SafeQueue<QueuedPacket> m_queue; // Queue for packets to be written
     std::thread m_thread;
     int64_t sequential_frame_counter_ = 0; // Counter for sequential frame numbers
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
@@ -61,6 +83,8 @@ private:
     std::atomic<size_t> peak_queued_bytes_{0};
     std::atomic<bool> queue_overflowed_{false};
     std::atomic<uint64_t> queue_overflow_events_{0};
+    mutable std::mutex latency_mutex_;
+    FFmpegWriterLatencyStats latency_stats_;
     void write_thread();
     void write_keyframe_sidecar();
     bool packet_has_idr(const uint8_t* data, size_t size) const;

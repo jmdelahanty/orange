@@ -155,6 +155,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
             ck(cudaMalloc(&encoder_entry_pool_[i].d_prepared_frame, prepared_frame_size));
             encoder_entry_pool_[i].surface_pitch = static_cast<size_t>(encoder_pitch_);
         }
+        encoder_entry_pool_[i].preprocess_complete_event = nullptr;
         free_encoder_entries_.push(&encoder_entry_pool_[i]);
     }
     available_buffers_.store(direct_input_enabled_ ? direct_input_slot_count_ : entry_pool_size, std::memory_order_relaxed);
@@ -166,6 +167,15 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         free_events_.push(&event_pool_[i]);
     }
     available_events_.store(entry_pool_size, std::memory_order_relaxed);
+
+    copy_start_event_pool_.resize(static_cast<size_t>(entry_pool_size));
+    copy_end_event_pool_.resize(static_cast<size_t>(entry_pool_size));
+    for (int i = 0; i < entry_pool_size; ++i) {
+        ck(cudaEventCreate(&copy_start_event_pool_[i]));
+        ck(cudaEventCreate(&copy_end_event_pool_[i]));
+        encoder_entry_pool_[i].copy_start_event = copy_start_event_pool_[i];
+        encoder_entry_pool_[i].copy_end_event = copy_end_event_pool_[i];
+    }
 }
 
 
@@ -199,6 +209,16 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
         if (event) cudaEventDestroy(event);
     }
     event_pool_.clear();
+
+    for (auto& event : copy_start_event_pool_) {
+        if (event) cudaEventDestroy(event);
+    }
+    copy_start_event_pool_.clear();
+
+    for (auto& event : copy_end_event_pool_) {
+        if (event) cudaEventDestroy(event);
+    }
+    copy_end_event_pool_.clear();
 }
 
 void EncoderPreprocessWorker::SetHwWorker(EncoderHwWorker* hw_worker)
@@ -405,6 +425,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     encoder_entry->direct_input = direct_input_enabled_;
     encoder_entry->surface_pitch = static_cast<size_t>(direct_input_enabled_ ? direct_input_pitch_ : encoder_pitch_);
     encoder_entry->surface_gpu_id = preprocess_gpu_id_;
+    encoder_entry->cross_gpu_copy_performed = false;
     if (direct_input_enabled_) {
         encoder_entry->d_prepared_frame = static_cast<unsigned char*>(direct_input_surfaces_[static_cast<size_t>(direct_input_slot_id)]);
     }
@@ -436,6 +457,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         if (!d_input_staging_) {
             ck(cudaMalloc(&d_input_staging_, static_cast<size_t>(frame_original_gpu_.size_pic)));
         }
+        ck(cudaEventRecord(encoder_entry->copy_start_event, m_stream));
         ck(cudaMemcpyPeerAsync(
             d_input_staging_,
             preprocess_gpu_id_,
@@ -443,6 +465,8 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             entry->image_gpu_id,
             static_cast<size_t>(frame_original_gpu_.size_pic),
             m_stream));
+        ck(cudaEventRecord(encoder_entry->copy_end_event, m_stream));
+        encoder_entry->cross_gpu_copy_performed = true;
         input_source = d_input_staging_;
     }
 

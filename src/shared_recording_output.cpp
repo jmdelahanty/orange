@@ -105,7 +105,8 @@ void SharedRecordingOutput::submit_frame_output(
     int64_t fallback_sample_index,
     uint64_t completion_gop_index,
     bool mark_complete,
-    const std::optional<RecordingMetadataRow>& metadata_row)
+    const std::optional<RecordingMetadataRow>& metadata_row,
+    const std::optional<RecordingOutputTimingSample>& timing_sample)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!is_open_) {
@@ -117,7 +118,8 @@ void SharedRecordingOutput::submit_frame_output(
         fallback_sample_index,
         completion_gop_index,
         mark_complete,
-        metadata_row);
+        metadata_row,
+        timing_sample);
 }
 
 void SharedRecordingOutput::buffer_packets_locked(
@@ -126,8 +128,22 @@ void SharedRecordingOutput::buffer_packets_locked(
     int64_t fallback_sample_index,
     uint64_t completion_gop_index,
     bool mark_complete,
-    const std::optional<RecordingMetadataRow>& metadata_row)
+    const std::optional<RecordingMetadataRow>& metadata_row,
+    const std::optional<RecordingOutputTimingSample>& timing_sample)
 {
+    if (timing_sample.has_value()) {
+        if (timing_sample->has_source_to_helper_copy) {
+            observe_latency_ns(
+                &source_to_helper_copy_latency_,
+                timing_sample->source_to_helper_copy_ns);
+        }
+        if (timing_sample->has_bitstream_fetch) {
+            observe_latency_ns(
+                &bitstream_fetch_latency_,
+                timing_sample->bitstream_fetch_ns);
+        }
+    }
+
     if (!split_gop_config_.enabled) {
         for (size_t i = 0; i < packets.size(); ++i) {
             const int64_t sample_index = i < output_timestamps.size()
@@ -211,6 +227,7 @@ void SharedRecordingOutput::buffer_packets_locked(
             update_pending_gop_peaks_locked();
         }
         pending.complete = true;
+        pending.completed_at_ns = steady_clock_now_ns();
     }
 
     flush_pending_gops_locked(false);
@@ -242,6 +259,13 @@ void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
         PendingGop pending = std::move(it->second);
         pending_gops_.erase(it);
         pending_gop_buffered_bytes_ -= pending.total_bytes;
+        const uint64_t release_started_ns = steady_clock_now_ns();
+        if (pending.complete && pending.completed_at_ns > 0 &&
+            release_started_ns >= pending.completed_at_ns) {
+            observe_latency_ns(
+                &gop_hold_before_release_latency_,
+                release_started_ns - pending.completed_at_ns);
+        }
 
         std::sort(
             pending.metadata_rows.begin(),
@@ -252,12 +276,16 @@ void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
         for (const auto& row : pending.metadata_rows) {
             write_metadata_row_locked(row);
         }
-        for (const auto& packet : pending.packets) {
+        for (size_t packet_index = 0; packet_index < pending.packets.size(); ++packet_index) {
+            const auto& packet = pending.packets[packet_index];
             if (writer_.video) {
                 writer_.video->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
                     static_cast<int>(packet.bytes.size()),
-                    packet.sample_index);
+                    packet.sample_index,
+                    pending.gop_index,
+                    packet_index + 1 == pending.packets.size(),
+                    release_started_ns);
             }
         }
         next_gop_to_flush_++;
@@ -281,6 +309,7 @@ void SharedRecordingOutput::refresh_writer_queue_metrics_locked()
     writer_queue_peak_bytes_ = std::max<size_t>(
         writer_queue_peak_bytes_,
         writer_.video->peak_queued_bytes());
+    writer_latency_stats_ = writer_.video->latency_stats();
 }
 
 void SharedRecordingOutput::write_metadata_row_locked(const RecordingMetadataRow& metadata_row)
@@ -409,6 +438,10 @@ SharedRecordingOutputStats SharedRecordingOutput::stats() const
     out.pending_gop_overflow_frontier_present = pending_gop_overflow_frontier_present_;
     out.pending_gop_overflow_frontier_complete = pending_gop_overflow_frontier_complete_;
     out.pending_gop_overflow_pending_keys = pending_gop_overflow_pending_keys_;
+    out.source_to_helper_copy = source_to_helper_copy_latency_;
+    out.bitstream_fetch = bitstream_fetch_latency_;
+    out.gop_hold_before_release = gop_hold_before_release_latency_;
+    out.writer_latency = writer_latency_stats_;
     return out;
 }
 
@@ -484,4 +517,8 @@ void SharedRecordingOutput::reset_pending_state_locked()
     pending_gop_overflow_frontier_present_ = false;
     pending_gop_overflow_frontier_complete_ = false;
     pending_gop_overflow_pending_keys_.clear();
+    source_to_helper_copy_latency_ = {};
+    bitstream_fetch_latency_ = {};
+    gop_hold_before_release_latency_ = {};
+    writer_latency_stats_ = {};
 }
