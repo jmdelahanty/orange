@@ -15,8 +15,8 @@
 #include "yolo_worker.h"
 #include "image_writer_worker.h"
 #include "crop_and_encode_worker.h"
+#include "recording_ingress.h"
 #include "cuda_context_debug.h"
-#include "encoder_preprocess_worker.h"
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
 #include "project.h"
@@ -416,7 +416,7 @@ void acquire_frames(
     PTPParams* ptp_params,
     INDIGOSignalBuilder* indigo_signal_builder,
     COpenGLDisplay* openGLDisplay,
-    EncoderPreprocessWorker* encoder_preprocess_worker,
+    RecordingIngress* recording_ingress,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources,
@@ -544,17 +544,19 @@ void acquire_frames(
     };
 
     auto build_pipeline_perf_sample = [&]() {
+        const RecordingIngressStats recording_stats =
+            recording_ingress ? recording_ingress->GetStats() : RecordingIngressStats{};
         PipelinePerfSample sample;
         sample.timestamp_utc = get_current_utc_timestamp();
         sample.frame_id = camera_state.frame_count;
         sample.recording_frame_id = last_recording_frame_count;
         sample.acquisition_fps = current_acquisition_fps;
-        sample.preprocess_fps = encoder_preprocess_worker ? encoder_preprocess_worker->get_fps() : 0.0;
-        sample.encode_fps = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_fps() : 0.0;
+        sample.preprocess_fps = recording_stats.preprocess_fps;
+        sample.encode_fps = recording_stats.encode_fps;
         sample.display_queue_depth = openGLDisplay ? openGLDisplay->GetCountQueueInSize() : -1;
         sample.yolo_queue_depth = yolo_worker ? yolo_worker->GetCountQueueInSize() : -1;
-        sample.preprocess_queue_depth = encoder_preprocess_worker ? encoder_preprocess_worker->GetCountQueueInSize() : -1;
-        sample.encode_queue_depth = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_queue_depth() : -1;
+        sample.preprocess_queue_depth = recording_stats.preprocess_queue_depth;
+        sample.encode_queue_depth = recording_stats.encode_queue_depth;
         sample.free_entries_available = free_entries_available;
         sample.free_entries_low_watermark = free_entries_low;
         sample.free_events_available = free_events_available;
@@ -563,12 +565,12 @@ void acquire_frames(
         sample.yolo_events_low_watermark = yolo_events_low;
         sample.pending_requeues = static_cast<int>(pending_requeues.size());
         sample.acquisition_resource_starvations = acquisition_resource_starvations;
-        sample.preprocess_buffers_available = encoder_preprocess_worker ? encoder_preprocess_worker->available_buffers_.load() : -1;
-        sample.preprocess_events_available = encoder_preprocess_worker ? encoder_preprocess_worker->available_events_.load() : -1;
-        sample.preprocess_resource_waits = encoder_preprocess_worker ? encoder_preprocess_worker->get_resource_waits() : 0;
-        sample.preprocess_frames_dropped = encoder_preprocess_worker ? encoder_preprocess_worker->get_frames_dropped() : 0;
-        sample.encode_failures = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_encode_failures() : 0;
-        sample.encode_slow_frames = encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_slow_frames() : 0;
+        sample.preprocess_buffers_available = recording_stats.preprocess_buffers_available;
+        sample.preprocess_events_available = recording_stats.preprocess_events_available;
+        sample.preprocess_resource_waits = recording_stats.preprocess_resource_waits;
+        sample.preprocess_frames_dropped = recording_stats.preprocess_frames_dropped;
+        sample.encode_failures = recording_stats.encode_failures;
+        sample.encode_slow_frames = recording_stats.encode_slow_frames;
         sample.camera_dropped_frames = camera_state.dropped_frames;
         sample.gpu_direct_frames = gpu_direct_frames_total;
         sample.gpu_ring_copy_frames = gpu_ring_copy_frames_total;
@@ -755,7 +757,7 @@ void acquire_frames(
             current_entry->camera_frame_struct = nullptr;
 
             bool will_display = (camera_select->stream_on && openGLDisplay);
-            bool will_record = (camera_control->record_video && encoder_preprocess_worker);
+            bool will_record = (camera_control->record_video && recording_ingress);
             bool yolo_enabled = (camera_select->yolo && yolo_worker);
             if (yolo_enabled && !last_yolo_enabled) {
                 yolo_decimate_counter = 0;
@@ -959,7 +961,7 @@ void acquire_frames(
                 current_entry->ref_count.store(dispatch_count);
 
                 if (will_display) openGLDisplay->PutObjectToQueueIn(current_entry);
-                if (will_record) encoder_preprocess_worker->PutObjectToQueueIn(current_entry);
+                if (will_record) recording_ingress->SubmitFrame(current_entry);
                 if (will_yolo) yolo_worker->PutObjectToQueueIn(current_entry);
 
                 if (use_direct_pointer && !use_ring_copy) {
@@ -1163,14 +1165,16 @@ void acquire_frames(
             try_stop_timer();
         }
         double time_diff = w.Stop();
+        const RecordingIngressStats final_recording_stats =
+            recording_ingress ? recording_ingress->GetStats() : RecordingIngressStats{};
         report_statistics(
             camera_params,
             &camera_state,
             time_diff,
-            encoder_preprocess_worker ? encoder_preprocess_worker->get_resource_waits() : 0,
-            encoder_preprocess_worker ? encoder_preprocess_worker->get_frames_dropped() : 0,
-            encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_encode_failures() : 0,
-            encoder_preprocess_worker ? encoder_preprocess_worker->get_hw_slow_frames() : 0);
+            final_recording_stats.preprocess_resource_waits,
+            final_recording_stats.preprocess_frames_dropped,
+            final_recording_stats.encode_failures,
+            final_recording_stats.encode_slow_frames);
 
         {
             NVTX_RANGE("Memory_Cleanup");

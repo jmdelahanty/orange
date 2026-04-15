@@ -6,6 +6,7 @@
 
 #include "encoder_hw_worker.h"
 #include "encoder_preprocess_worker.h"
+#include "recording_ingress.h"
 
 ModernRecordingPipeline::ModernRecordingPipeline(
     CameraParams* camera_params,
@@ -61,6 +62,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
 
     preprocess_worker_->SetHwWorker(hw_worker_.get());
     hw_worker_->SetPreprocessWorker(preprocess_worker_.get());
+    recording_ingress_ = std::make_unique<RecordingIngress>(preprocess_worker_.get());
 }
 
 ModernRecordingPipeline::~ModernRecordingPipeline()

@@ -18,7 +18,7 @@ class GPUVideoEncoder;
 class YOLOv8Worker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
-class EncoderPreprocessWorker;
+class RecordingIngress;
 class FrameIPCManager;
 
 void acquire_frames(
@@ -29,7 +29,7 @@ void acquire_frames(
     PTPParams* ptp_params,
     INDIGOSignalBuilder* indigo_signal_builder,
     COpenGLDisplay* openGLDisplay,
-    EncoderPreprocessWorker* encoder_preprocess_worker,
+    RecordingIngress* recording_ingress,
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources,

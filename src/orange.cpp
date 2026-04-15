@@ -3769,7 +3769,7 @@ int main(int argc, char **args) {
                                 ptp_params,
                                 &indigo_signal_builder,
                                 openGLDisplayWorkers[i],
-                                recording_pipelines[i] ? recording_pipelines[i]->preprocess_worker() : nullptr,
+                                recording_pipelines[i] ? recording_pipelines[i]->recording_ingress() : nullptr,
                                 yolo_workers[i],
                                 image_writer,
                                 &camera_resources[i],

@@ -11,6 +11,7 @@
 
 class EncoderPreprocessWorker;
 class EncoderHwWorker;
+class RecordingIngress;
 
 class ModernRecordingPipeline {
 public:
@@ -37,6 +38,7 @@ public:
     void request_stop();
     void shutdown();
 
+    RecordingIngress* recording_ingress() const { return recording_ingress_.get(); }
     EncoderPreprocessWorker* preprocess_worker() const { return preprocess_worker_.get(); }
     EncoderHwWorker* hw_worker() const { return hw_worker_.get(); }
     const RecordingOutputConfig& recording_output_config() const { return recording_output_config_; }
@@ -44,6 +46,7 @@ public:
     CameraParams* camera_params_ = nullptr;
     int recording_gpu_id_ = -1;
     RecordingOutputConfig recording_output_config_;
+    std::unique_ptr<RecordingIngress> recording_ingress_;
     std::unique_ptr<EncoderPreprocessWorker> preprocess_worker_;
     std::unique_ptr<EncoderHwWorker> hw_worker_;
 };
