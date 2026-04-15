@@ -140,6 +140,13 @@ struct PipelinePerfSample {
     uint64_t preprocess_frames_dropped = 0;
     uint64_t encode_failures = 0;
     uint64_t encode_slow_frames = 0;
+    uint64_t submitted_frames = 0;
+    uint64_t primary_routed_frames = 0;
+    uint64_t helper_requested_frames = 0;
+    uint64_t helper_fallback_frames = 0;
+    uint64_t helper_dispatched_frames = 0;
+    int last_target_gpu_id = -1;
+    std::string last_route_mode = "primary";
     uint64_t camera_dropped_frames = 0;
     uint64_t gpu_direct_frames = 0;
     uint64_t gpu_ring_copy_frames = 0;
@@ -202,6 +209,13 @@ public:
               << sample.preprocess_frames_dropped << ","
               << sample.encode_failures << ","
               << sample.encode_slow_frames << ","
+              << sample.submitted_frames << ","
+              << sample.primary_routed_frames << ","
+              << sample.helper_requested_frames << ","
+              << sample.helper_fallback_frames << ","
+              << sample.helper_dispatched_frames << ","
+              << sample.last_target_gpu_id << ","
+              << sample.last_route_mode << ","
               << sample.camera_dropped_frames << ","
               << sample.gpu_direct_frames << ","
               << sample.gpu_ring_copy_frames << ","
@@ -260,7 +274,9 @@ private:
                  "display_q,yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
-                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,camera_dropped_frames,"
+                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
+                 "camera_dropped_frames,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[PIPELINE] Cam " << serial
@@ -362,12 +378,30 @@ private:
             totals["preprocess_frames_dropped"] = last_sample_.preprocess_frames_dropped;
             totals["encode_failures"] = last_sample_.encode_failures;
             totals["encode_slow_frames"] = last_sample_.encode_slow_frames;
+            totals["submitted_frames"] = last_sample_.submitted_frames;
+            totals["primary_routed_frames"] = last_sample_.primary_routed_frames;
+            totals["helper_requested_frames"] = last_sample_.helper_requested_frames;
+            totals["helper_fallback_frames"] = last_sample_.helper_fallback_frames;
+            totals["helper_dispatched_frames"] = last_sample_.helper_dispatched_frames;
+            totals["last_target_gpu_id"] = last_sample_.last_target_gpu_id;
+            totals["last_route_mode"] = last_sample_.last_route_mode;
             totals["camera_dropped_frames"] = last_sample_.camera_dropped_frames;
             totals["gpu_direct_frames"] = last_sample_.gpu_direct_frames;
             totals["gpu_ring_copy_frames"] = last_sample_.gpu_ring_copy_frames;
             totals["gpu_copy_frames"] = last_sample_.gpu_copy_frames;
         }
         summary["totals"] = totals;
+        if (have_last_sample_) {
+            summary["routing"] = {
+                {"submitted_frames", last_sample_.submitted_frames},
+                {"primary_routed_frames", last_sample_.primary_routed_frames},
+                {"helper_requested_frames", last_sample_.helper_requested_frames},
+                {"helper_fallback_frames", last_sample_.helper_fallback_frames},
+                {"helper_dispatched_frames", last_sample_.helper_dispatched_frames},
+                {"last_target_gpu_id", last_sample_.last_target_gpu_id},
+                {"last_route_mode", last_sample_.last_route_mode}
+            };
+        }
 
         if (!update_recording_snapshot_pipeline_metrics(
                 current_folder_,
@@ -599,6 +633,13 @@ void acquire_frames(
         sample.preprocess_frames_dropped = recording_stats.preprocess_frames_dropped;
         sample.encode_failures = recording_stats.encode_failures;
         sample.encode_slow_frames = recording_stats.encode_slow_frames;
+        sample.submitted_frames = recording_stats.submitted_frames;
+        sample.primary_routed_frames = recording_stats.primary_routed_frames;
+        sample.helper_requested_frames = recording_stats.helper_requested_frames;
+        sample.helper_fallback_frames = recording_stats.helper_fallback_frames;
+        sample.helper_dispatched_frames = recording_stats.helper_dispatched_frames;
+        sample.last_target_gpu_id = recording_stats.last_target_gpu_id;
+        sample.last_route_mode = recording_stats.last_route_mode;
         sample.camera_dropped_frames = camera_state.dropped_frames;
         sample.gpu_direct_frames = gpu_direct_frames_total;
         sample.gpu_ring_copy_frames = gpu_ring_copy_frames_total;

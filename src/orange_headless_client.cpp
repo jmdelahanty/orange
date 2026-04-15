@@ -145,6 +145,11 @@ struct ExperimentCsvWindowStats {
     uint64_t pre_drops_delta = 0;
     uint64_t enc_fail_delta = 0;
     uint64_t enc_slow_delta = 0;
+    uint64_t submitted_frames_delta = 0;
+    uint64_t primary_routed_frames_delta = 0;
+    uint64_t helper_requested_frames_delta = 0;
+    uint64_t helper_fallback_frames_delta = 0;
+    uint64_t helper_dispatched_frames_delta = 0;
     uint64_t camera_dropped_frames_delta = 0;
     int pre_buffers_min = -1;
     int pre_events_min = -1;
@@ -2939,6 +2944,11 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     const int pre_drops_index = required_index("pre_drops");
     const int enc_fail_index = required_index("enc_fail");
     const int enc_slow_index = required_index("enc_slow");
+    const int submitted_frames_index = required_index("submitted_frames");
+    const int primary_routed_frames_index = required_index("primary_routed_frames");
+    const int helper_requested_frames_index = required_index("helper_requested_frames");
+    const int helper_fallback_frames_index = required_index("helper_fallback_frames");
+    const int helper_dispatched_frames_index = required_index("helper_dispatched_frames");
     const int camera_dropped_frames_index = required_index("camera_dropped_frames");
     if (enc_fps_index < 0 || acq_starve_index < 0 || pre_drops_index < 0 || enc_fail_index < 0) {
         stats.error = "CSV is missing one or more required fields in " + csv_path.string();
@@ -2982,12 +2992,22 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     uint64_t baseline_pre_drops = 0;
     uint64_t baseline_enc_fail = 0;
     uint64_t baseline_enc_slow = 0;
+    uint64_t baseline_submitted_frames = 0;
+    uint64_t baseline_primary_routed_frames = 0;
+    uint64_t baseline_helper_requested_frames = 0;
+    uint64_t baseline_helper_fallback_frames = 0;
+    uint64_t baseline_helper_dispatched_frames = 0;
     uint64_t baseline_camera_dropped_frames = 0;
     uint64_t last_acq_starve = 0;
     uint64_t last_pre_waits = 0;
     uint64_t last_pre_drops = 0;
     uint64_t last_enc_fail = 0;
     uint64_t last_enc_slow = 0;
+    uint64_t last_submitted_frames = 0;
+    uint64_t last_primary_routed_frames = 0;
+    uint64_t last_helper_requested_frames = 0;
+    uint64_t last_helper_fallback_frames = 0;
+    uint64_t last_helper_dispatched_frames = 0;
     uint64_t last_camera_dropped_frames = 0;
 
     std::string line;
@@ -3012,6 +3032,11 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         uint64_t pre_drops = 0;
         uint64_t enc_fail = 0;
         uint64_t enc_slow = 0;
+        uint64_t submitted_frames = 0;
+        uint64_t primary_routed_frames = 0;
+        uint64_t helper_requested_frames = 0;
+        uint64_t helper_fallback_frames = 0;
+        uint64_t helper_dispatched_frames = 0;
         uint64_t camera_dropped_frames = 0;
         if (!parse_double_cell(cells, enc_fps_index, &enc_fps) ||
             !parse_u64_cell(cells, acq_starve_index, &acq_starve) ||
@@ -3061,6 +3086,21 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         if (enc_slow_index >= 0) {
             parse_u64_cell(cells, enc_slow_index, &enc_slow);
         }
+        if (submitted_frames_index >= 0) {
+            parse_u64_cell(cells, submitted_frames_index, &submitted_frames);
+        }
+        if (primary_routed_frames_index >= 0) {
+            parse_u64_cell(cells, primary_routed_frames_index, &primary_routed_frames);
+        }
+        if (helper_requested_frames_index >= 0) {
+            parse_u64_cell(cells, helper_requested_frames_index, &helper_requested_frames);
+        }
+        if (helper_fallback_frames_index >= 0) {
+            parse_u64_cell(cells, helper_fallback_frames_index, &helper_fallback_frames);
+        }
+        if (helper_dispatched_frames_index >= 0) {
+            parse_u64_cell(cells, helper_dispatched_frames_index, &helper_dispatched_frames);
+        }
         if (camera_dropped_frames_index >= 0) {
             parse_u64_cell(cells, camera_dropped_frames_index, &camera_dropped_frames);
         }
@@ -3071,6 +3111,11 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         last_pre_drops = pre_drops;
         last_enc_fail = enc_fail;
         last_enc_slow = enc_slow;
+        last_submitted_frames = submitted_frames;
+        last_primary_routed_frames = primary_routed_frames;
+        last_helper_requested_frames = helper_requested_frames;
+        last_helper_fallback_frames = helper_fallback_frames;
+        last_helper_dispatched_frames = helper_dispatched_frames;
         last_camera_dropped_frames = camera_dropped_frames;
 
         if (row_index < warmup_row_count) {
@@ -3079,6 +3124,11 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
             baseline_pre_drops = pre_drops;
             baseline_enc_fail = enc_fail;
             baseline_enc_slow = enc_slow;
+            baseline_submitted_frames = submitted_frames;
+            baseline_primary_routed_frames = primary_routed_frames;
+            baseline_helper_requested_frames = helper_requested_frames;
+            baseline_helper_fallback_frames = helper_fallback_frames;
+            baseline_helper_dispatched_frames = helper_dispatched_frames;
             baseline_camera_dropped_frames = camera_dropped_frames;
         } else {
             enc_fps_values.push_back(enc_fps);
@@ -3141,6 +3191,26 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         (last_enc_fail >= baseline_enc_fail) ? (last_enc_fail - baseline_enc_fail) : last_enc_fail;
     stats.enc_slow_delta =
         (last_enc_slow >= baseline_enc_slow) ? (last_enc_slow - baseline_enc_slow) : last_enc_slow;
+    stats.submitted_frames_delta =
+        (last_submitted_frames >= baseline_submitted_frames)
+            ? (last_submitted_frames - baseline_submitted_frames)
+            : last_submitted_frames;
+    stats.primary_routed_frames_delta =
+        (last_primary_routed_frames >= baseline_primary_routed_frames)
+            ? (last_primary_routed_frames - baseline_primary_routed_frames)
+            : last_primary_routed_frames;
+    stats.helper_requested_frames_delta =
+        (last_helper_requested_frames >= baseline_helper_requested_frames)
+            ? (last_helper_requested_frames - baseline_helper_requested_frames)
+            : last_helper_requested_frames;
+    stats.helper_fallback_frames_delta =
+        (last_helper_fallback_frames >= baseline_helper_fallback_frames)
+            ? (last_helper_fallback_frames - baseline_helper_fallback_frames)
+            : last_helper_fallback_frames;
+    stats.helper_dispatched_frames_delta =
+        (last_helper_dispatched_frames >= baseline_helper_dispatched_frames)
+            ? (last_helper_dispatched_frames - baseline_helper_dispatched_frames)
+            : last_helper_dispatched_frames;
     stats.camera_dropped_frames_delta =
         (last_camera_dropped_frames >= baseline_camera_dropped_frames)
             ? (last_camera_dropped_frames - baseline_camera_dropped_frames)
@@ -3792,6 +3862,13 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["pre_drops_final"] = 0;
     row["enc_fail_final"] = 0;
     row["enc_slow_final"] = 0;
+    row["submitted_frames_final"] = 0ULL;
+    row["primary_routed_frames_final"] = 0ULL;
+    row["helper_requested_frames_final"] = 0ULL;
+    row["helper_fallback_frames_final"] = 0ULL;
+    row["helper_dispatched_frames_final"] = 0ULL;
+    row["routing_last_target_gpu_id"] = -1;
+    row["routing_last_route_mode"] = "";
     row["dropped_frames_camera"] = -1;
     row["pre_encoder_reference_capture_enabled"] = run.options.pre_encoder_reference_capture.enabled;
     row["pre_encoder_reference_capture_max_frames"] = run.options.pre_encoder_reference_capture.max_frames;
@@ -3872,7 +3949,17 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["pre_drops_final"] = csv_stats.pre_drops_delta;
     row["enc_fail_final"] = csv_stats.enc_fail_delta;
     row["enc_slow_final"] = csv_stats.enc_slow_delta;
+    row["submitted_frames_final"] = csv_stats.submitted_frames_delta;
+    row["primary_routed_frames_final"] = csv_stats.primary_routed_frames_delta;
+    row["helper_requested_frames_final"] = csv_stats.helper_requested_frames_delta;
+    row["helper_fallback_frames_final"] = csv_stats.helper_fallback_frames_delta;
+    row["helper_dispatched_frames_final"] = csv_stats.helper_dispatched_frames_delta;
     row["dropped_frames_camera"] = static_cast<int64_t>(csv_stats.camera_dropped_frames_delta);
+    const nlohmann::json routing_info = pipeline_info.value("routing", nlohmann::json::object());
+    if (routing_info.is_object()) {
+        row["routing_last_target_gpu_id"] = routing_info.value("last_target_gpu_id", -1);
+        row["routing_last_route_mode"] = routing_info.value("last_route_mode", "");
+    }
 
     if (encoder_info.is_object()) {
         row["nvenc_direct_input"] = encoder_info.value("path", "") == "hw_direct_input";
@@ -4054,7 +4141,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -4114,6 +4201,13 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("pre_drops_final", 0ULL) << ","
                 << row.value("enc_fail_final", 0ULL) << ","
                 << row.value("enc_slow_final", 0ULL) << ","
+                << row.value("submitted_frames_final", 0ULL) << ","
+                << row.value("primary_routed_frames_final", 0ULL) << ","
+                << row.value("helper_requested_frames_final", 0ULL) << ","
+                << row.value("helper_fallback_frames_final", 0ULL) << ","
+                << row.value("helper_dispatched_frames_final", 0ULL) << ","
+                << row.value("routing_last_target_gpu_id", -1) << ","
+                << "\"" << row.value("routing_last_route_mode", "") << "\","
                 << row.value("dropped_frames_camera", -1) << ","
                 << (row.value("pre_encoder_reference_capture_enabled", false) ? "true" : "false") << ","
                 << row.value("pre_encoder_reference_capture_max_frames", 0) << ","
