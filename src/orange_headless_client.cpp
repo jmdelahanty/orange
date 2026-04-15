@@ -2039,22 +2039,26 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 collect_unique_gpu_ids(cameras_params, selected_indices));
 
             for (int idx : selected_indices) {
+                const ResolvedRecordingConfig resolved_recording_config =
+                    build_resolved_recording_config(
+                        cameras_params[idx],
+                        cameras_params[idx].gpu_id,
+                        build_native_recording_output_config(cameras_params[idx]),
+                        encoder_settings.codec,
+                        encoder_settings.preset,
+                        encoder_settings.tuning,
+                        encoder_settings.rate_control_mode,
+                        encoder_settings.quality_value,
+                        encoder_settings.gop_length,
+                        encoder_settings.control_overrides,
+                        encoder_settings.importance_map,
+                        record_folder,
+                        pre_encoder_reference_capture);
                 recording_pipelines[idx] = std::make_unique<ModernRecordingPipeline>(
                     &cameras_params[idx],
-                    cameras_params[idx].gpu_id,
-                    build_native_recording_output_config(cameras_params[idx]),
-                    encoder_settings.codec,
-                    encoder_settings.preset,
-                    encoder_settings.tuning,
-                    encoder_settings.rate_control_mode,
-                    encoder_settings.quality_value,
-                    encoder_settings.gop_length,
-                    encoder_settings.control_overrides,
-                    encoder_settings.importance_map,
-                    record_folder,
+                    resolved_recording_config,
                     *camera_resources[idx].recycle_queue,
-                    camera_control,
-                    pre_encoder_reference_capture);
+                    camera_control);
                 recording_pipelines[idx]->start();
             }
         }

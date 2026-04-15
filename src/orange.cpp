@@ -3692,19 +3692,24 @@ int main(int argc, char **args) {
                                               << cameras_params[i].width << "x" << cameras_params[i].height
                                               << "." << std::endl;
                                 }
+                                const ResolvedRecordingConfig resolved_recording_config =
+                                    build_resolved_recording_config(
+                                        cameras_params[i],
+                                        cameras_params[i].gpu_id,
+                                        recording_output_config,
+                                        encoder_config->encoder_codec,
+                                        encoder_config->encoder_preset,
+                                        encoder_config->tuning_info,
+                                        encoder_config->rate_control_mode,
+                                        encoder_config->quality_value,
+                                        encoder_config->gop_length,
+                                        EncoderControlOverrides{},
+                                        ImportanceMapConfig{},
+                                        encoder_config->folder_name,
+                                        PreEncoderReferenceCaptureConfig{});
                                 recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
                                     &cameras_params[i],
-                                    cameras_params[i].gpu_id,
-                                    recording_output_config,
-                                    encoder_config->encoder_codec,
-                                    encoder_config->encoder_preset,
-                                    encoder_config->tuning_info,
-                                    encoder_config->rate_control_mode,
-                                    encoder_config->quality_value,
-                                    encoder_config->gop_length,
-                                    EncoderControlOverrides{},
-                                    ImportanceMapConfig{},
-                                    encoder_config->folder_name,
+                                    resolved_recording_config,
                                     *camera_resources[i].recycle_queue,
                                     camera_control);
                             }

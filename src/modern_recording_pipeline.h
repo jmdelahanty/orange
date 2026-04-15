@@ -19,20 +19,9 @@ class ModernRecordingPipeline {
 public:
     ModernRecordingPipeline(
         CameraParams* camera_params,
-        int recording_gpu_id,
-        const RecordingOutputConfig& recording_output_config,
-        const std::string& codec,
-        const std::string& preset,
-        const std::string& tuning,
-        const std::string& rate_control_mode,
-        int quality_value,
-        int gop_length,
-        const EncoderControlOverrides& encoder_control_overrides,
-        const ImportanceMapConfig& importance_map_config,
-        const std::string& base_folder_name,
+        const ResolvedRecordingConfig& resolved_recording_config,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
-        CameraControl* camera_control,
-        const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config = {}
+        CameraControl* camera_control
     );
     ~ModernRecordingPipeline();
 
@@ -43,11 +32,12 @@ public:
     RecordingIngress* recording_ingress() const { return recording_ingress_.get(); }
     EncoderPreprocessWorker* preprocess_worker() const { return preprocess_worker_.get(); }
     EncoderHwWorker* hw_worker() const { return hw_worker_.get(); }
-    const RecordingOutputConfig& recording_output_config() const { return recording_output_config_; }
+    const RecordingOutputConfig& recording_output_config() const { return resolved_recording_config_.output; }
+    const ResolvedRecordingConfig& resolved_recording_config() const { return resolved_recording_config_; }
 
     CameraParams* camera_params_ = nullptr;
     int recording_gpu_id_ = -1;
-    RecordingOutputConfig recording_output_config_;
+    ResolvedRecordingConfig resolved_recording_config_;
     struct HelperEncodeTarget {
         int gpu_id = -1;
         std::unique_ptr<EncoderPreprocessWorker> preprocess_worker;

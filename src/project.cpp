@@ -1269,6 +1269,50 @@ nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& reco
     return build_recording_strategy_json_object(recording_strategy);
 }
 
+ResolvedRecordingConfig build_resolved_recording_config(
+    const CameraParams& camera_params,
+    int recording_gpu_id,
+    const RecordingOutputConfig& recording_output_config,
+    const std::string& codec,
+    const std::string& preset,
+    const std::string& tuning,
+    const std::string& rate_control_mode,
+    int quality_value,
+    int gop_length,
+    const EncoderControlOverrides& encoder_control_overrides,
+    const ImportanceMapConfig& importance_map_config,
+    const std::string& base_folder_name,
+    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config)
+{
+    ResolvedRecordingConfig resolved;
+    resolved.source_gpu_id = camera_params.gpu_id;
+    resolved.recording_gpu_id = recording_gpu_id >= 0 ? recording_gpu_id : camera_params.gpu_id;
+    resolved.encode = camera_params.recording.encode;
+    if (!codec.empty()) {
+        resolved.encode.codec = lower_ascii_copy(codec);
+    }
+    if (!preset.empty()) {
+        resolved.encode.preset = lower_ascii_copy(preset);
+    }
+    if (!tuning.empty()) {
+        resolved.encode.tuning = lower_ascii_copy(tuning);
+    }
+    if (!rate_control_mode.empty()) {
+        resolved.encode.rate_control_mode = lower_ascii_copy(rate_control_mode);
+    }
+    resolved.encode.quality_value = quality_value;
+    resolved.encode.gop_length = gop_length;
+    resolved.output = recording_output_config;
+    resolved.strategy = camera_params.recording_strategy;
+    resolved.constraints = camera_params.recording.constraints;
+    resolved.resources = camera_params.recording.resources;
+    resolved.encoder_control_overrides = encoder_control_overrides;
+    resolved.importance_map = importance_map_config;
+    resolved.base_folder_name = base_folder_name;
+    resolved.pre_encoder_reference_capture = pre_encoder_reference_capture_config;
+    return resolved;
+}
+
 std::string get_current_utc_timestamp() {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);

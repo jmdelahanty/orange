@@ -13,24 +13,16 @@
 
 ModernRecordingPipeline::ModernRecordingPipeline(
     CameraParams* camera_params,
-    int recording_gpu_id,
-    const RecordingOutputConfig& recording_output_config,
-    const std::string& codec,
-    const std::string& preset,
-    const std::string& tuning,
-    const std::string& rate_control_mode,
-    int quality_value,
-    int gop_length,
-    const EncoderControlOverrides& encoder_control_overrides,
-    const ImportanceMapConfig& importance_map_config,
-    const std::string& base_folder_name,
+    const ResolvedRecordingConfig& resolved_recording_config,
     SafeQueue<WORKER_ENTRY*>& recycle_queue,
-    CameraControl* camera_control,
-    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
+    CameraControl* camera_control
 )
     : camera_params_(camera_params),
-      recording_gpu_id_(recording_gpu_id >= 0 ? recording_gpu_id : camera_params->gpu_id),
-      recording_output_config_(recording_output_config)
+      recording_gpu_id_(
+          resolved_recording_config.recording_gpu_id >= 0
+              ? resolved_recording_config.recording_gpu_id
+              : camera_params->gpu_id),
+      resolved_recording_config_(resolved_recording_config)
 {
     shared_recording_output_ = std::make_shared<SharedRecordingOutput>();
 
@@ -39,28 +31,28 @@ ModernRecordingPipeline::ModernRecordingPipeline(
         hw_encoder_name.c_str(),
         camera_params_,
         recording_gpu_id_,
-        recording_output_config_,
-        codec,
-        preset,
-        tuning,
-        rate_control_mode,
-        quality_value,
-        gop_length,
-        encoder_control_overrides,
-        importance_map_config,
-        base_folder_name,
+        resolved_recording_config_.output,
+        resolved_recording_config_.encode.codec,
+        resolved_recording_config_.encode.preset,
+        resolved_recording_config_.encode.tuning,
+        resolved_recording_config_.encode.rate_control_mode,
+        resolved_recording_config_.encode.quality_value,
+        resolved_recording_config_.encode.gop_length,
+        resolved_recording_config_.encoder_control_overrides,
+        resolved_recording_config_.importance_map,
+        resolved_recording_config_.base_folder_name,
         shared_recording_output_,
         true,
         nullptr,
         camera_control,
-        pre_encoder_reference_capture_config);
+        resolved_recording_config_.pre_encoder_reference_capture);
 
     const std::string preprocess_name = "Preprocess_Cam_" + camera_params_->camera_serial;
     preprocess_worker_ = std::make_unique<EncoderPreprocessWorker>(
         preprocess_name.c_str(),
         camera_params_,
         recording_gpu_id_,
-        recording_output_config_,
+        resolved_recording_config_.output,
         hw_worker_->direct_input_enabled(),
         hw_worker_->encoder_input_pitch(),
         hw_worker_->encoder_buffer_count(),
@@ -105,16 +97,16 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                 helper_hw_name.c_str(),
                 camera_params_,
                 helper_gpu_id,
-                recording_output_config_,
-                codec,
-                preset,
-                tuning,
-                rate_control_mode,
-                quality_value,
-                gop_length,
-                encoder_control_overrides,
-                importance_map_config,
-                base_folder_name,
+                resolved_recording_config_.output,
+                resolved_recording_config_.encode.codec,
+                resolved_recording_config_.encode.preset,
+                resolved_recording_config_.encode.tuning,
+                resolved_recording_config_.encode.rate_control_mode,
+                resolved_recording_config_.encode.quality_value,
+                resolved_recording_config_.encode.gop_length,
+                resolved_recording_config_.encoder_control_overrides,
+                resolved_recording_config_.importance_map,
+                resolved_recording_config_.base_folder_name,
                 shared_recording_output_,
                 false,
                 nullptr,
@@ -127,7 +119,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                 helper_preprocess_name.c_str(),
                 camera_params_,
                 helper_gpu_id,
-                recording_output_config_,
+                resolved_recording_config_.output,
                 helper_target.hw_worker->direct_input_enabled(),
                 helper_target.hw_worker->encoder_input_pitch(),
                 helper_target.hw_worker->encoder_buffer_count(),

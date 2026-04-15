@@ -117,6 +117,20 @@ struct CameraRecordingConfig {
     CameraRecordingResourcesConfig resources;
 };
 
+struct ResolvedRecordingConfig {
+    int source_gpu_id = -1;
+    int recording_gpu_id = -1;
+    CameraRecordingEncodeConfig encode;
+    RecordingOutputConfig output;
+    RecordingStrategyConfig strategy;
+    CameraRecordingConstraintsConfig constraints;
+    CameraRecordingResourcesConfig resources;
+    EncoderControlOverrides encoder_control_overrides;
+    ImportanceMapConfig importance_map;
+    std::string base_folder_name;
+    PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
+};
+
 // The lightweight struct to pass data from the preprocess worker to the hardware encoder.
 struct ENCODER_WORKER_ENTRY {
     unsigned char* d_prepared_frame;
