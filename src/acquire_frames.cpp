@@ -480,10 +480,10 @@ void acquire_frames(
     uint64_t gpu_direct_non_device = 0;
     uint64_t gpu_direct_wrong_device = 0;
     auto last_gpu_direct_log_time = std::chrono::steady_clock::now();
-    int free_entries_available = CameraResources::ACQUIRE_WORK_ENTRIES_MAX;
-    int free_events_available = CameraResources::EVENT_POOL_SIZE;
+    int free_entries_available = resources ? resources->acquire_work_entries_max : 0;
+    int free_events_available = resources ? static_cast<int>(resources->event_pool.size()) : 0;
     int yolo_events_available =
-        resources->yolo_events_queue ? CameraResources::EVENT_POOL_SIZE : 0;
+        (resources && resources->yolo_events_queue) ? static_cast<int>(resources->yolo_event_pool.size()) : 0;
     int free_entries_low = free_entries_available;
     int free_events_low = free_events_available;
     int yolo_events_low = yolo_events_available;

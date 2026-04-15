@@ -6,6 +6,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <cstdlib>
 #include <limits>
 #include <mutex>
 #include "network_base.h"
@@ -84,8 +85,8 @@ struct CameraControl
 };
 
 struct CameraResources {
-    static const int ACQUIRE_WORK_ENTRIES_MAX = 240;
-    static const int EVENT_POOL_SIZE = 256;
+    static constexpr int DEFAULT_ACQUIRE_WORK_ENTRIES_MAX = 240;
+    static constexpr int EVENT_POOL_SIZE = 256;
 
     WORKER_ENTRY* worker_entry_pool = nullptr;
     SafeQueue<WORKER_ENTRY*>* free_entries_queue = nullptr;
@@ -95,6 +96,7 @@ struct CameraResources {
     std::vector<cudaEvent_t> yolo_event_pool;
     SafeQueue<cudaEvent_t*>* free_events_queue = nullptr;
     SafeQueue<cudaEvent_t*>* yolo_events_queue = nullptr;
+    int acquire_work_entries_max = DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
 
     CameraResources() = default;
     CameraResources(const CameraResources&) = delete;
@@ -108,11 +110,13 @@ struct CameraResources {
         yolo_event_pool = std::move(other.yolo_event_pool);
         free_events_queue = other.free_events_queue;
         yolo_events_queue = other.yolo_events_queue;
+        acquire_work_entries_max = other.acquire_work_entries_max;
         other.worker_entry_pool = nullptr;
         other.free_entries_queue = nullptr;
         other.recycle_queue = nullptr;
         other.free_events_queue = nullptr;
         other.yolo_events_queue = nullptr;
+        other.acquire_work_entries_max = DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
     }
 
     CameraResources& operator=(CameraResources&& other) noexcept {
@@ -125,20 +129,50 @@ struct CameraResources {
             yolo_event_pool = std::move(other.yolo_event_pool);
             free_events_queue = other.free_events_queue;
             yolo_events_queue = other.yolo_events_queue;
+            acquire_work_entries_max = other.acquire_work_entries_max;
             other.worker_entry_pool = nullptr;
             other.free_entries_queue = nullptr;
             other.recycle_queue = nullptr;
             other.free_events_queue = nullptr;
             other.yolo_events_queue = nullptr;
+            other.acquire_work_entries_max = DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
         }
         return *this;
     }
 
+    static int resolve_acquire_work_entries_max() {
+        const char* env = std::getenv("ORANGE_ACQUIRE_WORK_ENTRIES_MAX");
+        if (!env || !*env) {
+            return DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
+        }
+        char* end = nullptr;
+        const long parsed = std::strtol(env, &end, 10);
+        if (end == env || *end != '\0') {
+            std::cerr << "[CameraResources] Ignoring invalid ORANGE_ACQUIRE_WORK_ENTRIES_MAX='"
+                      << env << "', using default " << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << std::endl;
+            return DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
+        }
+        if (parsed < 1 || parsed > DEFAULT_ACQUIRE_WORK_ENTRIES_MAX) {
+            std::cerr << "[CameraResources] ORANGE_ACQUIRE_WORK_ENTRIES_MAX must be within [1,"
+                      << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << "], using default "
+                      << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << std::endl;
+            return DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
+        }
+        return static_cast<int>(parsed);
+    }
+
     void initialize(int gpu_id, size_t frame_size, bool enable_yolo_events = true) {
         ck(cudaSetDevice(gpu_id));
-        
-        worker_entry_pool = new WORKER_ENTRY[ACQUIRE_WORK_ENTRIES_MAX];
-        for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
+
+        acquire_work_entries_max = resolve_acquire_work_entries_max();
+        if (acquire_work_entries_max != DEFAULT_ACQUIRE_WORK_ENTRIES_MAX) {
+            std::cout << "[CameraResources] Using " << acquire_work_entries_max
+                      << " acquisition work entries instead of "
+                      << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << std::endl;
+        }
+
+        worker_entry_pool = new WORKER_ENTRY[acquire_work_entries_max];
+        for (int i = 0; i < acquire_work_entries_max; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
             worker_entry_pool[i].image_gpu_id = gpu_id;
@@ -148,7 +182,7 @@ struct CameraResources {
         }
         
         free_entries_queue = new SafeQueue<WORKER_ENTRY*>();
-        for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
+        for (int i = 0; i < acquire_work_entries_max; ++i) {
             free_entries_queue->push(&worker_entry_pool[i]);
         }
         
@@ -173,7 +207,7 @@ struct CameraResources {
 
     void cleanup() {
         if (worker_entry_pool) {
-            for (int i = 0; i < ACQUIRE_WORK_ENTRIES_MAX; ++i) {
+            for (int i = 0; i < acquire_work_entries_max; ++i) {
                 if (worker_entry_pool[i].d_image_pool) {
                     cudaFree(worker_entry_pool[i].d_image_pool);
                 }
@@ -183,6 +217,7 @@ struct CameraResources {
             delete[] worker_entry_pool;
             worker_entry_pool = nullptr;
         }
+        acquire_work_entries_max = DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
 
         if (free_entries_queue) { delete free_entries_queue; free_entries_queue = nullptr; }
         if (recycle_queue) { delete recycle_queue; recycle_queue = nullptr; }
