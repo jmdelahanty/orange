@@ -295,6 +295,7 @@ Available today, without additional code changes:
   - camera runtime recording strategy after any experiment-spec override
   - source GPU id
   - primary encode GPU id
+  - split-GOP topology metadata
   - shared pending-GOP buffer stats
   - shared writer-queue stats
   - pre-encoder reference capture summary
@@ -322,6 +323,27 @@ Most useful snapshot fields for this smoke test:
 - `encoders.<serial>.recording_strategy.split_gop.transfer_mode`
 - `encoders.<serial>.source_gpu_id`
 - `encoders.<serial>.encode_gpu_id`
+- `encoders.<serial>.recording_strategy.split_gop.topology.static`
+- `encoders.<serial>.recording_strategy.split_gop.topology.runtime`
+
+Topology fields are now split intentionally:
+
+- `topology.static`
+  - stable host / pair facts
+  - source / helper GPU ids
+  - per-GPU runtime info such as `pci_bus_id`
+  - `copy_paths[*].topology_class`
+  - `copy_paths[*].peer_access_capability`
+- `topology.runtime`
+  - run-local evidence
+  - `source_to_helper_copy_samples_total`
+  - `copy_paths[*].peer_access_observation`
+
+Interpretation:
+
+- `topology.static` answers "what GPUs and interconnect class did this run use?"
+- `topology.runtime` answers "what evidence do we have that this run actually
+  used the helper copy path and attempted / enabled peer access?"
 
 ## Telemetry Gaps Today
 
@@ -354,6 +376,9 @@ Practical consequence:
   - `gop_release_to_last_write`
 - multi-GPU `nvidia-smi dmon` capture is now persisted for the union of the
   source GPU and helper GPUs involved in the run
+- split-GOP topology metadata is now persisted in a clearer shape:
+  - `topology.static` for stable topology / capability facts
+  - `topology.runtime` for observed or inferred run evidence
 - helper-routing counts still are not written directly, so route choice is
   still inferred from throughput split, latency samples, and multi-GPU `dmon`
   rather than from explicit per-frame routing counters
@@ -576,12 +601,26 @@ Observed result:
 - `pending_gop_buffer.peak_backlog_gops = 2`
 - `pending_gop_buffer.overflow_events = 0`
 - `nvidia_smi_dmon.status = completed`
+- `recording_snapshot.json` now also persists:
+  - `topology.static.copy_paths[0].topology_class = PIX`
+  - `topology.static.copy_paths[0].peer_access_capability.can_access_peer = true`
+  - `topology.runtime.copy_paths[0].peer_access_observation.enabled = true`
 
 Most important interpretation:
 
 - `100 fps + gop=25` is now validated as more than a short smoke test
 - on this host, it is the current best validated visualization-oriented
   baseline for camera `2010096`
+
+Topology evidence note:
+
+- the current runtime peer-access observation may be inferred from successful
+  source-to-helper copy samples rather than read directly from a persisted CUDA
+  driver state callback
+- when that happens, the snapshot marks it explicitly with fields such as:
+  - `enable_attempted_inferred`
+  - `enabled_inferred`
+  - `observation_source = successful_source_to_helper_copy_samples`
 
 ## Pass Criteria
 

@@ -1341,6 +1341,40 @@ Interpretation:
 - `gop=25` is the current best validated baseline for seek-friendly
   visualization on this host
 
+### Snapshot Topology Metadata As Of 2026-04-15
+
+The run snapshot now persists split-GOP topology metadata in two sections:
+
+- `encoders.<serial>.recording_strategy.split_gop.topology.static`
+- `encoders.<serial>.recording_strategy.split_gop.topology.runtime`
+
+`topology.static` contains stable host / pair facts:
+
+- source / primary / helper GPU ids
+- per-GPU runtime info such as `pci_bus_id`
+- `copy_paths[*].topology_class` from `nvidia-smi topo -m`
+- `copy_paths[*].peer_access_capability`
+
+`topology.runtime` contains run-local evidence:
+
+- `source_to_helper_copy_samples_total`
+- `copy_paths[*].peer_access_observation`
+
+For the validated `GPU5 -> GPU6` runs, the snapshot now records:
+
+- `topology.static.copy_paths[0].topology_class = PIX`
+- `topology.static.copy_paths[0].peer_access_capability.can_access_peer = true`
+- `topology.runtime.copy_paths[0].peer_access_observation.enabled = true`
+
+Important nuance:
+
+- runtime peer-access enablement may be inferred from successful helper-copy
+  samples rather than directly persisted from the CUDA driver path
+- when that happens, the snapshot marks it explicitly with:
+  - `enable_attempted_inferred`
+  - `enabled_inferred`
+  - `observation_source = successful_source_to_helper_copy_samples`
+
 Host-specific caution:
 
 - `GPU3` is a poor experiment target on `pancake0` because it participates in
