@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 #include <cuda_runtime.h> // Add this include for cudaEvent_t
 
 struct RecordingOutputConfig {
@@ -51,6 +52,69 @@ struct EncoderControlOverrides {
         return aq >= 0 || temporal_aq >= 0 || lookahead >= 0 || lookahead_depth >= 0 ||
                target_bitrate_bps >= 0 || max_bitrate_bps >= 0 || vbv_buffer_size >= 0;
     }
+};
+
+struct SplitGopWriterQueueConfig {
+    uint64_t max_packets = 0;
+    uint64_t max_bytes = 0;
+    bool fail_on_overflow = true;
+};
+
+struct SplitGopConfig {
+    bool enabled = false;
+    std::string placement = "single_gpu";
+    std::vector<int> encoder_gpu_ids;
+    std::string source_encoder_policy = "local_only";
+    std::string transfer_mode = "auto";
+    uint64_t max_inflight_gops = 0;
+    uint64_t max_buffered_bytes = 0;
+    bool strict = false;
+    SplitGopWriterQueueConfig writer_queue;
+};
+
+struct RecordingStrategyConfig {
+    std::string requested_mode = "single_session";
+    std::string mode = "single_session";
+    std::string resolution_note;
+    SplitGopConfig split_gop;
+
+    bool split_gop_enabled() const { return mode == "split_gop" && split_gop.enabled; }
+};
+
+struct CameraRecordingEncodeConfig {
+    std::string codec = "h264";
+    std::string preset = "p1";
+    std::string tuning = "ll";
+    std::string rate_control_mode = "vbr";
+    int quality_value = 20;
+    int gop_length = 0;
+    bool nvenc_direct_input = false;
+};
+
+struct CameraRecordingOutputConfig {
+    std::string mode = "factor";
+    int downsample_factor = 1;
+    int requested_width = 0;
+    int requested_height = 0;
+};
+
+struct CameraRecordingConstraintsConfig {
+    bool require_peer_access = false;
+    std::string preferred_topology_class;
+};
+
+struct CameraRecordingResourcesConfig {
+    int acquire_work_entries = 0;
+    int encoder_entry_pool_size = 0;
+};
+
+struct CameraRecordingConfig {
+    std::string profile_name;
+    CameraRecordingEncodeConfig encode;
+    CameraRecordingOutputConfig output;
+    RecordingStrategyConfig strategy;
+    CameraRecordingConstraintsConfig constraints;
+    CameraRecordingResourcesConfig resources;
 };
 
 // The lightweight struct to pass data from the preprocess worker to the hardware encoder.
