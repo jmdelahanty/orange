@@ -2,7 +2,9 @@
 set -euo pipefail
 
 ORANGE_ROOT="/home/jeremy/orange-jeremy"
-ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
+DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
+EXPERIMENT_ORANGE_CLIENT="/home/jeremy/orange-gop-split-a16/targets/release/orange_client"
+ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 EVT_PROFILE="/etc/profile.d/evt.sh"
@@ -10,11 +12,14 @@ EVT_PROFILE="/etc/profile.d/evt.sh"
 usage() {
   cat <<'EOF'
 Usage:
-  orange_local_benchmark_wrapper.sh <experiment-spec.json>
-  orange_local_benchmark_wrapper.sh --stream-only --config-folder <path> --camera <serial|all> [options]
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] <experiment-spec.json>
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] --stream-only --config-folder <path> --camera <serial|all> [options]
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
+  - Only accepts orange_client binaries at:
+      /home/jeremy/orange-jeremy/build/orange_client
+      /home/jeremy/orange-gop-split-a16/targets/release/orange_client
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
       /tmp
@@ -36,11 +41,6 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-if [[ ! -x "$ORANGE_CLIENT" ]]; then
-  echo "orange_client not found or not executable at $ORANGE_CLIENT" >&2
-  exit 1
-fi
-
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required to parse the experiment spec." >&2
   exit 1
@@ -59,6 +59,33 @@ export VMA_TRACELEVEL="${VMA_TRACELEVEL:-0}"
 if [[ $# -eq 0 ]]; then
   usage >&2
   exit 2
+fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --orange-client)
+      shift
+      [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
+      ORANGE_CLIENT="$(realpath -e "$1")"
+      case "$ORANGE_CLIENT" in
+        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT")
+          ;;
+        *)
+          echo "Refusing to use orange_client outside allowed binaries: $ORANGE_CLIENT" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ ! -x "$ORANGE_CLIENT" ]]; then
+  echo "orange_client not found or not executable at $ORANGE_CLIENT" >&2
+  exit 1
 fi
 
 if [[ "$1" == "--stream-only" ]]; then
@@ -134,6 +161,7 @@ if [[ "$1" == "--stream-only" ]]; then
   fi
 
   echo "[sudo-wrapper] running stream-only local check"
+  echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
   echo "[sudo-wrapper] config_folder=$CONFIG_FOLDER"
   echo "[sudo-wrapper] cameras=${CAMERAS[*]}"
   if [[ "${#GPU_IDS[@]}" -gt 0 ]]; then
@@ -194,6 +222,7 @@ OUTPUT_ROOT="${SPEC_FIELDS[1]}"
 EXPERIMENT_ROOT="$(realpath -m "$OUTPUT_ROOT/$EXPERIMENT_ID")"
 
 echo "[sudo-wrapper] running experiment_id=$EXPERIMENT_ID"
+echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
 echo "[sudo-wrapper] spec=$SPEC_PATH"
 echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
 

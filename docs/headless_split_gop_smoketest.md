@@ -242,6 +242,7 @@ one short recording through the wrapper:
 
 ```bash
 sudo /usr/local/bin/orange-local-benchmark \
+  --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
   /tmp/2010096_split_gop_smoke_a16_pair_1_2.json
 ```
 
@@ -255,9 +256,6 @@ Equivalent direct invocation, if root is not required on the target host:
 
 Notes:
 
-- the currently installed wrapper on `pancake0` still points at the main-repo
-  binary, so it will not exercise this spec extension until that install step
-  is updated
 - `fixed.warmup_s = 2` gives a short stream warmup before the measured window
 - `fixed.duration_s = 12` is long enough to cross multiple GOP boundaries
   without turning the first run into a long soak test

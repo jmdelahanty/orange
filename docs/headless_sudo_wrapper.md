@@ -25,13 +25,11 @@ user so artifacts are not left root-owned.
 Because the wrapper forwards a structured experiment spec, new recording-mode
 options should go into the spec instead of becoming wrapper flags.
 
-Current workstation note:
+The wrapper also accepts an explicit `--orange-client <path>` override, but
+only for an allowlisted set of binaries:
 
-- the wrapper currently installed on `pancake0` still points at
-  `/home/jeremy/orange-jeremy/build/orange_client`
-- split-GOP experiment-spec support currently lives on `exp/gop-split-a16`
-- so to exercise the new spec block before merge, either reinstall the wrapper
-  from the experiment branch or run the experiment-branch binary directly
+- `/home/jeremy/orange-jeremy/build/orange_client`
+- `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
 
 ## Install
 
@@ -72,6 +70,14 @@ Temporary retry spec:
 
 ```bash
 sudo /usr/local/bin/orange-local-benchmark /tmp/2010096_smoke_a6000_retry.json
+```
+
+Experiment-branch binary:
+
+```bash
+sudo /usr/local/bin/orange-local-benchmark \
+  --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
+  /tmp/2010096_split_gop_smoke_a16_pair_1_2.json
 ```
 
 ## Split-GOP Specs
