@@ -2494,13 +2494,25 @@ std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
 {
     std::vector<int> gpu_ids;
     std::unordered_set<int> seen;
+    auto append_gpu_id = [&](int gpu_id) {
+        if (gpu_id < 0) {
+            return;
+        }
+        if (seen.insert(gpu_id).second) {
+            gpu_ids.push_back(gpu_id);
+        }
+    };
+
     for (int idx : selected_indices) {
         if (!cameras_params) {
             continue;
         }
-        const int gpu_id = cameras_params[idx].gpu_id;
-        if (seen.insert(gpu_id).second) {
-            gpu_ids.push_back(gpu_id);
+        const CameraParams& camera = cameras_params[idx];
+        append_gpu_id(camera.gpu_id);
+        if (camera.recording_strategy.split_gop_enabled()) {
+            for (int helper_gpu_id : camera.recording_strategy.split_gop.encoder_gpu_ids) {
+                append_gpu_id(helper_gpu_id);
+            }
         }
     }
     std::sort(gpu_ids.begin(), gpu_ids.end());
