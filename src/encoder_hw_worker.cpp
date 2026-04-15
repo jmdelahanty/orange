@@ -1623,6 +1623,7 @@ void EncoderHwWorker::refresh_writer_queue_metrics()
         writer_queue_peak_bytes_ = output_stats.writer_queue_peak_bytes;
         pending_gop_buffered_bytes_ = output_stats.pending_gop_bytes;
         pending_gop_peak_count_ = output_stats.pending_gop_peak_count;
+        pending_gop_peak_backlog_count_ = output_stats.pending_gop_peak_backlog_count;
         pending_gop_peak_bytes_ = output_stats.pending_gop_peak_bytes;
         pending_gop_overflowed_ = output_stats.pending_gop_overflowed;
         pending_gop_overflow_events_ = output_stats.pending_gop_overflow_events;
@@ -1651,6 +1652,7 @@ void EncoderHwWorker::reset_pending_gop_state()
         next_gop_to_flush_ = 0;
         pending_gop_buffered_bytes_ = 0;
         pending_gop_peak_count_ = 0;
+        pending_gop_peak_backlog_count_ = 0;
         pending_gop_peak_bytes_ = 0;
         pending_gop_overflowed_ = false;
         pending_gop_overflow_events_ = 0;
@@ -1660,6 +1662,7 @@ void EncoderHwWorker::reset_pending_gop_state()
     next_gop_to_flush_ = 0;
     pending_gop_buffered_bytes_ = 0;
     pending_gop_peak_count_ = 0;
+    pending_gop_peak_backlog_count_ = 0;
     pending_gop_peak_bytes_ = 0;
     pending_gop_overflowed_ = false;
     pending_gop_overflow_events_ = 0;
@@ -1718,13 +1721,9 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
         if (inserted) {
             pending.gop_index = gop_index;
             pending.created_at = std::chrono::steady_clock::now();
-        }
-
-        if (recording_strategy_config_.split_gop.max_inflight_gops > 0 &&
-            pending_gops_.size() > recording_strategy_config_.split_gop.max_inflight_gops) {
-            pending_gop_overflowed_ = true;
-            pending_gop_overflow_events_++;
-            throw std::runtime_error("split_gop pending GOP count exceeded configured limit");
+            pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+            pending_gop_peak_backlog_count_ =
+                std::max(pending_gop_peak_backlog_count_, pending_gop_backlog_count());
         }
 
         const size_t packet_size = packets[i].size();
@@ -1744,6 +1743,8 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
         pending.packets.push_back(std::move(buffered_packet));
 
         pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+        pending_gop_peak_backlog_count_ =
+            std::max(pending_gop_peak_backlog_count_, pending_gop_backlog_count());
         pending_gop_peak_bytes_ = std::max(pending_gop_peak_bytes_, pending_gop_buffered_bytes_);
 
         if (sample_index >= 0) {
@@ -1760,11 +1761,19 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
             pending.gop_index = completion_gop_index;
             pending.created_at = std::chrono::steady_clock::now();
             pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+            pending_gop_peak_backlog_count_ =
+                std::max(pending_gop_peak_backlog_count_, pending_gop_backlog_count());
         }
         pending.complete = true;
     }
 
     flush_pending_gops(false);
+    if (recording_strategy_config_.split_gop.max_inflight_gops > 0 &&
+        pending_gop_backlog_count() > recording_strategy_config_.split_gop.max_inflight_gops) {
+        pending_gop_overflowed_ = true;
+        pending_gop_overflow_events_++;
+        throw std::runtime_error("split_gop pending GOP backlog exceeded configured limit");
+    }
 }
 
 void EncoderHwWorker::flush_pending_gops(bool flush_all)
@@ -1801,6 +1810,18 @@ void EncoderHwWorker::flush_pending_gops(bool flush_all)
         next_gop_to_flush_++;
     }
     refresh_writer_queue_metrics();
+}
+
+size_t EncoderHwWorker::pending_gop_backlog_count() const
+{
+    size_t backlog = pending_gops_.size();
+    if (backlog == 0) {
+        return 0;
+    }
+    if (pending_gops_.find(next_gop_to_flush_) != pending_gops_.end()) {
+        backlog--;
+    }
+    return backlog;
 }
 
 int64_t EncoderHwWorker::oldest_pending_gop_age_ms() const
@@ -1961,8 +1982,12 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
             {"pending_gop_buffer", {
                 {"next_gop_to_flush", next_gop_to_flush_},
                 {"current_gops", shared_output_ ? shared_output_stats.pending_gop_count : pending_gops_.size()},
+                {"current_backlog_gops",
+                 shared_output_ ? shared_output_stats.pending_gop_backlog_count
+                                : pending_gop_backlog_count()},
                 {"current_bytes", pending_gop_buffered_bytes_},
                 {"peak_gops", pending_gop_peak_count_},
+                {"peak_backlog_gops", pending_gop_peak_backlog_count_},
                 {"peak_bytes", pending_gop_peak_bytes_},
                 {"overflow_detected", pending_gop_overflowed_},
                 {"overflow_events", pending_gop_overflow_events_},

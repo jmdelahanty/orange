@@ -151,7 +151,7 @@ void SharedRecordingOutput::buffer_packets_locked(
         if (inserted) {
             pending.gop_index = gop_index;
             pending.created_at = std::chrono::steady_clock::now();
-            pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+            update_pending_gop_peaks_locked();
         }
         pending.metadata_rows.push_back(row);
     };
@@ -169,13 +169,7 @@ void SharedRecordingOutput::buffer_packets_locked(
         if (inserted) {
             pending.gop_index = gop_index;
             pending.created_at = std::chrono::steady_clock::now();
-        }
-
-        if (split_gop_config_.max_inflight_gops > 0 &&
-            pending_gops_.size() > split_gop_config_.max_inflight_gops) {
-            pending_gop_overflowed_ = true;
-            pending_gop_overflow_events_++;
-            throw std::runtime_error("split_gop pending GOP count exceeded configured limit");
+            update_pending_gop_peaks_locked();
         }
 
         const size_t packet_size = packets[i].size();
@@ -193,7 +187,7 @@ void SharedRecordingOutput::buffer_packets_locked(
         pending_gop_buffered_bytes_ += packet_size;
         pending.packets.push_back(std::move(buffered_packet));
 
-        pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+        update_pending_gop_peaks_locked();
         pending_gop_peak_bytes_ = std::max(pending_gop_peak_bytes_, pending_gop_buffered_bytes_);
     }
 
@@ -210,12 +204,18 @@ void SharedRecordingOutput::buffer_packets_locked(
         if (inserted) {
             pending.gop_index = completion_gop_index;
             pending.created_at = std::chrono::steady_clock::now();
-            pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+            update_pending_gop_peaks_locked();
         }
         pending.complete = true;
     }
 
     flush_pending_gops_locked(false);
+    if (split_gop_config_.max_inflight_gops > 0 &&
+        pending_gop_backlog_count_locked() > split_gop_config_.max_inflight_gops) {
+        pending_gop_overflowed_ = true;
+        pending_gop_overflow_events_++;
+        throw std::runtime_error("split_gop pending GOP backlog exceeded configured limit");
+    }
 }
 
 void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
@@ -337,8 +337,10 @@ SharedRecordingOutputStats SharedRecordingOutput::stats() const
     out.writer_queue_peak_bytes = writer_queue_peak_bytes_;
     out.next_gop_to_flush = next_gop_to_flush_;
     out.pending_gop_count = pending_gops_.size();
+    out.pending_gop_backlog_count = pending_gop_backlog_count_locked();
     out.pending_gop_bytes = pending_gop_buffered_bytes_;
     out.pending_gop_peak_count = pending_gop_peak_count_;
+    out.pending_gop_peak_backlog_count = pending_gop_peak_backlog_count_;
     out.pending_gop_peak_bytes = pending_gop_peak_bytes_;
     out.pending_gop_overflowed = pending_gop_overflowed_;
     out.pending_gop_overflow_events = pending_gop_overflow_events_;
@@ -364,6 +366,26 @@ size_t SharedRecordingOutput::active_worker_sessions() const
     return active_worker_sessions_;
 }
 
+size_t SharedRecordingOutput::pending_gop_backlog_count_locked() const
+{
+    size_t backlog = pending_gops_.size();
+    if (backlog == 0) {
+        return 0;
+    }
+    if (pending_gops_.find(next_gop_to_flush_) != pending_gops_.end()) {
+        backlog--;
+    }
+    return backlog;
+}
+
+void SharedRecordingOutput::update_pending_gop_peaks_locked()
+{
+    pending_gop_peak_count_ = std::max(pending_gop_peak_count_, pending_gops_.size());
+    pending_gop_peak_backlog_count_ = std::max(
+        pending_gop_peak_backlog_count_,
+        pending_gop_backlog_count_locked());
+}
+
 int64_t SharedRecordingOutput::oldest_pending_gop_age_ms_locked() const
 {
     if (pending_gops_.empty()) {
@@ -385,6 +407,7 @@ void SharedRecordingOutput::reset_pending_state_locked()
     next_gop_to_flush_ = 0;
     pending_gop_buffered_bytes_ = 0;
     pending_gop_peak_count_ = 0;
+    pending_gop_peak_backlog_count_ = 0;
     pending_gop_peak_bytes_ = 0;
     pending_gop_overflowed_ = false;
     pending_gop_overflow_events_ = 0;

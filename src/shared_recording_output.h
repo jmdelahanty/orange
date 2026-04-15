@@ -32,8 +32,10 @@ struct SharedRecordingOutputStats {
     size_t writer_queue_peak_bytes = 0;
     uint64_t next_gop_to_flush = 0;
     size_t pending_gop_count = 0;
+    size_t pending_gop_backlog_count = 0;
     size_t pending_gop_bytes = 0;
     size_t pending_gop_peak_count = 0;
+    size_t pending_gop_peak_backlog_count = 0;
     size_t pending_gop_peak_bytes = 0;
     bool pending_gop_overflowed = false;
     uint64_t pending_gop_overflow_events = 0;
@@ -96,6 +98,8 @@ private:
     void flush_pending_gops_locked(bool flush_all);
     void refresh_writer_queue_metrics_locked();
     void write_metadata_row_locked(const RecordingMetadataRow& metadata_row);
+    size_t pending_gop_backlog_count_locked() const;
+    void update_pending_gop_peaks_locked();
     int64_t oldest_pending_gop_age_ms_locked() const;
     void reset_pending_state_locked();
 
@@ -111,6 +115,7 @@ private:
     uint64_t next_gop_to_flush_ = 0;
     size_t pending_gop_buffered_bytes_ = 0;
     size_t pending_gop_peak_count_ = 0;
+    size_t pending_gop_peak_backlog_count_ = 0;
     size_t pending_gop_peak_bytes_ = 0;
     bool pending_gop_overflowed_ = false;
     uint64_t pending_gop_overflow_events_ = 0;

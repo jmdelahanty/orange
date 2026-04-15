@@ -107,6 +107,7 @@ private:
                                 bool mark_complete,
                                 const std::optional<RecordingMetadataRow>& metadata_row);
     void flush_pending_gops(bool flush_all);
+    size_t pending_gop_backlog_count() const;
     int64_t oldest_pending_gop_age_ms() const;
 
     struct ReferenceCaptureStagingSlot {
@@ -249,6 +250,7 @@ private:
     uint64_t next_gop_to_flush_ = 0;
     size_t pending_gop_buffered_bytes_ = 0;
     size_t pending_gop_peak_count_ = 0;
+    size_t pending_gop_peak_backlog_count_ = 0;
     size_t pending_gop_peak_bytes_ = 0;
     bool pending_gop_overflowed_ = false;
     uint64_t pending_gop_overflow_events_ = 0;
