@@ -7,6 +7,7 @@
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
+#include <cstdlib>
 #include <stdexcept>
 
 #ifndef PIPELINE_PROFILE
@@ -26,6 +27,35 @@ void check_npp_status(NppStatus status, const char* operation)
     if (status != NPP_SUCCESS) {
         throw std::runtime_error(std::string(operation) + " failed with NPP status " + std::to_string(status));
     }
+}
+
+int resolve_encoder_entry_pool_size(bool direct_input_enabled,
+                                    int direct_input_slot_count,
+                                    int default_entry_pool_size)
+{
+    if (direct_input_enabled) {
+        return direct_input_slot_count;
+    }
+
+    const char* env = std::getenv("ORANGE_ENCODER_ENTRY_POOL_SIZE");
+    if (!env || !*env) {
+        return default_entry_pool_size;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0') {
+        std::cerr << "[EncoderPreprocessWorker] Ignoring invalid ORANGE_ENCODER_ENTRY_POOL_SIZE='"
+                  << env << "', using default " << default_entry_pool_size << std::endl;
+        return default_entry_pool_size;
+    }
+    if (parsed < 1 || parsed > default_entry_pool_size) {
+        std::cerr << "[EncoderPreprocessWorker] ORANGE_ENCODER_ENTRY_POOL_SIZE must be within [1,"
+                  << default_entry_pool_size << "], using default "
+                  << default_entry_pool_size << std::endl;
+        return default_entry_pool_size;
+    }
+    return static_cast<int>(parsed);
 }
 } // namespace
 
@@ -107,9 +137,15 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         ck(cudaMemset(d_uv_default_plane_, 128, uv_plane_size));
     }
 
-    const int entry_pool_size = direct_input_enabled_
-        ? direct_input_slot_count_
-        : DEFAULT_ENCODER_ENTRY_POOL_SIZE;
+    const int entry_pool_size = resolve_encoder_entry_pool_size(
+        direct_input_enabled_,
+        direct_input_slot_count_,
+        DEFAULT_ENCODER_ENTRY_POOL_SIZE);
+    if (!direct_input_enabled_ && entry_pool_size != DEFAULT_ENCODER_ENTRY_POOL_SIZE) {
+        std::cout << "[EncoderPreprocessWorker] Using " << entry_pool_size
+                  << " encoder entry slots instead of "
+                  << DEFAULT_ENCODER_ENTRY_POOL_SIZE << std::endl;
+    }
     encoder_entry_pool_.resize(static_cast<size_t>(entry_pool_size));
 
     // Create a pool of metadata entries that will be passed to the hardware encoder
