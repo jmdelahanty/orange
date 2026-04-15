@@ -355,6 +355,71 @@ void normalize_recording_strategy_config(RecordingStrategyConfig* config) {
     config->split_gop.enabled = config->mode == "split_gop";
 }
 
+bool parse_recording_strategy_json_object(const nlohmann::json& recording,
+                                          RecordingStrategyConfig* recording_strategy_out,
+                                          std::string* error_out) {
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!recording_strategy_out) {
+        if (error_out) {
+            *error_out = "recording strategy destination is null";
+        }
+        return false;
+    }
+    if (!recording.is_object()) {
+        if (error_out) {
+            *error_out = "recording strategy must be a JSON object";
+        }
+        return false;
+    }
+
+    RecordingStrategyConfig recording_strategy;
+    recording_strategy.requested_mode =
+        normalize_recording_mode_string(recording.value("mode", recording_strategy.requested_mode));
+    recording_strategy.mode = recording_strategy.requested_mode;
+    if (recording.contains("split_gop") && recording["split_gop"].is_object()) {
+        const nlohmann::json& split_gop = recording["split_gop"];
+        recording_strategy.split_gop.placement =
+            normalize_split_gop_placement_string(
+                split_gop.value("placement", recording_strategy.split_gop.placement));
+        recording_strategy.split_gop.source_encoder_policy =
+            normalize_split_gop_source_encoder_policy_string(split_gop.value(
+                "source_encoder_policy", recording_strategy.split_gop.source_encoder_policy));
+        recording_strategy.split_gop.transfer_mode =
+            normalize_split_gop_transfer_mode_string(
+                split_gop.value("transfer_mode", recording_strategy.split_gop.transfer_mode));
+        parse_split_gop_encoder_gpu_ids(
+            split_gop, &recording_strategy.split_gop.encoder_gpu_ids);
+        try_get_nonnegative_u64(
+            split_gop, "max_inflight_gops",
+            &recording_strategy.split_gop.max_inflight_gops);
+        try_get_nonnegative_u64(
+            split_gop, "max_buffered_bytes",
+            &recording_strategy.split_gop.max_buffered_bytes);
+        recording_strategy.split_gop.strict =
+            split_gop.value("strict", recording_strategy.split_gop.strict);
+
+        if (split_gop.contains("writer_queue") && split_gop["writer_queue"].is_object()) {
+            const nlohmann::json& writer_queue = split_gop["writer_queue"];
+            try_get_nonnegative_u64(
+                writer_queue, "max_packets",
+                &recording_strategy.split_gop.writer_queue.max_packets);
+            try_get_nonnegative_u64(
+                writer_queue, "max_bytes",
+                &recording_strategy.split_gop.writer_queue.max_bytes);
+            recording_strategy.split_gop.writer_queue.fail_on_overflow =
+                writer_queue.value(
+                    "fail_on_overflow",
+                    recording_strategy.split_gop.writer_queue.fail_on_overflow);
+        }
+    }
+
+    normalize_recording_strategy_config(&recording_strategy);
+    *recording_strategy_out = std::move(recording_strategy);
+    return true;
+}
+
 void parse_recording_strategy_from_json(const nlohmann::json& camera_config,
                                         CameraParams* camera_params) {
     if (!camera_params) {
@@ -366,53 +431,14 @@ void parse_recording_strategy_from_json(const nlohmann::json& camera_config,
         return;
     }
 
-    const nlohmann::json& recording = camera_config["recording"];
-    camera_params->recording_strategy.requested_mode =
-        normalize_recording_mode_string(recording.value("mode", camera_params->recording_strategy.requested_mode));
-    camera_params->recording_strategy.mode = camera_params->recording_strategy.requested_mode;
-
-    if (recording.contains("split_gop") && recording["split_gop"].is_object()) {
-        const nlohmann::json& split_gop = recording["split_gop"];
-        camera_params->recording_strategy.split_gop.placement =
-            normalize_split_gop_placement_string(
-                split_gop.value("placement", camera_params->recording_strategy.split_gop.placement));
-        camera_params->recording_strategy.split_gop.source_encoder_policy =
-            normalize_split_gop_source_encoder_policy_string(split_gop.value(
-                "source_encoder_policy", camera_params->recording_strategy.split_gop.source_encoder_policy));
-        camera_params->recording_strategy.split_gop.transfer_mode =
-            normalize_split_gop_transfer_mode_string(
-                split_gop.value("transfer_mode", camera_params->recording_strategy.split_gop.transfer_mode));
-        parse_split_gop_encoder_gpu_ids(
-            split_gop, &camera_params->recording_strategy.split_gop.encoder_gpu_ids);
-        try_get_nonnegative_u64(
-            split_gop, "max_inflight_gops",
-            &camera_params->recording_strategy.split_gop.max_inflight_gops);
-        try_get_nonnegative_u64(
-            split_gop, "max_buffered_bytes",
-            &camera_params->recording_strategy.split_gop.max_buffered_bytes);
-        camera_params->recording_strategy.split_gop.strict =
-            split_gop.value("strict", camera_params->recording_strategy.split_gop.strict);
-
-        if (split_gop.contains("writer_queue") && split_gop["writer_queue"].is_object()) {
-            const nlohmann::json& writer_queue = split_gop["writer_queue"];
-            try_get_nonnegative_u64(
-                writer_queue, "max_packets",
-                &camera_params->recording_strategy.split_gop.writer_queue.max_packets);
-            try_get_nonnegative_u64(
-                writer_queue, "max_bytes",
-                &camera_params->recording_strategy.split_gop.writer_queue.max_bytes);
-            camera_params->recording_strategy.split_gop.writer_queue.fail_on_overflow =
-                writer_queue.value(
-                    "fail_on_overflow",
-                    camera_params->recording_strategy.split_gop.writer_queue.fail_on_overflow);
-        }
+    RecordingStrategyConfig parsed_strategy;
+    if (parse_recording_strategy_json_object(camera_config["recording"], &parsed_strategy, nullptr)) {
+        camera_params->recording_strategy = std::move(parsed_strategy);
     }
-
-    normalize_recording_strategy_config(&camera_params->recording_strategy);
 }
 
-nlohmann::json build_recording_strategy_json_from_params(const CameraParams& camera_params) {
-    RecordingStrategyConfig recording_strategy = camera_params.recording_strategy;
+nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfig& recording_strategy_in) {
+    RecordingStrategyConfig recording_strategy = recording_strategy_in;
     normalize_recording_strategy_config(&recording_strategy);
 
     nlohmann::json recording = nlohmann::json::object();
@@ -432,6 +458,10 @@ nlohmann::json build_recording_strategy_json_from_params(const CameraParams& cam
         }}
     };
     return recording;
+}
+
+nlohmann::json build_recording_strategy_json_from_params(const CameraParams& camera_params) {
+    return build_recording_strategy_json_object(camera_params.recording_strategy);
 }
 
 bool starts_with_case_insensitive(const std::string& value, const std::string& prefix) {
@@ -782,6 +812,16 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     parse_gpio_nodes_from_json(camera_config, camera_params);
     parse_recording_strategy_from_json(camera_config, camera_params);
     infer_camera_gpio_metadata(camera_params);
+}
+
+bool parse_recording_strategy_json(const nlohmann::json& recording_json,
+                                   RecordingStrategyConfig* recording_strategy_out,
+                                   std::string* error_out) {
+    return parse_recording_strategy_json_object(recording_json, recording_strategy_out, error_out);
+}
+
+nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& recording_strategy) {
+    return build_recording_strategy_json_object(recording_strategy);
 }
 
 std::string get_current_utc_timestamp() {
