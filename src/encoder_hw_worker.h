@@ -75,6 +75,7 @@ public:
     bool direct_input_enabled() const { return direct_input_enabled_; }
     int encoder_input_pitch() const { return encoder_input_pitch_; }
     int encoder_buffer_count() const { return encoder_buffer_count_; }
+    void SetSplitGopTopologySnapshot(const nlohmann::json& topology_snapshot);
 
     EncoderContext encoder_;
     EncoderPreprocessWorker* m_prep_worker_;
@@ -210,6 +211,7 @@ private:
         int encode_gpu_id = -1;
         int gpu_id = -1;
         nlohmann::json gpu = nlohmann::json::object();
+        nlohmann::json split_gop_topology = nlohmann::json::object();
         nlohmann::json resolved_config = nlohmann::json::object();
         bool color = false;
         RecordingStrategyConfig recording_strategy;

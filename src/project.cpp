@@ -12,7 +12,9 @@
 #include <sstream>       // For std::ostringstream
 #include <ctime>         // For std::gmtime
 #include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <map>
 #include <utility>
 #include <mutex>
 #include <set>
@@ -158,6 +160,231 @@ nlohmann::json build_gpu_runtime_info(int gpu_id) {
     } else if (pci_status != cudaSuccess) {
         info["pci_bus_id_lookup_error"] = cudaGetErrorString(pci_status);
     }
+
+    return info;
+}
+
+namespace {
+
+std::vector<std::string> split_whitespace_tokens(const std::string& line)
+{
+    std::istringstream iss(line);
+    std::vector<std::string> tokens;
+    std::string token;
+    while (iss >> token) {
+        tokens.push_back(token);
+    }
+    return tokens;
+}
+
+std::string strip_ansi_escape_sequences(const std::string& input)
+{
+    std::string output;
+    output.reserve(input.size());
+
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(input[i]);
+        if (ch == 0x1b && i + 1 < input.size() && input[i + 1] == '[') {
+            i += 2;
+            while (i < input.size()) {
+                const unsigned char c = static_cast<unsigned char>(input[i]);
+                if (c >= '@' && c <= '~') {
+                    break;
+                }
+                ++i;
+            }
+            continue;
+        }
+        output.push_back(static_cast<char>(ch));
+    }
+
+    return output;
+}
+
+struct NvidiaSmiTopologyCache {
+    bool success = false;
+    std::string error;
+    std::vector<std::string> gpu_headers;
+    std::map<std::string, std::vector<std::string>> rows;
+};
+
+NvidiaSmiTopologyCache load_nvidia_smi_topology_cache()
+{
+    NvidiaSmiTopologyCache cache;
+    FILE* pipe = popen("nvidia-smi topo -m 2>/dev/null", "r");
+    if (!pipe) {
+        cache.error = "failed to execute `nvidia-smi topo -m`";
+        return cache;
+    }
+
+    char buffer[4096];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        const std::string clean_line = strip_ansi_escape_sequences(buffer);
+        const std::vector<std::string> tokens = split_whitespace_tokens(clean_line);
+        if (tokens.empty()) {
+            continue;
+        }
+
+        if (cache.gpu_headers.empty() &&
+            tokens.size() > 1 &&
+            tokens.front().rfind("GPU", 0) == 0 &&
+            tokens[1].rfind("GPU", 0) == 0) {
+            for (const std::string& token : tokens) {
+                if (token.rfind("GPU", 0) != 0) {
+                    break;
+                }
+                cache.gpu_headers.push_back(token);
+            }
+            continue;
+        }
+
+        if (tokens.front().rfind("GPU", 0) != 0 || cache.gpu_headers.empty()) {
+            continue;
+        }
+
+        if (tokens.size() < cache.gpu_headers.size() + 1) {
+            continue;
+        }
+
+        std::vector<std::string> connections;
+        connections.reserve(cache.gpu_headers.size());
+        for (std::size_t i = 0; i < cache.gpu_headers.size(); ++i) {
+            connections.push_back(tokens[i + 1]);
+        }
+        cache.rows[tokens.front()] = std::move(connections);
+    }
+
+    const int close_status = pclose(pipe);
+    if (close_status != 0) {
+        cache.error = "`nvidia-smi topo -m` exited with status " + std::to_string(close_status);
+        return cache;
+    }
+    if (cache.gpu_headers.empty() || cache.rows.empty()) {
+        cache.error = "`nvidia-smi topo -m` did not return a parseable GPU topology table";
+        return cache;
+    }
+
+    cache.success = true;
+    return cache;
+}
+
+const NvidiaSmiTopologyCache& get_nvidia_smi_topology_cache()
+{
+    static std::mutex cache_mutex;
+    static bool initialized = false;
+    static NvidiaSmiTopologyCache cache;
+
+    std::lock_guard<std::mutex> lock(cache_mutex);
+    if (!initialized) {
+        cache = load_nvidia_smi_topology_cache();
+        initialized = true;
+    }
+    return cache;
+}
+
+} // namespace
+
+std::string lookup_nvidia_smi_topology_class(int source_gpu_id,
+                                             int target_gpu_id,
+                                             std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (source_gpu_id < 0 || target_gpu_id < 0) {
+        if (error_out) {
+            *error_out = "invalid GPU ids";
+        }
+        return "";
+    }
+
+    const NvidiaSmiTopologyCache& cache = get_nvidia_smi_topology_cache();
+    if (!cache.success) {
+        if (error_out) {
+            *error_out = cache.error.empty() ? "topology cache unavailable" : cache.error;
+        }
+        return "";
+    }
+
+    const std::string row_key = "GPU" + std::to_string(source_gpu_id);
+    const std::string col_key = "GPU" + std::to_string(target_gpu_id);
+    const auto row_it = cache.rows.find(row_key);
+    if (row_it == cache.rows.end()) {
+        if (error_out) {
+            *error_out = "row not found in `nvidia-smi topo -m`: " + row_key;
+        }
+        return "";
+    }
+
+    const auto header_it = std::find(cache.gpu_headers.begin(), cache.gpu_headers.end(), col_key);
+    if (header_it == cache.gpu_headers.end()) {
+        if (error_out) {
+            *error_out = "column not found in `nvidia-smi topo -m`: " + col_key;
+        }
+        return "";
+    }
+
+    const std::size_t column_index = static_cast<std::size_t>(
+        std::distance(cache.gpu_headers.begin(), header_it));
+    if (column_index >= row_it->second.size()) {
+        if (error_out) {
+            *error_out = "topology matrix index out of range";
+        }
+        return "";
+    }
+
+    return row_it->second[column_index];
+}
+
+nlohmann::json build_gpu_copy_path_runtime_info(int source_gpu_id, int target_gpu_id)
+{
+    nlohmann::json info = {
+        {"source_gpu_id", source_gpu_id},
+        {"target_gpu_id", target_gpu_id},
+        {"source_gpu", build_gpu_runtime_info(source_gpu_id)},
+        {"target_gpu", build_gpu_runtime_info(target_gpu_id)},
+        {"same_gpu", source_gpu_id == target_gpu_id},
+        {"copy_direction", "source_to_target"},
+        {"runtime_peer_access", {
+            {"can_access_peer_query_direction", {
+                {"accessing_gpu_id", target_gpu_id},
+                {"peer_gpu_id", source_gpu_id}
+            }}
+        }}
+    };
+
+    std::string topology_error;
+    const std::string topology_class =
+        lookup_nvidia_smi_topology_class(source_gpu_id, target_gpu_id, &topology_error);
+    if (!topology_class.empty()) {
+        info["topology_class"] = topology_class;
+    } else if (!topology_error.empty()) {
+        info["topology_lookup_error"] = topology_error;
+    }
+
+    if (source_gpu_id < 0 || target_gpu_id < 0) {
+        info["runtime_peer_access"]["can_access_peer"] = false;
+        info["runtime_peer_access"]["peer_access_required"] = false;
+        return info;
+    }
+
+    if (source_gpu_id == target_gpu_id) {
+        info["runtime_peer_access"]["can_access_peer"] = true;
+        info["runtime_peer_access"]["peer_access_required"] = false;
+        return info;
+    }
+
+    int can_access_peer = 0;
+    const cudaError_t peer_status =
+        cudaDeviceCanAccessPeer(&can_access_peer, target_gpu_id, source_gpu_id);
+    if (peer_status == cudaSuccess) {
+        info["runtime_peer_access"]["can_access_peer"] = (can_access_peer != 0);
+    } else {
+        info["runtime_peer_access"]["can_access_peer"] = false;
+        info["runtime_peer_access"]["can_access_peer_lookup_error"] =
+            cudaGetErrorString(peer_status);
+    }
+    info["runtime_peer_access"]["peer_access_required"] = true;
 
     return info;
 }

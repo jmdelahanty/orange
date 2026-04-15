@@ -221,6 +221,18 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
     copy_end_event_pool_.clear();
 }
 
+std::vector<PeerAccessRouteState> EncoderPreprocessWorker::peer_access_states() const
+{
+    std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+    std::vector<PeerAccessRouteState> states;
+    states.reserve(peer_access_states_.size());
+    for (const auto& [source_gpu_id, state] : peer_access_states_) {
+        (void)source_gpu_id;
+        states.push_back(state);
+    }
+    return states;
+}
+
 void EncoderPreprocessWorker::SetHwWorker(EncoderHwWorker* hw_worker)
 {
     m_hw_worker_ = hw_worker;
@@ -257,21 +269,56 @@ bool EncoderPreprocessWorker::ensure_peer_access_enabled(int source_gpu_id)
     if (source_gpu_id < 0 || source_gpu_id == preprocess_gpu_id_) {
         return true;
     }
-    if (peer_access_enabled_gpus_.count(source_gpu_id) > 0) {
-        return true;
+
+    {
+        std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+        PeerAccessRouteState& state = peer_access_states_[source_gpu_id];
+        state.source_gpu_id = source_gpu_id;
+        state.target_gpu_id = preprocess_gpu_id_;
+        if (peer_access_enabled_gpus_.count(source_gpu_id) > 0) {
+            state.can_access_peer = true;
+            state.peer_access_enable_attempted = true;
+            state.peer_access_enabled = true;
+            state.enable_error.clear();
+            return true;
+        }
     }
 
     int can_access_peer = 0;
     ck(cudaDeviceCanAccessPeer(&can_access_peer, preprocess_gpu_id_, source_gpu_id));
+    {
+        std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+        PeerAccessRouteState& state = peer_access_states_[source_gpu_id];
+        state.source_gpu_id = source_gpu_id;
+        state.target_gpu_id = preprocess_gpu_id_;
+        state.can_access_peer = (can_access_peer != 0);
+        state.peer_access_enable_attempted = false;
+        state.peer_access_enabled = false;
+        state.enable_error.clear();
+    }
     if (!can_access_peer) {
         return false;
     }
 
     ck(cudaSetDevice(preprocess_gpu_id_));
+    {
+        std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+        peer_access_states_[source_gpu_id].peer_access_enable_attempted = true;
+    }
     cudaError_t enable_status = cudaDeviceEnablePeerAccess(source_gpu_id, 0);
     if (enable_status == cudaErrorPeerAccessAlreadyEnabled) {
         cudaGetLastError();
+        std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+        PeerAccessRouteState& state = peer_access_states_[source_gpu_id];
+        state.peer_access_enabled = true;
+        state.enable_error.clear();
     } else if (enable_status != cudaSuccess) {
+        {
+            std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+            PeerAccessRouteState& state = peer_access_states_[source_gpu_id];
+            state.peer_access_enabled = false;
+            state.enable_error = cudaGetErrorString(enable_status);
+        }
         throw std::runtime_error(
             "Failed to enable CUDA peer access from GPU " + std::to_string(preprocess_gpu_id_) +
             " to GPU " + std::to_string(source_gpu_id) + ": " +
@@ -279,6 +326,12 @@ bool EncoderPreprocessWorker::ensure_peer_access_enabled(int source_gpu_id)
     }
 
     peer_access_enabled_gpus_.insert(source_gpu_id);
+    {
+        std::lock_guard<std::mutex> lock(peer_access_states_mutex_);
+        PeerAccessRouteState& state = peer_access_states_[source_gpu_id];
+        state.peer_access_enabled = true;
+        state.enable_error.clear();
+    }
     return true;
 }
 

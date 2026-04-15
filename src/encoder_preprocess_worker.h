@@ -10,10 +10,22 @@
 #include <cuda_runtime.h>
 #include <atomic>
 #include <chrono>
+#include <map>
+#include <mutex>
 #include <set>
+#include <string>
 #include <vector>
 
 class EncoderHwWorker; // Forward declaration is sufficient here
+
+struct PeerAccessRouteState {
+    int source_gpu_id = -1;
+    int target_gpu_id = -1;
+    bool can_access_peer = false;
+    bool peer_access_enable_attempted = false;
+    bool peer_access_enabled = false;
+    std::string enable_error;
+};
 
 class EncoderPreprocessWorker : public CThreadWorker<WORKER_ENTRY>
 {
@@ -56,6 +68,7 @@ public:
     int direct_input_pitch() const { return direct_input_pitch_; }
     int direct_input_slot_count() const { return direct_input_slot_count_; }
     const std::vector<void*>& direct_input_surfaces() const { return direct_input_surfaces_; }
+    std::vector<PeerAccessRouteState> peer_access_states() const;
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
@@ -93,6 +106,8 @@ private:
     std::vector<cudaEvent_t> copy_end_event_pool_;
     std::vector<void*> direct_input_surfaces_;
     std::set<int> peer_access_enabled_gpus_;
+    mutable std::mutex peer_access_states_mutex_;
+    std::map<int, PeerAccessRouteState> peer_access_states_;
     
     // Performance monitoring members
     std::chrono::steady_clock::time_point last_fps_update_time_;

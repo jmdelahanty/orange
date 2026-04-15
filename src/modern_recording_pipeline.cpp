@@ -7,6 +7,7 @@
 
 #include "encoder_hw_worker.h"
 #include "encoder_preprocess_worker.h"
+#include "project.h"
 #include "recording_ingress.h"
 #include "shared_recording_output.h"
 
@@ -141,6 +142,8 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             helper_encode_targets_.push_back(std::move(helper_target));
         }
     }
+
+    refresh_split_gop_topology_snapshot();
 }
 
 ModernRecordingPipeline::~ModernRecordingPipeline()
@@ -172,6 +175,7 @@ void ModernRecordingPipeline::start()
 
 void ModernRecordingPipeline::request_stop()
 {
+    refresh_split_gop_topology_snapshot();
     for (auto& helper_target : helper_encode_targets_) {
         if (helper_target.hw_worker) {
             helper_target.hw_worker->StopThread();
@@ -190,6 +194,7 @@ void ModernRecordingPipeline::request_stop()
 
 void ModernRecordingPipeline::shutdown()
 {
+    refresh_split_gop_topology_snapshot();
     request_stop();
 
     for (auto& helper_target : helper_encode_targets_) {
@@ -219,4 +224,66 @@ void ModernRecordingPipeline::shutdown()
 
     recording_ingress_.reset();
     shared_recording_output_.reset();
+}
+
+void ModernRecordingPipeline::refresh_split_gop_topology_snapshot()
+{
+    if (!hw_worker_) {
+        return;
+    }
+
+    const SharedRecordingOutputStats shared_output_stats =
+        shared_recording_output_ ? shared_recording_output_->stats() : SharedRecordingOutputStats{};
+    nlohmann::json topology = nlohmann::json::object();
+    const int source_gpu_id = camera_params_ ? camera_params_->gpu_id : -1;
+    const int primary_encode_gpu_id = hw_worker_->encode_gpu_id();
+    topology["source_gpu_id"] = source_gpu_id;
+    topology["primary_encode_gpu_id"] = primary_encode_gpu_id;
+    topology["source_gpu"] = build_gpu_runtime_info(source_gpu_id);
+    topology["primary_encode_gpu"] = build_gpu_runtime_info(primary_encode_gpu_id);
+    topology["helper_gpus"] = nlohmann::json::array();
+    topology["copy_paths"] = nlohmann::json::array();
+
+    for (const auto& helper_target : helper_encode_targets_) {
+        topology["helper_gpus"].push_back(build_gpu_runtime_info(helper_target.gpu_id));
+
+        nlohmann::json pair_info =
+            build_gpu_copy_path_runtime_info(source_gpu_id, helper_target.gpu_id);
+        if (helper_target.preprocess_worker) {
+            const std::vector<PeerAccessRouteState> observed_states =
+                helper_target.preprocess_worker->peer_access_states();
+            const PeerAccessRouteState* matched_state = nullptr;
+            for (const PeerAccessRouteState& state : observed_states) {
+                if (state.source_gpu_id == source_gpu_id) {
+                    matched_state = &state;
+                    break;
+                }
+            }
+            if (!matched_state && observed_states.size() == 1) {
+                matched_state = &observed_states.front();
+            }
+            if (matched_state) {
+                pair_info["runtime_peer_access"]["can_access_peer"] = matched_state->can_access_peer;
+                pair_info["runtime_peer_access"]["peer_access_enable_attempted"] =
+                    matched_state->peer_access_enable_attempted;
+                pair_info["runtime_peer_access"]["peer_access_enabled"] =
+                    matched_state->peer_access_enabled;
+                pair_info["runtime_peer_access"]["observed_source_gpu_id"] =
+                    matched_state->source_gpu_id;
+                if (!matched_state->enable_error.empty()) {
+                    pair_info["runtime_peer_access"]["enable_error"] = matched_state->enable_error;
+                }
+            } else if (source_gpu_id != helper_target.gpu_id &&
+                       pair_info["runtime_peer_access"].value("can_access_peer", false) &&
+                       helper_encode_targets_.size() == 1 &&
+                       shared_output_stats.source_to_helper_copy.sample_count > 0) {
+                pair_info["runtime_peer_access"]["peer_access_enable_attempted"] = true;
+                pair_info["runtime_peer_access"]["peer_access_enabled"] = true;
+                pair_info["runtime_peer_access"]["peer_access_enabled_inferred"] = true;
+            }
+        }
+        topology["copy_paths"].push_back(std::move(pair_info));
+    }
+
+    hw_worker_->SetSplitGopTopologySnapshot(topology);
 }

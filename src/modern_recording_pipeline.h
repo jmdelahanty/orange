@@ -58,6 +58,9 @@ public:
     std::unique_ptr<EncoderPreprocessWorker> preprocess_worker_;
     std::unique_ptr<EncoderHwWorker> hw_worker_;
     std::vector<HelperEncodeTarget> helper_encode_targets_;
+
+private:
+    void refresh_split_gop_topology_snapshot();
 };
 
 #endif
