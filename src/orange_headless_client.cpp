@@ -133,6 +133,10 @@ struct ExperimentCsvWindowStats {
     std::size_t included_rows = 0;
     double enc_fps_mean = 0.0;
     double enc_fps_p95 = 0.0;
+    double enc_fps_primary_mean = 0.0;
+    double enc_fps_primary_p95 = 0.0;
+    double enc_fps_helpers_mean = 0.0;
+    double enc_fps_helpers_p95 = 0.0;
     int acq_free_entries_min = -1;
     int acq_free_events_min = -1;
     int yolo_events_min = -1;
@@ -2830,6 +2834,8 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     };
 
     const int enc_fps_index = required_index("enc_fps");
+    const int enc_fps_primary_index = required_index("enc_fps_primary");
+    const int enc_fps_helpers_index = required_index("enc_fps_helpers");
     const int acq_free_entries_index = required_index("acq_free_entries");
     const int acq_free_events_index = required_index("acq_free_events");
     const int yolo_events_index = required_index("yolo_events");
@@ -2871,6 +2877,8 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     };
 
     std::vector<double> enc_fps_values;
+    std::vector<double> enc_fps_primary_values;
+    std::vector<double> enc_fps_helpers_values;
     int post_warmup_acq_free_entries_min = std::numeric_limits<int>::max();
     int post_warmup_acq_free_events_min = std::numeric_limits<int>::max();
     int post_warmup_yolo_events_min = std::numeric_limits<int>::max();
@@ -2899,6 +2907,8 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
 
         const std::vector<std::string> cells = split_csv_line_simple(line);
         double enc_fps = 0.0;
+        double enc_fps_primary = 0.0;
+        double enc_fps_helpers = 0.0;
         int acq_free_entries = -1;
         int acq_free_events = -1;
         int yolo_events = -1;
@@ -2915,6 +2925,12 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
             !parse_u64_cell(cells, pre_drops_index, &pre_drops) ||
             !parse_u64_cell(cells, enc_fail_index, &enc_fail)) {
             continue;
+        }
+        if (enc_fps_primary_index >= 0) {
+            parse_double_cell(cells, enc_fps_primary_index, &enc_fps_primary);
+        }
+        if (enc_fps_helpers_index >= 0) {
+            parse_double_cell(cells, enc_fps_helpers_index, &enc_fps_helpers);
         }
         if (acq_free_entries_index >= 0) {
             uint64_t acq_free_entries_u64 = 0;
@@ -2973,6 +2989,12 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
             baseline_camera_dropped_frames = camera_dropped_frames;
         } else {
             enc_fps_values.push_back(enc_fps);
+            if (enc_fps_primary_index >= 0) {
+                enc_fps_primary_values.push_back(enc_fps_primary);
+            }
+            if (enc_fps_helpers_index >= 0) {
+                enc_fps_helpers_values.push_back(enc_fps_helpers);
+            }
             ++stats.included_rows;
             if (acq_free_entries >= 0) {
                 post_warmup_acq_free_entries_min = std::min(post_warmup_acq_free_entries_min, acq_free_entries);
@@ -3002,6 +3024,20 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         std::accumulate(enc_fps_values.begin(), enc_fps_values.end(), 0.0);
     stats.enc_fps_mean = enc_fps_sum / static_cast<double>(enc_fps_values.size());
     stats.enc_fps_p95 = compute_percentile(enc_fps_values, 95.0);
+    if (!enc_fps_primary_values.empty()) {
+        const double enc_fps_primary_sum =
+            std::accumulate(enc_fps_primary_values.begin(), enc_fps_primary_values.end(), 0.0);
+        stats.enc_fps_primary_mean =
+            enc_fps_primary_sum / static_cast<double>(enc_fps_primary_values.size());
+        stats.enc_fps_primary_p95 = compute_percentile(enc_fps_primary_values, 95.0);
+    }
+    if (!enc_fps_helpers_values.empty()) {
+        const double enc_fps_helpers_sum =
+            std::accumulate(enc_fps_helpers_values.begin(), enc_fps_helpers_values.end(), 0.0);
+        stats.enc_fps_helpers_mean =
+            enc_fps_helpers_sum / static_cast<double>(enc_fps_helpers_values.size());
+        stats.enc_fps_helpers_p95 = compute_percentile(enc_fps_helpers_values, 95.0);
+    }
     stats.acq_starve_delta =
         (last_acq_starve >= baseline_acq_starve) ? (last_acq_starve - baseline_acq_starve) : last_acq_starve;
     stats.pre_waits_delta =
@@ -3635,6 +3671,10 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["gpu_pci_bus_id"] = "";
     row["enc_fps_mean"] = 0.0;
     row["enc_fps_p95"] = 0.0;
+    row["enc_fps_primary_mean"] = 0.0;
+    row["enc_fps_primary_p95"] = 0.0;
+    row["enc_fps_helpers_mean"] = 0.0;
+    row["enc_fps_helpers_p95"] = 0.0;
     row["acq_free_entries_min"] = -1;
     row["acq_free_events_min"] = -1;
     row["yolo_events_min"] = -1;
@@ -3711,6 +3751,10 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
 
     row["enc_fps_mean"] = csv_stats.enc_fps_mean;
     row["enc_fps_p95"] = csv_stats.enc_fps_p95;
+    row["enc_fps_primary_mean"] = csv_stats.enc_fps_primary_mean;
+    row["enc_fps_primary_p95"] = csv_stats.enc_fps_primary_p95;
+    row["enc_fps_helpers_mean"] = csv_stats.enc_fps_helpers_mean;
+    row["enc_fps_helpers_p95"] = csv_stats.enc_fps_helpers_p95;
     row["acq_free_entries_min"] = csv_stats.acq_free_entries_min;
     row["acq_free_events_min"] = csv_stats.acq_free_events_min;
     row["yolo_events_min"] = csv_stats.yolo_events_min;
@@ -3903,7 +3947,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -3949,6 +3993,10 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << "\"" << row.value("reason", "") << "\","
                 << row.value("enc_fps_mean", 0.0) << ","
                 << row.value("enc_fps_p95", 0.0) << ","
+                << row.value("enc_fps_primary_mean", 0.0) << ","
+                << row.value("enc_fps_primary_p95", 0.0) << ","
+                << row.value("enc_fps_helpers_mean", 0.0) << ","
+                << row.value("enc_fps_helpers_p95", 0.0) << ","
                 << row.value("acq_free_entries_min", -1) << ","
                 << row.value("acq_free_events_min", -1) << ","
                 << row.value("yolo_events_min", -1) << ","

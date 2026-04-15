@@ -117,7 +117,11 @@ struct PipelinePerfSample {
     uint64_t recording_frame_id = 0;
     double acquisition_fps = 0.0;
     double preprocess_fps = 0.0;
+    double preprocess_fps_primary = 0.0;
+    double preprocess_fps_helpers = 0.0;
     double encode_fps = 0.0;
+    double encode_fps_primary = 0.0;
+    double encode_fps_helpers = 0.0;
     int display_queue_depth = -1;
     int yolo_queue_depth = -1;
     int preprocess_queue_depth = -1;
@@ -175,7 +179,11 @@ public:
               << sample.recording_frame_id << ","
               << sample.acquisition_fps << ","
               << sample.preprocess_fps << ","
+              << sample.preprocess_fps_primary << ","
+              << sample.preprocess_fps_helpers << ","
               << sample.encode_fps << ","
+              << sample.encode_fps_primary << ","
+              << sample.encode_fps_helpers << ","
               << sample.display_queue_depth << ","
               << sample.yolo_queue_depth << ","
               << sample.preprocess_queue_depth << ","
@@ -202,7 +210,11 @@ public:
 
         acquisition_fps_.add(sample.acquisition_fps);
         preprocess_fps_.add(sample.preprocess_fps);
+        preprocess_fps_primary_.add(sample.preprocess_fps_primary);
+        preprocess_fps_helpers_.add(sample.preprocess_fps_helpers);
         encode_fps_.add(sample.encode_fps);
+        encode_fps_primary_.add(sample.encode_fps_primary);
+        encode_fps_helpers_.add(sample.encode_fps_helpers);
         display_queue_depth_.add(sample.display_queue_depth);
         yolo_queue_depth_.add(sample.yolo_queue_depth);
         preprocess_queue_depth_.add(sample.preprocess_queue_depth);
@@ -244,7 +256,7 @@ private:
             return;
         }
         ResetStats();
-        file_ << "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,enc_fps,"
+        file_ << "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,"
                  "display_q,yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
@@ -273,7 +285,11 @@ private:
         last_sample_ = PipelinePerfSample{};
         acquisition_fps_.reset();
         preprocess_fps_.reset();
+        preprocess_fps_primary_.reset();
+        preprocess_fps_helpers_.reset();
         encode_fps_.reset();
+        encode_fps_primary_.reset();
+        encode_fps_helpers_.reset();
         display_queue_depth_.reset();
         yolo_queue_depth_.reset();
         preprocess_queue_depth_.reset();
@@ -315,7 +331,11 @@ private:
         summary["fps"] = {
             {"acquisition", acquisition_fps_.to_json()},
             {"preprocess", preprocess_fps_.to_json()},
+            {"preprocess_primary", preprocess_fps_primary_.to_json()},
+            {"preprocess_helpers", preprocess_fps_helpers_.to_json()},
             {"encode", encode_fps_.to_json()},
+            {"encode_primary", encode_fps_primary_.to_json()},
+            {"encode_helpers", encode_fps_helpers_.to_json()},
         };
         summary["queue_depth"] = {
             {"display", display_queue_depth_.to_json()},
@@ -369,7 +389,11 @@ private:
     PipelinePerfSample last_sample_;
     RunningDoubleStats acquisition_fps_{};
     RunningDoubleStats preprocess_fps_{};
+    RunningDoubleStats preprocess_fps_primary_{};
+    RunningDoubleStats preprocess_fps_helpers_{};
     RunningDoubleStats encode_fps_{};
+    RunningDoubleStats encode_fps_primary_{};
+    RunningDoubleStats encode_fps_helpers_{};
     RunningInt64Stats display_queue_depth_{};
     RunningInt64Stats yolo_queue_depth_{};
     RunningInt64Stats preprocess_queue_depth_{};
@@ -552,7 +576,11 @@ void acquire_frames(
         sample.recording_frame_id = last_recording_frame_count;
         sample.acquisition_fps = current_acquisition_fps;
         sample.preprocess_fps = recording_stats.preprocess_fps;
+        sample.preprocess_fps_primary = recording_stats.preprocess_fps_primary;
+        sample.preprocess_fps_helpers = recording_stats.preprocess_fps_helpers;
         sample.encode_fps = recording_stats.encode_fps;
+        sample.encode_fps_primary = recording_stats.encode_fps_primary;
+        sample.encode_fps_helpers = recording_stats.encode_fps_helpers;
         sample.display_queue_depth = openGLDisplay ? openGLDisplay->GetCountQueueInSize() : -1;
         sample.yolo_queue_depth = yolo_worker ? yolo_worker->GetCountQueueInSize() : -1;
         sample.preprocess_queue_depth = recording_stats.preprocess_queue_depth;

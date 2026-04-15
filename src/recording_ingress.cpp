@@ -171,21 +171,54 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 RecordingIngressStats RecordingIngress::GetStats() const
 {
     RecordingIngressStats stats;
-    if (primary_preprocess_worker_) {
-        stats.preprocess_fps = primary_preprocess_worker_->get_fps();
-        stats.encode_fps = primary_preprocess_worker_->get_hw_fps();
-        stats.preprocess_queue_depth = primary_preprocess_worker_->GetCountQueueInSize();
-        stats.encode_queue_depth = primary_preprocess_worker_->get_hw_queue_depth();
-        stats.preprocess_buffers_available =
-            primary_preprocess_worker_->available_buffers_.load(std::memory_order_relaxed);
-        stats.preprocess_events_available =
-            primary_preprocess_worker_->available_events_.load(std::memory_order_relaxed);
-        stats.preprocess_resource_waits = primary_preprocess_worker_->get_resource_waits();
-        stats.preprocess_frames_dropped = primary_preprocess_worker_->get_frames_dropped();
-        stats.encode_failures = primary_preprocess_worker_->get_hw_encode_failures();
-        stats.encode_slow_frames = primary_preprocess_worker_->get_hw_slow_frames();
+    auto accumulate_nonnegative = [](int* total, int value) {
+        if (!total || value < 0) {
+            return;
+        }
+        if (*total < 0) {
+            *total = 0;
+        }
+        *total += value;
+    };
+
+    auto accumulate_worker = [&](EncoderPreprocessWorker* worker, bool is_primary) {
+        if (!worker) {
+            return;
+        }
+
+        const double preprocess_fps = worker->get_fps();
+        const double encode_fps = worker->get_hw_fps();
+        if (is_primary) {
+            stats.preprocess_fps_primary = preprocess_fps;
+            stats.encode_fps_primary = encode_fps;
+        } else {
+            stats.preprocess_fps_helpers += preprocess_fps;
+            stats.encode_fps_helpers += encode_fps;
+        }
+
+        accumulate_nonnegative(&stats.preprocess_queue_depth, worker->GetCountQueueInSize());
+        accumulate_nonnegative(&stats.encode_queue_depth, worker->get_hw_queue_depth());
+        accumulate_nonnegative(
+            &stats.preprocess_buffers_available,
+            worker->available_buffers_.load(std::memory_order_relaxed));
+        accumulate_nonnegative(
+            &stats.preprocess_events_available,
+            worker->available_events_.load(std::memory_order_relaxed));
+
+        stats.preprocess_resource_waits += worker->get_resource_waits();
+        stats.preprocess_frames_dropped += worker->get_frames_dropped();
+        stats.encode_failures += worker->get_hw_encode_failures();
+        stats.encode_slow_frames += worker->get_hw_slow_frames();
+    };
+
+    accumulate_worker(primary_preprocess_worker_, true);
+    for (const auto& [gpu_id, worker] : helper_preprocess_workers_) {
+        (void)gpu_id;
+        accumulate_worker(worker, false);
     }
 
+    stats.preprocess_fps = stats.preprocess_fps_primary + stats.preprocess_fps_helpers;
+    stats.encode_fps = stats.encode_fps_primary + stats.encode_fps_helpers;
     stats.submitted_frames = submitted_frames_.load(std::memory_order_relaxed);
     stats.primary_routed_frames = primary_routed_frames_.load(std::memory_order_relaxed);
     stats.helper_requested_frames = helper_requested_frames_.load(std::memory_order_relaxed);

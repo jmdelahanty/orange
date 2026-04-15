@@ -14,7 +14,11 @@ class EncoderPreprocessWorker;
 
 struct RecordingIngressStats {
     double preprocess_fps = 0.0;
+    double preprocess_fps_primary = 0.0;
+    double preprocess_fps_helpers = 0.0;
     double encode_fps = 0.0;
+    double encode_fps_primary = 0.0;
+    double encode_fps_helpers = 0.0;
     int preprocess_queue_depth = -1;
     int encode_queue_depth = -1;
     int preprocess_buffers_available = -1;
