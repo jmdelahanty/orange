@@ -990,8 +990,9 @@ Implemented in the experiment branch:
 
 Current limitations:
 
-- no live split-GOP recording has been validated yet; current proof is compile-
-  level plus code inspection
+- one-camera live split-GOP recording has now been validated headlessly on
+  `pancake0` using `GPU5 + GPU6`, `hevc`, and the reduced pool overrides
+  described below
 - `pure_offload` is not fully wired as a real helper-target mode yet; helper
   targets are currently instantiated only for `hybrid_split`
 - split-GOP is not a dedicated headless CLI flag yet; first runs should use
@@ -1000,11 +1001,10 @@ Current limitations:
   counters exist inside `RecordingIngress`, but they are not yet written into
   `recording_snapshot.json`
 - direct-input is still intentionally out of scope for this path
-- there is not yet a completed live validation of:
-  - ordered drain / close with helper workers
-  - metadata continuity
-  - keyframe sidecar correctness
-  - final artifact correctness under real camera load
+- explicit validation is still missing for:
+  - metadata continuity checks beyond file creation
+  - keyframe sidecar correctness review
+  - multi-camera and longer-duration artifact correctness
 
 ## First Live Bring-Up Findings As Of 2026-04-15
 
@@ -1102,6 +1102,90 @@ Current state after the first live run:
 - so the next code step should be:
   - instrument and fix the pending-GOP release / accounting path before
     widening the experiment
+
+## Root Cause And Fix As Of 2026-04-15
+
+The original split-GOP backlog failures turned out to be coordination bugs in
+the shared output path, not a raw encode-throughput limit.
+
+Observed failure pattern:
+
+- healthy acquisition at roughly `60 fps`
+- helper encoder startup was successful
+- first backlog overflow appeared near frame `241` with `gop=60`
+- overflow logs showed `next_gop_to_flush` moving forward while old GOP keys
+  still reappeared in `pending_gops_`
+
+The instrumentation added during bring-up showed two distinct problems:
+
+- packet sample identity was being inferred from session-local NVENC output
+  timing rather than from the submitted global recording-frame order
+- GOP completion was being marked when the last input frame of a GOP was
+  submitted, not when all packets for that GOP had actually been emitted by
+  NVENC
+
+Together, those bugs let the shared-output coordinator flush a GOP too early.
+Late packets for that GOP would then recreate old GOP keys behind the flush
+frontier, which made the backlog counter grow until it tripped the
+`max_inflight_gops` guard.
+
+The experiment-branch fix in commit `8b8a1e9` does three things:
+
+- preserves real split-GOP overflow / peak metrics in
+  `recording_snapshot.json`
+- matches emitted packets back to the global submitted sample order inside each
+  encoder worker
+- marks a GOP complete only after emitted-packet counts catch up with submitted
+  frame counts for that GOP
+
+## Successful Validation As Of 2026-04-15
+
+The split-GOP path is now validated for one headless camera run on
+`pancake0`.
+
+Validated setup:
+
+- camera: `2010096`
+- codec: `hevc`
+- source / helper pair: `GPU5 + GPU6`
+- policy:
+  - `mode = split_gop`
+  - `placement = multi_gpu`
+  - `source_encoder_policy = hybrid_split`
+  - `transfer_mode = raw`
+- wrapper overrides:
+  - `--acquire-work-entries-max 64`
+  - `--encoder-entry-pool-size 32`
+
+Successful confirmation run:
+
+- experiment id: `2010096_split_gop_smoke_a16_pair_5_6_hevc_rerun10`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_60](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_rerun10/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_60>)
+
+Observed result:
+
+- `842` frames received
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- no split-GOP backlog overflow
+- clean shutdown without the earlier shared-output close error
+
+Key final snapshot signals from the successful run:
+
+- `current_backlog_gops = 0`
+- `overflow_detected = false`
+- `overflow_events = 0`
+- `peak_backlog_gops = 2`
+
+Host-specific caution:
+
+- `GPU3` is a poor experiment target on `pancake0` because it participates in
+  the desktop stack (`Xorg` / `gnome-shell`), which blocks `gpu-reset` and
+  makes stale-memory cleanup harder
+- `GPU5 + GPU6` is currently the best clean `PIX` pair for repeatable A16
+  bring-up on this host
 
 If that run passes after the coordinator fix, the next comparison should be:
 

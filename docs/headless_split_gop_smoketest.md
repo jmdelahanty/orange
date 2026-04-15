@@ -1,6 +1,6 @@
 # Headless Split-GOP Smoke Test
 
-Date: 2026-04-14
+Date: 2026-04-15
 Scope: define the first headless bring-up test for the `exp/gop-split-a16`
 experiment branch, including setup, commands, pass / fail criteria, and the
 telemetry that is and is not available today.
@@ -33,14 +33,16 @@ This is a correctness and bring-up test, not a throughput bakeoff.
 - source GPU: one A16 GPU in a favorable `PIX` group
 - helper GPU: one peer-access-capable A16 partner in the same `PIX` group
 
-Recommended initial pair on `pancake0`:
+Recommended current pair on `pancake0`:
 
-- `GPU1 + GPU2`
+- `GPU5 + GPU6`
 
 Avoid for the first run:
 
 - any `GPU0 + A16` pairing
 - any cross-group A16 pairing such as `GPU1..GPU4 <-> GPU5..GPU8`
+- `GPU3` as a source GPU on this host, because it participates in the desktop
+  stack and is harder to reset cleanly
 
 ## Recording Strategy Under Test
 
@@ -48,12 +50,12 @@ Use:
 
 - `mode = split_gop`
 - `placement = multi_gpu`
-- `encoder_gpu_ids = [1, 2]`
+- `encoder_gpu_ids = [5, 6]`
 - `source_encoder_policy = hybrid_split`
 - `transfer_mode = raw`
 - `strict = true`
 
-Keep the camera source GPU fixed on `GPU1`.
+Keep the camera source GPU fixed on `GPU5`.
 
 Rationale:
 
@@ -121,12 +123,12 @@ Use the same experiment-spec structure as other headless runs, with one added
 
 ```json
 {
-  "experiment_id": "2010096_split_gop_smoke_a16_pair_1_2",
-  "notes": "First one-camera split-GOP smoke test on an A16 PIX pair.",
-  "selection": {
-    "camera_serials": ["2010096"],
-    "gpu_ids": [1]
-  },
+    "experiment_id": "2010096_split_gop_smoke_a16_pair_5_6",
+    "notes": "One-camera split-GOP smoke test on a clean A16 PIX pair.",
+    "selection": {
+      "camera_serials": ["2010096"],
+      "gpu_ids": [5]
+    },
   "fixed": {
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
@@ -138,7 +140,7 @@ Use the same experiment-spec structure as other headless runs, with one added
       "mode": "split_gop",
       "split_gop": {
         "placement": "multi_gpu",
-        "encoder_gpu_ids": [1, 2],
+        "encoder_gpu_ids": [5, 6],
         "source_encoder_policy": "hybrid_split",
         "transfer_mode": "raw",
         "max_inflight_gops": 2,
@@ -153,7 +155,7 @@ Use the same experiment-spec structure as other headless runs, with one added
     }
   },
   "matrix": {
-    "codec": ["h264"],
+    "codec": ["hevc"],
     "preset": ["p1"],
     "tuning": ["ll"],
     "rate_control_mode": ["vbr"],
@@ -180,7 +182,7 @@ layer `fixed.recording_by_camera` on top of the default:
       "mode": "split_gop",
       "split_gop": {
         "placement": "multi_gpu",
-        "encoder_gpu_ids": [1, 2],
+        "encoder_gpu_ids": [5, 6],
         "source_encoder_policy": "hybrid_split",
         "transfer_mode": "raw"
       }
@@ -221,7 +223,7 @@ Run a short stream-only check first:
 /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
   --mode local \
   --camera <serial> \
-  --gpu-id 1 \
+  --gpu-id 5 \
   --stream-only \
   --duration 5
 ```
@@ -234,7 +236,7 @@ Expected result:
 
 ## Step 3: Split-GOP Recording Smoke Test
 
-Write the experiment spec to `/tmp/2010096_split_gop_smoke_a16_pair_1_2.json`.
+Write the experiment spec to `/tmp/2010096_split_gop_smoke_a16_pair_5_6.json`.
 
 Once the sudo wrapper is installed from the experiment branch, or after the
 split-GOP experiment-spec support is merged into the main headless binary, run
@@ -242,8 +244,10 @@ one short recording through the wrapper:
 
 ```bash
 sudo /usr/local/bin/orange-local-benchmark \
+  --acquire-work-entries-max 64 \
+  --encoder-entry-pool-size 32 \
   --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
-  /tmp/2010096_split_gop_smoke_a16_pair_1_2.json
+  /tmp/2010096_split_gop_smoke_a16_pair_5_6.json
 ```
 
 Equivalent direct invocation, if root is not required on the target host:
@@ -251,7 +255,7 @@ Equivalent direct invocation, if root is not required on the target host:
 ```bash
 /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
   --mode local \
-  --experiment-spec /tmp/2010096_split_gop_smoke_a16_pair_1_2.json
+  --experiment-spec /tmp/2010096_split_gop_smoke_a16_pair_5_6.json
 ```
 
 Notes:
@@ -259,6 +263,9 @@ Notes:
 - `fixed.warmup_s = 2` gives a short stream warmup before the measured window
 - `fixed.duration_s = 12` is long enough to cross multiple GOP boundaries
   without turning the first run into a long soak test
+- `--acquire-work-entries-max 64` and `--encoder-entry-pool-size 32` reduce
+  source-GPU and preprocess-GPU VRAM pressure enough for this full-resolution
+  camera on A16
 - if lower latency is more important than matching production GOP, use
   `matrix.gop_length = [30]` for the first run
 - for camera `2010096` at full `4512x4512` resolution, prefer `hevc` instead
@@ -337,6 +344,51 @@ Practical consequence:
   the shared pending-GOP / writer machinery stayed healthy
 - but they do not yet prove, by themselves, how many frames or GOPs actually
   routed through the helper path
+
+## Successful Result As Of 2026-04-15
+
+The smoke test has now passed on `pancake0` using the current recommended A16
+pair and the wrapper overrides above.
+
+Validated run:
+
+- experiment branch commit: `8b8a1e9`
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_rerun10`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_60](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_rerun10/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_60>)
+
+Observed result:
+
+- `842` frames received
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- no split-GOP backlog overflow
+- clean shutdown
+
+Most important snapshot values from the successful run:
+
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.overflow_detected = false`
+- `pending_gop_buffer.overflow_events = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+
+## Root Cause Of The Earlier Backlog Failures
+
+The earlier `split_gop pending GOP backlog exceeded configured limit` failures
+were not caused by raw encode throughput alone.
+
+The actual coordination bugs were:
+
+- packet sample identity was being inferred too loosely in a multi-session
+  context
+- GOP completion was being marked when the last input frame of a GOP was
+  submitted, not when all output packets for that GOP had actually been emitted
+
+That let the shared-output coordinator flush a GOP too early. Late packets for
+that same GOP would then recreate old GOP keys behind the flush frontier, which
+made the backlog counter grow until it tripped the configured limit.
 
 For the first smoke test, this means success evidence is partly artifact-based
 and partly log / behavior-based.
