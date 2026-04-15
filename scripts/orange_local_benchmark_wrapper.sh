@@ -6,6 +6,7 @@ DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
 EXPERIMENT_ORANGE_CLIENT="/home/jeremy/orange-gop-split-a16/targets/release/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
 ACQUIRE_WORK_ENTRIES_MAX=""
+ENCODER_ENTRY_POOL_SIZE=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 EVT_PROFILE="/etc/profile.d/evt.sh"
@@ -15,7 +16,8 @@ usage() {
 Usage:
   orange_local_benchmark_wrapper.sh [--orange-client <path>] <experiment-spec.json>
   orange_local_benchmark_wrapper.sh [--orange-client <path>] [--acquire-work-entries-max <n>] <experiment-spec.json>
-  orange_local_benchmark_wrapper.sh [--orange-client <path>] [--acquire-work-entries-max <n>] --stream-only --config-folder <path> --camera <serial|all> [options]
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] [--acquire-work-entries-max <n>] [--encoder-entry-pool-size <n>] <experiment-spec.json>
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] [--acquire-work-entries-max <n>] [--encoder-entry-pool-size <n>] --stream-only --config-folder <path> --camera <serial|all> [options]
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
@@ -23,6 +25,7 @@ Behavior:
       /home/jeremy/orange-jeremy/build/orange_client
       /home/jeremy/orange-gop-split-a16/targets/release/orange_client
   - Optionally exports ORANGE_ACQUIRE_WORK_ENTRIES_MAX for the launched process.
+  - Optionally exports ORANGE_ENCODER_ENTRY_POOL_SIZE for the launched process.
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
       /tmp
@@ -85,6 +88,13 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "--acquire-work-entries-max requires a value." >&2; exit 2; }
       [[ "$1" =~ ^[0-9]+$ ]] || { echo "--acquire-work-entries-max must be a non-negative integer." >&2; exit 2; }
       ACQUIRE_WORK_ENTRIES_MAX="$1"
+      shift
+      ;;
+    --encoder-entry-pool-size)
+      shift
+      [[ $# -gt 0 ]] || { echo "--encoder-entry-pool-size requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]+$ ]] || { echo "--encoder-entry-pool-size must be a non-negative integer." >&2; exit 2; }
+      ENCODER_ENTRY_POOL_SIZE="$1"
       shift
       ;;
     *)
@@ -187,6 +197,10 @@ if [[ "$1" == "--stream-only" ]]; then
     echo "[sudo-wrapper] acquire_work_entries_max=$ACQUIRE_WORK_ENTRIES_MAX"
     export ORANGE_ACQUIRE_WORK_ENTRIES_MAX="$ACQUIRE_WORK_ENTRIES_MAX"
   fi
+  if [[ -n "$ENCODER_ENTRY_POOL_SIZE" ]]; then
+    echo "[sudo-wrapper] encoder_entry_pool_size=$ENCODER_ENTRY_POOL_SIZE"
+    export ORANGE_ENCODER_ENTRY_POOL_SIZE="$ENCODER_ENTRY_POOL_SIZE"
+  fi
 
   exec "${CMD[@]}"
 fi
@@ -242,6 +256,10 @@ echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
 if [[ -n "$ACQUIRE_WORK_ENTRIES_MAX" ]]; then
   echo "[sudo-wrapper] acquire_work_entries_max=$ACQUIRE_WORK_ENTRIES_MAX"
   export ORANGE_ACQUIRE_WORK_ENTRIES_MAX="$ACQUIRE_WORK_ENTRIES_MAX"
+fi
+if [[ -n "$ENCODER_ENTRY_POOL_SIZE" ]]; then
+  echo "[sudo-wrapper] encoder_entry_pool_size=$ENCODER_ENTRY_POOL_SIZE"
+  export ORANGE_ENCODER_ENTRY_POOL_SIZE="$ENCODER_ENTRY_POOL_SIZE"
 fi
 
 set +e
