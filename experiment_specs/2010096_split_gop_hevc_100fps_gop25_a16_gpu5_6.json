@@ -1,0 +1,49 @@
+{
+  "experiment_id": "2010096_split_gop_hevc_100fps_gop25_a16_gpu5_6",
+  "notes": "Validated short split-GOP run for camera 2010096 on A16 PIX pair GPU5+GPU6. Uses /tmp/orange_2010096_100fps_config until a real checked-in 100 fps camera config exists.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 12,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "sync_mode": "free_run",
+    "config_folder": "/tmp/orange_2010096_100fps_config",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "recording": {
+      "mode": "split_gop",
+      "split_gop": {
+        "placement": "multi_gpu",
+        "encoder_gpu_ids": [5, 6],
+        "source_encoder_policy": "hybrid_split",
+        "transfer_mode": "raw",
+        "max_inflight_gops": 2,
+        "max_buffered_bytes": 134217728,
+        "strict": true,
+        "writer_queue": {
+          "max_packets": 4096,
+          "max_bytes": 134217728,
+          "fail_on_overflow": true
+        }
+      }
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 100.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}
