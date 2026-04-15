@@ -22,6 +22,17 @@ It only accepts spec files under:
 After the run, it chowns the experiment output folder back to the invoking
 user so artifacts are not left root-owned.
 
+Because the wrapper forwards a structured experiment spec, new recording-mode
+options should go into the spec instead of becoming wrapper flags.
+
+Current workstation note:
+
+- the wrapper currently installed on `pancake0` still points at
+  `/home/jeremy/orange-jeremy/build/orange_client`
+- split-GOP experiment-spec support currently lives on `exp/gop-split-a16`
+- so to exercise the new spec block before merge, either reinstall the wrapper
+  from the experiment branch or run the experiment-branch binary directly
+
 ## Install
 
 Install the wrapper as a root-owned executable:
@@ -62,6 +73,30 @@ Temporary retry spec:
 ```bash
 sudo /usr/local/bin/orange-local-benchmark /tmp/2010096_smoke_a6000_retry.json
 ```
+
+## Split-GOP Specs
+
+For split-GOP bring-up on the experiment branch, put the recording strategy
+inside the experiment spec under `fixed.recording`, using the same JSON shape as
+the per-camera `recording` block:
+
+```json
+"fixed": {
+  "recording": {
+    "mode": "split_gop",
+    "split_gop": {
+      "placement": "multi_gpu",
+      "encoder_gpu_ids": [1, 2],
+      "source_encoder_policy": "hybrid_split",
+      "transfer_mode": "raw",
+      "strict": true
+    }
+  }
+}
+```
+
+If a multi-camera run needs different helper pairs, add
+`fixed.recording_by_camera` keyed by camera serial.
 
 ## Notes
 

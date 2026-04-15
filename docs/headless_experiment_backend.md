@@ -98,6 +98,9 @@ Local CLI note:
   `encoder_basic_setup`
 - local mode now also accepts `--experiment-spec <path>` for single-host matrix
   runs
+- on the `exp/gop-split-a16` branch, the experiment-spec path also accepts an
+  optional `fixed.recording` block plus `fixed.recording_by_camera` overrides,
+  using the same JSON shape as the per-camera `recording` config
 - the first experiment-spec implementation is intentionally constrained to:
   - `display=false`
   - `yolo=false`

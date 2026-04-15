@@ -102,16 +102,98 @@ nvidia-smi topo -m
 
 ## Configuration Method For The First Smoke Test
 
-For the first smoke test, prefer env overrides for the split-GOP knobs.
+Prefer a structured experiment spec, not ad hoc env overrides.
 
 Why:
 
-- the headless CLI does not yet expose a dedicated split-GOP flag surface
-- env overrides avoid mutating production camera JSON during the first bring-up
-- the experiment branch already resolves recording strategy from env overrides
+- the sudo wrapper already forwards `--experiment-spec` cleanly
+- the same JSON can be checked in, reviewed, and rerun later
+- the split-GOP recording block now matches the per-camera `recording` schema
+- `run_config.json` preserves the requested split-GOP settings per run
 
-Use `--gpu-id 1` only to force the selected camera's source GPU at runtime.
-Use env overrides to define the helper pair and split-GOP policy.
+Use the experiment spec to define the split-GOP policy and helper pair. Use the
+camera config folder or `selection.gpu_ids` only for the source GPU assignment.
+
+### Recommended Spec Shape
+
+Use the same experiment-spec structure as other headless runs, with one added
+`fixed.recording` block:
+
+```json
+{
+  "experiment_id": "2010096_split_gop_smoke_a16_pair_1_2",
+  "notes": "First one-camera split-GOP smoke test on an A16 PIX pair.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [1]
+  },
+  "fixed": {
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "config_folder": "/home/jeremy/orange_data/config/local/jeremy",
+    "duration_s": 12,
+    "warmup_s": 2,
+    "stream_start_delay_s": 0,
+    "nvenc_direct_input": false,
+    "recording": {
+      "mode": "split_gop",
+      "split_gop": {
+        "placement": "multi_gpu",
+        "encoder_gpu_ids": [1, 2],
+        "source_encoder_policy": "hybrid_split",
+        "transfer_mode": "raw",
+        "max_inflight_gops": 2,
+        "max_buffered_bytes": 134217728,
+        "strict": true,
+        "writer_queue": {
+          "max_packets": 4096,
+          "max_bytes": 134217728,
+          "fail_on_overflow": true
+        }
+      }
+    }
+  },
+  "matrix": {
+    "codec": ["h264"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [60]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 1.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}
+```
+
+If a later multi-camera experiment needs different helper GPU sets per camera,
+layer `fixed.recording_by_camera` on top of the default:
+
+```json
+"fixed": {
+  "recording": { "...": "default for all selected cameras" },
+  "recording_by_camera": {
+    "2010096": {
+      "mode": "split_gop",
+      "split_gop": {
+        "placement": "multi_gpu",
+        "encoder_gpu_ids": [1, 2],
+        "source_encoder_policy": "hybrid_split",
+        "transfer_mode": "raw"
+      }
+    }
+  }
+}
+```
+
+The intended precedence is:
+
+- per-camera JSON config provides the baseline
+- `fixed.recording` overrides that baseline for all selected cameras
+- `fixed.recording_by_camera.<serial>` overrides the shared default for one camera
 
 ## Test Sequence
 
@@ -152,42 +234,35 @@ Expected result:
 
 ## Step 3: Split-GOP Recording Smoke Test
 
-Run one short recording:
+Write the experiment spec to `/tmp/2010096_split_gop_smoke_a16_pair_1_2.json`.
+
+Once the sudo wrapper is installed from the experiment branch, or after the
+split-GOP experiment-spec support is merged into the main headless binary, run
+one short recording through the wrapper:
 
 ```bash
-ORANGE_RECORDING_MODE=split_gop \
-ORANGE_SPLIT_GOP_PLACEMENT=multi_gpu \
-ORANGE_SPLIT_GOP_ENCODER_GPU_IDS=1,2 \
-ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY=hybrid_split \
-ORANGE_SPLIT_GOP_TRANSFER_MODE=raw \
-ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS=2 \
-ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES=134217728 \
-ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS=4096 \
-ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES=134217728 \
-ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW=1 \
-ORANGE_SPLIT_GOP_STRICT=1 \
+sudo /usr/local/bin/orange-local-benchmark \
+  /tmp/2010096_split_gop_smoke_a16_pair_1_2.json
+```
+
+Equivalent direct invocation, if root is not required on the target host:
+
+```bash
 /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
   --mode local \
-  --camera <serial> \
-  --gpu-id 1 \
-  --record-folder <record-folder> \
-  --codec h264 \
-  --preset p1 \
-  --tuning ll \
-  --rate-control vbr \
-  --quality 20 \
-  --gop 60 \
-  --record-delay 2 \
-  --duration 12
+  --experiment-spec /tmp/2010096_split_gop_smoke_a16_pair_1_2.json
 ```
 
 Notes:
 
-- `--record-delay 2` gives a short stream warmup before recording arms
-- `--duration 12` is long enough to cross multiple GOP boundaries without
-  turning the first run into a long soak test
+- the currently installed wrapper on `pancake0` still points at the main-repo
+  binary, so it will not exercise this spec extension until that install step
+  is updated
+- `fixed.warmup_s = 2` gives a short stream warmup before the measured window
+- `fixed.duration_s = 12` is long enough to cross multiple GOP boundaries
+  without turning the first run into a long soak test
 - if lower latency is more important than matching production GOP, use
-  `--gop 30` for the first run
+  `matrix.gop_length = [30]` for the first run
 
 ## Required Artifacts
 
@@ -210,6 +285,7 @@ Available today, without additional code changes:
 - `recording_snapshot.json`
   - encoder configuration
   - resolved recording strategy
+  - camera runtime recording strategy after any experiment-spec override
   - source GPU id
   - primary encode GPU id
   - shared pending-GOP buffer stats
@@ -264,6 +340,11 @@ Practical consequence:
 
 For the first smoke test, this means success evidence is partly artifact-based
 and partly log / behavior-based.
+
+## Workflow Note
+
+The structured experiment-spec path is the preferred workflow for this bring-up.
+Keep env overrides as a temporary developer escape hatch only.
 
 ## Pass Criteria
 
