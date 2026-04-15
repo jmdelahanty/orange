@@ -1,6 +1,6 @@
 {
   "experiment_id": "2010096_split_gop_hevc_100fps_gop25_soak60_a16_gpu5_6",
-  "notes": "Validated 60s soak for camera 2010096 on A16 PIX pair GPU5+GPU6. Uses /tmp/orange_2010096_100fps_config until a real checked-in 100 fps camera config exists.",
+  "notes": "Validated 60s soak for camera 2010096 on A16 PIX pair GPU5+GPU6. Uses the checked-in schema 3 camera config in config/validated_split_gop_hevc_100fps_gop25.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [5]
@@ -11,7 +11,7 @@
     "display": false,
     "yolo": false,
     "sync_mode": "free_run",
-    "config_folder": "/tmp/orange_2010096_100fps_config",
+    "config_folder": "/home/jeremy/orange-jeremy/config/validated_split_gop_hevc_100fps_gop25",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "nvenc_direct_input": false,
     "recording": {

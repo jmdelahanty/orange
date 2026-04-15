@@ -565,6 +565,7 @@ bool apply_recording_strategy_overrides_to_selected_cameras(
         bool applied_override = false;
         if (options.has_recording_strategy_override) {
             camera_params.recording_strategy = options.recording_strategy_override;
+            camera_params.recording.strategy = camera_params.recording_strategy;
             applied_override = true;
         }
 
@@ -572,6 +573,7 @@ bool apply_recording_strategy_overrides_to_selected_cameras(
             options.recording_strategy_overrides_by_camera.find(camera_serial);
         if (per_camera_it != options.recording_strategy_overrides_by_camera.end()) {
             camera_params.recording_strategy = per_camera_it->second;
+            camera_params.recording.strategy = camera_params.recording_strategy;
             applied_override = true;
             applied_per_camera_overrides.insert(camera_serial);
         }

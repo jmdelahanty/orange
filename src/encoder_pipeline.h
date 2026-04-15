@@ -81,6 +81,42 @@ struct RecordingStrategyConfig {
     bool split_gop_enabled() const { return mode == "split_gop" && split_gop.enabled; }
 };
 
+struct CameraRecordingEncodeConfig {
+    std::string codec = "h264";
+    std::string preset = "p1";
+    std::string tuning = "ll";
+    std::string rate_control_mode = "vbr";
+    int quality_value = 20;
+    int gop_length = 0;
+    bool nvenc_direct_input = false;
+};
+
+struct CameraRecordingOutputConfig {
+    std::string mode = "factor";
+    int downsample_factor = 1;
+    int requested_width = 0;
+    int requested_height = 0;
+};
+
+struct CameraRecordingConstraintsConfig {
+    bool require_peer_access = false;
+    std::string preferred_topology_class;
+};
+
+struct CameraRecordingResourcesConfig {
+    int acquire_work_entries = 0;
+    int encoder_entry_pool_size = 0;
+};
+
+struct CameraRecordingConfig {
+    std::string profile_name;
+    CameraRecordingEncodeConfig encode;
+    CameraRecordingOutputConfig output;
+    RecordingStrategyConfig strategy;
+    CameraRecordingConstraintsConfig constraints;
+    CameraRecordingResourcesConfig resources;
+};
+
 // The lightweight struct to pass data from the preprocess worker to the hardware encoder.
 struct ENCODER_WORKER_ENTRY {
     unsigned char* d_prepared_frame;

@@ -408,7 +408,7 @@ std::vector<std::string> string_split_char(char* string_c, std::string delimiter
 
 namespace {
 constexpr const char* kCameraConfigSchemaId = "orange.camera.config";
-constexpr int kCameraConfigSchemaVersion = 2;
+constexpr int kCameraConfigSchemaVersion = 3;
 
 std::string lower_ascii_copy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -440,6 +440,349 @@ std::string normalize_gpio_connector_variant_string(std::string value) {
         return value;
     }
     return "unknown";
+}
+
+std::string normalize_recording_mode_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "single_session" || value == "split_gop") {
+        return value;
+    }
+    return "single_session";
+}
+
+std::string normalize_split_gop_placement_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "single_gpu" || value == "multi_gpu") {
+        return value;
+    }
+    return "single_gpu";
+}
+
+std::string normalize_split_gop_source_encoder_policy_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "local_only" || value == "hybrid_split" || value == "pure_offload") {
+        return value;
+    }
+    return "local_only";
+}
+
+std::string normalize_split_gop_transfer_mode_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "prepared") {
+        return "prepared_nv12";
+    }
+    if (value == "auto" || value == "raw" || value == "prepared_nv12") {
+        return value;
+    }
+    return "auto";
+}
+
+std::string normalize_recording_output_mode_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "factor" || value == "resolution") {
+        return value;
+    }
+    return "factor";
+}
+
+std::string normalize_preferred_topology_class_string(std::string value) {
+    if (value.empty()) {
+        return value;
+    }
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+    return value;
+}
+
+bool try_get_nonnegative_u64(const nlohmann::json& object, const char* key, uint64_t* out_value) {
+    if (!out_value || !object.contains(key)) {
+        return false;
+    }
+    const nlohmann::json& value = object[key];
+    if (value.is_number_unsigned()) {
+        *out_value = value.get<uint64_t>();
+        return true;
+    }
+    if (value.is_number_integer()) {
+        const long long parsed = value.get<long long>();
+        if (parsed < 0) {
+            return false;
+        }
+        *out_value = static_cast<uint64_t>(parsed);
+        return true;
+    }
+    return false;
+}
+
+bool try_get_nonnegative_int(const nlohmann::json& object, const char* key, int* out_value) {
+    if (!out_value || !object.contains(key)) {
+        return false;
+    }
+    const nlohmann::json& value = object[key];
+    if (!value.is_number_integer() && !value.is_number_unsigned()) {
+        return false;
+    }
+    const long long parsed = value.get<long long>();
+    if (parsed < 0) {
+        return false;
+    }
+    *out_value = static_cast<int>(parsed);
+    return true;
+}
+
+void parse_split_gop_encoder_gpu_ids(const nlohmann::json& split_gop,
+                                     std::vector<int>* encoder_gpu_ids_out) {
+    if (!encoder_gpu_ids_out || !split_gop.contains("encoder_gpu_ids") ||
+        !split_gop["encoder_gpu_ids"].is_array()) {
+        return;
+    }
+
+    std::set<int> seen_gpu_ids;
+    for (const auto& value : split_gop["encoder_gpu_ids"]) {
+        if (!value.is_number_integer() && !value.is_number_unsigned()) {
+            continue;
+        }
+        const long long parsed = value.get<long long>();
+        if (parsed < 0) {
+            continue;
+        }
+        const int gpu_id = static_cast<int>(parsed);
+        if (seen_gpu_ids.insert(gpu_id).second) {
+            encoder_gpu_ids_out->push_back(gpu_id);
+        }
+    }
+}
+
+void normalize_recording_strategy_config(RecordingStrategyConfig* config) {
+    if (!config) {
+        return;
+    }
+
+    config->requested_mode = normalize_recording_mode_string(
+        config->requested_mode.empty() ? config->mode : config->requested_mode);
+    config->mode = config->requested_mode;
+    config->split_gop.placement = normalize_split_gop_placement_string(config->split_gop.placement);
+    config->split_gop.source_encoder_policy =
+        normalize_split_gop_source_encoder_policy_string(config->split_gop.source_encoder_policy);
+    config->split_gop.transfer_mode =
+        normalize_split_gop_transfer_mode_string(config->split_gop.transfer_mode);
+    if (config->split_gop.encoder_gpu_ids.size() > 1) {
+        config->split_gop.placement = "multi_gpu";
+    }
+    config->split_gop.enabled = config->mode == "split_gop";
+}
+
+void normalize_camera_recording_config(CameraRecordingConfig* config) {
+    if (!config) {
+        return;
+    }
+
+    config->encode.codec = lower_ascii_copy(config->encode.codec);
+    config->encode.preset = lower_ascii_copy(config->encode.preset);
+    config->encode.tuning = lower_ascii_copy(config->encode.tuning);
+    config->encode.rate_control_mode = lower_ascii_copy(config->encode.rate_control_mode);
+    config->output.mode = normalize_recording_output_mode_string(config->output.mode);
+    config->constraints.preferred_topology_class =
+        normalize_preferred_topology_class_string(config->constraints.preferred_topology_class);
+    normalize_recording_strategy_config(&config->strategy);
+}
+
+bool parse_recording_strategy_json_object(const nlohmann::json& recording,
+                                          RecordingStrategyConfig* recording_strategy_out,
+                                          std::string* error_out) {
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!recording_strategy_out) {
+        if (error_out) {
+            *error_out = "recording strategy destination is null";
+        }
+        return false;
+    }
+    if (!recording.is_object()) {
+        if (error_out) {
+            *error_out = "recording strategy must be a JSON object";
+        }
+        return false;
+    }
+
+    RecordingStrategyConfig recording_strategy;
+    recording_strategy.requested_mode =
+        normalize_recording_mode_string(recording.value("mode", recording_strategy.requested_mode));
+    recording_strategy.mode = recording_strategy.requested_mode;
+    if (recording.contains("split_gop") && recording["split_gop"].is_object()) {
+        const nlohmann::json& split_gop = recording["split_gop"];
+        recording_strategy.split_gop.placement =
+            normalize_split_gop_placement_string(
+                split_gop.value("placement", recording_strategy.split_gop.placement));
+        recording_strategy.split_gop.source_encoder_policy =
+            normalize_split_gop_source_encoder_policy_string(split_gop.value(
+                "source_encoder_policy", recording_strategy.split_gop.source_encoder_policy));
+        recording_strategy.split_gop.transfer_mode =
+            normalize_split_gop_transfer_mode_string(
+                split_gop.value("transfer_mode", recording_strategy.split_gop.transfer_mode));
+        parse_split_gop_encoder_gpu_ids(
+            split_gop, &recording_strategy.split_gop.encoder_gpu_ids);
+        try_get_nonnegative_u64(
+            split_gop, "max_inflight_gops",
+            &recording_strategy.split_gop.max_inflight_gops);
+        try_get_nonnegative_u64(
+            split_gop, "max_buffered_bytes",
+            &recording_strategy.split_gop.max_buffered_bytes);
+        recording_strategy.split_gop.strict =
+            split_gop.value("strict", recording_strategy.split_gop.strict);
+
+        if (split_gop.contains("writer_queue") && split_gop["writer_queue"].is_object()) {
+            const nlohmann::json& writer_queue = split_gop["writer_queue"];
+            try_get_nonnegative_u64(
+                writer_queue, "max_packets",
+                &recording_strategy.split_gop.writer_queue.max_packets);
+            try_get_nonnegative_u64(
+                writer_queue, "max_bytes",
+                &recording_strategy.split_gop.writer_queue.max_bytes);
+            recording_strategy.split_gop.writer_queue.fail_on_overflow =
+                writer_queue.value(
+                    "fail_on_overflow",
+                    recording_strategy.split_gop.writer_queue.fail_on_overflow);
+        }
+    }
+
+    normalize_recording_strategy_config(&recording_strategy);
+    *recording_strategy_out = std::move(recording_strategy);
+    return true;
+}
+
+void parse_recording_config_from_json(const nlohmann::json& camera_config,
+                                      CameraParams* camera_params) {
+    if (!camera_params) {
+        return;
+    }
+
+    camera_params->recording = CameraRecordingConfig();
+    if (!camera_config.contains("recording") || !camera_config["recording"].is_object()) {
+        return;
+    }
+
+    const nlohmann::json& recording = camera_config["recording"];
+    camera_params->recording.profile_name =
+        recording.value("profile_name", camera_params->recording.profile_name);
+
+    if (recording.contains("encode") && recording["encode"].is_object()) {
+        const nlohmann::json& encode = recording["encode"];
+        camera_params->recording.encode.codec =
+            lower_ascii_copy(encode.value("codec", camera_params->recording.encode.codec));
+        camera_params->recording.encode.preset =
+            lower_ascii_copy(encode.value("preset", camera_params->recording.encode.preset));
+        camera_params->recording.encode.tuning =
+            lower_ascii_copy(encode.value("tuning", camera_params->recording.encode.tuning));
+        camera_params->recording.encode.rate_control_mode = lower_ascii_copy(
+            encode.value("rate_control_mode", camera_params->recording.encode.rate_control_mode));
+        camera_params->recording.encode.quality_value =
+            encode.value("quality_value", camera_params->recording.encode.quality_value);
+        camera_params->recording.encode.gop_length =
+            encode.value("gop_length", camera_params->recording.encode.gop_length);
+        camera_params->recording.encode.nvenc_direct_input =
+            encode.value("nvenc_direct_input", camera_params->recording.encode.nvenc_direct_input);
+    }
+
+    if (recording.contains("output") && recording["output"].is_object()) {
+        const nlohmann::json& output = recording["output"];
+        camera_params->recording.output.mode =
+            normalize_recording_output_mode_string(
+                output.value("mode", camera_params->recording.output.mode));
+        camera_params->recording.output.downsample_factor =
+            output.value("downsample_factor", camera_params->recording.output.downsample_factor);
+        camera_params->recording.output.requested_width =
+            output.value("requested_width", camera_params->recording.output.requested_width);
+        camera_params->recording.output.requested_height =
+            output.value("requested_height", camera_params->recording.output.requested_height);
+    }
+
+    if (recording.contains("constraints") && recording["constraints"].is_object()) {
+        const nlohmann::json& constraints = recording["constraints"];
+        camera_params->recording.constraints.require_peer_access =
+            constraints.value("require_peer_access", camera_params->recording.constraints.require_peer_access);
+        camera_params->recording.constraints.preferred_topology_class =
+            normalize_preferred_topology_class_string(constraints.value(
+                "preferred_topology_class",
+                camera_params->recording.constraints.preferred_topology_class));
+    }
+
+    if (recording.contains("resources") && recording["resources"].is_object()) {
+        const nlohmann::json& resources = recording["resources"];
+        try_get_nonnegative_int(
+            resources, "acquire_work_entries",
+            &camera_params->recording.resources.acquire_work_entries);
+        try_get_nonnegative_int(
+            resources, "encoder_entry_pool_size",
+            &camera_params->recording.resources.encoder_entry_pool_size);
+    }
+
+    RecordingStrategyConfig parsed_strategy;
+    if (parse_recording_strategy_json_object(recording, &parsed_strategy, nullptr)) {
+        camera_params->recording.strategy = std::move(parsed_strategy);
+    }
+
+    normalize_camera_recording_config(&camera_params->recording);
+    camera_params->recording_strategy = camera_params->recording.strategy;
+}
+
+nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfig& recording_strategy_in) {
+    RecordingStrategyConfig recording_strategy = recording_strategy_in;
+    normalize_recording_strategy_config(&recording_strategy);
+
+    nlohmann::json recording = nlohmann::json::object();
+    recording["mode"] = recording_strategy.requested_mode;
+    recording["split_gop"] = {
+        {"placement", recording_strategy.split_gop.placement},
+        {"encoder_gpu_ids", recording_strategy.split_gop.encoder_gpu_ids},
+        {"source_encoder_policy", recording_strategy.split_gop.source_encoder_policy},
+        {"transfer_mode", recording_strategy.split_gop.transfer_mode},
+        {"max_inflight_gops", recording_strategy.split_gop.max_inflight_gops},
+        {"max_buffered_bytes", recording_strategy.split_gop.max_buffered_bytes},
+        {"strict", recording_strategy.split_gop.strict},
+        {"writer_queue", {
+            {"max_packets", recording_strategy.split_gop.writer_queue.max_packets},
+            {"max_bytes", recording_strategy.split_gop.writer_queue.max_bytes},
+            {"fail_on_overflow", recording_strategy.split_gop.writer_queue.fail_on_overflow}
+        }}
+    };
+    return recording;
+}
+
+nlohmann::json build_recording_config_json_from_params(const CameraParams& camera_params)
+{
+    CameraRecordingConfig recording = camera_params.recording;
+    recording.strategy = camera_params.recording_strategy;
+    normalize_camera_recording_config(&recording);
+
+    nlohmann::json recording_json = build_recording_strategy_json_object(recording.strategy);
+    recording_json["profile_name"] = recording.profile_name;
+    recording_json["encode"] = {
+        {"codec", recording.encode.codec},
+        {"preset", recording.encode.preset},
+        {"tuning", recording.encode.tuning},
+        {"rate_control_mode", recording.encode.rate_control_mode},
+        {"quality_value", recording.encode.quality_value},
+        {"gop_length", recording.encode.gop_length},
+        {"nvenc_direct_input", recording.encode.nvenc_direct_input}
+    };
+    recording_json["output"] = {
+        {"mode", recording.output.mode},
+        {"downsample_factor", recording.output.downsample_factor},
+        {"requested_width", recording.output.requested_width},
+        {"requested_height", recording.output.requested_height}
+    };
+    recording_json["constraints"] = {
+        {"require_peer_access", recording.constraints.require_peer_access},
+        {"preferred_topology_class", recording.constraints.preferred_topology_class}
+    };
+    recording_json["resources"] = {
+        {"acquire_work_entries", recording.resources.acquire_work_entries},
+        {"encoder_entry_pool_size", recording.resources.encoder_entry_pool_size}
+    };
+    return recording_json;
 }
 
 std::string canonicalize_gpio_recipe_string(std::string value) {
@@ -563,134 +906,6 @@ void parse_split_gop_encoder_gpu_ids(const nlohmann::json& split_gop,
     }
 }
 
-void normalize_recording_strategy_config(RecordingStrategyConfig* config) {
-    if (!config) {
-        return;
-    }
-
-    config->requested_mode = normalize_recording_mode_string(
-        config->requested_mode.empty() ? config->mode : config->requested_mode);
-    config->mode = config->requested_mode;
-    config->split_gop.placement = normalize_split_gop_placement_string(config->split_gop.placement);
-    config->split_gop.source_encoder_policy =
-        normalize_split_gop_source_encoder_policy_string(config->split_gop.source_encoder_policy);
-    config->split_gop.transfer_mode =
-        normalize_split_gop_transfer_mode_string(config->split_gop.transfer_mode);
-    if (config->split_gop.encoder_gpu_ids.size() > 1) {
-        config->split_gop.placement = "multi_gpu";
-    }
-    config->split_gop.enabled = config->mode == "split_gop";
-}
-
-bool parse_recording_strategy_json_object(const nlohmann::json& recording,
-                                          RecordingStrategyConfig* recording_strategy_out,
-                                          std::string* error_out) {
-    if (error_out) {
-        error_out->clear();
-    }
-    if (!recording_strategy_out) {
-        if (error_out) {
-            *error_out = "recording strategy destination is null";
-        }
-        return false;
-    }
-    if (!recording.is_object()) {
-        if (error_out) {
-            *error_out = "recording strategy must be a JSON object";
-        }
-        return false;
-    }
-
-    RecordingStrategyConfig recording_strategy;
-    recording_strategy.requested_mode =
-        normalize_recording_mode_string(recording.value("mode", recording_strategy.requested_mode));
-    recording_strategy.mode = recording_strategy.requested_mode;
-    if (recording.contains("split_gop") && recording["split_gop"].is_object()) {
-        const nlohmann::json& split_gop = recording["split_gop"];
-        recording_strategy.split_gop.placement =
-            normalize_split_gop_placement_string(
-                split_gop.value("placement", recording_strategy.split_gop.placement));
-        recording_strategy.split_gop.source_encoder_policy =
-            normalize_split_gop_source_encoder_policy_string(split_gop.value(
-                "source_encoder_policy", recording_strategy.split_gop.source_encoder_policy));
-        recording_strategy.split_gop.transfer_mode =
-            normalize_split_gop_transfer_mode_string(
-                split_gop.value("transfer_mode", recording_strategy.split_gop.transfer_mode));
-        parse_split_gop_encoder_gpu_ids(
-            split_gop, &recording_strategy.split_gop.encoder_gpu_ids);
-        try_get_nonnegative_u64(
-            split_gop, "max_inflight_gops",
-            &recording_strategy.split_gop.max_inflight_gops);
-        try_get_nonnegative_u64(
-            split_gop, "max_buffered_bytes",
-            &recording_strategy.split_gop.max_buffered_bytes);
-        recording_strategy.split_gop.strict =
-            split_gop.value("strict", recording_strategy.split_gop.strict);
-
-        if (split_gop.contains("writer_queue") && split_gop["writer_queue"].is_object()) {
-            const nlohmann::json& writer_queue = split_gop["writer_queue"];
-            try_get_nonnegative_u64(
-                writer_queue, "max_packets",
-                &recording_strategy.split_gop.writer_queue.max_packets);
-            try_get_nonnegative_u64(
-                writer_queue, "max_bytes",
-                &recording_strategy.split_gop.writer_queue.max_bytes);
-            recording_strategy.split_gop.writer_queue.fail_on_overflow =
-                writer_queue.value(
-                    "fail_on_overflow",
-                    recording_strategy.split_gop.writer_queue.fail_on_overflow);
-        }
-    }
-
-    normalize_recording_strategy_config(&recording_strategy);
-    *recording_strategy_out = std::move(recording_strategy);
-    return true;
-}
-
-void parse_recording_strategy_from_json(const nlohmann::json& camera_config,
-                                        CameraParams* camera_params) {
-    if (!camera_params) {
-        return;
-    }
-
-    camera_params->recording_strategy = RecordingStrategyConfig();
-    if (!camera_config.contains("recording") || !camera_config["recording"].is_object()) {
-        return;
-    }
-
-    RecordingStrategyConfig parsed_strategy;
-    if (parse_recording_strategy_json_object(camera_config["recording"], &parsed_strategy, nullptr)) {
-        camera_params->recording_strategy = std::move(parsed_strategy);
-    }
-}
-
-nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfig& recording_strategy_in) {
-    RecordingStrategyConfig recording_strategy = recording_strategy_in;
-    normalize_recording_strategy_config(&recording_strategy);
-
-    nlohmann::json recording = nlohmann::json::object();
-    recording["mode"] = recording_strategy.requested_mode;
-    recording["split_gop"] = {
-        {"placement", recording_strategy.split_gop.placement},
-        {"encoder_gpu_ids", recording_strategy.split_gop.encoder_gpu_ids},
-        {"source_encoder_policy", recording_strategy.split_gop.source_encoder_policy},
-        {"transfer_mode", recording_strategy.split_gop.transfer_mode},
-        {"max_inflight_gops", recording_strategy.split_gop.max_inflight_gops},
-        {"max_buffered_bytes", recording_strategy.split_gop.max_buffered_bytes},
-        {"strict", recording_strategy.split_gop.strict},
-        {"writer_queue", {
-            {"max_packets", recording_strategy.split_gop.writer_queue.max_packets},
-            {"max_bytes", recording_strategy.split_gop.writer_queue.max_bytes},
-            {"fail_on_overflow", recording_strategy.split_gop.writer_queue.fail_on_overflow}
-        }}
-    };
-    return recording;
-}
-
-nlohmann::json build_recording_strategy_json_from_params(const CameraParams& camera_params) {
-    return build_recording_strategy_json_object(camera_params.recording_strategy);
-}
-
 bool starts_with_case_insensitive(const std::string& value, const std::string& prefix) {
     const std::string lower_value = lower_ascii_copy(value);
     const std::string lower_prefix = lower_ascii_copy(prefix);
@@ -766,6 +981,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->trigger_activation = "RisingEdge";
     camera_params->ptp_mode.clear();
     camera_params->gpio_nodes.clear();
+    camera_params->recording = CameraRecordingConfig();
     camera_params->recording_strategy = RecordingStrategyConfig();
 }
 
@@ -879,6 +1095,78 @@ std::vector<std::string>::const_iterator find_camera_config_for_serial(
                         });
 }
 
+bool camera_config_schema_version_supported(int schema_version) {
+    return schema_version == 1 || schema_version == 2 || schema_version == 3;
+}
+
+bool try_parse_source_gpu_id_from_json(const nlohmann::json& camera_config,
+                                       int* gpu_id_out,
+                                       bool* used_legacy_gpu_id_out,
+                                       std::string* error_out) {
+    if (gpu_id_out) {
+        *gpu_id_out = -1;
+    }
+    if (used_legacy_gpu_id_out) {
+        *used_legacy_gpu_id_out = false;
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+
+    const bool has_source_gpu_id = camera_config.contains("source_gpu_id");
+    const bool has_legacy_gpu_id = camera_config.contains("gpu_id");
+    if (!has_source_gpu_id && !has_legacy_gpu_id) {
+        if (error_out) {
+            *error_out = "camera config missing source_gpu_id";
+        }
+        return false;
+    }
+
+    auto parse_gpu_value = [&](const nlohmann::json& value, int* parsed_out) -> bool {
+        if (!parsed_out) {
+            return false;
+        }
+        if (!value.is_number_integer() && !value.is_number_unsigned()) {
+            return false;
+        }
+        const long long parsed = value.get<long long>();
+        if (parsed < 0) {
+            return false;
+        }
+        *parsed_out = static_cast<int>(parsed);
+        return true;
+    };
+
+    int source_gpu_id = -1;
+    int legacy_gpu_id = -1;
+    if (has_source_gpu_id && !parse_gpu_value(camera_config["source_gpu_id"], &source_gpu_id)) {
+        if (error_out) {
+            *error_out = "camera config field `source_gpu_id` must be a non-negative integer";
+        }
+        return false;
+    }
+    if (has_legacy_gpu_id && !parse_gpu_value(camera_config["gpu_id"], &legacy_gpu_id)) {
+        if (error_out) {
+            *error_out = "camera config field `gpu_id` must be a non-negative integer";
+        }
+        return false;
+    }
+    if (has_source_gpu_id && has_legacy_gpu_id && source_gpu_id != legacy_gpu_id) {
+        if (error_out) {
+            *error_out = "`source_gpu_id` and legacy `gpu_id` disagree";
+        }
+        return false;
+    }
+
+    if (gpu_id_out) {
+        *gpu_id_out = has_source_gpu_id ? source_gpu_id : legacy_gpu_id;
+    }
+    if (used_legacy_gpu_id_out) {
+        *used_legacy_gpu_id_out = !has_source_gpu_id && has_legacy_gpu_id;
+    }
+    return true;
+}
+
 nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_params)
 {
     nlohmann::json camera_config = nlohmann::json::object();
@@ -890,7 +1178,7 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
     camera_config["exposure"] = camera_params.exposure;
     camera_config["pixel_format"] = camera_params.pixel_format;
     camera_config["color_temp"] = camera_params.color_temp;
-    camera_config["gpu_id"] = camera_params.gpu_id;
+    camera_config["source_gpu_id"] = camera_params.gpu_id;
     camera_config["gpu_direct"] = camera_params.gpu_direct;
     camera_config["focus_uart_bootstrap"] = camera_params.focus_uart_bootstrap;
     camera_config["color"] = camera_params.color;
@@ -939,7 +1227,7 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
     camera_config["gpio"] = {
         {"nodes", std::move(gpio_nodes)}
     };
-    camera_config["recording"] = build_recording_strategy_json_from_params(camera_params);
+    camera_config["recording"] = build_recording_config_json_from_params(camera_params);
     return camera_config;
 }
 
@@ -948,6 +1236,7 @@ nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
     nlohmann::json snapshot = nlohmann::json::object();
     snapshot["source"] = {
         {"camera_config_path", camera_params.config_path},
+        {"configured_source_gpu_id", camera_params.configured_gpu_id},
         {"configured_gpu_id", camera_params.configured_gpu_id},
         {"gpu_id_runtime_overridden", camera_params.gpu_id_runtime_overridden}
     };
@@ -974,7 +1263,13 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->exposure = camera_config["exposure"];
     camera_params->pixel_format = camera_config["pixel_format"];
     camera_params->color_temp = camera_config["color_temp"];
-    camera_params->configured_gpu_id = camera_config["gpu_id"];
+    std::string source_gpu_error;
+    if (!try_parse_source_gpu_id_from_json(camera_config,
+                                           &camera_params->configured_gpu_id,
+                                           nullptr,
+                                           &source_gpu_error)) {
+        throw std::runtime_error("Invalid camera config `" + file_name + "`: " + source_gpu_error);
+    }
     camera_params->gpu_id = camera_params->configured_gpu_id;
     camera_params->gpu_id_runtime_overridden = false;
     camera_params->gpu_direct = camera_config["gpu_direct"];
@@ -1005,7 +1300,8 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
                   << ": " << camera_params->config_schema_id
                   << " (expected " << kCameraConfigSchemaId << ")" << std::endl;
     }
-    if (camera_params->config_schema_version > kCameraConfigSchemaVersion) {
+    if (camera_params->config_schema_version > 0 &&
+        !camera_config_schema_version_supported(camera_params->config_schema_version)) {
         std::cerr << "Camera config schema_version mismatch for " << file_name
                   << ": " << camera_params->config_schema_version
                   << " (expected " << kCameraConfigSchemaVersion << ")" << std::endl;
@@ -1037,7 +1333,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     }
 
     parse_gpio_nodes_from_json(camera_config, camera_params);
-    parse_recording_strategy_from_json(camera_config, camera_params);
+    parse_recording_config_from_json(camera_config, camera_params);
     infer_camera_gpio_metadata(camera_params);
 }
 
