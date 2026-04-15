@@ -167,6 +167,36 @@ struct HeadlessGpuDmonMonitor {
     std::string error;
 };
 
+struct HeadlessThreadFailureState {
+    mutable std::mutex mutex;
+    bool failed = false;
+    std::string first_error;
+
+    void reset() {
+        std::lock_guard<std::mutex> lock(mutex);
+        failed = false;
+        first_error.clear();
+    }
+
+    void record_failure(const std::string& error) {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!failed) {
+            first_error = error;
+        }
+        failed = true;
+    }
+
+    bool has_failure() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return failed;
+    }
+
+    std::string get_first_error() const {
+        std::lock_guard<std::mutex> lock(mutex);
+        return first_error;
+    }
+};
+
 using CameraGpuOverrideMap = std::unordered_map<std::string, int>;
 using RecordingStrategyOverrideMap = std::unordered_map<std::string, RecordingStrategyConfig>;
 
@@ -1830,6 +1860,8 @@ void quit_process(bool error = false, const std::string &reason = "")
     }
 }
 
+extern bool quit_server;
+
 bool open_cameras(CameraParams *cameras_params,
                   CameraEmergent *ecams,
                   CameraEachSelect *cameras_select,
@@ -1879,6 +1911,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     std::vector<CameraResources>& camera_resources,
     std::vector<int>& active_camera_indices,
     std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+    HeadlessThreadFailureState* thread_failure_state,
     HeadlessGpuDmonMonitor* gpu_dmon_monitor,
     CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select,
     GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params,
@@ -1889,6 +1922,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     bool enable_recording = true)
 {
     std::cout << "start camera sthread..." << std::endl;
+    if (thread_failure_state) {
+        thread_failure_state->reset();
+    }
     const HeadlessEncoderSettings encoder_settings = parse_headless_encoder_setup(encoder_basic_setup);
     std::cout << "Headless encoder config: codec=" << encoder_settings.codec
               << " preset=" << encoder_settings.preset
@@ -2051,19 +2087,54 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     for (int idx : selected_indices)
     {
         camera_threads.push_back(std::thread(
-            &acquire_frames,
-            &ecams[idx],
-            &cameras_params[idx],
-            &cameras_select[idx],
-            camera_control,
-            ptp_params,
-            nullptr,
-            nullptr,
-            recording_pipelines[idx] ? recording_pipelines[idx]->recording_ingress() : nullptr,
-            nullptr,
-            nullptr,
-            &camera_resources[idx],
-            nullptr));
+            [&, idx, thread_failure_state]() {
+                try {
+                    acquire_frames(
+                        &ecams[idx],
+                        &cameras_params[idx],
+                        &cameras_select[idx],
+                        camera_control,
+                        ptp_params,
+                        nullptr,
+                        nullptr,
+                        recording_pipelines[idx] ? recording_pipelines[idx]->recording_ingress() : nullptr,
+                        nullptr,
+                        nullptr,
+                        &camera_resources[idx],
+                        nullptr);
+                } catch (const std::exception& ex) {
+                    std::ostringstream message;
+                    message << "Headless camera thread failed for camera "
+                            << cameras_params[idx].camera_serial
+                            << ": " << ex.what();
+                    std::cerr << message.str() << std::endl;
+                    if (thread_failure_state) {
+                        thread_failure_state->record_failure(message.str());
+                    }
+                    if (camera_control) {
+                        camera_control->subscribe = false;
+                        camera_control->record_video = false;
+                        camera_control->recording_draining = true;
+                        camera_control->stop_record = true;
+                    }
+                    quit_server = true;
+                } catch (...) {
+                    const std::string message =
+                        "Headless camera thread failed with an unknown exception for camera " +
+                        cameras_params[idx].camera_serial;
+                    std::cerr << message << std::endl;
+                    if (thread_failure_state) {
+                        thread_failure_state->record_failure(message);
+                    }
+                    if (camera_control) {
+                        camera_control->subscribe = false;
+                        camera_control->record_video = false;
+                        camera_control->recording_draining = true;
+                        camera_control->stop_record = true;
+                    }
+                    quit_server = true;
+                }
+            }));
     }
 
     // wait for all camera ready
@@ -2106,6 +2177,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     CameraEachSelect *cameras_select = nullptr;
     CameraControl *camera_control = new CameraControl;
@@ -2136,6 +2208,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         camera_resources,
                         active_camera_indices,
                         recording_pipelines,
+                        &thread_failure_state,
                         &gpu_dmon_monitor,
                         cameras_params,
                         ecams,
@@ -2179,6 +2252,14 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 }
                 quit_server = true;
                 break;
+        }
+
+        if (thread_failure_state.has_failure()) {
+            if (gpu_dmon_monitor.error.empty()) {
+                gpu_dmon_monitor.error = thread_failure_state.get_first_error();
+            }
+            stop_headless_gpu_dmon_monitor(&gpu_dmon_monitor);
+            manager_context->state = FetchGame::ManagerState_ERROR;
         }
 
         if (ptp_params->network_set_stop_ptp && ptp_params->ptp_stop_reached) {
@@ -3546,6 +3627,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     const bool enable_recording = !options.stream_only;
     const std::string active_record_folder = enable_recording ? options.record_folder : std::string();
@@ -3556,6 +3638,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         camera_resources,
         active_camera_indices,
         recording_pipelines,
+        &thread_failure_state,
         &gpu_dmon_monitor,
         cameras_params.get(),
         ecams.get(),
@@ -3611,6 +3694,13 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         usleep(100000);
     }
 
+    if (thread_failure_state.has_failure() && gpu_dmon_monitor.error.empty()) {
+        gpu_dmon_monitor.error = thread_failure_state.get_first_error();
+    }
+    if (thread_failure_state.has_failure()) {
+        stop_headless_gpu_dmon_monitor(&gpu_dmon_monitor);
+    }
+
     shutdown_headless_run(
         camera_threads,
         camera_resources,
@@ -3624,6 +3714,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &camera_control,
         &ptp_params,
         false);
+
+    if (thread_failure_state.has_failure()) {
+        std::cerr << thread_failure_state.get_first_error() << std::endl;
+        return 1;
+    }
 
     return 0;
 }
