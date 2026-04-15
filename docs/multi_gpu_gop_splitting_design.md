@@ -1179,6 +1179,106 @@ Key final snapshot signals from the successful run:
 - `overflow_events = 0`
 - `peak_backlog_gops = 2`
 
+## Throughput Expansion As Of 2026-04-15
+
+After the first `gop=60` correctness run passed, the next question was whether
+the same `GPU5 + GPU6` split-GOP path could sustain higher frame rates at full
+`4512x4512` resolution.
+
+### Stable `80 fps` Result
+
+Validated run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_80fps_rerun7`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_80](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_80fps_rerun7/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_80>)
+
+Observed result:
+
+- `1122` frames received
+- calculated acquisition rate `80.000465 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 74.7599`
+- end-of-run steady-state split was effectively even:
+  - `enc_fps_primary ~= 40 fps`
+  - `enc_fps_helpers ~= 40 fps`
+
+Interpretation:
+
+- `80 fps` is a stable operating point on this A16 pair for camera `2010096`
+  with:
+  - `hevc`
+  - `hybrid_split`
+  - `raw` transfer
+  - reduced acquisition / preprocess pools
+- the lower `runs.csv enc_fps_mean` is mostly startup drag; the per-second
+  pipeline CSV shows steady-state operation at about `80 fps`
+
+### Failed `100 fps` Attempt With `gop=100`
+
+Validated run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_100](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_100>)
+
+Observed result:
+
+- acquisition initially reached about `98.39 fps`
+- first pipeline sample showed:
+  - aggregate `enc_fps ~= 54.68`
+  - `enc_fps_primary ~= 54.68`
+  - `enc_fps_helpers = 0.0`
+- the helper lane did not contribute in the first sample because the whole
+  first `100`-frame GOP still belonged to the primary lane
+- the run then hit the intermittent camera transport failure:
+  - repeated `EVT_CameraGetFrame Error, 11`
+  - then `Socket operation failed`
+
+Interpretation:
+
+- this run did not prove that `100 fps` is impossible
+- it did show that `gop=100` front-loads too much work onto the source /
+  primary lane before the helper lane can contribute
+- for `100 fps`, a shorter GOP is the more appropriate next step
+
+### Successful `100 fps` Result With `gop=50`
+
+Validated run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop50_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_50](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop50_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_50>)
+
+Observed result:
+
+- `1402` frames received over `14.02 s`
+- calculated acquisition rate `99.935234 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 100.438`
+- `runs.csv enc_fps_primary_mean = 50.2256`
+- `runs.csv enc_fps_helpers_mean = 50.2127`
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+- `pending_gop_buffer.overflow_events = 0`
+
+Interpretation:
+
+- `100 fps` is viable on `GPU5 + GPU6` for this camera when the GOP is short
+  enough for the helper lane to join early
+- reducing GOP from `100` to `50` was the key change; with `gop=50`, helper
+  contribution was visible by the second pipeline sample and the run settled
+  into a roughly `50/50` split across the two encode lanes
+- the shared-output backlog coordinator remained healthy throughout the
+  successful run
+
 Host-specific caution:
 
 - `GPU3` is a poor experiment target on `pancake0` because it participates in

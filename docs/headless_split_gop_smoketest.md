@@ -333,17 +333,30 @@ Not available yet in persisted artifacts:
   - `helper_dispatched_frames`
   - `helper_fallback_frames`
   - `last_target_gpu_id`
-- explicit helper-GPU transfer timing
 - explicit helper-GPU transfer byte counts
-- aggregated helper + primary queue / FPS reporting in the pipeline snapshot
 - a persisted per-helper encoder snapshot
 
 Practical consequence:
 
 - the current artifacts can prove that split-GOP mode was configured and that
   the shared pending-GOP / writer machinery stayed healthy
-- but they do not yet prove, by themselves, how many frames or GOPs actually
-  routed through the helper path
+- aggregate helper + primary preprocess / encode FPS are now persisted in:
+  - `Cam<serial>_pipeline_perf.csv`
+  - `recording_snapshot.json`
+  - `runs.csv`
+- explicit split-GOP latency timing is now persisted in
+  `recording_snapshot.json`, including:
+  - `source_to_helper_copy`
+  - `bitstream_fetch`
+  - `gop_hold_before_release`
+  - `writer_queue_wait`
+  - `packet_mux_write`
+  - `gop_release_to_last_write`
+- multi-GPU `nvidia-smi dmon` capture is now persisted for the union of the
+  source GPU and helper GPUs involved in the run
+- helper-routing counts still are not written directly, so route choice is
+  still inferred from throughput split, latency samples, and multi-GPU `dmon`
+  rather than from explicit per-frame routing counters
 
 ## Successful Result As Of 2026-04-15
 
@@ -425,6 +438,90 @@ Recommended next code step:
 
 - instrument and fix pending-GOP accounting / flush progression
 - do not widen to more cameras or more GPUs until that is fixed
+
+## Throughput Follow-Up Results As Of 2026-04-15
+
+After the initial `gop=60` correctness run, the same `GPU5 + GPU6` pair was
+used for higher-frame-rate bring-up on camera `2010096`.
+
+### `80 fps` Stable Result
+
+Validated run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_80fps_rerun7`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_80](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_80fps_rerun7/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_80>)
+
+Observed result:
+
+- `1122` frames received
+- calculated acquisition rate `80.000465 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- pipeline steady state near the end of the run was about:
+  - `enc_fps = 79.999126`
+  - `enc_fps_primary = 39.997327`
+  - `enc_fps_helpers = 40.001798`
+
+### `100 fps` With `gop=100` Failed Early
+
+Validated run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_100](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_100>)
+
+Observed result:
+
+- acquisition initially reached about `98.39 fps`
+- first pipeline sample showed:
+  - `enc_fps = 54.675641`
+  - `enc_fps_primary = 54.675641`
+  - `enc_fps_helpers = 0.0`
+- the helper lane did not contribute in the first sample because the whole
+  first `100`-frame GOP still belonged to the primary lane
+- the run then hit the intermittent camera transport failure
+
+Interpretation:
+
+- this was a bad first `100 fps` GOP size, not proof that the A16 pair could
+  never sustain `100 fps`
+
+### `100 fps` With `gop=50` Passed
+
+Validated run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop50_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_50](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop50_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_50>)
+
+Observed result:
+
+- `1402` frames received over `14.02 s`
+- calculated acquisition rate `99.935234 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 100.438`
+- `runs.csv enc_fps_primary_mean = 50.2256`
+- `runs.csv enc_fps_helpers_mean = 50.2127`
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+- `pending_gop_buffer.overflow_events = 0`
+- `nvidia_smi_dmon.status = completed`
+- `nvidia-smi dmon` monitored both GPUs:
+  - command `nvidia-smi dmon -i 5,6 -s putcm -d 1 -o DT`
+
+Most important interpretation:
+
+- the source/helper split is effectively `50/50` at `100 fps` once the GOP is
+  short enough for the helper lane to start early
+- for this camera and topology, `gop=50` is a much better `100 fps` setting
+  than `gop=100`
 
 ## Pass Criteria
 
