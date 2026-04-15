@@ -10,9 +10,12 @@
 #include <deque>
 #include <fstream>
 #include <map>
+#include <memory>
+#include <optional>
 #include "encoder_pipeline.h"
 #include "json.hpp"
 #include "pre_encoder_reference_writer.h"
+#include "shared_recording_output.h"
 
 class EncoderPreprocessWorker; // Forward declaration
 
@@ -49,6 +52,8 @@ public:
         const EncoderControlOverrides& encoder_control_overrides,
         const ImportanceMapConfig& importance_map_config,
         std::string folder_name,
+        std::shared_ptr<SharedRecordingOutput> shared_output,
+        bool owns_recording_output,
         EncoderPreprocessWorker* prep_worker,
         CameraControl* camera_control,
         const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
@@ -99,7 +104,8 @@ private:
                                 const std::vector<uint64_t>& output_timestamps,
                                 int64_t fallback_sample_index,
                                 uint64_t completion_gop_index,
-                                bool mark_complete);
+                                bool mark_complete,
+                                const std::optional<RecordingMetadataRow>& metadata_row);
     void flush_pending_gops(bool flush_all);
     int64_t oldest_pending_gop_age_ms() const;
 
@@ -219,6 +225,8 @@ private:
     int gop_length_ = 0;
     uint32_t recording_gop_length_ = 1;
     RecordingStrategyConfig recording_strategy_config_;
+    std::shared_ptr<SharedRecordingOutput> shared_output_;
+    bool owns_recording_output_ = true;
     Writer writer_;
     PreEncoderReferenceWriter pre_encoder_reference_writer_;
     std::vector<ReferenceCaptureStagingSlot> pre_encoder_reference_staging_slots_;

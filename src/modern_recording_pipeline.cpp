@@ -2,11 +2,13 @@
 
 #include "modern_recording_pipeline.h"
 
+#include <algorithm>
 #include <iostream>
 
 #include "encoder_hw_worker.h"
 #include "encoder_preprocess_worker.h"
 #include "recording_ingress.h"
+#include "shared_recording_output.h"
 
 ModernRecordingPipeline::ModernRecordingPipeline(
     CameraParams* camera_params,
@@ -29,6 +31,8 @@ ModernRecordingPipeline::ModernRecordingPipeline(
       recording_gpu_id_(recording_gpu_id >= 0 ? recording_gpu_id : camera_params->gpu_id),
       recording_output_config_(recording_output_config)
 {
+    shared_recording_output_ = std::make_shared<SharedRecordingOutput>();
+
     const std::string hw_encoder_name = "HW_Encoder_Cam_" + camera_params_->camera_serial;
     hw_worker_ = std::make_unique<EncoderHwWorker>(
         hw_encoder_name.c_str(),
@@ -44,6 +48,8 @@ ModernRecordingPipeline::ModernRecordingPipeline(
         encoder_control_overrides,
         importance_map_config,
         base_folder_name,
+        shared_recording_output_,
+        true,
         nullptr,
         camera_control,
         pre_encoder_reference_capture_config);
@@ -68,6 +74,73 @@ ModernRecordingPipeline::ModernRecordingPipeline(
         hw_worker_->encode_gpu_id(),
         hw_worker_->recording_gop_length(),
         hw_worker_->recording_strategy_config());
+
+    const RecordingStrategyConfig& resolved_strategy = hw_worker_->recording_strategy_config();
+    const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;
+    const bool wants_helper_targets =
+        resolved_strategy.split_gop_enabled() &&
+        policy == "hybrid_split";
+    if (wants_helper_targets) {
+        for (int helper_gpu_id : resolved_strategy.split_gop.encoder_gpu_ids) {
+            if (helper_gpu_id < 0 || helper_gpu_id == hw_worker_->encode_gpu_id()) {
+                continue;
+            }
+            const bool already_registered = std::any_of(
+                helper_encode_targets_.begin(),
+                helper_encode_targets_.end(),
+                [helper_gpu_id](const HelperEncodeTarget& target) {
+                    return target.gpu_id == helper_gpu_id;
+                });
+            if (already_registered) {
+                continue;
+            }
+
+            HelperEncodeTarget helper_target;
+            helper_target.gpu_id = helper_gpu_id;
+
+            const std::string helper_hw_name =
+                "HW_Encoder_Cam_" + camera_params_->camera_serial + "_GPU_" + std::to_string(helper_gpu_id);
+            helper_target.hw_worker = std::make_unique<EncoderHwWorker>(
+                helper_hw_name.c_str(),
+                camera_params_,
+                helper_gpu_id,
+                recording_output_config_,
+                codec,
+                preset,
+                tuning,
+                rate_control_mode,
+                quality_value,
+                gop_length,
+                encoder_control_overrides,
+                importance_map_config,
+                base_folder_name,
+                shared_recording_output_,
+                false,
+                nullptr,
+                camera_control,
+                PreEncoderReferenceCaptureConfig{});
+
+            const std::string helper_preprocess_name =
+                "Preprocess_Cam_" + camera_params_->camera_serial + "_GPU_" + std::to_string(helper_gpu_id);
+            helper_target.preprocess_worker = std::make_unique<EncoderPreprocessWorker>(
+                helper_preprocess_name.c_str(),
+                camera_params_,
+                helper_gpu_id,
+                recording_output_config_,
+                helper_target.hw_worker->direct_input_enabled(),
+                helper_target.hw_worker->encoder_input_pitch(),
+                helper_target.hw_worker->encoder_buffer_count(),
+                recycle_queue,
+                camera_control);
+
+            helper_target.preprocess_worker->SetHwWorker(helper_target.hw_worker.get());
+            helper_target.hw_worker->SetPreprocessWorker(helper_target.preprocess_worker.get());
+            recording_ingress_->RegisterHelperPreprocessWorker(
+                helper_gpu_id,
+                helper_target.preprocess_worker.get());
+            helper_encode_targets_.push_back(std::move(helper_target));
+        }
+    }
 }
 
 ModernRecordingPipeline::~ModernRecordingPipeline()
@@ -77,6 +150,16 @@ ModernRecordingPipeline::~ModernRecordingPipeline()
 
 void ModernRecordingPipeline::start()
 {
+    for (auto& helper_target : helper_encode_targets_) {
+        if (helper_target.preprocess_worker) {
+            helper_target.preprocess_worker->SetMaxQueueSize(240);
+            helper_target.preprocess_worker->StartThread();
+        }
+        if (helper_target.hw_worker) {
+            helper_target.hw_worker->SetMaxQueueSize(240);
+            helper_target.hw_worker->StartThread();
+        }
+    }
     if (preprocess_worker_) {
         preprocess_worker_->SetMaxQueueSize(240);
         preprocess_worker_->StartThread();
@@ -89,6 +172,14 @@ void ModernRecordingPipeline::start()
 
 void ModernRecordingPipeline::request_stop()
 {
+    for (auto& helper_target : helper_encode_targets_) {
+        if (helper_target.hw_worker) {
+            helper_target.hw_worker->StopThread();
+        }
+        if (helper_target.preprocess_worker) {
+            helper_target.preprocess_worker->StopThread();
+        }
+    }
     if (hw_worker_) {
         hw_worker_->StopThread();
     }
@@ -101,6 +192,20 @@ void ModernRecordingPipeline::shutdown()
 {
     request_stop();
 
+    for (auto& helper_target : helper_encode_targets_) {
+        if (helper_target.hw_worker) {
+            std::cout << "Flushing final packets for helper HW encoder "
+                      << camera_params_->camera_serial
+                      << " on GPU " << helper_target.gpu_id << "..." << std::endl;
+            helper_target.hw_worker->flush_and_close();
+            helper_target.hw_worker.reset();
+        }
+        if (helper_target.preprocess_worker) {
+            helper_target.preprocess_worker.reset();
+        }
+    }
+    helper_encode_targets_.clear();
+
     if (hw_worker_) {
         std::cout << "Flushing final packets for main HW encoder "
                   << camera_params_->camera_serial << "..." << std::endl;
@@ -111,4 +216,7 @@ void ModernRecordingPipeline::shutdown()
     if (preprocess_worker_) {
         preprocess_worker_.reset();
     }
+
+    recording_ingress_.reset();
+    shared_recording_output_.reset();
 }

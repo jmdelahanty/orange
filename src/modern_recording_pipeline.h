@@ -5,6 +5,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "encoder_pipeline.h"
 #include "video_capture.h"
@@ -12,6 +13,7 @@
 class EncoderPreprocessWorker;
 class EncoderHwWorker;
 class RecordingIngress;
+class SharedRecordingOutput;
 
 class ModernRecordingPipeline {
 public:
@@ -46,9 +48,16 @@ public:
     CameraParams* camera_params_ = nullptr;
     int recording_gpu_id_ = -1;
     RecordingOutputConfig recording_output_config_;
+    struct HelperEncodeTarget {
+        int gpu_id = -1;
+        std::unique_ptr<EncoderPreprocessWorker> preprocess_worker;
+        std::unique_ptr<EncoderHwWorker> hw_worker;
+    };
+    std::shared_ptr<SharedRecordingOutput> shared_recording_output_;
     std::unique_ptr<RecordingIngress> recording_ingress_;
     std::unique_ptr<EncoderPreprocessWorker> preprocess_worker_;
     std::unique_ptr<EncoderHwWorker> hw_worker_;
+    std::vector<HelperEncodeTarget> helper_encode_targets_;
 };
 
 #endif

@@ -3,6 +3,7 @@
 #include "encoder_hw_worker.h"
 #include "encoder_preprocess_worker.h"
 #include "fsuid_guard.h"
+#include "shared_recording_output.h"
 #include <iostream>
 #include <utility>
 #include <vector>
@@ -878,6 +879,8 @@ EncoderHwWorker::EncoderHwWorker(
     const EncoderControlOverrides& encoder_control_overrides,
     const ImportanceMapConfig& importance_map_config,
     std::string base_folder_name,
+    std::shared_ptr<SharedRecordingOutput> shared_output,
+    bool owns_recording_output,
     EncoderPreprocessWorker* prep_worker,
     CameraControl* camera_control,
     const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
@@ -898,6 +901,8 @@ EncoderHwWorker::EncoderHwWorker(
   quality_value_(clamp_quality_value(quality_value)),
   gop_length_(sanitize_recording_gop_length(gop_length)),
   recording_strategy_config_(resolve_recording_strategy_config(*camera_params)),
+  shared_output_(std::move(shared_output)),
+  owns_recording_output_(owns_recording_output),
   m_prep_worker_(prep_worker),
   camera_control_(camera_control),
   encoder_(),
@@ -1567,7 +1572,7 @@ void EncoderHwWorker::finalize_recording()
     }
 
     flush_and_close();
-    if (encoder_snapshot_valid_ && !active_recording_folder_.empty()) {
+    if (owns_recording_output_ && encoder_snapshot_valid_ && !active_recording_folder_.empty()) {
         const std::string camera_key = camera_params_->camera_serial.empty()
             ? std::to_string(camera_params_->camera_id)
             : camera_params_->camera_serial;
@@ -1577,7 +1582,7 @@ void EncoderHwWorker::finalize_recording()
     active_recording_folder_.clear();
     is_recording_ = false;
 
-    if (camera_control_) {
+    if (owns_recording_output_ && camera_control_) {
         int remaining = camera_control_->active_recorders.fetch_sub(1, std::memory_order_relaxed) - 1;
         if (remaining == 0) {
             if (camera_control_->recording_draining) {
@@ -1602,11 +1607,28 @@ bool EncoderHwWorker::drain_ready()
     if (!pending_pre_encoder_reference_captures_.empty()) {
         return false;
     }
+    if (shared_output_ && owns_recording_output_ && shared_output_->active_worker_sessions() > 1) {
+        return false;
+    }
     return true;
 }
 
 void EncoderHwWorker::refresh_writer_queue_metrics()
 {
+    if (shared_output_) {
+        const SharedRecordingOutputStats output_stats = shared_output_->stats();
+        writer_queue_overflowed_ = output_stats.writer_queue_overflowed;
+        writer_queue_overflow_events_ = output_stats.writer_queue_overflow_events;
+        writer_queue_peak_packets_ = output_stats.writer_queue_peak_packets;
+        writer_queue_peak_bytes_ = output_stats.writer_queue_peak_bytes;
+        pending_gop_buffered_bytes_ = output_stats.pending_gop_bytes;
+        pending_gop_peak_count_ = output_stats.pending_gop_peak_count;
+        pending_gop_peak_bytes_ = output_stats.pending_gop_peak_bytes;
+        pending_gop_overflowed_ = output_stats.pending_gop_overflowed;
+        pending_gop_overflow_events_ = output_stats.pending_gop_overflow_events;
+        next_gop_to_flush_ = output_stats.next_gop_to_flush;
+        return;
+    }
     if (!writer_.video) {
         return;
     }
@@ -1625,6 +1647,15 @@ void EncoderHwWorker::refresh_writer_queue_metrics()
 
 void EncoderHwWorker::reset_pending_gop_state()
 {
+    if (shared_output_) {
+        next_gop_to_flush_ = 0;
+        pending_gop_buffered_bytes_ = 0;
+        pending_gop_peak_count_ = 0;
+        pending_gop_peak_bytes_ = 0;
+        pending_gop_overflowed_ = false;
+        pending_gop_overflow_events_ = 0;
+        return;
+    }
     pending_gops_.clear();
     next_gop_to_flush_ = 0;
     pending_gop_buffered_bytes_ = 0;
@@ -1638,8 +1669,21 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
                                              const std::vector<uint64_t>& output_timestamps,
                                              int64_t fallback_sample_index,
                                              uint64_t completion_gop_index,
-                                             bool mark_complete)
+                                             bool mark_complete,
+                                             const std::optional<RecordingMetadataRow>& metadata_row)
 {
+    if (shared_output_) {
+        shared_output_->submit_frame_output(
+            packets,
+            output_timestamps,
+            fallback_sample_index,
+            completion_gop_index,
+            mark_complete,
+            metadata_row);
+        refresh_writer_queue_metrics();
+        return;
+    }
+
     if (!recording_strategy_config_.split_gop_enabled()) {
         for (size_t i = 0; i < packets.size(); ++i) {
             const int64_t sample_index = i < output_timestamps.size()
@@ -1725,6 +1769,10 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
 
 void EncoderHwWorker::flush_pending_gops(bool flush_all)
 {
+    if (shared_output_) {
+        refresh_writer_queue_metrics();
+        return;
+    }
     if (!recording_strategy_config_.split_gop_enabled()) {
         return;
     }
@@ -1757,6 +1805,9 @@ void EncoderHwWorker::flush_pending_gops(bool flush_all)
 
 int64_t EncoderHwWorker::oldest_pending_gop_age_ms() const
 {
+    if (shared_output_) {
+        return shared_output_->stats().oldest_pending_gop_age_ms;
+    }
     if (pending_gops_.empty()) {
         return 0;
     }
@@ -1772,6 +1823,8 @@ int64_t EncoderHwWorker::oldest_pending_gop_age_ms() const
 
 nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
 {
+    const SharedRecordingOutputStats shared_output_stats =
+        shared_output_ ? shared_output_->stats() : SharedRecordingOutputStats{};
     nlohmann::json info;
     info["backend"] = encoder_snapshot_.backend;
     info["path"] = encoder_snapshot_.path;
@@ -1907,7 +1960,7 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
             {"strict", encoder_snapshot_.recording_strategy.split_gop.strict},
             {"pending_gop_buffer", {
                 {"next_gop_to_flush", next_gop_to_flush_},
-                {"current_gops", pending_gops_.size()},
+                {"current_gops", shared_output_ ? shared_output_stats.pending_gop_count : pending_gops_.size()},
                 {"current_bytes", pending_gop_buffered_bytes_},
                 {"peak_gops", pending_gop_peak_count_},
                 {"peak_bytes", pending_gop_peak_bytes_},
@@ -1949,7 +2002,8 @@ void EncoderHwWorker::flush_and_close()
             output_timestamps,
             fallback_sample_index,
             static_cast<uint64_t>(fallback_sample_index) / std::max<uint32_t>(1u, recording_gop_length_),
-            !encoder_.vPacket.empty());
+            !encoder_.vPacket.empty(),
+            std::nullopt);
         encoder_.vPacket.clear();
         if (direct_input_enabled_ && m_prep_worker_) {
             for (uint32_t slot_id : retired_slots) {
@@ -1961,6 +2015,13 @@ void EncoderHwWorker::flush_and_close()
     flush_pending_gops(true);
     finalize_pre_encoder_reference_capture();
     release_pre_encoder_reference_capture_resources();
+
+    if (shared_output_) {
+        refresh_writer_queue_metrics();
+        shared_output_->close_worker_session(owns_recording_output_);
+        refresh_writer_queue_metrics();
+        return;
+    }
 
     if (writer_.video) {
         refresh_writer_queue_metrics();
@@ -2038,24 +2099,41 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 queue_config.max_queued_bytes =
                     static_cast<size_t>(recording_strategy_config_.split_gop.writer_queue.max_bytes);
             }
-            initialize_writer_hw(
-                &writer_,
-                camera_params_,
-                recording_output_config_,
-                current_recording_folder,
-                codec_,
-                metadata_tags,
-                queue_config);
+            if (shared_output_) {
+                SharedRecordingOutputOpenParams open_params;
+                open_params.camera_params = camera_params_;
+                open_params.recording_output_config = recording_output_config_;
+                open_params.folder_name = current_recording_folder;
+                open_params.codec = codec_;
+                open_params.metadata_tags = metadata_tags;
+                open_params.queue_config = queue_config;
+                open_params.split_gop_config = recording_strategy_config_.split_gop;
+                open_params.recording_gop_length = recording_gop_length_;
+                shared_output_->open_if_needed(open_params);
+            } else {
+                initialize_writer_hw(
+                    &writer_,
+                    camera_params_,
+                    recording_output_config_,
+                    current_recording_folder,
+                    codec_,
+                    metadata_tags,
+                    queue_config);
+            }
         }
-        initialize_pre_encoder_reference_capture();
-        if (encoder_snapshot_valid_) {
+        if (owns_recording_output_) {
+            initialize_pre_encoder_reference_capture();
+        }
+        if (owns_recording_output_ && encoder_snapshot_valid_) {
             const std::string camera_key = camera_params_->camera_serial.empty()
                 ? std::to_string(camera_params_->camera_id)
                 : camera_params_->camera_serial;
             nlohmann::json encoder_info = build_encoder_snapshot_json();
             update_recording_snapshot_encoder(current_recording_folder, camera_key, encoder_info);
         }
-        camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
+        if (owns_recording_output_) {
+            camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
+        }
         is_recording_ = true;
     }
 
@@ -2170,12 +2248,17 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         size_t packets_generated = encoder_.vPacket.size();
         total_packets_ += packets_generated;
 
+        const std::optional<RecordingMetadataRow> metadata_row = RecordingMetadataRow{
+            entry->recording_frame_id,
+            entry->timestamp,
+            entry->timestamp_sys};
         buffer_encoded_packets(
             encoder_.vPacket,
             output_timestamps,
             static_cast<int64_t>(zero_based_recording_frame),
             entry->gop_index,
-            entry->is_last_frame_in_gop);
+            entry->is_last_frame_in_gop,
+            metadata_row);
         if (recording_strategy_config_.split_gop_enabled() &&
             recording_strategy_config_.split_gop.writer_queue.fail_on_overflow &&
             writer_queue_overflowed_) {
@@ -2185,7 +2268,9 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             throw std::runtime_error("split_gop pending GOP buffer overflowed");
         }
 
-        write_metadata_hw(writer_.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
+        if (!shared_output_) {
+            write_metadata_hw(writer_.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
+        }
         last_recording_frame_id_ = std::max<uint64_t>(
             last_recording_frame_id_,
             zero_based_recording_frame + 1);
