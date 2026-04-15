@@ -47,6 +47,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
         hw_worker_->direct_input_enabled(),
         hw_worker_->encoder_input_pitch(),
         hw_worker_->encoder_buffer_count(),
+        resolved_recording_config_.resources.encoder_entry_pool_size,
         recycle_queue,
         camera_control);
 
@@ -108,6 +109,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                 helper_target.hw_worker->direct_input_enabled(),
                 helper_target.hw_worker->encoder_input_pitch(),
                 helper_target.hw_worker->encoder_buffer_count(),
+                helper_resolved_recording_config.resources.encoder_entry_pool_size,
                 recycle_queue,
                 camera_control);
 

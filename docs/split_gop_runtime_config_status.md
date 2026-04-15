@@ -173,8 +173,14 @@ Today:
 - codec/preset/tuning/rate-control/quality/GOP now resolve into
   `ResolvedRecordingConfig`, but the builder still receives those values from
   headless/GUI callsites rather than purely from one higher-level config source
-- resource knobs such as acquisition pool size and encoder-entry pool size are
-  still largely env-based or local helper based
+- `recording.resources.acquire_work_entries` now feeds `CameraResources`
+  allocation by default
+- `recording.resources.encoder_entry_pool_size` now feeds
+  `EncoderPreprocessWorker` allocation by default
+- the corresponding env vars still intentionally override config values for
+  experiments:
+  - `ORANGE_ACQUIRE_WORK_ENTRIES_MAX`
+  - `ORANGE_ENCODER_ENTRY_POOL_SIZE`
 
 So schema 3 currently persists the desired shape cleanly, but runtime still
 pulls parts of the effective configuration from multiple sources.

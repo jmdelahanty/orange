@@ -38,6 +38,7 @@ public:
         bool direct_input_enabled,
         int encoder_pitch,
         int direct_input_slot_count,
+        int configured_entry_pool_size,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
         CameraControl* camera_control
     );

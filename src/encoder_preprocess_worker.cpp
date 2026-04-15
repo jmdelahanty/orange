@@ -31,6 +31,7 @@ void check_npp_status(NppStatus status, const char* operation)
 
 int resolve_encoder_entry_pool_size(bool direct_input_enabled,
                                     int direct_input_slot_count,
+                                    int configured_entry_pool_size,
                                     int default_entry_pool_size)
 {
     if (direct_input_enabled) {
@@ -39,7 +40,16 @@ int resolve_encoder_entry_pool_size(bool direct_input_enabled,
 
     const char* env = std::getenv("ORANGE_ENCODER_ENTRY_POOL_SIZE");
     if (!env || !*env) {
-        return default_entry_pool_size;
+        if (configured_entry_pool_size <= 0) {
+            return default_entry_pool_size;
+        }
+        if (configured_entry_pool_size > default_entry_pool_size) {
+            std::cerr << "[EncoderPreprocessWorker] Configured encoder_entry_pool_size must be within [1,"
+                      << default_entry_pool_size << "], using default "
+                      << default_entry_pool_size << std::endl;
+            return default_entry_pool_size;
+        }
+        return configured_entry_pool_size;
     }
 
     char* end = nullptr;
@@ -67,6 +77,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     bool direct_input_enabled,
     int encoder_pitch,
     int direct_input_slot_count,
+    int configured_entry_pool_size,
     SafeQueue<WORKER_ENTRY*>& recycle_queue,
     CameraControl* camera_control
 )
@@ -140,6 +151,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     const int entry_pool_size = resolve_encoder_entry_pool_size(
         direct_input_enabled_,
         direct_input_slot_count_,
+        configured_entry_pool_size,
         DEFAULT_ENCODER_ENTRY_POOL_SIZE);
     if (!direct_input_enabled_ && entry_pool_size != DEFAULT_ENCODER_ENTRY_POOL_SIZE) {
         std::cout << "[EncoderPreprocessWorker] Using " << entry_pool_size

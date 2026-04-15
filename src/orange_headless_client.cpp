@@ -1981,7 +1981,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             camera_resources[idx].initialize(
                 cameras_params[idx].gpu_id,
                 max_frame_size_bytes,
-                false);
+                false,
+                cameras_params[idx].recording.resources.acquire_work_entries);
         }
 
     } catch (const std::exception& ex) {

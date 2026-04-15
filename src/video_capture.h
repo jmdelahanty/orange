@@ -140,10 +140,19 @@ struct CameraResources {
         return *this;
     }
 
-    static int resolve_acquire_work_entries_max() {
+    static int resolve_acquire_work_entries_max(int configured_value) {
         const char* env = std::getenv("ORANGE_ACQUIRE_WORK_ENTRIES_MAX");
         if (!env || !*env) {
-            return DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
+            if (configured_value <= 0) {
+                return DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
+            }
+            if (configured_value > DEFAULT_ACQUIRE_WORK_ENTRIES_MAX) {
+                std::cerr << "[CameraResources] Configured acquire_work_entries must be within [1,"
+                          << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << "], using default "
+                          << DEFAULT_ACQUIRE_WORK_ENTRIES_MAX << std::endl;
+                return DEFAULT_ACQUIRE_WORK_ENTRIES_MAX;
+            }
+            return configured_value;
         }
         char* end = nullptr;
         const long parsed = std::strtol(env, &end, 10);
@@ -161,10 +170,13 @@ struct CameraResources {
         return static_cast<int>(parsed);
     }
 
-    void initialize(int gpu_id, size_t frame_size, bool enable_yolo_events = true) {
+    void initialize(int gpu_id,
+                    size_t frame_size,
+                    bool enable_yolo_events = true,
+                    int configured_acquire_work_entries_max = 0) {
         ck(cudaSetDevice(gpu_id));
 
-        acquire_work_entries_max = resolve_acquire_work_entries_max();
+        acquire_work_entries_max = resolve_acquire_work_entries_max(configured_acquire_work_entries_max);
         if (acquire_work_entries_max != DEFAULT_ACQUIRE_WORK_ENTRIES_MAX) {
             std::cout << "[CameraResources] Using " << acquire_work_entries_max
                       << " acquisition work entries instead of "

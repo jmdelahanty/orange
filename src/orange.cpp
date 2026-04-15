@@ -3615,7 +3615,8 @@ int main(int argc, char **args) {
                             camera_resources[i].initialize(
                                 cameras_params[i].gpu_id,
                                 max_frame_size_bytes,
-                                cameras_select[i].yolo);
+                                cameras_select[i].yolo,
+                                cameras_params[i].recording.resources.acquire_work_entries);
                             if (cameras_select[i].send_frame_ipc) {
                                 frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
                                 if (!frame_ipc_managers[i]->isEnabled()) {
