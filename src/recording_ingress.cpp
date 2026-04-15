@@ -25,26 +25,26 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                                    int source_gpu_id,
                                    int primary_encode_gpu_id,
                                    uint32_t recording_gop_length,
-                                   RecordingStrategyConfig recording_strategy_config)
+                                   const ResolvedRecordingConfig& resolved_recording_config)
     : primary_preprocess_worker_(primary_preprocess_worker),
       source_gpu_id_(source_gpu_id),
       primary_encode_gpu_id_(primary_encode_gpu_id),
       recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
-      recording_strategy_config_(std::move(recording_strategy_config))
+      resolved_recording_config_(resolved_recording_config)
 {
-    if (!recording_strategy_config_.split_gop_enabled()) {
+    if (!resolved_recording_config_.strategy.split_gop_enabled()) {
         route_gpu_ids_.push_back(primary_encode_gpu_id_);
         return;
     }
 
-    const std::string& policy = recording_strategy_config_.split_gop.source_encoder_policy;
+    const std::string& policy = resolved_recording_config_.strategy.split_gop.source_encoder_policy;
     if (policy == "pure_offload") {
-        for (int gpu_id : recording_strategy_config_.split_gop.encoder_gpu_ids) {
+        for (int gpu_id : resolved_recording_config_.strategy.split_gop.encoder_gpu_ids) {
             if (gpu_id != primary_encode_gpu_id_) {
                 append_unique_gpu_id(&route_gpu_ids_, gpu_id);
             }
         }
-        if (route_gpu_ids_.empty() && !recording_strategy_config_.split_gop.strict) {
+        if (route_gpu_ids_.empty() && !resolved_recording_config_.strategy.split_gop.strict) {
             route_gpu_ids_.push_back(primary_encode_gpu_id_);
         }
         return;
@@ -52,7 +52,7 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
 
     route_gpu_ids_.push_back(primary_encode_gpu_id_);
     if (policy == "hybrid_split") {
-        for (int gpu_id : recording_strategy_config_.split_gop.encoder_gpu_ids) {
+        for (int gpu_id : resolved_recording_config_.strategy.split_gop.encoder_gpu_ids) {
             if (gpu_id != primary_encode_gpu_id_) {
                 append_unique_gpu_id(&route_gpu_ids_, gpu_id);
             }
@@ -80,8 +80,8 @@ int RecordingIngress::select_target_gpu_id(uint64_t recording_frame_id, bool* he
         *helper_requested = false;
     }
     if (route_gpu_ids_.empty()) {
-        if (recording_strategy_config_.split_gop_enabled() &&
-            recording_strategy_config_.split_gop.source_encoder_policy == "pure_offload") {
+        if (resolved_recording_config_.strategy.split_gop_enabled() &&
+            resolved_recording_config_.strategy.split_gop.source_encoder_policy == "pure_offload") {
             if (helper_requested) {
                 *helper_requested = true;
             }
@@ -144,7 +144,7 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
     }
 
     if (!target_worker) {
-        if (helper_requested && recording_strategy_config_.split_gop.strict) {
+        if (helper_requested && resolved_recording_config_.strategy.split_gop.strict) {
             throw std::runtime_error(
                 "Split-GOP helper GPU " + std::to_string(target_gpu_id) +
                 " was selected by RecordingIngress but no helper preprocess worker is registered");

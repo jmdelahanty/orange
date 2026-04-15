@@ -43,21 +43,12 @@ public:
         const char* name,
         CameraParams* camera_params,
         int encode_gpu_id,
-        const RecordingOutputConfig& recording_output_config,
-        const std::string& codec,
-        const std::string& preset,
-        const std::string& tuning,
-        const std::string& rate_control_mode,
-        int quality_value,
-        int gop_length,
-        const EncoderControlOverrides& encoder_control_overrides,
-        const ImportanceMapConfig& importance_map_config,
+        const ResolvedRecordingConfig& resolved_recording_config,
         std::string folder_name,
         std::shared_ptr<SharedRecordingOutput> shared_output,
         bool owns_recording_output,
         EncoderPreprocessWorker* prep_worker,
-        CameraControl* camera_control,
-        const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
+        CameraControl* camera_control
     );
     ~EncoderHwWorker() override;
 
@@ -221,6 +212,7 @@ private:
 
     CameraParams* camera_params_;
     int encode_gpu_id_;
+    ResolvedRecordingConfig resolved_recording_config_;
     RecordingOutputConfig recording_output_config_;
     std::string base_folder_name_;
     std::string codec_;

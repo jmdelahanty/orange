@@ -31,21 +31,12 @@ ModernRecordingPipeline::ModernRecordingPipeline(
         hw_encoder_name.c_str(),
         camera_params_,
         recording_gpu_id_,
-        resolved_recording_config_.output,
-        resolved_recording_config_.encode.codec,
-        resolved_recording_config_.encode.preset,
-        resolved_recording_config_.encode.tuning,
-        resolved_recording_config_.encode.rate_control_mode,
-        resolved_recording_config_.encode.quality_value,
-        resolved_recording_config_.encode.gop_length,
-        resolved_recording_config_.encoder_control_overrides,
-        resolved_recording_config_.importance_map,
+        resolved_recording_config_,
         resolved_recording_config_.base_folder_name,
         shared_recording_output_,
         true,
         nullptr,
-        camera_control,
-        resolved_recording_config_.pre_encoder_reference_capture);
+        camera_control);
 
     const std::string preprocess_name = "Preprocess_Cam_" + camera_params_->camera_serial;
     preprocess_worker_ = std::make_unique<EncoderPreprocessWorker>(
@@ -66,9 +57,9 @@ ModernRecordingPipeline::ModernRecordingPipeline(
         camera_params_->gpu_id,
         hw_worker_->encode_gpu_id(),
         hw_worker_->recording_gop_length(),
-        hw_worker_->recording_strategy_config());
+        resolved_recording_config_);
 
-    const RecordingStrategyConfig& resolved_strategy = hw_worker_->recording_strategy_config();
+    const RecordingStrategyConfig& resolved_strategy = resolved_recording_config_.strategy;
     const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;
     const bool wants_helper_targets =
         resolved_strategy.split_gop_enabled() &&
@@ -93,25 +84,19 @@ ModernRecordingPipeline::ModernRecordingPipeline(
 
             const std::string helper_hw_name =
                 "HW_Encoder_Cam_" + camera_params_->camera_serial + "_GPU_" + std::to_string(helper_gpu_id);
+            ResolvedRecordingConfig helper_resolved_recording_config = resolved_recording_config_;
+            helper_resolved_recording_config.recording_gpu_id = helper_gpu_id;
+            helper_resolved_recording_config.pre_encoder_reference_capture = PreEncoderReferenceCaptureConfig{};
             helper_target.hw_worker = std::make_unique<EncoderHwWorker>(
                 helper_hw_name.c_str(),
                 camera_params_,
                 helper_gpu_id,
-                resolved_recording_config_.output,
-                resolved_recording_config_.encode.codec,
-                resolved_recording_config_.encode.preset,
-                resolved_recording_config_.encode.tuning,
-                resolved_recording_config_.encode.rate_control_mode,
-                resolved_recording_config_.encode.quality_value,
-                resolved_recording_config_.encode.gop_length,
-                resolved_recording_config_.encoder_control_overrides,
-                resolved_recording_config_.importance_map,
+                helper_resolved_recording_config,
                 resolved_recording_config_.base_folder_name,
                 shared_recording_output_,
                 false,
                 nullptr,
-                camera_control,
-                PreEncoderReferenceCaptureConfig{});
+                camera_control);
 
             const std::string helper_preprocess_name =
                 "Preprocess_Cam_" + camera_params_->camera_serial + "_GPU_" + std::to_string(helper_gpu_id);

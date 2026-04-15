@@ -12,6 +12,7 @@
 #include <sstream>       // For std::ostringstream
 #include <ctime>         // For std::gmtime
 #include <cctype>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -1269,6 +1270,208 @@ nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& reco
     return build_recording_strategy_json_object(recording_strategy);
 }
 
+bool runtime_env_is_set(const char* name) {
+    const char* env = std::getenv(name);
+    return env && *env != '\0';
+}
+
+bool parse_runtime_env_flag(const char* name, bool default_value) {
+    const char* env = std::getenv(name);
+    if (!env || *env == '\0') {
+        return default_value;
+    }
+    if (strcmp(env, "0") == 0 || strcmp(env, "false") == 0 || strcmp(env, "FALSE") == 0 ||
+        strcmp(env, "off") == 0 || strcmp(env, "OFF") == 0) {
+        return false;
+    }
+    return true;
+}
+
+uint64_t parse_runtime_env_u64(const char* name, uint64_t default_value) {
+    const char* env = std::getenv(name);
+    if (!env || *env == '\0') {
+        return default_value;
+    }
+    char* end = nullptr;
+    const unsigned long long value = std::strtoull(env, &end, 10);
+    if (end == env || (end && *end != '\0')) {
+        return default_value;
+    }
+    return static_cast<uint64_t>(value);
+}
+
+std::string parse_runtime_env_string(const char* name, std::string default_value) {
+    const char* env = std::getenv(name);
+    if (!env || *env == '\0') {
+        return default_value;
+    }
+    return std::string(env);
+}
+
+std::vector<int> parse_runtime_env_int_list(const char* name) {
+    std::vector<int> values;
+    const char* env = std::getenv(name);
+    if (!env || *env == '\0') {
+        return values;
+    }
+
+    std::stringstream ss(env);
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+        token.erase(std::remove_if(token.begin(), token.end(), [](unsigned char ch) {
+            return std::isspace(ch) != 0;
+        }), token.end());
+        if (token.empty()) {
+            continue;
+        }
+        char* end = nullptr;
+        const long value = std::strtol(token.c_str(), &end, 10);
+        if (end == token.c_str() || (end && *end != '\0')) {
+            continue;
+        }
+        values.push_back(static_cast<int>(value));
+    }
+    return values;
+}
+
+void append_runtime_resolution_note(std::string* note, const std::string& message) {
+    if (!note || message.empty()) {
+        return;
+    }
+    if (!note->empty()) {
+        *note += "; ";
+    }
+    *note += message;
+}
+
+void apply_runtime_recording_strategy_env_overrides(RecordingStrategyConfig* config) {
+    if (!config) {
+        return;
+    }
+
+    if (runtime_env_is_set("ORANGE_RECORDING_MODE") || runtime_env_is_set("ORANGE_GOP_EXPERIMENT")) {
+        const bool legacy_split_gop_enabled = parse_runtime_env_flag("ORANGE_GOP_EXPERIMENT", false);
+        config->requested_mode = normalize_recording_mode_string(parse_runtime_env_string(
+            "ORANGE_RECORDING_MODE",
+            legacy_split_gop_enabled ? "split_gop" : "single_session"));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY") ||
+        runtime_env_is_set("ORANGE_GOP_ENCODER_POLICY")) {
+        config->split_gop.source_encoder_policy = normalize_split_gop_source_encoder_policy_string(
+            parse_runtime_env_string(
+                "ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY",
+                parse_runtime_env_string(
+                    "ORANGE_GOP_ENCODER_POLICY",
+                    config->split_gop.source_encoder_policy)));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_TRANSFER_MODE") ||
+        runtime_env_is_set("ORANGE_GOP_TRANSFER_MODE")) {
+        config->split_gop.transfer_mode = normalize_split_gop_transfer_mode_string(
+            parse_runtime_env_string(
+                "ORANGE_SPLIT_GOP_TRANSFER_MODE",
+                parse_runtime_env_string(
+                    "ORANGE_GOP_TRANSFER_MODE",
+                    config->split_gop.transfer_mode)));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_PLACEMENT")) {
+        config->split_gop.placement = normalize_split_gop_placement_string(
+            parse_runtime_env_string("ORANGE_SPLIT_GOP_PLACEMENT", config->split_gop.placement));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_ENCODER_GPU_IDS")) {
+        config->split_gop.encoder_gpu_ids = parse_runtime_env_int_list("ORANGE_SPLIT_GOP_ENCODER_GPU_IDS");
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS") ||
+        runtime_env_is_set("ORANGE_GOP_MAX_INFLIGHT_GOPS")) {
+        config->split_gop.max_inflight_gops = parse_runtime_env_u64(
+            "ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS",
+            parse_runtime_env_u64(
+                "ORANGE_GOP_MAX_INFLIGHT_GOPS",
+                config->split_gop.max_inflight_gops));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES") ||
+        runtime_env_is_set("ORANGE_GOP_MAX_BUFFERED_BYTES")) {
+        config->split_gop.max_buffered_bytes = parse_runtime_env_u64(
+            "ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES",
+            parse_runtime_env_u64(
+                "ORANGE_GOP_MAX_BUFFERED_BYTES",
+                config->split_gop.max_buffered_bytes));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS") ||
+        runtime_env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_PACKETS")) {
+        config->split_gop.writer_queue.max_packets = parse_runtime_env_u64(
+            "ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS",
+            parse_runtime_env_u64(
+                "ORANGE_GOP_MAX_WRITER_QUEUE_PACKETS",
+                config->split_gop.writer_queue.max_packets));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES") ||
+        runtime_env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_BYTES")) {
+        config->split_gop.writer_queue.max_bytes = parse_runtime_env_u64(
+            "ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES",
+            parse_runtime_env_u64(
+                "ORANGE_GOP_MAX_WRITER_QUEUE_BYTES",
+                config->split_gop.writer_queue.max_bytes));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW") ||
+        runtime_env_is_set("ORANGE_GOP_FAIL_ON_WRITER_OVERFLOW")) {
+        config->split_gop.writer_queue.fail_on_overflow = parse_runtime_env_flag(
+            "ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW",
+            parse_runtime_env_flag(
+                "ORANGE_GOP_FAIL_ON_WRITER_OVERFLOW",
+                config->split_gop.writer_queue.fail_on_overflow));
+    }
+
+    if (runtime_env_is_set("ORANGE_SPLIT_GOP_STRICT")) {
+        config->split_gop.strict = parse_runtime_env_flag(
+            "ORANGE_SPLIT_GOP_STRICT",
+            config->split_gop.strict);
+    }
+}
+
+bool has_runtime_recording_strategy_env_override() {
+    return runtime_env_is_set("ORANGE_RECORDING_MODE") ||
+           runtime_env_is_set("ORANGE_GOP_EXPERIMENT") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY") ||
+           runtime_env_is_set("ORANGE_GOP_ENCODER_POLICY") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_TRANSFER_MODE") ||
+           runtime_env_is_set("ORANGE_GOP_TRANSFER_MODE") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_PLACEMENT") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_ENCODER_GPU_IDS") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS") ||
+           runtime_env_is_set("ORANGE_GOP_MAX_INFLIGHT_GOPS") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES") ||
+           runtime_env_is_set("ORANGE_GOP_MAX_BUFFERED_BYTES") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS") ||
+           runtime_env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_PACKETS") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES") ||
+           runtime_env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_BYTES") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW") ||
+           runtime_env_is_set("ORANGE_GOP_FAIL_ON_WRITER_OVERFLOW") ||
+           runtime_env_is_set("ORANGE_SPLIT_GOP_STRICT");
+}
+
+RecordingStrategyConfig resolve_runtime_recording_strategy_config(const CameraParams& camera_params) {
+    RecordingStrategyConfig config = camera_params.recording.strategy;
+    normalize_recording_strategy_config(&config);
+    if (!has_runtime_recording_strategy_env_override()) {
+        return config;
+    }
+
+    append_runtime_resolution_note(&config.resolution_note, "env override active");
+    apply_runtime_recording_strategy_env_overrides(&config);
+    normalize_recording_strategy_config(&config);
+    return config;
+}
+
 ResolvedRecordingConfig build_resolved_recording_config(
     const CameraParams& camera_params,
     int recording_gpu_id,
@@ -1302,8 +1505,11 @@ ResolvedRecordingConfig build_resolved_recording_config(
     }
     resolved.encode.quality_value = quality_value;
     resolved.encode.gop_length = gop_length;
+    resolved.encode.nvenc_direct_input = parse_runtime_env_flag(
+        "ORANGE_NVENC_DIRECT_INPUT",
+        resolved.encode.nvenc_direct_input);
     resolved.output = recording_output_config;
-    resolved.strategy = camera_params.recording_strategy;
+    resolved.strategy = resolve_runtime_recording_strategy_config(camera_params);
     resolved.constraints = camera_params.recording.constraints;
     resolved.resources = camera_params.recording.resources;
     resolved.encoder_control_overrides = encoder_control_overrides;

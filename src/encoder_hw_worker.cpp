@@ -95,23 +95,6 @@ uint32_t saturate_positive_u32(int value) {
     return static_cast<uint32_t>(value);
 }
 
-bool parse_env_flag(const char* name, bool default_value) {
-    const char* env = std::getenv(name);
-    if (!env || *env == '\0') {
-        return default_value;
-    }
-    if (strcmp(env, "0") == 0 || strcmp(env, "false") == 0 || strcmp(env, "FALSE") == 0 ||
-        strcmp(env, "off") == 0 || strcmp(env, "OFF") == 0) {
-        return false;
-    }
-    return true;
-}
-
-bool env_is_set(const char* name) {
-    const char* env = std::getenv(name);
-    return env && *env != '\0';
-}
-
 nlohmann::json latency_stats_to_json(const LatencyAggregateStats& stats) {
     return {
         {"samples", stats.sample_count},
@@ -119,241 +102,6 @@ nlohmann::json latency_stats_to_json(const LatencyAggregateStats& stats) {
         {"max_ms", stats.max_ms()},
         {"last_ms", stats.last_ms()}
     };
-}
-
-uint64_t parse_env_u64(const char* name, uint64_t default_value) {
-    const char* env = std::getenv(name);
-    if (!env || *env == '\0') {
-        return default_value;
-    }
-    char* end = nullptr;
-    const unsigned long long value = std::strtoull(env, &end, 10);
-    if (end == env || (end && *end != '\0')) {
-        return default_value;
-    }
-    return static_cast<uint64_t>(value);
-}
-
-std::string parse_env_string(const char* name, std::string default_value) {
-    const char* env = std::getenv(name);
-    if (!env || *env == '\0') {
-        return default_value;
-    }
-    return std::string(env);
-}
-
-std::string lowercase_copy(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
-        return static_cast<char>(std::tolower(ch));
-    });
-    return value;
-}
-
-void append_resolution_note(std::string* note, const std::string& message) {
-    if (!note || message.empty()) {
-        return;
-    }
-    if (!note->empty()) {
-        *note += "; ";
-    }
-    *note += message;
-}
-
-std::vector<int> parse_env_int_list(const char* name) {
-    std::vector<int> values;
-    const char* env = std::getenv(name);
-    if (!env || *env == '\0') {
-        return values;
-    }
-
-    std::stringstream ss(env);
-    std::string token;
-    while (std::getline(ss, token, ',')) {
-        token.erase(std::remove_if(token.begin(), token.end(), [](unsigned char ch) {
-            return std::isspace(ch) != 0;
-        }), token.end());
-        if (token.empty()) {
-            continue;
-        }
-        char* end = nullptr;
-        const long value = std::strtol(token.c_str(), &end, 10);
-        if (end == token.c_str() || (end && *end != '\0')) {
-            continue;
-        }
-        values.push_back(static_cast<int>(value));
-    }
-    return values;
-}
-
-void normalize_recording_strategy_config(RecordingStrategyConfig* config) {
-    if (!config) {
-        return;
-    }
-    config->requested_mode = lowercase_copy(
-        config->requested_mode.empty() ? config->mode : config->requested_mode);
-    if (config->requested_mode.empty()) {
-        config->requested_mode = "single_session";
-    }
-    config->mode = config->requested_mode;
-    if (config->mode != "single_session" && config->mode != "split_gop") {
-        append_resolution_note(
-            &config->resolution_note,
-            "invalid recording mode requested; falling back to single_session");
-        config->mode = "single_session";
-        config->requested_mode = "single_session";
-    }
-
-    config->split_gop.source_encoder_policy = lowercase_copy(config->split_gop.source_encoder_policy);
-    config->split_gop.transfer_mode = lowercase_copy(config->split_gop.transfer_mode);
-    config->split_gop.placement = lowercase_copy(config->split_gop.placement);
-
-    if (config->split_gop.source_encoder_policy != "local_only" &&
-        config->split_gop.source_encoder_policy != "hybrid_split" &&
-        config->split_gop.source_encoder_policy != "pure_offload") {
-        append_resolution_note(
-            &config->resolution_note,
-            "invalid split_gop source_encoder_policy requested; using local_only");
-        config->split_gop.source_encoder_policy = "local_only";
-    }
-
-    if (config->split_gop.transfer_mode != "auto" &&
-        config->split_gop.transfer_mode != "prepared_nv12" &&
-        config->split_gop.transfer_mode != "raw" &&
-        config->split_gop.transfer_mode != "prepared") {
-        append_resolution_note(
-            &config->resolution_note,
-            "invalid split_gop transfer_mode requested; using auto");
-        config->split_gop.transfer_mode = "auto";
-    }
-    if (config->split_gop.transfer_mode == "prepared") {
-        config->split_gop.transfer_mode = "prepared_nv12";
-    }
-
-    if (config->split_gop.encoder_gpu_ids.size() > 1) {
-        if (config->split_gop.placement != "multi_gpu") {
-            append_resolution_note(
-                &config->resolution_note,
-                "multiple split_gop encoder_gpu_ids requested; resolving placement to multi_gpu");
-        }
-        config->split_gop.placement = "multi_gpu";
-    } else if (config->split_gop.placement != "single_gpu" &&
-               config->split_gop.placement != "multi_gpu") {
-        append_resolution_note(
-            &config->resolution_note,
-            "invalid split_gop placement requested; resolving placement from encoder_gpu_ids");
-        config->split_gop.placement =
-            config->split_gop.encoder_gpu_ids.size() > 1 ? "multi_gpu" : "single_gpu";
-    }
-
-    config->split_gop.enabled = config->mode == "split_gop";
-}
-
-void apply_recording_strategy_env_overrides(RecordingStrategyConfig* config) {
-    if (!config) {
-        return;
-    }
-
-    if (env_is_set("ORANGE_RECORDING_MODE") || env_is_set("ORANGE_GOP_EXPERIMENT")) {
-        const bool legacy_split_gop_enabled = parse_env_flag("ORANGE_GOP_EXPERIMENT", false);
-        config->requested_mode = lowercase_copy(parse_env_string(
-            "ORANGE_RECORDING_MODE",
-            legacy_split_gop_enabled ? "split_gop" : "single_session"));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY") || env_is_set("ORANGE_GOP_ENCODER_POLICY")) {
-        config->split_gop.source_encoder_policy = lowercase_copy(parse_env_string(
-            "ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY",
-            parse_env_string("ORANGE_GOP_ENCODER_POLICY", config->split_gop.source_encoder_policy)));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_TRANSFER_MODE") || env_is_set("ORANGE_GOP_TRANSFER_MODE")) {
-        config->split_gop.transfer_mode = lowercase_copy(parse_env_string(
-            "ORANGE_SPLIT_GOP_TRANSFER_MODE",
-            parse_env_string("ORANGE_GOP_TRANSFER_MODE", config->split_gop.transfer_mode)));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_PLACEMENT")) {
-        config->split_gop.placement =
-            lowercase_copy(parse_env_string("ORANGE_SPLIT_GOP_PLACEMENT", config->split_gop.placement));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_ENCODER_GPU_IDS")) {
-        config->split_gop.encoder_gpu_ids = parse_env_int_list("ORANGE_SPLIT_GOP_ENCODER_GPU_IDS");
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS") || env_is_set("ORANGE_GOP_MAX_INFLIGHT_GOPS")) {
-        config->split_gop.max_inflight_gops = parse_env_u64(
-            "ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS",
-            parse_env_u64("ORANGE_GOP_MAX_INFLIGHT_GOPS", config->split_gop.max_inflight_gops));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES") || env_is_set("ORANGE_GOP_MAX_BUFFERED_BYTES")) {
-        config->split_gop.max_buffered_bytes = parse_env_u64(
-            "ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES",
-            parse_env_u64("ORANGE_GOP_MAX_BUFFERED_BYTES", config->split_gop.max_buffered_bytes));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS") ||
-        env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_PACKETS")) {
-        config->split_gop.writer_queue.max_packets = parse_env_u64(
-            "ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS",
-            parse_env_u64("ORANGE_GOP_MAX_WRITER_QUEUE_PACKETS", config->split_gop.writer_queue.max_packets));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES") ||
-        env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_BYTES")) {
-        config->split_gop.writer_queue.max_bytes = parse_env_u64(
-            "ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES",
-            parse_env_u64("ORANGE_GOP_MAX_WRITER_QUEUE_BYTES", config->split_gop.writer_queue.max_bytes));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW") ||
-        env_is_set("ORANGE_GOP_FAIL_ON_WRITER_OVERFLOW")) {
-        config->split_gop.writer_queue.fail_on_overflow = parse_env_flag(
-            "ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW",
-            parse_env_flag(
-                "ORANGE_GOP_FAIL_ON_WRITER_OVERFLOW",
-                config->split_gop.writer_queue.fail_on_overflow));
-    }
-
-    if (env_is_set("ORANGE_SPLIT_GOP_STRICT")) {
-        config->split_gop.strict = parse_env_flag("ORANGE_SPLIT_GOP_STRICT", config->split_gop.strict);
-    }
-}
-
-bool has_recording_strategy_env_override() {
-    return env_is_set("ORANGE_RECORDING_MODE") ||
-           env_is_set("ORANGE_GOP_EXPERIMENT") ||
-           env_is_set("ORANGE_SPLIT_GOP_SOURCE_ENCODER_POLICY") ||
-           env_is_set("ORANGE_GOP_ENCODER_POLICY") ||
-           env_is_set("ORANGE_SPLIT_GOP_TRANSFER_MODE") ||
-           env_is_set("ORANGE_GOP_TRANSFER_MODE") ||
-           env_is_set("ORANGE_SPLIT_GOP_PLACEMENT") ||
-           env_is_set("ORANGE_SPLIT_GOP_ENCODER_GPU_IDS") ||
-           env_is_set("ORANGE_SPLIT_GOP_MAX_INFLIGHT_GOPS") ||
-           env_is_set("ORANGE_GOP_MAX_INFLIGHT_GOPS") ||
-           env_is_set("ORANGE_SPLIT_GOP_MAX_BUFFERED_BYTES") ||
-           env_is_set("ORANGE_GOP_MAX_BUFFERED_BYTES") ||
-           env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_PACKETS") ||
-           env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_PACKETS") ||
-           env_is_set("ORANGE_SPLIT_GOP_MAX_WRITER_QUEUE_BYTES") ||
-           env_is_set("ORANGE_GOP_MAX_WRITER_QUEUE_BYTES") ||
-           env_is_set("ORANGE_SPLIT_GOP_FAIL_ON_WRITER_OVERFLOW") ||
-           env_is_set("ORANGE_GOP_FAIL_ON_WRITER_OVERFLOW") ||
-           env_is_set("ORANGE_SPLIT_GOP_STRICT");
-}
-
-RecordingStrategyConfig resolve_recording_strategy_config(const CameraParams& camera_params) {
-    RecordingStrategyConfig config = camera_params.recording_strategy;
-    normalize_recording_strategy_config(&config);
-    if (!has_recording_strategy_env_override()) {
-        return config;
-    }
-
-    append_resolution_note(&config.resolution_note, "env override active");
-    apply_recording_strategy_env_overrides(&config);
-    normalize_recording_strategy_config(&config);
-    return config;
 }
 
 std::string normalize_importance_map_mode(std::string mode) {
@@ -878,38 +626,32 @@ EncoderHwWorker::EncoderHwWorker(
     const char* name,
     CameraParams* camera_params,
     int encode_gpu_id,
-    const RecordingOutputConfig& recording_output_config,
-    const std::string& codec,
-    const std::string& preset,
-    const std::string& tuning,
-    const std::string& rate_control_mode,
-    int quality_value,
-    int gop_length,
-    const EncoderControlOverrides& encoder_control_overrides,
-    const ImportanceMapConfig& importance_map_config,
+    const ResolvedRecordingConfig& resolved_recording_config,
     std::string base_folder_name,
     std::shared_ptr<SharedRecordingOutput> shared_output,
     bool owns_recording_output,
     EncoderPreprocessWorker* prep_worker,
-    CameraControl* camera_control,
-    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config
+    CameraControl* camera_control
 )
 : CThreadWorker(name),
   camera_params_(camera_params),
   encode_gpu_id_(encode_gpu_id >= 0 ? encode_gpu_id : camera_params->gpu_id),
-  recording_output_config_(recording_output_config),
+  resolved_recording_config_(resolved_recording_config),
+  recording_output_config_(resolved_recording_config.output),
   base_folder_name_(base_folder_name),
-  codec_(codec),
-  preset_(preset),
-  tuning_(tuning),
-  rate_control_mode_(rate_control_mode.empty() ? "vbr" : rate_control_mode),
-  encoder_control_overrides_(encoder_control_overrides),
-  importance_map_config_(importance_map_config),
-  pre_encoder_reference_capture_config_(pre_encoder_reference_capture_config),
-  direct_input_enabled_(parse_env_flag("ORANGE_NVENC_DIRECT_INPUT", false)),
-  quality_value_(clamp_quality_value(quality_value)),
-  gop_length_(sanitize_recording_gop_length(gop_length)),
-  recording_strategy_config_(resolve_recording_strategy_config(*camera_params)),
+  codec_(resolved_recording_config.encode.codec),
+  preset_(resolved_recording_config.encode.preset),
+  tuning_(resolved_recording_config.encode.tuning),
+  rate_control_mode_(resolved_recording_config.encode.rate_control_mode.empty()
+                         ? "vbr"
+                         : resolved_recording_config.encode.rate_control_mode),
+  encoder_control_overrides_(resolved_recording_config.encoder_control_overrides),
+  importance_map_config_(resolved_recording_config.importance_map),
+  pre_encoder_reference_capture_config_(resolved_recording_config.pre_encoder_reference_capture),
+  direct_input_enabled_(resolved_recording_config.encode.nvenc_direct_input),
+  quality_value_(clamp_quality_value(resolved_recording_config.encode.quality_value)),
+  gop_length_(sanitize_recording_gop_length(resolved_recording_config.encode.gop_length)),
+  recording_strategy_config_(resolved_recording_config.strategy),
   shared_output_(std::move(shared_output)),
   owns_recording_output_(owns_recording_output),
   m_prep_worker_(prep_worker),
@@ -921,6 +663,8 @@ EncoderHwWorker::EncoderHwWorker(
   frame_counter_(0),
   is_recording_(false) // Initialize recording state
 {
+    resolved_recording_config_.recording_gpu_id = encode_gpu_id_;
+
     if (!pre_encoder_reference_capture_config_.has_valid_bound()) {
         throw std::invalid_argument(
             "pre_encoder_reference_capture requires exactly one positive bound: max_frames or max_seconds");
@@ -949,14 +693,14 @@ EncoderHwWorker::EncoderHwWorker(
     initializeParams.encodeConfig = &encodeConfig;
 
     GUID codecGuid = (codec_ == "hevc") ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
-    GUID presetGuid = (preset == "p1") ? NV_ENC_PRESET_P1_GUID : (preset == "p5") ? NV_ENC_PRESET_P5_GUID : (preset == "p7") ? NV_ENC_PRESET_P7_GUID : NV_ENC_PRESET_P3_GUID;
-    NV_ENC_TUNING_INFO tuningInfo = (tuning == "ll") ? NV_ENC_TUNING_INFO_LOW_LATENCY : (tuning == "ull") ? NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY : (tuning == "lossless") ? NV_ENC_TUNING_INFO_LOSSLESS : NV_ENC_TUNING_INFO_HIGH_QUALITY;
+    GUID presetGuid = (preset_ == "p1") ? NV_ENC_PRESET_P1_GUID : (preset_ == "p5") ? NV_ENC_PRESET_P5_GUID : (preset_ == "p7") ? NV_ENC_PRESET_P7_GUID : NV_ENC_PRESET_P3_GUID;
+    NV_ENC_TUNING_INFO tuningInfo = (tuning_ == "ll") ? NV_ENC_TUNING_INFO_LOW_LATENCY : (tuning_ == "ull") ? NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY : (tuning_ == "lossless") ? NV_ENC_TUNING_INFO_LOSSLESS : NV_ENC_TUNING_INFO_HIGH_QUALITY;
 
 
     encoder_.pEnc->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
 
-    const bool low_latency = is_low_latency_tuning(tuning);
-    const bool lossless = is_lossless_tuning(tuning);
+    const bool low_latency = is_low_latency_tuning(tuning_);
+    const bool lossless = is_lossless_tuning(tuning_);
 
     initializeParams.frameRateNum = camera_params_->frame_rate;
     initializeParams.frameRateDen = 1;

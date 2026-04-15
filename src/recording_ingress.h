@@ -42,7 +42,7 @@ public:
                      int source_gpu_id,
                      int primary_encode_gpu_id,
                      uint32_t recording_gop_length,
-                     RecordingStrategyConfig recording_strategy_config);
+                     const ResolvedRecordingConfig& resolved_recording_config);
 
     void SubmitFrame(WORKER_ENTRY* entry);
     RecordingIngressStats GetStats() const;
@@ -61,7 +61,7 @@ private:
     int source_gpu_id_ = -1;
     int primary_encode_gpu_id_ = -1;
     uint32_t recording_gop_length_ = 1;
-    RecordingStrategyConfig recording_strategy_config_;
+    ResolvedRecordingConfig resolved_recording_config_;
     std::vector<int> route_gpu_ids_;
     std::unordered_map<int, EncoderPreprocessWorker*> helper_preprocess_workers_;
     std::atomic<uint64_t> submitted_frames_{0};
