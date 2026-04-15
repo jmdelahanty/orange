@@ -29,6 +29,7 @@ not priority for v1.
 - `docs/nvenc_direct_input_plan.md`
 - `docs/nvenc_throughput_todo.md`
 - `docs/nvenc_benchmark_runsheet.md`
+- `docs/headless_split_gop_smoketest.md`
 - `docs/threading_model_overview.md`
 - `docs/recording_segment_rollover_todo.md`
 
