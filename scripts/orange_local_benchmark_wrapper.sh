@@ -5,6 +5,7 @@ ORANGE_ROOT="/home/jeremy/orange-jeremy"
 DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
 EXPERIMENT_ORANGE_CLIENT="/home/jeremy/orange-gop-split-a16/targets/release/orange_client"
 ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
+ACQUIRE_WORK_ENTRIES_MAX=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 EVT_PROFILE="/etc/profile.d/evt.sh"
@@ -13,13 +14,15 @@ usage() {
   cat <<'EOF'
 Usage:
   orange_local_benchmark_wrapper.sh [--orange-client <path>] <experiment-spec.json>
-  orange_local_benchmark_wrapper.sh [--orange-client <path>] --stream-only --config-folder <path> --camera <serial|all> [options]
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] [--acquire-work-entries-max <n>] <experiment-spec.json>
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] [--acquire-work-entries-max <n>] --stream-only --config-folder <path> --camera <serial|all> [options]
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
   - Only accepts orange_client binaries at:
       /home/jeremy/orange-jeremy/build/orange_client
       /home/jeremy/orange-gop-split-a16/targets/release/orange_client
+  - Optionally exports ORANGE_ACQUIRE_WORK_ENTRIES_MAX for the launched process.
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
       /tmp
@@ -75,6 +78,13 @@ while [[ $# -gt 0 ]]; do
           exit 2
           ;;
       esac
+      shift
+      ;;
+    --acquire-work-entries-max)
+      shift
+      [[ $# -gt 0 ]] || { echo "--acquire-work-entries-max requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]+$ ]] || { echo "--acquire-work-entries-max must be a non-negative integer." >&2; exit 2; }
+      ACQUIRE_WORK_ENTRIES_MAX="$1"
       shift
       ;;
     *)
@@ -173,6 +183,10 @@ if [[ "$1" == "--stream-only" ]]; then
   if [[ -n "$STREAM_START_DELAY" ]]; then
     echo "[sudo-wrapper] stream_start_delay_s=$STREAM_START_DELAY"
   fi
+  if [[ -n "$ACQUIRE_WORK_ENTRIES_MAX" ]]; then
+    echo "[sudo-wrapper] acquire_work_entries_max=$ACQUIRE_WORK_ENTRIES_MAX"
+    export ORANGE_ACQUIRE_WORK_ENTRIES_MAX="$ACQUIRE_WORK_ENTRIES_MAX"
+  fi
 
   exec "${CMD[@]}"
 fi
@@ -225,6 +239,10 @@ echo "[sudo-wrapper] running experiment_id=$EXPERIMENT_ID"
 echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
 echo "[sudo-wrapper] spec=$SPEC_PATH"
 echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
+if [[ -n "$ACQUIRE_WORK_ENTRIES_MAX" ]]; then
+  echo "[sudo-wrapper] acquire_work_entries_max=$ACQUIRE_WORK_ENTRIES_MAX"
+  export ORANGE_ACQUIRE_WORK_ENTRIES_MAX="$ACQUIRE_WORK_ENTRIES_MAX"
+fi
 
 set +e
 "$ORANGE_CLIENT" --mode local --experiment-spec "$SPEC_PATH"
