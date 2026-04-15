@@ -77,7 +77,7 @@ bool update_recording_snapshot_pipeline_metrics(const std::string& recording_fol
 bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folder,
                                               const std::string& monitor_name,
                                               const nlohmann::json& monitor_info);
-nlohmann::json build_gpu_copy_path_runtime_info(int source_gpu_id, int target_gpu_id);
+nlohmann::json build_gpu_copy_path_static_topology_info(int source_gpu_id, int target_gpu_id);
 std::string lookup_nvidia_smi_topology_class(int source_gpu_id,
                                              int target_gpu_id,
                                              std::string* error_out = nullptr);

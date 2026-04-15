@@ -60,7 +60,8 @@ public:
     std::vector<HelperEncodeTarget> helper_encode_targets_;
 
 private:
-    void refresh_split_gop_topology_snapshot();
+    void initialize_split_gop_topology_static_snapshot();
+    void refresh_split_gop_runtime_topology_snapshot();
 };
 
 #endif

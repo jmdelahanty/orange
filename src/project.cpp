@@ -336,7 +336,7 @@ std::string lookup_nvidia_smi_topology_class(int source_gpu_id,
     return row_it->second[column_index];
 }
 
-nlohmann::json build_gpu_copy_path_runtime_info(int source_gpu_id, int target_gpu_id)
+nlohmann::json build_gpu_copy_path_static_topology_info(int source_gpu_id, int target_gpu_id)
 {
     nlohmann::json info = {
         {"source_gpu_id", source_gpu_id},
@@ -345,7 +345,7 @@ nlohmann::json build_gpu_copy_path_runtime_info(int source_gpu_id, int target_gp
         {"target_gpu", build_gpu_runtime_info(target_gpu_id)},
         {"same_gpu", source_gpu_id == target_gpu_id},
         {"copy_direction", "source_to_target"},
-        {"runtime_peer_access", {
+        {"peer_access_capability", {
             {"can_access_peer_query_direction", {
                 {"accessing_gpu_id", target_gpu_id},
                 {"peer_gpu_id", source_gpu_id}
@@ -363,14 +363,14 @@ nlohmann::json build_gpu_copy_path_runtime_info(int source_gpu_id, int target_gp
     }
 
     if (source_gpu_id < 0 || target_gpu_id < 0) {
-        info["runtime_peer_access"]["can_access_peer"] = false;
-        info["runtime_peer_access"]["peer_access_required"] = false;
+        info["peer_access_capability"]["can_access_peer"] = false;
+        info["peer_access_capability"]["peer_access_required"] = false;
         return info;
     }
 
     if (source_gpu_id == target_gpu_id) {
-        info["runtime_peer_access"]["can_access_peer"] = true;
-        info["runtime_peer_access"]["peer_access_required"] = false;
+        info["peer_access_capability"]["can_access_peer"] = true;
+        info["peer_access_capability"]["peer_access_required"] = false;
         return info;
     }
 
@@ -378,13 +378,13 @@ nlohmann::json build_gpu_copy_path_runtime_info(int source_gpu_id, int target_gp
     const cudaError_t peer_status =
         cudaDeviceCanAccessPeer(&can_access_peer, target_gpu_id, source_gpu_id);
     if (peer_status == cudaSuccess) {
-        info["runtime_peer_access"]["can_access_peer"] = (can_access_peer != 0);
+        info["peer_access_capability"]["can_access_peer"] = (can_access_peer != 0);
     } else {
-        info["runtime_peer_access"]["can_access_peer"] = false;
-        info["runtime_peer_access"]["can_access_peer_lookup_error"] =
+        info["peer_access_capability"]["can_access_peer"] = false;
+        info["peer_access_capability"]["can_access_peer_lookup_error"] =
             cudaGetErrorString(peer_status);
     }
-    info["runtime_peer_access"]["peer_access_required"] = true;
+    info["peer_access_capability"]["peer_access_required"] = true;
 
     return info;
 }

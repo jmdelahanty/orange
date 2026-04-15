@@ -1185,9 +1185,14 @@ void EncoderHwWorker::SetPreprocessWorker(EncoderPreprocessWorker* prep_worker)
     encoder_input_pitch_ = m_prep_worker_->direct_input_pitch();
 }
 
-void EncoderHwWorker::SetSplitGopTopologySnapshot(const nlohmann::json& topology_snapshot)
+void EncoderHwWorker::SetSplitGopTopologyStaticSnapshot(const nlohmann::json& topology_snapshot)
 {
-    encoder_snapshot_.split_gop_topology = topology_snapshot;
+    encoder_snapshot_.split_gop_topology_static = topology_snapshot;
+}
+
+void EncoderHwWorker::SetSplitGopTopologyRuntimeSnapshot(const nlohmann::json& topology_snapshot)
+{
+    encoder_snapshot_.split_gop_topology_runtime = topology_snapshot;
 }
 
 void EncoderHwWorker::initialize_importance_map()
@@ -2125,31 +2130,45 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
             }}
         }}
     };
-    if (!encoder_snapshot_.split_gop_topology.empty()) {
-        info["recording_strategy"]["split_gop"]["topology"] =
-            encoder_snapshot_.split_gop_topology;
+    const bool has_static_topology = !encoder_snapshot_.split_gop_topology_static.empty();
+    const bool has_runtime_topology = !encoder_snapshot_.split_gop_topology_runtime.empty();
+    if (has_static_topology || has_runtime_topology) {
         auto& topology = info["recording_strategy"]["split_gop"]["topology"];
-        topology["source_to_helper_copy_samples"] =
+        if (has_static_topology) {
+            topology["static"] = encoder_snapshot_.split_gop_topology_static;
+        }
+        if (has_runtime_topology) {
+            topology["runtime"] = encoder_snapshot_.split_gop_topology_runtime;
+        }
+        auto& runtime = topology["runtime"];
+        runtime["source_to_helper_copy_samples_total"] =
             shared_output_stats.source_to_helper_copy.sample_count;
-        auto topology_it = topology.find("copy_paths");
-        if (topology_it != topology.end() && topology_it->is_array() &&
+        auto topology_it = runtime.find("copy_paths");
+        if (topology_it != runtime.end() && topology_it->is_array() &&
             shared_output_stats.source_to_helper_copy.sample_count > 0) {
             for (auto& copy_path : *topology_it) {
-                auto& runtime_peer_access = copy_path["runtime_peer_access"];
-                if (!runtime_peer_access.is_object()) {
+                auto& peer_access_observation = copy_path["peer_access_observation"];
+                if (!peer_access_observation.is_object()) {
+                    peer_access_observation = nlohmann::json::object();
+                }
+                const bool peer_access_required =
+                    copy_path.value("peer_access_required", false);
+                const bool can_access_peer =
+                    copy_path.value("can_access_peer", false);
+                if (!peer_access_required || !can_access_peer) {
                     continue;
                 }
-                if (!runtime_peer_access.value("peer_access_required", false) ||
-                    !runtime_peer_access.value("can_access_peer", false)) {
-                    continue;
+                if (!peer_access_observation.contains("enable_attempted")) {
+                    peer_access_observation["enable_attempted"] = true;
+                    peer_access_observation["enable_attempted_inferred"] = true;
                 }
-                if (!runtime_peer_access.contains("peer_access_enable_attempted")) {
-                    runtime_peer_access["peer_access_enable_attempted"] = true;
-                    runtime_peer_access["peer_access_enable_attempted_inferred"] = true;
+                if (!peer_access_observation.contains("enabled")) {
+                    peer_access_observation["enabled"] = true;
+                    peer_access_observation["enabled_inferred"] = true;
                 }
-                if (!runtime_peer_access.contains("peer_access_enabled")) {
-                    runtime_peer_access["peer_access_enabled"] = true;
-                    runtime_peer_access["peer_access_enabled_inferred"] = true;
+                if (!peer_access_observation.contains("observation_source")) {
+                    peer_access_observation["observation_source"] =
+                        "successful_source_to_helper_copy_samples";
                 }
             }
         }
