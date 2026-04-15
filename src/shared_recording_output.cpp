@@ -1,6 +1,8 @@
 #include "shared_recording_output.h"
 
 #include <algorithm>
+#include <iostream>
+#include <sstream>
 #include <stdexcept>
 
 #include "camera.h"
@@ -175,8 +177,10 @@ void SharedRecordingOutput::buffer_packets_locked(
         const size_t packet_size = packets[i].size();
         if (split_gop_config_.max_buffered_bytes > 0 &&
             pending_gop_buffered_bytes_ + packet_size > split_gop_config_.max_buffered_bytes) {
-            pending_gop_overflowed_ = true;
-            pending_gop_overflow_events_++;
+            record_pending_gop_overflow_locked(
+                "bytes",
+                completion_gop_index,
+                split_gop_config_.max_buffered_bytes);
             throw std::runtime_error("split_gop pending GOP bytes exceeded configured limit");
         }
 
@@ -212,8 +216,10 @@ void SharedRecordingOutput::buffer_packets_locked(
     flush_pending_gops_locked(false);
     if (split_gop_config_.max_inflight_gops > 0 &&
         pending_gop_backlog_count_locked() > split_gop_config_.max_inflight_gops) {
-        pending_gop_overflowed_ = true;
-        pending_gop_overflow_events_++;
+        record_pending_gop_overflow_locked(
+            "backlog",
+            completion_gop_index,
+            split_gop_config_.max_inflight_gops);
         throw std::runtime_error("split_gop pending GOP backlog exceeded configured limit");
     }
 }
@@ -286,6 +292,56 @@ void SharedRecordingOutput::write_metadata_row_locked(const RecordingMetadataRow
     }
 }
 
+void SharedRecordingOutput::record_pending_gop_overflow_locked(const char* reason,
+                                                               uint64_t completion_gop_index,
+                                                               size_t limit)
+{
+    pending_gop_overflowed_ = true;
+    pending_gop_overflow_events_++;
+    pending_gop_overflow_reason_ = reason ? reason : "";
+    pending_gop_overflow_completion_gop_index_ = completion_gop_index;
+    pending_gop_overflow_next_gop_to_flush_ = next_gop_to_flush_;
+    pending_gop_overflow_limit_ = limit;
+    pending_gop_overflow_pending_count_ = pending_gops_.size();
+    pending_gop_overflow_backlog_count_ = pending_gop_backlog_count_locked();
+
+    const auto frontier_it = pending_gops_.find(next_gop_to_flush_);
+    pending_gop_overflow_frontier_present_ = frontier_it != pending_gops_.end();
+    pending_gop_overflow_frontier_complete_ =
+        frontier_it != pending_gops_.end() && frontier_it->second.complete;
+
+    pending_gop_overflow_pending_keys_.clear();
+    pending_gop_overflow_pending_keys_.reserve(pending_gops_.size());
+    for (const auto& entry : pending_gops_) {
+        pending_gop_overflow_pending_keys_.push_back(entry.first);
+    }
+
+    if (pending_gop_overflow_events_ <= 4 || (pending_gop_overflow_events_ % 60) == 0) {
+        std::ostringstream keys_stream;
+        keys_stream << "[";
+        for (size_t i = 0; i < pending_gop_overflow_pending_keys_.size(); ++i) {
+            if (i > 0) {
+                keys_stream << ",";
+            }
+            keys_stream << pending_gop_overflow_pending_keys_[i];
+        }
+        keys_stream << "]";
+
+        std::cerr << "[SharedRecordingOutput] split_gop overflow"
+                  << " reason=" << pending_gop_overflow_reason_
+                  << " completion_gop=" << pending_gop_overflow_completion_gop_index_
+                  << " next_gop_to_flush=" << pending_gop_overflow_next_gop_to_flush_
+                  << " backlog=" << pending_gop_overflow_backlog_count_
+                  << " pending=" << pending_gop_overflow_pending_count_
+                  << " limit=" << pending_gop_overflow_limit_
+                  << " frontier_present=" << (pending_gop_overflow_frontier_present_ ? "yes" : "no")
+                  << " frontier_complete="
+                  << (pending_gop_overflow_frontier_complete_ ? "yes" : "no")
+                  << " keys=" << keys_stream.str()
+                  << std::endl;
+    }
+}
+
 void SharedRecordingOutput::close()
 {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -323,7 +379,6 @@ void SharedRecordingOutput::close_locked()
     is_open_ = false;
     active_worker_sessions_ = 0;
     close_requested_ = false;
-    reset_pending_state_locked();
 }
 
 SharedRecordingOutputStats SharedRecordingOutput::stats() const
@@ -345,6 +400,15 @@ SharedRecordingOutputStats SharedRecordingOutput::stats() const
     out.pending_gop_overflowed = pending_gop_overflowed_;
     out.pending_gop_overflow_events = pending_gop_overflow_events_;
     out.oldest_pending_gop_age_ms = oldest_pending_gop_age_ms_locked();
+    out.pending_gop_overflow_reason = pending_gop_overflow_reason_;
+    out.pending_gop_overflow_completion_gop_index = pending_gop_overflow_completion_gop_index_;
+    out.pending_gop_overflow_next_gop_to_flush = pending_gop_overflow_next_gop_to_flush_;
+    out.pending_gop_overflow_limit = pending_gop_overflow_limit_;
+    out.pending_gop_overflow_pending_count = pending_gop_overflow_pending_count_;
+    out.pending_gop_overflow_backlog_count = pending_gop_overflow_backlog_count_;
+    out.pending_gop_overflow_frontier_present = pending_gop_overflow_frontier_present_;
+    out.pending_gop_overflow_frontier_complete = pending_gop_overflow_frontier_complete_;
+    out.pending_gop_overflow_pending_keys = pending_gop_overflow_pending_keys_;
     return out;
 }
 
@@ -411,4 +475,13 @@ void SharedRecordingOutput::reset_pending_state_locked()
     pending_gop_peak_bytes_ = 0;
     pending_gop_overflowed_ = false;
     pending_gop_overflow_events_ = 0;
+    pending_gop_overflow_reason_.clear();
+    pending_gop_overflow_completion_gop_index_ = 0;
+    pending_gop_overflow_next_gop_to_flush_ = 0;
+    pending_gop_overflow_limit_ = 0;
+    pending_gop_overflow_pending_count_ = 0;
+    pending_gop_overflow_backlog_count_ = 0;
+    pending_gop_overflow_frontier_present_ = false;
+    pending_gop_overflow_frontier_complete_ = false;
+    pending_gop_overflow_pending_keys_.clear();
 }

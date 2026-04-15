@@ -40,6 +40,15 @@ struct SharedRecordingOutputStats {
     bool pending_gop_overflowed = false;
     uint64_t pending_gop_overflow_events = 0;
     int64_t oldest_pending_gop_age_ms = 0;
+    std::string pending_gop_overflow_reason;
+    uint64_t pending_gop_overflow_completion_gop_index = 0;
+    uint64_t pending_gop_overflow_next_gop_to_flush = 0;
+    size_t pending_gop_overflow_limit = 0;
+    size_t pending_gop_overflow_pending_count = 0;
+    size_t pending_gop_overflow_backlog_count = 0;
+    bool pending_gop_overflow_frontier_present = false;
+    bool pending_gop_overflow_frontier_complete = false;
+    std::vector<uint64_t> pending_gop_overflow_pending_keys;
 };
 
 struct SharedRecordingOutputOpenParams {
@@ -98,6 +107,9 @@ private:
     void flush_pending_gops_locked(bool flush_all);
     void refresh_writer_queue_metrics_locked();
     void write_metadata_row_locked(const RecordingMetadataRow& metadata_row);
+    void record_pending_gop_overflow_locked(const char* reason,
+                                            uint64_t completion_gop_index,
+                                            size_t limit);
     size_t pending_gop_backlog_count_locked() const;
     void update_pending_gop_peaks_locked();
     int64_t oldest_pending_gop_age_ms_locked() const;
@@ -119,6 +131,15 @@ private:
     size_t pending_gop_peak_bytes_ = 0;
     bool pending_gop_overflowed_ = false;
     uint64_t pending_gop_overflow_events_ = 0;
+    std::string pending_gop_overflow_reason_;
+    uint64_t pending_gop_overflow_completion_gop_index_ = 0;
+    uint64_t pending_gop_overflow_next_gop_to_flush_ = 0;
+    size_t pending_gop_overflow_limit_ = 0;
+    size_t pending_gop_overflow_pending_count_ = 0;
+    size_t pending_gop_overflow_backlog_count_ = 0;
+    bool pending_gop_overflow_frontier_present_ = false;
+    bool pending_gop_overflow_frontier_complete_ = false;
+    std::vector<uint64_t> pending_gop_overflow_pending_keys_;
     bool writer_queue_overflowed_ = false;
     uint64_t writer_queue_overflow_events_ = 0;
     size_t writer_queue_peak_packets_ = 0;

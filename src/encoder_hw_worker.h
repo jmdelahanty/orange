@@ -12,6 +12,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include "encoder_pipeline.h"
 #include "json.hpp"
 #include "pre_encoder_reference_writer.h"
@@ -106,6 +107,14 @@ private:
                                 uint64_t completion_gop_index,
                                 bool mark_complete,
                                 const std::optional<RecordingMetadataRow>& metadata_row);
+    std::vector<uint64_t> resolve_output_sample_indices(
+        size_t packet_count,
+        const std::vector<uint64_t>& output_timestamps,
+        std::optional<uint64_t> submitted_sample_index,
+        const char* context);
+    void note_submitted_frame(uint64_t gop_index, bool is_last_frame_in_gop);
+    std::vector<uint64_t> note_emitted_packets_and_collect_completed_gops(
+        const std::vector<uint64_t>& packet_sample_indices);
     void flush_pending_gops(bool flush_all);
     size_t pending_gop_backlog_count() const;
     int64_t oldest_pending_gop_age_ms() const;
@@ -254,6 +263,10 @@ private:
     size_t pending_gop_peak_bytes_ = 0;
     bool pending_gop_overflowed_ = false;
     uint64_t pending_gop_overflow_events_ = 0;
+    std::deque<uint64_t> pending_output_sample_indices_;
+    std::map<uint64_t, uint32_t> submitted_frames_by_gop_;
+    std::map<uint64_t, uint32_t> emitted_frames_by_gop_;
+    std::set<uint64_t> submitted_complete_gops_;
 
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;

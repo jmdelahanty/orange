@@ -1648,6 +1648,10 @@ void EncoderHwWorker::refresh_writer_queue_metrics()
 
 void EncoderHwWorker::reset_pending_gop_state()
 {
+    pending_output_sample_indices_.clear();
+    submitted_frames_by_gop_.clear();
+    emitted_frames_by_gop_.clear();
+    submitted_complete_gops_.clear();
     if (shared_output_) {
         next_gop_to_flush_ = 0;
         pending_gop_buffered_bytes_ = 0;
@@ -1666,6 +1670,94 @@ void EncoderHwWorker::reset_pending_gop_state()
     pending_gop_peak_bytes_ = 0;
     pending_gop_overflowed_ = false;
     pending_gop_overflow_events_ = 0;
+}
+
+std::vector<uint64_t> EncoderHwWorker::resolve_output_sample_indices(
+    size_t packet_count,
+    const std::vector<uint64_t>& output_timestamps,
+    std::optional<uint64_t> submitted_sample_index,
+    const char* context)
+{
+    if (submitted_sample_index.has_value()) {
+        pending_output_sample_indices_.push_back(*submitted_sample_index);
+    }
+
+    std::vector<uint64_t> resolved_sample_indices;
+    resolved_sample_indices.reserve(packet_count);
+
+    while (resolved_sample_indices.size() < packet_count && !pending_output_sample_indices_.empty()) {
+        resolved_sample_indices.push_back(pending_output_sample_indices_.front());
+        pending_output_sample_indices_.pop_front();
+    }
+
+    if (resolved_sample_indices.size() == packet_count) {
+        return resolved_sample_indices;
+    }
+
+    if (output_timestamps.size() >= packet_count) {
+        if (packet_count > 0) {
+            std::cerr << "[" << threadName << "] Falling back to NVENC output timestamps in "
+                      << (context ? context : "unknown")
+                      << " because queued sample indices were insufficient. queued="
+                      << pending_output_sample_indices_.size()
+                      << " packets=" << packet_count
+                      << std::endl;
+        }
+        return output_timestamps;
+    }
+
+    if (!resolved_sample_indices.empty()) {
+        const uint64_t last_value = resolved_sample_indices.back();
+        while (resolved_sample_indices.size() < packet_count) {
+            resolved_sample_indices.push_back(last_value);
+        }
+        return resolved_sample_indices;
+    }
+
+    resolved_sample_indices.assign(packet_count, 0);
+    return resolved_sample_indices;
+}
+
+void EncoderHwWorker::note_submitted_frame(uint64_t gop_index, bool is_last_frame_in_gop)
+{
+    submitted_frames_by_gop_[gop_index]++;
+    if (is_last_frame_in_gop) {
+        submitted_complete_gops_.insert(gop_index);
+    }
+}
+
+std::vector<uint64_t> EncoderHwWorker::note_emitted_packets_and_collect_completed_gops(
+    const std::vector<uint64_t>& packet_sample_indices)
+{
+    std::vector<uint64_t> completed_gops;
+    std::set<uint64_t> candidate_gops;
+
+    for (uint64_t sample_index : packet_sample_indices) {
+        const uint64_t gop_index = sample_index / std::max<uint32_t>(1u, recording_gop_length_);
+        emitted_frames_by_gop_[gop_index]++;
+        candidate_gops.insert(gop_index);
+    }
+
+    for (uint64_t gop_index : candidate_gops) {
+        const auto submitted_it = submitted_frames_by_gop_.find(gop_index);
+        const auto emitted_it = emitted_frames_by_gop_.find(gop_index);
+        if (submitted_it == submitted_frames_by_gop_.end() ||
+            emitted_it == emitted_frames_by_gop_.end()) {
+            continue;
+        }
+        if (!submitted_complete_gops_.count(gop_index)) {
+            continue;
+        }
+        if (emitted_it->second < submitted_it->second) {
+            continue;
+        }
+        completed_gops.push_back(gop_index);
+        submitted_frames_by_gop_.erase(submitted_it);
+        emitted_frames_by_gop_.erase(emitted_it);
+        submitted_complete_gops_.erase(gop_index);
+    }
+
+    return completed_gops;
 }
 
 void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8_t>>& packets,
@@ -1980,17 +2072,26 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
             {"max_buffered_bytes", encoder_snapshot_.recording_strategy.split_gop.max_buffered_bytes},
             {"strict", encoder_snapshot_.recording_strategy.split_gop.strict},
             {"pending_gop_buffer", {
-                {"next_gop_to_flush", next_gop_to_flush_},
+                {"next_gop_to_flush",
+                 shared_output_ ? shared_output_stats.next_gop_to_flush : next_gop_to_flush_},
                 {"current_gops", shared_output_ ? shared_output_stats.pending_gop_count : pending_gops_.size()},
                 {"current_backlog_gops",
                  shared_output_ ? shared_output_stats.pending_gop_backlog_count
                                 : pending_gop_backlog_count()},
-                {"current_bytes", pending_gop_buffered_bytes_},
-                {"peak_gops", pending_gop_peak_count_},
-                {"peak_backlog_gops", pending_gop_peak_backlog_count_},
-                {"peak_bytes", pending_gop_peak_bytes_},
-                {"overflow_detected", pending_gop_overflowed_},
-                {"overflow_events", pending_gop_overflow_events_},
+                {"current_bytes",
+                 shared_output_ ? shared_output_stats.pending_gop_bytes : pending_gop_buffered_bytes_},
+                {"peak_gops",
+                 shared_output_ ? shared_output_stats.pending_gop_peak_count : pending_gop_peak_count_},
+                {"peak_backlog_gops",
+                 shared_output_ ? shared_output_stats.pending_gop_peak_backlog_count
+                                : pending_gop_peak_backlog_count_},
+                {"peak_bytes",
+                 shared_output_ ? shared_output_stats.pending_gop_peak_bytes : pending_gop_peak_bytes_},
+                {"overflow_detected",
+                 shared_output_ ? shared_output_stats.pending_gop_overflowed : pending_gop_overflowed_},
+                {"overflow_events",
+                 shared_output_ ? shared_output_stats.pending_gop_overflow_events
+                                : pending_gop_overflow_events_},
                 {"oldest_pending_age_ms", oldest_pending_gop_age_ms()}
             }},
             {"writer_queue", {
@@ -2005,6 +2106,21 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
             }}
         }}
     };
+    if (shared_output_ && !shared_output_stats.pending_gop_overflow_reason.empty()) {
+        info["recording_strategy"]["split_gop"]["pending_gop_buffer"]["last_overflow"] = {
+            {"reason", shared_output_stats.pending_gop_overflow_reason},
+            {"completion_gop_index",
+             shared_output_stats.pending_gop_overflow_completion_gop_index},
+            {"next_gop_to_flush",
+             shared_output_stats.pending_gop_overflow_next_gop_to_flush},
+            {"limit", shared_output_stats.pending_gop_overflow_limit},
+            {"pending_count", shared_output_stats.pending_gop_overflow_pending_count},
+            {"backlog_count", shared_output_stats.pending_gop_overflow_backlog_count},
+            {"frontier_present", shared_output_stats.pending_gop_overflow_frontier_present},
+            {"frontier_complete", shared_output_stats.pending_gop_overflow_frontier_complete},
+            {"pending_keys", shared_output_stats.pending_gop_overflow_pending_keys}
+        };
+    }
     info["resolved_config"] = encoder_snapshot_.resolved_config;
     info["pre_encoder_reference_capture"] = pre_encoder_reference_writer_.BuildSummaryJson();
     return info;
@@ -2012,32 +2128,58 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
 
 void EncoderHwWorker::flush_and_close()
 {
-    if (encoder_.pEnc) {
-        std::vector<uint32_t> retired_slots;
-        std::vector<uint64_t> output_timestamps;
-        encoder_.pEnc->EndEncode(
-            encoder_.vPacket,
-            direct_input_enabled_ ? &retired_slots : nullptr,
-            &output_timestamps);
-        const int64_t fallback_sample_index = last_recording_frame_id_ > 0
-            ? static_cast<int64_t>(last_recording_frame_id_ - 1)
-            : 0;
-        buffer_encoded_packets(
-            encoder_.vPacket,
-            output_timestamps,
-            fallback_sample_index,
-            static_cast<uint64_t>(fallback_sample_index) / std::max<uint32_t>(1u, recording_gop_length_),
-            !encoder_.vPacket.empty(),
-            std::nullopt);
-        encoder_.vPacket.clear();
-        if (direct_input_enabled_ && m_prep_worker_) {
-            for (uint32_t slot_id : retired_slots) {
-                m_prep_worker_->free_direct_input_slots_.push(static_cast<int>(slot_id));
-                m_prep_worker_->available_buffers_++;
+    if (!is_recording_ && active_recording_folder_.empty()) {
+        return;
+    }
+    try {
+        if (encoder_.pEnc) {
+            std::vector<uint32_t> retired_slots;
+            std::vector<uint64_t> output_timestamps;
+            encoder_.pEnc->EndEncode(
+                encoder_.vPacket,
+                direct_input_enabled_ ? &retired_slots : nullptr,
+                &output_timestamps);
+            const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
+                encoder_.vPacket.size(),
+                output_timestamps,
+                std::nullopt,
+                "EndEncode");
+            const std::vector<uint64_t> completed_gops =
+                note_emitted_packets_and_collect_completed_gops(packet_sample_indices);
+            const int64_t fallback_sample_index = last_recording_frame_id_ > 0
+                ? static_cast<int64_t>(last_recording_frame_id_ - 1)
+                : 0;
+            buffer_encoded_packets(
+                encoder_.vPacket,
+                packet_sample_indices,
+                fallback_sample_index,
+                static_cast<uint64_t>(fallback_sample_index) /
+                    std::max<uint32_t>(1u, recording_gop_length_),
+                false,
+                std::nullopt);
+            for (uint64_t completed_gop_index : completed_gops) {
+                buffer_encoded_packets(
+                    {},
+                    {},
+                    fallback_sample_index,
+                    completed_gop_index,
+                    true,
+                    std::nullopt);
+            }
+            encoder_.vPacket.clear();
+            if (direct_input_enabled_ && m_prep_worker_) {
+                for (uint32_t slot_id : retired_slots) {
+                    m_prep_worker_->free_direct_input_slots_.push(static_cast<int>(slot_id));
+                    m_prep_worker_->available_buffers_++;
+                }
             }
         }
+        flush_pending_gops(true);
+    } catch (const std::exception& e) {
+        encode_failures_++;
+        std::cerr << "[" << threadName << "] flush_and_close exception: "
+                  << e.what() << std::endl;
     }
-    flush_pending_gops(true);
     finalize_pre_encoder_reference_capture();
     release_pre_encoder_reference_capture_resources();
 
@@ -2270,7 +2412,15 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 &output_timestamps);
         }
 
+        note_submitted_frame(entry->gop_index, entry->is_last_frame_in_gop);
         size_t packets_generated = encoder_.vPacket.size();
+        const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
+            packets_generated,
+            output_timestamps,
+            zero_based_recording_frame,
+            "EncodeFrame");
+        const std::vector<uint64_t> completed_gops =
+            note_emitted_packets_and_collect_completed_gops(packet_sample_indices);
         total_packets_ += packets_generated;
 
         const std::optional<RecordingMetadataRow> metadata_row = RecordingMetadataRow{
@@ -2279,11 +2429,20 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             entry->timestamp_sys};
         buffer_encoded_packets(
             encoder_.vPacket,
-            output_timestamps,
+            packet_sample_indices,
             static_cast<int64_t>(zero_based_recording_frame),
             entry->gop_index,
-            entry->is_last_frame_in_gop,
+            false,
             metadata_row);
+        for (uint64_t completed_gop_index : completed_gops) {
+            buffer_encoded_packets(
+                {},
+                {},
+                static_cast<int64_t>(zero_based_recording_frame),
+                completed_gop_index,
+                true,
+                std::nullopt);
+        }
         if (recording_strategy_config_.split_gop_enabled() &&
             recording_strategy_config_.split_gop.writer_queue.fail_on_overflow &&
             writer_queue_overflowed_) {
