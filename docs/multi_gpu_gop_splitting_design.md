@@ -1006,6 +1006,50 @@ Current limitations:
   - keyframe sidecar correctness
   - final artifact correctness under real camera load
 
+## First Live Bring-Up Findings As Of 2026-04-15
+
+The first real headless bring-up on `pancake0` produced two important results.
+
+What worked:
+
+- the structured experiment-spec workflow is now real:
+  - `fixed.recording` was accepted by the experiment runner
+  - the override was applied to `CameraParams` before pipeline startup
+  - the requested split-GOP block was preserved in `run_config.json`
+  - the runtime recording strategy override was captured in
+    `recording_snapshot.json`
+- the updated sudo wrapper successfully launched the experiment-branch binary
+  using:
+  - `--orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client`
+- the first `hevc` split-GOP run on camera `2010096` with `GPU1 + GPU2` proved
+  that the helper path is real:
+  - both hardware encoder workers started
+  - the helper preprocess / helper encoder path on `GPU2` came up
+  - acquisition held at roughly `60 fps`
+  - each encoder worker ran at roughly `30 fps`
+  - camera dropped-frame count stayed at `0`
+
+What failed:
+
+- `h264` at `4512x4512` failed even in plain `single_session` with
+  `nvEncInitializeEncoder(... ) returned error 8`
+- the same camera and topology succeeded far enough under `hevc` to show that
+  the `h264` failure was not a split-GOP-specific regression
+- the first `hevc` split-GOP run then failed in the GOP coordinator with:
+  - `split_gop pending GOP count exceeded configured limit`
+
+Current interpretation:
+
+- for camera `2010096`, `h264` is the wrong first codec at full `4512x4512`
+  resolution; use `hevc` for future full-resolution bring-up on this camera
+- the multi-GPU helper path is now validated at a basic startup / dispatch
+  level
+- the next blocker is in pending-GOP accounting / release behavior, not in:
+  - camera open
+  - helper worker instantiation
+  - wrapper / spec plumbing
+  - A16 peer routing at startup
+
 ## Immediate Next Bring-Up Plan
 
 The next step should be a headless-first smoke test, not more architectural
@@ -1023,6 +1067,8 @@ Recommended first run:
   - `source_encoder_policy = hybrid_split`
   - `transfer_mode = raw`
   - `strict = true`
+- for full-resolution `4512x4512` camera `2010096`, prefer:
+  - `codec = hevc`
 - use a short run first:
   - stream-only sanity check
   - then a short recording, for example `10-15 s`
@@ -1049,7 +1095,15 @@ What the first run must prove:
 - no writer-queue overflow or pending-GOP budget overflow occurs
 - one combined MP4 is produced rather than split per-encoder files
 
-If that run passes, the next comparison should be:
+Current state after the first live run:
+
+- helper-owned GOP dispatch now has live startup evidence
+- the immediate failing condition is pending-GOP budget overflow
+- so the next code step should be:
+  - instrument and fix the pending-GOP release / accounting path before
+    widening the experiment
+
+If that run passes after the coordinator fix, the next comparison should be:
 
 - baseline `single_session`
 - `split_gop + multi_gpu + hybrid_split + raw`

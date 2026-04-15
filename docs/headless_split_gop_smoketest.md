@@ -261,6 +261,8 @@ Notes:
   without turning the first run into a long soak test
 - if lower latency is more important than matching production GOP, use
   `matrix.gop_length = [30]` for the first run
+- for camera `2010096` at full `4512x4512` resolution, prefer `hevc` instead
+  of `h264` for the first real recording run
 
 ## Required Artifacts
 
@@ -343,6 +345,34 @@ and partly log / behavior-based.
 
 The structured experiment-spec path is the preferred workflow for this bring-up.
 Keep env overrides as a temporary developer escape hatch only.
+
+## 2026-04-15 Bring-Up Results
+
+Two runs were especially informative:
+
+- `single_session + h264 + 4512x4512`
+  - failed during `nvEncInitializeEncoder(...)`
+  - this happened even without split-GOP enabled
+- `split_gop + multi_gpu + hybrid_split + raw + hevc`
+  - both encoder workers started
+  - helper GPU `2` came up
+  - acquisition held at about `60 fps`
+  - each encoder worker ran at about `30 fps`
+  - camera dropped frames stayed at `0`
+  - the run then aborted on:
+    - `split_gop pending GOP count exceeded configured limit`
+
+What this means:
+
+- the spec-based wrapper workflow is working
+- the multi-GPU helper path is working at startup / dispatch level
+- `h264` is not the right first codec for this full-resolution camera
+- the current blocker is the pending-GOP coordinator limit / release behavior
+
+Recommended next code step:
+
+- instrument and fix pending-GOP accounting / flush progression
+- do not widen to more cameras or more GPUs until that is fixed
 
 ## Pass Criteria
 
