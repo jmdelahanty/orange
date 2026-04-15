@@ -1,6 +1,7 @@
 # Multi-GPU GOP-Splitting Design
 
 Date: 2026-04-12
+Updated: 2026-04-14
 Scope: document what was learned about NVIDIA's `AppEncMultiInstance` style
 GOP splitting, explain what it means for the current Orange recording pipeline,
 describe a practical first design for this repo, list current blockers and
@@ -953,6 +954,129 @@ This phase is about orchestration correctness, not throughput.
   - transfer overhead.
 - [ ] Decide whether GOP splitting is worth productionization or should remain
   experimental.
+
+## Implementation Status As Of 2026-04-14
+
+This section records the current state of the experiment branch
+`exp/gop-split-a16`. The items below describe code that has been implemented in
+that branch; they are not all merged into the main branch yet.
+
+Implemented in the experiment branch:
+
+- explicit CFR sample-index PTS plumbing so mux timestamps follow
+  `recording_frame_id` rather than packet arrival order
+- bounded writer-queue scaffolding and explicit split-GOP byte / count budgets
+- GOP identity on the encode handoff:
+  - `gop_index`
+  - `frame_index_within_gop`
+  - `is_last_frame_in_gop`
+- ordered GOP release buffering so completed later GOPs wait until earlier GOPs
+  are ready
+- separation of `source GPU` ownership from `encode GPU` ownership in the
+  recording path
+- cross-GPU raw-frame staging support in the preprocess path when the encode
+  target lives on another GPU
+- per-camera `recording` config parsing / saving in camera JSON
+- env overrides for split-GOP bring-up and debugging
+- `RecordingIngress` as the acquisition-side seam for recording routing
+- GOP-aware routing policy in `RecordingIngress`
+- helper preprocess / helper hardware encoder instantiation for
+  `hybrid_split`
+- `SharedRecordingOutput` so primary and helper encoders feed one MP4 / metadata
+  output path
+- headless local mode (`orange_client --mode local`) using the same
+  `ModernRecordingPipeline` path as the GUI recording pipeline
+
+Current limitations:
+
+- no live split-GOP recording has been validated yet; current proof is compile-
+  level plus code inspection
+- `pure_offload` is not fully wired as a real helper-target mode yet; helper
+  targets are currently instantiated only for `hybrid_split`
+- split-GOP is not a dedicated headless CLI flag yet; first runs should use
+  camera JSON config or env overrides
+- acquisition-facing stats are still primary-worker-centric; helper routing
+  counters exist inside `RecordingIngress`, but they are not yet written into
+  `recording_snapshot.json`
+- direct-input is still intentionally out of scope for this path
+- there is not yet a completed live validation of:
+  - ordered drain / close with helper workers
+  - metadata continuity
+  - keyframe sidecar correctness
+  - final artifact correctness under real camera load
+
+## Immediate Next Bring-Up Plan
+
+The next step should be a headless-first smoke test, not more architectural
+refactoring.
+
+Recommended first run:
+
+- one camera only
+- one A16 `PIX` pair only, for example `GPU1 + GPU2`
+- keep the camera / vision source GPU fixed on `GPU1`
+- use:
+  - `mode = split_gop`
+  - `placement = multi_gpu`
+  - `encoder_gpu_ids = [1, 2]`
+  - `source_encoder_policy = hybrid_split`
+  - `transfer_mode = raw`
+  - `strict = true`
+- use a short run first:
+  - stream-only sanity check
+  - then a short recording, for example `10-15 s`
+  - with a modest GOP like `30` or `60`
+
+Why headless first:
+
+- the local headless client already builds `ModernRecordingPipeline`
+- it removes display / YOLO / crop / pose from the experiment
+- it gives a cleaner first signal on routing, encode, mux, and drain behavior
+
+Artifacts to inspect after the first run:
+
+- `Cam<serial>.mp4`
+- per-camera metadata CSV
+- `recording_snapshot.json`
+- console logs for drain / overflow / helper-routing failures
+
+What the first run must prove:
+
+- the recording completes without crash or drain timeout
+- helper-owned GOPs really dispatch to the helper path
+- output ordering and CFR timestamping remain correct
+- no writer-queue overflow or pending-GOP budget overflow occurs
+- one combined MP4 is produced rather than split per-encoder files
+
+If that run passes, the next comparison should be:
+
+- baseline `single_session`
+- `split_gop + multi_gpu + hybrid_split + raw`
+- later, `split_gop + multi_gpu + hybrid_split + prepared_nv12`
+
+Only after that should the experiment expand to:
+
+- `pure_offload`
+- more than one helper GPU
+- direct-input interaction
+- broader 4-camera scheduling policy
+
+## Immediate Code Follow-Ups After First Bring-Up
+
+Assuming the first headless split-GOP run works, the next code tasks should be:
+
+- propagate helper-routing counters into `recording_snapshot.json` so the first
+  runtime evidence is preserved in artifacts
+- aggregate helper and primary queue / FPS / failure stats more explicitly in
+  acquisition-side reporting
+- validate helper-worker stop / flush ordering under repeated short runs
+- add a dedicated headless CLI surface for recording strategy selection if the
+  env-based bring-up proves useful
+- decide whether the first transfer benchmark should stay `raw`-only or add
+  `prepared_nv12` immediately after the first success
+
+This keeps the next stage focused on measurement and artifact quality rather
+than more speculative refactoring.
 
 ## Risks
 
