@@ -1279,6 +1279,68 @@ Interpretation:
 - the shared-output backlog coordinator remained healthy throughout the
   successful run
 
+### Successful `100 fps` Result With `gop=25`
+
+Validated short run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25>)
+
+Observed result:
+
+- `1402` frames received over `14.02 s`
+- calculated acquisition rate `99.935120 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 100.571`
+- `runs.csv enc_fps_primary_mean = 50.1549`
+- `runs.csv enc_fps_helpers_mean = 50.4161`
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+- `pending_gop_buffer.overflow_events = 0`
+
+Interpretation:
+
+- `gop=25` preserved the same clean `100 fps` behavior as `gop=50`
+- startup/helper engagement was slightly better than `gop=50`
+- the short-run output size was effectively unchanged from `gop=50`
+- for random-seek-heavy visualization, `gop=25` is the better tested setting
+
+### Successful `100 fps gop=25` Soak
+
+Validated soak run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_soak60_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_soak60_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25>)
+
+Observed result:
+
+- `6206` frames received over `62.06 s`
+- calculated acquisition rate `99.985451 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 100.017`
+- `runs.csv enc_fps_primary_mean = 49.9697`
+- `runs.csv enc_fps_helpers_mean = 50.0473`
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+- `pending_gop_buffer.overflow_events = 0`
+- `nvidia_smi_dmon.status = completed`
+
+Interpretation:
+
+- `100 fps`, `hevc`, `gop=25`, `GPU5 + GPU6`, `hybrid_split`, and `raw`
+  transfer is now validated beyond a short smoke test
+- the source/helper split remained effectively `50/50` over a full-minute soak
+- `gop=25` is the current best validated baseline for seek-friendly
+  visualization on this host
+
 Host-specific caution:
 
 - `GPU3` is a poor experiment target on `pancake0` because it participates in

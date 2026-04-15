@@ -523,6 +523,66 @@ Most important interpretation:
 - for this camera and topology, `gop=50` is a much better `100 fps` setting
   than `gop=100`
 
+### `100 fps` With `gop=25` Passed
+
+Validated short run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25>)
+
+Observed result:
+
+- `1402` frames received over `14.02 s`
+- calculated acquisition rate `99.935120 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 100.571`
+- `runs.csv enc_fps_primary_mean = 50.1549`
+- `runs.csv enc_fps_helpers_mean = 50.4161`
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+- `pending_gop_buffer.overflow_events = 0`
+
+Most important interpretation:
+
+- `gop=25` preserved the same clean `100 fps` result as `gop=50`
+- helper engagement at startup was slightly better
+- for random-seek-heavy visualization, `gop=25` is the more attractive tested
+  setting
+
+### `100 fps gop=25` 60s Soak Passed
+
+Validated soak run:
+
+- experiment id:
+  `2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_soak60_rerun1`
+- artifacts:
+  [run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25](</home/jeremy/orange_data/exp/unsorted/2010096_split_gop_smoke_a16_pair_5_6_hevc_100fps_gop25_soak60_rerun1/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25>)
+
+Observed result:
+
+- `6206` frames received over `62.06 s`
+- calculated acquisition rate `99.985451 fps`
+- `0` camera drops
+- `0` preprocess drops
+- `0` encode failures
+- `runs.csv enc_fps_mean = 100.017`
+- `runs.csv enc_fps_primary_mean = 49.9697`
+- `runs.csv enc_fps_helpers_mean = 50.0473`
+- `pending_gop_buffer.current_backlog_gops = 0`
+- `pending_gop_buffer.peak_backlog_gops = 2`
+- `pending_gop_buffer.overflow_events = 0`
+- `nvidia_smi_dmon.status = completed`
+
+Most important interpretation:
+
+- `100 fps + gop=25` is now validated as more than a short smoke test
+- on this host, it is the current best validated visualization-oriented
+  baseline for camera `2010096`
+
 ## Pass Criteria
 
 Hard pass requires all of the following:
