@@ -564,16 +564,14 @@ bool apply_recording_strategy_overrides_to_selected_cameras(
 
         bool applied_override = false;
         if (options.has_recording_strategy_override) {
-            camera_params.recording_strategy = options.recording_strategy_override;
-            camera_params.recording.strategy = camera_params.recording_strategy;
+            camera_params.recording.strategy = options.recording_strategy_override;
             applied_override = true;
         }
 
         const auto per_camera_it =
             options.recording_strategy_overrides_by_camera.find(camera_serial);
         if (per_camera_it != options.recording_strategy_overrides_by_camera.end()) {
-            camera_params.recording_strategy = per_camera_it->second;
-            camera_params.recording.strategy = camera_params.recording_strategy;
+            camera_params.recording.strategy = per_camera_it->second;
             applied_override = true;
             applied_per_camera_overrides.insert(camera_serial);
         }
@@ -581,7 +579,7 @@ bool apply_recording_strategy_overrides_to_selected_cameras(
         if (applied_override) {
             std::cout << "Applied headless recording override."
                       << " camera=" << camera_serial
-                      << " " << format_recording_strategy_summary(camera_params.recording_strategy)
+                      << " " << format_recording_strategy_summary(camera_params.recording.strategy)
                       << std::endl;
         }
     }
@@ -2601,8 +2599,8 @@ std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
         }
         const CameraParams& camera = cameras_params[idx];
         append_gpu_id(camera.gpu_id);
-        if (camera.recording_strategy.split_gop_enabled()) {
-            for (int helper_gpu_id : camera.recording_strategy.split_gop.encoder_gpu_ids) {
+        if (camera.recording.strategy.split_gop_enabled()) {
+            for (int helper_gpu_id : camera.recording.strategy.split_gop.encoder_gpu_ids) {
                 append_gpu_id(helper_gpu_id);
             }
         }

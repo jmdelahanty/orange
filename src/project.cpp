@@ -726,7 +726,6 @@ void parse_recording_config_from_json(const nlohmann::json& camera_config,
     }
 
     normalize_camera_recording_config(&camera_params->recording);
-    camera_params->recording_strategy = camera_params->recording.strategy;
 }
 
 nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfig& recording_strategy_in) {
@@ -755,7 +754,6 @@ nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfi
 nlohmann::json build_recording_config_json_from_params(const CameraParams& camera_params)
 {
     CameraRecordingConfig recording = camera_params.recording;
-    recording.strategy = camera_params.recording_strategy;
     normalize_camera_recording_config(&recording);
 
     nlohmann::json recording_json = build_recording_strategy_json_object(recording.strategy);
@@ -905,7 +903,6 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->ptp_mode.clear();
     camera_params->gpio_nodes.clear();
     camera_params->recording = CameraRecordingConfig();
-    camera_params->recording_strategy = RecordingStrategyConfig();
 }
 
 void parse_gpio_nodes_from_json(const nlohmann::json& camera_config, CameraParams* camera_params) {

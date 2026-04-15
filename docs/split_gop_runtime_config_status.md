@@ -3,8 +3,8 @@
 ## Purpose
 
 This note records the current state of split-GOP runtime configuration on
-`exp/gop-split-a16`, why there are currently two recording-related fields on
-`CameraParams`, and the intended migration to a single runtime resolution model.
+`exp/gop-split-a16`, what was transitional during schema-3 integration, and the
+remaining migration steps toward a single runtime resolution model.
 
 This is intentionally a status-and-plan artifact, not a final architecture
 document. It is meant to keep the branch-level history understandable while the
@@ -21,6 +21,8 @@ Recent configuration/status commits on that branch:
 - `80fd97e` `experiment_specs: add validated split-gop 100fps gop25 runs`
 - `2efef9d` `config: add schema 3 split-gop camera configs`
 - `9b4dc89` `config: fix schema 3 project integration`
+- `710f3f2` `recording: add resolved runtime config`
+- `b341250` `recording: migrate runtime consumers to resolved config`
 
 The split-GOP runtime validation and telemetry work already on this branch
 includes:
@@ -49,15 +51,15 @@ The relevant runtime structs are currently:
 
 - `CameraRecordingConfig`
 - `RecordingStrategyConfig`
+- `ResolvedRecordingConfig`
 
-On the branch today, `CameraParams` contains both:
+On the branch today, `CameraParams` contains:
 
 - `recording`
-- `recording_strategy`
 
-This is a transitional state.
+The older `recording_strategy` alias has now been removed from `CameraParams`.
 
-## What The Two Fields Mean
+## What The Current Fields Mean
 
 ### `camera_params.recording`
 
@@ -72,10 +74,10 @@ It is the on-disk representation of what we want for that camera:
 
 This is the field that should survive long-term as the persisted camera config.
 
-### `camera_params.recording_strategy`
+### `ResolvedRecordingConfig.strategy`
 
-`recording_strategy` is the older runtime-only scheduling struct that the
-split-GOP implementation was originally built around.
+`RecordingStrategyConfig` is still the runtime scheduling sub-struct that the
+split-GOP implementation uses internally.
 
 It currently describes only the scheduling and buffering policy:
 
@@ -86,37 +88,37 @@ It currently describes only the scheduling and buffering policy:
 - `transfer_mode`
 - split-GOP queue/buffer limits
 
-This field exists today only because the runtime implementation was completed
-before schema 3 was added.
+It now lives inside the resolved runtime object rather than as a second field on
+`CameraParams`.
 
-## Why Both Exist Right Now
+## What Was Transitional
 
 The branch history happened in this order:
 
 1. The runtime split-GOP implementation was built around
-   `CameraParams.recording_strategy`.
+   `RecordingStrategyConfig` directly.
 2. Later, schema 3 added `CameraParams.recording` as the persisted camera config
    surface.
 3. Schema 3 was then integrated onto `exp/gop-split-a16` without rewriting the
    entire runtime path in the same change.
+4. `ResolvedRecordingConfig` was added so GUI/headless/spec/env flows could
+   produce one per-run runtime object.
+5. Runtime consumers were migrated to read from that resolved object.
 
-So the branch currently keeps both fields and mirrors them.
+The branch no longer keeps both camera fields.
 
-Current synchronization behavior:
+The old transitional behavior was:
 
 - camera JSON parse fills `camera_params.recording`
-- parse then copies:
-  - `camera_params.recording_strategy = camera_params.recording.strategy`
 - headless experiment-spec overrides still target `RecordingStrategyConfig`
-- headless override application copies the override into both:
-  - `camera_params.recording_strategy`
+- headless override application now writes into:
   - `camera_params.recording.strategy`
 - camera config save writes `recording`
-- before save, the writer copies:
-  - `camera_params.recording_strategy -> camera_params.recording.strategy`
+- runtime resolution builds:
+  - `ResolvedRecordingConfig`
 
-So `recording_strategy` is currently a runtime alias/bridge, not an independent
-source of truth.
+So the alias/bridge step has been removed, but the strategy sub-struct still
+exists as part of the resolved runtime config.
 
 ## What Is Actually Implemented Today
 
@@ -141,19 +143,22 @@ These should be treated as transitional or incomplete:
   - ingress understands the policy
   - helper-target construction is still centered on `hybrid_split`
 
-## Where Runtime Still Reads The Old Alias
+## What Is Cleaned Up Now
 
-The branch still uses `recording_strategy` directly in several core runtime
-places:
+These runtime paths now consume `ResolvedRecordingConfig` instead of the old
+camera-level alias:
 
+- `ModernRecordingPipeline`
 - `EncoderHwWorker`
 - `RecordingIngress`
-- headless experiment-spec override application
-- some runtime summaries/logging
+- GUI pipeline construction
+- headless pipeline construction
 
-This is why removing `recording_strategy` immediately would be risky.
+Headless experiment specs still express overrides as `RecordingStrategyConfig`
+JSON, but those overrides now land in `camera_params.recording.strategy` and
+then flow through the resolver.
 
-## Another Important Transitional Gap
+## Remaining Transitional Gaps
 
 Schema 3 added more than just strategy:
 
@@ -165,8 +170,9 @@ But runtime is not yet consistently driven from those persisted fields.
 
 Today:
 
-- codec/preset/tuning/rate-control/quality/GOP still primarily flow in through
-  pipeline constructor arguments and headless CLI/spec settings
+- codec/preset/tuning/rate-control/quality/GOP now resolve into
+  `ResolvedRecordingConfig`, but the builder still receives those values from
+  headless/GUI callsites rather than purely from one higher-level config source
 - resource knobs such as acquisition pool size and encoder-entry pool size are
   still largely env-based or local helper based
 
@@ -183,7 +189,6 @@ The goal is to move to a single runtime resolution model:
 That means:
 
 - `CameraParams.recording` remains the camera-config field
-- `CameraParams.recording_strategy` is removed after migration
 - runtime code consumes a resolved, per-run config object instead of directly
   reading scattered camera/config/env/CLI fields
 
@@ -198,4 +203,3 @@ The intended runtime object should look conceptually like:
 - optional provenance / resolution notes
 
 That struct should be built once per camera/run from:
-

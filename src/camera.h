@@ -62,7 +62,6 @@ struct CameraParams{
     std::string ptp_mode;
     std::vector<CameraGpioNodeConfig> gpio_nodes;
     CameraRecordingConfig recording;
-    RecordingStrategyConfig recording_strategy;
     unsigned int gain_max; 
     unsigned int gain_min;
     unsigned int gain_inc;
