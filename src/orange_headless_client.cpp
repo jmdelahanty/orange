@@ -1922,6 +1922,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     GigEVisionDeviceInfo *device_info, int num_cameras, PTPParams *ptp_params,
     const std::vector<int>& required_gpu_ids,
     std::string record_folder, std::string encoder_basic_setup,
+    bool nvenc_direct_input,
     const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture,
     int record_start_delay_seconds = 0,
     bool enable_recording = true)
@@ -2038,21 +2039,26 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 collect_unique_gpu_ids(cameras_params, selected_indices));
 
             for (int idx : selected_indices) {
+                ResolvedRecordingConfigOverrides recording_overrides;
+                recording_overrides.recording_gpu_id = cameras_params[idx].gpu_id;
+                recording_overrides.has_output_override = true;
+                recording_overrides.output = build_native_recording_output_config(cameras_params[idx]);
+                recording_overrides.codec = encoder_settings.codec;
+                recording_overrides.preset = encoder_settings.preset;
+                recording_overrides.tuning = encoder_settings.tuning;
+                recording_overrides.rate_control_mode = encoder_settings.rate_control_mode;
+                recording_overrides.quality_value = encoder_settings.quality_value;
+                recording_overrides.gop_length = encoder_settings.gop_length;
+                recording_overrides.has_nvenc_direct_input_override = true;
+                recording_overrides.nvenc_direct_input = nvenc_direct_input;
+                recording_overrides.encoder_control_overrides = encoder_settings.control_overrides;
+                recording_overrides.importance_map = encoder_settings.importance_map;
+                recording_overrides.base_folder_name = record_folder;
+                recording_overrides.pre_encoder_reference_capture = pre_encoder_reference_capture;
                 const ResolvedRecordingConfig resolved_recording_config =
                     build_resolved_recording_config(
                         cameras_params[idx],
-                        cameras_params[idx].gpu_id,
-                        build_native_recording_output_config(cameras_params[idx]),
-                        encoder_settings.codec,
-                        encoder_settings.preset,
-                        encoder_settings.tuning,
-                        encoder_settings.rate_control_mode,
-                        encoder_settings.quality_value,
-                        encoder_settings.gop_length,
-                        encoder_settings.control_overrides,
-                        encoder_settings.importance_map,
-                        record_folder,
-                        pre_encoder_reference_capture);
+                        recording_overrides);
                 recording_pipelines[idx] = std::make_unique<ModernRecordingPipeline>(
                     &cameras_params[idx],
                     resolved_recording_config,
@@ -2230,6 +2236,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         {},
                         recording_setup->record_folder,
                         recording_setup->encoder_basic_setup,
+                        false,
                         PreEncoderReferenceCaptureConfig{},
                         0))
                 {
@@ -3725,6 +3732,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.required_gpu_ids,
         active_record_folder,
         encoder_setup,
+        options.nvenc_direct_input,
         options.pre_encoder_reference_capture,
         options.record_start_delay_seconds,
         enable_recording);
@@ -4233,9 +4241,6 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
 
 int run_local_experiment(const HeadlessCliOptions& options)
 {
-    ScopedEnvVarOverride direct_input_override(
-        "ORANGE_NVENC_DIRECT_INPUT",
-        options.nvenc_direct_input ? "1" : "0");
     ExperimentSpec spec;
     std::string error;
     if (!load_experiment_spec(options, &spec, &error)) {
@@ -4335,9 +4340,6 @@ int run_local_experiment(const HeadlessCliOptions& options)
                   << std::endl;
 
         const std::string started_at_utc = get_current_utc_timestamp();
-        ScopedEnvVarOverride per_run_direct_input_override(
-            "ORANGE_NVENC_DIRECT_INPUT",
-            run.options.nvenc_direct_input ? "1" : "0");
         const int rc = run_local_recording_session(run.options, false);
         bool run_failed = (rc != 0);
         nlohmann::json run_entry = {
@@ -4456,9 +4458,6 @@ int run_local_experiment(const HeadlessCliOptions& options)
 
 int run_local_mode(const HeadlessCliOptions& options)
 {
-    ScopedEnvVarOverride direct_input_override(
-        "ORANGE_NVENC_DIRECT_INPUT",
-        options.nvenc_direct_input ? "1" : "0");
     return run_local_recording_session(options, true);
 }
 

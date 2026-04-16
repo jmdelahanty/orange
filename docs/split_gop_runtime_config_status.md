@@ -23,6 +23,7 @@ Recent configuration/status commits on that branch:
 - `9b4dc89` `config: fix schema 3 project integration`
 - `710f3f2` `recording: add resolved runtime config`
 - `b341250` `recording: migrate runtime consumers to resolved config`
+- `55352c1` `recording: resolve resource pool sizes from config`
 
 The split-GOP runtime validation and telemetry work already on this branch
 includes:
@@ -158,6 +159,10 @@ Headless experiment specs still express overrides as `RecordingStrategyConfig`
 JSON, but those overrides now land in `camera_params.recording.strategy` and
 then flow through the resolver.
 
+GUI and headless callsites now build one explicit runtime-override object before
+calling the resolver, rather than passing a long list of loose encode/output
+arguments.
+
 ## Remaining Transitional Gaps
 
 Schema 3 added more than just strategy:
@@ -170,9 +175,10 @@ But runtime is not yet consistently driven from those persisted fields.
 
 Today:
 
-- codec/preset/tuning/rate-control/quality/GOP now resolve into
-  `ResolvedRecordingConfig`, but the builder still receives those values from
-  headless/GUI callsites rather than purely from one higher-level config source
+- codec/preset/tuning/rate-control/quality/GOP now flow through a single
+  override struct into `ResolvedRecordingConfig`
+- direct-input now also flows through that same override path for GUI/headless
+  runs
 - `recording.resources.acquire_work_entries` now feeds `CameraResources`
   allocation by default
 - `recording.resources.encoder_entry_pool_size` now feeds
@@ -181,6 +187,8 @@ Today:
   experiments:
   - `ORANGE_ACQUIRE_WORK_ENTRIES_MAX`
   - `ORANGE_ENCODER_ENTRY_POOL_SIZE`
+  - `ORANGE_NVENC_DIRECT_INPUT` remains supported as a fallback for older
+    workflows, but it is no longer the normal headless control path
 
 So schema 3 currently persists the desired shape cleanly, but runtime still
 pulls parts of the effective configuration from multiple sources.

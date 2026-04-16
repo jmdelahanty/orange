@@ -131,6 +131,24 @@ struct ResolvedRecordingConfig {
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
 };
 
+struct ResolvedRecordingConfigOverrides {
+    int recording_gpu_id = -1;
+    bool has_output_override = false;
+    RecordingOutputConfig output;
+    std::string codec;
+    std::string preset;
+    std::string tuning;
+    std::string rate_control_mode;
+    int quality_value = -1;
+    int gop_length = -1;
+    bool has_nvenc_direct_input_override = false;
+    bool nvenc_direct_input = false;
+    EncoderControlOverrides encoder_control_overrides;
+    ImportanceMapConfig importance_map;
+    std::string base_folder_name;
+    PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
+};
+
 // The lightweight struct to pass data from the preprocess worker to the hardware encoder.
 struct ENCODER_WORKER_ENTRY {
     unsigned char* d_prepared_frame;

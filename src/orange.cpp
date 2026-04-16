@@ -3693,21 +3693,21 @@ int main(int argc, char **args) {
                                               << cameras_params[i].width << "x" << cameras_params[i].height
                                               << "." << std::endl;
                                 }
+                                ResolvedRecordingConfigOverrides recording_overrides;
+                                recording_overrides.recording_gpu_id = cameras_params[i].gpu_id;
+                                recording_overrides.has_output_override = true;
+                                recording_overrides.output = recording_output_config;
+                                recording_overrides.codec = encoder_config->encoder_codec;
+                                recording_overrides.preset = encoder_config->encoder_preset;
+                                recording_overrides.tuning = encoder_config->tuning_info;
+                                recording_overrides.rate_control_mode = encoder_config->rate_control_mode;
+                                recording_overrides.quality_value = encoder_config->quality_value;
+                                recording_overrides.gop_length = encoder_config->gop_length;
+                                recording_overrides.base_folder_name = encoder_config->folder_name;
                                 const ResolvedRecordingConfig resolved_recording_config =
                                     build_resolved_recording_config(
                                         cameras_params[i],
-                                        cameras_params[i].gpu_id,
-                                        recording_output_config,
-                                        encoder_config->encoder_codec,
-                                        encoder_config->encoder_preset,
-                                        encoder_config->tuning_info,
-                                        encoder_config->rate_control_mode,
-                                        encoder_config->quality_value,
-                                        encoder_config->gop_length,
-                                        EncoderControlOverrides{},
-                                        ImportanceMapConfig{},
-                                        encoder_config->folder_name,
-                                        PreEncoderReferenceCaptureConfig{});
+                                        recording_overrides);
                                 recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
                                     &cameras_params[i],
                                     resolved_recording_config,

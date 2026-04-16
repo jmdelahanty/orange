@@ -1471,48 +1471,55 @@ RecordingStrategyConfig resolve_runtime_recording_strategy_config(const CameraPa
 
 ResolvedRecordingConfig build_resolved_recording_config(
     const CameraParams& camera_params,
-    int recording_gpu_id,
-    const RecordingOutputConfig& recording_output_config,
-    const std::string& codec,
-    const std::string& preset,
-    const std::string& tuning,
-    const std::string& rate_control_mode,
-    int quality_value,
-    int gop_length,
-    const EncoderControlOverrides& encoder_control_overrides,
-    const ImportanceMapConfig& importance_map_config,
-    const std::string& base_folder_name,
-    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config)
+    const ResolvedRecordingConfigOverrides& overrides)
 {
     ResolvedRecordingConfig resolved;
     resolved.source_gpu_id = camera_params.gpu_id;
-    resolved.recording_gpu_id = recording_gpu_id >= 0 ? recording_gpu_id : camera_params.gpu_id;
+    resolved.recording_gpu_id =
+        overrides.recording_gpu_id >= 0 ? overrides.recording_gpu_id : camera_params.gpu_id;
     resolved.encode = camera_params.recording.encode;
-    if (!codec.empty()) {
-        resolved.encode.codec = lower_ascii_copy(codec);
+    if (!overrides.codec.empty()) {
+        resolved.encode.codec = lower_ascii_copy(overrides.codec);
     }
-    if (!preset.empty()) {
-        resolved.encode.preset = lower_ascii_copy(preset);
+    if (!overrides.preset.empty()) {
+        resolved.encode.preset = lower_ascii_copy(overrides.preset);
     }
-    if (!tuning.empty()) {
-        resolved.encode.tuning = lower_ascii_copy(tuning);
+    if (!overrides.tuning.empty()) {
+        resolved.encode.tuning = lower_ascii_copy(overrides.tuning);
     }
-    if (!rate_control_mode.empty()) {
-        resolved.encode.rate_control_mode = lower_ascii_copy(rate_control_mode);
+    if (!overrides.rate_control_mode.empty()) {
+        resolved.encode.rate_control_mode = lower_ascii_copy(overrides.rate_control_mode);
     }
-    resolved.encode.quality_value = quality_value;
-    resolved.encode.gop_length = gop_length;
-    resolved.encode.nvenc_direct_input = parse_runtime_env_flag(
-        "ORANGE_NVENC_DIRECT_INPUT",
-        resolved.encode.nvenc_direct_input);
-    resolved.output = recording_output_config;
+    if (overrides.quality_value >= 0) {
+        resolved.encode.quality_value = overrides.quality_value;
+    }
+    if (overrides.gop_length >= 0) {
+        resolved.encode.gop_length = overrides.gop_length;
+    }
+    if (overrides.has_nvenc_direct_input_override) {
+        resolved.encode.nvenc_direct_input = overrides.nvenc_direct_input;
+    } else {
+        resolved.encode.nvenc_direct_input = parse_runtime_env_flag(
+            "ORANGE_NVENC_DIRECT_INPUT",
+            resolved.encode.nvenc_direct_input);
+    }
+    resolved.output.mode = camera_params.recording.output.mode;
+    resolved.output.downsample_factor = camera_params.recording.output.downsample_factor;
+    resolved.output.requested_width = camera_params.recording.output.requested_width;
+    resolved.output.requested_height = camera_params.recording.output.requested_height;
+    resolved.output.resolved_width = static_cast<int>(camera_params.width);
+    resolved.output.resolved_height = static_cast<int>(camera_params.height);
+    resolved.output.resize_enabled = false;
+    if (overrides.has_output_override) {
+        resolved.output = overrides.output;
+    }
     resolved.strategy = resolve_runtime_recording_strategy_config(camera_params);
     resolved.constraints = camera_params.recording.constraints;
     resolved.resources = camera_params.recording.resources;
-    resolved.encoder_control_overrides = encoder_control_overrides;
-    resolved.importance_map = importance_map_config;
-    resolved.base_folder_name = base_folder_name;
-    resolved.pre_encoder_reference_capture = pre_encoder_reference_capture_config;
+    resolved.encoder_control_overrides = overrides.encoder_control_overrides;
+    resolved.importance_map = overrides.importance_map;
+    resolved.base_folder_name = overrides.base_folder_name;
+    resolved.pre_encoder_reference_capture = overrides.pre_encoder_reference_capture;
     return resolved;
 }
 

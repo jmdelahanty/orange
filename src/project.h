@@ -87,18 +87,7 @@ bool parse_recording_strategy_json(const nlohmann::json& recording_json,
 nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& recording_strategy);
 ResolvedRecordingConfig build_resolved_recording_config(
     const CameraParams& camera_params,
-    int recording_gpu_id,
-    const RecordingOutputConfig& recording_output_config,
-    const std::string& codec,
-    const std::string& preset,
-    const std::string& tuning,
-    const std::string& rate_control_mode,
-    int quality_value,
-    int gop_length,
-    const EncoderControlOverrides& encoder_control_overrides,
-    const ImportanceMapConfig& importance_map_config,
-    const std::string& base_folder_name,
-    const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture_config = {});
+    const ResolvedRecordingConfigOverrides& overrides = {});
 bool read_camera_config_snapshot(const CameraParams& camera_params,
                                  std::string* config_contents,
                                  std::string* error_out);
