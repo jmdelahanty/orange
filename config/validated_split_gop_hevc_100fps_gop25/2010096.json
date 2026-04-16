@@ -37,7 +37,7 @@
     "nodes": []
   },
   "recording": {
-    "profile_name": "validated_split_gop_hevc_100fps_gop25_v1",
+    "profile_name": "validated_split_gop_hevc_100fps_gop25",
     "encode": {
       "codec": "hevc",
       "preset": "p1",
@@ -50,8 +50,8 @@
     "output": {
       "mode": "factor",
       "downsample_factor": 1,
-      "requested_width": 0,
-      "requested_height": 0
+      "requested_width": 4512,
+      "requested_height": 4512
     },
     "mode": "split_gop",
     "split_gop": {
