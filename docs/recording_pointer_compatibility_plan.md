@@ -26,6 +26,10 @@ defaults to `~/orange_data/...`.
 The shared pointer is rooted under `/run`, which is a system tmpfs location and
 is reset on reboot.
 
+That makes `/run/orange/latest_recording.json` a good fit for live IPC and
+producer/consumer rendezvous, but not a durable pointer that should be expected
+to survive reboot.
+
 ## Why This Matters
 
 For Orange alone, the local pointer is usually enough because it lives beside
@@ -136,6 +140,18 @@ Reason:
 
 - Citrus already prefers it
 - removing it immediately would be a contract break
+- `/run` is still the simplest machine-wide live rendezvous location for
+  producer/consumer workflows
+
+Operational recommendation:
+
+- treat `/run/orange/latest_recording.json` as the canonical live IPC path
+- provision `/run/orange` with `tmpfiles.d` at boot instead of depending on
+  on-demand creation during a recording run
+
+Repo-tracked sample:
+
+- [config/system/orange-tmpfiles.conf.example](/home/jeremy/orange-gop-split-a16/config/system/orange-tmpfiles.conf.example)
 
 ## Suggested Migration Phases
 

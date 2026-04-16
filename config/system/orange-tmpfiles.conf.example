@@ -1,0 +1,15 @@
+# Example systemd-tmpfiles rule for Orange live recording pointer IPC.
+#
+# Install as:
+#   /etc/tmpfiles.d/orange.conf
+#
+# Then apply immediately with:
+#   sudo systemd-tmpfiles --create /etc/tmpfiles.d/orange.conf
+#
+# This provisions the canonical live rendezvous directory used for:
+#   /run/orange/latest_recording.json
+#
+# Mode 2775 keeps the directory root-owned, group-writable for `ipc`, and
+# setgid so descendants inherit the `ipc` group.
+
+d /run/orange 2775 root ipc -

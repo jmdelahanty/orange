@@ -58,6 +58,7 @@ Concrete example on this machine:
 Repo-tracked example:
 
 - [config/app/default.example.json](/home/jeremy/orange-gop-split-a16/config/app/default.example.json)
+- [config/system/orange-tmpfiles.conf.example](/home/jeremy/orange-gop-split-a16/config/system/orange-tmpfiles.conf.example)
 
 Why this location:
 
@@ -183,6 +184,17 @@ Recommended default:
 - `/run/orange/latest_recording.json`
 
 This is a full file path, not just a directory.
+
+Operational recommendation:
+
+- treat `/run/orange/latest_recording.json` as the canonical live
+  producer/consumer rendezvous path
+- provision its parent directory with `tmpfiles.d` rather than relying on
+  Orange to create it opportunistically during a recording run
+
+Recommended sample rule:
+
+- [config/system/orange-tmpfiles.conf.example](/home/jeremy/orange-gop-split-a16/config/system/orange-tmpfiles.conf.example)
 
 ## Precedence Rules
 
