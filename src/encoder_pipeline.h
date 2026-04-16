@@ -133,8 +133,8 @@ struct ResolvedRecordingConfig {
 
 struct ResolvedRecordingConfigOverrides {
     int recording_gpu_id = -1;
-    bool has_output_override = false;
-    RecordingOutputConfig output;
+    bool has_output_preferences_override = false;
+    CameraRecordingOutputConfig output_preferences;
     std::string codec;
     std::string preset;
     std::string tuning;

@@ -1741,16 +1741,13 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
     }
 }
 
-RecordingOutputConfig build_native_recording_output_config(const CameraParams& camera_params)
+CameraRecordingOutputConfig build_native_recording_output_preferences(const CameraParams& camera_params)
 {
-    RecordingOutputConfig output;
+    CameraRecordingOutputConfig output;
     output.mode = "factor";
     output.downsample_factor = 1;
     output.requested_width = static_cast<int>(camera_params.width);
     output.requested_height = static_cast<int>(camera_params.height);
-    output.resolved_width = static_cast<int>(camera_params.width);
-    output.resolved_height = static_cast<int>(camera_params.height);
-    output.resize_enabled = false;
     return output;
 }
 
@@ -2041,8 +2038,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             for (int idx : selected_indices) {
                 ResolvedRecordingConfigOverrides recording_overrides;
                 recording_overrides.recording_gpu_id = cameras_params[idx].gpu_id;
-                recording_overrides.has_output_override = true;
-                recording_overrides.output = build_native_recording_output_config(cameras_params[idx]);
+                recording_overrides.has_output_preferences_override = true;
+                recording_overrides.output_preferences =
+                    build_native_recording_output_preferences(cameras_params[idx]);
                 recording_overrides.codec = encoder_settings.codec;
                 recording_overrides.preset = encoder_settings.preset;
                 recording_overrides.tuning = encoder_settings.tuning;

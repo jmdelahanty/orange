@@ -85,6 +85,10 @@ bool parse_recording_strategy_json(const nlohmann::json& recording_json,
                                    RecordingStrategyConfig* recording_strategy_out,
                                    std::string* error_out = nullptr);
 nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& recording_strategy);
+RecordingOutputConfig resolve_effective_recording_output_config(
+    const CameraParams& camera_params,
+    const CameraRecordingOutputConfig& requested_output,
+    std::string* warning_out = nullptr);
 ResolvedRecordingConfig build_resolved_recording_config(
     const CameraParams& camera_params,
     const ResolvedRecordingConfigOverrides& overrides = {});

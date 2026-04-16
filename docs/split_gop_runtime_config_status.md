@@ -161,7 +161,8 @@ then flow through the resolver.
 
 GUI and headless callsites now build one explicit runtime-override object before
 calling the resolver, rather than passing a long list of loose encode/output
-arguments.
+arguments. Those callsites now provide requested output preferences, while the
+actual output-size resolution logic lives in the runtime builder.
 
 ## Remaining Transitional Gaps
 
@@ -179,6 +180,8 @@ Today:
   override struct into `ResolvedRecordingConfig`
 - direct-input now also flows through that same override path for GUI/headless
   runs
+- requested output preferences now flow through that same override path, and the
+  builder resolves them into the effective `RecordingOutputConfig`
 - `recording.resources.acquire_work_entries` now feeds `CameraResources`
   allocation by default
 - `recording.resources.encoder_entry_pool_size` now feeds
@@ -191,7 +194,7 @@ Today:
     workflows, but it is no longer the normal headless control path
 
 So schema 3 currently persists the desired shape cleanly, but runtime still
-pulls parts of the effective configuration from multiple sources.
+pulls some parts of the effective configuration from multiple sources.
 
 ## Goal State
 

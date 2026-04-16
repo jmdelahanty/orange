@@ -480,6 +480,9 @@ std::string normalize_split_gop_transfer_mode_string(std::string value) {
 
 std::string normalize_recording_output_mode_string(std::string value) {
     value = lower_ascii_copy(std::move(value));
+    if (value == "exact_size") {
+        return "resolution";
+    }
     if (value == "factor" || value == "resolution") {
         return value;
     }
@@ -1267,6 +1270,115 @@ nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& reco
     return build_recording_strategy_json_object(recording_strategy);
 }
 
+RecordingOutputConfig resolve_effective_recording_output_config(
+    const CameraParams& camera_params,
+    const CameraRecordingOutputConfig& requested_output,
+    std::string* warning_out)
+{
+    if (warning_out) {
+        warning_out->clear();
+    }
+
+    constexpr int kMinRecordingOutputDimension = 64;
+    auto is_supported_record_output_factor = [](int factor) {
+        return factor == 1 || factor == 2 || factor == 4 || factor == 8 || factor == 16;
+    };
+
+    std::string mode = normalize_recording_output_mode_string(requested_output.mode);
+    int factor = requested_output.downsample_factor;
+    int width = requested_output.requested_width;
+    int height = requested_output.requested_height;
+
+    if (!is_supported_record_output_factor(factor)) {
+        factor = 1;
+    }
+    if (width < 1) {
+        width = 1024;
+    }
+    if (height < 1) {
+        height = 1024;
+    }
+
+    RecordingOutputConfig output;
+    output.mode = mode;
+    output.downsample_factor = factor;
+    output.requested_width = width;
+    output.requested_height = height;
+    output.resolved_width = static_cast<int>(camera_params.width);
+    output.resolved_height = static_cast<int>(camera_params.height);
+    output.resize_enabled = false;
+
+    auto fallback_to_native = [&](const std::string& warning) {
+        if (warning_out) {
+            *warning_out = warning;
+        }
+        output.mode = "factor";
+        output.downsample_factor = 1;
+        output.requested_width = static_cast<int>(camera_params.width);
+        output.requested_height = static_cast<int>(camera_params.height);
+        output.resolved_width = static_cast<int>(camera_params.width);
+        output.resolved_height = static_cast<int>(camera_params.height);
+        output.resize_enabled = false;
+    };
+
+    if (mode == "resolution") {
+        if (width < kMinRecordingOutputDimension || height < kMinRecordingOutputDimension) {
+            fallback_to_native("requested output size is smaller than the minimum supported recording dimension");
+            return output;
+        }
+        if ((width % 2) != 0 || (height % 2) != 0) {
+            fallback_to_native("requested output size must have even width and height for NV12");
+            return output;
+        }
+        if (width > static_cast<int>(camera_params.width) || height > static_cast<int>(camera_params.height)) {
+            fallback_to_native("requested output size cannot upscale beyond the camera source dimensions");
+            return output;
+        }
+        const int64_t lhs = static_cast<int64_t>(width) * static_cast<int64_t>(camera_params.height);
+        const int64_t rhs = static_cast<int64_t>(height) * static_cast<int64_t>(camera_params.width);
+        if (lhs != rhs) {
+            fallback_to_native("requested output size must preserve the source aspect ratio");
+            return output;
+        }
+
+        output.resolved_width = width;
+        output.resolved_height = height;
+        output.resize_enabled =
+            output.resolved_width != static_cast<int>(camera_params.width) ||
+            output.resolved_height != static_cast<int>(camera_params.height);
+        return output;
+    }
+
+    if (!is_supported_record_output_factor(factor)) {
+        fallback_to_native("recording downsample factor must be one of 1, 2, 4, 8, or 16");
+        return output;
+    }
+
+    if ((camera_params.width % static_cast<unsigned int>(factor)) != 0 ||
+        (camera_params.height % static_cast<unsigned int>(factor)) != 0) {
+        fallback_to_native("recording downsample factor must evenly divide the source dimensions");
+        return output;
+    }
+
+    const int resolved_width = static_cast<int>(camera_params.width / static_cast<unsigned int>(factor));
+    const int resolved_height = static_cast<int>(camera_params.height / static_cast<unsigned int>(factor));
+    if (resolved_width < kMinRecordingOutputDimension || resolved_height < kMinRecordingOutputDimension) {
+        fallback_to_native("recording downsample result is below the minimum supported output dimension");
+        return output;
+    }
+    if ((resolved_width % 2) != 0 || (resolved_height % 2) != 0) {
+        fallback_to_native("recording downsample result must have even width and height for NV12");
+        return output;
+    }
+
+    output.requested_width = resolved_width;
+    output.requested_height = resolved_height;
+    output.resolved_width = resolved_width;
+    output.resolved_height = resolved_height;
+    output.resize_enabled = factor != 1;
+    return output;
+}
+
 bool runtime_env_is_set(const char* name) {
     const char* env = std::getenv(name);
     return env && *env != '\0';
@@ -1503,16 +1615,11 @@ ResolvedRecordingConfig build_resolved_recording_config(
             "ORANGE_NVENC_DIRECT_INPUT",
             resolved.encode.nvenc_direct_input);
     }
-    resolved.output.mode = camera_params.recording.output.mode;
-    resolved.output.downsample_factor = camera_params.recording.output.downsample_factor;
-    resolved.output.requested_width = camera_params.recording.output.requested_width;
-    resolved.output.requested_height = camera_params.recording.output.requested_height;
-    resolved.output.resolved_width = static_cast<int>(camera_params.width);
-    resolved.output.resolved_height = static_cast<int>(camera_params.height);
-    resolved.output.resize_enabled = false;
-    if (overrides.has_output_override) {
-        resolved.output = overrides.output;
-    }
+    const CameraRecordingOutputConfig output_preferences =
+        overrides.has_output_preferences_override
+            ? overrides.output_preferences
+            : camera_params.recording.output;
+    resolved.output = resolve_effective_recording_output_config(camera_params, output_preferences, nullptr);
     resolved.strategy = resolve_runtime_recording_strategy_config(camera_params);
     resolved.constraints = camera_params.recording.constraints;
     resolved.resources = camera_params.recording.resources;
