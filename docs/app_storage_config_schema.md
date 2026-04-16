@@ -55,6 +55,10 @@ Concrete example on this machine:
 
 - `/home/jeremy/orange_data/config/app/default.json`
 
+Repo-tracked example:
+
+- [config/app/default.example.json](/home/jeremy/orange-gop-split-a16/config/app/default.example.json)
+
 Why this location:
 
 - it matches the existing Orange data tree under `~/orange_data`

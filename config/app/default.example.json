@@ -1,0 +1,13 @@
+{
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "storage": {
+    "default_recording_root": "/home/jeremy/orange_data/exp/unsorted",
+    "latest_recording": {
+      "write_local_pointer": true,
+      "canonical_pointer_root": "/home/jeremy/orange_data/.orange",
+      "write_run_pointer": true,
+      "run_pointer_path": "/run/orange/latest_recording.json"
+    }
+  }
+}
