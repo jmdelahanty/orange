@@ -74,9 +74,9 @@ struct HeadlessCliOptions {
     std::vector<int> required_gpu_ids;
     HeadlessEncoderSettings encoder_settings;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
-    bool has_recording_strategy_override = false;
-    RecordingStrategyConfig recording_strategy_override;
-    std::unordered_map<std::string, RecordingStrategyConfig> recording_strategy_overrides_by_camera;
+    bool has_recording_override = false;
+    nlohmann::json recording_override = nlohmann::json::object();
+    std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
 };
 
 struct ExperimentSpec {
@@ -97,9 +97,9 @@ struct ExperimentSpec {
     std::vector<int> gpu_ids;
     HeadlessEncoderSettings selection;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
-    bool has_recording_strategy_override = false;
-    RecordingStrategyConfig recording_strategy_override;
-    std::unordered_map<std::string, RecordingStrategyConfig> recording_strategy_overrides_by_camera;
+    bool has_recording_override = false;
+    nlohmann::json recording_override = nlohmann::json::object();
+    std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
     std::vector<std::string> codecs;
     std::vector<std::string> presets;
     std::vector<std::string> tunings;
@@ -203,7 +203,7 @@ struct HeadlessThreadFailureState {
 };
 
 using CameraGpuOverrideMap = std::unordered_map<std::string, int>;
-using RecordingStrategyOverrideMap = std::unordered_map<std::string, RecordingStrategyConfig>;
+using RecordingOverrideMap = std::unordered_map<std::string, nlohmann::json>;
 
 constexpr int kGpuDmonStartupPollMs = 200;
 constexpr int kGpuDmonShutdownWaitMs = 2000;
@@ -432,12 +432,12 @@ std::string canonicalize_headless_camera_serial(std::string value)
     return value.substr(first_non_zero);
 }
 
-nlohmann::json build_recording_strategy_override_map_json(
-    const RecordingStrategyOverrideMap& overrides)
+nlohmann::json build_recording_override_map_json(
+    const RecordingOverrideMap& overrides)
 {
     nlohmann::json out = nlohmann::json::object();
-    for (const auto& [camera_serial, recording_strategy] : overrides) {
-        out[camera_serial] = build_recording_strategy_json(recording_strategy);
+    for (const auto& [camera_serial, recording] : overrides) {
+        out[camera_serial] = recording;
     }
     return out;
 }
@@ -479,9 +479,9 @@ bool parse_experiment_recording_overrides(const nlohmann::json& fixed,
         return false;
     }
 
-    spec->has_recording_strategy_override = false;
-    spec->recording_strategy_override = RecordingStrategyConfig();
-    spec->recording_strategy_overrides_by_camera.clear();
+    spec->has_recording_override = false;
+    spec->recording_override = nlohmann::json::object();
+    spec->recording_overrides_by_camera.clear();
 
     if (fixed.contains("recording")) {
         if (!fixed["recording"].is_object()) {
@@ -490,16 +490,18 @@ bool parse_experiment_recording_overrides(const nlohmann::json& fixed,
             }
             return false;
         }
-        if (!parse_recording_strategy_json(
+        CameraRecordingConfig recording_config;
+        if (!parse_camera_recording_json(
                 fixed["recording"],
-                &spec->recording_strategy_override,
+                &recording_config,
                 error_out)) {
             if (error_out && !error_out->empty()) {
                 *error_out = "Experiment spec fixed.recording invalid: " + *error_out;
             }
             return false;
         }
-        spec->has_recording_strategy_override = true;
+        spec->recording_override = fixed["recording"];
+        spec->has_recording_override = true;
     }
 
     if (!fixed.contains("recording_by_camera")) {
@@ -527,21 +529,21 @@ bool parse_experiment_recording_overrides(const nlohmann::json& fixed,
             }
             return false;
         }
-        RecordingStrategyConfig recording_strategy;
-        if (!parse_recording_strategy_json(item.value(), &recording_strategy, error_out)) {
+        CameraRecordingConfig recording_config;
+        if (!parse_camera_recording_json(item.value(), &recording_config, error_out)) {
             if (error_out && !error_out->empty()) {
                 *error_out = "Experiment spec fixed.recording_by_camera." + item.key() +
                              " invalid: " + *error_out;
             }
             return false;
         }
-        spec->recording_strategy_overrides_by_camera[canonical_serial] = std::move(recording_strategy);
+        spec->recording_overrides_by_camera[canonical_serial] = item.value();
     }
 
     return true;
 }
 
-bool apply_recording_strategy_overrides_to_selected_cameras(
+bool apply_recording_overrides_to_selected_cameras(
     const HeadlessCliOptions& options,
     CameraParams* cameras_params,
     const std::vector<int>& selected_inventory_indices,
@@ -563,17 +565,31 @@ bool apply_recording_strategy_overrides_to_selected_cameras(
         const std::string camera_serial = canonicalize_headless_camera_serial(camera_params.camera_serial);
 
         bool applied_override = false;
-        if (options.has_recording_strategy_override) {
-            camera_params.recording.strategy = options.recording_strategy_override;
+        nlohmann::json effective_recording_json =
+            build_camera_recording_json(camera_params.recording);
+        if (options.has_recording_override) {
+            effective_recording_json.merge_patch(options.recording_override);
             applied_override = true;
         }
 
         const auto per_camera_it =
-            options.recording_strategy_overrides_by_camera.find(camera_serial);
-        if (per_camera_it != options.recording_strategy_overrides_by_camera.end()) {
-            camera_params.recording.strategy = per_camera_it->second;
+            options.recording_overrides_by_camera.find(camera_serial);
+        if (per_camera_it != options.recording_overrides_by_camera.end()) {
+            effective_recording_json.merge_patch(per_camera_it->second);
             applied_override = true;
             applied_per_camera_overrides.insert(camera_serial);
+        }
+
+        if (applied_override) {
+            CameraRecordingConfig merged_recording;
+            if (!parse_camera_recording_json(effective_recording_json, &merged_recording, error_out)) {
+                if (error_out && !error_out->empty()) {
+                    *error_out = "Failed to apply recording override for camera " +
+                                 camera_serial + ": " + *error_out;
+                }
+                return false;
+            }
+            camera_params.recording = std::move(merged_recording);
         }
 
         if (applied_override) {
@@ -584,7 +600,7 @@ bool apply_recording_strategy_overrides_to_selected_cameras(
         }
     }
 
-    for (const auto& [camera_serial, _] : options.recording_strategy_overrides_by_camera) {
+    for (const auto& [camera_serial, _] : options.recording_overrides_by_camera) {
         if (applied_per_camera_overrides.count(camera_serial) == 0) {
             if (error_out) {
                 *error_out =
@@ -3516,12 +3532,12 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.required_gpu_ids = spec.gpu_ids;
                                                             run.options.encoder_settings = spec.selection;
                                                             run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
-                                                            run.options.has_recording_strategy_override =
-                                                                spec.has_recording_strategy_override;
-                                                            run.options.recording_strategy_override =
-                                                                spec.recording_strategy_override;
-                                                            run.options.recording_strategy_overrides_by_camera =
-                                                                spec.recording_strategy_overrides_by_camera;
+                                                            run.options.has_recording_override =
+                                                                spec.has_recording_override;
+                                                            run.options.recording_override =
+                                                                spec.recording_override;
+                                                            run.options.recording_overrides_by_camera =
+                                                                spec.recording_overrides_by_camera;
                                                             if (run.options.pre_encoder_reference_capture.enabled &&
                                                                 !run.options.pre_encoder_reference_capture.output_dir.empty()) {
                                                                 const std::filesystem::path configured_output_dir(
@@ -3584,15 +3600,14 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                  build_pre_encoder_reference_capture_json(
                                                                      run.options.pre_encoder_reference_capture)},
                                                             };
-                                                            if (spec.has_recording_strategy_override) {
+                                                            if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
-                                                                    build_recording_strategy_json(
-                                                                        spec.recording_strategy_override);
+                                                                    spec.recording_override;
                                                             }
-                                                            if (!spec.recording_strategy_overrides_by_camera.empty()) {
+                                                            if (!spec.recording_overrides_by_camera.empty()) {
                                                                 run.config_json["recording_by_camera"] =
-                                                                    build_recording_strategy_override_map_json(
-                                                                        spec.recording_strategy_overrides_by_camera);
+                                                                    build_recording_override_map_json(
+                                                                        spec.recording_overrides_by_camera);
                                                             }
                                                             runs.push_back(std::move(run));
                                                             }
@@ -3676,7 +3691,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     }
 
     std::string recording_override_error;
-    if (!apply_recording_strategy_overrides_to_selected_cameras(
+    if (!apply_recording_overrides_to_selected_cameras(
             options,
             cameras_params.get(),
             selected_inventory_indices,

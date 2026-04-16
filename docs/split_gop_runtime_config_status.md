@@ -155,9 +155,9 @@ camera-level alias:
 - GUI pipeline construction
 - headless pipeline construction
 
-Headless experiment specs still express overrides as `RecordingStrategyConfig`
-JSON, but those overrides now land in `camera_params.recording.strategy` and
-then flow through the resolver.
+Headless experiment specs can now express broader schema-3 `recording` JSON
+overrides. Those overrides are validated up front, merged onto each selected
+camera's persisted `recording` block, and then flow through the resolver.
 
 GUI and headless callsites now build one explicit runtime-override object before
 calling the resolver, rather than passing a long list of loose encode/output

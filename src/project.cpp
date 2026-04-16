@@ -657,6 +657,89 @@ bool parse_recording_strategy_json_object(const nlohmann::json& recording,
     return true;
 }
 
+bool parse_camera_recording_json_impl(const nlohmann::json& recording_json,
+                                      CameraRecordingConfig* recording_out,
+                                      std::string* error_out) {
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!recording_out) {
+        if (error_out) {
+            *error_out = "Internal error: null camera recording config destination";
+        }
+        return false;
+    }
+    if (!recording_json.is_object()) {
+        if (error_out) {
+            *error_out = "Recording config must be a JSON object";
+        }
+        return false;
+    }
+
+    CameraRecordingConfig recording;
+    recording.profile_name = recording_json.value("profile_name", recording.profile_name);
+
+    if (recording_json.contains("encode") && recording_json["encode"].is_object()) {
+        const nlohmann::json& encode = recording_json["encode"];
+        recording.encode.codec =
+            lower_ascii_copy(encode.value("codec", recording.encode.codec));
+        recording.encode.preset =
+            lower_ascii_copy(encode.value("preset", recording.encode.preset));
+        recording.encode.tuning =
+            lower_ascii_copy(encode.value("tuning", recording.encode.tuning));
+        recording.encode.rate_control_mode = lower_ascii_copy(
+            encode.value("rate_control_mode", recording.encode.rate_control_mode));
+        recording.encode.quality_value =
+            encode.value("quality_value", recording.encode.quality_value);
+        recording.encode.gop_length =
+            encode.value("gop_length", recording.encode.gop_length);
+        recording.encode.nvenc_direct_input =
+            encode.value("nvenc_direct_input", recording.encode.nvenc_direct_input);
+    }
+
+    if (recording_json.contains("output") && recording_json["output"].is_object()) {
+        const nlohmann::json& output = recording_json["output"];
+        recording.output.mode =
+            normalize_recording_output_mode_string(
+                output.value("mode", recording.output.mode));
+        recording.output.downsample_factor =
+            output.value("downsample_factor", recording.output.downsample_factor);
+        recording.output.requested_width =
+            output.value("requested_width", recording.output.requested_width);
+        recording.output.requested_height =
+            output.value("requested_height", recording.output.requested_height);
+    }
+
+    if (recording_json.contains("constraints") && recording_json["constraints"].is_object()) {
+        const nlohmann::json& constraints = recording_json["constraints"];
+        recording.constraints.require_peer_access =
+            constraints.value("require_peer_access", recording.constraints.require_peer_access);
+        recording.constraints.preferred_topology_class =
+            normalize_preferred_topology_class_string(constraints.value(
+                "preferred_topology_class",
+                recording.constraints.preferred_topology_class));
+    }
+
+    if (recording_json.contains("resources") && recording_json["resources"].is_object()) {
+        const nlohmann::json& resources = recording_json["resources"];
+        try_get_nonnegative_int(
+            resources, "acquire_work_entries",
+            &recording.resources.acquire_work_entries);
+        try_get_nonnegative_int(
+            resources, "encoder_entry_pool_size",
+            &recording.resources.encoder_entry_pool_size);
+    }
+
+    RecordingStrategyConfig parsed_strategy;
+    if (parse_recording_strategy_json_object(recording_json, &parsed_strategy, nullptr)) {
+        recording.strategy = std::move(parsed_strategy);
+    }
+
+    normalize_camera_recording_config(&recording);
+    *recording_out = std::move(recording);
+    return true;
+}
+
 void parse_recording_config_from_json(const nlohmann::json& camera_config,
                                       CameraParams* camera_params) {
     if (!camera_params) {
@@ -668,67 +751,10 @@ void parse_recording_config_from_json(const nlohmann::json& camera_config,
         return;
     }
 
-    const nlohmann::json& recording = camera_config["recording"];
-    camera_params->recording.profile_name =
-        recording.value("profile_name", camera_params->recording.profile_name);
-
-    if (recording.contains("encode") && recording["encode"].is_object()) {
-        const nlohmann::json& encode = recording["encode"];
-        camera_params->recording.encode.codec =
-            lower_ascii_copy(encode.value("codec", camera_params->recording.encode.codec));
-        camera_params->recording.encode.preset =
-            lower_ascii_copy(encode.value("preset", camera_params->recording.encode.preset));
-        camera_params->recording.encode.tuning =
-            lower_ascii_copy(encode.value("tuning", camera_params->recording.encode.tuning));
-        camera_params->recording.encode.rate_control_mode = lower_ascii_copy(
-            encode.value("rate_control_mode", camera_params->recording.encode.rate_control_mode));
-        camera_params->recording.encode.quality_value =
-            encode.value("quality_value", camera_params->recording.encode.quality_value);
-        camera_params->recording.encode.gop_length =
-            encode.value("gop_length", camera_params->recording.encode.gop_length);
-        camera_params->recording.encode.nvenc_direct_input =
-            encode.value("nvenc_direct_input", camera_params->recording.encode.nvenc_direct_input);
+    CameraRecordingConfig recording;
+    if (parse_camera_recording_json_impl(camera_config["recording"], &recording, nullptr)) {
+        camera_params->recording = std::move(recording);
     }
-
-    if (recording.contains("output") && recording["output"].is_object()) {
-        const nlohmann::json& output = recording["output"];
-        camera_params->recording.output.mode =
-            normalize_recording_output_mode_string(
-                output.value("mode", camera_params->recording.output.mode));
-        camera_params->recording.output.downsample_factor =
-            output.value("downsample_factor", camera_params->recording.output.downsample_factor);
-        camera_params->recording.output.requested_width =
-            output.value("requested_width", camera_params->recording.output.requested_width);
-        camera_params->recording.output.requested_height =
-            output.value("requested_height", camera_params->recording.output.requested_height);
-    }
-
-    if (recording.contains("constraints") && recording["constraints"].is_object()) {
-        const nlohmann::json& constraints = recording["constraints"];
-        camera_params->recording.constraints.require_peer_access =
-            constraints.value("require_peer_access", camera_params->recording.constraints.require_peer_access);
-        camera_params->recording.constraints.preferred_topology_class =
-            normalize_preferred_topology_class_string(constraints.value(
-                "preferred_topology_class",
-                camera_params->recording.constraints.preferred_topology_class));
-    }
-
-    if (recording.contains("resources") && recording["resources"].is_object()) {
-        const nlohmann::json& resources = recording["resources"];
-        try_get_nonnegative_int(
-            resources, "acquire_work_entries",
-            &camera_params->recording.resources.acquire_work_entries);
-        try_get_nonnegative_int(
-            resources, "encoder_entry_pool_size",
-            &camera_params->recording.resources.encoder_entry_pool_size);
-    }
-
-    RecordingStrategyConfig parsed_strategy;
-    if (parse_recording_strategy_json_object(recording, &parsed_strategy, nullptr)) {
-        camera_params->recording.strategy = std::move(parsed_strategy);
-    }
-
-    normalize_camera_recording_config(&camera_params->recording);
 }
 
 nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfig& recording_strategy_in) {
@@ -754,9 +780,9 @@ nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfi
     return recording;
 }
 
-nlohmann::json build_recording_config_json_from_params(const CameraParams& camera_params)
+nlohmann::json build_camera_recording_json_impl(const CameraRecordingConfig& recording_in)
 {
-    CameraRecordingConfig recording = camera_params.recording;
+    CameraRecordingConfig recording = recording_in;
     normalize_camera_recording_config(&recording);
 
     nlohmann::json recording_json = build_recording_strategy_json_object(recording.strategy);
@@ -785,6 +811,11 @@ nlohmann::json build_recording_config_json_from_params(const CameraParams& camer
         {"encoder_entry_pool_size", recording.resources.encoder_entry_pool_size}
     };
     return recording_json;
+}
+
+nlohmann::json build_recording_config_json_from_params(const CameraParams& camera_params)
+{
+    return build_camera_recording_json_impl(camera_params.recording);
 }
 
 std::string canonicalize_gpio_recipe_string(std::string value) {
@@ -1268,6 +1299,16 @@ bool parse_recording_strategy_json(const nlohmann::json& recording_json,
 
 nlohmann::json build_recording_strategy_json(const RecordingStrategyConfig& recording_strategy) {
     return build_recording_strategy_json_object(recording_strategy);
+}
+
+bool parse_camera_recording_json(const nlohmann::json& recording_json,
+                                 CameraRecordingConfig* recording_out,
+                                 std::string* error_out) {
+    return parse_camera_recording_json_impl(recording_json, recording_out, error_out);
+}
+
+nlohmann::json build_camera_recording_json(const CameraRecordingConfig& recording) {
+    return build_camera_recording_json_impl(recording);
 }
 
 RecordingOutputConfig resolve_effective_recording_output_config(
