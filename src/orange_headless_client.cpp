@@ -1778,11 +1778,13 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
         return false;
     }
 
-    orange::ScopedFsuid fsuid_guard;
-    (void)fsuid_guard;
     const std::filesystem::path recording_path(record_folder);
     std::error_code create_error;
-    std::filesystem::create_directories(recording_path, create_error);
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::filesystem::create_directories(recording_path, create_error);
+    }
     if (create_error && !std::filesystem::exists(recording_path)) {
         std::cerr << "Failed to create recording folder " << record_folder
                   << ": " << create_error.message() << std::endl;
