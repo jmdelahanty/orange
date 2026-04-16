@@ -11,7 +11,7 @@
     "display": false,
     "yolo": false,
     "sync_mode": "free_run",
-    "config_folder": "/home/jeremy/orange-jeremy/config/validated_split_gop_hevc_100fps_gop25",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25",
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "nvenc_direct_input": false,
     "recording": {
