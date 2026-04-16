@@ -15,6 +15,24 @@
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "nvenc_direct_input": false,
     "recording": {
+      "profile_name": "validated_split_gop_hevc_100fps_gop25",
+      "encode": {
+        "nvenc_direct_input": false
+      },
+      "output": {
+        "mode": "factor",
+        "downsample_factor": 1,
+        "requested_width": 4512,
+        "requested_height": 4512
+      },
+      "constraints": {
+        "require_peer_access": true,
+        "preferred_topology_class": "PIX"
+      },
+      "resources": {
+        "acquire_work_entries": 64,
+        "encoder_entry_pool_size": 32
+      },
       "mode": "split_gop",
       "split_gop": {
         "placement": "multi_gpu",
