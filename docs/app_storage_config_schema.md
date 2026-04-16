@@ -196,9 +196,13 @@ The effective recording base folder should resolve in this order:
 3. legacy fallback:
    - `~/orange_data/exp/unsorted`
 
-For the first implementation, it is acceptable to apply this precedence only to
-the GUI default recording root, while leaving headless CLI and experiment-spec
-flows explicit and unchanged.
+Current implementation status:
+
+- `storage.default_recording_root` is used for the GUI default recording root
+- headless CLI and experiment-spec flows still choose their recording folders
+  explicitly
+- `storage.latest_recording.*` now controls the local, canonical, and `/run`
+  pointer writes emitted by the recording snapshot path
 
 The pointer outputs should then use the resolved base folder plus the configured
 metadata roots.

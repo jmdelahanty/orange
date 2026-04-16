@@ -26,10 +26,15 @@ struct AppStorageConfig {
     std::string schema_id;
     int schema_version = 0;
     std::string default_recording_root;
+    bool write_local_pointer = true;
+    std::string canonical_pointer_root;
+    bool write_run_pointer = true;
+    std::string run_pointer_path;
 };
 
 // Function Declarations
 void prepare_application_folders(std::string orange_root_dir_str);
+std::string build_default_orange_root_dir(std::string* warning_out = nullptr);
 std::string build_default_app_config_path(const std::string& orange_root_dir_str);
 bool load_app_storage_config(const std::string& orange_root_dir_str,
                              AppStorageConfig* config_out,

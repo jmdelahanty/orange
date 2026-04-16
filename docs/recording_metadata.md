@@ -20,6 +20,12 @@ The producer writes pointer files at recording start:
 <base_folder>/.orange/latest_recording.json
 ```
 
+and a canonical user-data pointer:
+
+```
+<canonical_pointer_root>/latest_recording.json
+```
+
 and a global pointer:
 
 ```
@@ -30,11 +36,15 @@ and a global pointer:
 output path, e.g. `encoder_config->folder_name` or `input_folder`). If the user
 changes the save folder in the UI, the pointer file location changes with it.
 
+`<canonical_pointer_root>` is configured by app storage config and currently
+defaults to `~/orange_data/.orange`.
+
 The pointer file references the full snapshot file path for that recording.
 The global pointer is written by the producer process (runs as root) and is
 readable by all users. `/run` is tmpfs, so it resets on reboot.
-Both pointer files are written atomically (temp file + rename) after the snapshot
-file is successfully written, so consumers should never see partial JSON.
+The local, canonical, and global pointers are written atomically (temp file +
+rename) after the snapshot file is successfully written, so consumers should
+never see partial JSON.
 
 ## Pointer file schema
 

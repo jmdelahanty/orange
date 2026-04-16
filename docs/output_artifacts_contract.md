@@ -40,6 +40,7 @@ Default configured base path in runtime:
 | Snapshot JSON | `<recording_folder>/recording_snapshot.json` | Required | Recording started |
 | PTP sync summary | `<recording_folder>/ptp_sync_summary.json` | Required | Recording started |
 | Latest pointer (local) | `<base_folder>/.orange/latest_recording.json` | Required | Recording started |
+| Latest pointer (canonical) | `<canonical_pointer_root>/latest_recording.json` | Required when configured | Recording started |
 | Latest pointer (shared) | `/run/orange/latest_recording.json` | Required (best-effort write) | Recording started |
 | Main video | `<recording_folder>/Cam<serial>.mp4` | Typical | Per-camera HW encoding active |
 | Main metadata CSV | `<recording_folder>/Cam<serial>_meta.csv` | Typical | Per-camera HW encoding active |
@@ -65,6 +66,7 @@ handoff fields are underspecified at present).
 
 Written to both:
 - `<base_folder>/.orange/latest_recording.json`
+- `<canonical_pointer_root>/latest_recording.json` when configured
 - `/run/orange/latest_recording.json`
 
 Current emitted shape:
@@ -80,6 +82,7 @@ Current emitted shape:
 
 Notes:
 - Writes are atomic (`.tmp` + rename).
+- `<canonical_pointer_root>` currently defaults to `~/orange_data/.orange`.
 - `/run/orange/latest_recording.json` is chmod `0644`.
 
 ### Recording Snapshot JSON

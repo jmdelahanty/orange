@@ -2,6 +2,7 @@
 #include "project.h"
 #include "fsuid_guard.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
+#include <pwd.h>
 #include <sys/stat.h>    // For mkdir
 #include <iostream>
 #include <fstream>       // For std::ifstream
@@ -36,12 +37,78 @@ std::string default_recording_root_for_orange_root(const std::string& orange_roo
     return (std::filesystem::path(orange_root_dir_str) / "exp" / "unsorted").string();
 }
 
+std::string default_canonical_pointer_root_for_orange_root(const std::string& orange_root_dir_str)
+{
+    return (std::filesystem::path(orange_root_dir_str) / ".orange").string();
+}
+
+std::string default_run_pointer_path()
+{
+    return "/run/orange/latest_recording.json";
+}
+
+std::string trim_ascii_copy(std::string value)
+{
+    value.erase(
+        value.begin(),
+        std::find_if(value.begin(), value.end(), [](unsigned char c) {
+            return !std::isspace(c);
+        }));
+    value.erase(
+        std::find_if(value.rbegin(), value.rend(), [](unsigned char c) {
+            return !std::isspace(c);
+        }).base(),
+        value.end());
+    return value;
+}
+
 bool app_config_schema_version_supported(int schema_version)
 {
     return schema_version == kAppConfigSchemaVersion;
 }
 
 } // namespace
+
+std::string build_default_orange_root_dir(std::string* warning_out)
+{
+    if (warning_out) {
+        warning_out->clear();
+    }
+
+    auto build_for_home = [](const std::string& home_dir) -> std::string {
+        if (home_dir.empty()) {
+            return std::string();
+        }
+        return (std::filesystem::path(home_dir) / "orange_data").string();
+    };
+
+    const char* sudo_user = std::getenv("SUDO_USER");
+    if (sudo_user && sudo_user[0] != '\0') {
+        if (passwd* pw = getpwnam(sudo_user)) {
+            if (pw->pw_dir && pw->pw_dir[0] != '\0') {
+                return build_for_home(pw->pw_dir);
+            }
+        } else if (warning_out) {
+            *warning_out = std::string("Failed to resolve SUDO_USER home for `") + sudo_user + "`";
+        }
+    }
+
+    const char* home = std::getenv("HOME");
+    if (home && home[0] != '\0') {
+        return build_for_home(home);
+    }
+
+    if (passwd* pw = getpwuid(getuid())) {
+        if (pw->pw_dir && pw->pw_dir[0] != '\0') {
+            return build_for_home(pw->pw_dir);
+        }
+    }
+
+    if (warning_out) {
+        *warning_out = "Failed to resolve Orange data root from runtime environment";
+    }
+    return std::string();
+}
 
 std::string build_default_app_config_path(const std::string& orange_root_dir_str)
 {
@@ -66,6 +133,10 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.schema_id = kAppConfigSchemaId;
     config.schema_version = kAppConfigSchemaVersion;
     config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir_str);
+    config.write_local_pointer = true;
+    config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
+    config.write_run_pointer = true;
+    config.run_pointer_path = default_run_pointer_path();
 
     const std::filesystem::path config_path(build_default_app_config_path(orange_root_dir_str));
     if (!std::filesystem::exists(config_path)) {
@@ -128,19 +199,64 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 }
                 return false;
             }
-            std::string configured_root = storage["default_recording_root"].get<std::string>();
-            configured_root.erase(
-                configured_root.begin(),
-                std::find_if(configured_root.begin(), configured_root.end(), [](unsigned char c) {
-                    return !std::isspace(c);
-                }));
-            configured_root.erase(
-                std::find_if(configured_root.rbegin(), configured_root.rend(), [](unsigned char c) {
-                    return !std::isspace(c);
-                }).base(),
-                configured_root.end());
+            std::string configured_root = trim_ascii_copy(storage["default_recording_root"].get<std::string>());
             if (!configured_root.empty()) {
                 config.default_recording_root = configured_root;
+            }
+        }
+        if (storage.contains("latest_recording")) {
+            if (!storage["latest_recording"].is_object()) {
+                if (error_out) {
+                    *error_out = "storage.latest_recording must be an object in " + config_path.string();
+                }
+                return false;
+            }
+
+            const nlohmann::json& latest = storage["latest_recording"];
+            if (latest.contains("write_local_pointer")) {
+                if (!latest["write_local_pointer"].is_boolean()) {
+                    if (error_out) {
+                        *error_out =
+                            "storage.latest_recording.write_local_pointer must be a boolean in " +
+                            config_path.string();
+                    }
+                    return false;
+                }
+                config.write_local_pointer = latest["write_local_pointer"].get<bool>();
+            }
+            if (latest.contains("canonical_pointer_root")) {
+                if (!latest["canonical_pointer_root"].is_string()) {
+                    if (error_out) {
+                        *error_out =
+                            "storage.latest_recording.canonical_pointer_root must be a string in " +
+                            config_path.string();
+                    }
+                    return false;
+                }
+                config.canonical_pointer_root =
+                    trim_ascii_copy(latest["canonical_pointer_root"].get<std::string>());
+            }
+            if (latest.contains("write_run_pointer")) {
+                if (!latest["write_run_pointer"].is_boolean()) {
+                    if (error_out) {
+                        *error_out =
+                            "storage.latest_recording.write_run_pointer must be a boolean in " +
+                            config_path.string();
+                    }
+                    return false;
+                }
+                config.write_run_pointer = latest["write_run_pointer"].get<bool>();
+            }
+            if (latest.contains("run_pointer_path")) {
+                if (!latest["run_pointer_path"].is_string()) {
+                    if (error_out) {
+                        *error_out =
+                            "storage.latest_recording.run_pointer_path must be a string in " +
+                            config_path.string();
+                    }
+                    return false;
+                }
+                config.run_pointer_path = trim_ascii_copy(latest["run_pointer_path"].get<std::string>());
             }
         }
     }
@@ -1991,8 +2107,38 @@ bool write_latest_recording_pointer(const std::string& base_folder,
     pointer["snapshot_path"] = (std::filesystem::path(recording_folder) / "recording_snapshot.json").string();
 
     bool wrote_any = false;
+    bool attempted_any = false;
+    AppStorageConfig app_storage_config;
+    {
+        std::string orange_root_warning;
+        const std::string orange_root_dir = build_default_orange_root_dir(&orange_root_warning);
+        if (!orange_root_dir.empty()) {
+            std::string app_storage_error;
+            if (!load_app_storage_config(orange_root_dir, &app_storage_config, &app_storage_error)) {
+                std::cerr << "App storage config warning: " << app_storage_error << std::endl;
+                app_storage_config.schema_id = kAppConfigSchemaId;
+                app_storage_config.schema_version = kAppConfigSchemaVersion;
+                app_storage_config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir);
+                app_storage_config.write_local_pointer = true;
+                app_storage_config.canonical_pointer_root =
+                    default_canonical_pointer_root_for_orange_root(orange_root_dir);
+                app_storage_config.write_run_pointer = true;
+                app_storage_config.run_pointer_path = default_run_pointer_path();
+            }
+        } else {
+            if (!orange_root_warning.empty()) {
+                std::cerr << "App storage config warning: " << orange_root_warning << std::endl;
+            }
+            app_storage_config.schema_id = kAppConfigSchemaId;
+            app_storage_config.schema_version = kAppConfigSchemaVersion;
+            app_storage_config.write_local_pointer = true;
+            app_storage_config.write_run_pointer = true;
+            app_storage_config.run_pointer_path = default_run_pointer_path();
+        }
+    }
 
-    if (!base_folder.empty()) {
+    if (app_storage_config.write_local_pointer && !base_folder.empty()) {
+        attempted_any = true;
         std::filesystem::path meta_dir = std::filesystem::path(base_folder) / ".orange";
         std::filesystem::path pointer_path = meta_dir / "latest_recording.json";
 
@@ -2016,9 +2162,41 @@ bool write_latest_recording_pointer(const std::string& base_folder,
         }
     }
 
-    {
-        std::filesystem::path run_dir = "/run/orange";
-        std::filesystem::path run_pointer = run_dir / "latest_recording.json";
+    if (!app_storage_config.canonical_pointer_root.empty()) {
+        attempted_any = true;
+        std::filesystem::path canonical_root = app_storage_config.canonical_pointer_root;
+        std::filesystem::path pointer_path = canonical_root / "latest_recording.json";
+
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+
+            std::error_code ec;
+            std::filesystem::create_directories(canonical_root, ec);
+            if (ec) {
+                std::cerr << "Error creating canonical metadata folder: " << canonical_root.string()
+                          << " (" << ec.message() << ")" << std::endl;
+            } else {
+                if (!write_json_atomic(pointer_path, pointer, std::filesystem::perms::unknown, false,
+                                       "canonical latest recording pointer")) {
+                    std::cerr << "Failed to write canonical latest recording pointer: "
+                              << pointer_path.string() << std::endl;
+                } else {
+                    wrote_any = true;
+                }
+            }
+        }
+    }
+
+    if (app_storage_config.write_run_pointer && !app_storage_config.run_pointer_path.empty()) {
+        std::filesystem::path run_pointer = app_storage_config.run_pointer_path;
+        std::filesystem::path run_dir = run_pointer.parent_path();
+        attempted_any = true;
+        if (run_dir.empty()) {
+            std::cerr << "Invalid run metadata pointer path (missing parent directory): "
+                      << run_pointer.string() << std::endl;
+            return wrote_any || !attempted_any;
+        }
         std::error_code ec;
         std::filesystem::create_directories(run_dir, ec);
         if (ec) {
@@ -2049,7 +2227,7 @@ bool write_latest_recording_pointer(const std::string& base_folder,
         }
     }
 
-    return wrote_any;
+    return wrote_any || !attempted_any;
 }
 } // namespace
 
