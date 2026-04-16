@@ -2311,7 +2311,11 @@ int main(int argc, char **args) {
     std::vector<std::string> tokenized_path = string_split(cwd, delimiter);
     std::string orange_root_dir_str = "/home/" + tokenized_path[2] + "/orange_data";
     prepare_application_folders(orange_root_dir_str);
-    std::string input_folder = orange_root_dir_str + "/exp/unsorted";
+    std::string app_storage_warning;
+    std::string input_folder = resolve_default_recording_root(orange_root_dir_str, &app_storage_warning);
+    if (!app_storage_warning.empty()) {
+        std::cerr << "App storage config warning: " << app_storage_warning << std::endl;
+    }
 
     std::string yolo_model_folder = orange_root_dir_str + "/detect";
     std::string yolo_model = yolo_model_folder + "/fish_jinyao.engine";

@@ -26,6 +26,148 @@
 
 // --- Definitions of all functions previously in project.h ---
 
+namespace {
+
+constexpr const char* kAppConfigSchemaId = "orange.app.config";
+constexpr int kAppConfigSchemaVersion = 1;
+
+std::string default_recording_root_for_orange_root(const std::string& orange_root_dir_str)
+{
+    return (std::filesystem::path(orange_root_dir_str) / "exp" / "unsorted").string();
+}
+
+bool app_config_schema_version_supported(int schema_version)
+{
+    return schema_version == kAppConfigSchemaVersion;
+}
+
+} // namespace
+
+std::string build_default_app_config_path(const std::string& orange_root_dir_str)
+{
+    return (std::filesystem::path(orange_root_dir_str) / "config" / "app" / "default.json").string();
+}
+
+bool load_app_storage_config(const std::string& orange_root_dir_str,
+                             AppStorageConfig* config_out,
+                             std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!config_out) {
+        if (error_out) {
+            *error_out = "Internal error: null app storage config destination";
+        }
+        return false;
+    }
+
+    AppStorageConfig config;
+    config.schema_id = kAppConfigSchemaId;
+    config.schema_version = kAppConfigSchemaVersion;
+    config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir_str);
+
+    const std::filesystem::path config_path(build_default_app_config_path(orange_root_dir_str));
+    if (!std::filesystem::exists(config_path)) {
+        *config_out = std::move(config);
+        return true;
+    }
+
+    std::ifstream input(config_path);
+    if (!input.is_open()) {
+        if (error_out) {
+            *error_out = "Failed to open app config: " + config_path.string();
+        }
+        return false;
+    }
+
+    nlohmann::json root;
+    try {
+        input >> root;
+    } catch (const std::exception& ex) {
+        if (error_out) {
+            *error_out = "Failed to parse app config " + config_path.string() + ": " + ex.what();
+        }
+        return false;
+    }
+
+    if (!root.is_object()) {
+        if (error_out) {
+            *error_out = "App config root must be a JSON object: " + config_path.string();
+        }
+        return false;
+    }
+
+    const std::string schema_id = root.value("schema_id", std::string());
+    const int schema_version = root.value("schema_version", 0);
+    if (!schema_id.empty() && schema_id != kAppConfigSchemaId) {
+        if (error_out) {
+            *error_out = "App config schema_id mismatch for " + config_path.string() +
+                         ": " + schema_id + " (expected " + kAppConfigSchemaId + ")";
+        }
+        return false;
+    }
+    if (schema_version > 0 && !app_config_schema_version_supported(schema_version)) {
+        if (error_out) {
+            *error_out = "App config schema_version mismatch for " + config_path.string() +
+                         ": " + std::to_string(schema_version) +
+                         " (expected " + std::to_string(kAppConfigSchemaVersion) + ")";
+        }
+        return false;
+    }
+
+    config.schema_id = schema_id.empty() ? kAppConfigSchemaId : schema_id;
+    config.schema_version = (schema_version <= 0) ? kAppConfigSchemaVersion : schema_version;
+
+    if (root.contains("storage") && root["storage"].is_object()) {
+        const nlohmann::json& storage = root["storage"];
+        if (storage.contains("default_recording_root")) {
+            if (!storage["default_recording_root"].is_string()) {
+                if (error_out) {
+                    *error_out = "storage.default_recording_root must be a string in " + config_path.string();
+                }
+                return false;
+            }
+            std::string configured_root = storage["default_recording_root"].get<std::string>();
+            configured_root.erase(
+                configured_root.begin(),
+                std::find_if(configured_root.begin(), configured_root.end(), [](unsigned char c) {
+                    return !std::isspace(c);
+                }));
+            configured_root.erase(
+                std::find_if(configured_root.rbegin(), configured_root.rend(), [](unsigned char c) {
+                    return !std::isspace(c);
+                }).base(),
+                configured_root.end());
+            if (!configured_root.empty()) {
+                config.default_recording_root = configured_root;
+            }
+        }
+    }
+
+    *config_out = std::move(config);
+    return true;
+}
+
+std::string resolve_default_recording_root(const std::string& orange_root_dir_str,
+                                           std::string* warning_out)
+{
+    if (warning_out) {
+        warning_out->clear();
+    }
+
+    AppStorageConfig config;
+    std::string error;
+    if (!load_app_storage_config(orange_root_dir_str, &config, &error)) {
+        if (warning_out) {
+            *warning_out = error;
+        }
+        return default_recording_root_for_orange_root(orange_root_dir_str);
+    }
+
+    return config.default_recording_root;
+}
+
 void prepare_application_folders(std::string orange_root_dir_str)
 {
     orange::ScopedFsuid fsuid_guard;
@@ -60,6 +202,14 @@ void prepare_application_folders(std::string orange_root_dir_str)
     if (!std::filesystem::exists(config_network_path)) {
         if(std::filesystem::create_directory(config_network_path)) {
             std::cout << "Create config/network folder..." << std::endl;
+        }
+    }
+
+    std::string config_app = orange_root_dir_str + "/config/app";
+    std::filesystem::path config_app_path(config_app);
+    if (!std::filesystem::exists(config_app_path)) {
+        if(std::filesystem::create_directories(config_app_path)) {
+            std::cout << "Create config/app folder..." << std::endl;
         }
     }
 

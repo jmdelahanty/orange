@@ -45,6 +45,26 @@ for how the latest-recording pointers relate to it.
 - `schema_id = "orange.app.config"`
 - `schema_version = 1`
 
+## Proposed File Location
+
+Preferred host-local file:
+
+- `~/orange_data/config/app/default.json`
+
+Concrete example on this machine:
+
+- `/home/jeremy/orange_data/config/app/default.json`
+
+Why this location:
+
+- it matches the existing Orange data tree under `~/orange_data`
+- it lives beside the existing `config/local` and `config/network` folders
+- it is host/user-local runtime configuration, not a repo-tracked camera artifact
+
+Missing-file behavior should remain non-fatal:
+
+- if the file is absent, Orange should continue using built-in defaults
+
 ## Proposed Shape
 
 ```json
@@ -172,6 +192,10 @@ The effective recording base folder should resolve in this order:
 3. legacy fallback:
    - `~/orange_data/exp/unsorted`
 
+For the first implementation, it is acceptable to apply this precedence only to
+the GUI default recording root, while leaving headless CLI and experiment-spec
+flows explicit and unchanged.
+
 The pointer outputs should then use the resolved base folder plus the configured
 metadata roots.
 
@@ -271,8 +295,11 @@ See:
 ## Recommended Implementation Order
 
 1. Add app-level config parsing for this schema.
-2. Use `storage.default_recording_root` where Orange currently falls back to
-   `~/orange_data/exp/unsorted`.
+2. First minimal runtime slice:
+   - create/read `~/orange_data/config/app/default.json`
+   - use `storage.default_recording_root` where the GUI currently falls back to
+     `~/orange_data/exp/unsorted`
+   - leave headless CLI/experiment paths explicit for now
 3. Keep the existing local pointer.
 4. Add canonical user-data pointer writing.
 5. Keep `/run/orange/latest_recording.json` as compatibility output.
