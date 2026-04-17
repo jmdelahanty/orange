@@ -63,6 +63,186 @@ std::string join_gpu_ids(const std::vector<int>& gpu_ids)
     return oss.str();
 }
 
+std::string current_strategy_mode(const RecordingStrategyConfig& strategy)
+{
+    if (!strategy.requested_mode.empty()) {
+        return strategy.requested_mode;
+    }
+    return strategy.mode.empty() ? "single_session" : strategy.mode;
+}
+
+void apply_strategy_mode(RecordingStrategyConfig* strategy, const std::string& mode)
+{
+    if (!strategy) {
+        return;
+    }
+    const std::string resolved_mode = (mode == "split_gop") ? "split_gop" : "single_session";
+    strategy->requested_mode = resolved_mode;
+    strategy->mode = resolved_mode;
+    strategy->split_gop.enabled = (resolved_mode == "split_gop");
+}
+
+int current_helper_gpu_id(const CameraParams& camera_params)
+{
+    const std::vector<int> helper_gpu_ids = build_recording_helper_gpu_ids(
+        camera_params.gpu_id,
+        camera_params.recording.strategy.split_gop.encoder_gpu_ids);
+    return helper_gpu_ids.empty() ? -1 : helper_gpu_ids.front();
+}
+
+void set_single_helper_gpu_id(CameraParams* camera_params, const int helper_gpu_id)
+{
+    if (!camera_params) {
+        return;
+    }
+
+    std::vector<int> encoder_gpu_ids;
+    encoder_gpu_ids.push_back(camera_params->gpu_id);
+    if (helper_gpu_id >= 0 && helper_gpu_id != camera_params->gpu_id) {
+        encoder_gpu_ids.push_back(helper_gpu_id);
+    }
+
+    camera_params->recording.strategy.split_gop.encoder_gpu_ids = std::move(encoder_gpu_ids);
+    camera_params->recording.strategy.split_gop.placement =
+        camera_params->recording.strategy.split_gop.encoder_gpu_ids.size() > 1
+            ? "multi_gpu"
+            : "single_gpu";
+}
+
+void render_advanced_recording_controls(CameraParams* cameras_params,
+                                        CameraEachSelect* cameras_select,
+                                        const int num_cameras,
+                                        const bool camera_open,
+                                        const bool streaming_active)
+{
+    ImGui::SeparatorText("Advanced Recording");
+
+    if (!camera_open || !cameras_params || !cameras_select || num_cameras <= 0) {
+        ImGui::TextDisabled("Open cameras to inspect and edit per-camera advanced recording settings.");
+        return;
+    }
+
+    ImGui::TextDisabled(
+        "These controls edit the in-memory per-camera recording config used for the next stream/record session.");
+    if (streaming_active) {
+        ImGui::TextDisabled("Advanced recording settings are locked while streaming is active.");
+    }
+
+    if (!ImGui::TreeNode("Per-camera advanced controls")) {
+        return;
+    }
+
+    ImGui::BeginDisabled(streaming_active);
+
+    static const char* const kRecordingModeValues[] = {"single_session", "split_gop"};
+    static const char* const kRecordingModeLabels[] = {"single_session", "split_gop"};
+    static const char* const kTransferModeValues[] = {"auto", "raw"};
+    static const char* const kTransferModeLabels[] = {"auto", "raw"};
+    static const char* const kSourcePolicyValues[] = {"hybrid_split", "local_only"};
+    static const char* const kSourcePolicyLabels[] = {"hybrid_split", "local_only"};
+    static const char* const kTopologyValues[] = {"", "PIX", "PXB", "PHB", "SYS"};
+    static const char* const kTopologyLabels[] = {"(none)", "PIX", "PXB", "PHB", "SYS"};
+
+    for (int i = 0; i < num_cameras; ++i) {
+        CameraParams& camera_params = cameras_params[i];
+        CameraRecordingConfig& recording = camera_params.recording;
+        RecordingStrategyConfig& strategy = recording.strategy;
+
+        std::ostringstream header;
+        header << camera_params.camera_serial << " (source GPU " << camera_params.gpu_id << ")";
+        if (cameras_select[i].record) {
+            header << " [record]";
+        }
+
+        if (!ImGui::TreeNode(header.str().c_str())) {
+            continue;
+        }
+
+        ImGui::PushID(i);
+
+        ImGui::TextDisabled("Source GPU: %d", camera_params.gpu_id);
+        ImGui::TextDisabled(
+            "Config schema: %s v%d",
+            camera_params.config_schema_id.empty() ? "(legacy)" : camera_params.config_schema_id.c_str(),
+            camera_params.config_schema_version);
+
+        std::string ui_mode = current_strategy_mode(strategy);
+        if (combo_select_string(
+                "recording mode",
+                &ui_mode,
+                kRecordingModeValues,
+                kRecordingModeLabels,
+                IM_ARRAYSIZE(kRecordingModeValues))) {
+            apply_strategy_mode(&strategy, ui_mode);
+        }
+
+        const bool split_gop_enabled = current_strategy_mode(strategy) == "split_gop";
+        ImGui::BeginDisabled(!split_gop_enabled);
+
+        int helper_gpu_id = current_helper_gpu_id(camera_params);
+        if (ImGui::InputInt("helper GPU id (-1 disables helper)", &helper_gpu_id)) {
+            set_single_helper_gpu_id(&camera_params, helper_gpu_id);
+        }
+
+        combo_select_string(
+            "transfer mode",
+            &strategy.split_gop.transfer_mode,
+            kTransferModeValues,
+            kTransferModeLabels,
+            IM_ARRAYSIZE(kTransferModeValues));
+
+        combo_select_string(
+            "source encoder policy",
+            &strategy.split_gop.source_encoder_policy,
+            kSourcePolicyValues,
+            kSourcePolicyLabels,
+            IM_ARRAYSIZE(kSourcePolicyValues));
+
+        ImGui::Checkbox("require peer access", &recording.constraints.require_peer_access);
+        combo_select_string(
+            "preferred topology",
+            &recording.constraints.preferred_topology_class,
+            kTopologyValues,
+            kTopologyLabels,
+            IM_ARRAYSIZE(kTopologyValues));
+
+        ImGui::InputInt(
+            "acquire work entries (0=default)",
+            &recording.resources.acquire_work_entries);
+        if (recording.resources.acquire_work_entries < 0) {
+            recording.resources.acquire_work_entries = 0;
+        }
+
+        ImGui::InputInt(
+            "encoder entry pool size (0=default)",
+            &recording.resources.encoder_entry_pool_size);
+        if (recording.resources.encoder_entry_pool_size < 0) {
+            recording.resources.encoder_entry_pool_size = 0;
+        }
+
+        ImGui::TextDisabled(
+            "Placement: %s | encoder GPU ids: %s",
+            strategy.split_gop.placement.c_str(),
+            join_gpu_ids(strategy.split_gop.encoder_gpu_ids).c_str());
+
+        if (strategy.split_gop.source_encoder_policy != "hybrid_split") {
+            ImGui::TextDisabled(
+                "Only hybrid_split is currently validated for the multi-GPU recording path.");
+        }
+
+        ImGui::EndDisabled();
+        if (!split_gop_enabled) {
+            ImGui::TextDisabled("Split-GOP-specific controls are disabled while recording mode is single_session.");
+        }
+
+        ImGui::PopID();
+        ImGui::TreePop();
+    }
+
+    ImGui::EndDisabled();
+    ImGui::TreePop();
+}
+
 void render_advanced_recording_validation_summary(CameraParams* cameras_params,
                                                   CameraEachSelect* cameras_select,
                                                   const int num_cameras)
@@ -123,7 +303,7 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
     }
 
     ImGui::TextDisabled(
-        "Read-only summary for record-enabled split-GOP cameras. Editing comes in a later slice.");
+        "Validation summary for record-enabled split-GOP cameras using the current in-memory per-camera settings.");
     if (invalid_camera_count == 0) {
         ImGui::TextColored(
             ImVec4(0.2f, 0.8f, 0.2f, 1.0f),
@@ -540,6 +720,12 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
         ImGui::TreePop();
     }
 
+    render_advanced_recording_controls(
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        camera_open,
+        streaming_active);
     render_advanced_recording_validation_summary(cameras_params, cameras_select, num_cameras);
 
     return actions;
