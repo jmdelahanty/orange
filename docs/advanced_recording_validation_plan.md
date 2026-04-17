@@ -334,3 +334,10 @@ For now, the GUI should be intentionally conservative:
 That will keep the first advanced-recording UI aligned with the actual
 validated runtime envelope, instead of letting the GUI assemble combinations
 that the branch does not yet schedule safely.
+
+## Follow-Up
+
+For the concrete stream-start / record-start guard sequence that should use
+these rules, see:
+
+- [recording_preflight_implementation_checklist.md](/home/jeremy/orange-gop-split-a16/docs/recording_preflight_implementation_checklist.md)
