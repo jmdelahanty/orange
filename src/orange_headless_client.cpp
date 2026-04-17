@@ -68,6 +68,7 @@ struct HeadlessCliOptions {
     std::string config_folder;
     std::string record_folder;
     std::string experiment_spec_path;
+    std::string sync_mode_override;
     int duration_seconds = 0;
     int stream_start_delay_seconds = 0;
     int record_start_delay_seconds = 0;
@@ -86,6 +87,7 @@ struct ExperimentSpec {
     std::string notes;
     std::string output_root;
     std::string config_folder;
+    std::string sync_mode = "free_run";
     int duration_s = 0;
     int warmup_s = 0;
     int stream_start_delay_s = 0;
@@ -614,6 +616,46 @@ bool apply_recording_overrides_to_selected_cameras(
     return true;
 }
 
+bool parse_headless_sync_mode_override(const std::string& value, std::string* out);
+
+bool apply_sync_mode_override_to_selected_cameras(
+    const HeadlessCliOptions& options,
+    CameraParams* cameras_params,
+    const std::vector<int>& selected_inventory_indices,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!cameras_params) {
+        if (error_out) {
+            *error_out = "Internal error: null camera params while applying sync mode override";
+        }
+        return false;
+    }
+    if (options.sync_mode_override.empty()) {
+        return true;
+    }
+
+    std::string normalized_sync_mode;
+    if (!parse_headless_sync_mode_override(options.sync_mode_override, &normalized_sync_mode)) {
+        if (error_out) {
+            *error_out = "Unsupported headless sync mode override: " + options.sync_mode_override;
+        }
+        return false;
+    }
+
+    for (int inventory_index : selected_inventory_indices) {
+        CameraParams& camera_params = cameras_params[inventory_index];
+        camera_params.sync_mode = normalized_sync_mode;
+        if (normalized_sync_mode == "ptp_gate" && camera_params.ptp_mode.empty()) {
+            camera_params.ptp_mode = "TwoStep";
+        }
+    }
+
+    return true;
+}
+
 std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
 {
     std::vector<std::string> tokens;
@@ -649,6 +691,28 @@ std::string normalize_headless_sync_mode_label(const CameraParams* camera_params
         return "ptp_gate";
     }
     return "free_run";
+}
+
+bool parse_headless_sync_mode_override(const std::string& value, std::string* out)
+{
+    if (!out) {
+        return false;
+    }
+
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (normalized.empty() || normalized == "free_run") {
+        *out = "free_run";
+        return true;
+    }
+    if (normalized == "ptp_gate") {
+        *out = "ptp_gate";
+        return true;
+    }
+    return false;
 }
 
 bool parse_headless_toggle_override(const std::string& value, int* out)
@@ -3394,10 +3458,11 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         return false;
     }
-    const std::string sync_mode = fixed.value("sync_mode", "free_run");
-    if (sync_mode != "free_run") {
+    const std::string raw_sync_mode = fixed.value("sync_mode", "free_run");
+    if (!parse_headless_sync_mode_override(raw_sync_mode, &spec->sync_mode)) {
         if (error_out) {
-            *error_out = "Local experiment runner currently only supports fixed.sync_mode=free_run";
+            *error_out =
+                "Local experiment runner currently only supports fixed.sync_mode=free_run or ptp_gate";
         }
         return false;
     }
@@ -3552,6 +3617,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.mode = HeadlessMode::Local;
                                                             run.options.config_folder = spec.config_folder;
                                                             run.options.record_folder = run.recording_folder;
+                                                            run.options.sync_mode_override = spec.sync_mode;
                                                             run.options.duration_seconds = spec.duration_s + spec.warmup_s;
                                                             run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
                                                             run.options.record_start_delay_seconds = 0;
@@ -3717,6 +3783,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
 
+    std::string sync_mode_override_error;
+    if (!apply_sync_mode_override_to_selected_cameras(
+            options,
+            cameras_params.get(),
+            selected_inventory_indices,
+            &sync_mode_override_error)) {
+        std::cerr << sync_mode_override_error << std::endl;
+        close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+        return 1;
+    }
+
     std::string recording_override_error;
     if (!apply_recording_overrides_to_selected_cameras(
             options,
@@ -3726,6 +3803,11 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         std::cerr << recording_override_error << std::endl;
         close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
         return 1;
+    }
+
+    const int selected_camera_count = static_cast<int>(selected_inventory_indices.size());
+    for (int inventory_index : selected_inventory_indices) {
+        cameras_params[inventory_index].num_cameras = selected_camera_count;
     }
 
     if (options.stream_start_delay_seconds > 0) {
