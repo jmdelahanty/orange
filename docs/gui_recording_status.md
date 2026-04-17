@@ -262,3 +262,4 @@ That remaining work includes:
 - [recording_panel_modularization_plan.md](/home/jeremy/orange-gop-split-a16/docs/recording_panel_modularization_plan.md)
 - [gui_recording_config_todo.md](/home/jeremy/orange-gop-split-a16/docs/gui_recording_config_todo.md)
 - [advanced_recording_validation_plan.md](/home/jeremy/orange-gop-split-a16/docs/advanced_recording_validation_plan.md)
+- [session_orchestration_architecture.md](/home/jeremy/orange-gop-split-a16/docs/session_orchestration_architecture.md)
