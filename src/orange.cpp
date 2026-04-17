@@ -30,6 +30,7 @@
 #include "fsuid_guard.h"
 #include "aperture_characterization.h"
 #include "camera_preview_utils.h"
+#include "gui/camera_properties_panel.h"
 #include "gui/frame_ipc_panel.h"
 #include "gui/host_ptp_panel.h"
 #include "image_canvas.h"
@@ -2489,7 +2490,12 @@ int main(int argc, char **args) {
                      local_config_select < static_cast<int>(local_config_folders.size()))
                         ? local_config_folders[local_config_select]
                         : std::string();
-                set_camera_properties(ecams, cameras_params, num_cameras, color_temps, selected_local_config_folder);
+                orange::gui::render_camera_properties_panel(
+                    ecams,
+                    cameras_params,
+                    num_cameras,
+                    color_temps,
+                    selected_local_config_folder);
 
                 if (camera_control->record_video) {
                     // ImGui::EndDisabled();
