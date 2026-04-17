@@ -212,3 +212,9 @@ This TODO does not propose:
 
 Once this UI plan is accepted, the next implementation step should be a small
 GUI patch that covers only Phase 1.
+
+See also:
+
+- [advanced_recording_validation_plan.md](/home/jeremy/orange-gop-split-a16/docs/advanced_recording_validation_plan.md)
+  for the per-camera and cross-camera validation rules that should gate future
+  split-GOP editing in the GUI.
