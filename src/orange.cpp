@@ -30,6 +30,7 @@
 #include "fsuid_guard.h"
 #include "aperture_characterization.h"
 #include "camera_preview_utils.h"
+#include "gui/frame_ipc_panel.h"
 #include "gui/host_ptp_panel.h"
 #include "image_canvas.h"
 #include "spatial_layout_ui.h"
@@ -2718,58 +2719,13 @@ int main(int argc, char **args) {
                     ImGui::TreePop();
                 }
 
-                // NEW: Add Frame IPC status section after the table
-                if (camera_control->subscribe) {
-                    bool any_frame_ipc_active = false;
-                    for (int i = 0; i < num_cameras; i++) {
-                        if (cameras_select[i].send_frame_ipc) {
-                            any_frame_ipc_active = true;
-                            break;
-                        }
-                    }
-                    
-                    if (any_frame_ipc_active) {
-                        ImGui::Separator();
-                        ImGui::Text("Frame IPC Status:");
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (cameras_select[i].send_frame_ipc) {
-                                FrameIPCManager* ipc_manager =
-                                    (i < static_cast<int>(frame_ipc_managers.size()))
-                                        ? frame_ipc_managers[i].get()
-                                        : nullptr;
-                                const std::string expected_queue_name =
-                                    "/shm_cam_" + cameras_params[i].camera_serial;
-                                if (!ipc_manager) {
-                                    const char* init_error =
-                                        (i < static_cast<int>(frame_ipc_init_errors.size()) &&
-                                         !frame_ipc_init_errors[i].empty())
-                                            ? frame_ipc_init_errors[i].c_str()
-                                            : "init did not complete";
-                                    ImGui::Text(
-                                        "  %s: %s [manager unavailable]",
-                                        cameras_params[i].camera_serial.c_str(),
-                                        expected_queue_name.c_str());
-                                    ImGui::TextDisabled("    init_error=%s", init_error);
-                                    continue;
-                                }
-
-                                ImGui::Text(
-                                    "  %s: %s",
-                                    cameras_params[i].camera_serial.c_str(),
-                                    ipc_manager->getQueueName().c_str());
-                                ImGui::TextDisabled(
-                                    "    base=%llu updates=%llu push_fail=%llu base_drop=%llu update_drop=%llu stale=%llu",
-                                    static_cast<unsigned long long>(ipc_manager->getFramesSent()),
-                                    static_cast<unsigned long long>(ipc_manager->getUpdatesSent()),
-                                    static_cast<unsigned long long>(ipc_manager->getIpcPushFailures()),
-                                    static_cast<unsigned long long>(ipc_manager->getBaseQueueDrops()),
-                                    static_cast<unsigned long long>(ipc_manager->getUpdateQueueDrops()),
-                                    static_cast<unsigned long long>(ipc_manager->getUpdateStaleDrops()));
-                            }
-                        }
-                        ImGui::TextDisabled("  Run './dummy_reader' to monitor");
-                    }
-                }
+                orange::gui::render_frame_ipc_status_panel(
+                    camera_control->subscribe,
+                    cameras_select,
+                    cameras_params,
+                    num_cameras,
+                    frame_ipc_managers,
+                    frame_ipc_init_errors);
 
                 if (camera_control->subscribe) {
                     // ImGui::EndDisabled();
