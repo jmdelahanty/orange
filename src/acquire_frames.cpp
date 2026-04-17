@@ -449,7 +449,10 @@ std::string current_recording_folder(CameraControl* camera_control) {
 }
 }
 
-static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *ecam, CameraState *camera_state){
+static inline void PTP_timestamp_checking(PTPState *ptp_state,
+                                          CameraEmergent *ecam,
+                                          CameraState *camera_state,
+                                          CameraParams *camera_params){
     NVTX_RANGE("PTP_Timestamp_Check");
     EVT_CameraExecuteCommand(&ecam->camera, "GevTimestampControlLatch");
     EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
@@ -464,6 +467,21 @@ static inline void PTP_timestamp_checking(PTPState *ptp_state, CameraEmergent *e
     }
     ptp_state->ptp_time_prev = ptp_state->ptp_time;
     ptp_state->frame_ts_prev = ptp_state->frame_ts;
+
+    const uint64_t next_frame_index = static_cast<uint64_t>(camera_state->frame_count) + 1;
+    if (next_frame_index <= 5) {
+        const int64_t latch_minus_frame_ns =
+            static_cast<int64_t>(ptp_state->ptp_time) - static_cast<int64_t>(ptp_state->frame_ts);
+        std::cout << "[PTP_FIRST_FRAMES]"
+                  << " cam=" << (camera_params ? camera_params->camera_serial : std::string("<unknown>"))
+                  << " frame=" << next_frame_index
+                  << " frame_ts_ns=" << ptp_state->frame_ts
+                  << " latched_ptp_ns=" << ptp_state->ptp_time
+                  << " latch_minus_frame_ns=" << latch_minus_frame_ns
+                  << " frame_delta_ns=" << ptp_state->frame_ts_delta
+                  << " latch_delta_ns=" << ptp_state->ptp_time_delta
+                  << std::endl;
+    }
 }
 
 void acquire_frames(
@@ -794,12 +812,12 @@ void acquire_frames(
             continue;
         }
 
-        camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
+            camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
 
-        if (camera_state.camera_return == EVT_SUCCESS) {
-            if (camera_control->sync_camera) {
-                PTP_timestamp_checking(&ptp_state, ecam, &camera_state);
-            }
+            if (camera_state.camera_return == EVT_SUCCESS) {
+                if (camera_control->sync_camera) {
+                PTP_timestamp_checking(&ptp_state, ecam, &camera_state, camera_params);
+                }
 
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);

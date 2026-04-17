@@ -87,6 +87,67 @@ std::string resolved_ptp_mode(const CameraParams* camera_params)
     return camera_params->ptp_mode.empty() ? "TwoStep" : camera_params->ptp_mode;
 }
 
+bool get_camera_enum_param_string(Emergent::CEmergentCamera* camera,
+                                  const char* name,
+                                  std::string* out_value)
+{
+    if (camera == nullptr || name == nullptr || out_value == nullptr) {
+        return false;
+    }
+
+    char buffer[256] = {};
+    unsigned long value_size = 0;
+    if (EVT_CameraGetEnumParam(camera, name, buffer, sizeof(buffer), &value_size) != EVT_SUCCESS) {
+        return false;
+    }
+    *out_value = std::string(buffer);
+    return true;
+}
+
+bool get_camera_uint32_param_value(Emergent::CEmergentCamera* camera,
+                                   const char* name,
+                                   unsigned int* out_value)
+{
+    if (camera == nullptr || name == nullptr || out_value == nullptr) {
+        return false;
+    }
+    return EVT_CameraGetUInt32Param(camera, name, out_value) == EVT_SUCCESS;
+}
+
+void log_ptp_camera_sync_readback(Emergent::CEmergentCamera* camera, const CameraParams* camera_params)
+{
+    if (camera == nullptr || camera_params == nullptr) {
+        return;
+    }
+
+    std::string trigger_selector = "<unavailable>";
+    std::string trigger_source = "<unavailable>";
+    std::string trigger_mode = "<unavailable>";
+    std::string acquisition_mode = "<unavailable>";
+    std::string ptp_mode = "<unavailable>";
+    unsigned int acquisition_frame_count = 0;
+
+    get_camera_enum_param_string(camera, "TriggerSelector", &trigger_selector);
+    get_camera_enum_param_string(camera, "TriggerSource", &trigger_source);
+    get_camera_enum_param_string(camera, "TriggerMode", &trigger_mode);
+    get_camera_enum_param_string(camera, "AcquisitionMode", &acquisition_mode);
+    get_camera_enum_param_string(camera, "PtpMode", &ptp_mode);
+    const bool has_acquisition_frame_count =
+        get_camera_uint32_param_value(camera, "AcquisitionFrameCount", &acquisition_frame_count);
+
+    std::cout << camera_params->camera_serial
+              << " [ptp_camera_sync] Readback"
+              << " trigger_selector=" << trigger_selector
+              << " trigger_source=" << trigger_source
+              << " trigger_mode=" << trigger_mode
+              << " acquisition_mode=" << acquisition_mode
+              << " acquisition_frame_count="
+              << (has_acquisition_frame_count ? std::to_string(acquisition_frame_count) : std::string("<unavailable>"))
+              << " ptp_mode=" << ptp_mode
+              << " gate_offset_ns=" << camera_params->ptp_gate_offset_ns
+              << std::endl;
+}
+
 void log_camera_gpudirect_state(const char* stage,
                                 const char* context,
                                 Emergent::CEmergentCamera* camera,
@@ -1314,6 +1375,7 @@ void ptp_camera_sync(Emergent::CEmergentCamera *camera, CameraParams *camera_par
     check_camera_errors(EVT_CameraSetUInt32Param(camera, "AcquisitionFrameCount", 1), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerMode", "On"), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "PtpMode", ptp_mode.c_str()), camera_params->camera_serial.c_str());
+    log_ptp_camera_sync_readback(camera, camera_params);
 }
 
 void ptp_sync_off(Emergent::CEmergentCamera *camera, CameraParams *camera_params)

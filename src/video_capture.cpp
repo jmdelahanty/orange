@@ -67,17 +67,31 @@ void start_ptp_sync(PTPState *ptp_state, PTPParams *ptp_params, CameraParams *ca
         }
     }
 
+    const unsigned long long base_gate_time_ns = ptp_params->ptp_global_time;
     const unsigned long long ptp_time_plus_delta_to_start =
-        ptp_params->ptp_global_time + camera_params->ptp_gate_offset_ns;
+        base_gate_time_ns + camera_params->ptp_gate_offset_ns;
     ptp_state->ptp_time_plus_delta_to_start_low = (unsigned int)(ptp_time_plus_delta_to_start & 0xFFFFFFFF);
     ptp_state->ptp_time_plus_delta_to_start_high = (unsigned int)(ptp_time_plus_delta_to_start >> 32);
     EVT_CameraSetUInt32Param(&ecam->camera, "PtpAcquisitionGateTimeHigh", ptp_state->ptp_time_plus_delta_to_start_high);
     EVT_CameraSetUInt32Param(&ecam->camera, "PtpAcquisitionGateTimeLow", ptp_state->ptp_time_plus_delta_to_start_low);
     ptp_state->ptp_time_plus_delta_to_start_uint = ptp_time_plus_delta_to_start;
-    ptp_state->ptp_time_plus_delta_to_start = ptp_params->ptp_global_time;
-    printf("PTP Gate time(ns): %llu (offset_ns=%llu)\n",
+    ptp_state->ptp_time_plus_delta_to_start = ptp_time_plus_delta_to_start;
+    unsigned int gate_time_high_readback = 0;
+    unsigned int gate_time_low_readback = 0;
+    const bool gate_high_ok =
+        EVT_CameraGetUInt32Param(&ecam->camera, "PtpAcquisitionGateTimeHigh", &gate_time_high_readback) == EVT_SUCCESS;
+    const bool gate_low_ok =
+        EVT_CameraGetUInt32Param(&ecam->camera, "PtpAcquisitionGateTimeLow", &gate_time_low_readback) == EVT_SUCCESS;
+    const unsigned long long gate_time_readback =
+        (static_cast<unsigned long long>(gate_time_high_readback) << 32) |
+        static_cast<unsigned long long>(gate_time_low_readback);
+    printf("PTP Gate programming serial=%s base_gate_ns=%llu effective_gate_ns=%llu offset_ns=%llu readback_gate_ns=%s%llu\n",
+           camera_params->camera_serial.c_str(),
+           base_gate_time_ns,
            ptp_time_plus_delta_to_start,
-           camera_params->ptp_gate_offset_ns);
+           camera_params->ptp_gate_offset_ns,
+           (gate_high_ok && gate_low_ok) ? "" : "unavailable:",
+           gate_time_readback);
 }
 
 
