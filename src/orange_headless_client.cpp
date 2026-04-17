@@ -69,6 +69,7 @@ struct HeadlessCliOptions {
     std::string record_folder;
     std::string experiment_spec_path;
     std::string sync_mode_override;
+    std::string ptp_gate_acquisition_mode_override;
     int ptp_gate_stagger_ns = 0;
     int duration_seconds = 0;
     int stream_start_delay_seconds = 0;
@@ -89,6 +90,7 @@ struct ExperimentSpec {
     std::string output_root;
     std::string config_folder;
     std::string sync_mode = "free_run";
+    std::string ptp_gate_acquisition_mode;
     int ptp_gate_stagger_ns = 0;
     int duration_s = 0;
     int warmup_s = 0;
@@ -893,6 +895,7 @@ bool apply_recording_overrides_to_selected_cameras(
 }
 
 bool parse_headless_sync_mode_override(const std::string& value, std::string* out);
+bool parse_headless_ptp_gate_acquisition_mode_override(const std::string& value, std::string* out);
 
 bool apply_sync_mode_override_to_selected_cameras(
     const HeadlessCliOptions& options,
@@ -971,6 +974,47 @@ bool apply_ptp_gate_stagger_to_selected_cameras(
     return true;
 }
 
+bool apply_ptp_gate_acquisition_mode_to_selected_cameras(
+    const HeadlessCliOptions& options,
+    CameraParams* cameras_params,
+    const std::vector<int>& selected_inventory_indices,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!cameras_params) {
+        if (error_out) {
+            *error_out = "Internal error: null camera params while applying PTP gate acquisition mode";
+        }
+        return false;
+    }
+
+    std::string normalized_mode = "multiframe";
+    if (!options.ptp_gate_acquisition_mode_override.empty()) {
+        if (!parse_headless_ptp_gate_acquisition_mode_override(
+                options.ptp_gate_acquisition_mode_override, &normalized_mode)) {
+            if (error_out) {
+                *error_out =
+                    "Unsupported PTP gate acquisition mode override: " +
+                    options.ptp_gate_acquisition_mode_override;
+            }
+            return false;
+        }
+    }
+
+    for (int inventory_index : selected_inventory_indices) {
+        CameraParams& camera_params = cameras_params[inventory_index];
+        camera_params.ptp_gate_acquisition_mode = "multiframe";
+        if (!camera_sync_mode_uses_ptp(&camera_params)) {
+            continue;
+        }
+        camera_params.ptp_gate_acquisition_mode = normalized_mode;
+    }
+
+    return true;
+}
+
 std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
 {
     std::vector<std::string> tokens;
@@ -1025,6 +1069,28 @@ bool parse_headless_sync_mode_override(const std::string& value, std::string* ou
     }
     if (normalized == "ptp_gate") {
         *out = "ptp_gate";
+        return true;
+    }
+    return false;
+}
+
+bool parse_headless_ptp_gate_acquisition_mode_override(const std::string& value, std::string* out)
+{
+    if (!out) {
+        return false;
+    }
+
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+
+    if (normalized.empty() || normalized == "multiframe") {
+        *out = "multiframe";
+        return true;
+    }
+    if (normalized == "continuous") {
+        *out = "continuous";
         return true;
     }
     return false;
@@ -1342,6 +1408,8 @@ void print_headless_usage(const char* argv0)
         << "  --duration <seconds>         Optional. Otherwise runs until Ctrl+C.\n"
         << "  --stream-start-delay <sec>   Optional. Wait after camera open before stream open.\n"
         << "  --record-delay <seconds>     Optional. Stream first, then arm recording.\n"
+        << "  --ptp-gate-acquisition-mode <multiframe|continuous>\n"
+        << "                              Optional. Experimental override for camera-side ptp_gate acquisition mode.\n"
         << "  --ptp-gate-stagger-ns <int>  Optional. Apply a per-camera gate-time offset for ptp_gate runs.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
         << "  --list-cameras               List local cameras and exit.\n"
@@ -1799,6 +1867,25 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
                 }
                 return false;
             }
+            continue;
+        }
+        if (arg == "--ptp-gate-acquisition-mode") {
+            options->ptp_gate_acquisition_mode_override =
+                consume_value("--ptp-gate-acquisition-mode");
+            if (options->ptp_gate_acquisition_mode_override.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            std::string normalized_mode;
+            if (!parse_headless_ptp_gate_acquisition_mode_override(
+                    options->ptp_gate_acquisition_mode_override, &normalized_mode)) {
+                if (error_out) {
+                    *error_out =
+                        "Invalid --ptp-gate-acquisition-mode value: " +
+                        options->ptp_gate_acquisition_mode_override;
+                }
+                return false;
+            }
+            options->ptp_gate_acquisition_mode_override = normalized_mode;
             continue;
         }
         if (arg == "--ptp-gate-stagger-ns") {
@@ -2750,6 +2837,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.duration_seconds > 0 || options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             options.nvenc_direct_input ||
+            !options.ptp_gate_acquisition_mode_override.empty() ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
@@ -2772,6 +2860,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             options.nvenc_direct_input ||
+            !options.ptp_gate_acquisition_mode_override.empty() ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
@@ -2781,6 +2870,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
                     "--list-cameras, --stream-only, --record-folder, --camera, --codec, --preset, --tuning, "
                     "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
                     "--preenc-ref-max-seconds, --duration, --stream-start-delay, --nvenc-direct-input, "
+                    "--ptp-gate-acquisition-mode, "
                     "--record-delay, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
@@ -3734,6 +3824,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->config_folder = cli_options.config_folder.empty()
         ? fixed.value("config_folder", "")
         : cli_options.config_folder;
+    spec->ptp_gate_acquisition_mode = fixed.value("ptp_gate_acquisition_mode", "");
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
@@ -3801,6 +3892,19 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 "Local experiment runner currently only supports fixed.sync_mode=free_run or ptp_gate";
         }
         return false;
+    }
+    if (!spec->ptp_gate_acquisition_mode.empty()) {
+        std::string normalized_acquisition_mode;
+        if (!parse_headless_ptp_gate_acquisition_mode_override(
+                spec->ptp_gate_acquisition_mode, &normalized_acquisition_mode)) {
+            if (error_out) {
+                *error_out =
+                    "Local experiment runner only supports "
+                    "fixed.ptp_gate_acquisition_mode=multiframe or continuous";
+            }
+            return false;
+        }
+        spec->ptp_gate_acquisition_mode = normalized_acquisition_mode;
     }
 
     spec->target_fps_tolerance_pct = policy.value("target_fps_tolerance_pct", 1.0);
@@ -3954,6 +4058,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.config_folder = spec.config_folder;
                                                             run.options.record_folder = run.recording_folder;
                                                             run.options.sync_mode_override = spec.sync_mode;
+                                                            run.options.ptp_gate_acquisition_mode_override =
+                                                                spec.ptp_gate_acquisition_mode;
                                                             run.options.ptp_gate_stagger_ns =
                                                                 spec.ptp_gate_stagger_ns;
                                                             run.options.duration_seconds = spec.duration_s + spec.warmup_s;
@@ -4145,6 +4251,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
 
+    std::string ptp_gate_acquisition_mode_error;
+    if (!apply_ptp_gate_acquisition_mode_to_selected_cameras(
+            options,
+            cameras_params.get(),
+            selected_inventory_indices,
+            &ptp_gate_acquisition_mode_error)) {
+        std::cerr << ptp_gate_acquisition_mode_error << std::endl;
+        close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+        return 1;
+    }
+
     std::string ptp_gate_stagger_error;
     if (!apply_ptp_gate_stagger_to_selected_cameras(
             options,
@@ -4199,6 +4316,19 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             }
             std::cout << "  Camera " << cameras_params[inventory_index].camera_serial
                       << " gate_offset_ns=" << cameras_params[inventory_index].ptp_gate_offset_ns
+                      << std::endl;
+        }
+    }
+    if (selected_run_uses_ptp && !options.ptp_gate_acquisition_mode_override.empty()) {
+        std::cout << "Headless PTP gate acquisition mode override: "
+                  << options.ptp_gate_acquisition_mode_override
+                  << std::endl;
+        for (int inventory_index : selected_inventory_indices) {
+            if (!camera_sync_mode_uses_ptp(&cameras_params[inventory_index])) {
+                continue;
+            }
+            std::cout << "  Camera " << cameras_params[inventory_index].camera_serial
+                      << " acquisition_mode=" << cameras_params[inventory_index].ptp_gate_acquisition_mode
                       << std::endl;
         }
     }

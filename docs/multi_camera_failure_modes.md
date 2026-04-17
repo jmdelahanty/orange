@@ -25,6 +25,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `80 fps` `ptp_gate` recording, `2 ms` stagger | Stable at about `80 fps` on both cameras | `0` camera drops, balanced helper routing, `overflow_events = 0` | Stagger relieves the synchronized burst problem at `80 fps` |
 | Dual-camera `100 fps` `ptp_gate` stream-only | Stable at about `100 fps` on both cameras | `0` camera drops in `--stream-only` | Raw synchronized acquisition is fine without recording |
 | Dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | PTP-gated offset acquisition becomes unstable at `100 fps`; this is a different mode than GOP backlog overflow |
+| Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
 
@@ -144,6 +145,20 @@ Relevant sweep outcomes:
 
 All remained unstable at `100 fps`.
 
+One more controlled comparison is now available:
+
+- `2 ms` stagger with experimental `Continuous` gate acquisition mode
+
+That run still failed in the same general way:
+
+- `2010095`: `enc_fps_mean = 100.005`
+- `2010096`: `enc_fps_mean = 7.10428`
+- `overflow_events = 0`
+
+So the current evidence does not support a simple story of:
+
+- "`MultiFrame + AcquisitionFrameCount=1` is the only thing wrong"
+
 Representative artifacts:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger25us_rerun1`
@@ -151,6 +166,7 @@ Representative artifacts:
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger100us_rerun1`
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger0p25ms_rerun1`
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_rerun2`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_continuous_rerun1`
 - `/home/jeremy/orange_data/exp/unsorted/2010096_2010095_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_swaporder_rerun1`
 
 ### 4. Operational / Setup Failures
@@ -227,6 +243,9 @@ This clearly works in some regimes:
 So it is not simply broken. But it remains a plausible source of fragile
 high-rate multi-camera behavior, especially once offsets are introduced.
 
+However, the new `Continuous` comparison means this camera-side mode choice is
+probably not the entire explanation on its own.
+
 ## Current Best Next Diagnostics
 
 1. Investigate the camera-side gated acquisition mode itself.
@@ -238,4 +257,3 @@ high-rate multi-camera behavior, especially once offsets are introduced.
      frames.
 3. Keep `80 fps` stagger as the current validated synchronized baseline.
    - Do not treat `100 fps` nonzero stagger as usable yet.
-

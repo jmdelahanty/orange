@@ -102,6 +102,16 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
       offset
     - the `100 fps` failures show stale-frame behavior after gate open rather
       than the older split-GOP backlog-overflow signature
+  - one more discriminator is now available:
+    - experimental `Continuous` gate acquisition mode with `2 ms` stagger:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_continuous_rerun1`
+    - result:
+      - `2010095` stays near `100 fps`
+      - offset `2010096` still falls to about `7 fps`
+      - `overflow_events = 0`
+    - so `MultiFrame + AcquisitionFrameCount=1` may still be brittle, but it
+      is probably not the entire explanation for the `100 fps` offset-camera
+      instability
 
 ## Hardening Plan
 

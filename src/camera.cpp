@@ -137,6 +137,7 @@ void log_ptp_camera_sync_readback(Emergent::CEmergentCamera* camera, const Camer
 
     std::cout << camera_params->camera_serial
               << " [ptp_camera_sync] Readback"
+              << " requested_acquisition_mode=" << camera_params->ptp_gate_acquisition_mode
               << " trigger_selector=" << trigger_selector
               << " trigger_source=" << trigger_source
               << " trigger_mode=" << trigger_mode
@@ -1369,9 +1370,21 @@ void ptp_camera_sync(Emergent::CEmergentCamera *camera, CameraParams *camera_par
 {
     // ptp triggering configuration settings
     const std::string ptp_mode = resolved_ptp_mode(camera_params);
+    std::string acquisition_mode = camera_params->ptp_gate_acquisition_mode;
+    std::transform(acquisition_mode.begin(), acquisition_mode.end(), acquisition_mode.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (acquisition_mode != "continuous") {
+        acquisition_mode = "multiframe";
+    }
     check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerSelector", camera_params->trigger_selector.c_str()), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerSource", "Software"), camera_params->camera_serial.c_str());
-    check_camera_errors(EVT_CameraSetEnumParam(camera, "AcquisitionMode", "MultiFrame"), camera_params->camera_serial.c_str());
+    check_camera_errors(
+        EVT_CameraSetEnumParam(
+            camera,
+            "AcquisitionMode",
+            acquisition_mode == "continuous" ? "Continuous" : "MultiFrame"),
+        camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetUInt32Param(camera, "AcquisitionFrameCount", 1), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "TriggerMode", "On"), camera_params->camera_serial.c_str());
     check_camera_errors(EVT_CameraSetEnumParam(camera, "PtpMode", ptp_mode.c_str()), camera_params->camera_serial.c_str());

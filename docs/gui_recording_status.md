@@ -394,6 +394,8 @@ Additional PTP characterization artifacts:
     `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_rerun2`
   - swapped `2 ms` order:
     `/home/jeremy/orange_data/exp/unsorted/2010096_2010095_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_swaporder_rerun1`
+  - experimental `Continuous` gate acquisition mode with `2 ms` stagger:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_continuous_rerun1`
 
 Those runs show:
 
@@ -423,6 +425,8 @@ Those runs show:
   - `2 ms`: the `0 ns` camera stays near `100 fps`, the offset camera
     collapses to about `6 fps`
   - swapped `2 ms`: the failure follows the camera with the offset
+  - experimental `Continuous` mode with `2 ms`: the `0 ns` camera still stays
+    near `100 fps`, while the offset camera still collapses to about `7 fps`
 
 That narrows the remaining problem to a rate-sensitive dual-camera synchronized
 interaction, not a general `ptp_gate` setup bug:
@@ -434,6 +438,9 @@ interaction, not a general `ptp_gate` setup bug:
 - dual-camera `100 fps` `ptp_gate` stream-only works
 - dual-camera `80 fps` `ptp_gate` with a small stagger works
 - dual-camera `100 fps` `ptp_gate` with nonzero stagger remains unstable
+- switching the camera-side PTP gate acquisition mode from `MultiFrame` to
+  experimental `Continuous` does not resolve the `100 fps` offset-camera
+  instability by itself
 
 This means:
 
