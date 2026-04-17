@@ -140,6 +140,23 @@ Validated settings:
 - `hybrid_split`
 - `raw`
 
+The final pipeline-sample shutdown fix was also rerun and validated in headless
+mode using:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_100fps_gop25_a16_gpu5_6_snapshotcheck1`
+
+That rerun confirmed that the snapshot now carries the true final helper
+routing state instead of lagging the last periodic sample. In the validated
+artifact:
+
+- `helper_requested_frames = 700`
+- `helper_dispatched_frames = 700`
+- `helper_fallback_frames = 0`
+- `source_to_helper_copy_samples_total = 700`
+- `latency.source_to_helper_copy.samples = 700`
+
+Those values also match the final row in `Cam2010096_pipeline_perf.csv`.
+
 ### GUI
 
 GUI startup and non-split recording path still work after the modularization
@@ -208,7 +225,8 @@ Status of that fix:
 
 - implemented
 - build-verified
-- not yet rerun-validated on a fresh recording after the patch
+- runtime-validated in headless mode
+- not yet rerun-validated in the GUI path
 
 ### Remaining Monolith In `orange.cpp`
 
