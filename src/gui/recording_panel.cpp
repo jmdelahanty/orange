@@ -221,6 +221,8 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
                                                     CameraParams* cameras_params,
                                                     CameraEachSelect* cameras_select,
                                                     const int num_cameras,
+                                                    const std::string* config_defaults_status,
+                                                    const bool config_defaults_status_warning,
                                                     const std::vector<std::string>* preflight_errors)
 {
     RecordingPanelActions actions;
@@ -244,6 +246,21 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
     ImGui::PopStyleColor(1);
     ImGui::SameLine();
     ImGui::Text("%s", input_folder->c_str());
+
+    if (config_defaults_status && !config_defaults_status->empty()) {
+        ImGui::Spacing();
+        if (config_defaults_status_warning) {
+            ImGui::TextColored(
+                ImVec4(0.95f, 0.75f, 0.2f, 1.0f),
+                "%s",
+                config_defaults_status->c_str());
+        } else {
+            ImGui::TextColored(
+                ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                "%s",
+                config_defaults_status->c_str());
+        }
+    }
 
     if (preflight_errors && !preflight_errors->empty()) {
         ImGui::Spacing();

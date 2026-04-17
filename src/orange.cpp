@@ -35,6 +35,7 @@
 #include "gui/host_ptp_panel.h"
 #include "gui/recording_panel.h"
 #include "image_canvas.h"
+#include "recording_output_utils.h"
 #include "recording_validation.h"
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
@@ -2062,6 +2063,8 @@ int main(int argc, char **args) {
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
+    std::string recording_config_defaults_status;
+    bool recording_config_defaults_status_warning = false;
 
     EncoderConfig *encoder_config = new EncoderConfig{
         "h264",
@@ -2242,6 +2245,8 @@ int main(int argc, char **args) {
                     cameras_params,
                     cameras_select,
                     num_cameras,
+                    &recording_config_defaults_status,
+                    recording_config_defaults_status_warning,
                     &recording_preflight_errors);
             if (recording_panel_actions.choose_recording_dir_requested) {
                 IGFD::FileDialogConfig config;
@@ -2731,6 +2736,20 @@ int main(int argc, char **args) {
                             }
                         }
 
+                        {
+                            const orange::recording::RecordingConfigSyncResult sync_result =
+                                orange::recording::sync_encoder_config_from_camera_defaults(
+                                    cameras_params,
+                                    num_cameras,
+                                    encoder_config);
+                            recording_config_defaults_status = sync_result.message;
+                            recording_config_defaults_status_warning = sync_result.warning;
+                            if (!recording_config_defaults_status.empty()) {
+                                std::cout << "[GUI][recording-defaults] "
+                                          << recording_config_defaults_status << std::endl;
+                            }
+                        }
+
 
                         for (int i = 0; i < num_cameras; i++) {
                             cameras_select[i].stream_on = false;
@@ -2776,6 +2795,8 @@ int main(int argc, char **args) {
                     }
                 } else {
                     camera_control->open = false;
+                    recording_config_defaults_status.clear();
+                    recording_config_defaults_status_warning = false;
                     ptp_stream_sync = false;
                     for (int i = 0; i < num_cameras; i++) {
                         close_camera(&ecams[i].camera, &cameras_params[i]);
