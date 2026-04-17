@@ -124,6 +124,16 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
     - that pushes suspicion further upstream, toward camera/transport/SDK-side
       buffering or gated-acquisition behavior rather than obvious app-side
       queue exhaustion
+  - new spec-run discriminator:
+    - dual-camera `100 fps` `ptp_gate` `stream_only` with no stagger:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp`
+    - dual-camera `100 fps` `ptp_gate` `stream_only` with `2 ms` stagger:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp_stagger2ms`
+    - both runs stayed near `100 fps` on both cameras with `0` camera drops
+      and no `[PTP_STALE_DUMP]` output
+    - that means the pathological `100 fps` offset-camera stale-frame failure
+      is not triggered by PTP gating plus offset alone; it requires recording
+      to be active
 
 ## Hardening Plan
 

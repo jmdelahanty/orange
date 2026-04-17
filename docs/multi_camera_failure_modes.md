@@ -23,7 +23,8 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` `free_run` recording | Throughput collapse with split-GOP output overflow | backlog exceptions, `overflow_events > 0`, `peak_backlog_gops > max_inflight_gops` | Recording-path backlog overflow under unsynchronized high-rate multi-camera load |
 | Dual-camera `80 fps` `ptp_gate` recording, no stagger | Both cameras drop to about `54-57 fps` | single-camera `80 fps ptp_gate` works, dual-camera `80 fps free_run` works, dual-camera `80 fps ptp_gate` fails | Synchronized burst contention once tightly aligned arrivals interact with recording |
 | Dual-camera `80 fps` `ptp_gate` recording, `2 ms` stagger | Stable at about `80 fps` on both cameras | `0` camera drops, balanced helper routing, `overflow_events = 0` | Stagger relieves the synchronized burst problem at `80 fps` |
-| Dual-camera `100 fps` `ptp_gate` stream-only | Stable at about `100 fps` on both cameras | `0` camera drops in `--stream-only` | Raw synchronized acquisition is fine without recording |
+| Dual-camera `100 fps` `ptp_gate` stream-only, no stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Raw synchronized acquisition is fine without recording |
+| Dual-camera `100 fps` `ptp_gate` stream-only, `2 ms` stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Offset alone is not enough to trigger stale-frame onset; recording pressure is part of the bad interaction |
 | Dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | PTP-gated offset acquisition becomes unstable at `100 fps`; this is a different mode than GOP backlog overflow |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
@@ -157,6 +158,27 @@ Relevant sweep outcomes:
 - `250 us`
 - `2 ms`
 - swapped `2 ms`
+
+New stream-only discriminator:
+
+- checked-in dual-camera stream-only specs now exist for the same two-camera
+  PTP path:
+  - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp.json`
+  - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp_stagger2ms.json`
+- validated artifacts:
+  - no stagger:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp`
+  - `2 ms` stagger:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp_stagger2ms`
+- both runs sustained about `100 fps` on both cameras with:
+  - `0` camera drops
+  - `0` acquisition starvation
+  - no `[PTP_STALE_DUMP]` output
+
+That is the strongest current evidence that the catastrophic `100 fps` stagger
+failures are not caused by PTP gating or offset acquisition alone. The stale
+onset requires recording to be active, even though the stale frames are already
+old when they first enter `acquire_frames(...)`.
 
 All remained unstable at `100 fps`.
 

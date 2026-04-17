@@ -1,0 +1,34 @@
+{
+  "experiment_id": "2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp_stagger2ms",
+  "notes": "Dual-camera stream-only PTP-gated diagnostic for 2010095 and 2010096 with a 2 ms inter-camera stagger. Evaluates whether stagger alone destabilizes acquisition before recording is enabled.",
+  "selection": {
+    "camera_serials": ["2010095", "2010096"],
+    "gpu_ids": [1, 5]
+  },
+  "fixed": {
+    "duration_s": 12,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": true,
+    "sync_mode": "ptp_gate",
+    "ptp_gate_stagger_ns": 2000000,
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}
