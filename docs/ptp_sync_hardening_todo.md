@@ -112,6 +112,18 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
     - so `MultiFrame + AcquisitionFrameCount=1` may still be brittle, but it
       is probably not the entire explanation for the `100 fps` offset-camera
       instability
+  - stale-onset receive-history logging is now also in:
+    - threshold dump run:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_staleprobe1`
+    - current read:
+      - at the first `latch_minus_frame_ns > 50 ms` crossing, the receive
+        history still shows contiguous camera frame ids
+      - `camera_dropped_frames = 0` at onset
+      - `acquisition_resource_starvations = 0` at onset
+      - free entry / event pools are still near full at onset
+    - that pushes suspicion further upstream, toward camera/transport/SDK-side
+      buffering or gated-acquisition behavior rather than obvious app-side
+      queue exhaustion
 
 ## Hardening Plan
 

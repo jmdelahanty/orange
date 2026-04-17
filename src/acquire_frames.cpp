@@ -35,6 +35,8 @@
 #if PIPELINE_PROFILE
 static constexpr int kCopyProfileLogEvery = 60;
 #endif
+static constexpr int64_t kPtpStaleReceiveThresholdNs = 50LL * 1000LL * 1000LL;
+static constexpr size_t kPtpReceiveHistoryLimit = 256;
 
 namespace {
 struct RunningInt64Stats {
@@ -152,6 +154,86 @@ struct PipelinePerfSample {
     uint64_t gpu_ring_copy_frames = 0;
     uint64_t gpu_copy_frames = 0;
 };
+
+struct PtpReceiveHistoryEntry {
+    uint64_t local_frame_id = 0;
+    uint64_t camera_frame_id = 0;
+    uint64_t frame_timestamp_ns = 0;
+    uint64_t timestamp_sys_ns = 0;
+    int64_t latch_minus_frame_ns = 0;
+    uint64_t frame_delta_ns = 0;
+    uint64_t latch_delta_ns = 0;
+    uint64_t camera_dropped_frames = 0;
+    int dispatch_count = 0;
+    int free_entries_available = -1;
+    int free_events_available = -1;
+    int yolo_events_available = -1;
+    size_t pending_requeues = 0;
+    uint64_t acquisition_resource_starvations = 0;
+    bool will_display = false;
+    bool will_record = false;
+    bool will_yolo = false;
+    bool use_direct_pointer = false;
+    bool use_ring_copy = false;
+};
+
+void append_ptp_receive_history(std::deque<PtpReceiveHistoryEntry>* history,
+                                const PtpReceiveHistoryEntry& entry) {
+    if (!history) {
+        return;
+    }
+    history->push_back(entry);
+    while (history->size() > kPtpReceiveHistoryLimit) {
+        history->pop_front();
+    }
+}
+
+void dump_ptp_receive_history(const CameraParams* camera_params,
+                              const CameraControl* camera_control,
+                              const std::deque<PtpReceiveHistoryEntry>& history,
+                              const PtpReceiveHistoryEntry& trigger_entry) {
+    const std::string serial =
+        camera_params ? camera_params->camera_serial : std::string("<unknown>");
+    std::cout << "[PTP_STALE_DUMP] cam=" << serial
+              << " threshold_ns=" << kPtpStaleReceiveThresholdNs
+              << " trigger_local_frame=" << trigger_entry.local_frame_id
+              << " trigger_camera_frame_id=" << trigger_entry.camera_frame_id
+              << " trigger_latch_minus_frame_ns=" << trigger_entry.latch_minus_frame_ns
+              << " gate_offset_ns="
+              << (camera_params ? camera_params->ptp_gate_offset_ns : 0ULL)
+              << " ptp_gate_acquisition_mode="
+              << (camera_params ? camera_params->ptp_gate_acquisition_mode : std::string("<unknown>"))
+              << " sync_camera="
+              << (camera_control && camera_control->sync_camera ? 1 : 0)
+              << " history_entries=" << history.size()
+              << std::endl;
+
+    size_t index = 0;
+    for (const PtpReceiveHistoryEntry& entry : history) {
+        std::cout << "  [PTP_STALE_DUMP][" << index << "]"
+                  << " local_frame=" << entry.local_frame_id
+                  << " camera_frame_id=" << entry.camera_frame_id
+                  << " frame_ts_ns=" << entry.frame_timestamp_ns
+                  << " timestamp_sys_ns=" << entry.timestamp_sys_ns
+                  << " latch_minus_frame_ns=" << entry.latch_minus_frame_ns
+                  << " frame_delta_ns=" << entry.frame_delta_ns
+                  << " latch_delta_ns=" << entry.latch_delta_ns
+                  << " camera_dropped_frames=" << entry.camera_dropped_frames
+                  << " dispatch_count=" << entry.dispatch_count
+                  << " free_entries=" << entry.free_entries_available
+                  << " free_events=" << entry.free_events_available
+                  << " yolo_events=" << entry.yolo_events_available
+                  << " pending_requeues=" << entry.pending_requeues
+                  << " acq_starve=" << entry.acquisition_resource_starvations
+                  << " will_display=" << (entry.will_display ? 1 : 0)
+                  << " will_record=" << (entry.will_record ? 1 : 0)
+                  << " will_yolo=" << (entry.will_yolo ? 1 : 0)
+                  << " direct=" << (entry.use_direct_pointer ? 1 : 0)
+                  << " ring_copy=" << (entry.use_ring_copy ? 1 : 0)
+                  << std::endl;
+        ++index;
+    }
+}
 
 class PipelinePerfRecorder {
 public:
@@ -581,6 +663,8 @@ void acquire_frames(
     uint64_t yolo_decimate_counter = 0;
     bool last_yolo_enabled = false;
     PipelinePerfRecorder pipeline_perf_recorder(camera_params);
+    std::deque<PtpReceiveHistoryEntry> ptp_receive_history;
+    bool ptp_stale_history_dumped = false;
     if (yolo_decimate > 1) {
         std::cout << "[YOLO] Cam " << camera_params->camera_serial
                   << " decimate=1/" << yolo_decimate << std::endl;
@@ -990,6 +1074,44 @@ void acquire_frames(
             current_entry->has_detections = will_yolo;
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
+
+            if (camera_control->sync_camera) {
+                const int64_t latch_minus_frame_ns =
+                    static_cast<int64_t>(ptp_state.ptp_time) -
+                    static_cast<int64_t>(ptp_state.frame_ts);
+                PtpReceiveHistoryEntry receive_entry;
+                receive_entry.local_frame_id = camera_state.frame_count;
+                receive_entry.camera_frame_id = ecam->frame_recv.frame_id;
+                receive_entry.frame_timestamp_ns = current_entry->timestamp;
+                receive_entry.timestamp_sys_ns = current_entry->timestamp_sys;
+                receive_entry.latch_minus_frame_ns = latch_minus_frame_ns;
+                receive_entry.frame_delta_ns = ptp_state.frame_ts_delta;
+                receive_entry.latch_delta_ns = ptp_state.ptp_time_delta;
+                receive_entry.camera_dropped_frames = camera_state.dropped_frames;
+                receive_entry.dispatch_count = dispatch_count;
+                receive_entry.free_entries_available = free_entries_available;
+                receive_entry.free_events_available = free_events_available;
+                receive_entry.yolo_events_available = yolo_events_available;
+                receive_entry.pending_requeues = pending_requeues.size();
+                receive_entry.acquisition_resource_starvations =
+                    acquisition_resource_starvations;
+                receive_entry.will_display = will_display;
+                receive_entry.will_record = will_record;
+                receive_entry.will_yolo = will_yolo;
+                receive_entry.use_direct_pointer = use_direct_pointer;
+                receive_entry.use_ring_copy = use_ring_copy;
+                append_ptp_receive_history(&ptp_receive_history, receive_entry);
+
+                if (!ptp_stale_history_dumped &&
+                    latch_minus_frame_ns > kPtpStaleReceiveThresholdNs) {
+                    dump_ptp_receive_history(
+                        camera_params,
+                        camera_control,
+                        ptp_receive_history,
+                        receive_entry);
+                    ptp_stale_history_dumped = true;
+                }
+            }
 
             // FRAME_IPC: Send frame data immediately after capture
             // This ensures EVERY frame is sent for synchronization

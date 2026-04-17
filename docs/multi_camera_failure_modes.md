@@ -122,6 +122,21 @@ Interpretation:
   camera's current PTP time
 - that suggests buffering or gated-acquisition instability after gate open
 
+New direct evidence from stale-onset receive-history logging:
+
+- threshold-triggered dumps were captured from:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_staleprobe1`
+- at the moment `latch_minus_frame_ns` first crossed `50 ms`, the receive-side
+  history still showed:
+  - contiguous camera frame ids
+  - `camera_dropped_frames = 0`
+  - `acquisition_resource_starvations = 0`
+  - near-full free entry / event pools
+  - `direct=1`, `ring_copy=0`
+- so the stale onset is happening before the frame enters preprocess/encode and
+  before any visible app-side queue starvation or frame-id-gap accounting
+  begins
+
 Important discriminator:
 
 - for larger offsets, the bad behavior follows the offset camera
@@ -255,5 +270,8 @@ probably not the entire explanation on its own.
    - Specifically, determine whether stale frames are already queued before the
      gate or begin accumulating only after some number of good post-gate
      frames.
+   - This is now partly answered: the first stale threshold crossing still
+     showed contiguous camera frame ids and no app-side starvation, which
+     points upstream of the recording/preprocess path.
 3. Keep `80 fps` stagger as the current validated synchronized baseline.
    - Do not treat `100 fps` nonzero stagger as usable yet.
