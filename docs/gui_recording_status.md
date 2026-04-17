@@ -372,6 +372,19 @@ Additional PTP characterization artifacts:
     - `2010096`: `902/902` frames, `0` camera drops, `99.910065 fps`
 - dual-camera `80 fps` PTP with `2 ms` stagger:
   - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_stagger2ms_rerun1`
+- dual-camera `100 fps` PTP stagger sweep:
+  - `25 us`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger25us_rerun1`
+  - `50 us`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger50us_rerun1`
+  - `100 us`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger100us_rerun1`
+  - `250 us`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger0p25ms_rerun1`
+  - `2 ms`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_rerun2`
+  - swapped `2 ms` order:
+    `/home/jeremy/orange_data/exp/unsorted/2010096_2010095_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_swaporder_rerun1`
 
 Those runs show:
 
@@ -390,6 +403,17 @@ Those runs show:
   - `2010095`: `enc_fps_mean = 80.025`, `dropped_frames_camera = 0`
   - `2010096`: `enc_fps_mean = 80.0509`, `dropped_frames_camera = 0`
   - `overflow_events = 0` on both cameras
+- dual-camera `100 fps` under `ptp_gate` does not become healthy with the
+  nonzero staggers tried so far
+  - `25 us`: both cameras collapse to about `2-4 fps`
+  - `50 us`: both cameras collapse to about `2-4 fps`
+  - `100 us`: the `0 ns` camera stays near `100 fps`, the offset camera
+    collapses to about `2 fps`
+  - `250 us`: the `0 ns` camera stays near `100 fps`, the offset camera
+    collapses to about `7 fps`
+  - `2 ms`: the `0 ns` camera stays near `100 fps`, the offset camera
+    collapses to about `6 fps`
+  - swapped `2 ms`: the failure follows the camera with the offset
 
 That narrows the remaining problem to a rate-sensitive dual-camera synchronized
 interaction, not a general `ptp_gate` setup bug:
@@ -400,6 +424,7 @@ interaction, not a general `ptp_gate` setup bug:
 - dual-camera `80 fps` `free_run` works
 - dual-camera `100 fps` `ptp_gate` stream-only works
 - dual-camera `80 fps` `ptp_gate` with a small stagger works
+- dual-camera `100 fps` `ptp_gate` with nonzero stagger remains unstable
 
 This means:
 
@@ -408,6 +433,10 @@ This means:
 - headless `ptp_gate` no longer has a setup gap
 - dual-camera `2 x 80 fps` under local PTP currently underperforms badly and
   is not yet a validated synchronized baseline
+- dual-camera `2 x 80 fps` with `2 ms` stagger is a validated synchronized
+  recording baseline
+- dual-camera `2 x 100 fps` under local PTP remains unstable even with the
+  tiny stagger sweep completed so far
 - the next likely root-cause area is synchronized burst contention that only
   appears once recording work is added on top of phase-aligned arrivals
 
@@ -435,6 +464,15 @@ That diagnostic has now been exercised successfully:
   expected range
 - this is strong evidence that the unfixed case is dominated by synchronized
   burst contention rather than a wrong GPU assignment or generic PTP setup bug
+
+The follow-on `100 fps` sweep sharpens that result:
+
+- stagger is a valid mitigation at `80 fps`
+- but at `100 fps`, every nonzero stagger tried so far remains unstable
+- for larger offsets, the failure largely follows the camera receiving the
+  offset
+- the `100 fps` failures are also not the old split-GOP backlog-overflow mode;
+  they instead show stale-frame behavior after gate open
 
 ### Remaining Monolith In `orange.cpp`
 

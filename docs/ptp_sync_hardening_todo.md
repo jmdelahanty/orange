@@ -77,6 +77,27 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
   - the branch now has an experimental headless stagger hook:
     `fixed.ptp_gate_stagger_ns` in experiment specs and
     `--ptp-gate-stagger-ns` in local headless CLI.
+  - follow-on `100 fps` characterization shows that nonzero stagger is not a
+    complete solution at the higher rate:
+    - `25 us`:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger25us_rerun1`
+    - `50 us`:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger50us_rerun1`
+    - `100 us`:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger100us_rerun1`
+    - `250 us`:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger0p25ms_rerun1`
+    - `2 ms`:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_rerun2`
+    - swapped `2 ms` order:
+      `/home/jeremy/orange_data/exp/unsorted/2010096_2010095_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_swaporder_rerun1`
+  - current read after that sweep:
+    - `80 fps` plus stagger is a valid mitigation
+    - `100 fps` plus nonzero stagger remains unstable
+    - for the larger offsets, the failure follows the camera receiving the
+      offset
+    - the `100 fps` failures show stale-frame behavior after gate open rather
+      than the older split-GOP backlog-overflow signature
 
 ## Hardening Plan
 
