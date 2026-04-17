@@ -3144,59 +3144,20 @@ int main(int argc, char **args) {
                                 allow_transition = false;
                             } else {
                                 recording_preflight_errors.clear();
-                                camera_control->recording_draining = false;
-                                camera_control->stop_record = false;
-                                std::string recording_id = get_current_date_time();
-                                std::string recording_folder;
-                                std::string base_folder = encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name;
-                                {
-                                    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-                                    if (camera_control->recording_folder.empty()) {
-                                        camera_control->recording_folder = base_folder + "/" + recording_id;
-                                    } else {
-                                        recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
-                                    }
-                                    recording_folder = camera_control->recording_folder;
-                                }
-                                if (base_folder.empty() && !recording_folder.empty()) {
-                                    std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
-                                    if (parent.empty() || parent == "/") {
-                                        base_folder = recording_folder;
-                                    } else {
-                                        base_folder = parent.string();
-                                    }
-                                }
-                                resolved_recording_folder = recording_folder;
-                                make_folder(recording_folder);
-                                write_recording_snapshot(
-                                    recording_folder,
-                                    recording_id,
-                                    cameras_params,
-                                    num_cameras,
-                                    base_folder,
-                                    camera_control->sync_camera,
-                                    ptp_params);
-                                initialize_ptp_sync_summary(
-                                    recording_folder,
-                                    recording_id,
-                                    num_cameras,
-                                    camera_control->sync_camera,
-                                    ptp_params);
+                                const orange::session::RecordingRunStartResult start_result =
+                                    orange::session::begin_recording_run(
+                                        camera_control,
+                                        cameras_params,
+                                        num_cameras,
+                                        encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name,
+                                        ptp_params);
+                                allow_transition = start_result.ok;
+                                resolved_recording_folder = start_result.recording_folder;
                             }
                         }
 
                         if (allow_transition) {
-                            camera_control->record_video = next_record_state;
-                            if (!camera_control->record_video) {
-                                camera_control->recording_draining = true;
-                                camera_control->stop_record = true;
-                                if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
-                                    camera_control->recording_draining = false;
-                                    camera_control->stop_record = false;
-                                }
-                            }
-
-                            if (camera_control->record_video) {
+                            if (next_record_state) {
                                 // START RECORDING
                                 try_start_timer();
                                 std::cout << "Recording toggled ON." << std::endl;
@@ -3205,6 +3166,7 @@ int main(int argc, char **args) {
                                 }
                             } else {
                                 // STOP RECORDING
+                                orange::session::request_stop_recording_run(camera_control);
                                 try_stop_timer();
                                 std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
                             }
@@ -3220,11 +3182,8 @@ int main(int argc, char **args) {
                 }
             }
 
-            std::string active_recording_folder;
-            {
-                std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-                active_recording_folder = camera_control->recording_folder;
-            }
+            const std::string active_recording_folder =
+                orange::session::current_recording_folder(camera_control);
             if (!active_recording_folder.empty()) {
                 ImGui::SameLine();
                 if (ImGui::Button("Copy recording path")) {

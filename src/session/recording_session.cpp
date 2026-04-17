@@ -3,6 +3,7 @@
 #include "project.h"
 #include "recording_output_utils.h"
 
+#include <filesystem>
 #include <iostream>
 
 namespace orange::session {
@@ -80,6 +81,89 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
             *camera_resources[i].recycle_queue,
             camera_control);
     }
+}
+
+RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
+                                            CameraParams* cameras_params,
+                                            const int num_cameras,
+                                            const std::string& base_folder,
+                                            PTPParams* ptp_params)
+{
+    RecordingRunStartResult result;
+    if (!camera_control || !cameras_params || num_cameras <= 0) {
+        return result;
+    }
+
+    camera_control->recording_draining = false;
+    camera_control->stop_record = false;
+
+    std::string recording_id = get_current_date_time();
+    std::string recording_folder;
+    std::string resolved_base_folder = base_folder;
+    {
+        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+        if (camera_control->recording_folder.empty()) {
+            camera_control->recording_folder = resolved_base_folder + "/" + recording_id;
+        } else {
+            recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
+        }
+        recording_folder = camera_control->recording_folder;
+    }
+
+    if (resolved_base_folder.empty() && !recording_folder.empty()) {
+        const std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
+        if (parent.empty() || parent == "/") {
+            resolved_base_folder = recording_folder;
+        } else {
+            resolved_base_folder = parent.string();
+        }
+    }
+
+    make_folder(recording_folder);
+    write_recording_snapshot(
+        recording_folder,
+        recording_id,
+        cameras_params,
+        num_cameras,
+        resolved_base_folder,
+        camera_control->sync_camera,
+        ptp_params);
+    initialize_ptp_sync_summary(
+        recording_folder,
+        recording_id,
+        num_cameras,
+        camera_control->sync_camera,
+        ptp_params);
+
+    camera_control->record_video = true;
+    result.ok = true;
+    result.recording_folder = std::move(recording_folder);
+    return result;
+}
+
+void request_stop_recording_run(CameraControl* camera_control)
+{
+    if (!camera_control) {
+        return;
+    }
+
+    camera_control->record_video = false;
+    camera_control->recording_draining = true;
+    camera_control->stop_record = true;
+    if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
+        camera_control->recording_draining = false;
+        camera_control->stop_record = false;
+    }
+}
+
+std::string current_recording_folder(CameraControl* camera_control)
+{
+    if (!camera_control) {
+        return {};
+    }
+
+    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+    return camera_control->recording_folder;
 }
 
 void start_recording_pipeline_for_camera(RecordingSessionState* state, const int camera_index)
