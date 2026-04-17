@@ -126,6 +126,7 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
         cameras_params,
         num_cameras,
         resolved_base_folder,
+        true,
         camera_control->sync_camera,
         ptp_params);
     initialize_ptp_sync_summary(

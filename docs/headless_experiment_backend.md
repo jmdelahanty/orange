@@ -32,11 +32,15 @@ between GUI recording and headless recording.
 The current headless startup path is:
 
 1. open cameras
-2. allocate EVT frame buffers
-3. write `recording_snapshot.json` and initialize the PTP summary
+2. create the run folder and initialize per-run artifacts when a run folder is
+   provided:
+   - `recording_snapshot.json`
+   - `ptp_sync_summary.json`
+   - GPU monitoring metadata
+3. allocate EVT frame buffers
 4. create one `CameraResources` pool per camera
-5. create one `ModernRecordingPipeline` per camera
-6. force a record-only camera selection:
+5. create one `ModernRecordingPipeline` per camera when recording is enabled
+6. force a record-only camera selection when recording is enabled:
    - `stream_on = false`
    - `record = true`
    - `yolo = false`
@@ -101,8 +105,38 @@ Local CLI note:
 - the first experiment-spec implementation is intentionally constrained to:
   - `display=false`
   - `yolo=false`
-  - `sync_mode=free_run`
   - explicit local runs only, not remote orchestration
+
+Experiment specs now support two useful fixed-mode toggles:
+
+- `fixed.sync_mode = "free_run" | "ptp_gate"`
+- `fixed.stream_only = true | false`
+
+`fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
+for that run:
+
+- no `ModernRecordingPipeline` is created
+- no video output is expected
+- the run folder is still created
+- the run still writes:
+  - `recording_snapshot.json`
+  - `ptp_sync_summary.json`
+  - `Cam*_pipeline_perf.csv`
+  - `nvidia_smi_dmon.csv`
+- stream-only runs do not update the shared `latest_recording.json` pointers
+- `runs.csv` evaluates `acq_fps_mean` / `acq_fps_p95` instead of requiring an
+  encoder snapshot
+
+That gives us a documented “stream-only experiment spec” mode instead of having
+to drop down to the ad hoc direct CLI.
+
+Checked-in example:
+
+- `experiment_specs/2010096_split_gop_hevc_100fps_stream_only_a16_gpu5.json`
+
+Validated artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_100fps_stream_only_a16_gpu5`
 
 This is the right shape for throughput testing because it minimizes unrelated
 consumers and keeps the benchmark focused on acquisition -> preprocess ->

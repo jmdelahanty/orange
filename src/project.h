@@ -75,6 +75,7 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const CameraParams* cameras_params,
                               int num_cameras,
                               const std::string& base_folder,
+                              bool update_latest_pointer = true,
                               bool sync_camera_enabled = false,
                               const PTPParams* ptp_params = nullptr);
 nlohmann::json build_gpu_runtime_info(int gpu_id);

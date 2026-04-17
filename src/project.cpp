@@ -2587,6 +2587,7 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const CameraParams* cameras_params,
                               int num_cameras,
                               const std::string& base_folder,
+                              bool update_latest_pointer,
                               bool sync_camera_enabled,
                               const PTPParams* ptp_params) {
     if (!cameras_params || num_cameras <= 0) {
@@ -2673,7 +2674,7 @@ bool write_recording_snapshot(const std::string& recording_folder,
         wrote_snapshot = true;
     }
 
-    if (wrote_snapshot) {
+    if (wrote_snapshot && update_latest_pointer) {
         if (!write_latest_recording_pointer(base_folder, recording_folder, resolved_recording_id, timestamp_utc)) {
             std::cerr << "Failed to update latest recording pointer in base folder." << std::endl;
         }

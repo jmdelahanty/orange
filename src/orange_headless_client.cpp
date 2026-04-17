@@ -90,6 +90,7 @@ struct ExperimentSpec {
     std::string output_root;
     std::string config_folder;
     std::string sync_mode = "free_run";
+    bool stream_only = false;
     std::string ptp_gate_acquisition_mode;
     int ptp_gate_stagger_ns = 0;
     int duration_s = 0;
@@ -411,6 +412,8 @@ struct ExperimentCsvWindowStats {
     bool ok = false;
     std::size_t total_rows = 0;
     std::size_t included_rows = 0;
+    double acq_fps_mean = 0.0;
+    double acq_fps_p95 = 0.0;
     double enc_fps_mean = 0.0;
     double enc_fps_p95 = 0.0;
     double enc_fps_primary_mean = 0.0;
@@ -2251,7 +2254,8 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
                                           CameraControl* camera_control,
                                           CameraParams* cameras_params,
                                           int num_cameras,
-                                          PTPParams* ptp_params)
+                                          PTPParams* ptp_params,
+                                          bool update_latest_pointer)
 {
     if (record_folder.empty()) {
         std::cerr << "Headless recording folder is empty." << std::endl;
@@ -2287,6 +2291,7 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
             cameras_params,
             num_cameras,
             base_path.string(),
+            update_latest_pointer,
             camera_control->sync_camera,
             ptp_params)) {
         std::cerr << "Failed to write headless recording snapshot for " << record_folder << std::endl;
@@ -2303,7 +2308,7 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
         return false;
     }
 
-    std::cout << "Recorded video saves to : " << record_folder << std::endl;
+    std::cout << "Headless run artifacts save to : " << record_folder << std::endl;
     return true;
 }
 
@@ -2427,6 +2432,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         thread_failure_state->reset();
     }
     const HeadlessEncoderSettings encoder_settings = parse_headless_encoder_setup(encoder_basic_setup);
+    const bool enable_artifacts = !record_folder.empty();
     std::cout << "Headless encoder config: codec=" << encoder_settings.codec
               << " preset=" << encoder_settings.preset
               << " tuning=" << encoder_settings.tuning
@@ -2542,13 +2548,14 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     recording_pipelines.resize(num_cameras);
 
     try {
-        if (enable_recording) {
+        if (enable_artifacts) {
             if (!prepare_headless_recording_artifacts(
                     record_folder,
                     camera_control,
                     selected_camera_params.data(),
                     static_cast<int>(selected_camera_params.size()),
-                    ptp_params)) {
+                    ptp_params,
+                    enable_recording)) {
                 cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                 return false;
             }
@@ -2557,7 +2564,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 gpu_dmon_monitor,
                 record_folder,
                 collect_unique_gpu_ids(cameras_params, selected_indices));
+        }
 
+        if (enable_recording) {
             for (int idx : selected_indices) {
                 ResolvedRecordingConfigOverrides recording_overrides;
                 recording_overrides.recording_gpu_id = cameras_params[idx].gpu_id;
@@ -2594,7 +2603,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
-        if (enable_recording) {
+        if (enable_artifacts) {
             drain_and_shutdown_recording(recording_pipelines, camera_control);
             stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
         }
@@ -3467,6 +3476,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         return it == header_index.end() ? -1 : it->second;
     };
 
+    const int acq_fps_index = required_index("acq_fps");
     const int enc_fps_index = required_index("enc_fps");
     const int enc_fps_primary_index = required_index("enc_fps_primary");
     const int enc_fps_helpers_index = required_index("enc_fps_helpers");
@@ -3486,7 +3496,8 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     const int helper_fallback_frames_index = required_index("helper_fallback_frames");
     const int helper_dispatched_frames_index = required_index("helper_dispatched_frames");
     const int camera_dropped_frames_index = required_index("camera_dropped_frames");
-    if (enc_fps_index < 0 || acq_starve_index < 0 || pre_drops_index < 0 || enc_fail_index < 0) {
+    if (acq_fps_index < 0 || enc_fps_index < 0 || acq_starve_index < 0 ||
+        pre_drops_index < 0 || enc_fail_index < 0) {
         stats.error = "CSV is missing one or more required fields in " + csv_path.string();
         return stats;
     }
@@ -3515,6 +3526,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         }
     };
 
+    std::vector<double> acq_fps_values;
     std::vector<double> enc_fps_values;
     std::vector<double> enc_fps_primary_values;
     std::vector<double> enc_fps_helpers_values;
@@ -3555,6 +3567,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         }
 
         const std::vector<std::string> cells = split_csv_line_simple(line);
+        double acq_fps = 0.0;
         double enc_fps = 0.0;
         double enc_fps_primary = 0.0;
         double enc_fps_helpers = 0.0;
@@ -3574,7 +3587,8 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         uint64_t helper_fallback_frames = 0;
         uint64_t helper_dispatched_frames = 0;
         uint64_t camera_dropped_frames = 0;
-        if (!parse_double_cell(cells, enc_fps_index, &enc_fps) ||
+        if (!parse_double_cell(cells, acq_fps_index, &acq_fps) ||
+            !parse_double_cell(cells, enc_fps_index, &enc_fps) ||
             !parse_u64_cell(cells, acq_starve_index, &acq_starve) ||
             !parse_u64_cell(cells, pre_drops_index, &pre_drops) ||
             !parse_u64_cell(cells, enc_fail_index, &enc_fail)) {
@@ -3667,6 +3681,7 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
             baseline_helper_dispatched_frames = helper_dispatched_frames;
             baseline_camera_dropped_frames = camera_dropped_frames;
         } else {
+            acq_fps_values.push_back(acq_fps);
             enc_fps_values.push_back(enc_fps);
             if (enc_fps_primary_index >= 0) {
                 enc_fps_primary_values.push_back(enc_fps_primary);
@@ -3699,6 +3714,10 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         return stats;
     }
 
+    const double acq_fps_sum =
+        std::accumulate(acq_fps_values.begin(), acq_fps_values.end(), 0.0);
+    stats.acq_fps_mean = acq_fps_sum / static_cast<double>(acq_fps_values.size());
+    stats.acq_fps_p95 = compute_percentile(acq_fps_values, 95.0);
     const double enc_fps_sum =
         std::accumulate(enc_fps_values.begin(), enc_fps_values.end(), 0.0);
     stats.enc_fps_mean = enc_fps_sum / static_cast<double>(enc_fps_values.size());
@@ -3824,6 +3843,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->config_folder = cli_options.config_folder.empty()
         ? fixed.value("config_folder", "")
         : cli_options.config_folder;
+    spec->stream_only = fixed.value("stream_only", false);
     spec->ptp_gate_acquisition_mode = fixed.value("ptp_gate_acquisition_mode", "");
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
     spec->duration_s = fixed.value("duration_s", 0);
@@ -3882,6 +3902,14 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (fixed.contains("yolo") && fixed["yolo"].is_boolean() && fixed["yolo"].get<bool>()) {
         if (error_out) {
             *error_out = "Local experiment runner only supports yolo=false for now";
+        }
+        return false;
+    }
+    if (spec->stream_only && spec->pre_encoder_reference_capture.enabled) {
+        if (error_out) {
+            *error_out =
+                "Local experiment runner does not support fixed.stream_only=true "
+                "with fixed.pre_encoder_reference_capture.";
         }
         return false;
     }
@@ -4057,6 +4085,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.mode = HeadlessMode::Local;
                                                             run.options.config_folder = spec.config_folder;
                                                             run.options.record_folder = run.recording_folder;
+                                                            run.options.stream_only = spec.stream_only;
                                                             run.options.sync_mode_override = spec.sync_mode;
                                                             run.options.ptp_gate_acquisition_mode_override =
                                                                 spec.ptp_gate_acquisition_mode;
@@ -4131,6 +4160,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"warmup_s", spec.warmup_s},
                                                                 {"stream_start_delay_s", spec.stream_start_delay_s},
                                                                 {"record_start_delay_s", 0},
+                                                                {"stream_only", spec.stream_only},
                                                                 {"nvenc_direct_input", spec.nvenc_direct_input},
                                                                 {"recording_folder", run.recording_folder},
                                                                 {"pre_encoder_reference_capture",
@@ -4357,7 +4387,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     const bool enable_recording = !options.stream_only;
-    const std::string active_record_folder = enable_recording ? options.record_folder : std::string();
+    const std::string active_record_folder = options.record_folder;
 
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool started = start_camera_thread(
@@ -4389,7 +4419,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
 
     std::cout << "Local headless " << (enable_recording ? "recording" : "stream-only")
               << " run started."
-              << " folder=" << (enable_recording ? options.record_folder : "<none>")
+              << " folder=" << (active_record_folder.empty() ? "<none>" : active_record_folder)
               << " cameras=" << format_selected_camera_serials(options.encoder_settings)
               << std::endl;
 
@@ -4490,6 +4520,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["nvenc_direct_input"] = run.options.nvenc_direct_input;
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
+    row["stream_only"] = run.options.stream_only;
     row["display"] = false;
     row["yolo"] = false;
     row["recording_folder"] = run.recording_folder;
@@ -4504,6 +4535,8 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["gpu_id"] = -1;
     row["gpu_name"] = "";
     row["gpu_pci_bus_id"] = "";
+    row["acq_fps_mean"] = 0.0;
+    row["acq_fps_p95"] = 0.0;
     row["enc_fps_mean"] = 0.0;
     row["enc_fps_p95"] = 0.0;
     row["enc_fps_primary_mean"] = 0.0;
@@ -4546,6 +4579,8 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                                           .value(camera_serial, nlohmann::json::object());
     const nlohmann::json encoder_info = snapshot.value("encoders", nlohmann::json::object())
                                           .value(camera_serial, nlohmann::json::object());
+    const nlohmann::json camera_runtime_info = snapshot.value("camera_runtime", nlohmann::json::object())
+                                                 .value(camera_serial, nlohmann::json::object());
     const nlohmann::json ptp_summary = [&]() {
         nlohmann::json out = nlohmann::json::object();
         std::string error;
@@ -4556,7 +4591,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         summarize_video_artifact(run.recording_folder, camera_serial);
 
     row["video_present"] = video_stats.video_present;
-    row["video_path"] = video_stats.video_path;
+    row["video_path"] = run.options.stream_only ? "" : video_stats.video_path;
     row["video_file_size_bytes"] = video_stats.file_size_bytes;
     row["video_duration_s"] = video_stats.duration_s;
     row["video_achieved_bitrate_bps"] = video_stats.achieved_bitrate_bps;
@@ -4591,6 +4626,8 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         return row;
     }
 
+    row["acq_fps_mean"] = csv_stats.acq_fps_mean;
+    row["acq_fps_p95"] = csv_stats.acq_fps_p95;
     row["enc_fps_mean"] = csv_stats.enc_fps_mean;
     row["enc_fps_p95"] = csv_stats.enc_fps_p95;
     row["enc_fps_primary_mean"] = csv_stats.enc_fps_primary_mean;
@@ -4619,7 +4656,37 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         row["routing_last_route_mode"] = routing_info.value("last_route_mode", "");
     }
 
-    if (encoder_info.is_object()) {
+    double target_fps = 0.0;
+    if (camera_runtime_info.is_object()) {
+        const nlohmann::json runtime_info = camera_runtime_info.value("runtime", nlohmann::json::object());
+        if (runtime_info.is_object()) {
+            target_fps = runtime_info.value("frame_rate", 0.0);
+        }
+    }
+
+    if (run.options.stream_only) {
+        const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
+        const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
+        const double acq_fps_mean = row["acq_fps_mean"].get<double>();
+        const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
+        const bool fps_ok = (target_fps <= 0.0) || (acq_fps_mean + tolerance >= target_fps);
+
+        if ((spec.require_zero_acq_starve && acq_starve > 0) ||
+            (spec.require_zero_pre_drops && pre_drops > 0)) {
+            row["pass_fail"] = "fail";
+            if (spec.require_zero_acq_starve && acq_starve > 0) {
+                row["reason"] = "nonzero acquisition starvation";
+            } else {
+                row["reason"] = "nonzero preprocess drops";
+            }
+        } else if (!fps_ok) {
+            row["pass_fail"] = "marginal";
+            row["reason"] = "acquisition fps below target tolerance";
+        } else {
+            row["pass_fail"] = "pass";
+            row["reason"] = "meets current stream-only policy";
+        }
+    } else if (encoder_info.is_object()) {
         row["nvenc_direct_input"] = encoder_info.value("path", "") == "hw_direct_input";
         if (row["gpu_id"].get<int>() < 0) {
             row["gpu_id"] = encoder_info.value("gpu_id", -1);
@@ -4679,7 +4746,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                     !metadata_path.empty() && std::filesystem::exists(metadata_path);
             }
         }
-        const double target_fps = static_cast<double>(encoder_info.value("fps", 0));
+        if (target_fps <= 0.0) {
+            target_fps = static_cast<double>(encoder_info.value("fps", 0));
+        }
         const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
         const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
         const uint64_t enc_fail = row["enc_fail_final"].get<uint64_t>();
@@ -4799,7 +4868,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -4829,6 +4898,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("importance_map_block_size", 0) << ","
                 << row.value("importance_map_grid_width", 0) << ","
                 << row.value("importance_map_grid_height", 0) << ","
+                << (row.value("stream_only", false) ? "true" : "false") << ","
                 << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","
@@ -4843,6 +4913,8 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("status", "") << ","
                 << row.value("pass_fail", "") << ","
                 << "\"" << row.value("reason", "") << "\","
+                << row.value("acq_fps_mean", 0.0) << ","
+                << row.value("acq_fps_p95", 0.0) << ","
                 << row.value("enc_fps_mean", 0.0) << ","
                 << row.value("enc_fps_p95", 0.0) << ","
                 << row.value("enc_fps_primary_mean", 0.0) << ","
