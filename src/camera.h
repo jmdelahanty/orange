@@ -60,6 +60,7 @@ struct CameraParams{
     std::string trigger_source = "Software";
     std::string trigger_activation = "RisingEdge";
     std::string ptp_mode;
+    unsigned long long ptp_gate_offset_ns = 0;
     std::vector<CameraGpioNodeConfig> gpio_nodes;
     CameraRecordingConfig recording;
     unsigned int gain_max; 

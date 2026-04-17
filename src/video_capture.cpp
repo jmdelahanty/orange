@@ -67,14 +67,17 @@ void start_ptp_sync(PTPState *ptp_state, PTPParams *ptp_params, CameraParams *ca
         }
     }
 
-    unsigned long long ptp_time_plus_delta_to_start = ptp_params->ptp_global_time;
+    const unsigned long long ptp_time_plus_delta_to_start =
+        ptp_params->ptp_global_time + camera_params->ptp_gate_offset_ns;
     ptp_state->ptp_time_plus_delta_to_start_low = (unsigned int)(ptp_time_plus_delta_to_start & 0xFFFFFFFF);
     ptp_state->ptp_time_plus_delta_to_start_high = (unsigned int)(ptp_time_plus_delta_to_start >> 32);
     EVT_CameraSetUInt32Param(&ecam->camera, "PtpAcquisitionGateTimeHigh", ptp_state->ptp_time_plus_delta_to_start_high);
     EVT_CameraSetUInt32Param(&ecam->camera, "PtpAcquisitionGateTimeLow", ptp_state->ptp_time_plus_delta_to_start_low);
     ptp_state->ptp_time_plus_delta_to_start_uint = ptp_time_plus_delta_to_start;
     ptp_state->ptp_time_plus_delta_to_start = ptp_params->ptp_global_time;
-    printf("PTP Gate time(ns): %llu\n", ptp_time_plus_delta_to_start);
+    printf("PTP Gate time(ns): %llu (offset_ns=%llu)\n",
+           ptp_time_plus_delta_to_start,
+           camera_params->ptp_gate_offset_ns);
 }
 
 

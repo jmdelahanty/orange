@@ -370,6 +370,8 @@ Additional PTP characterization artifacts:
     benchmark completed cleanly with:
     - `2010095`: `902/902` frames, `0` camera drops, `99.908340 fps`
     - `2010096`: `902/902` frames, `0` camera drops, `99.910065 fps`
+- dual-camera `80 fps` PTP with `2 ms` stagger:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_stagger2ms_rerun1`
 
 Those runs show:
 
@@ -383,6 +385,11 @@ Those runs show:
   disabled entirely
   - both cameras sustain about `100 fps`
   - camera drops remain `0`
+- dual-camera `80 fps` under `ptp_gate` becomes healthy again when a small
+  `2 ms` stagger is introduced between the cameras
+  - `2010095`: `enc_fps_mean = 80.025`, `dropped_frames_camera = 0`
+  - `2010096`: `enc_fps_mean = 80.0509`, `dropped_frames_camera = 0`
+  - `overflow_events = 0` on both cameras
 
 That narrows the remaining problem to a rate-sensitive dual-camera synchronized
 interaction, not a general `ptp_gate` setup bug:
@@ -392,6 +399,7 @@ interaction, not a general `ptp_gate` setup bug:
 - dual-camera `80 fps` PTP fails
 - dual-camera `80 fps` `free_run` works
 - dual-camera `100 fps` `ptp_gate` stream-only works
+- dual-camera `80 fps` `ptp_gate` with a small stagger works
 
 This means:
 
@@ -420,6 +428,13 @@ useful next diagnostic:
 - but their frame arrivals would no longer land at exactly the same instant
 - if a tiny offset restores throughput at `2 x 80 fps`, that strongly supports
   the synchronized-burst-contention explanation
+
+That diagnostic has now been exercised successfully:
+
+- a `2 ms` stagger restored dual-camera `80 fps` `ptp_gate` throughput to the
+  expected range
+- this is strong evidence that the unfixed case is dominated by synchronized
+  burst contention rather than a wrong GPU assignment or generic PTP setup bug
 
 ### Remaining Monolith In `orange.cpp`
 

@@ -69,6 +69,7 @@ struct HeadlessCliOptions {
     std::string record_folder;
     std::string experiment_spec_path;
     std::string sync_mode_override;
+    int ptp_gate_stagger_ns = 0;
     int duration_seconds = 0;
     int stream_start_delay_seconds = 0;
     int record_start_delay_seconds = 0;
@@ -88,6 +89,7 @@ struct ExperimentSpec {
     std::string output_root;
     std::string config_folder;
     std::string sync_mode = "free_run";
+    int ptp_gate_stagger_ns = 0;
     int duration_s = 0;
     int warmup_s = 0;
     int stream_start_delay_s = 0;
@@ -930,6 +932,45 @@ bool apply_sync_mode_override_to_selected_cameras(
     return true;
 }
 
+bool apply_ptp_gate_stagger_to_selected_cameras(
+    const HeadlessCliOptions& options,
+    CameraParams* cameras_params,
+    const std::vector<int>& selected_inventory_indices,
+    std::string* error_out)
+{
+    if (error_out) {
+        error_out->clear();
+    }
+    if (!cameras_params) {
+        if (error_out) {
+            *error_out = "Internal error: null camera params while applying PTP gate stagger";
+        }
+        return false;
+    }
+
+    for (int inventory_index : selected_inventory_indices) {
+        cameras_params[inventory_index].ptp_gate_offset_ns = 0;
+    }
+
+    if (options.ptp_gate_stagger_ns <= 0) {
+        return true;
+    }
+
+    int ptp_camera_ordinal = 0;
+    for (int inventory_index : selected_inventory_indices) {
+        CameraParams& camera_params = cameras_params[inventory_index];
+        if (!camera_sync_mode_uses_ptp(&camera_params)) {
+            continue;
+        }
+        camera_params.ptp_gate_offset_ns =
+            static_cast<unsigned long long>(ptp_camera_ordinal) *
+            static_cast<unsigned long long>(options.ptp_gate_stagger_ns);
+        ++ptp_camera_ordinal;
+    }
+
+    return true;
+}
+
 std::vector<std::string> split_headless_encoder_setup(const std::string& setup)
 {
     std::vector<std::string> tokens;
@@ -1301,6 +1342,7 @@ void print_headless_usage(const char* argv0)
         << "  --duration <seconds>         Optional. Otherwise runs until Ctrl+C.\n"
         << "  --stream-start-delay <sec>   Optional. Wait after camera open before stream open.\n"
         << "  --record-delay <seconds>     Optional. Stream first, then arm recording.\n"
+        << "  --ptp-gate-stagger-ns <int>  Optional. Apply a per-camera gate-time offset for ptp_gate runs.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
@@ -1754,6 +1796,19 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             if (!parse_non_negative_int(value, &options->record_start_delay_seconds)) {
                 if (error_out) {
                     *error_out = "Invalid --record-delay value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--ptp-gate-stagger-ns") {
+            const std::string value = consume_value("--ptp-gate-stagger-ns");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->ptp_gate_stagger_ns)) {
+                if (error_out) {
+                    *error_out = "Invalid --ptp-gate-stagger-ns value: " + value;
                 }
                 return false;
             }
@@ -3679,6 +3734,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->config_folder = cli_options.config_folder.empty()
         ? fixed.value("config_folder", "")
         : cli_options.config_folder;
+    spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
@@ -3716,6 +3772,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->stream_start_delay_s < 0) {
         if (error_out) {
             *error_out = "Experiment spec fixed.stream_start_delay_s must be >= 0";
+        }
+        return false;
+    }
+    if (spec->ptp_gate_stagger_ns < 0) {
+        if (error_out) {
+            *error_out = "Experiment spec fixed.ptp_gate_stagger_ns must be >= 0";
         }
         return false;
     }
@@ -3892,6 +3954,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.config_folder = spec.config_folder;
                                                             run.options.record_folder = run.recording_folder;
                                                             run.options.sync_mode_override = spec.sync_mode;
+                                                            run.options.ptp_gate_stagger_ns =
+                                                                spec.ptp_gate_stagger_ns;
                                                             run.options.duration_seconds = spec.duration_s + spec.warmup_s;
                                                             run.options.stream_start_delay_seconds = spec.stream_start_delay_s;
                                                             run.options.record_start_delay_seconds = 0;
@@ -4081,6 +4145,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
 
+    std::string ptp_gate_stagger_error;
+    if (!apply_ptp_gate_stagger_to_selected_cameras(
+            options,
+            cameras_params.get(),
+            selected_inventory_indices,
+            &ptp_gate_stagger_error)) {
+        std::cerr << ptp_gate_stagger_error << std::endl;
+        close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+        return 1;
+    }
+
     std::string recording_override_error;
     if (!apply_recording_overrides_to_selected_cameras(
             options,
@@ -4111,6 +4186,20 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             std::cerr << host_ptp_error << std::endl;
             close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
             return 1;
+        }
+    }
+
+    if (selected_run_uses_ptp && options.ptp_gate_stagger_ns > 0) {
+        std::cout << "Headless PTP gate stagger enabled."
+                  << " per_camera_offset_ns=" << options.ptp_gate_stagger_ns
+                  << std::endl;
+        for (int inventory_index : selected_inventory_indices) {
+            if (!camera_sync_mode_uses_ptp(&cameras_params[inventory_index])) {
+                continue;
+            }
+            std::cout << "  Camera " << cameras_params[inventory_index].camera_serial
+                      << " gate_offset_ns=" << cameras_params[inventory_index].ptp_gate_offset_ns
+                      << std::endl;
         }
     }
 

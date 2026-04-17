@@ -70,6 +70,13 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
     introduce a small deliberate stagger between the two PTP-gated cameras; if
     throughput returns at `2 x 80 fps`, that strongly supports the
     synchronized-burst-contention explanation.
+  - that diagnostic has now succeeded with a `2 ms` stagger:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_stagger2ms_rerun1`
+    restored both cameras to about `80 fps` with `0` camera drops in
+    `runs.csv` and `overflow_events = 0` in `recording_snapshot.json`.
+  - the branch now has an experimental headless stagger hook:
+    `fixed.ptp_gate_stagger_ns` in experiment specs and
+    `--ptp-gate-stagger-ns` in local headless CLI.
 
 ## Hardening Plan
 
