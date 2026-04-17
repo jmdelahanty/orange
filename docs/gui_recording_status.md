@@ -365,6 +365,11 @@ Additional PTP characterization artifacts:
   - `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_80fps_gop25_ptp_rerun1`
 - dual-camera `60 fps` PTP:
   - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_60fps_gop25_dual_pix_ptp_rerun2`
+- dual-camera `100 fps` PTP stream-only:
+  - no recording artifacts are written for this mode, but the direct local
+    benchmark completed cleanly with:
+    - `2010095`: `902/902` frames, `0` camera drops, `99.908340 fps`
+    - `2010096`: `902/902` frames, `0` camera drops, `99.910065 fps`
 
 Those runs show:
 
@@ -374,6 +379,10 @@ Those runs show:
 - dual-camera `60 fps` under `ptp_gate` is healthy
   - `2010095`: `enc_fps_mean = 61.2507`, `dropped_frames_camera = 0`
   - `2010096`: `enc_fps_mean = 61.2`, `dropped_frames_camera = 0`
+- dual-camera `100 fps` under `ptp_gate` is also healthy when recording is
+  disabled entirely
+  - both cameras sustain about `100 fps`
+  - camera drops remain `0`
 
 That narrows the remaining problem to a rate-sensitive dual-camera synchronized
 interaction, not a general `ptp_gate` setup bug:
@@ -382,6 +391,7 @@ interaction, not a general `ptp_gate` setup bug:
 - dual-camera `60 fps` PTP works
 - dual-camera `80 fps` PTP fails
 - dual-camera `80 fps` `free_run` works
+- dual-camera `100 fps` `ptp_gate` stream-only works
 
 This means:
 
@@ -390,8 +400,26 @@ This means:
 - headless `ptp_gate` no longer has a setup gap
 - dual-camera `2 x 80 fps` under local PTP currently underperforms badly and
   is not yet a validated synchronized baseline
-- the next likely root-cause area is synchronized burst contention in the
-  transport/acquisition path after both cameras are phase-aligned
+- the next likely root-cause area is synchronized burst contention that only
+  appears once recording work is added on top of phase-aligned arrivals
+
+Current working hypothesis:
+
+- this does not look like an average-bandwidth limit
+- the stronger interpretation is an instantaneous burst-capacity or queueing
+  problem
+- `free_run` naturally smears the two cameras apart in time, while `ptp_gate`
+  aligns them very tightly
+- with recording enabled, those aligned arrivals likely create short bursts of
+  shared work in transport, acquisition handoff, or recording-side queueing
+
+That is why a small deliberate stagger between the two `ptp_gate` cameras is a
+useful next diagnostic:
+
+- both cameras would stay PTP-synchronized and keep the same nominal FPS
+- but their frame arrivals would no longer land at exactly the same instant
+- if a tiny offset restores throughput at `2 x 80 fps`, that strongly supports
+  the synchronized-burst-contention explanation
 
 ### Remaining Monolith In `orange.cpp`
 

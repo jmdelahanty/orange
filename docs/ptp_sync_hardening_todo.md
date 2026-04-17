@@ -57,9 +57,19 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
     `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_80fps_gop25_ptp_rerun1`
   - dual-camera `60 fps` PTP works:
     `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_60fps_gop25_dual_pix_ptp_rerun2`
+  - dual-camera `100 fps` PTP stream-only also works:
+    no recording artifacts are emitted in this mode, but the direct local
+    benchmark sustained about `100 fps` on both cameras with `0` camera drops
 - Current best interpretation:
   - this is likely a rate-sensitive dual-camera synchronized contention problem,
     not a general single-camera `ptp_gate` configuration failure.
+  - more specifically, the evidence now points away from an average-bandwidth
+    limit and toward a burst-capacity or queueing problem that appears when
+    tightly phase-aligned camera arrivals interact with the recording path.
+  - next diagnostic:
+    introduce a small deliberate stagger between the two PTP-gated cameras; if
+    throughput returns at `2 x 80 fps`, that strongly supports the
+    synchronized-burst-contention explanation.
 
 ## Hardening Plan
 
