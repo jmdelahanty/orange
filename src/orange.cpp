@@ -36,6 +36,7 @@
 #include "gui/recording_panel.h"
 #include "image_canvas.h"
 #include "recording_validation.h"
+#include "session/recording_session.h"
 #include "spatial_layout_ui.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
@@ -2057,7 +2058,7 @@ int main(int argc, char **args) {
     image_writer->StartThread();
 
     std::vector<CameraResources> camera_resources;
-    std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    orange::session::RecordingSessionState recording_session;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
@@ -2863,9 +2864,6 @@ int main(int argc, char **args) {
                             tex = new GL_Texture[num_cameras];
                             crop_tex = new GL_Texture[num_cameras];
                             yolo_workers.assign(num_cameras, nullptr);
-                            recording_pipelines.clear();
-                            recording_pipelines.resize(num_cameras);
-
                             // Initialize all worker pointers to nullptr
                             for(int i = 0; i < num_cameras; ++i) {
                                 openGLDisplayWorkers[i] = nullptr;
@@ -2910,51 +2908,6 @@ int main(int argc, char **args) {
                                         yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
                                     }
                                 }
-                                if (cameras_select[i].record) {
-                                    std::string recording_output_warning;
-                                    const RecordingOutputConfig recording_output_config =
-                                        orange::gui::resolve_recording_output_config(
-                                            cameras_params[i],
-                                            *encoder_config,
-                                            cameras_select[i],
-                                            &recording_output_warning);
-                                    if (!recording_output_warning.empty()) {
-                                        std::cerr << "[record_output] Cam " << cameras_params[i].camera_serial
-                                                  << ": " << recording_output_warning
-                                                  << ". Falling back to native "
-                                                  << cameras_params[i].width << "x" << cameras_params[i].height
-                                                  << "." << std::endl;
-                                    }
-                                    ResolvedRecordingConfigOverrides recording_overrides;
-                                    recording_overrides.recording_gpu_id = cameras_params[i].gpu_id;
-                                    recording_overrides.has_output_preferences_override = true;
-                                    recording_overrides.output_preferences.mode =
-                                        recording_output_config.mode == "resolution" ? "resolution"
-                                        : (recording_output_config.mode == "exact_size" ? "exact_size" : "factor");
-                                    recording_overrides.output_preferences.downsample_factor =
-                                        recording_output_config.downsample_factor;
-                                    recording_overrides.output_preferences.requested_width =
-                                        recording_output_config.requested_width;
-                                    recording_overrides.output_preferences.requested_height =
-                                        recording_output_config.requested_height;
-                                    recording_overrides.codec = encoder_config->encoder_codec;
-                                    recording_overrides.preset = encoder_config->encoder_preset;
-                                    recording_overrides.tuning = encoder_config->tuning_info;
-                                    recording_overrides.rate_control_mode = encoder_config->rate_control_mode;
-                                    recording_overrides.quality_value = encoder_config->quality_value;
-                                    recording_overrides.gop_length = encoder_config->gop_length;
-                                    recording_overrides.base_folder_name = encoder_config->folder_name;
-                                    const ResolvedRecordingConfig resolved_recording_config =
-                                        build_resolved_recording_config(
-                                            cameras_params[i],
-                                            recording_overrides);
-                                    recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
-                                        &cameras_params[i],
-                                        resolved_recording_config,
-                                        *camera_resources[i].recycle_queue,
-                                        camera_control);
-                                }
-
                                 if (cameras_select[i].crop_and_encode) {
                                     std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
                                     cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
@@ -2972,6 +2925,15 @@ int main(int argc, char **args) {
                                 }
                             }
 
+                            orange::session::create_recording_pipelines_for_stream(
+                                &recording_session,
+                                cameras_params,
+                                cameras_select,
+                                num_cameras,
+                                *encoder_config,
+                                camera_resources.data(),
+                                camera_control);
+
                             // START ALL WORKER THREADS
                             for (int i = 0; i < num_cameras; i++) {
                                 if (openGLDisplayWorkers[i]) {
@@ -2982,9 +2944,7 @@ int main(int argc, char **args) {
                                     yolo_workers[i]->SetMaxQueueSize(240);
                                     yolo_workers[i]->StartThread();
                                 }
-                                if (recording_pipelines[i]) {
-                                    recording_pipelines[i]->start();
-                                }
+                                orange::session::start_recording_pipeline_for_camera(&recording_session, i);
                                 if (cropAndEncodeWorkers[i]) {
                                     cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
                                     cropAndEncodeWorkers[i]->StartThread();
@@ -3015,7 +2975,7 @@ int main(int argc, char **args) {
                                     ptp_params,
                                     &indigo_signal_builder,
                                     openGLDisplayWorkers[i],
-                                    recording_pipelines[i] ? recording_pipelines[i]->recording_ingress() : nullptr,
+                                    orange::session::recording_ingress_for_camera(recording_session, i),
                                     yolo_workers[i],
                                     image_writer,
                                     &camera_resources[i],
@@ -3056,7 +3016,7 @@ int main(int argc, char **args) {
                             if (yolo_workers[i]) yolo_workers[i]->StopThread();
                             if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
-                            if (recording_pipelines[i]) recording_pipelines[i]->request_stop();
+                            orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
                         }
                         std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
 
@@ -3082,15 +3042,12 @@ int main(int argc, char **args) {
                                 yolo_workers[i] = nullptr;
                             }
 
-                            if (recording_pipelines[i]) {
-                                recording_pipelines[i]->shutdown();
-                                recording_pipelines[i].reset();
-                            }
+                            orange::session::shutdown_recording_pipeline_for_camera(&recording_session, i);
                         }
                         
                         // Clear the worker pointer vectors
                         yolo_workers.clear();
-                        recording_pipelines.clear();
+                        orange::session::clear_recording_pipelines(&recording_session);
                         if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
