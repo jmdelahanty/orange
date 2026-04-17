@@ -195,15 +195,16 @@ Additional GUI checks completed:
   output defaults on camera open
 - the negative-test folder `100_cam4_invalid_no_helper` immediately shows the
   split-GOP validation failure in red when `record=true` is selected
-
-What is still not manually confirmed yet:
-
-- a fresh post-`eaf8619` GUI run proving the final pipeline sample makes the
-  routing totals in `recording_snapshot.json` line up with the true final
-  shutdown state
-- an explicit GUI attempt to press `Start streaming` with the invalid
-  `100_cam4_invalid_no_helper` config and confirm the hard preflight gate blocks
-  the session, not just the read-only validation summary
+- pressing `Start streaming` with `100_cam4_invalid_no_helper` is blocked by the
+  hard preflight gate
+- a fresh post-`eaf8619` GUI run validated the final pipeline-sample fix using:
+  - `/home/jeremy/orange_data/exp/unsorted/2026_04_17_12_04_52`
+- that GUI artifact confirms the final routed/helper copy counts line up:
+  - `helper_requested_frames = 175`
+  - `helper_dispatched_frames = 175`
+  - `helper_fallback_frames = 0`
+  - `source_to_helper_copy_samples_total = 175`
+  - `latency.source_to_helper_copy.samples = 175`
 
 ## Known Caveats
 
@@ -226,7 +227,7 @@ Status of that fix:
 - implemented
 - build-verified
 - runtime-validated in headless mode
-- not yet rerun-validated in the GUI path
+- runtime-validated in the GUI path
 
 ### Remaining Monolith In `orange.cpp`
 
@@ -242,25 +243,19 @@ That remaining work includes:
 
 ## Recommended Next Steps
 
-1. Rerun one short GUI split-GOP recording after the final pipeline-sample fix.
-   Goal:
-   confirm that routing totals in the snapshot now reflect the true final
-   state.
-
-2. Attempt `Start streaming` with the invalid `100_cam4_invalid_no_helper`
-   config.
-   Goal:
-   confirm the hard preflight gate blocks streaming, not just that the
-   validation summary turns red.
-
-3. Extract record start/stop metadata flow into `src/session/recording_session.*`.
+1. Extract record start/stop metadata flow into `src/session/recording_session.*`.
    Goal:
    further thin `src/orange.cpp` and align with the modularization plan.
 
-4. Add editable advanced per-camera split-GOP controls.
+2. Add editable advanced per-camera split-GOP controls.
    Goal:
    move beyond read-only validation summary while keeping the same safety
    checks.
+
+3. Add an app-level GUI surface for storage defaults and latest-recording
+   pointer settings.
+   Goal:
+   make the new app config discoverable without requiring direct JSON edits.
 
 ## Related Docs
 
