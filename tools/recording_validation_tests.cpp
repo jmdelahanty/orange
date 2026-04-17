@@ -47,6 +47,20 @@ Lookup make_lookup(const std::string& topology_class, const bool can_access_peer
     };
 }
 
+RecordingValidationCameraInput make_single_session_camera(const std::string& serial,
+                                                          const bool record_enabled,
+                                                          const int source_gpu_id)
+{
+    RecordingValidationCameraInput camera;
+    camera.camera_serial = serial;
+    camera.record_enabled = record_enabled;
+    camera.source_gpu_id = source_gpu_id;
+    camera.strategy.requested_mode = "single_session";
+    camera.strategy.mode = "single_session";
+    camera.strategy.split_gop.enabled = false;
+    return camera;
+}
+
 void require(const bool condition, const std::string& message)
 {
     if (!condition) {
@@ -123,6 +137,33 @@ void test_multiple_helpers_fail_in_current_gui_mode()
     require(!summaries[0].local_errors.empty(), "expected helper-count validation error");
 }
 
+void test_preflight_is_noop_without_split_gop_recording()
+{
+    const std::vector<RecordingValidationCameraInput> cameras = {
+        make_single_session_camera("2010096", true, 5)
+    };
+    const RecordingPreflightResult result =
+        run_recording_preflight(cameras, make_lookup("PIX", true));
+    require(result.ok, "single-session recording should not fail split-GOP preflight");
+    require(!result.has_record_enabled_split_gop,
+            "single-session recording should not be treated as split-GOP preflight");
+    require(result.errors.empty(), "single-session preflight should produce no errors");
+}
+
+void test_preflight_flattens_conflicts()
+{
+    const std::vector<RecordingValidationCameraInput> cameras = {
+        make_split_gop_camera("2010095", true, 1, {1, 2}),
+        make_split_gop_camera("2010096", true, 2, {2, 3})
+    };
+    const RecordingPreflightResult result =
+        run_recording_preflight(cameras, make_lookup("PIX", true));
+    require(!result.ok, "conflicting split-GOP session should fail preflight");
+    require(result.has_record_enabled_split_gop,
+            "preflight should report split-GOP participation");
+    require(!result.errors.empty(), "preflight should flatten conflict errors");
+}
+
 }  // namespace
 
 int main()
@@ -139,6 +180,8 @@ int main()
         {"overlapping_gpu_claims_fail", &test_overlapping_gpu_claims_fail},
         {"non_record_camera_is_ignored_for_conflicts", &test_non_record_camera_is_ignored_for_conflicts},
         {"multiple_helpers_fail_in_current_gui_mode", &test_multiple_helpers_fail_in_current_gui_mode},
+        {"preflight_is_noop_without_split_gop_recording", &test_preflight_is_noop_without_split_gop_recording},
+        {"preflight_flattens_conflicts", &test_preflight_flattens_conflicts},
     };
 
     for (const auto& test : tests) {

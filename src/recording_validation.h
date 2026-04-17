@@ -53,6 +53,13 @@ struct CameraRecordingValidationSummary {
     bool valid() const { return local_errors.empty() && session_errors.empty(); }
 };
 
+struct RecordingPreflightResult {
+    bool ok = true;
+    bool has_record_enabled_split_gop = false;
+    std::vector<CameraRecordingValidationSummary> summaries;
+    std::vector<std::string> errors;
+};
+
 using RecordingValidationGpuPathLookup =
     std::function<RecordingValidationGpuPathInfo(int source_gpu_id, int helper_gpu_id)>;
 
@@ -62,5 +69,9 @@ std::vector<int> build_recording_helper_gpu_ids(int source_gpu_id,
                                                 const std::vector<int>& encode_gpu_ids);
 
 std::vector<CameraRecordingValidationSummary> validate_recording_configuration(
+    const std::vector<RecordingValidationCameraInput>& cameras,
+    const RecordingValidationGpuPathLookup& gpu_path_lookup);
+
+RecordingPreflightResult run_recording_preflight(
     const std::vector<RecordingValidationCameraInput>& cameras,
     const RecordingValidationGpuPathLookup& gpu_path_lookup);

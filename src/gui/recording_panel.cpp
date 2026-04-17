@@ -103,30 +103,7 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
         validate_recording_configuration(
             validation_inputs,
             [](const int source_gpu_id, const int helper_gpu_id) {
-                RecordingValidationGpuPathInfo info;
-                info.source_gpu_id = source_gpu_id;
-                info.helper_gpu_id = helper_gpu_id;
-                const nlohmann::json copy_path_info =
-                    build_gpu_copy_path_static_topology_info(source_gpu_id, helper_gpu_id);
-                if (copy_path_info.contains("topology_class") &&
-                    copy_path_info["topology_class"].is_string()) {
-                    info.topology_class = copy_path_info["topology_class"].get<std::string>();
-                }
-                if (copy_path_info.contains("topology_lookup_error") &&
-                    copy_path_info["topology_lookup_error"].is_string()) {
-                    info.topology_error =
-                        copy_path_info["topology_lookup_error"].get<std::string>();
-                }
-                if (copy_path_info.contains("peer_access_capability") &&
-                    copy_path_info["peer_access_capability"].is_object()) {
-                    const nlohmann::json& peer_access = copy_path_info["peer_access_capability"];
-                    if (peer_access.contains("can_access_peer") &&
-                        peer_access["can_access_peer"].is_boolean()) {
-                        info.can_access_peer = peer_access["can_access_peer"].get<bool>();
-                        info.can_access_peer_known = true;
-                    }
-                }
-                return info;
+                return build_recording_validation_gpu_path_info(source_gpu_id, helper_gpu_id);
             });
 
     if (record_enabled_count == 0) {
@@ -306,7 +283,8 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
                                                     const bool streaming_active,
                                                     CameraParams* cameras_params,
                                                     CameraEachSelect* cameras_select,
-                                                    const int num_cameras)
+                                                    const int num_cameras,
+                                                    const std::vector<std::string>* preflight_errors)
 {
     RecordingPanelActions actions;
     if (!input_folder || !encoder_config) {
@@ -329,6 +307,16 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
     ImGui::PopStyleColor(1);
     ImGui::SameLine();
     ImGui::Text("%s", input_folder->c_str());
+
+    if (preflight_errors && !preflight_errors->empty()) {
+        ImGui::Spacing();
+        ImGui::TextColored(
+            ImVec4(0.9f, 0.3f, 0.3f, 1.0f),
+            "Last recording preflight failure:");
+        for (const std::string& error : *preflight_errors) {
+            ImGui::BulletText("%s", error.c_str());
+        }
+    }
 
     sanitize_record_output_config(
         &encoder_config->record_output_mode,

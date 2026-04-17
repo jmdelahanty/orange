@@ -656,6 +656,36 @@ nlohmann::json build_gpu_copy_path_static_topology_info(int source_gpu_id, int t
     return info;
 }
 
+RecordingValidationGpuPathInfo build_recording_validation_gpu_path_info(int source_gpu_id,
+                                                                        int helper_gpu_id)
+{
+    RecordingValidationGpuPathInfo info;
+    info.source_gpu_id = source_gpu_id;
+    info.helper_gpu_id = helper_gpu_id;
+
+    const nlohmann::json copy_path_info =
+        build_gpu_copy_path_static_topology_info(source_gpu_id, helper_gpu_id);
+    if (copy_path_info.contains("topology_class") &&
+        copy_path_info["topology_class"].is_string()) {
+        info.topology_class = copy_path_info["topology_class"].get<std::string>();
+    }
+    if (copy_path_info.contains("topology_lookup_error") &&
+        copy_path_info["topology_lookup_error"].is_string()) {
+        info.topology_error = copy_path_info["topology_lookup_error"].get<std::string>();
+    }
+    if (copy_path_info.contains("peer_access_capability") &&
+        copy_path_info["peer_access_capability"].is_object()) {
+        const nlohmann::json& peer_access = copy_path_info["peer_access_capability"];
+        if (peer_access.contains("can_access_peer") &&
+            peer_access["can_access_peer"].is_boolean()) {
+            info.can_access_peer = peer_access["can_access_peer"].get<bool>();
+            info.can_access_peer_known = true;
+        }
+    }
+
+    return info;
+}
+
 std::vector<std::string> string_split_char(char* string_c, std::string delimiter) {
     // ... (implementation from project.h)
     std::string s = std::string(string_c);

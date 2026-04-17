@@ -7,6 +7,7 @@
 #include <chrono>
 #include "network_base.h" // For EnetContext, ENetPeer, FetchGame::ManagerState (via fetch_generated.h)
 #include "camera.h"     // For CameraParams, GigEVisionDeviceInfo, CameraEmergent
+#include "recording_validation.h"
 #include "json.hpp" // For JSON handling (nlohmann::json)
 #include <filesystem> // For filesystem operations
 #include <fstream>   // For file operations
@@ -77,6 +78,8 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               bool sync_camera_enabled = false,
                               const PTPParams* ptp_params = nullptr);
 nlohmann::json build_gpu_runtime_info(int gpu_id);
+RecordingValidationGpuPathInfo build_recording_validation_gpu_path_info(int source_gpu_id,
+                                                                        int helper_gpu_id);
 bool initialize_ptp_sync_summary(const std::string& recording_folder,
                                  const std::string& recording_id,
                                  int num_cameras,

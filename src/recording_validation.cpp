@@ -123,6 +123,18 @@ void populate_session_conflicts(std::vector<CameraRecordingValidationSummary>* s
     }
 }
 
+void append_unique_error(std::set<std::string>* seen_errors,
+                         std::vector<std::string>* errors_out,
+                         const std::string& value)
+{
+    if (!seen_errors || !errors_out || value.empty()) {
+        return;
+    }
+    if (seen_errors->insert(value).second) {
+        errors_out->push_back(value);
+    }
+}
+
 }  // namespace
 
 std::vector<int> build_recording_claimed_gpu_ids(const int source_gpu_id,
@@ -171,4 +183,33 @@ std::vector<CameraRecordingValidationSummary> validate_recording_configuration(
     }
     populate_session_conflicts(&summaries);
     return summaries;
+}
+
+RecordingPreflightResult run_recording_preflight(
+    const std::vector<RecordingValidationCameraInput>& cameras,
+    const RecordingValidationGpuPathLookup& gpu_path_lookup)
+{
+    RecordingPreflightResult result;
+    result.summaries = validate_recording_configuration(cameras, gpu_path_lookup);
+
+    std::set<std::string> seen_errors;
+    for (const auto& summary : result.summaries) {
+        if (!summary.record_enabled || !summary.split_gop_enabled) {
+            continue;
+        }
+        result.has_record_enabled_split_gop = true;
+
+        for (const std::string& error : summary.local_errors) {
+            append_unique_error(
+                &seen_errors,
+                &result.errors,
+                summary.camera_serial + ": " + error);
+        }
+        for (const std::string& error : summary.session_errors) {
+            append_unique_error(&seen_errors, &result.errors, error);
+        }
+    }
+
+    result.ok = result.errors.empty();
+    return result;
 }

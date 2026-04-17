@@ -1986,6 +1986,31 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             }
         }
 
+        std::vector<RecordingValidationCameraInput> validation_inputs;
+        validation_inputs.reserve(selected_indices.size());
+        for (int idx : selected_indices) {
+            RecordingValidationCameraInput input;
+            input.camera_index = idx;
+            input.camera_serial = cameras_params[idx].camera_serial;
+            input.record_enabled = enable_recording;
+            input.source_gpu_id = cameras_params[idx].gpu_id;
+            input.strategy = cameras_params[idx].recording.strategy;
+            input.constraints = cameras_params[idx].recording.constraints;
+            validation_inputs.push_back(std::move(input));
+        }
+        const RecordingPreflightResult preflight = run_recording_preflight(
+            validation_inputs,
+            [](const int source_gpu_id, const int helper_gpu_id) {
+                return build_recording_validation_gpu_path_info(source_gpu_id, helper_gpu_id);
+            });
+        if (!preflight.ok) {
+            std::cerr << "Headless recording preflight failed." << std::endl;
+            for (const std::string& error : preflight.errors) {
+                std::cerr << "  - " << error << std::endl;
+            }
+            return false;
+        }
+
         camera_resources.clear();
         camera_resources.resize(num_cameras);
         for (int idx : selected_indices) {

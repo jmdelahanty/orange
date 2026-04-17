@@ -4,6 +4,7 @@
 #include "video_capture.h"
 
 #include <string>
+#include <vector>
 
 struct EncoderConfig {
     std::string encoder_codec;
@@ -39,6 +40,7 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
                                                     bool streaming_active,
                                                     CameraParams* cameras_params,
                                                     CameraEachSelect* cameras_select,
-                                                    int num_cameras);
+                                                    int num_cameras,
+                                                    const std::vector<std::string>* preflight_errors);
 
 }  // namespace orange::gui

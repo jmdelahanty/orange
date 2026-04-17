@@ -35,6 +35,7 @@
 #include "gui/host_ptp_panel.h"
 #include "gui/recording_panel.h"
 #include "image_canvas.h"
+#include "recording_validation.h"
 #include "spatial_layout_ui.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
@@ -183,6 +184,55 @@ std::string trim_ascii_whitespace(const std::string& input)
         --end;
     }
     return input.substr(start, end - start);
+}
+
+std::vector<RecordingValidationCameraInput> build_gui_recording_validation_inputs(
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    std::vector<RecordingValidationCameraInput> inputs;
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return inputs;
+    }
+
+    inputs.reserve(static_cast<std::size_t>(num_cameras));
+    for (int i = 0; i < num_cameras; ++i) {
+        RecordingValidationCameraInput input;
+        input.camera_index = i;
+        input.camera_serial = cameras_params[i].camera_serial;
+        input.record_enabled = cameras_select[i].record;
+        input.source_gpu_id = cameras_params[i].gpu_id;
+        input.strategy = cameras_params[i].recording.strategy;
+        input.constraints = cameras_params[i].recording.constraints;
+        inputs.push_back(std::move(input));
+    }
+
+    return inputs;
+}
+
+RecordingPreflightResult run_gui_recording_preflight(const CameraParams* cameras_params,
+                                                     const CameraEachSelect* cameras_select,
+                                                     const int num_cameras)
+{
+    return run_recording_preflight(
+        build_gui_recording_validation_inputs(cameras_params, cameras_select, num_cameras),
+        [](const int source_gpu_id, const int helper_gpu_id) {
+            return build_recording_validation_gpu_path_info(source_gpu_id, helper_gpu_id);
+        });
+}
+
+void log_recording_preflight_failure(const char* context,
+                                     const RecordingPreflightResult& preflight)
+{
+    if (preflight.ok || preflight.errors.empty()) {
+        return;
+    }
+
+    std::cerr << "[recording_preflight] " << context << " blocked" << std::endl;
+    for (const std::string& error : preflight.errors) {
+        std::cerr << "  - " << error << std::endl;
+    }
 }
 
 bool parse_uint_csv_text(const char* text, std::vector<unsigned int>* out_values, std::string* error_out)
@@ -2010,6 +2060,7 @@ int main(int argc, char **args) {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
+    std::vector<std::string> recording_preflight_errors;
 
     EncoderConfig *encoder_config = new EncoderConfig{
         "h264",
@@ -2189,7 +2240,8 @@ int main(int argc, char **args) {
                     camera_control->subscribe,
                     cameras_params,
                     cameras_select,
-                    num_cameras);
+                    num_cameras,
+                    &recording_preflight_errors);
             if (recording_panel_actions.choose_recording_dir_requested) {
                 IGFD::FileDialogConfig config;
                 config.countSelectionMax = 1;
@@ -2759,211 +2811,220 @@ int main(int argc, char **args) {
                     ImGui::BeginDisabled();
                 }
                 if (ImGui::Button(camera_control->subscribe ? "Stop streaming" : "Start streaming")) {
-                    (camera_control->subscribe) = !(camera_control->subscribe);
-
-                    if (camera_control->subscribe) {
+                    const bool start_streaming = !camera_control->subscribe;
+                    if (start_streaming) {
+                        const RecordingPreflightResult preflight =
+                            run_gui_recording_preflight(cameras_params, cameras_select, num_cameras);
+                        if (!preflight.ok) {
+                            recording_preflight_errors = preflight.errors;
+                            log_recording_preflight_failure("gui_start_streaming", preflight);
+                        } else {
+                            recording_preflight_errors.clear();
+                            camera_control->subscribe = true;
                         // START STREAMING
-                        std::cout << "STARTING STREAMING SESSION..." << std::endl;
+                            std::cout << "STARTING STREAMING SESSION..." << std::endl;
 
-                        if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record || cs.crop_and_encode; })) {
-                            // Store the base folder for recordings, not the final timestamped one.
-                            encoder_config->folder_name = input_folder;
-                        }
-
-                        // This part remains the same
-                        camera_resources.resize(num_cameras);
-                        frame_ipc_managers.clear();
-                        frame_ipc_managers.resize(num_cameras);
-                        frame_ipc_init_errors.clear();
-                        frame_ipc_init_errors.resize(num_cameras);
-                        size_t max_frame_size_bytes = 0;
-                        for (int i = 0; i < num_cameras; ++i) {
-                            size_t current_size = (size_t)cameras_params[i].width * (size_t)cameras_params[i].height;
-                            if (current_size > max_frame_size_bytes) {
-                                max_frame_size_bytes = current_size;
+                            if (std::any_of(cameras_select, cameras_select + num_cameras, [](const CameraEachSelect& cs){ return cs.record || cs.crop_and_encode; })) {
+                                // Store the base folder for recordings, not the final timestamped one.
+                                encoder_config->folder_name = input_folder;
                             }
-                        }
-                        for (int i = 0; i < num_cameras; ++i) {
-                            std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
-                            camera_resources[i].initialize(
-                                cameras_params[i].gpu_id,
-                                max_frame_size_bytes,
-                                cameras_select[i].yolo,
-                                cameras_params[i].recording.resources.acquire_work_entries);
-                            if (cameras_select[i].send_frame_ipc) {
-                                frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
-                                if (!frame_ipc_managers[i]->isEnabled()) {
-                                    frame_ipc_init_errors[i] = frame_ipc_managers[i]->getInitError();
-                                    frame_ipc_managers[i].reset();
+
+                            // This part remains the same
+                            camera_resources.resize(num_cameras);
+                            frame_ipc_managers.clear();
+                            frame_ipc_managers.resize(num_cameras);
+                            frame_ipc_init_errors.clear();
+                            frame_ipc_init_errors.resize(num_cameras);
+                            size_t max_frame_size_bytes = 0;
+                            for (int i = 0; i < num_cameras; ++i) {
+                                size_t current_size = (size_t)cameras_params[i].width * (size_t)cameras_params[i].height;
+                                if (current_size > max_frame_size_bytes) {
+                                    max_frame_size_bytes = current_size;
                                 }
                             }
-                        }
-                        // Create worker thread objects and GPU textures
-                        openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
-                        cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
-                        tex = new GL_Texture[num_cameras];
-                        crop_tex = new GL_Texture[num_cameras];
-                        yolo_workers.assign(num_cameras, nullptr);
-                        recording_pipelines.clear();
-                        recording_pipelines.resize(num_cameras);
-
-                        // Initialize all worker pointers to nullptr
-                        for(int i = 0; i < num_cameras; ++i) {
-                            openGLDisplayWorkers[i] = nullptr;
-                            cropAndEncodeWorkers[i] = nullptr;
-                        }
-                        cudaSetDevice(display_gpu_id);
-
-                        // Allocate main textures for each camera's OpenGL display
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (cameras_select[i].stream_on) {
-                                int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
-                                int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
-                                setup_texture(tex[i], w, h);
+                            for (int i = 0; i < num_cameras; ++i) {
+                                std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
+                                camera_resources[i].initialize(
+                                    cameras_params[i].gpu_id,
+                                    max_frame_size_bytes,
+                                    cameras_select[i].yolo,
+                                    cameras_params[i].recording.resources.acquire_work_entries);
+                                if (cameras_select[i].send_frame_ipc) {
+                                    frame_ipc_managers[i] = std::make_unique<FrameIPCManager>(&cameras_params[i]);
+                                    if (!frame_ipc_managers[i]->isEnabled()) {
+                                        frame_ipc_init_errors[i] = frame_ipc_managers[i]->getInitError();
+                                        frame_ipc_managers[i].reset();
+                                    }
+                                }
                             }
-                        }
+                            // Create worker thread objects and GPU textures
+                            openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
+                            cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
+                            tex = new GL_Texture[num_cameras];
+                            crop_tex = new GL_Texture[num_cameras];
+                            yolo_workers.assign(num_cameras, nullptr);
+                            recording_pipelines.clear();
+                            recording_pipelines.resize(num_cameras);
 
-                        // Setup cropped textures for each crop/encode worker
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (cameras_select[i].crop_and_encode) {
-                                // The crop view has a fixed size of 256x256
-                                setup_texture(crop_tex[i], 256, 256);
+                            // Initialize all worker pointers to nullptr
+                            for(int i = 0; i < num_cameras; ++i) {
+                                openGLDisplayWorkers[i] = nullptr;
+                                cropAndEncodeWorkers[i] = nullptr;
                             }
-                        }
+                            cudaSetDevice(display_gpu_id);
 
-                        // CREATE AND LINK ALL WORKER THREADS
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (cameras_select[i].stream_on) {
-                                std::string name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
-                                openGLDisplayWorkers[i] = new COpenGLDisplay(name.c_str(), &cameras_params[i], &cameras_select[i], tex[i].cuda_buffer, &indigo_signal_builder, *camera_resources[i].recycle_queue);
+                            // Allocate main textures for each camera's OpenGL display
+                            for (int i = 0; i < num_cameras; i++) {
+                                if (cameras_select[i].stream_on) {
+                                    int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
+                                    int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
+                                    setup_texture(tex[i], w, h);
+                                }
                             }
-                            if (cameras_select[i].yolo) {
-                                std::string name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
-                                cameras_select[i].yolo_model = yolo_model.c_str();
-                                yolo_workers[i] = new YOLOv8Worker(
-                                    name.c_str(),
+
+                            // Setup cropped textures for each crop/encode worker
+                            for (int i = 0; i < num_cameras; i++) {
+                                if (cameras_select[i].crop_and_encode) {
+                                    // The crop view has a fixed size of 256x256
+                                    setup_texture(crop_tex[i], 256, 256);
+                                }
+                            }
+
+                            // CREATE AND LINK ALL WORKER THREADS
+                            for (int i = 0; i < num_cameras; i++) {
+                                if (cameras_select[i].stream_on) {
+                                    std::string name = "OpenGLDisplay_Cam_" + cameras_params[i].camera_serial;
+                                    openGLDisplayWorkers[i] = new COpenGLDisplay(name.c_str(), &cameras_params[i], &cameras_select[i], tex[i].cuda_buffer, &indigo_signal_builder, *camera_resources[i].recycle_queue);
+                                }
+                                if (cameras_select[i].yolo) {
+                                    std::string name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
+                                    cameras_select[i].yolo_model = yolo_model.c_str();
+                                    yolo_workers[i] = new YOLOv8Worker(
+                                        name.c_str(),
+                                        &cameras_params[i],
+                                        &cameras_select[i],
+                                        camera_control,
+                                        *camera_resources[i].recycle_queue
+                                    );
+                                    if (openGLDisplayWorkers[i]) {
+                                        yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
+                                    }
+                                }
+                                if (cameras_select[i].record) {
+                                    std::string recording_output_warning;
+                                    const RecordingOutputConfig recording_output_config =
+                                        orange::gui::resolve_recording_output_config(
+                                            cameras_params[i],
+                                            *encoder_config,
+                                            cameras_select[i],
+                                            &recording_output_warning);
+                                    if (!recording_output_warning.empty()) {
+                                        std::cerr << "[record_output] Cam " << cameras_params[i].camera_serial
+                                                  << ": " << recording_output_warning
+                                                  << ". Falling back to native "
+                                                  << cameras_params[i].width << "x" << cameras_params[i].height
+                                                  << "." << std::endl;
+                                    }
+                                    ResolvedRecordingConfigOverrides recording_overrides;
+                                    recording_overrides.recording_gpu_id = cameras_params[i].gpu_id;
+                                    recording_overrides.has_output_preferences_override = true;
+                                    recording_overrides.output_preferences.mode =
+                                        recording_output_config.mode == "resolution" ? "resolution"
+                                        : (recording_output_config.mode == "exact_size" ? "exact_size" : "factor");
+                                    recording_overrides.output_preferences.downsample_factor =
+                                        recording_output_config.downsample_factor;
+                                    recording_overrides.output_preferences.requested_width =
+                                        recording_output_config.requested_width;
+                                    recording_overrides.output_preferences.requested_height =
+                                        recording_output_config.requested_height;
+                                    recording_overrides.codec = encoder_config->encoder_codec;
+                                    recording_overrides.preset = encoder_config->encoder_preset;
+                                    recording_overrides.tuning = encoder_config->tuning_info;
+                                    recording_overrides.rate_control_mode = encoder_config->rate_control_mode;
+                                    recording_overrides.quality_value = encoder_config->quality_value;
+                                    recording_overrides.gop_length = encoder_config->gop_length;
+                                    recording_overrides.base_folder_name = encoder_config->folder_name;
+                                    const ResolvedRecordingConfig resolved_recording_config =
+                                        build_resolved_recording_config(
+                                            cameras_params[i],
+                                            recording_overrides);
+                                    recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
+                                        &cameras_params[i],
+                                        resolved_recording_config,
+                                        *camera_resources[i].recycle_queue,
+                                        camera_control);
+                                }
+
+                                if (cameras_select[i].crop_and_encode) {
+                                    std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
+                                    cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
+                                        name.c_str(),
+                                        &cameras_params[i],
+                                        encoder_config->folder_name,
+                                        *camera_resources[i].recycle_queue,
+                                        crop_tex[i].cuda_buffer,
+                                        camera_control
+                                    );
+                                    // Immediately link it to the YOLO worker if it exists
+                                    if (yolo_workers[i]) {
+                                        yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
+                                    }
+                                }
+                            }
+
+                            // START ALL WORKER THREADS
+                            for (int i = 0; i < num_cameras; i++) {
+                                if (openGLDisplayWorkers[i]) {
+                                    openGLDisplayWorkers[i]->SetMaxQueueSize(240); 
+                                    openGLDisplayWorkers[i]->StartThread();
+                                }
+                                if (yolo_workers[i]) {
+                                    yolo_workers[i]->SetMaxQueueSize(240);
+                                    yolo_workers[i]->StartThread();
+                                }
+                                if (recording_pipelines[i]) {
+                                    recording_pipelines[i]->start();
+                                }
+                                if (cropAndEncodeWorkers[i]) {
+                                    cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
+                                    cropAndEncodeWorkers[i]->StartThread();
+                                }
+                            }
+
+                            // PREPARE CAMERAS
+                            for (int i = 0; i < num_cameras; i++) {
+                                camera_open_stream(&ecams[i].camera, &cameras_params[i], "gui_start_streaming");
+                                ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
+                                allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
+                            }
+                            if (ptp_stream_sync) {
+                                for (int i = 0; i < num_cameras; i++) {
+                                    ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
+                                }
+                                camera_control->sync_camera = true;
+                            }
+
+                            // Start acquisition threads
+                            for (int i = 0; i < num_cameras; i++) {
+                                camera_threads.emplace_back(
+                                    &acquire_frames,
+                                    &ecams[i],
                                     &cameras_params[i],
                                     &cameras_select[i],
                                     camera_control,
-                                    *camera_resources[i].recycle_queue
+                                    ptp_params,
+                                    &indigo_signal_builder,
+                                    openGLDisplayWorkers[i],
+                                    recording_pipelines[i] ? recording_pipelines[i]->recording_ingress() : nullptr,
+                                    yolo_workers[i],
+                                    image_writer,
+                                    &camera_resources[i],
+                                    frame_ipc_managers[i].get()
                                 );
-                                if (openGLDisplayWorkers[i]) {
-                                    yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
-                                }
                             }
-                            if (cameras_select[i].record) {
-                                std::string recording_output_warning;
-                                const RecordingOutputConfig recording_output_config =
-                                    orange::gui::resolve_recording_output_config(
-                                        cameras_params[i],
-                                        *encoder_config,
-                                        cameras_select[i],
-                                        &recording_output_warning);
-                                if (!recording_output_warning.empty()) {
-                                    std::cerr << "[record_output] Cam " << cameras_params[i].camera_serial
-                                              << ": " << recording_output_warning
-                                              << ". Falling back to native "
-                                              << cameras_params[i].width << "x" << cameras_params[i].height
-                                              << "." << std::endl;
-                                }
-                                ResolvedRecordingConfigOverrides recording_overrides;
-                                recording_overrides.recording_gpu_id = cameras_params[i].gpu_id;
-                                recording_overrides.has_output_preferences_override = true;
-                                recording_overrides.output_preferences.mode =
-                                    recording_output_config.mode == "resolution" ? "resolution"
-                                    : (recording_output_config.mode == "exact_size" ? "exact_size" : "factor");
-                                recording_overrides.output_preferences.downsample_factor =
-                                    recording_output_config.downsample_factor;
-                                recording_overrides.output_preferences.requested_width =
-                                    recording_output_config.requested_width;
-                                recording_overrides.output_preferences.requested_height =
-                                    recording_output_config.requested_height;
-                                recording_overrides.codec = encoder_config->encoder_codec;
-                                recording_overrides.preset = encoder_config->encoder_preset;
-                                recording_overrides.tuning = encoder_config->tuning_info;
-                                recording_overrides.rate_control_mode = encoder_config->rate_control_mode;
-                                recording_overrides.quality_value = encoder_config->quality_value;
-                                recording_overrides.gop_length = encoder_config->gop_length;
-                                recording_overrides.base_folder_name = encoder_config->folder_name;
-                                const ResolvedRecordingConfig resolved_recording_config =
-                                    build_resolved_recording_config(
-                                        cameras_params[i],
-                                        recording_overrides);
-                                recording_pipelines[i] = std::make_unique<ModernRecordingPipeline>(
-                                    &cameras_params[i],
-                                    resolved_recording_config,
-                                    *camera_resources[i].recycle_queue,
-                                    camera_control);
-                            }
-
-                            if (cameras_select[i].crop_and_encode) {
-                                std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
-                                cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
-                                    name.c_str(),
-                                    &cameras_params[i],
-                                    encoder_config->folder_name,
-                                    *camera_resources[i].recycle_queue,
-                                    crop_tex[i].cuda_buffer,
-                                    camera_control
-                                );
-                                // Immediately link it to the YOLO worker if it exists
-                                if (yolo_workers[i]) {
-                                    yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
-                                }
-                            }
-                        }
-
-                        // START ALL WORKER THREADS
-                        for (int i = 0; i < num_cameras; i++) {
-                            if (openGLDisplayWorkers[i]) {
-                                openGLDisplayWorkers[i]->SetMaxQueueSize(240); 
-                                openGLDisplayWorkers[i]->StartThread();
-                            }
-                            if (yolo_workers[i]) {
-                                yolo_workers[i]->SetMaxQueueSize(240);
-                                yolo_workers[i]->StartThread();
-                            }
-                            if (recording_pipelines[i]) {
-                                recording_pipelines[i]->start();
-                            }
-                            if (cropAndEncodeWorkers[i]) {
-                                cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
-                                cropAndEncodeWorkers[i]->StartThread();
-                            }
-                        }
-
-                        // PREPARE CAMERAS
-                        for (int i = 0; i < num_cameras; i++) {
-                            camera_open_stream(&ecams[i].camera, &cameras_params[i], "gui_start_streaming");
-                            ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
-                            allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
-                        }
-                        if (ptp_stream_sync) {
-                            for (int i = 0; i < num_cameras; i++) {
-                                ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
-                            }
-                            camera_control->sync_camera = true;
-                        }
-
-                        // Start acquisition threads
-                        for (int i = 0; i < num_cameras; i++) {
-                            camera_threads.emplace_back(
-                                &acquire_frames,
-                                &ecams[i],
-                                &cameras_params[i],
-                                &cameras_select[i],
-                                camera_control,
-                                ptp_params,
-                                &indigo_signal_builder,
-                                openGLDisplayWorkers[i],
-                                recording_pipelines[i] ? recording_pipelines[i]->recording_ingress() : nullptr,
-                                yolo_workers[i],
-                                image_writer,
-                                &camera_resources[i],
-                                frame_ipc_managers[i].get()
-                            );
                         }
                     } else {
+                        camera_control->subscribe = false;
                         // STOP STREAMING
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
 
@@ -3094,69 +3155,81 @@ int main(int argc, char **args) {
                     } else {
                         bool next_record_state = !camera_control->record_video;
                         std::string resolved_recording_folder;
+                        bool allow_transition = true;
 
                         if (next_record_state) {
-                            camera_control->recording_draining = false;
-                            camera_control->stop_record = false;
-                            std::string recording_id = get_current_date_time();
-                            std::string recording_folder;
-                            std::string base_folder = encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name;
-                            {
-                                std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-                                if (camera_control->recording_folder.empty()) {
-                                    camera_control->recording_folder = base_folder + "/" + recording_id;
-                                } else {
-                                    recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
-                                }
-                                recording_folder = camera_control->recording_folder;
-                            }
-                            if (base_folder.empty() && !recording_folder.empty()) {
-                                std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
-                                if (parent.empty() || parent == "/") {
-                                    base_folder = recording_folder;
-                                } else {
-                                    base_folder = parent.string();
-                                }
-                            }
-                            resolved_recording_folder = recording_folder;
-                            make_folder(recording_folder);
-                            write_recording_snapshot(
-                                recording_folder,
-                                recording_id,
-                                cameras_params,
-                                num_cameras,
-                                base_folder,
-                                camera_control->sync_camera,
-                                ptp_params);
-                            initialize_ptp_sync_summary(
-                                recording_folder,
-                                recording_id,
-                                num_cameras,
-                                camera_control->sync_camera,
-                                ptp_params);
-                        }
-
-                        camera_control->record_video = next_record_state;
-                        if (!camera_control->record_video) {
-                            camera_control->recording_draining = true;
-                            camera_control->stop_record = true;
-                            if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
+                            const RecordingPreflightResult preflight =
+                                run_gui_recording_preflight(cameras_params, cameras_select, num_cameras);
+                            if (!preflight.ok) {
+                                recording_preflight_errors = preflight.errors;
+                                log_recording_preflight_failure("gui_start_recording", preflight);
+                                allow_transition = false;
+                            } else {
+                                recording_preflight_errors.clear();
                                 camera_control->recording_draining = false;
                                 camera_control->stop_record = false;
+                                std::string recording_id = get_current_date_time();
+                                std::string recording_folder;
+                                std::string base_folder = encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name;
+                                {
+                                    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+                                    if (camera_control->recording_folder.empty()) {
+                                        camera_control->recording_folder = base_folder + "/" + recording_id;
+                                    } else {
+                                        recording_id = std::filesystem::path(camera_control->recording_folder).filename().string();
+                                    }
+                                    recording_folder = camera_control->recording_folder;
+                                }
+                                if (base_folder.empty() && !recording_folder.empty()) {
+                                    std::filesystem::path parent = std::filesystem::path(recording_folder).parent_path();
+                                    if (parent.empty() || parent == "/") {
+                                        base_folder = recording_folder;
+                                    } else {
+                                        base_folder = parent.string();
+                                    }
+                                }
+                                resolved_recording_folder = recording_folder;
+                                make_folder(recording_folder);
+                                write_recording_snapshot(
+                                    recording_folder,
+                                    recording_id,
+                                    cameras_params,
+                                    num_cameras,
+                                    base_folder,
+                                    camera_control->sync_camera,
+                                    ptp_params);
+                                initialize_ptp_sync_summary(
+                                    recording_folder,
+                                    recording_id,
+                                    num_cameras,
+                                    camera_control->sync_camera,
+                                    ptp_params);
                             }
                         }
 
-                        if (camera_control->record_video) {
-                            // START RECORDING
-                            try_start_timer();
-                            std::cout << "Recording toggled ON." << std::endl;
-                            if (!resolved_recording_folder.empty()) {
-                                std::cout << "Recording folder: " << resolved_recording_folder << std::endl;
+                        if (allow_transition) {
+                            camera_control->record_video = next_record_state;
+                            if (!camera_control->record_video) {
+                                camera_control->recording_draining = true;
+                                camera_control->stop_record = true;
+                                if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
+                                    camera_control->recording_draining = false;
+                                    camera_control->stop_record = false;
+                                }
                             }
-                        } else {
-                            // STOP RECORDING
-                            try_stop_timer();
-                            std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
+
+                            if (camera_control->record_video) {
+                                // START RECORDING
+                                try_start_timer();
+                                std::cout << "Recording toggled ON." << std::endl;
+                                if (!resolved_recording_folder.empty()) {
+                                    std::cout << "Recording folder: " << resolved_recording_folder << std::endl;
+                                }
+                            } else {
+                                // STOP RECORDING
+                                try_stop_timer();
+                                std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
+                            }
                         }
                     }
                 }
