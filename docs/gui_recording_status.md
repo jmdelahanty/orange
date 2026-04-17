@@ -359,13 +359,39 @@ But performance is still poor under local PTP gating:
 - `2010095`: `enc_fps_mean = 55.2923`, `dropped_frames_camera = 266`
 - `2010096`: `enc_fps_mean = 55.313`, `dropped_frames_camera = 266`
 
+Additional PTP characterization artifacts:
+
+- single-camera `80 fps` PTP:
+  - `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_80fps_gop25_ptp_rerun1`
+- dual-camera `60 fps` PTP:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_60fps_gop25_dual_pix_ptp_rerun2`
+
+Those runs show:
+
+- single-camera `80 fps` under `ptp_gate` is healthy
+  - `2010096`: `enc_fps_mean ≈ 80`
+  - `camera_dropped_frames = 0`
+- dual-camera `60 fps` under `ptp_gate` is healthy
+  - `2010095`: `enc_fps_mean = 61.2507`, `dropped_frames_camera = 0`
+  - `2010096`: `enc_fps_mean = 61.2`, `dropped_frames_camera = 0`
+
+That narrows the remaining problem to a rate-sensitive dual-camera synchronized
+interaction, not a general `ptp_gate` setup bug:
+
+- single-camera `80 fps` PTP works
+- dual-camera `60 fps` PTP works
+- dual-camera `80 fps` PTP fails
+- dual-camera `80 fps` `free_run` works
+
 This means:
 
 - the current `2 x 80 fps` dual-camera baseline is useful for throughput
   characterization
 - headless `ptp_gate` no longer has a setup gap
-- but dual-camera `2 x 80 fps` under local PTP currently underperforms badly and
+- dual-camera `2 x 80 fps` under local PTP currently underperforms badly and
   is not yet a validated synchronized baseline
+- the next likely root-cause area is synchronized burst contention in the
+  transport/acquisition path after both cameras are phase-aligned
 
 ### Remaining Monolith In `orange.cpp`
 

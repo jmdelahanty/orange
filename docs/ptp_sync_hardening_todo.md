@@ -52,6 +52,14 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
 - Confirmed non-cause:
   - the two cameras are not accidentally sharing a source GPU in this run
     (`2010095 -> 1`, `2010096 -> 5`).
+- New discriminator results:
+  - single-camera `80 fps` PTP works:
+    `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_80fps_gop25_ptp_rerun1`
+  - dual-camera `60 fps` PTP works:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_60fps_gop25_dual_pix_ptp_rerun2`
+- Current best interpretation:
+  - this is likely a rate-sensitive dual-camera synchronized contention problem,
+    not a general single-camera `ptp_gate` configuration failure.
 
 ## Hardening Plan
 
