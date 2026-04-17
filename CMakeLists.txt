@@ -228,6 +228,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
+    "${SRC_DIR}/gui/host_ptp_panel.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_layout_ui.cpp"
