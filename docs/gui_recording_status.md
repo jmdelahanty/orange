@@ -67,6 +67,22 @@ That folder currently contains:
 
 Both are copied from the validated branch-local schema-3 configs.
 
+There is also a deliberate negative-test folder:
+
+- `~/orange_data/config/local/100_cam4_invalid_no_helper`
+
+That folder currently contains:
+
+- `2010096.json`
+
+and is intentionally invalid for the current split-GOP GUI validation because
+it sets:
+
+- `source_gpu_id = 5`
+- `recording.split_gop.encoder_gpu_ids = [5]`
+
+which resolves to no non-source helper GPU.
+
 ### GUI Recording Controls Sync From Camera Defaults
 
 When cameras are opened, the GUI now attempts to populate the session-wide
@@ -153,6 +169,25 @@ Confirmed from that run:
   - nonzero `helper_dispatched_frames`
   - helper lane visible in `Cam2010096_pipeline_perf.csv`
 
+Additional GUI checks completed:
+
+- non-split recording still starts, records, stops, and drains cleanly
+- the `100_cam4` schema-3 config folder is selectable in the normal GUI local
+  config flow
+- the GUI session recording controls now pick up the schema-3 camera encode and
+  output defaults on camera open
+- the negative-test folder `100_cam4_invalid_no_helper` immediately shows the
+  split-GOP validation failure in red when `record=true` is selected
+
+What is still not manually confirmed yet:
+
+- a fresh post-`eaf8619` GUI run proving the final pipeline sample makes the
+  routing totals in `recording_snapshot.json` line up with the true final
+  shutdown state
+- an explicit GUI attempt to press `Start streaming` with the invalid
+  `100_cam4_invalid_no_helper` config and confirm the hard preflight gate blocks
+  the session, not just the read-only validation summary
+
 ## Known Caveats
 
 ### Routing Totals Vs Copy Sample Totals
@@ -194,10 +229,11 @@ That remaining work includes:
    confirm that routing totals in the snapshot now reflect the true final
    state.
 
-2. Do one negative GUI test with an invalid split-GOP configuration.
+2. Attempt `Start streaming` with the invalid `100_cam4_invalid_no_helper`
+   config.
    Goal:
-   confirm the new preflight gate blocks streaming and shows the expected
-   errors.
+   confirm the hard preflight gate blocks streaming, not just that the
+   validation summary turns red.
 
 3. Extract record start/stop metadata flow into `src/session/recording_session.*`.
    Goal:
