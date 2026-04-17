@@ -8,6 +8,10 @@ validation, and modularization work.
 
 It is a status snapshot, not a full design document.
 
+Related note:
+
+- `docs/multi_camera_failure_modes.md`
+
 ## Current Architecture
 
 ### Config Sources
@@ -201,6 +205,11 @@ validated dual-camera headless baseline:
 - `2010096`: `enc_fps_mean = 79.6502`
 - no split-GOP backlog overflow
 - helper routing remained balanced on both cameras
+
+For a compact taxonomy of the current multi-camera failure modes and what has
+been ruled out, see:
+
+- `docs/multi_camera_failure_modes.md`
 
 ### GUI
 

@@ -3,6 +3,10 @@
 Date: 2026-02-24
 Scope: cross-camera start/stop synchronization in `orange-jeremy` (GUI + headless paths).
 
+Related note:
+
+- `docs/multi_camera_failure_modes.md`
+
 ## Goal
 
 Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable across partial failures (camera missing, packet loss, stalled thread), while keeping current behavior for healthy runs.
