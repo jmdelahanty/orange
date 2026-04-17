@@ -1213,6 +1213,10 @@ void acquire_frames(
             camera_params->camera_serial,
             build_ptp_camera_summary_json(true));
     }
+    if (!pipeline_perf_recorder.current_folder().empty()) {
+        const PipelinePerfSample final_pipeline_sample = build_pipeline_perf_sample();
+        pipeline_perf_recorder.Record(final_pipeline_sample);
+    }
     pipeline_perf_recorder.Close();
 
     // Cleanup
