@@ -342,6 +342,23 @@ And headless `ptp_gate` runs now:
 - auto-start the host stack when needed before camera open
 - auto-stop it on exit only when the run started it from an empty state
 
+Current `ptp_gate` artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_rerun7`
+
+That run confirms:
+
+- host linuxptp setup is no longer the blocker
+- both cameras open and cross the local PTP gate
+- GPU assignment is not the issue:
+  - `2010095` uses source GPU `1` with split-GOP pair `[1, 2]`
+  - `2010096` uses source GPU `5` with split-GOP pair `[5, 6]`
+
+But performance is still poor under local PTP gating:
+
+- `2010095`: `enc_fps_mean = 55.2923`, `dropped_frames_camera = 266`
+- `2010096`: `enc_fps_mean = 55.313`, `dropped_frames_camera = 266`
+
 This means:
 
 - the current `2 x 80 fps` dual-camera baseline is useful for throughput

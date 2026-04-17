@@ -47,6 +47,11 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
 - Remaining problem: the local PTP-gated dual-camera `2 x 80 fps` run completes
   but collapses to roughly `54 fps` per camera with large camera drops, so the
   synchronization path is still not performant enough to treat as validated.
+- Stable rerun reference:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_rerun7`
+- Confirmed non-cause:
+  - the two cameras are not accidentally sharing a source GPU in this run
+    (`2010095 -> 1`, `2010096 -> 5`).
 
 ## Hardening Plan
 
