@@ -885,7 +885,7 @@ std::string format_selected_camera_serials(const HeadlessEncoderSettings& settin
     std::ostringstream out;
     for (std::size_t i = 0; i < settings.camera_serials.size(); ++i) {
         if (i != 0) {
-            out << ",";
+            out << "+";
         }
         out << settings.camera_serials[i];
     }
