@@ -129,6 +129,280 @@ struct ExperimentRunPlan {
     nlohmann::json config_json = nlohmann::json::object();
 };
 
+struct HeadlessHostPtpStackGuard;
+void teardown_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard);
+
+struct HeadlessHostPtpStatusSummary {
+    bool ptp4l_running = false;
+    bool phc2sys_running = false;
+    bool socket_present = false;
+};
+
+struct HeadlessHostPtpStackGuard {
+    std::string script_path;
+    bool stop_on_exit = false;
+
+    ~HeadlessHostPtpStackGuard() {
+        teardown_headless_host_ptp_stack(this);
+    }
+};
+
+struct HeadlessHostPtpCommandResult {
+    int exit_code = -1;
+    std::string output;
+    std::string error_message;
+};
+
+std::string trim_ascii_whitespace(const std::string& input)
+{
+    size_t start = 0;
+    while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start]))) {
+        ++start;
+    }
+    size_t end = input.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(input[end - 1]))) {
+        --end;
+    }
+    return input.substr(start, end - start);
+}
+
+std::string shell_quote_single(const std::string& input)
+{
+    std::string quoted;
+    quoted.reserve(input.size() + 2);
+    quoted.push_back('\'');
+    for (char c : input) {
+        if (c == '\'') {
+            quoted += "'\\''";
+        } else {
+            quoted.push_back(c);
+        }
+    }
+    quoted.push_back('\'');
+    return quoted;
+}
+
+std::filesystem::path resolve_ptp_stack_script_path()
+{
+    std::vector<std::filesystem::path> candidates;
+    candidates.emplace_back(std::filesystem::current_path() / "scripts" / "ptp_stack.sh");
+
+    std::array<char, 4096> exe_path_buffer{};
+    const ssize_t exe_path_len =
+        readlink("/proc/self/exe", exe_path_buffer.data(), exe_path_buffer.size() - 1);
+    if (exe_path_len > 0) {
+        const std::filesystem::path exe_path(
+            std::string(exe_path_buffer.data(), static_cast<size_t>(exe_path_len)));
+        candidates.emplace_back(
+            exe_path.parent_path().parent_path().parent_path() / "scripts" / "ptp_stack.sh");
+    }
+
+    for (const auto& candidate : candidates) {
+        std::error_code ec;
+        if (std::filesystem::exists(candidate, ec) && !ec) {
+            return std::filesystem::absolute(candidate, ec);
+        }
+    }
+    return {};
+}
+
+HeadlessHostPtpCommandResult run_ptp_stack_command(const std::string& script_path,
+                                                   const std::string& command)
+{
+    HeadlessHostPtpCommandResult result;
+    if (script_path.empty()) {
+        result.error_message = "PTP stack script path is empty.";
+        return result;
+    }
+
+    const std::string full_command =
+        shell_quote_single(script_path) + " " + command + " 2>&1";
+    FILE* pipe = popen(full_command.c_str(), "r");
+    if (!pipe) {
+        result.error_message = "Failed to run PTP stack command.";
+        return result;
+    }
+
+    std::array<char, 512> buffer{};
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        result.output += buffer.data();
+    }
+
+    const int status = pclose(pipe);
+    if (status == -1) {
+        result.error_message = "Failed to close PTP stack command pipe.";
+        return result;
+    }
+
+    if (WIFEXITED(status)) {
+        result.exit_code = WEXITSTATUS(status);
+    } else {
+        result.exit_code = status;
+    }
+    return result;
+}
+
+HeadlessHostPtpStatusSummary parse_ptp_stack_status_output(const std::string& output)
+{
+    HeadlessHostPtpStatusSummary summary;
+    std::istringstream stream(output);
+    std::string line;
+    bool in_process_state = false;
+    bool in_time_status = false;
+    while (std::getline(stream, line)) {
+        const std::string trimmed = trim_ascii_whitespace(line);
+        if (trimmed == "Process state:") {
+            in_process_state = true;
+            in_time_status = false;
+            continue;
+        }
+        if (trimmed == "PTP TIME_STATUS_NP:") {
+            in_process_state = false;
+            in_time_status = true;
+            continue;
+        }
+        if (trimmed.empty()) {
+            if (in_process_state) {
+                in_process_state = false;
+            }
+            continue;
+        }
+
+        if (in_process_state) {
+            if (trimmed == "(no ptp4l/phc2sys process)") {
+                summary.ptp4l_running = false;
+                summary.phc2sys_running = false;
+                continue;
+            }
+            if (trimmed.find("ptp4l") != std::string::npos) {
+                summary.ptp4l_running = true;
+            }
+            if (trimmed.find("phc2sys") != std::string::npos) {
+                summary.phc2sys_running = true;
+            }
+            continue;
+        }
+
+        if (in_time_status) {
+            if (trimmed.find("(socket ") != std::string::npos &&
+                trimmed.find("not found") != std::string::npos) {
+                summary.socket_present = false;
+                continue;
+            }
+            if (trimmed.rfind("sending: GET TIME_STATUS_NP", 0) == 0) {
+                summary.socket_present = true;
+                continue;
+            }
+        }
+    }
+
+    return summary;
+}
+
+bool is_host_ptp_status_healthy(const HeadlessHostPtpStatusSummary& summary)
+{
+    return summary.ptp4l_running && summary.phc2sys_running && summary.socket_present;
+}
+
+bool ensure_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard, std::string* error_out)
+{
+    if (!guard) {
+        if (error_out) {
+            *error_out = "PTP stack guard is null.";
+        }
+        return false;
+    }
+
+    const std::filesystem::path script_path = resolve_ptp_stack_script_path();
+    if (script_path.empty()) {
+        if (error_out) {
+            *error_out = "Could not find scripts/ptp_stack.sh relative to the repo or binary.";
+        }
+        return false;
+    }
+    guard->script_path = script_path.string();
+    guard->stop_on_exit = false;
+
+    const HeadlessHostPtpCommandResult status_before =
+        run_ptp_stack_command(guard->script_path, "status");
+    if (!status_before.error_message.empty()) {
+        if (error_out) {
+            *error_out = status_before.error_message;
+        }
+        return false;
+    }
+    const HeadlessHostPtpStatusSummary before_summary =
+        parse_ptp_stack_status_output(status_before.output);
+    if (is_host_ptp_status_healthy(before_summary)) {
+        std::cout << "[HEADLESS][PTP] Host PTP stack already healthy." << std::endl;
+        return true;
+    }
+
+    std::cout << "[HEADLESS][PTP] Host PTP stack not ready; starting it now." << std::endl;
+    const bool stack_absent_before =
+        !before_summary.ptp4l_running && !before_summary.phc2sys_running && !before_summary.socket_present;
+    const HeadlessHostPtpCommandResult start_result =
+        run_ptp_stack_command(guard->script_path, "start");
+    if (!start_result.error_message.empty() || start_result.exit_code != 0) {
+        if (error_out) {
+            *error_out = "Failed to start host PTP stack."
+                + (start_result.error_message.empty() ? std::string() : (" " + start_result.error_message))
+                + (start_result.output.empty() ? std::string() : ("\n" + start_result.output));
+        }
+        return false;
+    }
+
+    const HeadlessHostPtpCommandResult status_after =
+        run_ptp_stack_command(guard->script_path, "status");
+    if (!status_after.error_message.empty()) {
+        if (error_out) {
+            *error_out = status_after.error_message;
+        }
+        return false;
+    }
+    const HeadlessHostPtpStatusSummary after_summary =
+        parse_ptp_stack_status_output(status_after.output);
+    if (!is_host_ptp_status_healthy(after_summary)) {
+        if (error_out) {
+            *error_out =
+                "Host PTP stack is still not healthy after start.\n" + status_after.output;
+        }
+        return false;
+    }
+
+    guard->stop_on_exit = stack_absent_before;
+    if (guard->stop_on_exit) {
+        std::cout << "[HEADLESS][PTP] Host PTP stack was started by this run and will be stopped on exit."
+                  << std::endl;
+    } else {
+        std::cout << "[HEADLESS][PTP] Host PTP stack was repaired for this run and will be left running on exit."
+                  << std::endl;
+    }
+    return true;
+}
+
+void teardown_headless_host_ptp_stack(HeadlessHostPtpStackGuard* guard)
+{
+    if (!guard || !guard->stop_on_exit || guard->script_path.empty()) {
+        return;
+    }
+    const HeadlessHostPtpCommandResult stop_result =
+        run_ptp_stack_command(guard->script_path, "stop");
+    if (!stop_result.error_message.empty() || stop_result.exit_code != 0) {
+        std::cerr << "[HEADLESS][PTP] Failed to stop host PTP stack after run.";
+        if (!stop_result.error_message.empty()) {
+            std::cerr << " " << stop_result.error_message;
+        }
+        if (!stop_result.output.empty()) {
+            std::cerr << "\n" << stop_result.output;
+        }
+        std::cerr << std::endl;
+        return;
+    }
+    std::cout << "[HEADLESS][PTP] Stopped host PTP stack started by this run." << std::endl;
+    guard->stop_on_exit = false;
+}
+
 struct ExperimentCsvWindowStats {
     bool ok = false;
     std::size_t total_rows = 0;
@@ -3766,6 +4040,19 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
 
+    HeadlessHostPtpStackGuard host_ptp_stack_guard;
+    std::string normalized_sync_mode_override;
+    if (parse_headless_sync_mode_override(
+            options.sync_mode_override,
+            &normalized_sync_mode_override) &&
+        normalized_sync_mode_override == "ptp_gate") {
+        std::string host_ptp_error;
+        if (!ensure_headless_host_ptp_stack(&host_ptp_stack_guard, &host_ptp_error)) {
+            std::cerr << host_ptp_error << std::endl;
+            return 1;
+        }
+    }
+
     std::unique_ptr<CameraEmergent[]> ecams(new CameraEmergent[discovered_cam_count]);
     std::unique_ptr<CameraParams[]> cameras_params(new CameraParams[discovered_cam_count]);
     std::unique_ptr<CameraEachSelect[]> cameras_select(new CameraEachSelect[discovered_cam_count]);
@@ -3808,6 +4095,23 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     const int selected_camera_count = static_cast<int>(selected_inventory_indices.size());
     for (int inventory_index : selected_inventory_indices) {
         cameras_params[inventory_index].num_cameras = selected_camera_count;
+    }
+
+    bool selected_run_uses_ptp = false;
+    for (int inventory_index : selected_inventory_indices) {
+        if (camera_sync_mode_uses_ptp(&cameras_params[inventory_index])) {
+            selected_run_uses_ptp = true;
+            break;
+        }
+    }
+
+    if (selected_run_uses_ptp) {
+        std::string host_ptp_error;
+        if (!ensure_headless_host_ptp_stack(&host_ptp_stack_guard, &host_ptp_error)) {
+            std::cerr << host_ptp_error << std::endl;
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
     }
 
     if (options.stream_start_delay_seconds > 0) {

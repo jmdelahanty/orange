@@ -324,25 +324,31 @@ That is captured directly in `recording_snapshot.json` under:
 
 - `recording_strategy.split_gop.pending_gop_buffer`
 
-### Headless PTP Gap
+### Headless PTP Status
 
 The checked-in validated camera configs are currently:
 
 - `sync_mode = free_run`
 - `ptp.enabled = false`
 
-The local headless experiment runner also still enforces:
+The local headless experiment runner now supports:
 
 - `fixed.sync_mode = free_run`
+- `fixed.sync_mode = ptp_gate`
 
-So current headless benchmark/spec results are not apples-to-apples with GUI
-runs done under PTP stream sync.
+And headless `ptp_gate` runs now:
+
+- preflight the host linuxptp stack through `scripts/ptp_stack.sh status`
+- auto-start the host stack when needed before camera open
+- auto-stop it on exit only when the run started it from an empty state
 
 This means:
 
 - the current `2 x 80 fps` dual-camera baseline is useful for throughput
   characterization
-- but headless multi-camera `ptp_gate` support remains a real gap
+- headless `ptp_gate` no longer has a setup gap
+- but dual-camera `2 x 80 fps` under local PTP currently underperforms badly and
+  is not yet a validated synchronized baseline
 
 ### Remaining Monolith In `orange.cpp`
 
@@ -366,9 +372,10 @@ owns top-level GUI orchestration around:
    make runs like the `2 x 100 fps` dual-camera failure show up as failures in
    `runs.csv`, not misleading passes.
 
-3. Add headless multi-camera `ptp_gate` support.
+3. Harden the local PTP-gated startup path.
    Goal:
-   make headless synchronized benchmarks directly comparable to GUI PTP runs.
+   make headless synchronized benchmarks directly comparable to GUI PTP runs by
+   fixing the remaining performance/stability gap after gate start.
 
 4. Add an app-level GUI surface for storage defaults and latest-recording
    pointer settings.

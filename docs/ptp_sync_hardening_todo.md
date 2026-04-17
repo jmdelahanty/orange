@@ -19,9 +19,12 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
    - Refs: `src/camera.h:100`, `src/orange_headless_client.cpp:282`, `src/video_capture.cpp:40`.
 5. Reset logic is tied to success path, so stale state can leak into next session after a failure.
    - Refs: `src/orange.cpp:980`, `src/orange_headless_client.cpp:175`.
-6. Host linuxptp stack control is still external to Orange.
-   - Users currently have to run `scripts/ptp_stack.sh start|stop|status` from a terminal.
-   - Refs: `docs/ptp.md:39`, `scripts/ptp_stack.sh`, `src/orange.cpp:3206`.
+6. Headless still lacks a hardened local-PTP startup path.
+   - Headless can now auto-start `scripts/ptp_stack.sh` for `ptp_gate` runs, but
+     local PTP start still depends on the legacy gated-start flow and can
+     underperform badly after startup.
+   - Refs: `scripts/ptp_stack.sh`, `src/orange_headless_client.cpp`,
+     `src/video_capture.cpp`.
 
 ## Audit Update (2026-03-16)
 
@@ -33,6 +36,17 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
 - Unbounded spin-wait barriers are still present in `src/video_capture.cpp` and `src/acquire_frames_headless.cpp`.
 - GUI and headless still use different stop/session-reset paths.
 - Treat this TODO as still open; recent code landed diagnostics and runbook improvements only.
+
+## Audit Update (2026-04-17)
+
+- Headless experiment specs now accept `fixed.sync_mode = ptp_gate`.
+- Headless `ptp_gate` runs now preflight the host linuxptp stack and can
+  auto-start it through `scripts/ptp_stack.sh`.
+- This closed the setup gap that previously left post-reboot `ptp_gate` runs
+  hanging before the cameras crossed the local PTP gate.
+- Remaining problem: the local PTP-gated dual-camera `2 x 80 fps` run completes
+  but collapses to roughly `54 fps` per camera with large camera drops, so the
+  synchronization path is still not performant enough to treat as validated.
 
 ## Hardening Plan
 
