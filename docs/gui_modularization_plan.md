@@ -226,6 +226,29 @@ Likely file:
 
 - `src/orange.cpp` remains the shell, but gets thinner over time
 
+Recommended directory-level split:
+
+- `src/gui/`
+  - ImGui rendering
+  - panel/window UI state
+  - reusable GUI widgets and helpers
+- `src/session/` (or `src/app/`)
+  - camera/stream/recording orchestration
+  - runtime resource lifecycle
+  - action helpers invoked by UI controls
+
+This split is important.
+
+If Orange only introduces a `src/gui/` directory but keeps large operational
+actions embedded inside GUI files, the current monolith is only moved, not
+reduced.
+
+Practical rule of thumb:
+
+- if a file is mostly `ImGui::...`, it probably belongs in `src/gui/`
+- if a file is mostly worker creation, stream/record lifecycle, camera
+  open/close, or resource setup/teardown, it probably belongs in `src/session/`
+
 ### B. Main Window Panels
 
 Extract from the current main window into panel-style renderers:
@@ -244,6 +267,15 @@ Possible naming:
 - `src/main_window_panels.h/.cpp`
 - or one file per larger panel if needed
 
+Recommended directory direction:
+
+- `src/gui/main_window_panels/`
+  - `camera_panel.cpp`
+  - `recording_panel.cpp`
+  - `stream_panel.cpp`
+  - `ptp_panel.cpp`
+  - `ipc_panel.cpp`
+
 ### C. Session / Runtime Control
 
 Move orchestration code behind explicit functions:
@@ -259,6 +291,18 @@ Possible naming:
 
 - `src/stream_session.h/.cpp`
 - `src/recording_session.h/.cpp`
+
+Recommended directory direction:
+
+- `src/session/`
+  - `camera_session.cpp`
+  - `stream_session.cpp`
+  - `recording_session.cpp`
+
+The exact filenames are less important than the separation itself:
+
+- GUI files decide what to render and what action to request
+- session/app files decide how to perform runtime lifecycle work
 
 ### D. Camera Property Editing
 
@@ -337,6 +381,12 @@ Low-risk extractions only:
 - move `gui.h` camera property logic into a dedicated UI module
 - keep all behavior the same
 
+Suggested filesystem move during this phase:
+
+- begin a real `src/gui/` directory for extracted panel modules
+- keep `src/orange.cpp` as the app shell
+- do not move heavy orchestration into `src/gui/`
+
 Target outcome:
 
 - smaller `src/orange.cpp`
@@ -386,6 +436,15 @@ Why this slice:
 - low coupling to streaming/recording teardown logic
 - preserves behavior
 - gives a repeatable panel pattern for future additions
+
+If recording UI becomes the next priority after that, the recommended sequence
+is:
+
+1. `src/gui/recording_panel.*`
+2. `src/session/recording_session.*`
+3. wire the existing recording section in `src/orange.cpp` through those modules
+
+That gives a meaningful improvement without requiring a full GUI rewrite.
 
 ## Good Practices To Keep
 
