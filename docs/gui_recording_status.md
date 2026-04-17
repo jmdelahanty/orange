@@ -40,10 +40,11 @@ Current GUI recording behavior is split into:
   - stream-time recording pipeline creation
   - recording pipeline start/stop requests
   - recording pipeline shutdown
-- `src/orange.cpp`
-  - record start/stop toggle state machine
   - recording folder initialization
-  - snapshot / metadata creation
+  - snapshot / metadata initialization
+  - record stop / drain transitions
+- `src/orange.cpp`
+  - top-level record start/stop toggle wiring
   - remaining app-shell orchestration
 
 This means stream start still owns pipeline lifetime, while the record button
@@ -157,6 +158,50 @@ artifact:
 
 Those values also match the final row in `Cam2010096_pipeline_perf.csv`.
 
+Headless multi-camera experiment-spec runs are now also validated
+structurally.
+
+During that work, a real bug was found and fixed in the headless experiment
+path:
+
+- multi-camera camera selections were serialized with `,`
+- the headless encoder setup parser also tokenized on `,`
+- this corrupted runs like `camera=2010095,2010096`
+- fix committed as:
+  - `8bb335a` `headless: fix multi-camera encoder setup parsing`
+
+After that fix:
+
+- one experiment spec can select both `2010095` and `2010096`
+- each camera can keep its own split-GOP PIX pair
+- both helper lanes come up correctly in one shared session
+
+Current dual-camera headless findings:
+
+- `2 x 100 fps` is not stable
+- `2 x 80 fps` is currently the validated dual-camera baseline
+
+`2 x 100 fps` headless artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_rerun2`
+
+That run proved the structure works, but both cameras underperformed badly:
+
+- `2010095`: `enc_fps_mean = 66.5072`
+- `2010096`: `enc_fps_mean = 68.5529`
+
+`2 x 80 fps` headless artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_rerun1`
+
+That run completed cleanly in `free_run` mode and is the current best
+validated dual-camera headless baseline:
+
+- `2010095`: `enc_fps_mean = 80.0002`
+- `2010096`: `enc_fps_mean = 79.6502`
+- no split-GOP backlog overflow
+- helper routing remained balanced on both cameras
+
 ### GUI
 
 GUI startup and non-split recording path still work after the modularization
@@ -206,6 +251,39 @@ Additional GUI checks completed:
   - `source_to_helper_copy_samples_total = 175`
   - `latency.source_to_helper_copy.samples = 175`
 
+GUI dual-camera split-GOP was also exercised with:
+
+- `2010095`
+- `2010096`
+- their disjoint PIX pairs
+
+The current result is:
+
+- multi-camera GUI recording is structurally working
+- `2 x 100 fps` is not currently stable
+
+Relevant GUI artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_04_17_12_50_42`
+
+That run showed:
+
+- both cameras opened and recorded in one session
+- both cameras used `split_gop`
+- both helper paths were active
+- `2010096` collapsed much harder than `2010095`
+
+The important failure signal in that run is not just low FPS. It is explicit
+split-GOP backlog overflow:
+
+- `2010095`: `peak_backlog_gops = 4`, `overflow_events = 53`
+- `2010096`: `peak_backlog_gops = 5`, `overflow_events = 83`
+
+So the current GUI conclusion matches headless:
+
+- multi-camera split-GOP works structurally
+- `2 x 100 fps` is not yet a validated operating point
+
 ## Known Caveats
 
 ### Routing Totals Vs Copy Sample Totals
@@ -229,30 +307,70 @@ Status of that fix:
 - runtime-validated in headless mode
 - runtime-validated in the GUI path
 
+### Dual-Camera Split-GOP Limit
+
+The branch now has a clear current boundary:
+
+- one camera at `100 fps` on its own PIX split-GOP pair is validated
+- two cameras at `100 fps` on disjoint PIX split-GOP pairs are not yet
+  validated
+- two cameras at `80 fps` on disjoint PIX split-GOP pairs do work in headless
+
+For the failed `2 x 100 fps` cases, the dominant recorded failure mode is:
+
+- split-GOP pending GOP backlog overflow
+
+That is captured directly in `recording_snapshot.json` under:
+
+- `recording_strategy.split_gop.pending_gop_buffer`
+
+### Headless PTP Gap
+
+The checked-in validated camera configs are currently:
+
+- `sync_mode = free_run`
+- `ptp.enabled = false`
+
+The local headless experiment runner also still enforces:
+
+- `fixed.sync_mode = free_run`
+
+So current headless benchmark/spec results are not apples-to-apples with GUI
+runs done under PTP stream sync.
+
+This means:
+
+- the current `2 x 80 fps` dual-camera baseline is useful for throughput
+  characterization
+- but headless multi-camera `ptp_gate` support remains a real gap
+
 ### Remaining Monolith In `orange.cpp`
 
-The stream-time recording pipeline lifecycle has been extracted, but the record
-start/stop metadata flow still lives in `src/orange.cpp`.
+The recording/session path is much thinner now, but `src/orange.cpp` still
+owns top-level GUI orchestration around:
 
-That remaining work includes:
-
-- recording folder initialization
-- snapshot creation
-- PTP sync summary initialization
-- `record_video` / `stop_record` / `recording_draining` transitions
+- app-shell state transitions
+- stream button wiring
+- record button wiring
+- non-recording panel coordination
 
 ## Recommended Next Steps
 
-1. Extract record start/stop metadata flow into `src/session/recording_session.*`.
+1. Validate the new editable advanced split-GOP controls in the GUI.
    Goal:
-   further thin `src/orange.cpp` and align with the modularization plan.
+   confirm the new per-camera editing surface behaves correctly with the
+   existing preflight guardrails.
 
-2. Add editable advanced per-camera split-GOP controls.
+2. Tighten experiment pass/fail policy for multi-camera overload cases.
    Goal:
-   move beyond read-only validation summary while keeping the same safety
-   checks.
+   make runs like the `2 x 100 fps` dual-camera failure show up as failures in
+   `runs.csv`, not misleading passes.
 
-3. Add an app-level GUI surface for storage defaults and latest-recording
+3. Add headless multi-camera `ptp_gate` support.
+   Goal:
+   make headless synchronized benchmarks directly comparable to GUI PTP runs.
+
+4. Add an app-level GUI surface for storage defaults and latest-recording
    pointer settings.
    Goal:
    make the new app config discoverable without requiring direct JSON edits.
