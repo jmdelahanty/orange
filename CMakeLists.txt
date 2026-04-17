@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.19)
 project(orange LANGUAGES CXX CUDA)
 
+include(CTest)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CUDA_STANDARD 17)
@@ -226,6 +228,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/yolo_worker.cpp"
     "${SRC_DIR}/enet_thread.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
@@ -268,6 +271,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/recording_validation.cpp"
     ${NVENCODER_SOURCES}
     "${SRC_DIR}/kernel.cu"
 )
@@ -294,6 +298,16 @@ add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
+
+if(BUILD_TESTING)
+    add_executable(recording_validation_tests
+        "tools/recording_validation_tests.cpp"
+        "${SRC_DIR}/recording_validation.cpp"
+    )
+    target_include_directories(recording_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_validation_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_validation_tests COMMAND recording_validation_tests)
+endif()
 
 function(orange_configure_target target_name)
     target_include_directories(${target_name} PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})

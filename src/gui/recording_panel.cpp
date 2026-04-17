@@ -3,11 +3,9 @@
 #include "encoder_hw_worker.h"
 #include "imgui.h"
 #include "project.h"
+#include "recording_validation.h"
 
-#include <algorithm>
 #include <iomanip>
-#include <map>
-#include <set>
 #include <sstream>
 
 namespace {
@@ -53,41 +51,6 @@ bool combo_select_string(const char* label,
     return changed;
 }
 
-std::vector<int> build_unique_gpu_id_list(const int source_gpu_id,
-                                          const std::vector<int>& encode_gpu_ids)
-{
-    std::vector<int> result;
-    std::set<int> seen_gpu_ids;
-    if (source_gpu_id >= 0 && seen_gpu_ids.insert(source_gpu_id).second) {
-        result.push_back(source_gpu_id);
-    }
-    for (int gpu_id : encode_gpu_ids) {
-        if (gpu_id < 0) {
-            continue;
-        }
-        if (seen_gpu_ids.insert(gpu_id).second) {
-            result.push_back(gpu_id);
-        }
-    }
-    return result;
-}
-
-std::vector<int> build_helper_gpu_id_list(const int source_gpu_id,
-                                          const std::vector<int>& encode_gpu_ids)
-{
-    std::vector<int> result;
-    std::set<int> seen_gpu_ids;
-    for (int gpu_id : encode_gpu_ids) {
-        if (gpu_id < 0 || gpu_id == source_gpu_id) {
-            continue;
-        }
-        if (seen_gpu_ids.insert(gpu_id).second) {
-            result.push_back(gpu_id);
-        }
-    }
-    return result;
-}
-
 std::string join_gpu_ids(const std::vector<int>& gpu_ids)
 {
     if (gpu_ids.empty()) {
@@ -104,173 +67,6 @@ std::string join_gpu_ids(const std::vector<int>& gpu_ids)
     return oss.str();
 }
 
-struct HelperGpuValidationSummary {
-    int helper_gpu_id = -1;
-    std::string topology_class;
-    std::string topology_error;
-    bool can_access_peer = false;
-    bool can_access_peer_known = false;
-    bool topology_matches_preference = true;
-    bool peer_requirement_satisfied = true;
-};
-
-struct CameraAdvancedRecordingValidationSummary {
-    int camera_index = -1;
-    std::string camera_serial;
-    bool record_enabled = false;
-    bool split_gop_enabled = false;
-    int source_gpu_id = -1;
-    std::vector<int> claimed_gpu_ids;
-    std::vector<int> helper_gpu_ids;
-    std::vector<HelperGpuValidationSummary> helpers;
-    std::vector<std::string> local_errors;
-    std::vector<std::string> session_errors;
-    std::string preferred_topology_class;
-    bool require_peer_access = false;
-    std::string transfer_mode;
-    std::string source_encoder_policy;
-
-    bool valid() const { return local_errors.empty() && session_errors.empty(); }
-};
-
-CameraAdvancedRecordingValidationSummary build_camera_advanced_recording_validation_summary(
-    const CameraParams& camera_params,
-    const CameraEachSelect& camera_select,
-    const int camera_index)
-{
-    CameraAdvancedRecordingValidationSummary summary;
-    summary.camera_index = camera_index;
-    summary.camera_serial = camera_params.camera_serial;
-    summary.record_enabled = camera_select.record;
-    summary.split_gop_enabled = camera_params.recording.strategy.split_gop_enabled();
-    summary.source_gpu_id = camera_params.gpu_id;
-    summary.preferred_topology_class =
-        camera_params.recording.constraints.preferred_topology_class;
-    summary.require_peer_access =
-        camera_params.recording.constraints.require_peer_access;
-    summary.transfer_mode =
-        camera_params.recording.strategy.split_gop.transfer_mode;
-    summary.source_encoder_policy =
-        camera_params.recording.strategy.split_gop.source_encoder_policy;
-
-    if (!summary.record_enabled || !summary.split_gop_enabled) {
-        return summary;
-    }
-
-    summary.claimed_gpu_ids = build_unique_gpu_id_list(
-        summary.source_gpu_id,
-        camera_params.recording.strategy.split_gop.encoder_gpu_ids);
-    summary.helper_gpu_ids = build_helper_gpu_id_list(
-        summary.source_gpu_id,
-        camera_params.recording.strategy.split_gop.encoder_gpu_ids);
-
-    if (summary.helper_gpu_ids.empty()) {
-        summary.local_errors.push_back(
-            "No non-source helper GPU is configured for split-GOP recording.");
-    } else if (summary.helper_gpu_ids.size() != 1) {
-        std::ostringstream oss;
-        oss << "GUI validation currently supports exactly one helper GPU; found "
-            << summary.helper_gpu_ids.size() << ".";
-        summary.local_errors.push_back(oss.str());
-    }
-
-    for (int helper_gpu_id : summary.helper_gpu_ids) {
-        HelperGpuValidationSummary helper_summary;
-        helper_summary.helper_gpu_id = helper_gpu_id;
-
-        const nlohmann::json copy_path_info =
-            build_gpu_copy_path_static_topology_info(summary.source_gpu_id, helper_gpu_id);
-
-        if (copy_path_info.contains("topology_class") &&
-            copy_path_info["topology_class"].is_string()) {
-            helper_summary.topology_class = copy_path_info["topology_class"].get<std::string>();
-        }
-        if (copy_path_info.contains("topology_lookup_error") &&
-            copy_path_info["topology_lookup_error"].is_string()) {
-            helper_summary.topology_error =
-                copy_path_info["topology_lookup_error"].get<std::string>();
-        }
-
-        if (copy_path_info.contains("peer_access_capability") &&
-            copy_path_info["peer_access_capability"].is_object()) {
-            const nlohmann::json& peer_access = copy_path_info["peer_access_capability"];
-            if (peer_access.contains("can_access_peer") &&
-                peer_access["can_access_peer"].is_boolean()) {
-                helper_summary.can_access_peer = peer_access["can_access_peer"].get<bool>();
-                helper_summary.can_access_peer_known = true;
-            }
-        }
-
-        if (!summary.preferred_topology_class.empty() &&
-            helper_summary.topology_class != summary.preferred_topology_class) {
-            helper_summary.topology_matches_preference = false;
-            std::ostringstream oss;
-            oss << "Helper GPU " << helper_gpu_id
-                << " is " << (helper_summary.topology_class.empty()
-                                  ? std::string("(unknown topology)")
-                                  : helper_summary.topology_class)
-                << " relative to source GPU " << summary.source_gpu_id
-                << "; expected " << summary.preferred_topology_class << ".";
-            summary.local_errors.push_back(oss.str());
-        }
-
-        if (summary.require_peer_access &&
-            (!helper_summary.can_access_peer_known || !helper_summary.can_access_peer)) {
-            helper_summary.peer_requirement_satisfied = false;
-            std::ostringstream oss;
-            oss << "Helper GPU " << helper_gpu_id
-                << " does not satisfy the peer-access requirement for source GPU "
-                << summary.source_gpu_id << ".";
-            summary.local_errors.push_back(oss.str());
-        }
-
-        summary.helpers.push_back(std::move(helper_summary));
-    }
-
-    return summary;
-}
-
-void populate_split_gop_session_conflicts(
-    std::vector<CameraAdvancedRecordingValidationSummary>* summaries)
-{
-    if (!summaries) {
-        return;
-    }
-
-    std::map<int, std::vector<std::size_t>> gpu_claims;
-    for (std::size_t i = 0; i < summaries->size(); ++i) {
-        const CameraAdvancedRecordingValidationSummary& summary = (*summaries)[i];
-        if (!summary.record_enabled || !summary.split_gop_enabled) {
-            continue;
-        }
-        for (int gpu_id : summary.claimed_gpu_ids) {
-            gpu_claims[gpu_id].push_back(i);
-        }
-    }
-
-    for (const auto& [gpu_id, claiming_indices] : gpu_claims) {
-        if (claiming_indices.size() < 2) {
-            continue;
-        }
-
-        std::ostringstream cameras_oss;
-        for (std::size_t position = 0; position < claiming_indices.size(); ++position) {
-            if (position > 0) {
-                cameras_oss << ", ";
-            }
-            cameras_oss << (*summaries)[claiming_indices[position]].camera_serial;
-        }
-
-        for (std::size_t summary_index : claiming_indices) {
-            std::ostringstream conflict;
-            conflict << "GPU " << gpu_id
-                     << " is claimed by multiple record-enabled split-GOP cameras: "
-                     << cameras_oss.str() << ".";
-            (*summaries)[summary_index].session_errors.push_back(conflict.str());
-        }
-    }
-}
-
 void render_advanced_recording_validation_summary(CameraParams* cameras_params,
                                                   CameraEachSelect* cameras_select,
                                                   const int num_cameras)
@@ -282,13 +78,19 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
         return;
     }
 
-    std::vector<CameraAdvancedRecordingValidationSummary> summaries;
-    summaries.reserve(static_cast<std::size_t>(num_cameras));
+    std::vector<RecordingValidationCameraInput> validation_inputs;
+    validation_inputs.reserve(static_cast<std::size_t>(num_cameras));
     int record_enabled_count = 0;
     int record_enabled_split_gop_count = 0;
     for (int i = 0; i < num_cameras; ++i) {
-        summaries.push_back(build_camera_advanced_recording_validation_summary(
-            cameras_params[i], cameras_select[i], i));
+        RecordingValidationCameraInput input;
+        input.camera_index = i;
+        input.camera_serial = cameras_params[i].camera_serial;
+        input.record_enabled = cameras_select[i].record;
+        input.source_gpu_id = cameras_params[i].gpu_id;
+        input.strategy = cameras_params[i].recording.strategy;
+        input.constraints = cameras_params[i].recording.constraints;
+        validation_inputs.push_back(std::move(input));
         if (cameras_select[i].record) {
             ++record_enabled_count;
             if (cameras_params[i].recording.strategy.split_gop_enabled()) {
@@ -296,7 +98,36 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
             }
         }
     }
-    populate_split_gop_session_conflicts(&summaries);
+
+    const std::vector<CameraRecordingValidationSummary> summaries =
+        validate_recording_configuration(
+            validation_inputs,
+            [](const int source_gpu_id, const int helper_gpu_id) {
+                RecordingValidationGpuPathInfo info;
+                info.source_gpu_id = source_gpu_id;
+                info.helper_gpu_id = helper_gpu_id;
+                const nlohmann::json copy_path_info =
+                    build_gpu_copy_path_static_topology_info(source_gpu_id, helper_gpu_id);
+                if (copy_path_info.contains("topology_class") &&
+                    copy_path_info["topology_class"].is_string()) {
+                    info.topology_class = copy_path_info["topology_class"].get<std::string>();
+                }
+                if (copy_path_info.contains("topology_lookup_error") &&
+                    copy_path_info["topology_lookup_error"].is_string()) {
+                    info.topology_error =
+                        copy_path_info["topology_lookup_error"].get<std::string>();
+                }
+                if (copy_path_info.contains("peer_access_capability") &&
+                    copy_path_info["peer_access_capability"].is_object()) {
+                    const nlohmann::json& peer_access = copy_path_info["peer_access_capability"];
+                    if (peer_access.contains("can_access_peer") &&
+                        peer_access["can_access_peer"].is_boolean()) {
+                        info.can_access_peer = peer_access["can_access_peer"].get<bool>();
+                        info.can_access_peer_known = true;
+                    }
+                }
+                return info;
+            });
 
     if (record_enabled_count == 0) {
         ImGui::TextDisabled("No cameras are currently selected for recording.");
