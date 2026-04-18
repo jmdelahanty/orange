@@ -315,6 +315,31 @@ Interpretation:
 - the pathological stale-frame onset requires real downstream recording work,
   not just "recording enabled" state or a lightweight recording handoff
 
+## Follow-Up: No-Stagger Primary-Only Control (2026-04-18)
+
+The same primary-only preprocess control was rerun without any PTP stagger:
+
+- `fixed.recording.mode = "single_session"`
+- `fixed.recording_sink_mode = "preprocess_only"`
+- `fixed.ptp_gate_stagger_ns = 0`
+
+Artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_hevc_100fps_gop25_dual_pix_ptp_nostagger_preprocessonly_primaryonly_rerun1`
+
+Result:
+
+- both cameras stayed healthy
+- `2010095`: `99.835815 fps`, `0` drops
+- `2010096`: `99.835266 fps`, `0` drops
+- no stale-frame onset
+
+Interpretation:
+
+- the recovery is not specific to the `2 ms` offset
+- disabling helper routing is what fixes the run
+- the offset only matters once the helper cross-GPU preprocess path is active
+
 That does not yet prove whether the trigger lives in:
 
 - preprocess

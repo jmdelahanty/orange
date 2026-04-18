@@ -288,6 +288,24 @@ Interpretation:
 - the narrowest confirmed trigger is now the helper preprocess path under
   `100 fps` `ptp_gate` with nonzero stagger
 
+No-stagger control:
+
+- rerunning the same primary-only preprocess control with
+  `fixed.ptp_gate_stagger_ns = 0` is also healthy
+- artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_hevc_100fps_gop25_dual_pix_ptp_nostagger_preprocessonly_primaryonly_rerun1`
+- result:
+  - `2010095`: `99.835815 fps`, `0` drops
+  - `2010096`: `99.835266 fps`, `0` drops
+  - no stale-frame onset
+
+Interpretation:
+
+- the fix is not “stagger-specific”
+- helper routing is the decisive variable
+- the offset only becomes pathological once the helper cross-GPU preprocess
+  path is in play
+
 All remained unstable at `100 fps`.
 
 One more controlled comparison is now available:
