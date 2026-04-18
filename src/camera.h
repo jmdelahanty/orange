@@ -62,6 +62,7 @@ struct CameraParams{
     std::string ptp_mode;
     std::string ptp_gate_acquisition_mode = "multiframe";
     unsigned long long ptp_gate_offset_ns = 0;
+    std::string acquisition_buffer_mode = "auto";
     std::vector<CameraGpioNodeConfig> gpio_nodes;
     CameraRecordingConfig recording;
     unsigned int gain_max; 

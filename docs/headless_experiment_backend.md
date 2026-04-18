@@ -111,6 +111,7 @@ Experiment specs now support two useful fixed-mode toggles:
 
 - `fixed.sync_mode = "free_run" | "ptp_gate"`
 - `fixed.stream_only = true | false`
+- `fixed.acquisition_buffer_mode = "auto" | "force_ring_copy"`
 - `fixed.recording_sink_mode = "real" | "immediate_recycle" | "threaded_handoff_only"`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
@@ -146,6 +147,21 @@ recording-enabled runs:
 These sink modes are intended only for diagnosing the `100 fps` multi-camera
 PTP recording failure mode. They intentionally produce no video output and
 `runs.csv` evaluates them using acquisition metrics instead of encoder output.
+
+`fixed.acquisition_buffer_mode` is a lower-level experimental acquisition-path
+override:
+
+- `auto`
+  - current runtime default
+  - direct camera GPU buffers are passed through when safe, otherwise the frame
+    is copied into Orange-owned ring-buffer memory
+- `force_ring_copy`
+  - always copy GPUDirect camera buffers into Orange-owned ring-buffer memory
+    before downstream recording work
+
+This knob exists for diagnosing ownership / requeue / buffer-lifetime issues in
+the acquisition-to-recording transition. It is intentionally headless-only and
+does not belong in persisted camera config yet.
 
 Checked-in example:
 

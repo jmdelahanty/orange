@@ -228,6 +228,23 @@ failures are not caused by PTP gating or offset acquisition alone. The stale
 onset requires recording to be active, even though the stale frames are already
 old when they first enter `acquire_frames(...)`.
 
+New acquisition-buffer discriminator:
+
+- forcing acquisition to use Orange-owned ring-buffer copies does not fix the
+  bad `100 fps` stagger case
+- artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_forceringcopy_rerun1`
+- result:
+  - `2010095` improved to `enc_fps_mean = 80.2815`
+  - `2010096` still collapsed to `enc_fps_mean = 5.35862`
+  - stale-frame onset still occurred
+
+Interpretation:
+
+- the direct camera-buffer pass-through path is not the sole cause
+- direct buffer lifetime may still contribute, but the remaining failure
+  requires more than just GPUDirect pass-through reuse
+
 All remained unstable at `100 fps`.
 
 One more controlled comparison is now available:

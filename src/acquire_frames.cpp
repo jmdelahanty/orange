@@ -1070,6 +1070,11 @@ void acquire_frames(
                                        attrs.type == cudaMemoryTypeDevice &&
                                        attrs.device == camera_params->gpu_id);
             bool use_ring_copy = (use_direct_pointer && dispatch_count > 1);
+            if (use_direct_pointer &&
+                camera_params &&
+                camera_params->acquisition_buffer_mode == "force_ring_copy") {
+                use_ring_copy = true;
+            }
 
             if (attr_status == cudaSuccess) {
                 if (attrs.type != cudaMemoryTypeDevice) {

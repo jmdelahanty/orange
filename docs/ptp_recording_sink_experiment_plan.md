@@ -218,6 +218,35 @@ Current interpretation:
 
 - bookkeeping alone is not enough to trigger the failure
 - a simple cross-thread handoff / delayed release is also not enough
+
+## Follow-Up: Acquisition Buffer Ownership Probe (2026-04-18)
+
+Because the sink modes passed cleanly, the next probe forced acquisition to
+copy GPUDirect camera buffers into Orange-owned ring-buffer memory before
+recording work:
+
+- control:
+  - `fixed.acquisition_buffer_mode = force_ring_copy`
+- artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_forceringcopy_rerun1`
+
+Result:
+
+- `2010095` improved substantially relative to the failing direct-pointer run
+  but still did not sustain the target:
+  - `enc_fps_mean = 80.2815`
+- `2010096` still collapsed badly:
+  - `enc_fps_mean = 5.35862`
+- stale-frame onset still occurred
+- the run used `direct=0 ring=1` at acquisition, so the direct camera-buffer
+  pass-through path was genuinely disabled
+
+Interpretation:
+
+- direct camera-buffer lifetime / requeue behavior is not the whole problem
+- forcing ring-copy changes the shape of the failure, but does not eliminate
+  the offset-camera collapse
+- the remaining trigger still requires real downstream recording work
 - the pathological stale-frame onset requires real downstream recording work,
   not just "recording enabled" state or a lightweight recording handoff
 
