@@ -27,6 +27,22 @@ struct PeerAccessRouteState {
     std::string enable_error;
 };
 
+struct HelperPreprocessSample {
+    uint64_t recording_frame_id = 0;
+    uint64_t local_frame_id = 0;
+    int source_gpu_id = -1;
+    int target_gpu_id = -1;
+    bool gpu_direct_mode = false;
+    bool direct_input_enabled = false;
+    int queue_depth = -1;
+    int available_buffers = -1;
+    int available_events = -1;
+    uint64_t resource_waits = 0;
+    uint64_t frames_dropped = 0;
+    float copy_ms = 0.0f;
+    float total_preprocess_ms = 0.0f;
+};
+
 class EncoderPreprocessWorker : public CThreadWorker<WORKER_ENTRY>
 {
 public:
@@ -75,6 +91,8 @@ protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
 
 private:
+    void append_helper_preprocess_sample(const HelperPreprocessSample& sample);
+    void dump_helper_preprocess_history(const HelperPreprocessSample& trigger_sample) const;
     bool ensure_peer_access_enabled(int source_gpu_id);
     CameraParams* camera_params_;
     int preprocess_gpu_id_;
@@ -109,6 +127,9 @@ private:
     std::set<int> peer_access_enabled_gpus_;
     mutable std::mutex peer_access_states_mutex_;
     std::map<int, PeerAccessRouteState> peer_access_states_;
+    mutable std::mutex helper_preprocess_history_mutex_;
+    std::deque<HelperPreprocessSample> helper_preprocess_history_;
+    std::atomic<bool> helper_preprocess_history_dumped_{false};
     
     // Performance monitoring members
     std::chrono::steady_clock::time_point last_fps_update_time_;
