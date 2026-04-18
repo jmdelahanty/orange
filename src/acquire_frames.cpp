@@ -37,6 +37,7 @@ static constexpr int kCopyProfileLogEvery = 60;
 #endif
 static constexpr int64_t kPtpStaleReceiveThresholdNs = 50LL * 1000LL * 1000LL;
 static constexpr size_t kPtpReceiveHistoryLimit = 256;
+static constexpr size_t kRecordingSubmitHistoryLimit = 256;
 
 namespace {
 struct RunningInt64Stats {
@@ -177,6 +178,16 @@ struct PtpReceiveHistoryEntry {
     bool use_ring_copy = false;
 };
 
+struct RecordingSubmitHistoryEntry {
+    uint64_t local_frame_id = 0;
+    uint64_t recording_frame_id = 0;
+    uint64_t camera_frame_id = 0;
+    int dispatch_count = 0;
+    bool use_direct_pointer = false;
+    bool use_ring_copy = false;
+    RecordingIngressStats ingress_stats;
+};
+
 void append_ptp_receive_history(std::deque<PtpReceiveHistoryEntry>* history,
                                 const PtpReceiveHistoryEntry& entry) {
     if (!history) {
@@ -230,6 +241,56 @@ void dump_ptp_receive_history(const CameraParams* camera_params,
                   << " will_yolo=" << (entry.will_yolo ? 1 : 0)
                   << " direct=" << (entry.use_direct_pointer ? 1 : 0)
                   << " ring_copy=" << (entry.use_ring_copy ? 1 : 0)
+                  << std::endl;
+        ++index;
+    }
+}
+
+void append_recording_submit_history(std::deque<RecordingSubmitHistoryEntry>* history,
+                                     const RecordingSubmitHistoryEntry& entry)
+{
+    if (!history) {
+        return;
+    }
+    history->push_back(entry);
+    while (history->size() > kRecordingSubmitHistoryLimit) {
+        history->pop_front();
+    }
+}
+
+void dump_recording_submit_history(const CameraParams* camera_params,
+                                   const std::deque<RecordingSubmitHistoryEntry>& history)
+{
+    const std::string serial =
+        camera_params ? camera_params->camera_serial : std::string("<unknown>");
+    std::cout << "[PTP_STALE_DUMP][RECORDING] cam=" << serial
+              << " history_entries=" << history.size()
+              << std::endl;
+
+    size_t index = 0;
+    for (const RecordingSubmitHistoryEntry& entry : history) {
+        std::cout << "  [PTP_STALE_DUMP][RECORDING][" << index << "]"
+                  << " local_frame=" << entry.local_frame_id
+                  << " recording_frame=" << entry.recording_frame_id
+                  << " camera_frame_id=" << entry.camera_frame_id
+                  << " dispatch_count=" << entry.dispatch_count
+                  << " direct=" << (entry.use_direct_pointer ? 1 : 0)
+                  << " ring_copy=" << (entry.use_ring_copy ? 1 : 0)
+                  << " submitted=" << entry.ingress_stats.submitted_frames
+                  << " primary_routed=" << entry.ingress_stats.primary_routed_frames
+                  << " helper_requested=" << entry.ingress_stats.helper_requested_frames
+                  << " helper_fallback=" << entry.ingress_stats.helper_fallback_frames
+                  << " helper_dispatched=" << entry.ingress_stats.helper_dispatched_frames
+                  << " pre_q=" << entry.ingress_stats.preprocess_queue_depth
+                  << " enc_q=" << entry.ingress_stats.encode_queue_depth
+                  << " pre_buf=" << entry.ingress_stats.preprocess_buffers_available
+                  << " pre_evt=" << entry.ingress_stats.preprocess_events_available
+                  << " pre_waits=" << entry.ingress_stats.preprocess_resource_waits
+                  << " pre_drops=" << entry.ingress_stats.preprocess_frames_dropped
+                  << " enc_fail=" << entry.ingress_stats.encode_failures
+                  << " enc_slow=" << entry.ingress_stats.encode_slow_frames
+                  << " last_target_gpu_id=" << entry.ingress_stats.last_target_gpu_id
+                  << " last_route_mode=" << entry.ingress_stats.last_route_mode
                   << std::endl;
         ++index;
     }
@@ -664,6 +725,7 @@ void acquire_frames(
     bool last_yolo_enabled = false;
     PipelinePerfRecorder pipeline_perf_recorder(camera_params);
     std::deque<PtpReceiveHistoryEntry> ptp_receive_history;
+    std::deque<RecordingSubmitHistoryEntry> recording_submit_history;
     bool ptp_stale_history_dumped = false;
     if (yolo_decimate > 1) {
         std::cout << "[YOLO] Cam " << camera_params->camera_serial
@@ -1109,6 +1171,11 @@ void acquire_frames(
                         camera_control,
                         ptp_receive_history,
                         receive_entry);
+                    if (!recording_submit_history.empty()) {
+                        dump_recording_submit_history(
+                            camera_params,
+                            recording_submit_history);
+                    }
                     ptp_stale_history_dumped = true;
                 }
             }
@@ -1170,7 +1237,22 @@ void acquire_frames(
                 current_entry->ref_count.store(dispatch_count);
 
                 if (will_display) openGLDisplay->PutObjectToQueueIn(current_entry);
-                if (will_record) recording_ingress->SubmitFrame(current_entry);
+                if (will_record) {
+                    recording_ingress->SubmitFrame(current_entry);
+                    if (camera_control->sync_camera) {
+                        RecordingSubmitHistoryEntry submit_entry;
+                        submit_entry.local_frame_id = current_entry->frame_id;
+                        submit_entry.recording_frame_id = current_entry->recording_frame_id;
+                        submit_entry.camera_frame_id = ecam->frame_recv.frame_id;
+                        submit_entry.dispatch_count = dispatch_count;
+                        submit_entry.use_direct_pointer = use_direct_pointer;
+                        submit_entry.use_ring_copy = use_ring_copy;
+                        submit_entry.ingress_stats = recording_ingress->GetStats();
+                        append_recording_submit_history(
+                            &recording_submit_history,
+                            submit_entry);
+                    }
+                }
                 if (will_yolo) yolo_worker->PutObjectToQueueIn(current_entry);
 
                 if (use_direct_pointer && !use_ring_copy) {

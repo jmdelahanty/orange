@@ -138,6 +138,25 @@ New direct evidence from stale-onset receive-history logging:
   before any visible app-side queue starvation or frame-id-gap accounting
   begins
 
+New handoff-side evidence from recording-submit history logging:
+
+- a recording-enabled probe was captured from:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_handoffprobe1`
+- when the bad camera first crossed the `50 ms` stale threshold, the recent
+  `recording_ingress->SubmitFrame(...)` history still showed:
+  - primary-only routing on the bad camera
+  - no helper requests or helper dispatches yet
+  - no preprocess waits or preprocess drops
+  - no encode failures
+  - near-full preprocess buffer / event pools
+  - only shallow queue depth at the ingress/preprocess boundary
+- so the stale onset is now narrowed further:
+  - it is not just "before encode"
+  - it is also before any obvious recording-side queue growth, helper-routing
+    pressure, or preprocess resource exhaustion becomes visible in the app
+  - recording still has to be enabled to trigger the bad interaction, but the
+    first visible failure happens upstream of the normal recording hot spots
+
 Important discriminator:
 
 - for larger offsets, the bad behavior follows the offset camera

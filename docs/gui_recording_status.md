@@ -456,6 +456,26 @@ This means:
 - the next likely root-cause area is synchronized burst contention that only
   appears once recording work is added on top of phase-aligned arrivals
 
+Newest handoff-side probe:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_handoffprobe1`
+
+That probe adds one more important constraint:
+
+- the bad camera still goes stale only when recording is enabled
+- but at first stale onset, the recent recording-submit history is still
+  primary-only with:
+  - no helper routing pressure yet
+  - no preprocess waits/drops
+  - near-full preprocess resource pools
+  - only shallow queue depth at the acquisition-to-recording handoff
+
+So the current narrowest read is:
+
+- recording enable is part of the trigger
+- but the first visible failure still happens upstream of the usual recording
+  hot spots like helper routing, preprocess starvation, or output backlog
+
 Current working hypothesis:
 
 - this does not look like an average-bandwidth limit

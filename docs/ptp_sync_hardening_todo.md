@@ -124,6 +124,21 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
     - that pushes suspicion further upstream, toward camera/transport/SDK-side
       buffering or gated-acquisition behavior rather than obvious app-side
       queue exhaustion
+  - recording-submit handoff logging is now also in:
+    - probe run:
+      `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_handoffprobe1`
+    - current read:
+      - at first stale onset on the bad camera, the recent
+        `recording_ingress->SubmitFrame(...)` history still shows primary-only
+        routing
+      - helper dispatch has not really started yet on that camera
+      - preprocess waits/drops are still `0`
+      - preprocess buffers / events are still near full
+      - queue depth near the recording handoff is still shallow
+    - that narrows the trigger further:
+      - recording must be enabled to trigger the failure
+      - but the first visible onset still appears before obvious app-side
+        recording queue pressure or preprocess starvation
   - new spec-run discriminator:
     - dual-camera `100 fps` `ptp_gate` `stream_only` with no stagger:
       `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp`
