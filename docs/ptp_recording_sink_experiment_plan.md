@@ -349,3 +349,61 @@ That does not yet prove whether the trigger lives in:
 
 But it rules out the earlier "ownership timing alone" hypothesis as the primary
 cause.
+
+## Follow-Up: Lightweight Helper Host Sampling Baseline (2026-04-18)
+
+The intrusive CUDA-event helper probe was replaced with a lighter host-side
+sampler that records, for the first `32` helper-routed frames:
+
+- helper enqueue time in `RecordingIngress`
+- helper worker start time
+- helper worker completion time
+- queue depth and free buffer/event counts at enqueue/start
+
+Validated artifacts:
+
+- `free_run`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe5`
+- `ptp_gate`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe5`
+
+Result:
+
+- both modes still degraded to roughly `69-70 fps`
+- `free_run`:
+  - `2010095`: `69.8883 fps`
+  - `2010096`: `69.9954 fps`
+- `ptp_gate`:
+  - `2010095`: `69.3989 fps`
+  - `2010096`: `69.2939 fps`
+
+Most important helper-host timing result:
+
+- the helper worker itself is not slow
+- the dominant startup cost is helper queue wait, not worker service time
+- first helper-routed frames showed:
+  - `free_run`: queue wait about `28.5-28.8 ms`, worker service about `0.05-0.07 ms`
+  - `ptp_gate`: queue wait about `33.3-33.6 ms`, worker service about `0.04-0.05 ms`
+- queue wait then decayed quickly:
+  - frame `102`: about `19-24 ms`
+  - frame `103`: about `9-13 ms`
+  - frame `104`: about `3.5-3.8 ms`
+  - later sampled frames: mostly `0.01-0.10 ms`
+
+Interpretation:
+
+- helper preprocessing work itself is not the dominant cost
+- the failure is currently better described as a helper-path startup backlog
+  right when helper routing begins at recording frame `101`
+- that startup backlog exists in both `free_run` and `ptp_gate`
+- `ptp_gate` is slightly worse at onset, but the basic helper startup problem
+  is not PTP-specific in this probe
+
+This shifts the next question from:
+
+- "is the helper worker slow?"
+
+to:
+
+- "why does helper routing begin with a burst of queued work before the helper
+  worker settles into steady-state service?"

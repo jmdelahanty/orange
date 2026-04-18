@@ -306,6 +306,30 @@ Interpretation:
 - the offset only becomes pathological once the helper cross-GPU preprocess
   path is in play
 
+New helper-host baseline:
+
+- lightweight host-side helper sampling is now available via:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe5`
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe5`
+- both runs degrade to the same general band:
+  - `free_run`: about `69.9-70.0 fps`
+  - `ptp_gate`: about `69.3-69.4 fps`
+- the first helper-routed frames show a large helper queue-wait spike:
+  - `free_run`: about `28.5-28.8 ms`
+  - `ptp_gate`: about `33.3-33.6 ms`
+- helper worker service itself is tiny:
+  - about `0.04-0.07 ms` on the first helper frames
+  - mostly `0.01-0.10 ms` after that
+- queue wait then decays quickly over the next few helper frames
+
+Interpretation:
+
+- the helper worker is not slow in steady state
+- the narrowest observed issue is now a startup backlog when helper routing
+  first begins at recording frame `101`
+- `ptp_gate` is somewhat worse at onset, but the helper-startup backlog is not
+  unique to PTP in this probe
+
 All remained unstable at `100 fps`.
 
 One more controlled comparison is now available:

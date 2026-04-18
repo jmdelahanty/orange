@@ -480,6 +480,37 @@ So the current narrowest read is:
 - but the first visible failure still happens upstream of the usual recording
   hot spots like helper routing, preprocess starvation, or output backlog
 
+Newest helper-path baseline:
+
+- `free_run` helper probe:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe5`
+- `ptp_gate` helper probe:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe5`
+
+Those runs used the lighter host-side helper sampler and showed:
+
+- both modes still degrade to about `69-70 fps`
+- the first helper-routed frames incur a large helper queue-wait spike
+  in both modes
+- helper worker service itself stays tiny
+
+Representative first helper-frame timings:
+
+- `free_run`:
+  - queue wait about `28.5-28.8 ms`
+  - worker service about `0.05-0.07 ms`
+- `ptp_gate`:
+  - queue wait about `33.3-33.6 ms`
+  - worker service about `0.04-0.05 ms`
+
+So the latest baseline suggests:
+
+- helper preprocessing itself is not slow
+- the helper path begins with a startup backlog when routing switches to the
+  helper GPU at recording frame `101`
+- `ptp_gate` is somewhat worse at onset, but the startup backlog is not unique
+  to PTP in this probe
+
 Newest sink results:
 
 - `immediate_recycle`:
