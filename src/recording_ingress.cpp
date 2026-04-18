@@ -50,6 +50,7 @@ std::string normalize_recording_sink_mode(const std::string& value)
         return "real";
     }
     if (normalized == "real" ||
+        normalized == "preprocess_only" ||
         normalized == "immediate_recycle" ||
         normalized == "threaded_handoff_only") {
         return normalized;

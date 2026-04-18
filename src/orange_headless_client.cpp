@@ -4065,7 +4065,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         if (error_out) {
             *error_out =
                 "Local experiment runner only supports "
-                "fixed.recording_sink_mode=real|immediate_recycle|threaded_handoff_only";
+                "fixed.recording_sink_mode=real|preprocess_only|immediate_recycle|threaded_handoff_only";
         }
         return false;
     }

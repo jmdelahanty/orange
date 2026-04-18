@@ -245,6 +245,31 @@ Interpretation:
 - direct buffer lifetime may still contribute, but the remaining failure
   requires more than just GPUDirect pass-through reuse
 
+New preprocess-only discriminator:
+
+- forcing the run through real preprocess workers with no HW encoder/output
+  still fails
+- artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_preprocessonly_rerun1`
+- result:
+  - `2010095`: `acq_fps_mean = 90.6936`
+  - `2010096`: `acq_fps_mean = 82.2947`
+  - stale-frame onset still occurs on the offset camera
+
+Most important timing clue:
+
+- on the bad camera, stale onset happens immediately after helper routing
+  begins
+- in the stale dump for `2010096`:
+  - recording frames `1-100` were still routed primary-only
+  - helper routing begins at recording frame `101`
+  - stale threshold fires at local frame `106`
+
+Interpretation:
+
+- encode/shared-output work are not required
+- helper-path preprocess is now the narrowest remaining trigger
+
 All remained unstable at `100 fps`.
 
 One more controlled comparison is now available:

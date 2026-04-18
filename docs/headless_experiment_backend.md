@@ -112,7 +112,7 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.sync_mode = "free_run" | "ptp_gate"`
 - `fixed.stream_only = true | false`
 - `fixed.acquisition_buffer_mode = "auto" | "force_ring_copy"`
-- `fixed.recording_sink_mode = "real" | "immediate_recycle" | "threaded_handoff_only"`
+- `fixed.recording_sink_mode = "real" | "preprocess_only" | "immediate_recycle" | "threaded_handoff_only"`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
@@ -137,6 +137,10 @@ recording-enabled runs:
 
 - `real`
   - normal recording pipeline
+- `preprocess_only`
+  - real preprocess workers and normal split-GOP helper routing
+  - no hardware encoder or shared-output work
+  - useful for separating preprocess from encode/output
 - `immediate_recycle`
   - recording branch stays logically enabled, but frames are released
     immediately instead of entering preprocess / encode

@@ -11,6 +11,17 @@
 #include "recording_ingress.h"
 #include "shared_recording_output.h"
 
+namespace {
+int default_preprocess_surface_pitch(const RecordingOutputConfig& output_config,
+                                     const CameraParams* camera_params)
+{
+    if (output_config.resolved_width > 0) {
+        return output_config.resolved_width;
+    }
+    return camera_params ? static_cast<int>(camera_params->width) : 0;
+}
+}
+
 ModernRecordingPipeline::ModernRecordingPipeline(
     CameraParams* camera_params,
     const ResolvedRecordingConfig& resolved_recording_config,
@@ -26,7 +37,76 @@ ModernRecordingPipeline::ModernRecordingPipeline(
       resolved_recording_config_(resolved_recording_config)
 {
     const std::string normalized_sink_mode = normalize_recording_sink_mode(recording_sink_mode);
-    if (!is_real_recording_sink_mode(normalized_sink_mode)) {
+    if (normalized_sink_mode == "preprocess_only") {
+        const int preprocess_surface_pitch =
+            default_preprocess_surface_pitch(resolved_recording_config_.output, camera_params_);
+
+        const std::string preprocess_name = "Preprocess_Cam_" + camera_params_->camera_serial;
+        preprocess_worker_ = std::make_unique<EncoderPreprocessWorker>(
+            preprocess_name.c_str(),
+            camera_params_,
+            recording_gpu_id_,
+            resolved_recording_config_.output,
+            false,
+            preprocess_surface_pitch,
+            0,
+            resolved_recording_config_.resources.encoder_entry_pool_size,
+            recycle_queue,
+            camera_control);
+
+        recording_ingress_ = std::make_unique<RecordingIngress>(
+            preprocess_worker_.get(),
+            camera_params_->gpu_id,
+            recording_gpu_id_,
+            std::max<uint32_t>(1u, static_cast<uint32_t>(camera_params_->frame_rate)),
+            resolved_recording_config_,
+            &recycle_queue,
+            "real");
+
+        const RecordingStrategyConfig& resolved_strategy = resolved_recording_config_.strategy;
+        const std::string& policy = resolved_strategy.split_gop.source_encoder_policy;
+        const bool wants_helper_targets =
+            resolved_strategy.split_gop_enabled() &&
+            policy == "hybrid_split";
+        if (wants_helper_targets) {
+            for (int helper_gpu_id : resolved_strategy.split_gop.encoder_gpu_ids) {
+                if (helper_gpu_id < 0 || helper_gpu_id == recording_gpu_id_) {
+                    continue;
+                }
+                const bool already_registered = std::any_of(
+                    helper_encode_targets_.begin(),
+                    helper_encode_targets_.end(),
+                    [helper_gpu_id](const HelperEncodeTarget& target) {
+                        return target.gpu_id == helper_gpu_id;
+                    });
+                if (already_registered) {
+                    continue;
+                }
+
+                HelperEncodeTarget helper_target;
+                helper_target.gpu_id = helper_gpu_id;
+
+                const std::string helper_preprocess_name =
+                    "Preprocess_Cam_" + camera_params_->camera_serial + "_GPU_" + std::to_string(helper_gpu_id);
+                helper_target.preprocess_worker = std::make_unique<EncoderPreprocessWorker>(
+                    helper_preprocess_name.c_str(),
+                    camera_params_,
+                    helper_gpu_id,
+                    resolved_recording_config_.output,
+                    false,
+                    preprocess_surface_pitch,
+                    0,
+                    resolved_recording_config_.resources.encoder_entry_pool_size,
+                    recycle_queue,
+                    camera_control);
+
+                recording_ingress_->RegisterHelperPreprocessWorker(
+                    helper_gpu_id,
+                    helper_target.preprocess_worker.get());
+                helper_encode_targets_.push_back(std::move(helper_target));
+            }
+        }
+    } else if (!is_real_recording_sink_mode(normalized_sink_mode)) {
         recording_ingress_ = std::make_unique<RecordingIngress>(
             nullptr,
             camera_params_->gpu_id,

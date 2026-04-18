@@ -67,8 +67,8 @@ This should be controlled by experiment spec and local headless CLI only.
 
 Suggested controls:
 
-- `fixed.recording_sink_mode = real|immediate_recycle|threaded_handoff_only`
-- `--recording-sink-mode real|immediate_recycle|threaded_handoff_only`
+- `fixed.recording_sink_mode = real|preprocess_only|immediate_recycle|threaded_handoff_only`
+- `--recording-sink-mode real|preprocess_only|immediate_recycle|threaded_handoff_only`
 
 Default remains:
 
@@ -247,6 +247,39 @@ Interpretation:
 - forcing ring-copy changes the shape of the failure, but does not eliminate
   the offset-camera collapse
 - the remaining trigger still requires real downstream recording work
+
+## Follow-Up: Preprocess-Only Probe (2026-04-18)
+
+The next discriminator ran the same known-bad case with:
+
+- `fixed.recording_sink_mode = preprocess_only`
+
+Artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_preprocessonly_rerun1`
+
+Result:
+
+- the run still failed
+- `2010095` degraded to `acq_fps_mean = 90.6936`
+- `2010096` degraded to `acq_fps_mean = 82.2947`
+- stale-frame onset still occurred on the offset camera
+- there was still no encoder/output work
+
+Most important clue:
+
+- the stale-onset dump occurred just after helper routing began on the bad
+  camera
+- the bad camera was still primary-only through recording frame `100`
+- helper routing started at recording frame `101`
+- the stale threshold fired at local frame `106`
+
+Interpretation:
+
+- real preprocess work is enough to trigger the bad interaction
+- encode/shared output are not required
+- the strongest remaining suspect is now cross-GPU helper preprocess under
+  PTP-gated stagger, not the later encode/output path
 - the pathological stale-frame onset requires real downstream recording work,
   not just "recording enabled" state or a lightweight recording handoff
 
