@@ -13,6 +13,13 @@ namespace {
 constexpr uint8_t kRouteModePrimary = 0;
 constexpr uint8_t kRouteModeHelper = 1;
 
+uint64_t recording_ingress_now_ns()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 void append_unique_gpu_id(std::vector<int>* gpu_ids, int gpu_id)
 {
     if (!gpu_ids || gpu_id < 0) {
@@ -239,6 +246,13 @@ void RecordingIngress::increment_last_route_mode_helper()
 
 void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 {
+    if (entry) {
+        entry->helper_enqueue_host_ns = 0;
+        entry->helper_enqueue_queue_depth = -1;
+        entry->helper_enqueue_available_buffers = -1;
+        entry->helper_enqueue_available_events = -1;
+    }
+
     if (recording_sink_mode_ == "immediate_recycle") {
         submitted_frames_.fetch_add(1, std::memory_order_relaxed);
         primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
@@ -292,6 +306,14 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
     } else {
         helper_dispatched_frames_.fetch_add(1, std::memory_order_relaxed);
         increment_last_route_mode_helper();
+        if (entry) {
+            entry->helper_enqueue_host_ns = recording_ingress_now_ns();
+            entry->helper_enqueue_queue_depth = target_worker->GetCountQueueInSize();
+            entry->helper_enqueue_available_buffers =
+                target_worker->available_buffers_.load(std::memory_order_relaxed);
+            entry->helper_enqueue_available_events =
+                target_worker->available_events_.load(std::memory_order_relaxed);
+        }
     }
 
     last_target_gpu_id_.store(target_gpu_id, std::memory_order_relaxed);

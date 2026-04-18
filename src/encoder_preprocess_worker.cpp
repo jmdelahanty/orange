@@ -20,9 +20,7 @@
 #if PIPELINE_PROFILE
 static constexpr int kEncProfileLogEvery = 60;
 #endif
-static constexpr size_t kHelperPreprocessHistoryLimit = 128;
-static constexpr float kHelperPreprocessSlowCopyMs = 2.0f;
-static constexpr float kHelperPreprocessSlowTotalMs = 8.0f;
+static constexpr size_t kHelperPreprocessHostHistoryLimit = 32;
 
 namespace {
 void check_npp_status(NppStatus status, const char* operation)
@@ -71,39 +69,12 @@ int resolve_encoder_entry_pool_size(bool direct_input_enabled,
     return static_cast<int>(parsed);
 }
 
-struct HelperPreprocessProfileEvents {
-    cudaEvent_t copy_start{};
-    cudaEvent_t copy_end{};
-    cudaEvent_t total_end{};
-    int device = -1;
-    bool initialized = false;
-    bool inflight = false;
-    HelperPreprocessSample sample;
-
-    void Init(int gpu_id) {
-        if (initialized) {
-            return;
-        }
-        device = gpu_id;
-        ck(cudaSetDevice(device));
-        ck(cudaEventCreate(&copy_start));
-        ck(cudaEventCreate(&copy_end));
-        ck(cudaEventCreate(&total_end));
-        initialized = true;
-    }
-
-    ~HelperPreprocessProfileEvents() {
-        if (!initialized) {
-            return;
-        }
-        if (device >= 0) {
-            cudaSetDevice(device);
-        }
-        cudaEventDestroy(copy_start);
-        cudaEventDestroy(copy_end);
-        cudaEventDestroy(total_end);
-    }
-};
+uint64_t helper_host_now_ns()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 } // namespace
 
 EncoderPreprocessWorker::EncoderPreprocessWorker(
@@ -231,6 +202,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
 EncoderPreprocessWorker::~EncoderPreprocessWorker()
 {
     ck(cudaSetDevice(preprocess_gpu_id_));
+    dump_helper_preprocess_host_history();
     if (m_stream) cudaStreamDestroy(m_stream);
 
     // Free all buffers in the pool
@@ -307,50 +279,45 @@ int EncoderPreprocessWorker::get_hw_queue_depth() const
     return m_hw_worker_ ? m_hw_worker_->get_queue_depth() : -1;
 }
 
-void EncoderPreprocessWorker::append_helper_preprocess_sample(
-    const HelperPreprocessSample& sample)
+void EncoderPreprocessWorker::append_helper_preprocess_host_sample(
+    const HelperPreprocessHostSample& sample)
 {
-    bool should_dump = false;
-    {
-        std::lock_guard<std::mutex> lock(helper_preprocess_history_mutex_);
-        helper_preprocess_history_.push_back(sample);
-        if (helper_preprocess_history_.size() > kHelperPreprocessHistoryLimit) {
-            helper_preprocess_history_.pop_front();
-        }
-        if (!helper_preprocess_history_dumped_.load(std::memory_order_relaxed) &&
-            (sample.copy_ms >= kHelperPreprocessSlowCopyMs ||
-             sample.total_preprocess_ms >= kHelperPreprocessSlowTotalMs)) {
-            helper_preprocess_history_dumped_.store(true, std::memory_order_relaxed);
-            should_dump = true;
-        }
+    std::lock_guard<std::mutex> lock(helper_preprocess_host_history_mutex_);
+    if (helper_preprocess_host_history_.size() >= kHelperPreprocessHostHistoryLimit) {
+        return;
     }
-
-    if (should_dump) {
-        dump_helper_preprocess_history(sample);
-    }
+    helper_preprocess_host_history_.push_back(sample);
 }
 
-void EncoderPreprocessWorker::dump_helper_preprocess_history(
-    const HelperPreprocessSample& trigger_sample) const
+void EncoderPreprocessWorker::dump_helper_preprocess_host_history() const
 {
-    std::deque<HelperPreprocessSample> history_copy;
+    std::deque<HelperPreprocessHostSample> history_copy;
     {
-        std::lock_guard<std::mutex> lock(helper_preprocess_history_mutex_);
-        history_copy = helper_preprocess_history_;
+        std::lock_guard<std::mutex> lock(helper_preprocess_host_history_mutex_);
+        history_copy = helper_preprocess_host_history_;
     }
 
-    std::cerr << "[HELPER_PRE_DUMP] cam=" << camera_params_->camera_serial
-              << " source_gpu=" << trigger_sample.source_gpu_id
-              << " target_gpu=" << trigger_sample.target_gpu_id
-              << " trigger_recording_frame=" << trigger_sample.recording_frame_id
-              << " trigger_local_frame=" << trigger_sample.local_frame_id
-              << " trigger_copy_ms=" << trigger_sample.copy_ms
-              << " trigger_total_preprocess_ms=" << trigger_sample.total_preprocess_ms
-              << " history_entries=" << history_copy.size()
+    if (history_copy.empty()) {
+        return;
+    }
+
+    std::cerr << "[HELPER_PRE_HOST_DUMP] cam=" << camera_params_->camera_serial
+              << " target_gpu=" << preprocess_gpu_id_
+              << " sampled_helper_frames=" << history_copy.size()
+              << " helper_frames_seen=" << helper_preprocess_host_seen_.load(std::memory_order_relaxed)
               << std::endl;
 
     for (size_t index = 0; index < history_copy.size(); ++index) {
         const auto& sample = history_copy[index];
+        const double queue_wait_ms = sample.start_host_ns > sample.enqueue_host_ns
+            ? static_cast<double>(sample.start_host_ns - sample.enqueue_host_ns) / 1e6
+            : 0.0;
+        const double worker_service_ms = sample.done_host_ns > sample.start_host_ns
+            ? static_cast<double>(sample.done_host_ns - sample.start_host_ns) / 1e6
+            : 0.0;
+        const double total_ms = sample.done_host_ns > sample.enqueue_host_ns
+            ? static_cast<double>(sample.done_host_ns - sample.enqueue_host_ns) / 1e6
+            : 0.0;
         std::cerr << "  [HELPER_PRE_DUMP][" << index << "]"
                   << " recording_frame=" << sample.recording_frame_id
                   << " local_frame=" << sample.local_frame_id
@@ -358,13 +325,17 @@ void EncoderPreprocessWorker::dump_helper_preprocess_history(
                   << " target_gpu=" << sample.target_gpu_id
                   << " gpu_direct=" << (sample.gpu_direct_mode ? 1 : 0)
                   << " direct_input=" << (sample.direct_input_enabled ? 1 : 0)
-                  << " q=" << sample.queue_depth
-                  << " free_buf=" << sample.available_buffers
-                  << " free_evt=" << sample.available_events
-                  << " waits=" << sample.resource_waits
-                  << " drops=" << sample.frames_dropped
-                  << " copy_ms=" << sample.copy_ms
-                  << " total_pre_ms=" << sample.total_preprocess_ms
+                  << " enqueue_q=" << sample.queue_depth_on_enqueue
+                  << " start_q=" << sample.queue_depth_on_start
+                  << " enqueue_free_buf=" << sample.available_buffers_on_enqueue
+                  << " enqueue_free_evt=" << sample.available_events_on_enqueue
+                  << " start_free_buf=" << sample.available_buffers_on_start
+                  << " start_free_evt=" << sample.available_events_on_start
+                  << " waits=" << sample.resource_waits_on_start
+                  << " drops=" << sample.frames_dropped_on_start
+                  << " queue_wait_ms=" << queue_wait_ms
+                  << " worker_service_ms=" << worker_service_ms
+                  << " total_ms=" << total_ms
                   << std::endl;
     }
 }
@@ -610,33 +581,9 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
     }
 
-    static thread_local HelperPreprocessProfileEvents helper_prof_events;
-    helper_prof_events.Init(preprocess_gpu_id_);
-    if (helper_prof_events.inflight) {
-        cudaError_t helper_status = cudaEventQuery(helper_prof_events.total_end);
-        if (helper_status == cudaSuccess) {
-            float copy_ms = 0.0f;
-            float total_ms = 0.0f;
-            ck(cudaEventElapsedTime(&copy_ms,
-                                    helper_prof_events.copy_start,
-                                    helper_prof_events.copy_end));
-            ck(cudaEventElapsedTime(&total_ms,
-                                    helper_prof_events.copy_start,
-                                    helper_prof_events.total_end));
-            helper_prof_events.sample.copy_ms = copy_ms;
-            helper_prof_events.sample.total_preprocess_ms = total_ms;
-            append_helper_preprocess_sample(helper_prof_events.sample);
-            helper_prof_events.inflight = false;
-        } else if (helper_status != cudaErrorNotReady) {
-            std::cerr << "[HELPER_PRE_DUMP] cam=" << camera_params_->camera_serial
-                      << " helper profile event query failed: "
-                      << cudaGetErrorString(helper_status) << std::endl;
-            helper_prof_events.inflight = false;
-        }
-    }
-
     unsigned char* input_source = entry->d_image;
-    bool sampled_helper_cross_gpu = false;
+    bool sample_helper_cross_gpu = false;
+    HelperPreprocessHostSample helper_host_sample;
     if (entry->image_gpu_id >= 0 && entry->image_gpu_id != preprocess_gpu_id_) {
         if (!ensure_peer_access_enabled(entry->image_gpu_id)) {
             throw std::runtime_error(
@@ -648,24 +595,32 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             ck(cudaMalloc(&d_input_staging_, static_cast<size_t>(frame_original_gpu_.size_pic)));
         }
         ck(cudaEventRecord(encoder_entry->copy_start_event, m_stream));
-        if (!helper_prof_events.inflight) {
-            helper_prof_events.sample.recording_frame_id = entry->recording_frame_id;
-            helper_prof_events.sample.local_frame_id = entry->frame_id;
-            helper_prof_events.sample.source_gpu_id = entry->image_gpu_id;
-            helper_prof_events.sample.target_gpu_id = preprocess_gpu_id_;
-            helper_prof_events.sample.gpu_direct_mode = entry->gpu_direct_mode;
-            helper_prof_events.sample.direct_input_enabled = direct_input_enabled_;
-            helper_prof_events.sample.queue_depth = GetCountQueueInSize();
-            helper_prof_events.sample.available_buffers =
+        const uint64_t helper_index =
+            helper_preprocess_host_seen_.fetch_add(1, std::memory_order_relaxed);
+        if (helper_index < kHelperPreprocessHostHistoryLimit) {
+            sample_helper_cross_gpu = true;
+            helper_host_sample.recording_frame_id = entry->recording_frame_id;
+            helper_host_sample.local_frame_id = entry->frame_id;
+            helper_host_sample.source_gpu_id = entry->image_gpu_id;
+            helper_host_sample.target_gpu_id = preprocess_gpu_id_;
+            helper_host_sample.gpu_direct_mode = entry->gpu_direct_mode;
+            helper_host_sample.direct_input_enabled = direct_input_enabled_;
+            helper_host_sample.enqueue_host_ns = entry->helper_enqueue_host_ns;
+            helper_host_sample.start_host_ns = helper_host_now_ns();
+            helper_host_sample.queue_depth_on_enqueue = entry->helper_enqueue_queue_depth;
+            helper_host_sample.queue_depth_on_start = GetCountQueueInSize();
+            helper_host_sample.available_buffers_on_enqueue =
+                entry->helper_enqueue_available_buffers;
+            helper_host_sample.available_events_on_enqueue =
+                entry->helper_enqueue_available_events;
+            helper_host_sample.available_buffers_on_start =
                 available_buffers_.load(std::memory_order_relaxed);
-            helper_prof_events.sample.available_events =
+            helper_host_sample.available_events_on_start =
                 available_events_.load(std::memory_order_relaxed);
-            helper_prof_events.sample.resource_waits =
+            helper_host_sample.resource_waits_on_start =
                 resource_waits_.load(std::memory_order_relaxed);
-            helper_prof_events.sample.frames_dropped =
+            helper_host_sample.frames_dropped_on_start =
                 frames_dropped_.load(std::memory_order_relaxed);
-            ck(cudaEventRecord(helper_prof_events.copy_start, m_stream));
-            sampled_helper_cross_gpu = true;
         }
         ck(cudaMemcpyPeerAsync(
             d_input_staging_,
@@ -675,9 +630,6 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             static_cast<size_t>(frame_original_gpu_.size_pic),
             m_stream));
         ck(cudaEventRecord(encoder_entry->copy_end_event, m_stream));
-        if (sampled_helper_cross_gpu) {
-            ck(cudaEventRecord(helper_prof_events.copy_end, m_stream));
-        }
         encoder_entry->cross_gpu_copy_performed = true;
         input_source = d_input_staging_;
     }
@@ -752,9 +704,9 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     
     // Record an event in the stream once all the above GPU work is queued.
     ck(cudaEventRecord(*encoder_entry->preprocess_complete_event, m_stream));
-    if (sampled_helper_cross_gpu) {
-        ck(cudaEventRecord(helper_prof_events.total_end, m_stream));
-        helper_prof_events.inflight = true;
+    if (sample_helper_cross_gpu) {
+        helper_host_sample.done_host_ns = helper_host_now_ns();
+        append_helper_preprocess_host_sample(helper_host_sample);
     }
 #if PIPELINE_PROFILE
     if (sample_preprocess) {

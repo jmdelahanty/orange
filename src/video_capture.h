@@ -33,6 +33,10 @@ typedef struct {
     uint64_t ipc_frame_id;
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
+    uint64_t helper_enqueue_host_ns = 0;
+    int helper_enqueue_queue_depth = -1;
+    int helper_enqueue_available_buffers = -1;
+    int helper_enqueue_available_events = -1;
     
     // YOLO detection fields
     std::vector<pose::Object> detections;
