@@ -1236,6 +1236,12 @@ void acquire_frames(
             if (dispatch_count > 0) {
                 current_entry->ref_count.store(dispatch_count);
 
+                if (use_direct_pointer && !use_ring_copy) {
+                    current_entry->camera_buffer_ptr = ecam->frame_recv.imagePtr;
+                    current_entry->camera_instance = &ecam->camera;
+                    current_entry->camera_frame_struct = &ecam->frame_recv;
+                }
+
                 if (will_display) openGLDisplay->PutObjectToQueueIn(current_entry);
                 if (will_record) {
                     recording_ingress->SubmitFrame(current_entry);
@@ -1254,12 +1260,6 @@ void acquire_frames(
                     }
                 }
                 if (will_yolo) yolo_worker->PutObjectToQueueIn(current_entry);
-
-                if (use_direct_pointer && !use_ring_copy) {
-                    current_entry->camera_buffer_ptr = ecam->frame_recv.imagePtr;
-                    current_entry->camera_instance = &ecam->camera;
-                    current_entry->camera_frame_struct = &ecam->frame_recv;
-                }
 
             } else {
                 // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above

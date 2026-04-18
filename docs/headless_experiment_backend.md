@@ -111,6 +111,7 @@ Experiment specs now support two useful fixed-mode toggles:
 
 - `fixed.sync_mode = "free_run" | "ptp_gate"`
 - `fixed.stream_only = true | false`
+- `fixed.recording_sink_mode = "real" | "immediate_recycle" | "threaded_handoff_only"`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
@@ -129,6 +130,22 @@ for that run:
 
 That gives us a documented “stream-only experiment spec” mode instead of having
 to drop down to the ad hoc direct CLI.
+
+`fixed.recording_sink_mode` is a separate experimental diagnostic knob for
+recording-enabled runs:
+
+- `real`
+  - normal recording pipeline
+- `immediate_recycle`
+  - recording branch stays logically enabled, but frames are released
+    immediately instead of entering preprocess / encode
+- `threaded_handoff_only`
+  - frames still cross a recording-side worker boundary, but no real
+    preprocess / encode / output work is done
+
+These sink modes are intended only for diagnosing the `100 fps` multi-camera
+PTP recording failure mode. They intentionally produce no video output and
+`runs.csv` evaluates them using acquisition metrics instead of encoder output.
 
 Checked-in example:
 

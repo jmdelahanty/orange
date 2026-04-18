@@ -140,6 +140,19 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
       - recording must be enabled to trigger the failure
       - but the first visible onset still appears before obvious app-side
         recording queue pressure or preprocess starvation
+  - sink-mode discriminator:
+    - headless now supports experimental
+      `recording_sink_mode=immediate_recycle|threaded_handoff_only`
+    - validated runs:
+      - `immediate_recycle`:
+        `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_immediaterecycle_rerun2`
+      - `threaded_handoff_only`:
+        `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_threadedhandoff_rerun2`
+    - both runs stayed near `100 fps` with `0` camera drops
+    - current read:
+      - the failure is not triggered by bookkeeping alone
+      - the failure is not triggered by a simple cross-thread recording handoff
+      - real downstream recording work is required
   - new spec-run discriminator:
     - dual-camera `100 fps` `ptp_gate` `stream_only` with no stagger:
       `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp`

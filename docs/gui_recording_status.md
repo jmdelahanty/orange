@@ -480,6 +480,26 @@ So the current narrowest read is:
 - but the first visible failure still happens upstream of the usual recording
   hot spots like helper routing, preprocess starvation, or output backlog
 
+Newest sink results:
+
+- `immediate_recycle`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_immediaterecycle_rerun2`
+- `threaded_handoff_only`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_threadedhandoff_rerun2`
+
+Those runs show:
+
+- both sink modes sustain about `100 fps` on both cameras
+- both have `0` camera drops
+- neither reproduces the stale-frame failure
+
+So the current read tightened again:
+
+- bookkeeping alone is not enough
+- a simple cross-thread recording handoff is not enough
+- the bad `100 fps` PTP-stagger failure requires real downstream recording
+  work
+
 Current working hypothesis:
 
 - this does not look like an average-bandwidth limit

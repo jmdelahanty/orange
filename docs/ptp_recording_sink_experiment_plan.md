@@ -189,3 +189,44 @@ This experiment is successful if it tells us which of these is true:
 
 Once one of those is established, the next instrumentation step can be much
 more targeted.
+
+## First Results (2026-04-17)
+
+The first two sink probes were run against the known-bad case:
+
+- dual-camera `100 fps`
+- `ptp_gate`
+- `2 ms` stagger
+- validated PIX pairs
+
+Artifacts:
+
+- `immediate_recycle`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_immediaterecycle_rerun2`
+- `threaded_handoff_only`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_threadedhandoff_rerun2`
+
+Results:
+
+- both sink modes sustained about `100 fps` on both cameras
+- both sink modes had:
+  - `0` camera drops
+  - `0` acquisition starvation
+  - no stale-frame onset
+
+Current interpretation:
+
+- bookkeeping alone is not enough to trigger the failure
+- a simple cross-thread handoff / delayed release is also not enough
+- the pathological stale-frame onset requires real downstream recording work,
+  not just "recording enabled" state or a lightweight recording handoff
+
+That does not yet prove whether the trigger lives in:
+
+- preprocess
+- helper routing / split-GOP topology
+- encoder-side work
+- shared output / ordered GOP release
+
+But it rules out the earlier "ownership timing alone" hypothesis as the primary
+cause.

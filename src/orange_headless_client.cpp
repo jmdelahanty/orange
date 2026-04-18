@@ -31,6 +31,7 @@
 #include "fetch_generated.h"
 #include "acquire_frames.h"
 #include "modern_recording_pipeline.h"
+#include "recording_ingress.h"
 #include "fsuid_guard.h"
 #include <signal.h>
 
@@ -71,6 +72,7 @@ struct HeadlessCliOptions {
     std::string sync_mode_override;
     std::string ptp_gate_acquisition_mode_override;
     int ptp_gate_stagger_ns = 0;
+    std::string recording_sink_mode = "real";
     int duration_seconds = 0;
     int stream_start_delay_seconds = 0;
     int record_start_delay_seconds = 0;
@@ -93,6 +95,7 @@ struct ExperimentSpec {
     bool stream_only = false;
     std::string ptp_gate_acquisition_mode;
     int ptp_gate_stagger_ns = 0;
+    std::string recording_sink_mode = "real";
     int duration_s = 0;
     int warmup_s = 0;
     int stream_start_delay_s = 0;
@@ -899,6 +902,7 @@ bool apply_recording_overrides_to_selected_cameras(
 
 bool parse_headless_sync_mode_override(const std::string& value, std::string* out);
 bool parse_headless_ptp_gate_acquisition_mode_override(const std::string& value, std::string* out);
+bool parse_headless_recording_sink_mode_override(const std::string& value, std::string* out);
 
 bool apply_sync_mode_override_to_selected_cameras(
     const HeadlessCliOptions& options,
@@ -1097,6 +1101,19 @@ bool parse_headless_ptp_gate_acquisition_mode_override(const std::string& value,
         return true;
     }
     return false;
+}
+
+bool parse_headless_recording_sink_mode_override(const std::string& value, std::string* out)
+{
+    if (!out) {
+        return false;
+    }
+    const std::string normalized = normalize_recording_sink_mode(value);
+    if (normalized.empty()) {
+        return false;
+    }
+    *out = normalized;
+    return true;
 }
 
 bool parse_headless_toggle_override(const std::string& value, int* out)
@@ -1904,6 +1921,24 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             }
             continue;
         }
+        if (arg == "--recording-sink-mode") {
+            options->recording_sink_mode = consume_value("--recording-sink-mode");
+            if (options->recording_sink_mode.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            std::string normalized_mode;
+            if (!parse_headless_recording_sink_mode_override(
+                    options->recording_sink_mode, &normalized_mode)) {
+                if (error_out) {
+                    *error_out =
+                        "Invalid --recording-sink-mode value: " +
+                        options->recording_sink_mode;
+                }
+                return false;
+            }
+            options->recording_sink_mode = normalized_mode;
+            continue;
+        }
         if (arg == "--list-cameras") {
             options->list_cameras = true;
             continue;
@@ -2423,6 +2458,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const std::vector<int>& required_gpu_ids,
     std::string record_folder, std::string encoder_basic_setup,
     bool nvenc_direct_input,
+    const std::string& recording_sink_mode,
     const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture,
     int record_start_delay_seconds = 0,
     bool enable_recording = true)
@@ -2441,6 +2477,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
               << " importance_map_roi_size_px=" << encoder_settings.importance_map.roi_size_px
               << " quality=" << encoder_settings.quality_value
               << " gop=" << encoder_settings.gop_length
+              << " recording_sink_mode=" << recording_sink_mode
               << " aq=" << format_headless_toggle_override(encoder_settings.control_overrides.aq)
               << " temporal_aq="
               << format_headless_toggle_override(encoder_settings.control_overrides.temporal_aq)
@@ -2549,13 +2586,15 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
     try {
         if (enable_artifacts) {
+            const bool update_latest_pointer =
+                enable_recording && is_real_recording_sink_mode(recording_sink_mode);
             if (!prepare_headless_recording_artifacts(
                     record_folder,
                     camera_control,
                     selected_camera_params.data(),
                     static_cast<int>(selected_camera_params.size()),
                     ptp_params,
-                    enable_recording)) {
+                    update_latest_pointer)) {
                 cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                 return false;
             }
@@ -2593,7 +2632,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     &cameras_params[idx],
                     resolved_recording_config,
                     *camera_resources[idx].recycle_queue,
-                    camera_control);
+                    camera_control,
+                    recording_sink_mode);
                 recording_pipelines[idx]->start();
             }
         }
@@ -2767,6 +2807,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         recording_setup->record_folder,
                         recording_setup->encoder_basic_setup,
                         false,
+                        "real",
                         PreEncoderReferenceCaptureConfig{},
                         0))
                 {
@@ -2846,6 +2887,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.duration_seconds > 0 || options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             options.nvenc_direct_input ||
+            options.recording_sink_mode != "real" ||
             !options.ptp_gate_acquisition_mode_override.empty() ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
@@ -2869,6 +2911,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.stream_start_delay_seconds > 0 ||
             options.record_start_delay_seconds > 0 ||
             options.nvenc_direct_input ||
+            options.recording_sink_mode != "real" ||
             !options.ptp_gate_acquisition_mode_override.empty() ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
@@ -2879,7 +2922,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
                     "--list-cameras, --stream-only, --record-folder, --camera, --codec, --preset, --tuning, "
                     "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
                     "--preenc-ref-max-seconds, --duration, --stream-start-delay, --nvenc-direct-input, "
-                    "--ptp-gate-acquisition-mode, "
+                    "--ptp-gate-acquisition-mode, --recording-sink-mode, "
                     "--record-delay, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
@@ -2899,6 +2942,22 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
         if (error_out) {
             *error_out =
                 "pre_encoder_reference_capture requires recording output and is not supported with --stream-only.";
+        }
+        return false;
+    }
+    if (options.recording_sink_mode != "real" &&
+        options.pre_encoder_reference_capture.enabled) {
+        if (error_out) {
+            *error_out =
+                "pre_encoder_reference_capture requires the real recording pipeline and is not supported with --recording-sink-mode != real.";
+        }
+        return false;
+    }
+
+    if (options.stream_only && options.recording_sink_mode != "real") {
+        if (error_out) {
+            *error_out =
+                "--recording-sink-mode is only supported when recording is enabled and cannot be used with --stream-only.";
         }
         return false;
     }
@@ -3846,6 +3905,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->stream_only = fixed.value("stream_only", false);
     spec->ptp_gate_acquisition_mode = fixed.value("ptp_gate_acquisition_mode", "");
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
+    spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
@@ -3910,6 +3970,32 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             *error_out =
                 "Local experiment runner does not support fixed.stream_only=true "
                 "with fixed.pre_encoder_reference_capture.";
+        }
+        return false;
+    }
+    if (!parse_headless_recording_sink_mode_override(
+            spec->recording_sink_mode, &spec->recording_sink_mode)) {
+        if (error_out) {
+            *error_out =
+                "Local experiment runner only supports "
+                "fixed.recording_sink_mode=real|immediate_recycle|threaded_handoff_only";
+        }
+        return false;
+    }
+    if (spec->stream_only && spec->recording_sink_mode != "real") {
+        if (error_out) {
+            *error_out =
+                "Local experiment runner does not support fixed.stream_only=true "
+                "with fixed.recording_sink_mode != real.";
+        }
+        return false;
+    }
+    if (spec->recording_sink_mode != "real" &&
+        spec->pre_encoder_reference_capture.enabled) {
+        if (error_out) {
+            *error_out =
+                "Local experiment runner does not support "
+                "fixed.recording_sink_mode != real with fixed.pre_encoder_reference_capture.";
         }
         return false;
     }
@@ -4086,6 +4172,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.config_folder = spec.config_folder;
                                                             run.options.record_folder = run.recording_folder;
                                                             run.options.stream_only = spec.stream_only;
+                                                            run.options.recording_sink_mode =
+                                                                spec.recording_sink_mode;
                                                             run.options.sync_mode_override = spec.sync_mode;
                                                             run.options.ptp_gate_acquisition_mode_override =
                                                                 spec.ptp_gate_acquisition_mode;
@@ -4161,6 +4249,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"stream_start_delay_s", spec.stream_start_delay_s},
                                                                 {"record_start_delay_s", 0},
                                                                 {"stream_only", spec.stream_only},
+                                                                {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"nvenc_direct_input", spec.nvenc_direct_input},
                                                                 {"recording_folder", run.recording_folder},
                                                                 {"pre_encoder_reference_capture",
@@ -4408,6 +4497,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         active_record_folder,
         encoder_setup,
         options.nvenc_direct_input,
+        options.recording_sink_mode,
         options.pre_encoder_reference_capture,
         options.record_start_delay_seconds,
         enable_recording);
@@ -4420,6 +4510,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::cout << "Local headless " << (enable_recording ? "recording" : "stream-only")
               << " run started."
               << " folder=" << (active_record_folder.empty() ? "<none>" : active_record_folder)
+              << " recording_sink_mode=" << options.recording_sink_mode
               << " cameras=" << format_selected_camera_serials(options.encoder_settings)
               << std::endl;
 
@@ -4521,6 +4612,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
     row["stream_only"] = run.options.stream_only;
+    row["recording_sink_mode"] = run.options.recording_sink_mode;
     row["display"] = false;
     row["yolo"] = false;
     row["recording_folder"] = run.recording_folder;
@@ -4590,8 +4682,11 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     const ExperimentVideoArtifactStats video_stats =
         summarize_video_artifact(run.recording_folder, camera_serial);
 
-    row["video_present"] = video_stats.video_present;
-    row["video_path"] = run.options.stream_only ? "" : video_stats.video_path;
+    const bool metrics_only_run =
+        run.options.stream_only || !is_real_recording_sink_mode(run.options.recording_sink_mode);
+
+    row["video_present"] = metrics_only_run ? false : video_stats.video_present;
+    row["video_path"] = metrics_only_run ? "" : video_stats.video_path;
     row["video_file_size_bytes"] = video_stats.file_size_bytes;
     row["video_duration_s"] = video_stats.duration_s;
     row["video_achieved_bitrate_bps"] = video_stats.achieved_bitrate_bps;
@@ -4664,7 +4759,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         }
     }
 
-    if (run.options.stream_only) {
+    if (metrics_only_run) {
         const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
         const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
         const double acq_fps_mean = row["acq_fps_mean"].get<double>();
@@ -4684,7 +4779,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             row["reason"] = "acquisition fps below target tolerance";
         } else {
             row["pass_fail"] = "pass";
-            row["reason"] = "meets current stream-only policy";
+            row["reason"] = run.options.stream_only
+                ? "meets current stream-only policy"
+                : "meets current recording sink diagnostic policy";
         }
     } else if (encoder_info.is_object()) {
         row["nvenc_direct_input"] = encoder_info.value("path", "") == "hw_direct_input";
@@ -4868,7 +4965,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,recording_sink_mode,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -4899,6 +4996,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("importance_map_grid_width", 0) << ","
                 << row.value("importance_map_grid_height", 0) << ","
                 << (row.value("stream_only", false) ? "true" : "false") << ","
+                << row.value("recording_sink_mode", "real") << ","
                 << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","

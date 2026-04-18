@@ -1,10 +1,13 @@
 #include "recording_ingress.h"
 
 #include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <stdexcept>
 #include <utility>
 
 #include "encoder_preprocess_worker.h"
+#include "threadworker.h"
 
 namespace {
 constexpr uint8_t kRouteModePrimary = 0;
@@ -19,19 +22,119 @@ void append_unique_gpu_id(std::vector<int>* gpu_ids, int gpu_id)
         gpu_ids->push_back(gpu_id);
     }
 }
+
+void release_recording_entry_to_recycle(SafeQueue<WORKER_ENTRY*>* recycle_queue, WORKER_ENTRY* entry)
+{
+    if (!entry) {
+        return;
+    }
+    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) != 1) {
+        return;
+    }
+    if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+        EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+    }
+    if (recycle_queue) {
+        recycle_queue->push(entry);
+    }
+}
 } // namespace
+
+std::string normalize_recording_sink_mode(const std::string& value)
+{
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (normalized.empty()) {
+        return "real";
+    }
+    if (normalized == "real" ||
+        normalized == "immediate_recycle" ||
+        normalized == "threaded_handoff_only") {
+        return normalized;
+    }
+    return {};
+}
+
+bool is_real_recording_sink_mode(const std::string& value)
+{
+    return normalize_recording_sink_mode(value) == "real";
+}
+
+class RecordingIngress::ThreadedHandoffWorker : public CThreadWorker<WORKER_ENTRY> {
+public:
+    explicit ThreadedHandoffWorker(SafeQueue<WORKER_ENTRY*>* recycle_queue)
+        : CThreadWorker<WORKER_ENTRY>("RecordingSinkHandoff"),
+          recycle_queue_(recycle_queue) {}
+
+    double fps() const { return current_fps_.load(std::memory_order_relaxed); }
+    bool IsDrained() const {
+        return in_flight_.load(std::memory_order_relaxed) == 0 &&
+               GetCountQueueIn() == 0;
+    }
+
+protected:
+    bool WorkerFunction(WORKER_ENTRY* entry) override
+    {
+        if (!entry) {
+            return false;
+        }
+        in_flight_.fetch_add(1, std::memory_order_relaxed);
+        release_recording_entry_to_recycle(recycle_queue_, entry);
+
+        const auto now = std::chrono::steady_clock::now();
+        frame_counter_++;
+        const std::chrono::duration<double> elapsed = now - last_fps_update_time_;
+        if (elapsed.count() >= 1.0) {
+            current_fps_.store(frame_counter_ / elapsed.count(), std::memory_order_relaxed);
+            frame_counter_ = 0;
+            last_fps_update_time_ = now;
+        }
+        in_flight_.fetch_sub(1, std::memory_order_relaxed);
+        return false;
+    }
+
+private:
+    SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
+    std::chrono::steady_clock::time_point last_fps_update_time_ = std::chrono::steady_clock::now();
+    std::atomic<int> frame_counter_{0};
+    std::atomic<double> current_fps_{0.0};
+    std::atomic<int> in_flight_{0};
+};
 
 RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_worker,
                                    int source_gpu_id,
                                    int primary_encode_gpu_id,
                                    uint32_t recording_gop_length,
-                                   const ResolvedRecordingConfig& resolved_recording_config)
+                                   const ResolvedRecordingConfig& resolved_recording_config,
+                                   SafeQueue<WORKER_ENTRY*>* recycle_queue,
+                                   const std::string& recording_sink_mode)
     : primary_preprocess_worker_(primary_preprocess_worker),
       source_gpu_id_(source_gpu_id),
       primary_encode_gpu_id_(primary_encode_gpu_id),
       recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
-      resolved_recording_config_(resolved_recording_config)
+      resolved_recording_config_(resolved_recording_config),
+      recycle_queue_(recycle_queue),
+      recording_sink_mode_(normalize_recording_sink_mode(recording_sink_mode))
 {
+    if (recording_sink_mode_.empty()) {
+        throw std::runtime_error("Unsupported recording sink mode: " + recording_sink_mode);
+    }
+
+    if (recording_sink_mode_ == "threaded_handoff_only") {
+        if (!recycle_queue_) {
+            throw std::runtime_error(
+                "threaded_handoff_only recording sink mode requires a recycle queue");
+        }
+        threaded_handoff_worker_ = std::make_unique<ThreadedHandoffWorker>(recycle_queue_);
+    }
+
+    if (recording_sink_mode_ != "real") {
+        route_gpu_ids_.push_back(primary_encode_gpu_id_);
+        return;
+    }
+
     if (!resolved_recording_config_.strategy.split_gop_enabled()) {
         route_gpu_ids_.push_back(primary_encode_gpu_id_);
         return;
@@ -58,6 +161,11 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
             }
         }
     }
+}
+
+RecordingIngress::~RecordingIngress()
+{
+    shutdown();
 }
 
 void RecordingIngress::RegisterHelperPreprocessWorker(int encode_gpu_id,
@@ -130,6 +238,27 @@ void RecordingIngress::increment_last_route_mode_helper()
 
 void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 {
+    if (recording_sink_mode_ == "immediate_recycle") {
+        submitted_frames_.fetch_add(1, std::memory_order_relaxed);
+        primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
+        last_target_gpu_id_.store(primary_encode_gpu_id_, std::memory_order_relaxed);
+        increment_last_route_mode_primary();
+        release_entry(entry);
+        return;
+    }
+
+    if (recording_sink_mode_ == "threaded_handoff_only") {
+        if (!threaded_handoff_worker_) {
+            throw std::runtime_error("threaded_handoff_only sink mode has no handoff worker");
+        }
+        submitted_frames_.fetch_add(1, std::memory_order_relaxed);
+        primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
+        last_target_gpu_id_.store(primary_encode_gpu_id_, std::memory_order_relaxed);
+        increment_last_route_mode_primary();
+        threaded_handoff_worker_->PutObjectToQueueIn(entry);
+        return;
+    }
+
     if (!primary_preprocess_worker_) {
         throw std::runtime_error("RecordingIngress has no primary preprocess worker");
     }
@@ -211,14 +340,21 @@ RecordingIngressStats RecordingIngress::GetStats() const
         stats.encode_slow_frames += worker->get_hw_slow_frames();
     };
 
-    accumulate_worker(primary_preprocess_worker_, true);
-    for (const auto& [gpu_id, worker] : helper_preprocess_workers_) {
-        (void)gpu_id;
-        accumulate_worker(worker, false);
-    }
+    if (recording_sink_mode_ == "threaded_handoff_only") {
+        stats.preprocess_fps_primary = threaded_handoff_worker_ ? threaded_handoff_worker_->fps() : 0.0;
+        stats.preprocess_fps = stats.preprocess_fps_primary;
+        stats.preprocess_queue_depth =
+            threaded_handoff_worker_ ? threaded_handoff_worker_->GetCountQueueInSize() : -1;
+    } else if (recording_sink_mode_ == "real") {
+        accumulate_worker(primary_preprocess_worker_, true);
+        for (const auto& [gpu_id, worker] : helper_preprocess_workers_) {
+            (void)gpu_id;
+            accumulate_worker(worker, false);
+        }
 
-    stats.preprocess_fps = stats.preprocess_fps_primary + stats.preprocess_fps_helpers;
-    stats.encode_fps = stats.encode_fps_primary + stats.encode_fps_helpers;
+        stats.preprocess_fps = stats.preprocess_fps_primary + stats.preprocess_fps_helpers;
+        stats.encode_fps = stats.encode_fps_primary + stats.encode_fps_helpers;
+    }
     stats.submitted_frames = submitted_frames_.load(std::memory_order_relaxed);
     stats.primary_routed_frames = primary_routed_frames_.load(std::memory_order_relaxed);
     stats.helper_requested_frames = helper_requested_frames_.load(std::memory_order_relaxed);
@@ -232,6 +368,12 @@ RecordingIngressStats RecordingIngress::GetStats() const
 
 bool RecordingIngress::IsDrained() const
 {
+    if (recording_sink_mode_ == "immediate_recycle") {
+        return true;
+    }
+    if (recording_sink_mode_ == "threaded_handoff_only") {
+        return !threaded_handoff_worker_ || threaded_handoff_worker_->IsDrained();
+    }
     if (primary_preprocess_worker_ && !primary_preprocess_worker_->IsDrained()) {
         return false;
     }
@@ -242,4 +384,30 @@ bool RecordingIngress::IsDrained() const
         }
     }
     return true;
+}
+
+void RecordingIngress::start()
+{
+    if (threaded_handoff_worker_) {
+        threaded_handoff_worker_->SetMaxQueueSize(240);
+        threaded_handoff_worker_->StartThread();
+    }
+}
+
+void RecordingIngress::request_stop()
+{
+    if (threaded_handoff_worker_) {
+        threaded_handoff_worker_->StopThread();
+    }
+}
+
+void RecordingIngress::shutdown()
+{
+    request_stop();
+    threaded_handoff_worker_.reset();
+}
+
+void RecordingIngress::release_entry(WORKER_ENTRY* entry)
+{
+    release_recording_entry_to_recycle(recycle_queue_, entry);
 }

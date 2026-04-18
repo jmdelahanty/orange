@@ -162,6 +162,30 @@ New handoff-side evidence from recording-submit history logging:
   - recording still has to be enabled to trigger the bad interaction, but the
     first visible failure happens upstream of the normal recording hot spots
 
+New sink-mode discriminator:
+
+- headless-only experimental sink modes were added:
+  - `immediate_recycle`
+  - `threaded_handoff_only`
+- validated artifacts:
+  - `immediate_recycle`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_immediaterecycle_rerun2`
+  - `threaded_handoff_only`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_threadedhandoff_rerun2`
+- both sink runs stayed near `100 fps` on both cameras with:
+  - `0` camera drops
+  - `0` acquisition starvation
+  - no stale-frame onset
+
+That is the strongest current evidence that the bad `100 fps` stagger failure
+does not come from:
+
+- bookkeeping alone
+- or a simple cross-thread handoff / delayed release
+
+It requires real downstream recording work, not just a lightweight recording
+sink.
+
 Important discriminator:
 
 - for larger offsets, the bad behavior follows the offset camera

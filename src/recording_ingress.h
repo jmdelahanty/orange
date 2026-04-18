@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -36,22 +37,34 @@ struct RecordingIngressStats {
     std::string last_route_mode = "primary";
 };
 
+std::string normalize_recording_sink_mode(const std::string& value);
+bool is_real_recording_sink_mode(const std::string& value);
+
 class RecordingIngress {
 public:
     RecordingIngress(EncoderPreprocessWorker* primary_preprocess_worker,
                      int source_gpu_id,
                      int primary_encode_gpu_id,
                      uint32_t recording_gop_length,
-                     const ResolvedRecordingConfig& resolved_recording_config);
+                     const ResolvedRecordingConfig& resolved_recording_config,
+                     SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr,
+                     const std::string& recording_sink_mode = "real");
+    ~RecordingIngress();
 
     void SubmitFrame(WORKER_ENTRY* entry);
     RecordingIngressStats GetStats() const;
     bool IsDrained() const;
     void RegisterHelperPreprocessWorker(int encode_gpu_id, EncoderPreprocessWorker* preprocess_worker);
+    void start();
+    void request_stop();
+    void shutdown();
 
     EncoderPreprocessWorker* primary_preprocess_worker() const { return primary_preprocess_worker_; }
 
 private:
+    class ThreadedHandoffWorker;
+
+    void release_entry(WORKER_ENTRY* entry);
     int select_target_gpu_id(uint64_t recording_frame_id, bool* helper_requested) const;
     EncoderPreprocessWorker* resolve_target_worker(int target_gpu_id) const;
     void increment_last_route_mode_primary();
@@ -62,6 +75,9 @@ private:
     int primary_encode_gpu_id_ = -1;
     uint32_t recording_gop_length_ = 1;
     ResolvedRecordingConfig resolved_recording_config_;
+    SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
+    std::string recording_sink_mode_ = "real";
+    std::unique_ptr<ThreadedHandoffWorker> threaded_handoff_worker_;
     std::vector<int> route_gpu_ids_;
     std::unordered_map<int, EncoderPreprocessWorker*> helper_preprocess_workers_;
     std::atomic<uint64_t> submitted_frames_{0};

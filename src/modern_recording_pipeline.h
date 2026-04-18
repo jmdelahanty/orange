@@ -21,7 +21,8 @@ public:
         CameraParams* camera_params,
         const ResolvedRecordingConfig& resolved_recording_config,
         SafeQueue<WORKER_ENTRY*>& recycle_queue,
-        CameraControl* camera_control
+        CameraControl* camera_control,
+        const std::string& recording_sink_mode = "real"
     );
     ~ModernRecordingPipeline();
 
