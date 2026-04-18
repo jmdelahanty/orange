@@ -456,6 +456,10 @@ This means:
 - the next likely root-cause area is synchronized burst contention that only
   appears once recording work is added on top of phase-aligned arrivals
 
+Follow-on diagnostic plan:
+
+- `docs/ptp_recording_sink_experiment_plan.md`
+
 Newest handoff-side probe:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_handoffprobe1`

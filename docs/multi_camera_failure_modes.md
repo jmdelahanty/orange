@@ -3,6 +3,11 @@
 Date: 2026-04-17
 Branch: `exp/gop-split-a16`
 
+Related notes:
+
+- `docs/ptp_sync_hardening_todo.md`
+- `docs/ptp_recording_sink_experiment_plan.md`
+
 ## Purpose
 
 This note summarizes the distinct multi-camera failure modes observed during

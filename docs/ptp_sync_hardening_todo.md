@@ -6,6 +6,7 @@ Scope: cross-camera start/stop synchronization in `orange-jeremy` (GUI + headles
 Related note:
 
 - `docs/multi_camera_failure_modes.md`
+- `docs/ptp_recording_sink_experiment_plan.md`
 
 ## Goal
 
