@@ -270,6 +270,24 @@ Interpretation:
 - encode/shared-output work are not required
 - helper-path preprocess is now the narrowest remaining trigger
 
+Primary-only preprocess control:
+
+- rerunning the same `preprocess_only` case with
+  `fixed.recording.mode = "single_session"` removes helper routing entirely
+- artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_preprocessonly_primaryonly_rerun1`
+- result:
+  - `2010095`: `99.839172 fps`, `0` drops
+  - `2010096`: `99.840248 fps`, `0` drops
+  - no stale-frame onset
+
+Interpretation:
+
+- real primary preprocess is healthy
+- the failure requires helper routing / cross-GPU helper preprocess
+- the narrowest confirmed trigger is now the helper preprocess path under
+  `100 fps` `ptp_gate` with nonzero stagger
+
 All remained unstable at `100 fps`.
 
 One more controlled comparison is now available:

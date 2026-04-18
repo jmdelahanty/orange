@@ -280,6 +280,38 @@ Interpretation:
 - encode/shared output are not required
 - the strongest remaining suspect is now cross-GPU helper preprocess under
   PTP-gated stagger, not the later encode/output path
+
+## Follow-Up: Primary-Only Preprocess Probe (2026-04-18)
+
+To isolate helper routing, the same `preprocess_only` probe was rerun with a
+runtime recording override:
+
+- `fixed.recording.mode = "single_session"`
+
+That keeps the run in:
+
+- real acquisition
+- real primary preprocess
+- no helper routing
+- no HW encoder / output work
+
+Artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_preprocessonly_primaryonly_rerun1`
+
+Result:
+
+- both cameras stayed healthy
+- `2010095`: `99.839172 fps`, `0` drops
+- `2010096`: `99.840248 fps`, `0` drops
+- no stale-frame onset
+
+Interpretation:
+
+- primary-only preprocess is healthy at `100 fps` under `ptp_gate + 2 ms`
+  stagger
+- helper cross-GPU preprocess is now the narrowest confirmed trigger for the
+  bad multi-camera `100 fps` PTP-stagger failure
 - the pathological stale-frame onset requires real downstream recording work,
   not just "recording enabled" state or a lightweight recording handoff
 
