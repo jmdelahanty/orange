@@ -716,3 +716,36 @@ Current interpretation:
   peer-copy payload contending with or perturbing camera receive on the source
   GPU, rather than helper thread startup, submit cost, or source-buffer
   ownership alone
+
+Route-shape clarification:
+
+- split-GOP routing is GOP-level, not frame-level interleaving
+- with `gop_length = 25` and two encoder GPUs, routing is shaped like:
+  - frames `1-25`: first route GPU
+  - frames `26-50`: second route GPU
+  - frames `51-75`: first route GPU
+  - frames `76-100`: second route GPU
+- across a full run this still averages to about half primary-routed and half
+  helper-routed frames
+- but during a helper-owned GOP, every incoming frame in that GOP needs the
+  full source-to-helper copy
+- at `100 fps`, the active helper-copy window is therefore closer to:
+  - `100 copies/sec * ~20 MiB/frame = ~2 GiB/sec` per active camera
+  - not a smooth `50 copies/sec` spread evenly over the whole second
+
+Implication for the next experiment:
+
+- the byte sweep is consistent with burst contention, not just average PCIe
+  bandwidth exhaustion
+- delaying helper copy start by a small configurable amount may help if the
+  large peer copy is colliding with the camera receive/requeue phase at the
+  start of helper-owned GOPs
+- useful first sweep:
+  - `0 ns` baseline
+  - `250000 ns`
+  - `500000 ns`
+  - `1000000 ns`
+  - `2000000 ns`
+- if small delays improve cadence, the problem is timing/burst contention
+- if delays do not help, the remaining suspect is steadier source-GPU /
+  copy-engine / PCIe contention during the helper-owned GOP itself

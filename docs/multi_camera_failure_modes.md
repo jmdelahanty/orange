@@ -35,7 +35,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` helper preprocess probes after deferred source release and acquisition cadence sidecar | Raw source buffers are now held until CUDA source reads are complete, but acquisition still settles near `69-70 fps` | helperprobe10 `free_run` and helperprobe11 `ptp_gate` completed with `0` source-release event misses; cadenceprobe1 shows both cameras jump from `~10 ms` frame deltas to `~20 ms` at frame `102` after helper routing starts at frame `101` | Premature source recycling and submit cost are not the remaining throughput root cause; the current target is an upstream GPUDirect/EVT/acquisition-buffer interaction triggered by helper routing |
 | Dual-camera `100 fps` helper source-read no-op | Split-GOP routing stays active and throughput recovers to `100 fps` | helpernoop2: `1200` submitted, `600` primary routed, `600` helper dispatched, `0` camera drops, cadence sidecars keep sequential frame IDs through helper activation | Routing and submit overhead are not sufficient to cause the failure; helper GPU source access/copy is the trigger |
 | Dual-camera `100 fps` force ring-copy with real helper source reads | Throughput still collapses to about `70 fps` | ringcopy1: `direct=0`, ring-copy active, frame IDs still jump `101 -> 103 -> 105` after helper routing starts, post-warmup drops `400-401` | The issue is not limited to camera-owned GPUDirect buffers; helper cross-GPU reads from acquisition-GPU memory are the stronger suspect |
-| Dual-camera `100 fps` helper peer-copy byte sweep | Healthy until the helper copy payload reaches a few MiB; clear degradation by `8 MiB` | `0`, `4 KiB`, and `1 MiB` pass with no cadence jumps; `4 MiB` first jumps at frame `102`; `8 MiB` falls to about `96.7 fps` with `40-41` post-warmup drops | The decisive variable is copy payload size, not route activation alone; source-GPU to helper-GPU copy pressure is the current root-cause target |
+| Dual-camera `100 fps` helper peer-copy byte sweep | Healthy until the helper copy payload reaches a few MiB; clear degradation by `8 MiB` | `0`, `4 KiB`, and `1 MiB` pass with no cadence jumps; `4 MiB` first jumps at frame `102`; `8 MiB` falls to about `96.7 fps` with `40-41` post-warmup drops | The decisive variable is copy payload size, not route activation alone; because routing is GOP-level, helper-copy pressure arrives in bursts during helper-owned GOPs |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
@@ -501,6 +501,33 @@ Interpretation:
 - the current target is source-GPU to helper-GPU copy pressure interfering with
   sustained camera receive, not helper scheduling or app-side submit overhead
   alone
+
+Route-shape clarification:
+
+- split-GOP routing is GOP-level:
+  - target GPU is selected from `gop_index % route_gpu_count`
+  - `gop_index = (recording_frame_id - 1) / gop_length`
+- with `gop_length = 25` and two encoder GPUs, helper routing is not every
+  other frame
+- it is 25-frame bursts:
+  - one 25-frame GOP on one GPU
+  - next 25-frame GOP on the other GPU
+  - repeat
+- the run-level counters still average to about `50 fps` primary and `50 fps`
+  helper per camera
+- during a helper-owned GOP, however, the source GPU sees helper-copy demand at
+  the full camera rate
+- for `4512 x 4512 Mono8`, that burst is about `100 * 20 MiB/sec`, or roughly
+  `2 GiB/sec` per active camera before considering overhead and topology
+
+This makes the next diagnostic clearer:
+
+- a small helper-copy delay is worth testing because it may move the large
+  peer-copy burst away from the camera receive/requeue moment
+- if delay helps, the failure is timing/burst contention
+- if delay does not help, the problem is more likely sustained contention on
+  the source GPU, copy engine, PCIe path, or GPUDirect/RDMA path during the
+  helper-owned GOP
 
 One more controlled comparison is now available:
 
