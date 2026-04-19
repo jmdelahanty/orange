@@ -657,3 +657,62 @@ Interpretation:
   with sustained `100 fps` acquisition from that source GPU
 - this points toward source-GPU/PCIe/RDMA contention or a CUDA peer-copy
   interaction, not `RecordingIngress` routing or source-buffer ownership alone
+
+## Follow-Up: Helper Peer-Copy Byte Sweep (2026-04-19)
+
+The ring-copy result kept the real helper source-read path active and still
+failed, so the next control limited how much data the helper worker copies from
+the acquisition GPU into helper-GPU staging.
+
+Experiment setting:
+
+- `recording_sink_mode = "preprocess_only"`
+- `sync_mode = "free_run"`
+- `fixed.helper_copy_bytes = -1` keeps the normal full-frame helper copy
+- `fixed.helper_copy_bytes = 0` skips the peer-copy payload while still routing
+  to the helper preprocess worker
+- positive `fixed.helper_copy_bytes` values copy only that many bytes
+
+This is a diagnostic-only control. Any value other than the full frame produces
+invalid helper-side image content, but it keeps the route, worker scheduling,
+and source-release mechanics active enough to test the acquisition-cadence
+impact of the copy payload.
+
+Validation artifacts:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copy0probe1`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copy4kprobe1`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copy1mprobe1`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copy4mprobe1`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copy8mprobe1`
+
+Result summary:
+
+| Helper copy cap | Result | Cadence probe |
+| --- | --- | --- |
+| `0` bytes | passes at about `100 fps`, `0` drops | no camera-frame-id jumps |
+| `4 KiB` | passes at about `100 fps`, `0` drops | no camera-frame-id jumps |
+| `1 MiB` | passes at about `100 fps`, `0` drops | no camera-frame-id jumps |
+| `4 MiB` | run policy still passes, but cadence shows first disruption | first frame-ID jump at recording frame `102` on both cameras |
+| `8 MiB` | marginal, about `96.7 fps`, `40-41` post-warmup drops | frame-ID jumps begin at recording frame `102` and recur |
+
+Important cadence detail:
+
+- helper routing starts at recording frame `101`
+- the first bad receive cadence appears at recording frame `102`
+- for `4 MiB` and `8 MiB`, both cameras jump from camera frame `101` to `103`
+  and host receive deltas grow to about `20 ms`
+- for `0`, `4 KiB`, and `1 MiB`, camera frame IDs remain sequential through
+  the same probe window
+
+Current interpretation:
+
+- helper routing and helper worker scheduling are not sufficient to cause the
+  collapse
+- a tiny peer copy is also not sufficient
+- the acquisition-cadence disruption appears once the helper peer-copy payload
+  reaches a few MiB per helper-routed frame
+- the current root-cause target is now the sustained source-GPU to helper-GPU
+  peer-copy payload contending with or perturbing camera receive on the source
+  GPU, rather than helper thread startup, submit cost, or source-buffer
+  ownership alone

@@ -113,6 +113,8 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.stream_only = true | false`
 - `fixed.acquisition_buffer_mode = "auto" | "force_ring_copy"`
 - `fixed.recording_sink_mode = "real" | "preprocess_only" | "immediate_recycle" | "threaded_handoff_only"`
+- `fixed.helper_noop_source_read = true | false`
+- `fixed.helper_copy_bytes = -1 | 0 | <positive byte count>`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
@@ -166,6 +168,26 @@ override:
 This knob exists for diagnosing ownership / requeue / buffer-lifetime issues in
 the acquisition-to-recording transition. It is intentionally headless-only and
 does not belong in persisted camera config yet.
+
+`fixed.helper_noop_source_read` and `fixed.helper_copy_bytes` are even narrower
+split-GOP helper diagnostics:
+
+- `helper_noop_source_read = true`
+  - helper-routed preprocess workers release the source without reading or
+    copying from it
+  - primary-routed frames still use the normal preprocess path
+- `helper_copy_bytes = -1`
+  - default full-frame helper peer copy
+- `helper_copy_bytes = 0`
+  - route to the helper and run helper preprocess, but skip the source-to-helper
+    peer copy payload
+- `helper_copy_bytes > 0`
+  - copy only that many bytes from the acquisition GPU into helper-GPU staging
+    before helper preprocess
+
+These settings intentionally corrupt helper-side image content when the copy is
+not the full frame. They are diagnostic-only controls for measuring whether the
+cross-GPU copy payload itself perturbs acquisition cadence.
 
 Checked-in example:
 

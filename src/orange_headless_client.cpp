@@ -99,6 +99,7 @@ struct ExperimentSpec {
     int ptp_gate_stagger_ns = 0;
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
+    int64_t helper_copy_bytes = -1;
     int duration_s = 0;
     int warmup_s = 0;
     int stream_start_delay_s = 0;
@@ -3995,6 +3996,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
     spec->helper_noop_source_read = fixed.value("helper_noop_source_read", false);
+    spec->helper_copy_bytes = fixed.value("helper_copy_bytes", static_cast<int64_t>(-1));
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
@@ -4038,6 +4040,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->ptp_gate_stagger_ns < 0) {
         if (error_out) {
             *error_out = "Experiment spec fixed.ptp_gate_stagger_ns must be >= 0";
+        }
+        return false;
+    }
+    if (spec->helper_copy_bytes < -1) {
+        if (error_out) {
+            *error_out = "Experiment spec fixed.helper_copy_bytes must be -1 or >= 0";
         }
         return false;
     }
@@ -4354,6 +4362,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
+                                                                {"helper_copy_bytes",
+                                                                 spec.helper_copy_bytes},
                                                                 {"nvenc_direct_input", spec.nvenc_direct_input},
                                                                 {"recording_folder", run.recording_folder},
                                                                 {"pre_encoder_reference_capture",
@@ -5218,6 +5228,15 @@ int run_local_experiment(const HeadlessCliOptions& options)
         setenv("ORANGE_PREPROCESS_HELPER_NOOP_SOURCE_READ", "1", 1);
         std::cout << "[EXPERIMENT] helper source-read noop enabled via spec"
                   << std::endl;
+    }
+    if (spec.helper_copy_bytes >= 0) {
+        const std::string helper_copy_bytes =
+            std::to_string(spec.helper_copy_bytes);
+        setenv("ORANGE_PREPROCESS_HELPER_COPY_BYTES",
+               helper_copy_bytes.c_str(),
+               1);
+        std::cout << "[EXPERIMENT] helper peer-copy byte limit enabled via spec"
+                  << " bytes=" << spec.helper_copy_bytes << std::endl;
     }
 
     const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);
