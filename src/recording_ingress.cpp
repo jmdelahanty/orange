@@ -248,6 +248,9 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 {
     if (entry) {
         entry->recording_submit_host_ns = recording_ingress_now_ns();
+        entry->recording_target_gpu_id = -1;
+        entry->recording_helper_requested = false;
+        entry->recording_route_helper = false;
         entry->helper_enqueue_host_ns = 0;
         entry->helper_enqueue_queue_depth = -1;
         entry->helper_enqueue_available_buffers = -1;
@@ -259,6 +262,10 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
         primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
         last_target_gpu_id_.store(primary_encode_gpu_id_, std::memory_order_relaxed);
         increment_last_route_mode_primary();
+        if (entry) {
+            entry->recording_target_gpu_id = primary_encode_gpu_id_;
+            entry->recording_route_helper = false;
+        }
         release_entry(entry);
         return;
     }
@@ -271,6 +278,10 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
         primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
         last_target_gpu_id_.store(primary_encode_gpu_id_, std::memory_order_relaxed);
         increment_last_route_mode_primary();
+        if (entry) {
+            entry->recording_target_gpu_id = primary_encode_gpu_id_;
+            entry->recording_route_helper = false;
+        }
         threaded_handoff_worker_->PutObjectToQueueIn(entry);
         return;
     }
@@ -283,6 +294,9 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 
     bool helper_requested = false;
     int target_gpu_id = select_target_gpu_id(entry ? entry->recording_frame_id : 0, &helper_requested);
+    if (entry) {
+        entry->recording_helper_requested = helper_requested;
+    }
     EncoderPreprocessWorker* target_worker = resolve_target_worker(target_gpu_id);
     if (helper_requested) {
         helper_requested_frames_.fetch_add(1, std::memory_order_relaxed);
@@ -304,10 +318,14 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
     if (target_gpu_id == primary_encode_gpu_id_) {
         primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
         increment_last_route_mode_primary();
+        if (entry) {
+            entry->recording_route_helper = false;
+        }
     } else {
         helper_dispatched_frames_.fetch_add(1, std::memory_order_relaxed);
         increment_last_route_mode_helper();
         if (entry) {
+            entry->recording_route_helper = true;
             entry->helper_enqueue_host_ns = entry->recording_submit_host_ns;
             entry->helper_enqueue_queue_depth = target_worker->GetCountQueueInSize();
             entry->helper_enqueue_available_buffers =
@@ -318,6 +336,9 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
     }
 
     last_target_gpu_id_.store(target_gpu_id, std::memory_order_relaxed);
+    if (entry) {
+        entry->recording_target_gpu_id = target_gpu_id;
+    }
     target_worker->PutObjectToQueueIn(entry);
 }
 

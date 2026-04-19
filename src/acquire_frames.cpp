@@ -39,6 +39,8 @@ static constexpr int kCopyProfileLogEvery = 60;
 static constexpr int64_t kPtpStaleReceiveThresholdNs = 50LL * 1000LL * 1000LL;
 static constexpr size_t kPtpReceiveHistoryLimit = 256;
 static constexpr size_t kRecordingSubmitHistoryLimit = 256;
+static constexpr uint64_t kAcquisitionCadenceProbeFrameMin = 80;
+static constexpr uint64_t kAcquisitionCadenceProbeFrameMax = 160;
 
 namespace {
 struct RunningInt64Stats {
@@ -187,6 +189,188 @@ struct RecordingSubmitHistoryEntry {
     bool use_direct_pointer = false;
     bool use_ring_copy = false;
     RecordingIngressStats ingress_stats;
+};
+
+struct AcquisitionCadenceProbeSample {
+    std::string timestamp_utc;
+    uint64_t local_frame_id = 0;
+    uint64_t recording_frame_id = 0;
+    uint64_t camera_frame_id = 0;
+    uint64_t camera_timestamp_ns = 0;
+    uint64_t camera_timestamp_delta_ns = 0;
+    uint64_t receive_host_ns = 0;
+    uint64_t receive_delta_ns = 0;
+    uint64_t get_frame_wait_ns = 0;
+    bool ptp_active = false;
+    uint64_t latched_ptp_time_ns = 0;
+    int64_t latch_minus_frame_ns = 0;
+    uint64_t latch_delta_ns = 0;
+    bool record_active = false;
+    int dispatch_count = 0;
+    bool will_display = false;
+    bool will_record = false;
+    bool will_yolo = false;
+    bool use_direct_pointer = false;
+    bool use_ring_copy = false;
+    int free_entries_available = -1;
+    int free_entries_low_watermark = -1;
+    int free_events_available = -1;
+    int free_events_low_watermark = -1;
+    int yolo_events_available = -1;
+    int yolo_events_low_watermark = -1;
+    size_t pending_requeues = 0;
+    uint64_t acquisition_resource_starvations = 0;
+    uint64_t camera_dropped_frames = 0;
+    uint64_t recording_submit_host_ns = 0;
+    uint64_t receive_to_submit_ns = 0;
+    int recording_target_gpu_id = -1;
+    bool recording_helper_requested = false;
+    bool recording_route_helper = false;
+    int helper_enqueue_queue_depth = -1;
+    int helper_enqueue_available_buffers = -1;
+    int helper_enqueue_available_events = -1;
+    uint64_t helper_enqueue_delay_ns = 0;
+    RecordingIngressStats ingress_stats;
+};
+
+class AcquisitionCadenceProbeRecorder {
+public:
+    explicit AcquisitionCadenceProbeRecorder(const CameraParams* camera_params)
+        : camera_params_(camera_params) {}
+
+    ~AcquisitionCadenceProbeRecorder() {
+        Close();
+    }
+
+    void Rotate(const std::string& folder) {
+        if (folder == current_folder_) {
+            return;
+        }
+        Close();
+        if (!folder.empty()) {
+            OpenFile(folder);
+        }
+    }
+
+    void Record(const AcquisitionCadenceProbeSample& sample) {
+        if (!file_.is_open() || !ShouldRecord(sample)) {
+            return;
+        }
+
+        file_ << sample.timestamp_utc << ","
+              << sample.local_frame_id << ","
+              << sample.recording_frame_id << ","
+              << sample.camera_frame_id << ","
+              << sample.camera_timestamp_ns << ","
+              << sample.camera_timestamp_delta_ns << ","
+              << sample.receive_host_ns << ","
+              << sample.receive_delta_ns << ","
+              << sample.get_frame_wait_ns << ","
+              << (sample.ptp_active ? 1 : 0) << ","
+              << sample.latched_ptp_time_ns << ","
+              << sample.latch_minus_frame_ns << ","
+              << sample.latch_delta_ns << ","
+              << (sample.record_active ? 1 : 0) << ","
+              << sample.dispatch_count << ","
+              << (sample.will_display ? 1 : 0) << ","
+              << (sample.will_record ? 1 : 0) << ","
+              << (sample.will_yolo ? 1 : 0) << ","
+              << (sample.use_direct_pointer ? 1 : 0) << ","
+              << (sample.use_ring_copy ? 1 : 0) << ","
+              << sample.free_entries_available << ","
+              << sample.free_entries_low_watermark << ","
+              << sample.free_events_available << ","
+              << sample.free_events_low_watermark << ","
+              << sample.yolo_events_available << ","
+              << sample.yolo_events_low_watermark << ","
+              << sample.pending_requeues << ","
+              << sample.acquisition_resource_starvations << ","
+              << sample.camera_dropped_frames << ","
+              << sample.recording_submit_host_ns << ","
+              << sample.receive_to_submit_ns << ","
+              << sample.recording_target_gpu_id << ","
+              << (sample.recording_helper_requested ? 1 : 0) << ","
+              << (sample.recording_route_helper ? 1 : 0) << ","
+              << sample.helper_enqueue_queue_depth << ","
+              << sample.helper_enqueue_available_buffers << ","
+              << sample.helper_enqueue_available_events << ","
+              << sample.helper_enqueue_delay_ns << ","
+              << sample.ingress_stats.submitted_frames << ","
+              << sample.ingress_stats.primary_routed_frames << ","
+              << sample.ingress_stats.helper_requested_frames << ","
+              << sample.ingress_stats.helper_fallback_frames << ","
+              << sample.ingress_stats.helper_dispatched_frames << ","
+              << sample.ingress_stats.last_target_gpu_id << ","
+              << sample.ingress_stats.last_route_mode << ","
+              << sample.ingress_stats.preprocess_queue_depth << ","
+              << sample.ingress_stats.encode_queue_depth << ","
+              << sample.ingress_stats.preprocess_buffers_available << ","
+              << sample.ingress_stats.preprocess_events_available << ","
+              << sample.ingress_stats.preprocess_resource_waits << ","
+              << sample.ingress_stats.preprocess_frames_dropped << ","
+              << sample.ingress_stats.encode_failures << ","
+              << sample.ingress_stats.encode_slow_frames << "\n";
+        file_.flush();
+    }
+
+    void Close() {
+        if (file_.is_open()) {
+            file_.close();
+        }
+        current_folder_.clear();
+        file_path_.clear();
+    }
+
+private:
+    bool ShouldRecord(const AcquisitionCadenceProbeSample& sample) const {
+        const uint64_t probe_frame =
+            sample.recording_frame_id > 0 ? sample.recording_frame_id : sample.local_frame_id;
+        return probe_frame >= kAcquisitionCadenceProbeFrameMin &&
+               probe_frame <= kAcquisitionCadenceProbeFrameMax;
+    }
+
+    void OpenFile(const std::string& folder) {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(folder);
+
+        current_folder_ = folder;
+        const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
+        file_path_ = (std::filesystem::path(current_folder_) /
+                      ("Cam" + serial + "_acquisition_cadence_probe.csv")).string();
+        file_.open(file_path_, std::ios::out | std::ios::trunc);
+        if (!file_) {
+            std::cerr << "[ACQ_CADENCE] Cam " << serial
+                      << " failed to open " << file_path_ << std::endl;
+            current_folder_.clear();
+            file_path_.clear();
+            return;
+        }
+        file_ << "timestamp_utc,local_frame_id,recording_frame_id,camera_frame_id,"
+                 "camera_timestamp_ns,camera_timestamp_delta_ns,"
+                 "receive_host_ns,receive_delta_ns,get_frame_wait_ns,"
+                 "ptp_active,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
+                 "record_active,dispatch_count,will_display,will_record,will_yolo,"
+                 "direct,ring_copy,"
+                 "free_entries,free_entries_low,free_events,free_events_low,"
+                 "yolo_events,yolo_events_low,pending_requeues,acq_starve,"
+                 "camera_dropped_frames,recording_submit_host_ns,receive_to_submit_ns,"
+                 "recording_target_gpu_id,recording_helper_requested,recording_route_helper,"
+                 "helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,"
+                 "submitted_frames,primary_routed_frames,helper_requested_frames,"
+                 "helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
+                 "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow\n";
+        std::cout << "[ACQ_CADENCE] Cam " << serial
+                  << " logging frames "
+                  << kAcquisitionCadenceProbeFrameMin << "-"
+                  << kAcquisitionCadenceProbeFrameMax
+                  << " to " << file_path_ << std::endl;
+    }
+
+    const CameraParams* camera_params_ = nullptr;
+    std::string current_folder_;
+    std::string file_path_;
+    std::ofstream file_;
 };
 
 void append_ptp_receive_history(std::deque<PtpReceiveHistoryEntry>* history,
@@ -689,6 +873,8 @@ void acquire_frames(
     double current_acquisition_fps = 0.0;
     uint64_t local_recording_frame_count = 0;
     uint64_t last_recording_frame_count = 0;
+    uint64_t last_receive_host_ns = 0;
+    uint64_t last_camera_timestamp_ns = 0;
     uint64_t acquisition_resource_starvations = 0;
     uint64_t gpu_direct_frames = 0;
     uint64_t gpu_ring_copy_frames = 0;
@@ -725,6 +911,7 @@ void acquire_frames(
     uint64_t yolo_decimate_counter = 0;
     bool last_yolo_enabled = false;
     PipelinePerfRecorder pipeline_perf_recorder(camera_params);
+    AcquisitionCadenceProbeRecorder acquisition_cadence_probe_recorder(camera_params);
     std::deque<PtpReceiveHistoryEntry> ptp_receive_history;
     std::deque<RecordingSubmitHistoryEntry> recording_submit_history;
     bool ptp_stale_history_dumped = false;
@@ -959,10 +1146,15 @@ void acquire_frames(
             continue;
         }
 
+            const uint64_t get_frame_call_host_ns = steady_clock_now_ns();
             camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
 
             if (camera_state.camera_return == EVT_SUCCESS) {
                 const uint64_t receive_host_ns = steady_clock_now_ns();
+                const uint64_t get_frame_wait_ns =
+                    receive_host_ns > get_frame_call_host_ns
+                        ? receive_host_ns - get_frame_call_host_ns
+                        : 0;
                 if (camera_control->sync_camera) {
                 PTP_timestamp_checking(&ptp_state, ecam, &camera_state, camera_params);
                 }
@@ -977,6 +1169,17 @@ void acquire_frames(
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
+            const uint64_t receive_delta_ns =
+                (last_receive_host_ns > 0 && receive_host_ns >= last_receive_host_ns)
+                    ? receive_host_ns - last_receive_host_ns
+                    : 0;
+            last_receive_host_ns = receive_host_ns;
+            const uint64_t camera_timestamp_ns = ecam->frame_recv.timestamp;
+            const uint64_t camera_timestamp_delta_ns =
+                (last_camera_timestamp_ns > 0 && camera_timestamp_ns >= last_camera_timestamp_ns)
+                    ? camera_timestamp_ns - last_camera_timestamp_ns
+                    : 0;
+            last_camera_timestamp_ns = camera_timestamp_ns;
 
         //     std::cout << "[DEBUG] Camera " << camera_params->camera_serial 
         //   << " incremented to frame_count=" << camera_state.frame_count 
@@ -1046,6 +1249,7 @@ void acquire_frames(
 
             const std::string live_recording_folder = current_recording_folder(camera_control);
             pipeline_perf_recorder.Rotate(live_recording_folder);
+            acquisition_cadence_probe_recorder.Rotate(live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
                     update_ptp_sync_summary_camera(
@@ -1142,6 +1346,13 @@ void acquire_frames(
             current_entry->frame_id = camera_state.frame_count;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
             current_entry->recording_submit_host_ns = 0;
+            current_entry->recording_target_gpu_id = -1;
+            current_entry->recording_helper_requested = false;
+            current_entry->recording_route_helper = false;
+            current_entry->helper_enqueue_host_ns = 0;
+            current_entry->helper_enqueue_queue_depth = -1;
+            current_entry->helper_enqueue_available_buffers = -1;
+            current_entry->helper_enqueue_available_events = -1;
             current_entry->has_detections = will_yolo;
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
@@ -1267,6 +1478,77 @@ void acquire_frames(
                             &recording_submit_history,
                             submit_entry);
                     }
+                }
+                const uint64_t probe_frame_id =
+                    current_entry->recording_frame_id > 0
+                        ? current_entry->recording_frame_id
+                        : current_entry->frame_id;
+                if (!live_recording_folder.empty() &&
+                    probe_frame_id >= kAcquisitionCadenceProbeFrameMin &&
+                    probe_frame_id <= kAcquisitionCadenceProbeFrameMax) {
+                    AcquisitionCadenceProbeSample cadence_sample;
+                    cadence_sample.timestamp_utc = get_current_utc_timestamp();
+                    cadence_sample.local_frame_id = current_entry->frame_id;
+                    cadence_sample.recording_frame_id = current_entry->recording_frame_id;
+                    cadence_sample.camera_frame_id = ecam->frame_recv.frame_id;
+                    cadence_sample.camera_timestamp_ns = camera_timestamp_ns;
+                    cadence_sample.camera_timestamp_delta_ns = camera_timestamp_delta_ns;
+                    cadence_sample.receive_host_ns = receive_host_ns;
+                    cadence_sample.receive_delta_ns = receive_delta_ns;
+                    cadence_sample.get_frame_wait_ns = get_frame_wait_ns;
+                    cadence_sample.ptp_active = camera_control->sync_camera;
+                    cadence_sample.latched_ptp_time_ns =
+                        camera_control->sync_camera ? ptp_state.ptp_time : 0;
+                    cadence_sample.latch_minus_frame_ns =
+                        camera_control->sync_camera
+                            ? static_cast<int64_t>(ptp_state.ptp_time) -
+                                  static_cast<int64_t>(ptp_state.frame_ts)
+                            : 0;
+                    cadence_sample.latch_delta_ns =
+                        camera_control->sync_camera ? ptp_state.ptp_time_delta : 0;
+                    cadence_sample.record_active = camera_control->record_video;
+                    cadence_sample.dispatch_count = dispatch_count;
+                    cadence_sample.will_display = will_display;
+                    cadence_sample.will_record = will_record;
+                    cadence_sample.will_yolo = will_yolo;
+                    cadence_sample.use_direct_pointer = use_direct_pointer;
+                    cadence_sample.use_ring_copy = use_ring_copy;
+                    cadence_sample.free_entries_available = free_entries_available;
+                    cadence_sample.free_entries_low_watermark = free_entries_low;
+                    cadence_sample.free_events_available = free_events_available;
+                    cadence_sample.free_events_low_watermark = free_events_low;
+                    cadence_sample.yolo_events_available = yolo_events_available;
+                    cadence_sample.yolo_events_low_watermark = yolo_events_low;
+                    cadence_sample.pending_requeues = pending_requeues.size();
+                    cadence_sample.acquisition_resource_starvations =
+                        acquisition_resource_starvations;
+                    cadence_sample.camera_dropped_frames = camera_state.dropped_frames;
+                    cadence_sample.recording_submit_host_ns =
+                        current_entry->recording_submit_host_ns;
+                    cadence_sample.receive_to_submit_ns =
+                        current_entry->recording_submit_host_ns > receive_host_ns
+                            ? current_entry->recording_submit_host_ns - receive_host_ns
+                            : 0;
+                    cadence_sample.recording_target_gpu_id =
+                        current_entry->recording_target_gpu_id;
+                    cadence_sample.recording_helper_requested =
+                        current_entry->recording_helper_requested;
+                    cadence_sample.recording_route_helper =
+                        current_entry->recording_route_helper;
+                    cadence_sample.helper_enqueue_queue_depth =
+                        current_entry->helper_enqueue_queue_depth;
+                    cadence_sample.helper_enqueue_available_buffers =
+                        current_entry->helper_enqueue_available_buffers;
+                    cadence_sample.helper_enqueue_available_events =
+                        current_entry->helper_enqueue_available_events;
+                    cadence_sample.helper_enqueue_delay_ns =
+                        current_entry->helper_enqueue_host_ns > receive_host_ns
+                            ? current_entry->helper_enqueue_host_ns - receive_host_ns
+                            : 0;
+                    cadence_sample.ingress_stats =
+                        recording_ingress ? recording_ingress->GetStats()
+                                          : RecordingIngressStats{};
+                    acquisition_cadence_probe_recorder.Record(cadence_sample);
                 }
                 if (will_yolo) yolo_worker->PutObjectToQueueIn(current_entry);
 
@@ -1449,6 +1731,7 @@ void acquire_frames(
         pipeline_perf_recorder.Record(final_pipeline_sample);
     }
     pipeline_perf_recorder.Close();
+    acquisition_cadence_probe_recorder.Close();
 
     // Cleanup
     {

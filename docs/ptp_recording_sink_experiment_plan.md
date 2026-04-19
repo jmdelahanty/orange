@@ -501,3 +501,63 @@ stall and source-release event exhaustion:
 
 Treat that as a stress signal for event-pool sizing, not as the primary
 performance baseline.
+
+## Follow-Up: Acquisition Cadence Probe (2026-04-19)
+
+The next probe moves upstream from preprocess/source-release timing to the
+acquisition handoff itself. Orange now writes a compact per-camera CSV sidecar:
+
+- `<recording_folder>/Cam<serial>_acquisition_cadence_probe.csv`
+
+The probe records frames `80-160`, using `recording_frame_id` when recording is
+active and `local_frame_id` otherwise. That window surrounds helper activation
+at recording frame `101`.
+
+The sidecar includes:
+
+- `EVT_CameraGetFrame` wait time
+- host receive-to-receive frame delta
+- camera timestamp delta
+- PTP latch/frame deltas when PTP is active
+- receive-to-recording-submit latency
+- selected recording target GPU and primary/helper route flags
+- acquisition free-entry/free-event counts
+- preprocess/encode queue and resource counters from `RecordingIngress`
+
+Intended interpretation:
+
+- if camera timestamp or host receive deltas are already alternating before
+  submit, the problem is acquisition/camera cadence
+- if acquisition cadence is clean but receive-to-submit or route-transition
+  fields jump, the problem is the acquisition-to-recording handoff
+- if acquisition and submit stay clean while downstream queues grow, the
+  problem has moved back into preprocess/encode/output
+
+Initial `free_run` validation artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_cadenceprobe1`
+
+Important result from the captured probe window:
+
+- recording frame `101` is the first helper-routed frame on both cameras
+- recording frame `101` still has a normal `~10 ms` camera timestamp delta
+- starting at recording frame `102`, both cameras jump to `~20 ms` camera
+  timestamp deltas
+- camera frame IDs then advance by `2` per received frame:
+  - `2010095`: frame `101 -> 103 -> 105 -> 107`
+  - `2010096`: frame `101 -> 103 -> 105 -> 107`
+- `receive_to_submit_ns` stays tiny, usually a few microseconds
+- acquisition free entries/events remain healthy
+
+Interpretation:
+
+- the `100 fps` free-run collapse is already visible at camera receive time
+- the acquisition thread is not spending meaningful time between receive and
+  recording submit
+- this points away from `RecordingIngress::SubmitFrame` cost and toward an
+  upstream GPUDirect/EVT/acquisition-buffer interaction that is triggered by
+  the helper route becoming active
+
+This run crashed during cleanup on `AcquisitionStop` for one camera with the
+known EVT socket-error/segfault pattern, but the full `80-160` probe window was
+written for both cameras and is usable for this localization result.

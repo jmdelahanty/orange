@@ -35,6 +35,9 @@ typedef struct {
     int image_gpu_id = -1;
     uint64_t acquisition_receive_host_ns = 0;
     uint64_t recording_submit_host_ns = 0;
+    int recording_target_gpu_id = -1;
+    bool recording_helper_requested = false;
+    bool recording_route_helper = false;
     uint64_t helper_enqueue_host_ns = 0;
     int helper_enqueue_queue_depth = -1;
     int helper_enqueue_available_buffers = -1;
