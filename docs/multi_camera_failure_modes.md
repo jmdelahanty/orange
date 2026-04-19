@@ -34,6 +34,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` helper preprocess probes after cross-GPU prewarm | First helper queue-wait spike mostly removed, but acquisition still settles near `69-70 fps` | helperprobe6 first helper queue wait about `4 ms`, camera drops still `351-401` | CUDA/helper cold-start is real but not the whole failure; remaining issue is upstream acquisition timing/backpressure once helper routing is active |
 | Dual-camera `100 fps` helper preprocess probes after deferred source release and acquisition cadence sidecar | Raw source buffers are now held until CUDA source reads are complete, but acquisition still settles near `69-70 fps` | helperprobe10 `free_run` and helperprobe11 `ptp_gate` completed with `0` source-release event misses; cadenceprobe1 shows both cameras jump from `~10 ms` frame deltas to `~20 ms` at frame `102` after helper routing starts at frame `101` | Premature source recycling and submit cost are not the remaining throughput root cause; the current target is an upstream GPUDirect/EVT/acquisition-buffer interaction triggered by helper routing |
 | Dual-camera `100 fps` helper source-read no-op | Split-GOP routing stays active and throughput recovers to `100 fps` | helpernoop2: `1200` submitted, `600` primary routed, `600` helper dispatched, `0` camera drops, cadence sidecars keep sequential frame IDs through helper activation | Routing and submit overhead are not sufficient to cause the failure; helper GPU source access/copy is the trigger |
+| Dual-camera `100 fps` force ring-copy with real helper source reads | Throughput still collapses to about `70 fps` | ringcopy1: `direct=0`, ring-copy active, frame IDs still jump `101 -> 103 -> 105` after helper routing starts, post-warmup drops `400-401` | The issue is not limited to camera-owned GPUDirect buffers; helper cross-GPU reads from acquisition-GPU memory are the stronger suspect |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
@@ -443,6 +444,30 @@ Interpretation:
 - the failure is now localized to helper GPU source access:
   peer access, `cudaMemcpyPeerAsync`, or the lifetime/requeue behavior when a
   helper GPU reads an EVT/GPUDirect camera-owned source buffer
+
+Force ring-copy with real helper source-read follow-up:
+
+- validation artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_ringcopy1`
+- experiment setting:
+  - `fixed.acquisition_buffer_mode = "force_ring_copy"`
+  - real helper source-read path enabled
+  - `recording_sink_mode = "preprocess_only"`
+- result:
+  - completed as marginal
+  - `2010095`: `70.1342 fps`, `400` post-warmup camera drops
+  - `2010096`: `70.1779 fps`, `401` post-warmup camera drops
+  - cadence sidecars still show frame IDs skipping every other frame after
+    helper activation
+  - acquisition counters confirm the ring-copy path, not direct source use
+
+Interpretation:
+
+- moving the source frame into an Orange-owned ring buffer is not enough
+- this weakens the "camera-owned GPUDirect buffer lifetime" hypothesis
+- the stronger suspect is the helper cross-GPU source read/copy from acquisition
+  GPU memory itself, likely via source-GPU/PCIe/RDMA contention or a peer-copy
+  interaction
 
 The real helper source-read path remained unstable at `100 fps`.
 

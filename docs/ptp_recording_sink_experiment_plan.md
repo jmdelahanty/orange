@@ -611,3 +611,49 @@ The next useful control is to force acquisition into Orange-owned ring-copy
 buffers and rerun the real helper path. If ring-copy stays healthy, the problem
 is specific to helper cross-GPU reads from EVT/GPUDirect camera buffers. If
 ring-copy still fails, the cross-GPU copy path itself is the stronger suspect.
+
+## Follow-Up: Force Ring-Copy With Real Helper Path (2026-04-19)
+
+The helper no-op control showed that split-GOP routing itself is safe when the
+helper worker does not read the source buffer. The next control forced
+acquisition into Orange-owned ring-copy buffers while keeping the real helper
+source-read path active.
+
+Experiment setting:
+
+- `fixed.acquisition_buffer_mode = "force_ring_copy"`
+- `fixed.helper_noop_source_read` omitted/disabled
+- `recording_sink_mode = "preprocess_only"`
+- `sync_mode = "free_run"`
+
+Validation artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_ringcopy1`
+
+Result:
+
+- the run completed but remained marginal
+- `2010095`: `70.1342 fps`, `400` post-warmup camera drops
+- `2010096`: `70.1779 fps`, `401` post-warmup camera drops
+- acquisition mode counters confirm ring-copy path:
+  - `direct=0`
+  - `ring>0`
+- cadence sidecars show the same transition:
+  - frame `101` is first helper route
+  - frame `102` starts skipping every other camera frame
+  - frame IDs jump `101 -> 103 -> 105 -> 107`
+  - host receive deltas jump to about `20 ms`
+  - `pending_requeues` stays around `2`
+- helper source-release samples show cross-GPU source-safe release around
+  `3.4 ms` after event record, without event misses
+
+Interpretation:
+
+- forcing Orange-owned ring-copy buffers does not fix the collapse
+- the failure is not limited to helper reads from EVT/GPUDirect camera-owned
+  buffers
+- the stronger current suspect is the helper cross-GPU source-read/copy itself:
+  reading from the acquisition GPU into the helper GPU appears to interfere
+  with sustained `100 fps` acquisition from that source GPU
+- this points toward source-GPU/PCIe/RDMA contention or a CUDA peer-copy
+  interaction, not `RecordingIngress` routing or source-buffer ownership alone
