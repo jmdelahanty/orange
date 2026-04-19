@@ -45,6 +45,7 @@ struct HelperPreprocessHostSample {
     int available_buffers_on_start = -1;
     int available_events_on_start = -1;
     size_t helper_copy_bytes = 0;
+    int64_t helper_copy_delay_ns = 0;
     uint64_t resource_waits_on_start = 0;
     uint64_t frames_dropped_on_start = 0;
 };
@@ -175,6 +176,7 @@ private:
     bool defer_source_release_enabled_ = true;
     bool helper_noop_source_read_enabled_ = false;
     int64_t helper_copy_limit_bytes_ = -1;
+    int64_t helper_copy_delay_ns_ = 0;
     std::atomic<int> pending_source_release_count_{0};
     std::atomic<uint64_t> source_release_event_misses_{0};
     

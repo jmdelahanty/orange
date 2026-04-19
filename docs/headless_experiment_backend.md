@@ -115,6 +115,7 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.recording_sink_mode = "real" | "preprocess_only" | "immediate_recycle" | "threaded_handoff_only"`
 - `fixed.helper_noop_source_read = true | false`
 - `fixed.helper_copy_bytes = -1 | 0 | <positive byte count>`
+- `fixed.helper_copy_delay_ns = 0 | <positive nanoseconds>`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
@@ -184,10 +185,15 @@ split-GOP helper diagnostics:
 - `helper_copy_bytes > 0`
   - copy only that many bytes from the acquisition GPU into helper-GPU staging
     before helper preprocess
+- `helper_copy_delay_ns > 0`
+  - sleep in the helper preprocess worker before starting the cross-GPU helper
+    peer copy
+  - intended only for testing whether the helper copy is colliding with a
+    sensitive acquisition receive/requeue window
 
 These settings intentionally corrupt helper-side image content when the copy is
-not the full frame. They are diagnostic-only controls for measuring whether the
-cross-GPU copy payload itself perturbs acquisition cadence.
+not the full frame. They are diagnostic-only controls for measuring whether
+cross-GPU copy payload and timing perturb acquisition cadence.
 
 Checked-in example:
 

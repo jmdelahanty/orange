@@ -162,6 +162,8 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         env_flag_disabled_by_default("ORANGE_PREPROCESS_HELPER_NOOP_SOURCE_READ");
     helper_copy_limit_bytes_ =
         env_int64_or_default("ORANGE_PREPROCESS_HELPER_COPY_BYTES", -1);
+    helper_copy_delay_ns_ =
+        env_int64_or_default("ORANGE_PREPROCESS_HELPER_COPY_DELAY_NS", 0);
     ck(cudaSetDevice(preprocess_gpu_id_));
     ck(cudaStreamCreate(&m_stream));
     if (defer_source_release_enabled_) {
@@ -181,6 +183,13 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
                   << camera_params_->camera_serial
                   << " preprocess_gpu=" << preprocess_gpu_id_
                   << " bytes=" << helper_copy_limit_bytes_
+                  << std::endl;
+    }
+    if (helper_copy_delay_ns_ > 0) {
+        std::cout << "[EncoderPreprocessWorker] Helper peer-copy delay enabled for camera "
+                  << camera_params_->camera_serial
+                  << " preprocess_gpu=" << preprocess_gpu_id_
+                  << " delay_ns=" << helper_copy_delay_ns_
                   << std::endl;
     }
 
@@ -416,6 +425,7 @@ void EncoderPreprocessWorker::dump_helper_preprocess_host_history() const
                   << " start_free_buf=" << sample.available_buffers_on_start
                   << " start_free_evt=" << sample.available_events_on_start
                   << " copy_bytes=" << sample.helper_copy_bytes
+                  << " copy_delay_ns=" << sample.helper_copy_delay_ns
                   << " waits=" << sample.resource_waits_on_start
                   << " drops=" << sample.frames_dropped_on_start
                   << " queue_wait_ms=" << queue_wait_ms
@@ -773,6 +783,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             helper_host_sample.available_events_on_start =
                 available_events_.load(std::memory_order_relaxed);
             helper_host_sample.helper_copy_bytes = 0;
+            helper_host_sample.helper_copy_delay_ns = 0;
             helper_host_sample.resource_waits_on_start =
                 resource_waits_.load(std::memory_order_relaxed);
             helper_host_sample.frames_dropped_on_start =
@@ -975,10 +986,14 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             helper_host_sample.available_events_on_start =
                 available_events_.load(std::memory_order_relaxed);
             helper_host_sample.helper_copy_bytes = helper_copy_bytes;
+            helper_host_sample.helper_copy_delay_ns = helper_copy_delay_ns_;
             helper_host_sample.resource_waits_on_start =
                 resource_waits_.load(std::memory_order_relaxed);
             helper_host_sample.frames_dropped_on_start =
                 frames_dropped_.load(std::memory_order_relaxed);
+        }
+        if (helper_copy_delay_ns_ > 0) {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(helper_copy_delay_ns_));
         }
         if (helper_copy_bytes > 0) {
             ck(cudaMemcpyPeerAsync(

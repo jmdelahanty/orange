@@ -36,6 +36,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` helper source-read no-op | Split-GOP routing stays active and throughput recovers to `100 fps` | helpernoop2: `1200` submitted, `600` primary routed, `600` helper dispatched, `0` camera drops, cadence sidecars keep sequential frame IDs through helper activation | Routing and submit overhead are not sufficient to cause the failure; helper GPU source access/copy is the trigger |
 | Dual-camera `100 fps` force ring-copy with real helper source reads | Throughput still collapses to about `70 fps` | ringcopy1: `direct=0`, ring-copy active, frame IDs still jump `101 -> 103 -> 105` after helper routing starts, post-warmup drops `400-401` | The issue is not limited to camera-owned GPUDirect buffers; helper cross-GPU reads from acquisition-GPU memory are the stronger suspect |
 | Dual-camera `100 fps` helper peer-copy byte sweep | Healthy until the helper copy payload reaches a few MiB; clear degradation by `8 MiB` | `0`, `4 KiB`, and `1 MiB` pass with no cadence jumps; `4 MiB` first jumps at frame `102`; `8 MiB` falls to about `96.7 fps` with `40-41` post-warmup drops | The decisive variable is copy payload size, not route activation alone; because routing is GOP-level, helper-copy pressure arrives in bursts during helper-owned GOPs |
+| Dual-camera `100 fps` helper peer-copy `250 us` delay | Worse than no-delay full-copy baseline and crashes during cleanup | sidecars from copydelay250us_probe1 show frame-ID jumps from frame `102`, `59` jumps per camera in the probe window, and terminal output reports `2010096` at `451` drops before EVT socket-error cleanup | A naive per-frame sleep before helper copy does not find a safe window; sustained helper-owned-GOP copy pressure remains the stronger suspect |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
@@ -528,6 +529,32 @@ This makes the next diagnostic clearer:
 - if delay does not help, the problem is more likely sustained contention on
   the source GPU, copy engine, PCIe path, or GPUDirect/RDMA path during the
   helper-owned GOP
+
+First helper-copy delay test:
+
+- setting:
+  - `fixed.helper_copy_delay_ns = 250000`
+  - full-frame helper copy
+  - `recording_sink_mode = "preprocess_only"`
+  - `sync_mode = "free_run"`
+- artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copydelay250us_probe1`
+- result:
+  - no `runs.csv` because the process hit the known EVT socket-error/segfault
+    cleanup path
+  - cadence sidecars were written and show the failure clearly
+  - both cameras start helper routing at frame `101`
+  - both cameras start skipping every other frame at frame `102`
+  - each camera has `59` frame-ID jumps in the `80-160` cadence probe window
+  - terminal output showed `2010096` with `451` camera drops before shutdown
+
+Interpretation:
+
+- a naive per-frame `250 us` delay makes the full-copy case worse, not better
+- this weakens the simple "copy starts slightly too early" hypothesis
+- the stronger remaining explanation is sustained helper-copy pressure during
+  the helper-owned GOP, or a topology/copy-engine interaction that requires a
+  more structural scheduling change than a fixed per-frame sleep
 
 One more controlled comparison is now available:
 

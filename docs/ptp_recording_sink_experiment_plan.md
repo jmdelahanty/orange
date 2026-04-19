@@ -749,3 +749,56 @@ Implication for the next experiment:
 - if small delays improve cadence, the problem is timing/burst contention
 - if delays do not help, the remaining suspect is steadier source-GPU /
   copy-engine / PCIe contention during the helper-owned GOP itself
+
+## Follow-Up: Helper Peer-Copy Delay Probe (2026-04-19)
+
+The first timing probe added:
+
+- `fixed.helper_copy_delay_ns`
+- internally mapped to `ORANGE_PREPROCESS_HELPER_COPY_DELAY_NS`
+- applied only in cross-GPU helper preprocess workers, immediately before the
+  source-GPU to helper-GPU peer copy
+
+First validation artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_copydelay250us_probe1`
+
+Setting:
+
+- full-frame helper copy
+- `recording_sink_mode = "preprocess_only"`
+- `sync_mode = "free_run"`
+- `fixed.helper_copy_delay_ns = 250000`
+
+Result:
+
+- the run did not complete cleanly; it hit the known EVT socket-error/segfault
+  cleanup path after one camera stopped
+- no `runs.csv` was written
+- sidecar artifacts were written and are useful:
+  - `Cam2010095_acquisition_cadence_probe.csv`
+  - `Cam2010096_acquisition_cadence_probe.csv`
+  - `Cam2010095_pipeline_perf.csv`
+  - `Cam2010096_pipeline_perf.csv`
+  - `recording_snapshot.json`
+- both cameras began helper routing at recording frame `101`
+- both cameras started skipping every other camera frame at recording frame
+  `102`
+- cadence sidecars show `59` frame-ID jumps in the `80-160` probe window for
+  each camera
+- pipeline CSVs show acquisition repeatedly alternating around `50 fps` and
+  `90-98 fps`
+- terminal output before the crash showed:
+  - `2010096`: `451` camera drops, about `67.8 fps`
+  - `2010095`: socket operation failed during shutdown/checkCameraErrors
+
+Interpretation:
+
+- a simple per-frame `250 us` host delay before the helper peer copy does not
+  move the copy into a safe window
+- this delay worsened the symptom relative to the no-delay full-copy case
+- the result points away from "the copy starts a few hundred microseconds too
+  early" as the primary explanation
+- the remaining suspect is sustained copy pressure during helper-owned GOPs, or
+  a more specific copy scheduling/topology interaction that a naive sleep does
+  not fix
