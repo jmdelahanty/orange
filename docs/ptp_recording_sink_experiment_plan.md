@@ -7,6 +7,7 @@ Related notes:
 
 - `docs/multi_camera_failure_modes.md`
 - `docs/ptp_sync_hardening_todo.md`
+- `docs/helper_queue_wait_explainer.md`
 
 ## Purpose
 
