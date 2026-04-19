@@ -32,6 +32,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` `ptp_gate` stream-only, `2 ms` stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Offset alone is not enough to trigger stale-frame onset; recording pressure is part of the bad interaction |
 | Dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | PTP-gated offset acquisition becomes unstable at `100 fps`; this is a different mode than GOP backlog overflow |
 | Dual-camera `100 fps` helper preprocess probes after cross-GPU prewarm | First helper queue-wait spike mostly removed, but acquisition still settles near `69-70 fps` | helperprobe6 first helper queue wait about `4 ms`, camera drops still `351-401` | CUDA/helper cold-start is real but not the whole failure; remaining issue is upstream acquisition timing/backpressure once helper routing is active |
+| Dual-camera `100 fps` helper preprocess probes after deferred source release | Raw source buffers are now held until CUDA source reads are complete, but acquisition still settles near `69-70 fps` | helperprobe10 `free_run` and helperprobe11 `ptp_gate` completed with `0` source-release event misses; camera drops remained `351-401` | Premature source recycling is now guarded against and is not the remaining throughput root cause |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
@@ -358,6 +359,33 @@ Interpretation:
   startup latency
 - the next localization target is the acquisition timing pattern that alternates
   between near-`50 fps` and near-`100 fps` once helper routing is active
+
+Deferred source-release follow-up:
+
+- preprocess now defers raw source entry recycling until queued CUDA source
+  reads are complete:
+  - helper cross-GPU frames are released after the peer copy into helper staging
+  - same-GPU frames are released after the source-safe preprocess event
+- validation artifacts:
+  - `free_run`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe10`
+  - `ptp_gate`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe11`
+- both runs completed with `0` source-release event misses
+- sampled source-release waits were small in the normal degraded case:
+  - same-GPU primary frames: about `0.4-0.5 ms`
+  - helper cross-GPU frames: about `3.2 ms`
+- throughput still missed target:
+  - `free_run`: about `70.3 fps`, `400-401` camera drops
+  - `ptp_gate`: about `69.4-69.6 fps`, `351` camera drops
+
+Interpretation:
+
+- premature raw-source reuse is now guarded against
+- normal source-release latency is not large enough to explain the missing
+  `100 fps` cadence
+- the remaining evidence still points upstream of encode/output, toward camera
+  receive cadence and acquisition timing around helper route activation
 
 All remained unstable at `100 fps`.
 

@@ -33,6 +33,8 @@ typedef struct {
     uint64_t ipc_frame_id;
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
+    uint64_t acquisition_receive_host_ns = 0;
+    uint64_t recording_submit_host_ns = 0;
     uint64_t helper_enqueue_host_ns = 0;
     int helper_enqueue_queue_depth = -1;
     int helper_enqueue_available_buffers = -1;

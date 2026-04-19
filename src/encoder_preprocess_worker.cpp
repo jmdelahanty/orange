@@ -7,8 +7,10 @@
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
+#include <algorithm>
 #include <cstdlib>
 #include <stdexcept>
+#include <thread>
 
 #ifndef PIPELINE_PROFILE
 #if defined(YOLO_PROFILE) && YOLO_PROFILE
@@ -21,6 +23,8 @@
 static constexpr int kEncProfileLogEvery = 60;
 #endif
 static constexpr size_t kHelperPreprocessHostHistoryLimit = 32;
+static constexpr uint64_t kSourceReleaseProbeFrameMin = 90;
+static constexpr uint64_t kSourceReleaseProbeFrameMax = 140;
 
 namespace {
 void check_npp_status(NppStatus status, const char* operation)
@@ -75,6 +79,18 @@ uint64_t helper_host_now_ns()
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+
+bool env_flag_enabled_by_default(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return true;
+    }
+    const char first = value[0];
+    return !(first == '0' || first == 'n' || first == 'N' ||
+             first == 'f' || first == 'F' ||
+             first == 'o' || first == 'O');
+}
 } // namespace
 
 EncoderPreprocessWorker::EncoderPreprocessWorker(
@@ -112,8 +128,16 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
       resize_output_roi_{0, 0, output_width_, output_height_},
       last_fps_update_time_(std::chrono::steady_clock::now())  // Initialize FPS timer
 {
+    defer_source_release_enabled_ =
+        env_flag_enabled_by_default("ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE");
     ck(cudaSetDevice(preprocess_gpu_id_));
     ck(cudaStreamCreate(&m_stream));
+    if (defer_source_release_enabled_) {
+        std::cout << "[EncoderPreprocessWorker] Deferred source release enabled for camera "
+                  << camera_params_->camera_serial
+                  << " preprocess_gpu=" << preprocess_gpu_id_
+                  << std::endl;
+    }
 
     if (direct_input_enabled_ && direct_input_slot_count_ <= 0) {
         throw std::runtime_error("Direct-input mode requires a positive slot count");
@@ -196,13 +220,23 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         encoder_entry_pool_[i].copy_start_event = copy_start_event_pool_[i];
         encoder_entry_pool_[i].copy_end_event = copy_end_event_pool_[i];
     }
+
+    const int source_release_event_pool_size =
+        std::max(entry_pool_size, DEFAULT_ENCODER_ENTRY_POOL_SIZE);
+    source_release_event_pool_.resize(static_cast<size_t>(source_release_event_pool_size));
+    for (int i = 0; i < source_release_event_pool_size; ++i) {
+        ck(cudaEventCreateWithFlags(&source_release_event_pool_[i], cudaEventDisableTiming));
+        free_source_release_events_.push(&source_release_event_pool_[i]);
+    }
 }
 
 
 EncoderPreprocessWorker::~EncoderPreprocessWorker()
 {
     ck(cudaSetDevice(preprocess_gpu_id_));
+    drain_pending_source_releases(true);
     dump_helper_preprocess_host_history();
+    dump_source_release_history();
     if (m_stream) cudaStreamDestroy(m_stream);
 
     // Free all buffers in the pool
@@ -240,6 +274,11 @@ EncoderPreprocessWorker::~EncoderPreprocessWorker()
         if (event) cudaEventDestroy(event);
     }
     copy_end_event_pool_.clear();
+
+    for (auto& event : source_release_event_pool_) {
+        if (event) cudaEventDestroy(event);
+    }
+    source_release_event_pool_.clear();
 }
 
 std::vector<PeerAccessRouteState> EncoderPreprocessWorker::peer_access_states() const
@@ -340,10 +379,182 @@ void EncoderPreprocessWorker::dump_helper_preprocess_host_history() const
     }
 }
 
+void EncoderPreprocessWorker::append_source_release_sample(
+    const SourceReleaseSample& sample)
+{
+    if (sample.recording_frame_id < kSourceReleaseProbeFrameMin ||
+        sample.recording_frame_id > kSourceReleaseProbeFrameMax) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(source_release_history_mutex_);
+    source_release_history_.push_back(sample);
+}
+
+void EncoderPreprocessWorker::dump_source_release_history() const
+{
+    std::deque<SourceReleaseSample> history_copy;
+    {
+        std::lock_guard<std::mutex> lock(source_release_history_mutex_);
+        history_copy = source_release_history_;
+    }
+
+    if (history_copy.empty()) {
+        return;
+    }
+
+    std::cerr << "[SOURCE_RELEASE_DUMP] cam=" << camera_params_->camera_serial
+              << " target_gpu=" << preprocess_gpu_id_
+              << " sampled_frames=" << history_copy.size()
+              << " frame_window=" << kSourceReleaseProbeFrameMin
+              << "-" << kSourceReleaseProbeFrameMax
+              << " event_misses=" << source_release_event_misses_.load(std::memory_order_relaxed)
+              << std::endl;
+
+    for (size_t index = 0; index < history_copy.size(); ++index) {
+        const auto& sample = history_copy[index];
+        const double receive_to_submit_ms =
+            (sample.submit_host_ns > sample.receive_host_ns && sample.receive_host_ns > 0)
+                ? static_cast<double>(sample.submit_host_ns - sample.receive_host_ns) / 1e6
+                : 0.0;
+        const double submit_to_worker_ms =
+            (sample.worker_start_host_ns > sample.submit_host_ns && sample.submit_host_ns > 0)
+                ? static_cast<double>(sample.worker_start_host_ns - sample.submit_host_ns) / 1e6
+                : 0.0;
+        const double worker_to_event_record_ms =
+            (sample.source_safe_event_record_host_ns > sample.worker_start_host_ns &&
+             sample.worker_start_host_ns > 0)
+                ? static_cast<double>(
+                      sample.source_safe_event_record_host_ns - sample.worker_start_host_ns) / 1e6
+                : 0.0;
+        const double event_record_to_release_ms =
+            (sample.source_release_host_ns > sample.source_safe_event_record_host_ns &&
+             sample.source_safe_event_record_host_ns > 0)
+                ? static_cast<double>(
+                      sample.source_release_host_ns - sample.source_safe_event_record_host_ns) / 1e6
+                : 0.0;
+        const double submit_to_release_ms =
+            (sample.source_release_host_ns > sample.submit_host_ns && sample.submit_host_ns > 0)
+                ? static_cast<double>(sample.source_release_host_ns - sample.submit_host_ns) / 1e6
+                : 0.0;
+        std::cerr << "  [SOURCE_RELEASE][" << index << "]"
+                  << " recording_frame=" << sample.recording_frame_id
+                  << " local_frame=" << sample.local_frame_id
+                  << " source_gpu=" << sample.source_gpu_id
+                  << " target_gpu=" << sample.target_gpu_id
+                  << " gpu_direct=" << (sample.gpu_direct_mode ? 1 : 0)
+                  << " cross_gpu=" << (sample.cross_gpu_copy ? 1 : 0)
+                  << " direct_input=" << (sample.direct_input_enabled ? 1 : 0)
+                  << " pending_on_record=" << sample.pending_releases_on_record
+                  << " receive_to_submit_ms=" << receive_to_submit_ms
+                  << " submit_to_worker_ms=" << submit_to_worker_ms
+                  << " worker_to_event_record_ms=" << worker_to_event_record_ms
+                  << " event_record_to_release_ms=" << event_record_to_release_ms
+                  << " submit_to_release_ms=" << submit_to_release_ms
+                  << std::endl;
+    }
+}
+
+cudaEvent_t* EncoderPreprocessWorker::acquire_source_release_event()
+{
+    cudaEvent_t* event = nullptr;
+    if (!defer_source_release_enabled_) {
+        return nullptr;
+    }
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        drain_pending_source_releases(false);
+        if (free_source_release_events_.pop(event)) {
+            return event;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+    source_release_event_misses_.fetch_add(1, std::memory_order_relaxed);
+    std::cerr << "[SOURCE_RELEASE] No source-release CUDA event available for camera "
+              << camera_params_->camera_serial
+              << " target_gpu=" << preprocess_gpu_id_
+              << "; falling back to immediate source release"
+              << std::endl;
+    return nullptr;
+}
+
+void EncoderPreprocessWorker::defer_source_release(
+    WORKER_ENTRY* entry,
+    cudaEvent_t* event,
+    const SourceReleaseSample& sample)
+{
+    if (!entry || !event) {
+        if (event) {
+            free_source_release_events_.push(event);
+        }
+        release_source_entry(entry);
+        return;
+    }
+    PendingSourceRelease pending;
+    pending.entry = entry;
+    pending.event = event;
+    pending.sample = sample;
+    pending.sample.pending_releases_on_record =
+        static_cast<int>(pending_source_releases_.size());
+    pending_source_releases_.push_back(pending);
+    pending_source_release_count_.store(
+        static_cast<int>(pending_source_releases_.size()),
+        std::memory_order_relaxed);
+}
+
+void EncoderPreprocessWorker::drain_pending_source_releases(bool synchronize_all)
+{
+    for (auto it = pending_source_releases_.begin();
+         it != pending_source_releases_.end(); ) {
+        cudaError_t status = cudaSuccess;
+        if (synchronize_all) {
+            status = cudaEventSynchronize(*it->event);
+        } else {
+            status = cudaEventQuery(*it->event);
+        }
+
+        if (status == cudaErrorNotReady) {
+            ++it;
+            continue;
+        }
+
+        if (status != cudaSuccess) {
+            std::cerr << "[SOURCE_RELEASE] CUDA event wait/query failed for camera "
+                      << camera_params_->camera_serial
+                      << " recording_frame=" << it->sample.recording_frame_id
+                      << " error=" << cudaGetErrorString(status)
+                      << std::endl;
+            cudaGetLastError();
+        }
+
+        it->sample.source_release_host_ns = helper_host_now_ns();
+        append_source_release_sample(it->sample);
+        release_source_entry(it->entry);
+        free_source_release_events_.push(it->event);
+        it = pending_source_releases_.erase(it);
+        pending_source_release_count_.store(
+            static_cast<int>(pending_source_releases_.size()),
+            std::memory_order_relaxed);
+    }
+}
+
+void EncoderPreprocessWorker::release_source_entry(WORKER_ENTRY* entry)
+{
+    if (!entry) {
+        return;
+    }
+    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
+            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
+        }
+        m_recycle_queue_.push(entry);
+    }
+}
+
 bool EncoderPreprocessWorker::IsDrained()
 {
     return (in_flight_.load(std::memory_order_relaxed) == 0) &&
-           (GetCountQueueInSize() == 0);
+           (GetCountQueueInSize() == 0) &&
+           (pending_source_release_count_.load(std::memory_order_relaxed) == 0);
 }
 
 void EncoderPreprocessWorker::PrepareCrossGpuInput(int source_gpu_id)
@@ -452,21 +663,23 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 {
     auto start_time = std::chrono::steady_clock::now();
 
+    if (!pending_source_releases_.empty()) {
+        ck(cudaSetDevice(preprocess_gpu_id_));
+        drain_pending_source_releases(false);
+    }
+
     if (!entry) {
         return false;
     }
+
+    const uint64_t worker_start_host_ns = helper_host_now_ns();
 
     const bool recording_enabled = camera_control_->record_video;
     const bool draining = camera_control_->recording_draining;
 
     // If we're not recording and not draining, just recycle and move on.
     if (!recording_enabled && !draining) {
-        if (entry && entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-             if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-            }
-            m_recycle_queue_.push(entry);
-        }
+        release_source_entry(entry);
         return false;
     }
 
@@ -571,12 +784,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     if (!encoder_entry || !event || (direct_input_enabled_ && direct_input_slot_id < 0)) {
         frames_dropped_++;
 
-        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-            }
-            m_recycle_queue_.push(entry);
-        }
+        release_source_entry(entry);
         in_flight_.fetch_sub(1, std::memory_order_relaxed);
         return false;
     }
@@ -594,6 +802,23 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     encoder_entry->cross_gpu_copy_performed = false;
     if (direct_input_enabled_) {
         encoder_entry->d_prepared_frame = static_cast<unsigned char*>(direct_input_surfaces_[static_cast<size_t>(direct_input_slot_id)]);
+    }
+
+    cudaEvent_t* source_release_event = acquire_source_release_event();
+    bool source_release_event_recorded = false;
+    uint64_t source_release_event_record_host_ns = 0;
+    bool cross_gpu_copy_performed = false;
+    SourceReleaseSample source_release_sample;
+    if (source_release_event) {
+        source_release_sample.recording_frame_id = entry->recording_frame_id;
+        source_release_sample.local_frame_id = entry->frame_id;
+        source_release_sample.source_gpu_id = entry->image_gpu_id;
+        source_release_sample.target_gpu_id = preprocess_gpu_id_;
+        source_release_sample.gpu_direct_mode = entry->gpu_direct_mode;
+        source_release_sample.direct_input_enabled = direct_input_enabled_;
+        source_release_sample.receive_host_ns = entry->acquisition_receive_host_ns;
+        source_release_sample.submit_host_ns = entry->recording_submit_host_ns;
+        source_release_sample.worker_start_host_ns = worker_start_host_ns;
     }
 
 #if PIPELINE_PROFILE
@@ -661,7 +886,13 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             static_cast<size_t>(frame_original_gpu_.size_pic),
             m_stream));
         ck(cudaEventRecord(encoder_entry->copy_end_event, m_stream));
+        if (source_release_event && !source_release_event_recorded) {
+            ck(cudaEventRecord(*source_release_event, m_stream));
+            source_release_event_recorded = true;
+            source_release_event_record_host_ns = helper_host_now_ns();
+        }
         encoder_entry->cross_gpu_copy_performed = true;
+        cross_gpu_copy_performed = true;
         input_source = d_input_staging_;
     }
 
@@ -735,6 +966,11 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     
     // Record an event in the stream once all the above GPU work is queued.
     ck(cudaEventRecord(*encoder_entry->preprocess_complete_event, m_stream));
+    if (source_release_event && !source_release_event_recorded) {
+        ck(cudaEventRecord(*source_release_event, m_stream));
+        source_release_event_recorded = true;
+        source_release_event_record_host_ns = helper_host_now_ns();
+    }
     if (sample_helper_cross_gpu) {
         helper_host_sample.done_host_ns = helper_host_now_ns();
         append_helper_preprocess_host_sample(helper_host_sample);
@@ -746,20 +982,26 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 #endif
 
-    // Release the main WORKER_ENTRY immediately.
-    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-        }
-        m_recycle_queue_.push(entry);
-    }
-
-    // Pass the prepared frame and its completion event to the hardware encoder.
     if (m_hw_worker_) {
         encoder_entry->recording_frame_id = entry->recording_frame_id;
         encoder_entry->timestamp = entry->timestamp;
         encoder_entry->timestamp_sys = entry->timestamp_sys;
-        
+    }
+
+    if (source_release_event_recorded) {
+        source_release_sample.cross_gpu_copy = cross_gpu_copy_performed;
+        source_release_sample.source_safe_event_record_host_ns =
+            source_release_event_record_host_ns;
+        defer_source_release(entry, source_release_event, source_release_sample);
+    } else {
+        if (source_release_event) {
+            free_source_release_events_.push(source_release_event);
+        }
+        release_source_entry(entry);
+    }
+
+    // Pass the prepared frame and its completion event to the hardware encoder.
+    if (m_hw_worker_) {
         m_hw_worker_->PutObjectToQueueIn(encoder_entry);
     } else {
         // If there's no hardware worker, recycle the resources.

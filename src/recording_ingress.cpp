@@ -247,6 +247,7 @@ void RecordingIngress::increment_last_route_mode_helper()
 void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 {
     if (entry) {
+        entry->recording_submit_host_ns = recording_ingress_now_ns();
         entry->helper_enqueue_host_ns = 0;
         entry->helper_enqueue_queue_depth = -1;
         entry->helper_enqueue_available_buffers = -1;
@@ -307,7 +308,7 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
         helper_dispatched_frames_.fetch_add(1, std::memory_order_relaxed);
         increment_last_route_mode_helper();
         if (entry) {
-            entry->helper_enqueue_host_ns = recording_ingress_now_ns();
+            entry->helper_enqueue_host_ns = entry->recording_submit_host_ns;
             entry->helper_enqueue_queue_depth = target_worker->GetCountQueueInSize();
             entry->helper_enqueue_available_buffers =
                 target_worker->available_buffers_.load(std::memory_order_relaxed);

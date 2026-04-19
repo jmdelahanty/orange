@@ -312,6 +312,50 @@ However, both runs remained below target:
 So the prewarm fixes a specific cold-start cost, but it does not fix the
 remaining two-camera `100 fps` acquisition/drop behavior by itself.
 
+## What Changed With Deferred Source Release
+
+After helper prewarm, the next hypothesis was that Orange might be returning
+the raw source buffer to EVT or the local acquisition ring before helper GPU
+work had safely finished reading from it. That would be a correctness bug even
+if the helper queue looked healthy.
+
+The preprocess worker now records a CUDA event after the last queued GPU
+operation that can read the source frame:
+
+- for helper cross-GPU frames, after the peer copy into the helper staging
+  buffer
+- for same-GPU frames, after the preprocess work has been queued
+
+The raw `WORKER_ENTRY` is recycled only after that event has completed. This is
+enabled by default and can be disabled for comparison with:
+
+```bash
+ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE=0
+```
+
+Validation probes:
+
+- `free_run`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe10`
+- `ptp_gate`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe11`
+
+Result:
+
+- both runs completed without source-release event exhaustion
+- sampled same-GPU source release waits were roughly `0.4-0.5 ms`
+- sampled helper cross-GPU source release waits were roughly `3.2 ms`
+- `free_run` still measured about `70.3 fps` with `400-401` camera drops
+- `ptp_gate` still measured about `69.4-69.6 fps` with `351` camera drops
+
+Interpretation:
+
+- early raw-source reuse is now guarded against
+- the normal source-release delay is small compared with the missing `100 fps`
+  cadence
+- deferred release is correctness hardening and useful observability, not the
+  throughput fix for the current dual-camera split-GOP failure
+
 ## The Most Important Learning Point
 
 A queue can be preallocated and still show large queue wait because:

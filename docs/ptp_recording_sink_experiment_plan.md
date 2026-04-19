@@ -447,3 +447,57 @@ Interpretation:
   activation latency alone
 - next diagnostics should focus on why acquisition timing drops into the
   `50/100 fps` alternating pattern once helper routing is active
+
+## Follow-Up: Deferred Source Release (2026-04-19)
+
+The next source-lifetime hypothesis was that preprocess might recycle a raw
+camera/ring source entry before queued CUDA work had finished reading it. The
+preprocess worker now defers raw source release until a CUDA event proves the
+source is no longer needed:
+
+- helper cross-GPU route: release after the peer copy into helper staging has
+  completed
+- same-GPU route: release after preprocess work has been queued through the
+  source-safe point
+
+The probe also records source-lifetime samples around recording frames
+`90-140`, which straddles helper route activation at frame `101`.
+
+Validated artifacts:
+
+- `free_run`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe10`
+- `ptp_gate`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe11`
+
+Result:
+
+- both completed as marginal, not failed
+- both had `0` source-release event misses after the release-event pool was
+  sized to at least the normal preprocess entry pool
+- `free_run`:
+  - `2010095`: `70.2575 fps`, `400` camera drops
+  - `2010096`: `70.2966 fps`, `401` camera drops
+- `ptp_gate`:
+  - `2010095`: `69.4057 fps`, `351` camera drops
+  - `2010096`: `69.5988 fps`, `351` camera drops
+- sampled normal source-release delay was small:
+  - same-GPU primary frames: about `0.4-0.5 ms`
+  - helper cross-GPU frames: about `3.2 ms`
+
+Interpretation:
+
+- raw source buffer reuse is now CUDA-safe by construction
+- the remaining `100 fps` failure is not explained by premature raw-source
+  recycling
+- the next useful probe should move upstream to acquisition timing:
+  `EVT_CameraGetFrame` wait duration, camera frame timestamps, and host receive
+  cadence around helper route activation
+
+One abnormal PTP run before the event-pool sizing fix showed a single-camera
+stall and source-release event exhaustion:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe10`
+
+Treat that as a stress signal for event-pool sizing, not as the primary
+performance baseline.

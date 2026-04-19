@@ -19,6 +19,7 @@
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
+#include "latency_stats.h"
 #include "project.h"
 #include <cstdlib>
 #include <fstream>
@@ -961,6 +962,7 @@ void acquire_frames(
             camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
 
             if (camera_state.camera_return == EVT_SUCCESS) {
+                const uint64_t receive_host_ns = steady_clock_now_ns();
                 if (camera_control->sync_camera) {
                 PTP_timestamp_checking(&ptp_state, ecam, &camera_state, camera_params);
                 }
@@ -1138,6 +1140,8 @@ void acquire_frames(
             current_entry->timestamp = ecam->frame_recv.timestamp;
             current_entry->timestamp_sys = real_time;
             current_entry->frame_id = camera_state.frame_count;
+            current_entry->acquisition_receive_host_ns = receive_host_ns;
+            current_entry->recording_submit_host_ns = 0;
             current_entry->has_detections = will_yolo;
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
@@ -1454,6 +1458,20 @@ void acquire_frames(
         // FRAME_IPC: Log final statistics if IPC was active
         if (ipc_manager) {
             // IPC logging disabled: final stats.
+        }
+
+        if (recording_ingress) {
+            const auto source_release_drain_deadline =
+                std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!recording_ingress->IsDrained() &&
+                   std::chrono::steady_clock::now() < source_release_drain_deadline) {
+                usleep(1000);
+            }
+            if (!recording_ingress->IsDrained()) {
+                std::cerr << "[SOURCE_RELEASE] Timed out waiting for recording ingress "
+                          << "to drain before AcquisitionStop for camera "
+                          << camera_params->camera_serial << std::endl;
+            }
         }
 
         {

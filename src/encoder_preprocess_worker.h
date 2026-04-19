@@ -48,6 +48,22 @@ struct HelperPreprocessHostSample {
     uint64_t frames_dropped_on_start = 0;
 };
 
+struct SourceReleaseSample {
+    uint64_t recording_frame_id = 0;
+    uint64_t local_frame_id = 0;
+    int source_gpu_id = -1;
+    int target_gpu_id = -1;
+    bool gpu_direct_mode = false;
+    bool cross_gpu_copy = false;
+    bool direct_input_enabled = false;
+    uint64_t receive_host_ns = 0;
+    uint64_t submit_host_ns = 0;
+    uint64_t worker_start_host_ns = 0;
+    uint64_t source_safe_event_record_host_ns = 0;
+    uint64_t source_release_host_ns = 0;
+    int pending_releases_on_record = 0;
+};
+
 class EncoderPreprocessWorker : public CThreadWorker<WORKER_ENTRY>
 {
 public:
@@ -97,8 +113,22 @@ protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
 
 private:
+    struct PendingSourceRelease {
+        WORKER_ENTRY* entry = nullptr;
+        cudaEvent_t* event = nullptr;
+        SourceReleaseSample sample;
+    };
+
     void append_helper_preprocess_host_sample(const HelperPreprocessHostSample& sample);
     void dump_helper_preprocess_host_history() const;
+    void append_source_release_sample(const SourceReleaseSample& sample);
+    void dump_source_release_history() const;
+    cudaEvent_t* acquire_source_release_event();
+    void defer_source_release(WORKER_ENTRY* entry,
+                              cudaEvent_t* event,
+                              const SourceReleaseSample& sample);
+    void drain_pending_source_releases(bool synchronize_all);
+    void release_source_entry(WORKER_ENTRY* entry);
     bool ensure_peer_access_enabled(int source_gpu_id);
     CameraParams* camera_params_;
     int preprocess_gpu_id_;
@@ -129,6 +159,8 @@ private:
     std::vector<cudaEvent_t> event_pool_;
     std::vector<cudaEvent_t> copy_start_event_pool_;
     std::vector<cudaEvent_t> copy_end_event_pool_;
+    std::vector<cudaEvent_t> source_release_event_pool_;
+    SafeQueue<cudaEvent_t*> free_source_release_events_;
     std::vector<void*> direct_input_surfaces_;
     std::set<int> peer_access_enabled_gpus_;
     mutable std::mutex peer_access_states_mutex_;
@@ -136,6 +168,12 @@ private:
     mutable std::mutex helper_preprocess_host_history_mutex_;
     std::deque<HelperPreprocessHostSample> helper_preprocess_host_history_;
     std::atomic<uint64_t> helper_preprocess_host_seen_{0};
+    mutable std::mutex source_release_history_mutex_;
+    std::deque<SourceReleaseSample> source_release_history_;
+    std::deque<PendingSourceRelease> pending_source_releases_;
+    bool defer_source_release_enabled_ = true;
+    std::atomic<int> pending_source_release_count_{0};
+    std::atomic<uint64_t> source_release_event_misses_{0};
     
     // Performance monitoring members
     std::chrono::steady_clock::time_point last_fps_update_time_;
