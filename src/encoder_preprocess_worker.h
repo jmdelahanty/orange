@@ -172,6 +172,7 @@ private:
     std::deque<SourceReleaseSample> source_release_history_;
     std::deque<PendingSourceRelease> pending_source_releases_;
     bool defer_source_release_enabled_ = true;
+    bool helper_noop_source_read_enabled_ = false;
     std::atomic<int> pending_source_release_count_{0};
     std::atomic<uint64_t> source_release_event_misses_{0};
     

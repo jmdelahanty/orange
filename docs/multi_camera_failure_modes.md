@@ -33,6 +33,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | PTP-gated offset acquisition becomes unstable at `100 fps`; this is a different mode than GOP backlog overflow |
 | Dual-camera `100 fps` helper preprocess probes after cross-GPU prewarm | First helper queue-wait spike mostly removed, but acquisition still settles near `69-70 fps` | helperprobe6 first helper queue wait about `4 ms`, camera drops still `351-401` | CUDA/helper cold-start is real but not the whole failure; remaining issue is upstream acquisition timing/backpressure once helper routing is active |
 | Dual-camera `100 fps` helper preprocess probes after deferred source release and acquisition cadence sidecar | Raw source buffers are now held until CUDA source reads are complete, but acquisition still settles near `69-70 fps` | helperprobe10 `free_run` and helperprobe11 `ptp_gate` completed with `0` source-release event misses; cadenceprobe1 shows both cameras jump from `~10 ms` frame deltas to `~20 ms` at frame `102` after helper routing starts at frame `101` | Premature source recycling and submit cost are not the remaining throughput root cause; the current target is an upstream GPUDirect/EVT/acquisition-buffer interaction triggered by helper routing |
+| Dual-camera `100 fps` helper source-read no-op | Split-GOP routing stays active and throughput recovers to `100 fps` | helpernoop2: `1200` submitted, `600` primary routed, `600` helper dispatched, `0` camera drops, cadence sidecars keep sequential frame IDs through helper activation | Routing and submit overhead are not sufficient to cause the failure; helper GPU source access/copy is the trigger |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
@@ -416,7 +417,34 @@ Interpretation:
 - the next investigation should focus on why activating the helper route causes
   the camera/driver receive cadence to skip every other frame
 
-All remained unstable at `100 fps`.
+Helper source-read no-op follow-up:
+
+- headless experiment specs now support:
+  - `fixed.helper_noop_source_read = true`
+- with that enabled, cross-GPU/helper-routed preprocess workers receive routed
+  frames but release them without reading/copying from the source GPU
+- primary-routed frames still run through normal preprocess
+- validation artifact:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helpernoop2`
+- result:
+  - both cameras passed
+  - `2010095`: `99.9989 fps`, `0` camera drops
+  - `2010096`: `100.001 fps`, `0` camera drops
+  - `1200` submitted frames per camera
+  - `600` primary-routed frames per camera
+  - `600` helper-dispatched frames per camera
+  - cadence sidecars keep sequential frame IDs through helper activation
+
+Interpretation:
+
+- split-GOP routing itself is not enough to cause the `50 fps` collapse
+- `RecordingIngress::SubmitFrame` cost is not enough to cause the collapse
+- helper thread scheduling is not enough to cause the collapse
+- the failure is now localized to helper GPU source access:
+  peer access, `cudaMemcpyPeerAsync`, or the lifetime/requeue behavior when a
+  helper GPU reads an EVT/GPUDirect camera-owned source buffer
+
+The real helper source-read path remained unstable at `100 fps`.
 
 One more controlled comparison is now available:
 

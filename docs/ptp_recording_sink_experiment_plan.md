@@ -561,3 +561,53 @@ Interpretation:
 This run crashed during cleanup on `AcquisitionStop` for one camera with the
 known EVT socket-error/segfault pattern, but the full `80-160` probe window was
 written for both cameras and is usable for this localization result.
+
+## Follow-Up: Helper Source-Read No-Op (2026-04-19)
+
+The acquisition cadence probe localized the free-run collapse to camera receive
+time immediately after helper routing begins. The next control kept split-GOP
+routing active but made helper-routed preprocess workers release the source
+entry without reading/copying from the source GPU.
+
+Experiment switch:
+
+- `fixed.helper_noop_source_read = true` in the headless experiment spec
+- internally maps to `ORANGE_PREPROCESS_HELPER_NOOP_SOURCE_READ=1`
+- only cross-GPU/helper-routed preprocess entries are no-oped
+- primary-routed entries still run through normal preprocess
+
+Validation artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helpernoop2`
+
+Result:
+
+- both cameras passed the current diagnostic policy
+- `2010095`: `99.9989 fps`, `0` camera drops
+- `2010096`: `100.001 fps`, `0` camera drops
+- submitted/routed frame counts remained split-GOP shaped:
+  - `1200` submitted
+  - `600` primary routed
+  - `600` helper requested
+  - `600` helper dispatched
+- acquisition cadence sidecars show helper route activation at frame `101`
+- frame IDs remain sequential through the probe window:
+  - `2010095`: `99, 100, 101, 102, 103, ...`
+  - `2010096`: `99, 100, 101, 102, 103, ...`
+- receive-to-submit latency remains only a few microseconds
+- helper worker queue wait/service time is tiny after the first no-op helper
+  frame
+
+Interpretation:
+
+- split-GOP routing itself is not sufficient to cause the `50 fps` collapse
+- `RecordingIngress::SubmitFrame` is not the bottleneck
+- helper worker scheduling is not the bottleneck
+- the trigger is specifically in the helper GPU source-read path:
+  peer access, `cudaMemcpyPeerAsync`, or the lifetime/requeue interaction around
+  a helper GPU reading a GPUDirect camera-owned source buffer
+
+The next useful control is to force acquisition into Orange-owned ring-copy
+buffers and rerun the real helper path. If ring-copy stays healthy, the problem
+is specific to helper cross-GPU reads from EVT/GPUDirect camera buffers. If
+ring-copy still fails, the cross-GPU copy path itself is the stronger suspect.

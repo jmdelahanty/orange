@@ -91,6 +91,18 @@ bool env_flag_enabled_by_default(const char* name)
              first == 'f' || first == 'F' ||
              first == 'o' || first == 'O');
 }
+
+bool env_flag_disabled_by_default(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return false;
+    }
+    const char first = value[0];
+    return !(first == '0' || first == 'n' || first == 'N' ||
+             first == 'f' || first == 'F' ||
+             first == 'o' || first == 'O');
+}
 } // namespace
 
 EncoderPreprocessWorker::EncoderPreprocessWorker(
@@ -130,10 +142,18 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
 {
     defer_source_release_enabled_ =
         env_flag_enabled_by_default("ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE");
+    helper_noop_source_read_enabled_ =
+        env_flag_disabled_by_default("ORANGE_PREPROCESS_HELPER_NOOP_SOURCE_READ");
     ck(cudaSetDevice(preprocess_gpu_id_));
     ck(cudaStreamCreate(&m_stream));
     if (defer_source_release_enabled_) {
         std::cout << "[EncoderPreprocessWorker] Deferred source release enabled for camera "
+                  << camera_params_->camera_serial
+                  << " preprocess_gpu=" << preprocess_gpu_id_
+                  << std::endl;
+    }
+    if (helper_noop_source_read_enabled_) {
+        std::cout << "[EncoderPreprocessWorker] Helper source-read noop enabled for camera "
                   << camera_params_->camera_serial
                   << " preprocess_gpu=" << preprocess_gpu_id_
                   << std::endl;
@@ -699,6 +719,55 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 
     ck(cudaSetDevice(preprocess_gpu_id_));
     EnsureNppStream(m_stream);
+
+    if (helper_noop_source_read_enabled_ &&
+        entry->image_gpu_id >= 0 &&
+        entry->image_gpu_id != preprocess_gpu_id_) {
+        const uint64_t helper_index =
+            helper_preprocess_host_seen_.fetch_add(1, std::memory_order_relaxed);
+        if (helper_index < kHelperPreprocessHostHistoryLimit) {
+            HelperPreprocessHostSample helper_host_sample;
+            helper_host_sample.recording_frame_id = entry->recording_frame_id;
+            helper_host_sample.local_frame_id = entry->frame_id;
+            helper_host_sample.source_gpu_id = entry->image_gpu_id;
+            helper_host_sample.target_gpu_id = preprocess_gpu_id_;
+            helper_host_sample.gpu_direct_mode = entry->gpu_direct_mode;
+            helper_host_sample.direct_input_enabled = direct_input_enabled_;
+            helper_host_sample.enqueue_host_ns = entry->helper_enqueue_host_ns;
+            helper_host_sample.start_host_ns = worker_start_host_ns;
+            helper_host_sample.done_host_ns = helper_host_now_ns();
+            helper_host_sample.queue_depth_on_enqueue = entry->helper_enqueue_queue_depth;
+            helper_host_sample.queue_depth_on_start = GetCountQueueInSize();
+            helper_host_sample.available_buffers_on_enqueue =
+                entry->helper_enqueue_available_buffers;
+            helper_host_sample.available_events_on_enqueue =
+                entry->helper_enqueue_available_events;
+            helper_host_sample.available_buffers_on_start =
+                available_buffers_.load(std::memory_order_relaxed);
+            helper_host_sample.available_events_on_start =
+                available_events_.load(std::memory_order_relaxed);
+            helper_host_sample.resource_waits_on_start =
+                resource_waits_.load(std::memory_order_relaxed);
+            helper_host_sample.frames_dropped_on_start =
+                frames_dropped_.load(std::memory_order_relaxed);
+            append_helper_preprocess_host_sample(helper_host_sample);
+        }
+        if (!entry->gpu_direct_mode && entry->event_ptr) {
+            cudaError_t sync_status = cudaEventSynchronize(*entry->event_ptr);
+            if (sync_status != cudaSuccess) {
+                std::cerr << "[EncoderPreprocessWorker] Helper source-read noop event sync "
+                          << "failed for camera " << camera_params_->camera_serial
+                          << " target_gpu=" << preprocess_gpu_id_
+                          << " recording_frame=" << entry->recording_frame_id
+                          << " error=" << cudaGetErrorString(sync_status)
+                          << std::endl;
+                cudaGetLastError();
+            }
+        }
+        release_source_entry(entry);
+        in_flight_.fetch_sub(1, std::memory_order_relaxed);
+        return false;
+    }
 
 #if PIPELINE_PROFILE
     struct EncProfileEvents {

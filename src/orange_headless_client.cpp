@@ -98,6 +98,7 @@ struct ExperimentSpec {
     std::string acquisition_buffer_mode = "auto";
     int ptp_gate_stagger_ns = 0;
     std::string recording_sink_mode = "real";
+    bool helper_noop_source_read = false;
     int duration_s = 0;
     int warmup_s = 0;
     int stream_start_delay_s = 0;
@@ -3993,6 +3994,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->acquisition_buffer_mode = fixed.value("acquisition_buffer_mode", "auto");
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
+    spec->helper_noop_source_read = fixed.value("helper_noop_source_read", false);
     spec->duration_s = fixed.value("duration_s", 0);
     spec->warmup_s = fixed.value("warmup_s", 0);
     spec->stream_start_delay_s = fixed.value("stream_start_delay_s", 0);
@@ -4350,6 +4352,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"acquisition_buffer_mode",
                                                                  spec.acquisition_buffer_mode},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
+                                                                {"helper_noop_source_read",
+                                                                 spec.helper_noop_source_read},
                                                                 {"nvenc_direct_input", spec.nvenc_direct_input},
                                                                 {"recording_folder", run.recording_folder},
                                                                 {"pre_encoder_reference_capture",
@@ -5208,6 +5212,12 @@ int run_local_experiment(const HeadlessCliOptions& options)
     if (!write_json_file(experiment_root / "experiment_spec.json", spec.source_json, &error)) {
         std::cerr << error << std::endl;
         return 1;
+    }
+
+    if (spec.helper_noop_source_read) {
+        setenv("ORANGE_PREPROCESS_HELPER_NOOP_SOURCE_READ", "1", 1);
+        std::cout << "[EXPERIMENT] helper source-read noop enabled via spec"
+                  << std::endl;
     }
 
     const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);
