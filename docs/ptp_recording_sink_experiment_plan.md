@@ -408,3 +408,42 @@ to:
 
 - "why does helper routing begin with a burst of queued work before the helper
   worker settles into steady-state service?"
+
+## Follow-Up: Helper Cross-GPU Prewarm (2026-04-19)
+
+The helper-host timing probe showed that the first helper-routed frame paid a
+large startup queue-wait cost even though helper worker service time was tiny.
+To test whether that was CUDA setup rather than steady-state helper speed, the
+helper preprocess worker now prewarms cross-GPU input setup during pipeline
+construction.
+
+The prewarm does this before recording starts:
+
+- enables peer access from acquisition GPU to helper preprocess GPU
+- allocates the helper-side input staging buffer
+- records and synchronizes a lightweight CUDA event on the helper stream
+
+Validation probes:
+
+- `free_run`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe6`
+- `ptp_gate`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe6`
+
+Result:
+
+- first helper queue wait improved from about `28-34 ms` to about `4 ms`
+- helper worker service remained tiny, usually below `0.1 ms`
+- both runs still remained marginal because acquisition rate stayed around
+  `69-70 fps`
+- camera drops remained high:
+  - `free_run`: `400-401`
+  - `ptp_gate`: `351`
+
+Interpretation:
+
+- helper cross-GPU setup cold-start was real and is now mostly removed
+- the remaining two-camera `100 fps` failure is not explained by helper
+  activation latency alone
+- next diagnostics should focus on why acquisition timing drops into the
+  `50/100 fps` alternating pattern once helper routing is active

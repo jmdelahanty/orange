@@ -31,6 +31,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `100 fps` `ptp_gate` stream-only, no stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Raw synchronized acquisition is fine without recording |
 | Dual-camera `100 fps` `ptp_gate` stream-only, `2 ms` stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Offset alone is not enough to trigger stale-frame onset; recording pressure is part of the bad interaction |
 | Dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | PTP-gated offset acquisition becomes unstable at `100 fps`; this is a different mode than GOP backlog overflow |
+| Dual-camera `100 fps` helper preprocess probes after cross-GPU prewarm | First helper queue-wait spike mostly removed, but acquisition still settles near `69-70 fps` | helperprobe6 first helper queue wait about `4 ms`, camera drops still `351-401` | CUDA/helper cold-start is real but not the whole failure; remaining issue is upstream acquisition timing/backpressure once helper routing is active |
 | Dual-camera `100 fps` `ptp_gate` recording, `2 ms` stagger, experimental `Continuous` acquisition mode | Offset camera still collapses while the `0 ns` camera stays healthy | `2010095 ≈ 100 fps`, offset `2010096 ≈ 7 fps`, `overflow_events = 0` | Switching from `MultiFrame` to `Continuous` does not by itself fix the `100 fps` offset-camera instability |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
@@ -330,6 +331,34 @@ Interpretation:
 - `ptp_gate` is somewhat worse at onset, but the helper-startup backlog is not
   unique to PTP in this probe
 
+Helper cross-GPU prewarm follow-up:
+
+- helper preprocess workers now prewarm cross-GPU input setup before recording
+  starts:
+  - enable peer access from source acquisition GPU to helper preprocess GPU
+  - allocate helper-side staging memory
+  - record and synchronize a lightweight event on the helper stream
+- validation artifacts:
+  - `free_run`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe6`
+  - `ptp_gate`:
+    `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe6`
+- first helper-routed frame queue wait improved to:
+  - `free_run`: about `3.7-3.9 ms`
+  - `ptp_gate`: about `4.2 ms`
+- both runs still missed target:
+  - `free_run`: about `70.3 fps`, `400-401` camera drops
+  - `ptp_gate`: about `69.5 fps`, `351` camera drops
+
+Interpretation:
+
+- one-time CUDA/helper setup was contributing to the first helper frame stall
+- prewarm removes most of that stall
+- the remaining dual-camera `100 fps` failure is not simply helper worker
+  startup latency
+- the next localization target is the acquisition timing pattern that alternates
+  between near-`50 fps` and near-`100 fps` once helper routing is active
+
 All remained unstable at `100 fps`.
 
 One more controlled comparison is now available:
@@ -435,15 +464,13 @@ probably not the entire explanation on its own.
 
 ## Current Best Next Diagnostics
 
-1. Investigate the camera-side gated acquisition mode itself.
-   - Compare the current `MultiFrame + count=1` programming against a
-     controlled experimental `Continuous` mode variant.
-2. Add more observability around stale-frame onset.
-   - Specifically, determine whether stale frames are already queued before the
-     gate or begin accumulating only after some number of good post-gate
-     frames.
-   - This is now partly answered: the first stale threshold crossing still
-     showed contiguous camera frame ids and no app-side starvation, which
-     points upstream of the recording/preprocess path.
+1. Instrument acquisition timing around helper-route activation.
+   - The helper warmup reduced first-helper queue wait, but acquisition still
+     alternates between near-`50 fps` and near-`100 fps` samples.
+   - Capture camera frame deltas, SDK receive gaps, and buffer return timing
+     across frames `90-140`.
+2. Keep comparing free-run and PTP-gated helper probes.
+   - The helper-start behavior is not unique to PTP, but PTP still gives more
+     direct frame timing evidence.
 3. Keep `80 fps` stagger as the current validated synchronized baseline.
    - Do not treat `100 fps` nonzero stagger as usable yet.

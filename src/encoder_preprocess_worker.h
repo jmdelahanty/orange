@@ -85,6 +85,7 @@ public:
     uint64_t get_hw_slow_frames() const;
     int get_hw_queue_depth() const;
     bool IsDrained();
+    void PrepareCrossGpuInput(int source_gpu_id);
     int preprocess_gpu_id() const { return preprocess_gpu_id_; }
     bool direct_input_enabled() const { return direct_input_enabled_; }
     int direct_input_pitch() const { return direct_input_pitch_; }

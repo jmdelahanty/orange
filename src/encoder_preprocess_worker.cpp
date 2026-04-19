@@ -346,6 +346,37 @@ bool EncoderPreprocessWorker::IsDrained()
            (GetCountQueueInSize() == 0);
 }
 
+void EncoderPreprocessWorker::PrepareCrossGpuInput(int source_gpu_id)
+{
+    if (source_gpu_id < 0 || source_gpu_id == preprocess_gpu_id_) {
+        return;
+    }
+
+    ck(cudaSetDevice(preprocess_gpu_id_));
+    if (!ensure_peer_access_enabled(source_gpu_id)) {
+        throw std::runtime_error(
+            "Cross-GPU preprocess prewarm requested from source GPU " +
+            std::to_string(source_gpu_id) + " to preprocess GPU " +
+            std::to_string(preprocess_gpu_id_) + ", but peer access is unavailable");
+    }
+    if (!d_input_staging_) {
+        ck(cudaMalloc(&d_input_staging_, static_cast<size_t>(frame_original_gpu_.size_pic)));
+    }
+
+    cudaEvent_t prewarm_event = nullptr;
+    ck(cudaEventCreateWithFlags(&prewarm_event, cudaEventDisableTiming));
+    ck(cudaEventRecord(prewarm_event, m_stream));
+    ck(cudaEventSynchronize(prewarm_event));
+    ck(cudaEventDestroy(prewarm_event));
+
+    std::cout << "[EncoderPreprocessWorker] Prewarmed cross-GPU input for camera "
+              << camera_params_->camera_serial
+              << " source_gpu=" << source_gpu_id
+              << " preprocess_gpu=" << preprocess_gpu_id_
+              << " staging_bytes=" << frame_original_gpu_.size_pic
+              << std::endl;
+}
+
 bool EncoderPreprocessWorker::ensure_peer_access_enabled(int source_gpu_id)
 {
     if (source_gpu_id < 0 || source_gpu_id == preprocess_gpu_id_) {

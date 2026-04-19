@@ -1,6 +1,6 @@
 # Helper Queue Wait Explainer
 
-Date: 2026-04-18
+Date: 2026-04-19
 Branch: `exp/gop-split-a16`
 
 Related notes:
@@ -60,6 +60,28 @@ So "warm up" here means:
 not:
 
 - "allocate the queue"
+
+## What The Helper Prewarm Does Now
+
+The helper preprocess worker now has an explicit cross-GPU input prewarm step
+before recording starts routing frames to that helper.
+
+For a helper worker whose preprocess GPU is different from the camera
+acquisition GPU, the prewarm:
+
+- sets the CUDA device to the helper preprocess GPU
+- enables peer access from the source acquisition GPU if needed
+- allocates the helper-side input staging buffer
+- records and synchronizes a lightweight CUDA event on the helper stream
+
+That intentionally moves one-time setup costs out of the first helper-routed
+recording frame. It does not push fake images through the full preprocess
+path, and it does not prove that every downstream GPU kernel is warmed.
+
+Relevant code:
+
+- `EncoderPreprocessWorker::PrepareCrossGpuInput(...)`
+- `src/modern_recording_pipeline.cpp`
 
 ## What We Measure Right Now
 
@@ -259,6 +281,36 @@ That pattern is best read as:
 - not "the queue implementation is slow"
 - but "helper routing turns on with a startup backlog, and the helper path
   catches up after the first few frames"
+
+## What Changed With `helperprobe6`
+
+After adding helper cross-GPU input prewarm, the same dual-camera `100 fps`
+preprocess-only helper probes were rerun:
+
+- `free_run`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_freerun_helperprobe6`
+- `ptp_gate`:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_dual_pix_ptp_helperprobe6`
+
+The first helper-routed frame changed from:
+
+- `free_run`: about `28.5-28.8 ms` queue wait
+- `ptp_gate`: about `33.3-33.6 ms` queue wait
+
+to:
+
+- `free_run`: about `3.7-3.9 ms` queue wait
+- `ptp_gate`: about `4.2 ms` queue wait
+
+That is a real improvement in helper activation latency.
+
+However, both runs remained below target:
+
+- `free_run`: about `70.3 fps` mean acquisition rate, `400-401` camera drops
+- `ptp_gate`: about `69.5 fps` mean acquisition rate, `351` camera drops
+
+So the prewarm fixes a specific cold-start cost, but it does not fix the
+remaining two-camera `100 fps` acquisition/drop behavior by itself.
 
 ## The Most Important Learning Point
 

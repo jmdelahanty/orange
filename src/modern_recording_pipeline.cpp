@@ -103,6 +103,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                 recording_ingress_->RegisterHelperPreprocessWorker(
                     helper_gpu_id,
                     helper_target.preprocess_worker.get());
+                helper_target.preprocess_worker->PrepareCrossGpuInput(camera_params_->gpu_id);
                 helper_encode_targets_.push_back(std::move(helper_target));
             }
         }
@@ -212,6 +213,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                 recording_ingress_->RegisterHelperPreprocessWorker(
                     helper_gpu_id,
                     helper_target.preprocess_worker.get());
+                helper_target.preprocess_worker->PrepareCrossGpuInput(camera_params_->gpu_id);
                 helper_encode_targets_.push_back(std::move(helper_target));
             }
         }
