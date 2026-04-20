@@ -206,6 +206,9 @@ copy infrastructure already exists elsewhere in the app.
 
 ### 8. Observed topology on `pancake0` makes A16-only GOP splitting much more plausible than mixed `A6000 + A16`
 
+Detailed `pancake0` NIC / GPU / NUMA notes are in
+`docs/pancake0_pcie_topology_notes.md`.
+
 Observed on `2026-04-12`:
 
 - `GPU0` is `NVIDIA RTX A6000`
