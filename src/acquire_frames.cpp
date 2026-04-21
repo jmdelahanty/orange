@@ -15,6 +15,7 @@
 #include "yolo_worker.h"
 #include "image_writer_worker.h"
 #include "crop_and_encode_worker.h"
+#include "display_preview_policy.h"
 #include "recording_ingress.h"
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
@@ -130,6 +131,10 @@ struct PipelinePerfSample {
     double encode_fps_primary = 0.0;
     double encode_fps_helpers = 0.0;
     int display_queue_depth = -1;
+    int display_preview_max_fps = -1;
+    uint64_t display_preview_eligible_frames = 0;
+    uint64_t display_preview_selected_frames = 0;
+    uint64_t display_preview_skipped_frames = 0;
     int yolo_queue_depth = -1;
     int preprocess_queue_depth = -1;
     int encode_queue_depth = -1;
@@ -214,6 +219,10 @@ struct AcquisitionCadenceProbeSample {
     bool record_active = false;
     int dispatch_count = 0;
     bool will_display = false;
+    int display_preview_max_fps = -1;
+    uint64_t display_preview_eligible_frames = 0;
+    uint64_t display_preview_selected_frames = 0;
+    uint64_t display_preview_skipped_frames = 0;
     bool will_record = false;
     bool will_yolo = false;
     bool use_direct_pointer = false;
@@ -281,6 +290,10 @@ public:
               << (sample.record_active ? 1 : 0) << ","
               << sample.dispatch_count << ","
               << (sample.will_display ? 1 : 0) << ","
+              << sample.display_preview_max_fps << ","
+              << sample.display_preview_eligible_frames << ","
+              << sample.display_preview_selected_frames << ","
+              << sample.display_preview_skipped_frames << ","
               << (sample.will_record ? 1 : 0) << ","
               << (sample.will_yolo ? 1 : 0) << ","
               << (sample.use_direct_pointer ? 1 : 0) << ","
@@ -360,7 +373,10 @@ private:
                  "camera_timestamp_ns,camera_timestamp_delta_ns,"
                  "receive_host_ns,receive_delta_ns,get_frame_wait_ns,"
                  "ptp_active,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
-                 "record_active,dispatch_count,will_display,will_record,will_yolo,"
+                 "record_active,dispatch_count,will_display,"
+                 "display_preview_max_fps,display_preview_eligible,"
+                 "display_preview_selected,display_preview_skipped,"
+                 "will_record,will_yolo,"
                  "direct,ring_copy,"
                  "free_entries,free_entries_low,free_events,free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,acq_starve,"
@@ -494,6 +510,26 @@ void dump_recording_submit_history(const CameraParams* camera_params,
     }
 }
 
+int resolve_display_preview_max_fps(const CameraEachSelect* camera_select)
+{
+    int configured = camera_select ? camera_select->display_preview_max_fps : 60;
+    const char* env = std::getenv("ORANGE_DISPLAY_PREVIEW_MAX_FPS");
+    if (!env || !*env) {
+        env = std::getenv("ORANGE_DISPLAY_MAX_FPS");
+    }
+    if (env && *env) {
+        char* end = nullptr;
+        const long parsed = std::strtol(env, &end, 10);
+        if (end != env && *end == '\0' && parsed >= 0 && parsed <= 10000) {
+            configured = static_cast<int>(parsed);
+        } else {
+            std::cerr << "[DISPLAY_PREVIEW] Ignoring invalid preview fps '"
+                      << env << "'" << std::endl;
+        }
+    }
+    return configured;
+}
+
 class PipelinePerfRecorder {
 public:
     explicit PipelinePerfRecorder(const CameraParams* camera_params)
@@ -533,6 +569,10 @@ public:
               << sample.encode_fps_primary << ","
               << sample.encode_fps_helpers << ","
               << sample.display_queue_depth << ","
+              << sample.display_preview_max_fps << ","
+              << sample.display_preview_eligible_frames << ","
+              << sample.display_preview_selected_frames << ","
+              << sample.display_preview_skipped_frames << ","
               << sample.yolo_queue_depth << ","
               << sample.preprocess_queue_depth << ","
               << sample.encode_queue_depth << ","
@@ -614,7 +654,8 @@ private:
         }
         ResetStats();
         file_ << "timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,"
-                 "display_q,yolo_q,pre_q,enc_q,"
+                 "display_q,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,"
+                 "yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
                  "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
@@ -737,6 +778,10 @@ private:
                 get_frame_errors_by_code[std::to_string(code)] = count;
             }
             totals["get_frame_errors_by_code"] = get_frame_errors_by_code;
+            totals["display_preview_max_fps"] = last_sample_.display_preview_max_fps;
+            totals["display_preview_eligible_frames"] = last_sample_.display_preview_eligible_frames;
+            totals["display_preview_selected_frames"] = last_sample_.display_preview_selected_frames;
+            totals["display_preview_skipped_frames"] = last_sample_.display_preview_skipped_frames;
             totals["gpu_direct_frames"] = last_sample_.gpu_direct_frames;
             totals["gpu_ring_copy_frames"] = last_sample_.gpu_ring_copy_frames;
             totals["gpu_copy_frames"] = last_sample_.gpu_copy_frames;
@@ -923,6 +968,15 @@ void acquire_frames(
     uint64_t gpu_direct_frames_total = 0;
     uint64_t gpu_ring_copy_frames_total = 0;
     uint64_t gpu_copy_frames_total = 0;
+    const int display_preview_max_fps = resolve_display_preview_max_fps(camera_select);
+    const unsigned int source_frame_rate =
+        (camera_params && camera_params->frame_rate > 0)
+            ? camera_params->frame_rate
+            : static_cast<unsigned int>(display_preview_max_fps > 0 ? display_preview_max_fps : 1);
+    DisplayPreviewCadence display_preview_cadence(display_preview_max_fps, source_frame_rate);
+    uint64_t display_preview_eligible_frames = 0;
+    uint64_t display_preview_selected_frames = 0;
+    uint64_t display_preview_skipped_frames = 0;
     uint64_t gpu_direct_attr_errors = 0;
     uint64_t gpu_direct_non_device = 0;
     uint64_t gpu_direct_wrong_device = 0;
@@ -1018,6 +1072,10 @@ void acquire_frames(
         sample.encode_fps_primary = recording_stats.encode_fps_primary;
         sample.encode_fps_helpers = recording_stats.encode_fps_helpers;
         sample.display_queue_depth = openGLDisplay ? openGLDisplay->GetCountQueueInSize() : -1;
+        sample.display_preview_max_fps = display_preview_max_fps;
+        sample.display_preview_eligible_frames = display_preview_eligible_frames;
+        sample.display_preview_selected_frames = display_preview_selected_frames;
+        sample.display_preview_skipped_frames = display_preview_skipped_frames;
         sample.yolo_queue_depth = yolo_worker ? yolo_worker->GetCountQueueInSize() : -1;
         sample.preprocess_queue_depth = recording_stats.preprocess_queue_depth;
         sample.encode_queue_depth = recording_stats.encode_queue_depth;
@@ -1253,7 +1311,16 @@ void acquire_frames(
             current_entry->camera_instance = nullptr;
             current_entry->camera_frame_struct = nullptr;
 
-            bool will_display = (camera_select->stream_on && openGLDisplay);
+            bool will_display = false;
+            if (camera_select->stream_on && openGLDisplay) {
+                display_preview_eligible_frames++;
+                will_display = display_preview_cadence.ShouldDisplayNextFrame();
+                if (will_display) {
+                    display_preview_selected_frames++;
+                } else {
+                    display_preview_skipped_frames++;
+                }
+            }
             bool will_record = (camera_control->record_video && recording_ingress);
             bool yolo_enabled = (camera_select->yolo && yolo_worker);
             if (yolo_enabled && !last_yolo_enabled) {
@@ -1570,6 +1637,10 @@ void acquire_frames(
                     cadence_sample.record_active = camera_control->record_video;
                     cadence_sample.dispatch_count = dispatch_count;
                     cadence_sample.will_display = will_display;
+                    cadence_sample.display_preview_max_fps = display_preview_max_fps;
+                    cadence_sample.display_preview_eligible_frames = display_preview_eligible_frames;
+                    cadence_sample.display_preview_selected_frames = display_preview_selected_frames;
+                    cadence_sample.display_preview_skipped_frames = display_preview_skipped_frames;
                     cadence_sample.will_record = will_record;
                     cadence_sample.will_yolo = will_yolo;
                     cadence_sample.use_direct_pointer = use_direct_pointer;
@@ -1698,6 +1769,9 @@ void acquire_frames(
                           << " non_dev=" << gpu_direct_non_device
                           << " wrong_dev=" << gpu_direct_wrong_device
                           << " stream=" << (camera_select->stream_on ? "on" : "off")
+                          << " display_selected=" << display_preview_selected_frames
+                          << " display_skipped=" << display_preview_skipped_frames
+                          << " display_max_fps=" << display_preview_max_fps
                           << " yolo=" << (camera_select->yolo ? "on" : "off")
                           << " record=" << (camera_control->record_video ? "on" : "off")
                           << std::endl;
@@ -1731,6 +1805,8 @@ void acquire_frames(
                           << " frame_id_gaps=" << pipeline_sample.camera_dropped_frames
                           << " get_frame_errors=" << pipeline_sample.get_frame_errors
                           << " last_get_frame_error=" << pipeline_sample.last_get_frame_error_code
+                          << " display_selected=" << pipeline_sample.display_preview_selected_frames
+                          << " display_skipped=" << pipeline_sample.display_preview_skipped_frames
                           << std::endl;
                 gpu_direct_frames = 0;
                 gpu_ring_copy_frames = 0;

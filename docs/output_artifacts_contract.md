@@ -271,6 +271,10 @@ Important:
   - `totals.get_frame_errors: integer` (optional SDK `EVT_CameraGetFrame` error count)
   - `totals.last_get_frame_error_code: integer` (optional last nonzero `EVT_CameraGetFrame` error code)
   - `totals.get_frame_errors_by_code: object` (optional map of SDK error code string to count)
+  - `totals.display_preview_max_fps: integer` (optional configured display preview cap)
+  - `totals.display_preview_eligible_frames: integer` (optional cumulative display-eligible frames)
+  - `totals.display_preview_selected_frames: integer` (optional cumulative frames sent to display)
+  - `totals.display_preview_skipped_frames: integer` (optional cumulative frames skipped by display cadence)
   - `totals.gpu_direct_frames: integer` (optional)
   - `totals.gpu_ring_copy_frames: integer` (optional)
   - `totals.gpu_copy_frames: integer` (optional)
@@ -450,15 +454,20 @@ Gate:
 Header (exact order):
 
 ```text
-timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,enc_fps,display_q,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,gpu_direct,gpu_ring,gpu_copy
+timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,display_q,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,camera_dropped_frames,get_frame_errors,last_get_frame_error_code,gpu_direct,gpu_ring,gpu_copy
 ```
 
 Field semantics:
 - `timestamp_utc`: UTC ISO8601 timestamp for the sample row.
 - `frame_id`: absolute camera frame counter at sample time.
 - `recording_frame_id`: last seen recording-frame counter for the active recording folder.
-- `acq_fps`, `pre_fps`, `enc_fps`: current acquisition, preprocess, and encode FPS estimates.
+- `acq_fps`, `pre_fps`, `enc_fps`: current acquisition, aggregate preprocess, and aggregate encode FPS estimates.
+- `pre_fps_primary`, `pre_fps_helpers`, `enc_fps_primary`, `enc_fps_helpers`: split-GOP primary/helper lane throughput estimates.
 - `display_q`, `yolo_q`, `pre_q`, `enc_q`: instantaneous queue depths for display, YOLO, preprocess, and HW encode stages.
+- `display_preview_max_fps`: configured GUI preview cap for this camera. `0` means every eligible frame may be displayed.
+- `display_preview_eligible`: cumulative frames that had display enabled and a display worker available.
+- `display_preview_selected`: cumulative display-eligible frames actually offered to the display queue.
+- `display_preview_skipped`: cumulative display-eligible frames skipped by preview cadence.
 - `acq_free_entries`, `acq_free_entries_low`: available acquire work entries and the interval low-water mark.
 - `acq_free_events`, `acq_free_events_low`: available acquire completion events and the interval low-water mark.
 - `yolo_events`, `yolo_events_low`: available YOLO completion events and the interval low-water mark.
@@ -467,11 +476,34 @@ Field semantics:
 - `pre_buffers`, `pre_events`: available preprocess NV12 buffers and CUDA events.
 - `pre_waits`, `pre_drops`: cumulative preprocess resource-wait and drop counters.
 - `enc_fail`, `enc_slow`: cumulative encode-failure and slow-frame counters.
-- `gpu_direct`, `gpu_ring`, `gpu_copy`: cumulative counts since the current recording folder opened for direct camera-pointer use, direct-pointer ring-copy fallback, and ordinary device copies.
+- `submitted_frames`, `primary_routed_frames`, `helper_requested_frames`, `helper_fallback_frames`, `helper_dispatched_frames`, `last_target_gpu_id`, `last_route_mode`: recording ingress routing counters and latest route state.
+- `camera_dropped_frames`: cumulative camera frame-ID gaps.
+- `get_frame_errors`, `last_get_frame_error_code`: cumulative SDK receive errors and latest nonzero SDK error code.
+- `gpu_direct`, `gpu_ring`, `gpu_copy`: cumulative counts at sample time for direct camera-pointer use, direct-pointer ring-copy fallback, and ordinary device copies.
 
 Behavior notes:
 - Emitted at approximately one row per second while the camera has a non-empty recording folder.
 - Short recordings may create the file with only the header if no one-second sample boundary is crossed.
+
+### Acquisition Cadence Probe CSV (`Cam<serial>_acquisition_cadence_probe.csv`)
+
+Header (exact order):
+
+```text
+timestamp_utc,local_frame_id,recording_frame_id,camera_frame_id,camera_timestamp_ns,camera_timestamp_delta_ns,receive_host_ns,receive_delta_ns,get_frame_wait_ns,ptp_active,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,record_active,dispatch_count,will_display,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,will_record,will_yolo,direct,ring_copy,free_entries,free_entries_low,free_events,free_events_low,yolo_events,yolo_events_low,pending_requeues,acq_starve,camera_dropped_frames,get_frame_errors,last_get_frame_error_code,recording_submit_host_ns,receive_to_submit_ns,recording_target_gpu_id,recording_helper_requested,recording_route_helper,helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow
+```
+
+Field semantics:
+- `local_frame_id`, `recording_frame_id`, `camera_frame_id`: acquisition-thread, recording, and SDK frame counters.
+- `camera_timestamp_ns`, `camera_timestamp_delta_ns`, `receive_host_ns`, `receive_delta_ns`, `get_frame_wait_ns`: per-frame receive timing diagnostics.
+- `ptp_active`, `latched_ptp_time_ns`, `latch_minus_frame_ns`, `latch_delta_ns`: PTP timing diagnostics; zeroed when PTP is not active.
+- `record_active`, `dispatch_count`, `will_display`, `will_record`, `will_yolo`, `direct`, `ring_copy`: per-frame routing/lifetime decisions.
+- `display_preview_*`: same display cadence counters as `Cam<serial>_pipeline_perf.csv`, sampled on the current probe row.
+- Remaining resource, error, and routing fields mirror the pipeline perf counters at the frame where the probe row is emitted.
+
+Behavior notes:
+- Emitted only for probe frames `80-160` using `recording_frame_id` when present, otherwise `local_frame_id`.
+- This artifact is intended for short-window fanout and timing debugging, not full-run per-frame logging.
 
 ## Keyframe Sidecar JSON Contract
 

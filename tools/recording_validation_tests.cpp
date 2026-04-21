@@ -1,4 +1,5 @@
 #include "recording_validation.h"
+#include "display_preview_policy.h"
 
 #include <cstdlib>
 #include <functional>
@@ -164,6 +165,49 @@ void test_preflight_flattens_conflicts()
     require(!result.errors.empty(), "preflight should flatten conflict errors");
 }
 
+void test_display_preview_cadence_selects_first_frame()
+{
+    DisplayPreviewCadence cadence(60, 100);
+    require(cadence.ShouldDisplayNextFrame(),
+            "display preview cadence should select the first eligible frame");
+}
+
+void test_display_preview_cadence_rate_limits()
+{
+    DisplayPreviewCadence cadence(60, 100);
+    int selected = 0;
+    for (int i = 0; i < 100; ++i) {
+        if (cadence.ShouldDisplayNextFrame()) {
+            ++selected;
+        }
+    }
+    require(selected == 60, "60 fps preview cap should select 60 of 100 source frames");
+}
+
+void test_display_preview_cadence_unlimited()
+{
+    DisplayPreviewCadence cadence(0, 100);
+    int selected = 0;
+    for (int i = 0; i < 100; ++i) {
+        if (cadence.ShouldDisplayNextFrame()) {
+            ++selected;
+        }
+    }
+    require(selected == 100, "zero preview cap should preserve every-frame display behavior");
+}
+
+void test_display_preview_cadence_caps_to_source_rate()
+{
+    DisplayPreviewCadence cadence(120, 100);
+    int selected = 0;
+    for (int i = 0; i < 100; ++i) {
+        if (cadence.ShouldDisplayNextFrame()) {
+            ++selected;
+        }
+    }
+    require(selected == 100, "preview cap above source frame rate should select every frame");
+}
+
 }  // namespace
 
 int main()
@@ -182,6 +226,10 @@ int main()
         {"multiple_helpers_fail_in_current_gui_mode", &test_multiple_helpers_fail_in_current_gui_mode},
         {"preflight_is_noop_without_split_gop_recording", &test_preflight_is_noop_without_split_gop_recording},
         {"preflight_flattens_conflicts", &test_preflight_flattens_conflicts},
+        {"display_preview_cadence_selects_first_frame", &test_display_preview_cadence_selects_first_frame},
+        {"display_preview_cadence_rate_limits", &test_display_preview_cadence_rate_limits},
+        {"display_preview_cadence_unlimited", &test_display_preview_cadence_unlimited},
+        {"display_preview_cadence_caps_to_source_rate", &test_display_preview_cadence_caps_to_source_rate},
     };
 
     for (const auto& test : tests) {

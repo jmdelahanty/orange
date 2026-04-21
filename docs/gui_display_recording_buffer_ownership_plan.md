@@ -348,21 +348,47 @@ The current recommendation is:
 
 ## Implementation Checklist
 
+Implementation status as of 2026-04-21:
+
+- Initial V1 display cadence gating is implemented in `acquire_frames(...)`.
+- GUI preview defaults to `60 fps` and can be overridden with
+  `ORANGE_DISPLAY_PREVIEW_MAX_FPS`; `ORANGE_DISPLAY_MAX_FPS` remains a legacy
+  alias for the same cap.
+- Skipped preview frames do not increment `dispatch_count`, so record-plus-preview
+  no longer forces every recording frame through the ring-copy path solely because
+  display is enabled.
+- Display queue enqueue is still blocking for selected preview frames. The
+  non-blocking/latest-only display queue is still a separate follow-up slice.
+
+Validation checkpoint:
+
+- `recording_validation_tests` passes, including display preview cadence tests.
+- `cmake --build /home/jeremy/orange-gop-split-a16/targets/release --target orange_client recording_validation_tests`
+  passes.
+- `cmake --build /home/jeremy/orange-gop-split-a16/targets/release --target orange`
+  passes.
+- Dual-camera headless record-only regression passes with this worktree's
+  `orange_client`:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_display_cadence_regression`
+- The headless regression is not a GUI display smoke because `display=false`; it
+  verifies the recording path remains direct and clean with the new telemetry
+  fields present.
+
 ### 1. Add Display Subscription Policy
 
 - [ ] Add a small display subscription policy struct.
 - [ ] Fields should include `enabled`, `mode`, and `max_fps`.
 - [ ] Initial modes should be `every_frame` and `latest_only`.
 - [ ] Default GUI mode should be `latest_only`.
-- [ ] Keep headless behavior unchanged.
+- [x] Keep headless behavior unchanged.
 
 ### 2. Gate Display Before Dispatch Count
 
-- [ ] In `acquire_frames(...)`, compute display eligibility before
+- [x] In `acquire_frames(...)`, compute display eligibility before
       `dispatch_count`.
 - [ ] Track last display-offered timestamp per camera.
-- [ ] Set `will_display = false` when preview cadence says to skip.
-- [ ] Ensure skipped display frames do not increment `dispatch_count`.
+- [x] Set `will_display = false` when preview cadence says to skip.
+- [x] Ensure skipped display frames do not increment `dispatch_count`.
 - [ ] Confirm record-only and GUI record-plus-preview can still use direct
       GPUDirect when no other full-rate consumer needs the frame.
 
@@ -390,6 +416,7 @@ The current recommendation is:
 
 - [ ] Add per-camera display counters to pipeline metrics or a display sidecar:
       offered, accepted, skipped by cadence, dropped by queue, rendered.
+- [x] Add V1 display cadence counters: eligible, selected, skipped.
 - [ ] Include display queue high-water mark.
 - [ ] Include whether a frame used `direct`, `ring_copy`, or another copy mode.
 - [ ] Make GUI validation artifacts easy to compare against headless artifacts.
@@ -435,8 +462,8 @@ GUI pass criteria:
 
 ## Recommended Slice Order
 
-1. Add display cadence gating before `dispatch_count`.
-2. Add display counters.
+1. Add display cadence gating before `dispatch_count`. Implemented for V1.
+2. Add display counters. Implemented for selected/skipped cadence counters; queue-drop/rendered counters still pending.
 3. Make display enqueue non-blocking/latest-only.
 4. Run GUI single-camera and dual-camera smoke.
 5. Run four-camera GUI smoke.

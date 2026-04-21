@@ -266,6 +266,7 @@ struct CameraEachSelect
     bool yolo = false;
     bool crop_and_encode = false;
     int downsample = 1;
+    int display_preview_max_fps = 60;
     bool record_output_override = false;
     std::string record_output_mode = "factor";
     int record_downsample_factor = 1;
