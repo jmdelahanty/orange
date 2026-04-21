@@ -25,6 +25,7 @@
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <map>
 
 #ifndef PIPELINE_PROFILE
 #if defined(YOLO_PROFILE) && YOLO_PROFILE
@@ -154,6 +155,9 @@ struct PipelinePerfSample {
     int last_target_gpu_id = -1;
     std::string last_route_mode = "primary";
     uint64_t camera_dropped_frames = 0;
+    uint64_t get_frame_errors = 0;
+    int last_get_frame_error_code = 0;
+    std::map<int, uint64_t> get_frame_errors_by_code;
     uint64_t gpu_direct_frames = 0;
     uint64_t gpu_ring_copy_frames = 0;
     uint64_t gpu_copy_frames = 0;
@@ -168,6 +172,8 @@ struct PtpReceiveHistoryEntry {
     uint64_t frame_delta_ns = 0;
     uint64_t latch_delta_ns = 0;
     uint64_t camera_dropped_frames = 0;
+    uint64_t get_frame_errors = 0;
+    int last_get_frame_error_code = 0;
     int dispatch_count = 0;
     int free_entries_available = -1;
     int free_events_available = -1;
@@ -221,6 +227,8 @@ struct AcquisitionCadenceProbeSample {
     size_t pending_requeues = 0;
     uint64_t acquisition_resource_starvations = 0;
     uint64_t camera_dropped_frames = 0;
+    uint64_t get_frame_errors = 0;
+    int last_get_frame_error_code = 0;
     uint64_t recording_submit_host_ns = 0;
     uint64_t receive_to_submit_ns = 0;
     int recording_target_gpu_id = -1;
@@ -286,6 +294,8 @@ public:
               << sample.pending_requeues << ","
               << sample.acquisition_resource_starvations << ","
               << sample.camera_dropped_frames << ","
+              << sample.get_frame_errors << ","
+              << sample.last_get_frame_error_code << ","
               << sample.recording_submit_host_ns << ","
               << sample.receive_to_submit_ns << ","
               << sample.recording_target_gpu_id << ","
@@ -354,7 +364,8 @@ private:
                  "direct,ring_copy,"
                  "free_entries,free_entries_low,free_events,free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,acq_starve,"
-                 "camera_dropped_frames,recording_submit_host_ns,receive_to_submit_ns,"
+                 "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
+                 "recording_submit_host_ns,receive_to_submit_ns,"
                  "recording_target_gpu_id,recording_helper_requested,recording_route_helper,"
                  "helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,"
                  "submitted_frames,primary_routed_frames,helper_requested_frames,"
@@ -415,6 +426,8 @@ void dump_ptp_receive_history(const CameraParams* camera_params,
                   << " frame_delta_ns=" << entry.frame_delta_ns
                   << " latch_delta_ns=" << entry.latch_delta_ns
                   << " camera_dropped_frames=" << entry.camera_dropped_frames
+                  << " get_frame_errors=" << entry.get_frame_errors
+                  << " last_get_frame_error_code=" << entry.last_get_frame_error_code
                   << " dispatch_count=" << entry.dispatch_count
                   << " free_entries=" << entry.free_entries_available
                   << " free_events=" << entry.free_events_available
@@ -545,6 +558,8 @@ public:
               << sample.last_target_gpu_id << ","
               << sample.last_route_mode << ","
               << sample.camera_dropped_frames << ","
+              << sample.get_frame_errors << ","
+              << sample.last_get_frame_error_code << ","
               << sample.gpu_direct_frames << ","
               << sample.gpu_ring_copy_frames << ","
               << sample.gpu_copy_frames << "\n";
@@ -604,7 +619,7 @@ private:
                  "yolo_events,yolo_events_low,pending_requeues,"
                  "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
                  "submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
-                 "camera_dropped_frames,"
+                 "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[PIPELINE] Cam " << serial
@@ -714,6 +729,14 @@ private:
             totals["last_target_gpu_id"] = last_sample_.last_target_gpu_id;
             totals["last_route_mode"] = last_sample_.last_route_mode;
             totals["camera_dropped_frames"] = last_sample_.camera_dropped_frames;
+            totals["camera_frame_id_gaps"] = last_sample_.camera_dropped_frames;
+            totals["get_frame_errors"] = last_sample_.get_frame_errors;
+            totals["last_get_frame_error_code"] = last_sample_.last_get_frame_error_code;
+            nlohmann::json get_frame_errors_by_code = nlohmann::json::object();
+            for (const auto& [code, count] : last_sample_.get_frame_errors_by_code) {
+                get_frame_errors_by_code[std::to_string(code)] = count;
+            }
+            totals["get_frame_errors_by_code"] = get_frame_errors_by_code;
             totals["gpu_direct_frames"] = last_sample_.gpu_direct_frames;
             totals["gpu_ring_copy_frames"] = last_sample_.gpu_ring_copy_frames;
             totals["gpu_copy_frames"] = last_sample_.gpu_copy_frames;
@@ -885,6 +908,7 @@ void acquire_frames(
     uint64_t gpu_direct_attr_errors = 0;
     uint64_t gpu_direct_non_device = 0;
     uint64_t gpu_direct_wrong_device = 0;
+    std::map<int, uint64_t> get_frame_errors_by_code;
     auto last_gpu_direct_log_time = std::chrono::steady_clock::now();
     int free_entries_available = resources ? resources->acquire_work_entries_max : 0;
     int free_events_available = resources ? static_cast<int>(resources->event_pool.size()) : 0;
@@ -938,6 +962,14 @@ void acquire_frames(
         summary["frame_count"] = camera_state.frame_count;
         summary["frames_received"] = camera_state.frames_recd;
         summary["dropped_frames"] = camera_state.dropped_frames;
+        summary["camera_frame_id_gaps"] = camera_state.dropped_frames;
+        summary["get_frame_errors"] = camera_state.get_frame_errors;
+        summary["last_get_frame_error_code"] = camera_state.last_get_frame_error_code;
+        nlohmann::json get_frame_errors_by_code_json = nlohmann::json::object();
+        for (const auto& [code, count] : get_frame_errors_by_code) {
+            get_frame_errors_by_code_json[std::to_string(code)] = count;
+        }
+        summary["get_frame_errors_by_code"] = get_frame_errors_by_code_json;
         summary["last_frame_timestamp_ns"] = ptp_state.frame_ts;
         summary["last_latched_ptp_time_ns"] = ptp_state.ptp_time;
         summary["ptp_offset_ns"] = ptp_offset_stats.to_json();
@@ -993,6 +1025,9 @@ void acquire_frames(
         sample.last_target_gpu_id = recording_stats.last_target_gpu_id;
         sample.last_route_mode = recording_stats.last_route_mode;
         sample.camera_dropped_frames = camera_state.dropped_frames;
+        sample.get_frame_errors = camera_state.get_frame_errors;
+        sample.last_get_frame_error_code = camera_state.last_get_frame_error_code;
+        sample.get_frame_errors_by_code = get_frame_errors_by_code;
         sample.gpu_direct_frames = gpu_direct_frames_total;
         sample.gpu_ring_copy_frames = gpu_ring_copy_frames_total;
         sample.gpu_copy_frames = gpu_copy_frames_total;
@@ -1370,6 +1405,8 @@ void acquire_frames(
                 receive_entry.frame_delta_ns = ptp_state.frame_ts_delta;
                 receive_entry.latch_delta_ns = ptp_state.ptp_time_delta;
                 receive_entry.camera_dropped_frames = camera_state.dropped_frames;
+                receive_entry.get_frame_errors = camera_state.get_frame_errors;
+                receive_entry.last_get_frame_error_code = camera_state.last_get_frame_error_code;
                 receive_entry.dispatch_count = dispatch_count;
                 receive_entry.free_entries_available = free_entries_available;
                 receive_entry.free_events_available = free_events_available;
@@ -1523,6 +1560,9 @@ void acquire_frames(
                     cadence_sample.acquisition_resource_starvations =
                         acquisition_resource_starvations;
                     cadence_sample.camera_dropped_frames = camera_state.dropped_frames;
+                    cadence_sample.get_frame_errors = camera_state.get_frame_errors;
+                    cadence_sample.last_get_frame_error_code =
+                        camera_state.last_get_frame_error_code;
                     cadence_sample.recording_submit_host_ns =
                         current_entry->recording_submit_host_ns;
                     cadence_sample.receive_to_submit_ns =
@@ -1664,6 +1704,9 @@ void acquire_frames(
                           << " pre_drop=" << pipeline_sample.preprocess_frames_dropped
                           << " enc_fail=" << pipeline_sample.encode_failures
                           << " enc_slow=" << pipeline_sample.encode_slow_frames
+                          << " frame_id_gaps=" << pipeline_sample.camera_dropped_frames
+                          << " get_frame_errors=" << pipeline_sample.get_frame_errors
+                          << " last_get_frame_error=" << pipeline_sample.last_get_frame_error_code
                           << std::endl;
                 gpu_direct_frames = 0;
                 gpu_ring_copy_frames = 0;
@@ -1695,7 +1738,9 @@ void acquire_frames(
                 break;
             }
         } else {
-            camera_state.dropped_frames++;
+            camera_state.get_frame_errors++;
+            camera_state.last_get_frame_error_code = camera_state.camera_return;
+            get_frame_errors_by_code[camera_state.camera_return]++;
             std::cerr << "EVT_CameraGetFrame Error, " << camera_state.camera_return
                       << ", camera serial, " << camera_params->camera_serial << std::endl;
             if (current_event) {

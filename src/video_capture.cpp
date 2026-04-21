@@ -14,7 +14,9 @@ void report_statistics(CameraParams *camera_params,
     print_out += "\n" + camera_params->camera_serial;
     print_out += ", Frame count: " + std::to_string(camera_state->frame_count);
     print_out += ", Frame received: " + std::to_string(camera_state->frames_recd);
-    print_out += ", Camera Dropped Frames: " + std::to_string(camera_state->dropped_frames);
+    print_out += ", Camera Frame-ID Gaps: " + std::to_string(camera_state->dropped_frames);
+    print_out += ", GetFrame Errors: " + std::to_string(camera_state->get_frame_errors);
+    print_out += ", Last GetFrame Error: " + std::to_string(camera_state->last_get_frame_error_code);
     print_out += ", Preprocess Waits: " + std::to_string(preprocess_resource_waits);
     print_out += ", Preprocess Drops: " + std::to_string(preprocess_frames_dropped);
     print_out += ", Encode Failures: " + std::to_string(encode_failures);

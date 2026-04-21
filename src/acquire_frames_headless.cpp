@@ -86,7 +86,8 @@ static inline void get_one_frame_headless(CameraState *camera_state, CameraEachS
     }
     else
     {
-        camera_state->dropped_frames++;
+        camera_state->get_frame_errors++;
+        camera_state->last_get_frame_error_code = camera_state->camera_return;
         std::cout << "EVT_CameraGetFrame Error, " << camera_state->camera_return << ", camera serial, " << camera_params->camera_serial << std::endl;
     }
 }

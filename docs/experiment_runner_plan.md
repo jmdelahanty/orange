@@ -396,7 +396,7 @@ For the first version, evaluate a run as:
 
 - `pass`
   - sustained `enc_fps` within configured tolerance of target
-  - `dropped_frames_camera == 0`
+  - `dropped_frames_camera == 0` / `camera_frame_id_gaps == 0`
   - `acq_starve == 0`
   - `pre_drops == 0`
   - `enc_fail == 0`
@@ -405,15 +405,18 @@ For the first version, evaluate a run as:
   - no hard failures, but clear waits / low-watermark pressure / reduced
     sustained encode FPS
 - `fail`
-  - any nonzero `dropped_frames_camera` when
+  - any nonzero `dropped_frames_camera` / `camera_frame_id_gaps` when
     `require_zero_camera_drops=true`
   - any nonzero `pre_drops` or `enc_fail`
   - sustained encode deficit
   - obvious queue runaway
 
-Keep camera `dropped_frames` separate from encode-path failure reasons:
+Keep camera frame integrity, SDK receive errors, and encode-path failure reasons
+separate:
 
-- `dropped_frames` is source-side camera health
+- `dropped_frames_camera` is the legacy row name for true camera frame-ID gaps
+- `get_frame_errors` is SDK receive/buffer pressure such as
+  `EVT_CameraGetFrame` returning `EVT_ERROR_NOMEM`
 - `acq_starve`, `pre_drops`, `enc_fail` are pipeline health
 - strict experiment policy can fail on both classes, but the row reason should
   preserve whether the failure came from source health or pipeline health

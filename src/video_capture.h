@@ -289,7 +289,10 @@ struct CameraState
 {
     int camera_return = 0;
     unsigned short id_prev = 0;
+    // Counts true camera frame-id gaps. SDK GetFrame errors are tracked separately.
     uint64_t dropped_frames = 0;
+    uint64_t get_frame_errors = 0;
+    int last_get_frame_error_code = 0;
     unsigned int frames_recd = 0;
     unsigned long long frame_count = 0;
 };
