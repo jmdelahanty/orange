@@ -151,6 +151,96 @@ Each consumer should also declare whether it can accept:
 - private copy,
 - stale/drop-oldest behavior.
 
+## Lease Policy Mental Model
+
+The lease/subscription policy should be configured before a stream or recording
+session starts, then applied for each acquired frame.
+
+At setup time, Orange already knows which consumers are active:
+
+- recording,
+- GUI display,
+- YOLO,
+- IPC,
+- snapshot/manual frame save.
+
+Each active consumer should describe what it needs. The acquisition loop should
+then decide, frame by frame, which consumers actually receive the frame and what
+buffer ownership strategy is safe.
+
+This means a refcount-like `dispatch_count` is still useful, but only as a
+low-level lifetime detail after the subscription policy has selected consumers.
+It should not be the high-level ownership policy by itself.
+
+Current overloaded model:
+
+```cpp
+dispatch_count = display + recording + yolo;
+if (dispatch_count > 1) {
+    use_ring_copy = true;
+}
+```
+
+Better model:
+
+```cpp
+selected_consumers = apply_subscription_policy(frame);
+lease_plan = choose_buffer_strategy(selected_consumers);
+ref_count = selected_consumers.size();
+dispatch_to(selected_consumers, lease_plan);
+```
+
+The key difference is that "display exists" does not automatically mean display
+receives every frame or changes recording's source-buffer mode.
+
+## Who Gets A Ring Copy
+
+It is more accurate to say "acquisition creates an Orange-owned payload" than
+"a consumer gets a ring copy."
+
+The SDK camera buffer is camera-owned. A ring/staging copy is the handoff point
+where the frame becomes Orange-owned. Once Orange owns the copied payload, the
+SDK receive buffer can be requeued independently of slower downstream
+consumers.
+
+Ring/staging copies are useful when:
+
+- multiple full-frame consumers need the same frame and at least one may outlive
+  the safe camera-buffer lease window,
+- a consumer is droppable or slow and should not hold an SDK receive buffer,
+- a consumer needs a different GPU or format,
+- Orange wants to requeue the SDK buffer quickly to protect acquisition
+  stability,
+- the source pointer is not a usable GPUDirect device pointer,
+- a diagnostic/config mode explicitly forces ring-copy.
+
+Ring/staging copies are not ideal when:
+
+- recording is the only full-frame every-frame consumer,
+- display is only a preview and can skip most frames,
+- YOLO is off,
+- IPC is metadata-only,
+- a borrowed SDK buffer only needs to be held until a short CUDA source-safe
+  event.
+
+Practical V1 policy:
+
+- recording-only: use borrowed SDK GPUDirect pointer when available and requeue
+  after recording's source-safe event
+- recording plus display preview: recording keeps the borrowed SDK pointer;
+  display receives only selected preview frames and should skip/drop when busy
+- recording plus YOLO every frame: use ring/staging or a proper multi-source-safe
+  lease plan, because both consumers may need full-frame image reads
+- display-only: use latest-only Orange-owned preview/staging payloads, because
+  GUI rendering should not hold SDK camera buffers
+- multiple non-droppable full-frame consumers: use ring/staging copy unless a
+  more explicit multi-lease source-safe plan has been implemented
+
+The ring/staging buffer should live at the ownership boundary between the
+camera-owned SDK receive buffer and Orange-owned frame payloads. That boundary
+belongs in acquisition or an acquisition-adjacent fanout layer, not hidden
+inside the display or recording workers.
+
 ## Proposed V1 Refactor
 
 Do not attempt the full ownership abstraction in one patch. The first useful
