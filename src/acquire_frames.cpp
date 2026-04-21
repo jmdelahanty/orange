@@ -1871,13 +1871,6 @@ void acquire_frames(
             camera_params->camera_serial,
             build_ptp_camera_summary_json(true));
     }
-    if (!pipeline_perf_recorder.current_folder().empty()) {
-        const PipelinePerfSample final_pipeline_sample = build_pipeline_perf_sample();
-        pipeline_perf_recorder.Record(final_pipeline_sample);
-    }
-    pipeline_perf_recorder.Close();
-    acquisition_cadence_probe_recorder.Close();
-
     // Cleanup
     {
         NVTX_RANGE("Cleanup_and_Shutdown");
@@ -1901,6 +1894,13 @@ void acquire_frames(
                           << camera_params->camera_serial << std::endl;
             }
         }
+
+        if (!pipeline_perf_recorder.current_folder().empty()) {
+            const PipelinePerfSample final_pipeline_sample = build_pipeline_perf_sample();
+            pipeline_perf_recorder.Record(final_pipeline_sample);
+        }
+        pipeline_perf_recorder.Close();
+        acquisition_cadence_probe_recorder.Close();
 
         {
             NVTX_CAMERA("Camera_Acquisition_Stop");
