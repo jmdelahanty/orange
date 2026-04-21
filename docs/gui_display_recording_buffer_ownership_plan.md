@@ -79,6 +79,69 @@ problem is:
 - GUI validation can diverge from headless validation even when the recording
   workers are shared.
 
+## GPUDirect Receive Versus NVENC Input
+
+The goal is not to send camera frames directly into NVENC as-is.
+
+There are two separate "direct" concepts:
+
+- GPUDirect camera receive,
+- NVENC input surfaces.
+
+With GPUDirect camera receive, the Emergent SDK receives camera image data
+directly into CUDA device memory on the acquisition GPU. That buffer is still
+SDK/camera-owned. Orange can borrow the pointer, but it must return/requeue the
+SDK frame once all source reads are safe.
+
+NVENC input is different. NVENC expects an encoder-compatible input surface,
+such as NV12 or another supported layout. The current camera frame is full-frame
+`Mono8`, so Orange still has to run recording preprocess work before encode.
+That preprocess step reads the camera image and prepares the encoder input
+surface.
+
+The desired low-copy recording path is:
+
+```text
+camera
+  -> SDK GPUDirect CUDA buffer
+  -> recording preprocess
+  -> NVENC input surface
+  -> encode
+```
+
+The current GUI stream-plus-record path can become:
+
+```text
+camera
+  -> SDK GPUDirect CUDA buffer
+  -> full-rate Orange-owned ring/staging copy
+  -> recording preprocess
+  -> NVENC input surface
+  -> encode
+```
+
+The extra ring/staging copy is what this plan tries to avoid for frames where
+recording is the only full-rate every-frame consumer.
+
+The desired GUI preview shape is closer to:
+
+```text
+camera
+  -> SDK GPUDirect CUDA buffer
+  -> recording preprocess
+  -> NVENC input surface
+  -> encode
+
+same source frame, selected by preview policy only when needed
+  -> display preview copy
+  -> OpenGL display
+```
+
+Longer-term `nvenc_direct_input` work is related but separate. That would target
+the preprocess-to-NVENC handoff. The buffer-ownership issue in this document is
+about avoiding an unnecessary acquisition-side full-frame copy before recording
+preprocess.
+
 ## Desired Semantics
 
 Recording should get the lowest-overhead safe path available for the selected
