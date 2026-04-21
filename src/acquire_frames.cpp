@@ -802,6 +802,7 @@ std::string current_recording_folder(CameraControl* camera_control) {
 
 static inline void PTP_timestamp_checking(PTPState *ptp_state,
                                           CameraEmergent *ecam,
+                                          const Emergent::CEmergentFrame *received_frame,
                                           CameraState *camera_state,
                                           CameraParams *camera_params){
     NVTX_RANGE("PTP_Timestamp_Check");
@@ -809,7 +810,7 @@ static inline void PTP_timestamp_checking(PTPState *ptp_state,
     EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
     EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueLow", &ptp_state->ptp_time_low);
     ptp_state->ptp_time = (((unsigned long long)(ptp_state->ptp_time_high)) << 32) | ((unsigned long long)(ptp_state->ptp_time_low));
-    ptp_state->frame_ts = ecam->frame_recv.timestamp;
+    ptp_state->frame_ts = received_frame ? received_frame->timestamp : 0;
     if (camera_state->frame_count != 0) {
         ptp_state->ptp_time_delta = ptp_state->ptp_time - ptp_state->ptp_time_prev;
         ptp_state->ptp_time_delta_sum += ptp_state->ptp_time_delta;
@@ -833,6 +834,23 @@ static inline void PTP_timestamp_checking(PTPState *ptp_state,
                   << " latch_delta_ns=" << ptp_state->ptp_time_delta
                   << std::endl;
     }
+}
+
+static inline Emergent::CEmergentFrame* resolve_queued_camera_frame(
+    CameraEmergent* ecam,
+    const Emergent::CEmergentFrame* received_frame)
+{
+    if (!ecam || !received_frame || !received_frame->imagePtr ||
+        !ecam->evt_frame || ecam->evt_frame_count <= 0) {
+        return nullptr;
+    }
+
+    for (int i = 0; i < ecam->evt_frame_count; ++i) {
+        if (ecam->evt_frame[i].imagePtr == received_frame->imagePtr) {
+            return &ecam->evt_frame[i];
+        }
+    }
+    return nullptr;
 }
 
 void acquire_frames(
@@ -1181,26 +1199,32 @@ void acquire_frames(
             continue;
         }
 
-            const uint64_t get_frame_call_host_ns = steady_clock_now_ns();
-            camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, &ecam->frame_recv, 1000);
+        Emergent::CEmergentFrame* received_frame = &current_entry->camera_frame_recv;
+        const uint64_t get_frame_call_host_ns = steady_clock_now_ns();
+        camera_state.camera_return = EVT_CameraGetFrame(&ecam->camera, received_frame, 1000);
 
-            if (camera_state.camera_return == EVT_SUCCESS) {
-                const uint64_t receive_host_ns = steady_clock_now_ns();
-                const uint64_t get_frame_wait_ns =
-                    receive_host_ns > get_frame_call_host_ns
-                        ? receive_host_ns - get_frame_call_host_ns
-                        : 0;
-                if (camera_control->sync_camera) {
-                PTP_timestamp_checking(&ptp_state, ecam, &camera_state, camera_params);
-                }
+        if (camera_state.camera_return == EVT_SUCCESS) {
+            Emergent::CEmergentFrame* frame_to_requeue =
+                resolve_queued_camera_frame(ecam, received_frame);
+            if (!frame_to_requeue) {
+                frame_to_requeue = received_frame;
+            }
+            const uint64_t receive_host_ns = steady_clock_now_ns();
+            const uint64_t get_frame_wait_ns =
+                receive_host_ns > get_frame_call_host_ns
+                    ? receive_host_ns - get_frame_call_host_ns
+                    : 0;
+            if (camera_control->sync_camera) {
+                PTP_timestamp_checking(&ptp_state, ecam, received_frame, &camera_state, camera_params);
+            }
 
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
             camera_state.dropped_frames += count_camera_frame_id_gaps(
                 camera_state.id_prev,
-                ecam->frame_recv.frame_id);
-            camera_state.id_prev = next_camera_frame_id_prev(ecam->frame_recv.frame_id);
+                received_frame->frame_id);
+            camera_state.id_prev = next_camera_frame_id_prev(received_frame->frame_id);
             camera_state.frames_recd++;
             camera_state.frame_count++;
             current_entry->frame_id = camera_state.frame_count; // Assign absolute frame ID
@@ -1209,7 +1233,7 @@ void acquire_frames(
                     ? receive_host_ns - last_receive_host_ns
                     : 0;
             last_receive_host_ns = receive_host_ns;
-            const uint64_t camera_timestamp_ns = ecam->frame_recv.timestamp;
+            const uint64_t camera_timestamp_ns = received_frame->timestamp;
             const uint64_t camera_timestamp_delta_ns =
                 (last_camera_timestamp_ns > 0 && camera_timestamp_ns >= last_camera_timestamp_ns)
                     ? camera_timestamp_ns - last_camera_timestamp_ns
@@ -1246,7 +1270,7 @@ void acquire_frames(
             if (will_yolo) {
                 if (!resources->yolo_events_queue) {
                     acquisition_resource_starvations++;
-                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
+                    EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                     resources->free_events_queue->push(current_event);
                     resources->free_entries_queue->push(current_entry);
                     free_events_available++;
@@ -1258,7 +1282,7 @@ void acquire_frames(
                 const bool got_yolo_event = resources->yolo_events_queue->pop(yolo_event);
                 if (!got_yolo_event) {
                     acquisition_resource_starvations++;
-                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
+                    EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                     resources->free_events_queue->push(current_event);
                     resources->free_entries_queue->push(current_entry);
                     free_events_available++;
@@ -1302,7 +1326,7 @@ void acquire_frames(
             if (will_yolo) dispatch_count++;
 
             cudaPointerAttributes attrs{};
-            cudaError_t attr_status = cudaPointerGetAttributes(&attrs, ecam->frame_recv.imagePtr);
+            cudaError_t attr_status = cudaPointerGetAttributes(&attrs, received_frame->imagePtr);
             if (attr_status != cudaSuccess) {
                 gpu_direct_attr_errors++;
                 cudaGetLastError(); // Clear error so we can continue.
@@ -1328,7 +1352,7 @@ void acquire_frames(
             if (use_direct_pointer && !use_ring_copy) {
                 gpu_direct_frames++;
                 gpu_direct_frames_total++;
-                current_entry->d_image = static_cast<unsigned char*>(ecam->frame_recv.imagePtr);
+                current_entry->d_image = static_cast<unsigned char*>(received_frame->imagePtr);
                 current_entry->gpu_direct_mode = true;
                 current_entry->owns_memory = false;
             } else {
@@ -1349,7 +1373,7 @@ void acquire_frames(
                     gpu_copy_frames++;
                     gpu_copy_frames_total++;
                 }
-                ck(cudaMemcpyAsync(current_entry->d_image, ecam->frame_recv.imagePtr, ecam->frame_recv.bufferSize, cudaMemcpyDeviceToDevice, stream));
+                ck(cudaMemcpyAsync(current_entry->d_image, received_frame->imagePtr, received_frame->bufferSize, cudaMemcpyDeviceToDevice, stream));
 #if PIPELINE_PROFILE
                 if (sample_copy) {
                     ck(cudaEventRecord(copy_prof_events.end, stream));
@@ -1362,7 +1386,7 @@ void acquire_frames(
                 current_entry->camera_instance = nullptr;
                 current_entry->camera_frame_struct = nullptr;
                 if (!use_direct_pointer) {
-                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
+                    EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                 }
             }
 
@@ -1370,13 +1394,13 @@ void acquire_frames(
             current_entry->yolo_completion_event = yolo_event;
             ck(cudaEventRecord(*current_entry->event_ptr, stream));
             if (use_ring_copy) {
-                pending_requeues.push_back({&ecam->camera, &ecam->frame_recv, current_entry->event_ptr});
+                pending_requeues.push_back({&ecam->camera, frame_to_requeue, current_entry->event_ptr});
             }
 
-            current_entry->width = ecam->frame_recv.size_x;
-            current_entry->height = ecam->frame_recv.size_y;
-            current_entry->pixelFormat = ecam->frame_recv.pixel_type;
-            current_entry->timestamp = ecam->frame_recv.timestamp;
+            current_entry->width = received_frame->size_x;
+            current_entry->height = received_frame->size_y;
+            current_entry->pixelFormat = received_frame->pixel_type;
+            current_entry->timestamp = received_frame->timestamp;
             current_entry->timestamp_sys = real_time;
             current_entry->frame_id = camera_state.frame_count;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
@@ -1398,7 +1422,7 @@ void acquire_frames(
                     static_cast<int64_t>(ptp_state.frame_ts);
                 PtpReceiveHistoryEntry receive_entry;
                 receive_entry.local_frame_id = camera_state.frame_count;
-                receive_entry.camera_frame_id = ecam->frame_recv.frame_id;
+                receive_entry.camera_frame_id = received_frame->frame_id;
                 receive_entry.frame_timestamp_ns = current_entry->timestamp;
                 receive_entry.timestamp_sys_ns = current_entry->timestamp_sys;
                 receive_entry.latch_minus_frame_ns = latch_minus_frame_ns;
@@ -1494,9 +1518,9 @@ void acquire_frames(
                 current_entry->ref_count.store(dispatch_count);
 
                 if (use_direct_pointer && !use_ring_copy) {
-                    current_entry->camera_buffer_ptr = ecam->frame_recv.imagePtr;
+                    current_entry->camera_buffer_ptr = received_frame->imagePtr;
                     current_entry->camera_instance = &ecam->camera;
-                    current_entry->camera_frame_struct = &ecam->frame_recv;
+                    current_entry->camera_frame_struct = frame_to_requeue;
                 }
 
                 if (will_display) openGLDisplay->PutObjectToQueueIn(current_entry);
@@ -1506,7 +1530,7 @@ void acquire_frames(
                         RecordingSubmitHistoryEntry submit_entry;
                         submit_entry.local_frame_id = current_entry->frame_id;
                         submit_entry.recording_frame_id = current_entry->recording_frame_id;
-                        submit_entry.camera_frame_id = ecam->frame_recv.frame_id;
+                        submit_entry.camera_frame_id = received_frame->frame_id;
                         submit_entry.dispatch_count = dispatch_count;
                         submit_entry.use_direct_pointer = use_direct_pointer;
                         submit_entry.use_ring_copy = use_ring_copy;
@@ -1527,7 +1551,7 @@ void acquire_frames(
                     cadence_sample.timestamp_utc = get_current_utc_timestamp();
                     cadence_sample.local_frame_id = current_entry->frame_id;
                     cadence_sample.recording_frame_id = current_entry->recording_frame_id;
-                    cadence_sample.camera_frame_id = ecam->frame_recv.frame_id;
+                    cadence_sample.camera_frame_id = received_frame->frame_id;
                     cadence_sample.camera_timestamp_ns = camera_timestamp_ns;
                     cadence_sample.camera_timestamp_delta_ns = camera_timestamp_delta_ns;
                     cadence_sample.receive_host_ns = receive_host_ns;
@@ -1596,7 +1620,7 @@ void acquire_frames(
                 // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above
                 // This ensures frame synchronization works even when just recording without display/YOLO
                 if (use_direct_pointer && !use_ring_copy) {
-                    EVT_CameraQueueFrame(&ecam->camera, &ecam->frame_recv);
+                    EVT_CameraQueueFrame(&ecam->camera, frame_to_requeue);
                 }
                 resources->free_events_queue->push(current_event);
                 if (yolo_event) {

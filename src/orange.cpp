@@ -2976,6 +2976,7 @@ int main(int argc, char **args) {
                             for (int i = 0; i < num_cameras; i++) {
                                 camera_open_stream(&ecams[i].camera, &cameras_params[i], "gui_start_streaming");
                                 ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
+                                ecams[i].evt_frame_count = evt_buffer_size;
                                 allocate_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, &cameras_params[i], evt_buffer_size);
                             }
                             if (ptp_stream_sync) {
@@ -3080,6 +3081,7 @@ int main(int argc, char **args) {
                             destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
                             delete[] ecams[i].evt_frame;
                             ecams[i].evt_frame = nullptr;
+                            ecams[i].evt_frame_count = 0;
                             check_camera_errors(EVT_CameraCloseStream(&ecams[i].camera), cameras_params[i].camera_serial.c_str());
                         }
 

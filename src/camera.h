@@ -130,6 +130,7 @@ inline void __check_camera_errors(EVT_ERROR err, const char *camera_serial, cons
 struct CameraEmergent{
     Emergent::CEmergentCamera camera;
     Emergent::CEmergentFrame* evt_frame;
+    int evt_frame_count = 0;
     Emergent::CEmergentFrame frame_recv;
     Emergent::CEmergentFrame frame_reorder;
 };

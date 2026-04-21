@@ -62,6 +62,7 @@ typedef struct {
     void* camera_buffer_ptr = nullptr;
     Emergent::CEmergentCamera* camera_instance = nullptr;
     Emergent::CEmergentFrame* camera_frame_struct = nullptr;
+    Emergent::CEmergentFrame camera_frame_recv;
     
     // Event for synchronization between workers
     cudaEvent_t* event_ptr; 

@@ -150,12 +150,14 @@ associated with the borrowed buffer."
 ## Proposed Next Patch
 
 Implement stable receive-frame descriptors in acquisition. The implementation
-checklist refines the first patch: prefer receiving directly into a
-per-`WORKER_ENTRY` `Emergent::CEmergentFrame` descriptor, then queue that same
-descriptor when downstream CUDA work no longer needs the source image.
+checklist refines the first patch: receive into a per-`WORKER_ENTRY`
+`Emergent::CEmergentFrame` descriptor for current-frame metadata, then resolve
+that frame's `imagePtr` back to the stable `ecam->evt_frame[]` descriptor used
+as the actual SDK requeue handle.
 
-The `imagePtr -> evt_frame[]` lookup remains a fallback option if the per-entry
-descriptor proves incompatible with the SDK.
+That split matters because direct pass-through keeps the `WORKER_ENTRY` alive
+until source release, but ring-copy can recycle the entry before the
+acquisition-thread pending requeue drains.
 
 After that patch, rerun the same recabled dual-camera `100 fps` split-GOP run
 and compare:

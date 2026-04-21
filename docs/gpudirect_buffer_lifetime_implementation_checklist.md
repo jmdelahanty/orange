@@ -50,7 +50,7 @@ mutable scratch frame:
 - [ ] Confirm current binary is the A16 worktree binary:
   `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
 
-### 2. Replace Scratch Receive Descriptor With Stable Per-Entry Descriptor
+### 2. Replace Scratch Receive Descriptor With Stable Receive/Requeue Handles
 
 Preferred first implementation:
 
@@ -62,12 +62,15 @@ Preferred first implementation:
 - [ ] Replace direct uses of `ecam->frame_recv.imagePtr`, `frame_id`,
       `timestamp`, `bufferSize`, `size_x`, `size_y`, and `pixel_type` in the
       main acquisition loop with the stable per-entry descriptor.
+- [ ] Resolve the received `imagePtr` back to the stable `ecam->evt_frame[]`
+      descriptor that owns that SDK receive buffer.
 - [ ] For direct GPUDirect pass-through, set:
-  `current_entry->camera_frame_struct = received_frame`.
+  `current_entry->camera_frame_struct = frame_to_requeue`.
 - [ ] For ring-copy pending requeues, store:
-  `PendingRequeue::frame = received_frame`.
+  `PendingRequeue::frame = frame_to_requeue`.
 - [ ] For immediate requeue error paths after a successful get-frame, call
-      `EVT_CameraQueueFrame()` with `received_frame`, not `&ecam->frame_recv`.
+      `EVT_CameraQueueFrame()` with `frame_to_requeue`, not
+      `&ecam->frame_recv`.
 - [ ] Keep `ecam->frame_recv` only for legacy paths that are not part of the
       main queued-worker recording path.
 
@@ -77,14 +80,12 @@ Why this is preferred:
   `EVT_CameraGetFrame()` into a separate receive descriptor, then queue that
   received descriptor.
 - A per-entry descriptor remains alive until the `WORKER_ENTRY` is recycled.
-- It avoids relying on pointer matching from `imagePtr` back to `evt_frame[]`.
+- Using the stable `evt_frame[]` descriptor as the requeue handle avoids a
+  ring-copy lifetime hazard where a `WORKER_ENTRY` can be recycled before the
+  acquisition-thread pending requeue drains.
 
-Fallback implementation if the per-entry descriptor proves incompatible:
+Fallback behavior if the `imagePtr -> evt_frame[]` lookup fails:
 
-- [ ] Build an `imagePtr -> Emergent::CEmergentFrame*` lookup over
-      `ecam->evt_frame[]`.
-- [ ] Store the stable `evt_frame[]` pointer on `WORKER_ENTRY`.
-- [ ] Requeue the stable `evt_frame[]` pointer instead of `&ecam->frame_recv`.
 - [ ] If lookup fails, copy into Orange-owned memory and requeue immediately
       using the scratch descriptor.
 

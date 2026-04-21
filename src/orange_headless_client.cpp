@@ -2190,6 +2190,7 @@ void allocate_selected_camera_frame_buffers(CameraEmergent* ecams,
     for (int idx : selected_indices) {
         camera_open_stream(&ecams[idx].camera, &cameras_params[idx], "headless_start_camera_thread");
         ecams[idx].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
+        ecams[idx].evt_frame_count = evt_buffer_size;
         allocate_frame_buffer(&ecams[idx].camera, ecams[idx].evt_frame, &cameras_params[idx], evt_buffer_size);
         if (cameras_params[idx].need_reorder && cameras_params[idx].gpu_direct) {
             allocate_frame_reorder_buffer(&ecams[idx].camera, &ecams[idx].frame_reorder, &cameras_params[idx]);
@@ -2267,6 +2268,7 @@ void cleanup_selected_camera_buffers(const std::vector<int>& active_camera_indic
             destroy_frame_buffer(&ecams[idx].camera, ecams[idx].evt_frame, evt_buffer_size, &cameras_params[idx]);
             delete[] ecams[idx].evt_frame;
             ecams[idx].evt_frame = nullptr;
+            ecams[idx].evt_frame_count = 0;
             check_camera_errors(EVT_CameraCloseStream(&ecams[idx].camera), cameras_params[idx].camera_serial.c_str());
         }
         if (idx >= 0 && idx < static_cast<int>(camera_resources.size())) {
@@ -2523,6 +2525,7 @@ bool open_cameras(CameraParams *cameras_params,
     for (int i = 0; i < num_cameras; i++)
     {
         ecams[i].evt_frame = nullptr;
+        ecams[i].evt_frame_count = 0;
         set_camera_params(&cameras_params[i], &device_info[i], camera_config_files, i, num_cameras);
         apply_camera_gpu_overrides(&cameras_params[i], 1, camera_gpu_overrides);
         if (!should_open[static_cast<std::size_t>(i)]) {
