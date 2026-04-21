@@ -565,9 +565,15 @@ Slot payload (`VectorSlot`) fields:
 
 Emission behavior:
 - Base frame event may be emitted with empty detections.
-- Detection update emitted when YOLO produces detections.
+- Detection update may be emitted when YOLO produces non-empty detections.
+- Detection updates older than the latest emitted base frame may be suppressed
+  from the live queue and counted as stale update drops.
 - During recording, IPC `frame_id` uses `recording_frame_id`.
 - Outside recording, IPC `frame_id` uses absolute camera `frame_id`.
+- The current Citrus consumer treats this queue as latest live-control state,
+  not as a complete Orange semantic event log. Do not rely on this queue to
+  preserve every base frame, delayed YOLO update, or zero-detection completion.
+  See [yolo_ipc_citrus_contract_plan.md](./yolo_ipc_citrus_contract_plan.md).
 
 ### Headless `frame_ipc_summary.json`
 

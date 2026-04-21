@@ -81,6 +81,20 @@ This means:
 - one active reader can drain frames before another reader sees them
 - a reader should usually be started before or shortly after the writer
 
+## Citrus Live-Control Semantics
+
+Citrus currently treats `/shm_cam_<camera_serial>` as a latest-state stream for
+stimulus execution, not as a complete producer event log. It drains available
+messages and keeps the latest effective tracking state.
+
+For the current Citrus contract, Orange should preserve monotonic `frame_id`
+behavior on this queue. Delayed YOLO detections for older frames should not be
+published as older-frame updates because Citrus may treat any non-empty payload
+as current stimulus state.
+
+See [yolo_ipc_citrus_contract_plan.md](./yolo_ipc_citrus_contract_plan.md) for
+the live-control vs Orange audit-log split.
+
 ## Headless IPC Testing
 
 Headless local runs keep frame IPC disabled by default. Enable it explicitly when

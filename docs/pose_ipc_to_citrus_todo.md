@@ -5,12 +5,17 @@ Scope: deliver pose outputs from `orange-jeremy` to `citrus` over SHM IPC with c
 
 ## Short Answer
 
-Primary plan: extend the existing IPC update payload (same queue, same update type),
-not a separate third message type.
+Updated 2026-04-21: do not extend the existing Citrus live-control queue with
+delayed keyed pose or YOLO updates until Citrus has an explicit versioned event
+contract.
 
-That means pose is attached to update payload objects (for example keypoints in
-`Object.kps/num_kps`) and/or additional optional update fields, keyed by the same
-`frame_id`.
+The prior primary plan was to extend the existing IPC update payload in the same
+queue. That is only safe if the payload represents complete latest live state
+with monotonic ids. It is not safe for delayed older-frame semantic updates
+because Citrus currently drains the queue and keeps latest state, without keyed
+merge semantics.
+
+See [yolo_ipc_citrus_contract_plan.md](./yolo_ipc_citrus_contract_plan.md).
 
 ## Current IPC Baseline
 
@@ -39,22 +44,24 @@ That means pose is attached to update payload objects (for example keypoints in
 
 ## Recommendation
 
-Use single-queue update extension first:
+Use the existing queue only for live latest-state data:
 
-- Keep base frame event as-is.
-- Keep update event type as-is.
-- Extend update semantics so pose can be included in the same per-frame update
-  payload (or a second "upsert" update for the same frame id).
+- Keep Citrus-facing messages monotonic.
+- Treat each message as a complete current state Citrus may use now.
+- Suppress or separately log delayed older-frame pose/YOLO results instead of
+  emitting them into `/shm_cam_<serial>`.
 
 Why:
-- minimal change to current producer/consumer control flow,
-- avoids introducing a new transport channel immediately,
-- aligns with existing object payload (`kps`, `num_kps`) already present.
+- this matches current Citrus behavior,
+- it avoids regressing live stimulus state with old updates,
+- it keeps Citrus H5 as a consumer-side record of what Citrus saw/used.
 
 Fallback if this proves too coupled:
 
-- separate pose queue per camera (new channel),
-- or explicit `payload_kind` in slot struct (breaking schema).
+- Orange-owned recording/audit artifact for delayed semantic history,
+- separate pose/event queue per camera with a new consumer contract,
+- explicit `payload_kind` and `sequence_id` in the Shaman slot struct
+  coordinated with Citrus.
 
 ## TODO Plan
 
@@ -70,12 +77,16 @@ Fallback if this proves too coupled:
   - disable pose => drain/finalize/tear down worker safely and stop new pose updates.
 - [ ] Surface pose enabled/active state in runtime status/telemetry.
 
-## Phase 1: Contract Update (Single-Queue Extension)
+## Phase 1: Contract Update
 
-- [ ] Update contract to define pose as an extension of update payload semantics.
-- [ ] Define whether multiple update emissions for same `frame_id` are allowed:
-  - recommended: "upsert allowed; latest update for `(camera_id, frame_id)` is authoritative".
-- [ ] Record this in `agent_contracts/orange_jeremy_ipc_contract.md` as additive version bump.
+- [ ] Update the contract to distinguish Citrus live latest-state IPC from
+      Orange recording/audit event history.
+- [ ] For the current `/shm_cam_<serial>` queue, require monotonic live-control
+      state. Do not allow delayed older-frame pose updates.
+- [ ] For delayed pose history, define an Orange-owned audit artifact or a new
+      versioned event IPC contract.
+- [ ] Record this in `agent_contracts/orange_jeremy_ipc_contract.md` only after
+      Citrus has agreed to the consumer behavior.
 
 ## Phase 2: Pose Payload Schema
 
@@ -93,12 +104,13 @@ Fallback if this proves too coupled:
 
 ## Phase 3: Producer Wiring
 
-- [ ] Emit pose IPC when `send_frame_ipc` and `pose` are enabled (not gated by recording state).
-- [ ] Use same frame identity policy as existing IPC (`ipc_frame_id` / recording-aware behavior).
-  - refs: `src/acquire_frames.cpp:430`, `src/acquire_frames.cpp:441`
-- [ ] Add pose update method (or extend existing update path) in `FrameIPCManager`:
-  - merge YOLO + pose for same frame when possible,
-  - or emit second update for same frame id with enriched payload.
+- [ ] Emit Citrus live pose IPC only when the payload is complete current state
+      and preserves monotonic `frame_id` behavior.
+- [ ] Use the same live-state frame identity policy as existing IPC
+      (`ipc_frame_id` / recording-aware behavior) only for Citrus-facing state.
+- [ ] Do not emit a late pose result for an older `frame_id` into
+      `/shm_cam_<serial>`.
+- [ ] Add an Orange audit path for late pose results if pose history matters.
 - [ ] Keep pose IPC best-effort/non-blocking:
   - bounded queues,
   - drop oldest on overflow,
@@ -106,9 +118,11 @@ Fallback if this proves too coupled:
 
 ## Phase 4: Citrus Consumer
 
-- [ ] Extend Citrus update decoder to parse pose fields from update payload.
-- [ ] Join pose to frame timeline by `(camera_id, frame_id)` with upsert semantics.
-- [ ] Handle missing/late pose updates gracefully (no hard dependency on every frame).
+- [ ] If pose remains live latest-state only, extend Citrus to parse pose fields
+      without changing its latest-state execution model.
+- [ ] If Citrus must receive delayed pose events, add a separate versioned event
+      ingestion path with `payload_kind`, `sequence_id`, and keyed merge policy.
+- [ ] Handle missing/late pose updates gracefully without regressing live state.
 
 ## Phase 5: Observability and Validation
 
@@ -119,7 +133,8 @@ Fallback if this proves too coupled:
   - push failures.
 - [ ] Add integration test:
   - stream with frame IPC + YOLO + pose enabled,
-  - verify Citrus receives pose and aligns to the intended frame IDs.
+  - verify Citrus receives monotonic live pose state,
+  - verify delayed older-frame pose events are not published to the live queue.
 - [ ] Add soak test under load with backpressure; verify YOLO/acquisition are not stalled by pose IPC.
 
 ## Phase 6: Model and Skeleton Runtime Metadata
@@ -138,7 +153,11 @@ Fallback if this proves too coupled:
 ## Explicit Gating Rules (target state)
 
 - Base frame IPC: sent when `send_frame_ipc` is enabled.
-- YOLO IPC update: sent when YOLO result is available.
+- YOLO live IPC update: sent only when it is safe for the Citrus latest-state
+  queue.
 - Pose worker: runs only when pose is explicitly enabled for that camera.
-- Pose IPC data: carried by update payload when pose is enabled and pose result is available.
-- Recording state should not be required for pose IPC emission.
+- Pose live IPC data: carried by live latest-state payload only when monotonic
+  and safe for Citrus.
+- Recording state should not be required for pose computation, but full delayed
+  pose history belongs in Orange recording/audit artifacts unless Citrus gains a
+  versioned event-log consumer.
