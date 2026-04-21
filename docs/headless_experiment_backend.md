@@ -195,6 +195,10 @@ Headless YOLO audit-log test mode:
 - `fixed.yolo_event_log.mode = "synthetic"` generates deterministic
   `Cam<serial>_yolo_events.jsonl` rows without creating a real TensorRT YOLO
   worker.
+- In `runs.json` / `runs.csv`, `yolo=false` still means no real TensorRT YOLO
+  worker ran. Synthetic audit coverage is reported separately through
+  `yolo_event_log_mode`, `yolo_event_log_status`, and the
+  `yolo_event_log_*` counters.
 - The experiment summary validates file presence, parseability, event sequence,
   detection cadence, zero-detection rows, and joins to `Cam<serial>_meta.csv`.
 - Synthetic rows are audit-only for now; they do not call

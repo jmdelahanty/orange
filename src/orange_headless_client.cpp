@@ -3379,6 +3379,10 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     yolo_event_log_config);
         }
         std::cout << "Headless synthetic YOLO event log enabled."
+                  << " source=acquisition_metadata"
+                  << " audit_only=true"
+                  << " real_yolo_worker=false"
+                  << " live_detection_ipc=false"
                   << " every_n_frames=" << yolo_event_log_config.every_n_frames
                   << " emit_zero_detections="
                   << (yolo_event_log_config.emit_zero_detections ? "true" : "false")

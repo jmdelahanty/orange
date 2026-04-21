@@ -174,6 +174,16 @@ Add summary fields to `runs.csv` / `runs.json`:
 - `yolo_event_log_parse_errors`
 - `yolo_event_log_status`
 
+Interpretation:
+
+- `yolo=false` in `runs.json` / `runs.csv` means no real TensorRT YOLO worker
+  ran.
+- Synthetic audit coverage is reported separately through
+  `yolo_event_log_mode=synthetic`, `yolo_event_log_status`, and the
+  `yolo_event_log_*` counters.
+- Synthetic detection rows are audit-only in this slice and do not update the
+  live Citrus shared-memory queue.
+
 ## Implementation Status
 
 - [x] Extract shared `YoloEventLogger` / `YoloResultRecord` into
@@ -232,14 +242,16 @@ Expected result for the checked-in run:
 
 ## Validation Result
 
-2026-04-21 run:
+2026-04-21 rerun after audit-only logging clarification:
 
 - Spec copy used by sudo wrapper:
-  `/tmp/2010096_synthetic_yolo_event_log_a16_gpu5.json`
+  `/tmp/2010096_synthetic_yolo_event_log_a16_gpu5_rerun.json`
 - Output root:
-  `/home/jeremy/orange_data/exp/unsorted/2010096_synthetic_yolo_event_log_a16_gpu5`
+  `/home/jeremy/orange_data/exp/unsorted/2010096_synthetic_yolo_event_log_a16_gpu5_rerun`
 - `runs.csv` / `runs.json` row status: `pass`
+- `yolo`: `false`
 - `frame_ipc_status`: `pass`
+- `yolo_event_log_mode`: `synthetic`
 - `yolo_event_log_status`: `pass`
 - JSONL rows: `601`
 - Detection rows: `60`
