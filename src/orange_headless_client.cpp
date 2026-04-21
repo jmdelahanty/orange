@@ -665,6 +665,22 @@ std::string format_selected_camera_serials(const HeadlessEncoderSettings& settin
     return out.str();
 }
 
+std::string encode_selected_camera_serials_for_setup(const HeadlessEncoderSettings& settings)
+{
+    if (settings.select_all_cameras || settings.camera_serials.empty()) {
+        return "all";
+    }
+
+    std::ostringstream out;
+    for (std::size_t i = 0; i < settings.camera_serials.size(); ++i) {
+        if (i != 0) {
+            out << "+";
+        }
+        out << settings.camera_serials[i];
+    }
+    return out.str();
+}
+
 std::string build_headless_encoder_setup_string(const HeadlessEncoderSettings& settings)
 {
     std::ostringstream out;
@@ -676,7 +692,7 @@ std::string build_headless_encoder_setup_string(const HeadlessEncoderSettings& s
         << " importance_map_roi_size_px=" << settings.importance_map.roi_size_px
         << " quality=" << settings.quality_value
         << " gop=" << settings.gop_length
-        << " camera=" << format_selected_camera_serials(settings);
+        << " camera=" << encode_selected_camera_serials_for_setup(settings);
     if (settings.control_overrides.aq >= 0) {
         out << " aq=" << format_headless_toggle_override(settings.control_overrides.aq);
     }
