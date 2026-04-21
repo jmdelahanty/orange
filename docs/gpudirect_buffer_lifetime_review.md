@@ -217,3 +217,16 @@ Current conclusion:
   when each camera has a disjoint PIX-local source/helper pair.
 - This does not yet validate GUI recording or longer-duration four-camera soak
   runs.
+
+Why this can coexist with earlier failures:
+
+- `SYS` ingress was not the only variable in the older runs.
+- Earlier artifacts mixed topology risk with helper-copy pressure, cold-path
+  startup effects, and a GPUDirect receive/requeue descriptor bug that could
+  create SDK receive-buffer pressure.
+- The current four-camera run keeps the high-bandwidth helper-copy path
+  PIX-local and disjoint per camera, while the stable requeue fix keeps SDK
+  receive buffers returning correctly.
+- Therefore the current claim is narrower than "SYS works": this specific
+  short-run layout works with PIX-local split-GOP helper pairs and fixed buffer
+  lifetime handling.

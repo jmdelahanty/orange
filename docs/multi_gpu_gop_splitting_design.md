@@ -241,6 +241,23 @@ Recommended paths to avoid in v1:
 - any cross-group `GPU1..GPU4 <-> GPU5..GPU8` pairing until the in-group
   `PIX` pairs have been measured
 
+2026-04-21 update:
+
+- short headless four-camera validation passed with cameras
+  `2010093 + 2010094 + 2010095 + 2010096` at `20 MP`, `100 fps`, HEVC,
+  `gop=25`, and no-stagger `ptp_gate`,
+- the validated source/helper pairs were `GPU3+GPU4`, `GPU1+GPU2`, `GPU7+GPU8`,
+  and `GPU5+GPU6`,
+- those source/helper pairs are still PIX-local even though the two `mlnx1`
+  camera NIC paths appear higher-cost relative to their selected source GPUs,
+- this means the four-camera pass is not evidence that all `SYS` paths are safe;
+  it is evidence that this host can tolerate the measured ingress paths when
+  helper copy/encode traffic stays PIX-local and GPU claims are disjoint.
+
+The operational rule remains: keep split-GOP source/helper pairs PIX-local for
+the validated path. Treat NIC-to-GPU ingress locality as a separate risk axis
+that needs long-soak validation rather than as an automatic blocker.
+
 ## Clarifying GOP-Oriented Scheduling
 
 The most common confusion is to think "GOP-oriented" means all raw frames in a

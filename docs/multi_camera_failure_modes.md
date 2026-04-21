@@ -117,7 +117,7 @@ Not yet claimed by this validation:
 
 - GUI recording path
 - long-duration soak behavior
-- more than two cameras
+- GUI four-camera path
 
 Historical note:
 
@@ -125,6 +125,29 @@ Historical note:
   failure-mode evidence, but they predate the recabled A16 topology and stable
   receive/requeue fix. They should not be read as contradicting the current
   no-stagger recabled PTP validation.
+
+## Why The Four-Camera SYS-Pair Run Stayed Healthy
+
+The four-camera result should not be read as "`SYS` is always fine." A more
+precise interpretation is:
+
+- the two `mlnx1` cameras still appear to use a higher-cost NIC-to-source-GPU
+  path on this host,
+- each camera's split-GOP source/helper pair stayed PIX-local,
+- every recording camera had disjoint source/helper GPU claims,
+- the stable GPUDirect receive/requeue fix was already in place,
+- the validation was a short headless run, not a long soak.
+
+That separates two traffic classes that were previously easy to conflate:
+
+- camera ingress: NIC to acquisition/source GPU,
+- split-GOP helper work: source GPU to helper GPU.
+
+The current evidence says that short `20 MP` `100 fps` four-camera recording is
+sustainable when helper traffic is kept local to each A16 PIX group and SDK
+buffer ownership is correct, even if some ingress traffic traverses a `SYS`
+path. It does not prove that cross-group helper copies, shared helper GPUs, GUI
+recording, or long-duration four-camera runs are safe.
 
 ## Detailed Failure Modes
 
