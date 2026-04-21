@@ -56,6 +56,7 @@ Default configured base path in runtime:
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
 | Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
 | YOLO perf CSV | `<recording_folder>/Cam<serial>_yolo_perf.csv` | Optional | `ORANGE_YOLO_PERF_LOG != 0` |
+| YOLO event JSONL | `<recording_folder>/Cam<serial>_yolo_events.jsonl` | Optional | GUI YOLO worker receives frames during recording |
 | YOLO debug PNG | `./debug_pre_yolo_<serial>_<frame_id>.png` | Optional | `Dump Input` action |
 
 Note: still-image save path is currently not a stable output contract (writer
@@ -448,6 +449,27 @@ Field semantics:
 Gate:
 - Disabled when `ORANGE_YOLO_PERF_LOG=0`.
 - Sampling controlled by `ORANGE_YOLO_PERF_SAMPLE`.
+
+### YOLO Event JSONL (`Cam<serial>_yolo_events.jsonl`)
+
+Path:
+- `<recording_folder>/Cam<serial>_yolo_events.jsonl`
+
+Gate:
+- GUI YOLO worker receives frames that carry a non-empty recording folder.
+
+Current emitted row type:
+- `yolo_result`
+
+Current behavior:
+- One JSON object per line.
+- The file is append-only during recording.
+- Rows include frame identity, timestamps, YOLO result status, detections, and
+  Citrus live IPC request status.
+- Current runtime records whether a live IPC update was requested/queued, but
+  does not yet emit final asynchronous `citrus_live_ipc_decision` rows.
+
+See [yolo_event_log_jsonl_contract.md](./yolo_event_log_jsonl_contract.md).
 
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 

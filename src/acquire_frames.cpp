@@ -1495,6 +1495,8 @@ void acquire_frames(
             current_entry->timestamp = received_frame->timestamp;
             current_entry->timestamp_sys = real_time;
             current_entry->frame_id = camera_state.frame_count;
+            current_entry->camera_frame_id = received_frame->frame_id;
+            current_entry->recording_folder = live_recording_folder;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
             current_entry->recording_submit_host_ns = 0;
             current_entry->recording_target_gpu_id = -1;

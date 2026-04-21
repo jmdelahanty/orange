@@ -188,10 +188,12 @@ This is a breaking or coordinated schema change. Citrus would need to:
 - [ ] Add documentation to the GUI/IPC status for `update_stale_drops`.
 - [x] Decide the first Orange-owned YOLO event artifact format
       (`jsonl` recommended for long runs).
-- [ ] Implement `Cam<serial>_yolo_events.jsonl` writer.
-- [ ] Emit explicit YOLO zero-detection completions into the Orange audit
+- [x] Implement `Cam<serial>_yolo_events.jsonl` writer.
+- [x] Emit explicit YOLO zero-detection completions into the Orange audit
       artifact.
-- [ ] Record Citrus live-IPC publish/suppress decisions in the audit artifact.
+- [x] Record Citrus live-IPC request status in `yolo_result` rows.
+- [ ] Record final Citrus live-IPC publish/suppress decisions in the audit
+      artifact.
 - [ ] Defer Shaman slot schema changes until Citrus is ready to coordinate a
       versioned `payload_kind` / `sequence_id` contract.
 

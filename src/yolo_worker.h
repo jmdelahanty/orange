@@ -23,6 +23,9 @@ class CropAndEncodeWorker;
 namespace yolo_perf {
 class YoloPerfLogger;
 }
+namespace yolo_event_log {
+class YoloEventLogger;
+}
 
 class YOLOv8Worker : public CThreadWorker<WORKER_ENTRY>
 {
@@ -87,6 +90,7 @@ private:
     VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;
+    std::unique_ptr<yolo_event_log::YoloEventLogger> event_logger_;
     uint64_t perf_sample_counter_ = 0;
     int perf_sample_rate_ = 1;
     std::string perf_log_folder_;

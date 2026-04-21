@@ -1,12 +1,17 @@
 # YOLO Event Log JSONL Contract
 
 Date: 2026-04-21
-Status: planned v1 contract, not yet emitted by the current runtime.
+Status: v1 contract. Current GUI YOLO runtime emits `yolo_result` rows.
+`citrus_live_ipc_decision` and `yolo_frame_decision` rows are planned.
 
 Purpose: define the Orange-owned recording/audit artifact for YOLO semantic
 history. This file is separate from the Citrus live-control shared-memory queue.
 Citrus IPC remains a latest-state stream; this JSONL file is where Orange should
 preserve complete YOLO results and Citrus live-IPC publish/suppress decisions.
+
+See also:
+[headless_synthetic_yolo_event_log_plan.md](./headless_synthetic_yolo_event_log_plan.md)
+for the planned deterministic headless test mode.
 
 ## Path
 
@@ -46,6 +51,7 @@ Every line must contain these fields:
   "camera_serial": "2010096",
   "camera_id": 3,
   "frame": {
+    "local_frame_id": 987,
     "camera_frame_id": 456789,
     "recording_frame_id": 123,
     "ipc_frame_id": 123,
@@ -69,6 +75,7 @@ Field semantics:
 - `recording_id`: recording folder id, usually `YYYY_MM_DD_HH_MM_SS`.
 - `camera_serial`: camera serial string used in filenames and SHM queue names.
 - `camera_id`: Orange runtime camera id/index.
+- `frame.local_frame_id`: Orange acquisition-thread local frame counter.
 - `frame.camera_frame_id`: absolute SDK/acquisition frame id.
 - `frame.recording_frame_id`: recording-local frame id, or `0` when no
   recording-local id exists.
@@ -100,6 +107,7 @@ result.
   "camera_serial": "2010096",
   "camera_id": 3,
   "frame": {
+    "local_frame_id": 987,
     "camera_frame_id": 456789,
     "recording_frame_id": 123,
     "ipc_frame_id": 123,
@@ -147,6 +155,12 @@ result.
 - `timeout`: YOLO did not produce a valid result before its timeout.
 - `failed`: YOLO failed for a non-timeout reason.
 
+Optional `yolo.error` values describe the failure or timeout reason. Current
+runtime examples include:
+
+- `inference_timeout`
+- `cpu_results_skipped`
+
 Detection semantics:
 
 - `detections` must be present on every `yolo_result` row.
@@ -169,9 +183,9 @@ Detection semantics:
 
 ### `citrus_live_ipc_decision`
 
-Required when Orange can observe the final live-IPC handling outcome for a
-non-empty YOLO result. This row is intentionally separate from `yolo_result`
-because the live queue writer is asynchronous.
+Planned row. Required once Orange can observe the final live-IPC handling
+outcome for a non-empty YOLO result. This row is intentionally separate from
+`yolo_result` because the live queue writer is asynchronous.
 
 ```json
 {
@@ -183,6 +197,7 @@ because the live queue writer is asynchronous.
   "camera_serial": "2010096",
   "camera_id": 3,
   "frame": {
+    "local_frame_id": 987,
     "camera_frame_id": 456789,
     "recording_frame_id": 123,
     "ipc_frame_id": 123,
@@ -229,9 +244,9 @@ a stable lowercase string such as:
 
 ### `yolo_frame_decision`
 
-Optional v1 row for frames that are considered for YOLO before the YOLO worker
-receives them. This is useful when auditing skipped frames due to decimation,
-disabled YOLO, resource pressure, or recording/session gates.
+Planned optional v1 row for frames that are considered for YOLO before the YOLO
+worker receives them. This is useful when auditing skipped frames due to
+decimation, disabled YOLO, resource pressure, or recording/session gates.
 
 ```json
 {
@@ -243,6 +258,7 @@ disabled YOLO, resource pressure, or recording/session gates.
   "camera_serial": "2010096",
   "camera_id": 3,
   "frame": {
+    "local_frame_id": 988,
     "camera_frame_id": 456790,
     "recording_frame_id": 124,
     "ipc_frame_id": 124,
@@ -289,14 +305,15 @@ Suggested `reason` values:
 
 ## Implementation Phasing
 
-Phase 1 should emit:
+Current implementation emits:
 
-- `yolo_result` for every frame that reaches YOLO,
-- `citrus_live_ipc_decision` for every non-empty result that is published or
-  suppressed by `FrameIPCManager`.
+- `yolo_result` for every frame that reaches YOLO while the frame has a
+  recording folder.
 
 Phase 2 should add:
 
+- `citrus_live_ipc_decision` rows for every non-empty result that is published
+  or suppressed by `FrameIPCManager`,
 - `yolo_frame_decision` rows for skipped/scheduled audit coverage,
 - model provenance fields in `yolo`,
 - optional keypoint payloads if pose-like outputs are added.

@@ -23,13 +23,17 @@
 #include "fsuid_guard.h"
 #include <condition_variable>
 #include <deque>
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <filesystem>
 #include <mutex>
 #include <thread>
 #include <utility>
 #include <cstring>
+#include <unordered_map>
+#include <unordered_set>
 #include <pthread.h>
 #include <sched.h>
 
@@ -378,6 +382,283 @@ YoloPerfConfig GetYoloPerfConfig() {
 }
 } // namespace yolo_perf
 
+namespace yolo_event_log {
+struct YoloResultRecord {
+    std::string recording_folder;
+    std::string status;
+    std::string error;
+    uint64_t local_frame_id = 0;
+    uint64_t camera_frame_id = 0;
+    uint64_t recording_frame_id = 0;
+    uint64_t ipc_frame_id = 0;
+    bool record_active = false;
+    uint64_t camera_timestamp = 0;
+    uint64_t timestamp_sys_ns = 0;
+    uint64_t event_epoch_us = 0;
+    uint64_t event_monotonic_us = 0;
+    int gpu_id = -1;
+    std::string model_id = "unknown";
+    std::string engine_path;
+    std::vector<pose::Object> detections;
+    std::string queue_name;
+    bool ipc_enabled = false;
+    bool ipc_requested = false;
+    std::string ipc_request_status = "not_enabled";
+};
+
+enum class YoloEventType {
+    kYoloResult,
+    kClose,
+};
+
+struct YoloEvent {
+    YoloEventType type = YoloEventType::kYoloResult;
+    YoloResultRecord result;
+};
+
+class YoloEventLogger {
+public:
+    YoloEventLogger(const std::string& camera_serial,
+                    int camera_id,
+                    const std::string& worker_name)
+        : camera_serial_(camera_serial),
+          camera_id_(camera_id),
+          worker_name_(worker_name),
+          running_(true) {
+        thread_ = std::thread(&YoloEventLogger::ThreadMain, this);
+    }
+
+    ~YoloEventLogger() {
+        Stop();
+    }
+
+    void Stop() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (!running_) {
+                return;
+            }
+            running_ = false;
+        }
+        cv_.notify_one();
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+    }
+
+    void Close() {
+        YoloEvent event;
+        event.type = YoloEventType::kClose;
+        EnqueueEvent(std::move(event));
+    }
+
+    void Enqueue(YoloResultRecord record) {
+        if (record.recording_folder.empty()) {
+            return;
+        }
+        YoloEvent event;
+        event.type = YoloEventType::kYoloResult;
+        event.result = std::move(record);
+        EnqueueEvent(std::move(event));
+    }
+
+private:
+    static constexpr size_t kMaxQueue = 8192;
+
+    void EnqueueEvent(YoloEvent&& event) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!running_) {
+            return;
+        }
+        if (queue_.size() >= kMaxQueue) {
+            dropped_++;
+            return;
+        }
+        queue_.push_back(std::move(event));
+        cv_.notify_one();
+    }
+
+    static std::string RecordingIdFromFolder(const std::string& folder) {
+        try {
+            return std::filesystem::path(folder).filename().string();
+        } catch (...) {
+            const size_t pos = folder.find_last_of('/');
+            return pos == std::string::npos ? folder : folder.substr(pos + 1);
+        }
+    }
+
+    void OpenFile(const std::string& folder) {
+        if (folder.empty()) {
+            return;
+        }
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(folder);
+        current_folder_ = folder;
+        recording_id_ = RecordingIdFromFolder(folder);
+        file_path_ = current_folder_ + "/Cam" + camera_serial_ + "_yolo_events.jsonl";
+
+        const bool first_open = opened_folders_.insert(current_folder_).second;
+        const auto mode = std::ios::out | (first_open ? std::ios::trunc : std::ios::app);
+        file_.open(file_path_, mode);
+        if (!file_) {
+            std::cerr << "[YOLO_EVENT_LOG] " << worker_name_
+                      << " failed to open " << file_path_ << std::endl;
+            current_folder_.clear();
+            recording_id_.clear();
+            file_path_.clear();
+            return;
+        }
+        std::cout << "[YOLO_EVENT_LOG] " << worker_name_
+                  << " logging to " << file_path_ << std::endl;
+    }
+
+    void CloseFile() {
+        if (file_.is_open()) {
+            file_.close();
+        }
+        current_folder_.clear();
+        recording_id_.clear();
+        file_path_.clear();
+    }
+
+    void RotateIfNeeded(const std::string& folder) {
+        if (folder == current_folder_ && file_.is_open()) {
+            return;
+        }
+        CloseFile();
+        OpenFile(folder);
+    }
+
+    void WriteResult(const YoloResultRecord& record) {
+        if (record.recording_folder.empty()) {
+            return;
+        }
+        RotateIfNeeded(record.recording_folder);
+        if (!file_.is_open()) {
+            return;
+        }
+
+        uint64_t& next_sequence = next_sequence_by_folder_[record.recording_folder];
+        if (next_sequence == 0) {
+            next_sequence = 1;
+        }
+
+        nlohmann::json detections = nlohmann::json::array();
+        for (size_t i = 0; i < record.detections.size(); ++i) {
+            const pose::Object& detection = record.detections[i];
+            nlohmann::json keypoints = nlohmann::json::array();
+            const size_t keypoint_count = std::min<size_t>(
+                detection.num_kps,
+                static_cast<size_t>(pose::MAX_KEYPOINTS));
+            for (size_t k = 0; k < keypoint_count; ++k) {
+                keypoints.push_back(detection.kps[k]);
+            }
+            detections.push_back({
+                {"index", static_cast<int>(i)},
+                {"x_px", detection.rect.x},
+                {"y_px", detection.rect.y},
+                {"width_px", detection.rect.width},
+                {"height_px", detection.rect.height},
+                {"label", detection.label},
+                {"confidence", detection.prob},
+                {"keypoints", std::move(keypoints)}
+            });
+        }
+
+        nlohmann::json yolo = {
+            {"status", record.status},
+            {"detection_count", static_cast<int>(record.detections.size())},
+            {"coordinate_space", "source_frame_pixels"},
+            {"model_id", record.model_id},
+            {"engine_path", record.engine_path},
+            {"gpu_id", record.gpu_id}
+        };
+        if (!record.error.empty()) {
+            yolo["error"] = record.error;
+        }
+
+        nlohmann::json root = {
+            {"schema_id", "orange.yolo_event"},
+            {"schema_version", 1},
+            {"event_sequence", next_sequence++},
+            {"event_kind", "yolo_result"},
+            {"recording_id", recording_id_},
+            {"camera_serial", camera_serial_},
+            {"camera_id", camera_id_},
+            {"frame", {
+                {"local_frame_id", record.local_frame_id},
+                {"camera_frame_id", record.camera_frame_id},
+                {"recording_frame_id", record.recording_frame_id},
+                {"ipc_frame_id", record.ipc_frame_id},
+                {"record_active", record.record_active}
+            }},
+            {"timestamps", {
+                {"camera_timestamp", record.camera_timestamp},
+                {"timestamp_sys_ns", record.timestamp_sys_ns},
+                {"event_epoch_us", record.event_epoch_us},
+                {"event_monotonic_us", record.event_monotonic_us}
+            }},
+            {"yolo", std::move(yolo)},
+            {"detections", std::move(detections)},
+            {"citrus_live_ipc", {
+                {"queue_name", record.queue_name},
+                {"enabled", record.ipc_enabled},
+                {"requested", record.ipc_requested},
+                {"request_status", record.ipc_request_status}
+            }}
+        };
+
+        file_ << root.dump() << '\n';
+    }
+
+    void ThreadMain() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (running_ || !queue_.empty()) {
+            if (queue_.empty()) {
+                cv_.wait(lock);
+                continue;
+            }
+            YoloEvent event = std::move(queue_.front());
+            queue_.pop_front();
+            lock.unlock();
+
+            switch (event.type) {
+                case YoloEventType::kClose:
+                    CloseFile();
+                    break;
+                case YoloEventType::kYoloResult:
+                    WriteResult(event.result);
+                    break;
+            }
+
+            lock.lock();
+        }
+        CloseFile();
+        if (dropped_ > 0) {
+            std::cerr << "[YOLO_EVENT_LOG] " << worker_name_
+                      << " dropped " << dropped_ << " events" << std::endl;
+        }
+    }
+
+    std::string camera_serial_;
+    int camera_id_ = 0;
+    std::string worker_name_;
+    std::thread thread_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::deque<YoloEvent> queue_;
+    bool running_;
+    std::string current_folder_;
+    std::string recording_id_;
+    std::string file_path_;
+    std::ofstream file_;
+    std::unordered_set<std::string> opened_folders_;
+    std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
+    size_t dropped_ = 0;
+};
+} // namespace yolo_event_log
+
 YOLOv8Worker::YOLOv8Worker(const char* name,
                            CameraParams* cam_params,
                            CameraEachSelect* cam_select,
@@ -425,6 +706,12 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
         std::cout << "YOLOv8Worker for " << name << " initialized successfully." << std::endl;
         // IPC logging disabled: YOLO IPC note.
 
+        event_logger_ = std::make_unique<yolo_event_log::YoloEventLogger>(
+            associated_camera_params_->camera_serial,
+            associated_camera_params_->camera_id,
+            threadName
+        );
+
         const yolo_perf::YoloPerfConfig perf_cfg = yolo_perf::GetYoloPerfConfig();
         if (perf_cfg.enabled) {
             perf_logger_ = std::make_unique<yolo_perf::YoloPerfLogger>(
@@ -442,6 +729,7 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
 
         if (fb_builder_) { delete fb_builder_; fb_builder_ = nullptr; }
         if (yolov8_instance_) { delete yolov8_instance_; yolov8_instance_ = nullptr; }
+        if (event_logger_) { event_logger_->Stop(); event_logger_.reset(); }
         if (frame_original_gpu_.d_orig) { cudaFree(frame_original_gpu_.d_orig); frame_original_gpu_.d_orig = nullptr; }
         if (debayer_gpu_.d_debayer) { cudaFree(debayer_gpu_.d_debayer); debayer_gpu_.d_debayer = nullptr; }
 
@@ -455,6 +743,10 @@ YOLOv8Worker::~YOLOv8Worker() {
     if (perf_logger_) {
         perf_logger_->Stop();
         perf_logger_.reset();
+    }
+    if (event_logger_) {
+        event_logger_->Stop();
+        event_logger_.reset();
     }
 
     if (associated_camera_params_) {
@@ -822,21 +1114,58 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
 #if YOLO_PROFILE
         const auto ipc_start = std::chrono::steady_clock::now();
 #endif
-        if (!skip_cpu_results && entry->frame_ipc_manager && entry->has_detections) {
-            FrameIPCManager* frame_ipc = entry->frame_ipc_manager;
+        uint64_t frame_id_for_ipc = entry->ipc_frame_id;
+        if (frame_id_for_ipc == 0) {
+            frame_id_for_ipc = (entry->recording_frame_id > 0)
+                               ? entry->recording_frame_id
+                               : entry->frame_id;
+        }
+
+        FrameIPCManager* frame_ipc = entry->frame_ipc_manager;
+        const bool frame_ipc_enabled = frame_ipc && frame_ipc->isEnabled();
+        const std::string frame_ipc_queue_name = frame_ipc
+            ? frame_ipc->getQueueName()
+            : ("/shm_cam_" + associated_camera_params_->camera_serial);
+        bool frame_ipc_update_requested = false;
+        std::string frame_ipc_request_status = frame_ipc_enabled
+            ? "not_requested_zero_detections"
+            : "not_enabled";
+
+        std::string yolo_status;
+        std::string yolo_error;
+        if (!finished_in_time) {
+            yolo_status = "timeout";
+            yolo_error = "inference_timeout";
+            frame_ipc_request_status = frame_ipc_enabled
+                ? "not_requested_failed"
+                : "not_enabled";
+        } else if (skip_cpu_results) {
+            yolo_status = "failed";
+            yolo_error = "cpu_results_skipped";
+            frame_ipc_request_status = frame_ipc_enabled
+                ? "not_requested_failed"
+                : "not_enabled";
+        } else if (entry->has_detections) {
+            yolo_status = "detections";
+            frame_ipc_request_status = frame_ipc_enabled ? "queued" : "not_enabled";
+        } else {
+            yolo_status = "zero_detections";
+            frame_ipc_request_status = frame_ipc_enabled
+                ? "not_requested_zero_detections"
+                : "not_enabled";
+        }
+
+        if (!skip_cpu_results && frame_ipc && entry->has_detections) {
             if (frame_ipc && frame_ipc->isEnabled()) {
                 // Convert detections to shaman format for IPC
                 std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
 
-                uint64_t frame_id = entry->ipc_frame_id;
-                if (frame_id == 0) {
-                    frame_id = (camera_control_->record_video && entry->recording_frame_id > 0)
-                               ? entry->recording_frame_id
-                               : entry->frame_id;
-                }
-
                 // Update the frame with detection data
-                frame_ipc->updateFrameWithDetections(frame_id, std::move(shaman_objects));
+                frame_ipc_update_requested =
+                    frame_ipc->updateFrameWithDetections(frame_id_for_ipc, std::move(shaman_objects));
+                if (!frame_ipc_update_requested) {
+                    frame_ipc_request_status = "not_enabled";
+                }
             }
         }
 #if YOLO_PROFILE
@@ -855,6 +1184,34 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
         const auto enet_end = std::chrono::steady_clock::now();
         ms_enet = std::chrono::duration<double, std::milli>(enet_end - enet_start).count();
 #endif
+
+        if (event_logger_ && !entry->recording_folder.empty()) {
+            yolo_event_log::YoloResultRecord record;
+            record.recording_folder = entry->recording_folder;
+            record.status = std::move(yolo_status);
+            record.error = std::move(yolo_error);
+            record.local_frame_id = entry->frame_id;
+            record.camera_frame_id = entry->camera_frame_id != 0
+                ? entry->camera_frame_id
+                : entry->frame_id;
+            record.recording_frame_id = entry->recording_frame_id;
+            record.ipc_frame_id = frame_id_for_ipc;
+            record.record_active = entry->recording_frame_id > 0;
+            record.camera_timestamp = entry->timestamp;
+            record.timestamp_sys_ns = entry->timestamp_sys;
+            record.event_epoch_us = get_epoch_time_us();
+            record.event_monotonic_us = get_steady_time_us();
+            record.gpu_id = associated_camera_params_->gpu_id;
+            record.engine_path = associated_camera_select_->yolo_model
+                ? associated_camera_select_->yolo_model
+                : "";
+            record.detections = entry->detections;
+            record.queue_name = frame_ipc_queue_name;
+            record.ipc_enabled = frame_ipc_enabled;
+            record.ipc_requested = frame_ipc_update_requested;
+            record.ipc_request_status = std::move(frame_ipc_request_status);
+            event_logger_->Enqueue(std::move(record));
+        }
 
         const auto cpu_end = std::chrono::steady_clock::now();
         ms_total = std::chrono::duration<double, std::milli>(cpu_end - cpu_start).count();

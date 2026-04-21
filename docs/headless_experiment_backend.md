@@ -190,6 +190,15 @@ Validated smoke:
   - `ipc_push_failures = 0`
   - run row `pass`
 
+Planned headless YOLO audit-log test mode:
+
+- `fixed.yolo_event_log.mode = "synthetic"` will generate deterministic
+  `Cam<serial>_yolo_events.jsonl` rows without creating a real TensorRT YOLO
+  worker.
+- The intent is to validate the Orange-owned YOLO audit artifact contract in
+  headless experiments before relying on GUI YOLO smoke tests.
+- See [headless_synthetic_yolo_event_log_plan.md](./headless_synthetic_yolo_event_log_plan.md).
+
 `fixed.recording_sink_mode` is a separate experimental diagnostic knob for
 recording-enabled runs:
 

@@ -29,8 +29,10 @@ typedef struct {
     int pixelFormat;
     unsigned long long timestamp;
     unsigned long long frame_id;
+    uint64_t camera_frame_id;
     uint64_t recording_frame_id;
     uint64_t ipc_frame_id;
+    std::string recording_folder;
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
     uint64_t acquisition_receive_host_ns = 0;
@@ -200,7 +202,10 @@ struct CameraResources {
             worker_entry_pool[i].image_gpu_id = gpu_id;
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
+            worker_entry_pool[i].camera_frame_id = 0;
+            worker_entry_pool[i].recording_frame_id = 0;
             worker_entry_pool[i].ipc_frame_id = 0;
+            worker_entry_pool[i].recording_folder.clear();
         }
         
         free_entries_queue = new SafeQueue<WORKER_ENTRY*>();
