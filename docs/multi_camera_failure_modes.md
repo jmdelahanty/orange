@@ -7,6 +7,7 @@ Related notes:
 
 - `docs/ptp_sync_hardening_todo.md`
 - `docs/ptp_recording_sink_experiment_plan.md`
+- `docs/gpudirect_buffer_lifetime_review.md`
 
 ## Purpose
 
@@ -42,6 +43,7 @@ It is meant to be a compact matrix of:
 | Post-reboot recabled dual-camera `100 fps` `free_run` real recording via sudo wrapper | Both videos complete near `100 fps`, but source-side errors recur and shift cameras | `2010095` fails strict policy with `4448` camera drops; `2010096` fails strict policy with `3` camera drops; both produce `253 MiB` MP4s with balanced `702/700` primary/helper routing and no preprocess or encode failures | The recabled topology still avoids the old encode/helper throughput collapse, but source-health failures are not isolated to a single camera; the next telemetry gap is exact drop-event timing beyond the narrow cadence window |
 | Split receive-error telemetry | Current builds split true frame-ID gaps from SDK receive errors | `camera_dropped_frames` / `dropped_frames_camera` now mean frame-ID gaps; `get_frame_errors`, `last_get_frame_error_code`, and `get_frame_errors_by_code` capture `EVT_CameraGetFrame` failures such as error `12` (`EVT_ERROR_NOMEM`) | The two recabled rows above were recorded before this split and likely mixed true gaps with SDK buffer-pressure errors; rerun with the split metrics before treating those counts as lost images |
 | Recabled dual-camera `100 fps` `free_run` real recording with split receive-error telemetry | Strict policy passes while SDK receive-buffer pressure is visible separately | `2010095`: `0` frame-ID gaps, `126` `GetFrame` errors, all code `12`; `2010096`: `0` frame-ID gaps, `0` `GetFrame` errors; both videos present near `100 fps` | Confirms the prior large drop counts were likely dominated by `EVT_ERROR_NOMEM` receive-buffer pressure, not lost frame IDs; next work should reduce/diagnose buffer pressure without conflating it with frame integrity |
+| GPUDirect buffer lifetime code review | Direct pass-through and ring-copy deferred requeue paths store `&ecam->frame_recv` as the SDK frame to return later | `ecam->frame_recv` is a single reusable scratch frame populated by each `EVT_CameraGetFrame`; it can be overwritten before downstream release requeues it | First fix should receive into a stable per-entry descriptor, with `imagePtr -> evt_frame[]` lookup as fallback; then add lease telemetry before increasing SDK buffer counts |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
 
