@@ -160,9 +160,56 @@ Make PTP start/stop synchronization deterministic, timeout-safe, and recoverable
       `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_stream_only_dual_pix_ptp_stagger2ms`
     - both runs stayed near `100 fps` on both cameras with `0` camera drops
       and no `[PTP_STALE_DUMP]` output
-    - that means the pathological `100 fps` offset-camera stale-frame failure
-      is not triggered by PTP gating plus offset alone; it requires recording
-      to be active
+	  - that means the pathological `100 fps` offset-camera stale-frame failure
+	      is not triggered by PTP gating plus offset alone; it requires recording
+	      to be active
+
+## Audit Update (2026-04-21)
+
+The recabled A16 topology plus the stable GPUDirect receive/requeue descriptor
+patch changed the validated PTP operating point.
+
+New validated artifacts:
+
+- Stream-only PTP gate sanity check:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`
+- Real PTP-gated recording, best `12 s` follow-up:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
+
+Checked-in specs:
+
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
+
+The `12 s` PTP-gated real recording passed current policy:
+
+- `2010095`: `1001` submitted frames, `0` camera frame-ID gaps,
+  `0` GetFrame errors, `0` preprocess drops, `0` encode failures.
+- `2010096`: `1000` submitted frames, `0` camera frame-ID gaps,
+  `0` GetFrame errors, `0` preprocess drops, `0` encode failures.
+- `runs.csv` reports about `100 fps` acquisition on both cameras.
+- `recording_snapshot.json` reports `overflow_events = 0` and
+  `peak_backlog_gops = 2`.
+- `ptp_sync_summary.json` reports steady-state latch-minus-frame around
+  `9.2 ms` and PTP offsets under `1 us`.
+
+Caveat:
+
+- The real-recording runs still emit early `PTP_STALE_DUMP` logs while encoder
+  workers are starting. These dumps did not correspond to frame loss,
+  `EVT_CameraGetFrame` errors, preprocess drops, or split-GOP overflow in the
+  checked artifacts.
+
+Current read:
+
+- The older `100 fps` nonzero-stagger PTP failures remain useful historical
+  failure-mode evidence, but they predate the recabled topology and stable
+  receive/requeue fix.
+- The currently validated synchronized recording point is no-stagger
+  `ptp_gate` on the recabled A16 topology.
+- Remaining PTP hardening work is now more about robustness and observability:
+  suppressing or reclassifying startup-only stale dumps, adding deadline-based
+  barriers, and validating longer soak runs.
 
 ## Hardening Plan
 

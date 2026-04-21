@@ -170,12 +170,20 @@ Completed validation artifacts:
   `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`,
   and
   `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- Checked-in PTP validation specs:
+  `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
+  and
+  `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
 - Single `2010095`:
   `/home/jeremy/orange_data/exp/unsorted/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
 - Single `2010096`:
   `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
 - Dual `2010095 + 2010096`:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+- Dual `2010095 + 2010096`, `ptp_gate`, stream-only:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`
+- Dual `2010095 + 2010096`, `ptp_gate`, real recording:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
 
 Dual-camera result:
 
@@ -183,6 +191,11 @@ Dual-camera result:
   preprocess drops, `0` encode failures.
 - `2010096`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
   preprocess drops, `0` encode failures.
+- PTP stream-only: both cameras `701` frames, `0` frame-ID gaps,
+  `0` GetFrame errors.
+- PTP real recording `12 s`: `2010095` `1001` submitted frames and `2010096`
+  `1000` submitted frames, both with `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, and `0` encode failures.
 
 ### 7. Decision Points After Validation
 

@@ -169,6 +169,8 @@ Checked-in validation config and specs:
 - `experiment_specs/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
 - `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
 
 The clean dual-camera validation artifact is:
 
@@ -185,6 +187,8 @@ Post-fix validation summary:
 | Single `2010095`, `100 fps`, real split-GOP GPUDirect | pass, `801` frames, `0` frame-ID gaps, `0` GetFrame errors |
 | Single `2010096`, `100 fps`, real split-GOP GPUDirect | pass, `801` frames, `0` frame-ID gaps, `0` GetFrame errors |
 | Dual `2010095 + 2010096`, `100 fps`, real split-GOP GPUDirect | pass, both cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures |
+| Dual `2010095 + 2010096`, `100 fps`, `ptp_gate`, stream-only GPUDirect | pass, both cameras `701` frames, `0` frame-ID gaps, `0` GetFrame errors |
+| Dual `2010095 + 2010096`, `100 fps`, `ptp_gate`, real split-GOP GPUDirect, `12 s` | pass, `2010095` `1001` submitted, `2010096` `1000` submitted, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures |
 
 Current conclusion:
 
@@ -192,6 +196,10 @@ Current conclusion:
   recabled run was addressed by stable receive/requeue descriptor handling for
   this headless free-run path.
 - Dual-camera `20 MP` `100 fps` split-GOP HEVC recording is now validated for
-  the recabled A16 topology used by this run.
-- This does not yet validate GUI recording, PTP-gated recording, longer-duration
-  soak runs, or more than two cameras.
+  the recabled A16 topology used by these runs.
+- The same recabled headless path is also validated for no-stagger
+  `ptp_gate` recording in short runs. The run still emits early
+  `PTP_STALE_DUMP` logs during encoder startup, but steady-state PTP summaries
+  and run artifacts show no frame loss or receive errors.
+- This does not yet validate GUI recording, longer-duration soak runs, or more
+  than two cameras.

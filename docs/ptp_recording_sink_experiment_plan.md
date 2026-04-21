@@ -9,6 +9,51 @@ Related notes:
 - `docs/ptp_sync_hardening_todo.md`
 - `docs/helper_queue_wait_explainer.md`
 
+## Recabled Validation Update (2026-04-21)
+
+The original experiment plan below is now historical context for the older
+pre-recable/nonzero-stagger stale-frame investigations. After the recabled A16
+topology and the stable GPUDirect receive/requeue fix in commit `951f910`,
+no-stagger headless `ptp_gate` recording is validated in short dual-camera
+`100 fps` runs.
+
+Current validated artifacts:
+
+- stream-only sanity:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`
+- real recording, best `12 s` run:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
+
+Checked-in specs:
+
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
+
+Best real-recording result:
+
+- `2010095`: `1001` submitted frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures
+- `2010096`: `1000` submitted frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures
+- split-GOP output: `overflow_events = 0`, `peak_backlog_gops = 2`
+- `ptp_sync_summary.json`: sub-microsecond mean PTP offset and
+  latch-minus-frame around `9.2 ms`
+
+Remaining caveat:
+
+- early startup `PTP_STALE_DUMP` logs still appear while encoders are coming up,
+  but the steady-state summaries and artifacts show no frame loss, receive
+  errors, preprocess drops, encode failures, or GOP overflow
+
+Current read:
+
+- current no-stagger recabled headless `ptp_gate` is a validated synchronized
+  recording point for cameras `2010095` and `2010096`
+- the old nonzero-stagger stale-frame artifacts remain useful historical failure
+  evidence, but they should not be read as contradicting the current no-stagger
+  recabled validation
+- GUI PTP recording, longer soaks, and more than two cameras remain unvalidated
+
 ## Purpose
 
 This note captures the next diagnostic step for the unstable:
@@ -33,7 +78,8 @@ from:
 The current evidence is already fairly specific:
 
 - dual-camera `100 fps` `ptp_gate` `stream_only` is healthy
-- dual-camera `100 fps` `ptp_gate` recording is not healthy
+- in the original pre-recable/nonzero-stagger investigation, dual-camera
+  `100 fps` `ptp_gate` recording was not healthy
 - stale-onset receive logging shows the bad camera already receiving stale
   frames before visible app-side starvation
 - stale-onset recording-submit logging shows the bad camera is still:
@@ -178,7 +224,8 @@ This experiment is not meant to:
 
 It is specifically aimed at:
 
-- the `100 fps` `ptp_gate` recording-enabled stale-frame onset problem
+- the historical `100 fps` `ptp_gate` recording-enabled stale-frame onset
+  problem
 
 ## Exit Criteria
 

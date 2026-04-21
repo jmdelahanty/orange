@@ -184,7 +184,11 @@ Current dual-camera headless findings:
 
 - `2 x 100 fps` is validated for the recabled A16 headless `free_run`
   split-GOP HEVC path after commit `951f910`
+- `2 x 100 fps` is also validated for the recabled A16 headless no-stagger
+  `ptp_gate` split-GOP HEVC path in short runs after commit `951f910`
 - `2 x 80 fps` remains a useful lower-rate baseline
+- `2 x 100 fps` GUI recording still needs separate validation on the same
+  recabled/stable-requeue build
 
 Historical pre-recable/pre-fix `2 x 100 fps` headless artifact:
 
@@ -202,6 +206,14 @@ Current clean recabled `2 x 100 fps` headless artifact:
 
 That run completed with both cameras at `1001` frames, `0` frame-ID gaps,
 `0` GetFrame errors, `0` preprocess drops, and `0` encode failures.
+
+Current clean recabled `2 x 100 fps` headless no-stagger `ptp_gate` artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
+
+That run completed with `2010095` at `1001` submitted frames and `2010096` at
+`1000` submitted frames. Both cameras reported `0` frame-ID gaps, `0` GetFrame
+errors, `0` preprocess drops, and `0` encode failures.
 
 `2 x 80 fps` headless artifact:
 
@@ -333,9 +345,10 @@ The branch now has a clear current boundary:
 
 - one camera at `100 fps` on its own PIX split-GOP pair is validated
 - two cameras at `100 fps` on recabled disjoint PIX split-GOP pairs are
-  validated for headless `free_run`
+  validated for headless `free_run` and no-stagger headless `ptp_gate`
 - two cameras at `80 fps` on disjoint PIX split-GOP pairs do work in headless
-- GUI and PTP-gated `2 x 100 fps` still need separate validation
+- GUI `2 x 100 fps` still needs separate validation after the recabled
+  stable-requeue fix
 
 For the historical failed `2 x 100 fps` cases, the dominant recorded failure
 mode is:
@@ -364,27 +377,37 @@ And headless `ptp_gate` runs now:
 - auto-start the host stack when needed before camera open
 - auto-stop it on exit only when the run started it from an empty state
 
-Current `ptp_gate` artifact:
+Current clean no-stagger `ptp_gate` recording artifact:
 
-- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_rerun7`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
 
 That run confirms:
 
 - host linuxptp setup is no longer the blocker
-- both cameras open and cross the local PTP gate
-- GPU assignment is not the issue:
-  - `2010095` uses source GPU `1` with split-GOP pair `[1, 2]`
-  - `2010096` uses source GPU `5` with split-GOP pair `[5, 6]`
+- both cameras open, cross the local PTP gate, and record real split-GOP HEVC
+- the recabled GPU assignment and stable GPUDirect receive/requeue path are
+  sufficient for a short `2 x 100 fps` synchronized run
+- `2010095`: `1001` submitted frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures
+- `2010096`: `1000` submitted frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures
+- split-GOP output remained stable with `overflow_events = 0` and
+  `peak_backlog_gops = 2`
+- `ptp_sync_summary.json` reports sub-microsecond mean PTP offset and
+  latch-minus-frame around `9.2 ms`
 
-But performance is still poor under local PTP gating:
+Remaining caveat:
 
-- `2010095`: `enc_fps_mean = 55.2923`, `dropped_frames_camera = 266`
-- `2010096`: `enc_fps_mean = 55.313`, `dropped_frames_camera = 266`
+- early startup `PTP_STALE_DUMP` logs still appear while encoders are coming up,
+  but the steady-state summaries and artifacts show no frame loss, receive
+  errors, preprocess drops, encode failures, or GOP overflow
 
-Additional PTP characterization artifacts:
+Historical pre-recable/pre-fix PTP characterization artifacts:
 
 - single-camera `80 fps` PTP:
   - `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_80fps_gop25_ptp_rerun1`
+- dual-camera `80 fps` PTP, no stagger:
+  - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_80fps_gop25_dual_pix_ptp_rerun7`
 - dual-camera `60 fps` PTP:
   - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_60fps_gop25_dual_pix_ptp_rerun2`
 - dual-camera `100 fps` PTP stream-only:
@@ -410,7 +433,7 @@ Additional PTP characterization artifacts:
   - experimental `Continuous` gate acquisition mode with `2 ms` stagger:
     `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_ptp_stagger2ms_continuous_rerun1`
 
-Those runs show:
+Those historical runs showed:
 
 - single-camera `80 fps` under `ptp_gate` is healthy
   - `2010096`: `enc_fps_mean ≈ 80`
@@ -427,8 +450,8 @@ Those runs show:
   - `2010095`: `enc_fps_mean = 80.025`, `dropped_frames_camera = 0`
   - `2010096`: `enc_fps_mean = 80.0509`, `dropped_frames_camera = 0`
   - `overflow_events = 0` on both cameras
-- dual-camera `100 fps` under `ptp_gate` does not become healthy with the
-  nonzero staggers tried so far
+- historical dual-camera `100 fps` under `ptp_gate` did not become healthy with
+  the nonzero staggers tried before recabling and the stable receive/requeue fix
   - `25 us`: both cameras collapse to about `2-4 fps`
   - `50 us`: both cameras collapse to about `2-4 fps`
   - `100 us`: the `0 ns` camera stays near `100 fps`, the offset camera
@@ -441,33 +464,30 @@ Those runs show:
   - experimental `Continuous` mode with `2 ms`: the `0 ns` camera still stays
     near `100 fps`, while the offset camera still collapses to about `7 fps`
 
-That narrows the remaining problem to a rate-sensitive dual-camera synchronized
-interaction, not a general `ptp_gate` setup bug:
+Those older runs narrowed the then-current problem to a rate-sensitive
+dual-camera synchronized interaction, not a general `ptp_gate` setup bug:
 
 - single-camera `80 fps` PTP works
 - dual-camera `60 fps` PTP works
-- dual-camera `80 fps` PTP fails
+- historical dual-camera `80 fps` PTP without stagger failed
 - dual-camera `80 fps` `free_run` works
 - dual-camera `100 fps` `ptp_gate` stream-only works
 - dual-camera `80 fps` `ptp_gate` with a small stagger works
-- dual-camera `100 fps` `ptp_gate` with nonzero stagger remains unstable
+- historical dual-camera `100 fps` `ptp_gate` with nonzero stagger remained
+  unstable
 - switching the camera-side PTP gate acquisition mode from `MultiFrame` to
   experimental `Continuous` does not resolve the `100 fps` offset-camera
   instability by itself
 
 This means:
 
-- the current `2 x 80 fps` dual-camera baseline is useful for throughput
-  characterization
 - headless `ptp_gate` no longer has a setup gap
-- dual-camera `2 x 80 fps` under local PTP currently underperforms badly and
-  is not yet a validated synchronized baseline
-- dual-camera `2 x 80 fps` with `2 ms` stagger is a validated synchronized
-  recording baseline
-- dual-camera `2 x 100 fps` under local PTP remains unstable even with the
-  tiny stagger sweep completed so far
-- the next likely root-cause area is synchronized burst contention that only
-  appears once recording work is added on top of phase-aligned arrivals
+- current no-stagger recabled `2 x 100 fps` headless `ptp_gate` is validated in
+  short recording runs
+- the older nonzero-stagger artifacts remain historical evidence for a separate
+  offset-camera stale-frame failure mode
+- GUI `2 x 100 fps`, longer soaks, and more than two cameras still need
+  validation before treating this as a broad production envelope
 
 Follow-on diagnostic plan:
 

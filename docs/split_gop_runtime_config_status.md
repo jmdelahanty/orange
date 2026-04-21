@@ -56,10 +56,13 @@ includes:
   GPUDirect split-GOP run on:
   - camera `2010095` using source/helper `GPU7 + GPU8`
   - camera `2010096` using source/helper `GPU5 + GPU6`
+- validated recabled dual-camera `100 fps`, `HEVC`, `gop=25`, real
+  GPUDirect split-GOP PTP-gated run on the same source/helper pairs
 
 Latest clean dual-camera validation artifact:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
 
 Checked-in recabled config and specs:
 
@@ -67,6 +70,8 @@ Checked-in recabled config and specs:
 - `experiment_specs/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
 - `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
 
 Latest clean dual-camera validation result:
 
@@ -75,6 +80,16 @@ Latest clean dual-camera validation result:
 - `0` `EVT_CameraGetFrame` errors
 - `0` preprocess drops
 - `0` encode failures
+
+Latest clean PTP-gated dual-camera validation result:
+
+- `2010095`: `1001` submitted frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures.
+- `2010096`: `1000` submitted frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures.
+- `runs.csv` reports about `100 fps` acquisition on both cameras.
+- `recording_snapshot.json` reports `overflow_events = 0` and
+  `peak_backlog_gops = 2`.
 
 ## Current Config Model
 

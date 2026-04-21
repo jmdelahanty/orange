@@ -31,7 +31,7 @@ It is meant to be a compact matrix of:
 | Dual-camera `80 fps` `ptp_gate` recording, `2 ms` stagger | Stable at about `80 fps` on both cameras | `0` camera drops, balanced helper routing, `overflow_events = 0` | Stagger relieves the synchronized burst problem at `80 fps` |
 | Dual-camera `100 fps` `ptp_gate` stream-only, no stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Raw synchronized acquisition is fine without recording |
 | Dual-camera `100 fps` `ptp_gate` stream-only, `2 ms` stagger | Stable at about `100 fps` on both cameras | `0` camera drops, no stale dump | Offset alone is not enough to trigger stale-frame onset; recording pressure is part of the bad interaction |
-| Dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | PTP-gated offset acquisition becomes unstable at `100 fps`; this is a different mode than GOP backlog overflow |
+| Historical dual-camera `100 fps` `ptp_gate` recording, nonzero stagger | One or both cameras collapse; bad camera eventually shows multi-second stale-frame lag | `latch_minus_frame_ns` jumps from `~9 ms` to seconds, `overflow_events = 0`, failure follows offset camera for larger offsets | The older nonzero-stagger artifacts capture an offset-camera failure mode at `100 fps`; this is different from GOP backlog overflow and from the current no-stagger recabled PTP validation |
 | Dual-camera `100 fps` helper preprocess probes after cross-GPU prewarm | First helper queue-wait spike mostly removed, but acquisition still settles near `69-70 fps` | helperprobe6 first helper queue wait about `4 ms`, camera drops still `351-401` | CUDA/helper cold-start is real but not the whole failure; remaining issue is upstream acquisition timing/backpressure once helper routing is active |
 | Dual-camera `100 fps` helper preprocess probes after deferred source release and acquisition cadence sidecar | Raw source buffers are now held until CUDA source reads are complete, but acquisition still settles near `69-70 fps` | helperprobe10 `free_run` and helperprobe11 `ptp_gate` completed with `0` source-release event misses; cadenceprobe1 shows both cameras jump from `~10 ms` frame deltas to `~20 ms` at frame `102` after helper routing starts at frame `101` | Premature source recycling and submit cost are not the remaining throughput root cause; the current target is an upstream GPUDirect/EVT/acquisition-buffer interaction triggered by helper routing |
 | Dual-camera `100 fps` helper source-read no-op | Split-GOP routing stays active and throughput recovers to `100 fps` | helpernoop2: `1200` submitted, `600` primary routed, `600` helper dispatched, `0` camera drops, cadence sidecars keep sequential frame IDs through helper activation | Routing and submit overhead are not sufficient to cause the failure; helper GPU source access/copy is the trigger |
@@ -44,11 +44,13 @@ It is meant to be a compact matrix of:
 | Split receive-error telemetry | Current builds split true frame-ID gaps from SDK receive errors | `camera_dropped_frames` / `dropped_frames_camera` now mean frame-ID gaps; `get_frame_errors`, `last_get_frame_error_code`, and `get_frame_errors_by_code` capture `EVT_CameraGetFrame` failures such as error `12` (`EVT_ERROR_NOMEM`) | The two recabled rows above were recorded before this split and likely mixed true gaps with SDK buffer-pressure errors; rerun with the split metrics before treating those counts as lost images |
 | Recabled dual-camera `100 fps` `free_run` real recording with split receive-error telemetry | Strict policy passes while SDK receive-buffer pressure is visible separately | `2010095`: `0` frame-ID gaps, `126` `GetFrame` errors, all code `12`; `2010096`: `0` frame-ID gaps, `0` `GetFrame` errors; both videos present near `100 fps` | Confirms the prior large drop counts were likely dominated by `EVT_ERROR_NOMEM` receive-buffer pressure, not lost frame IDs; next work should reduce/diagnose buffer pressure without conflating it with frame integrity |
 | GPUDirect buffer lifetime code review | Direct pass-through and ring-copy deferred requeue paths store `&ecam->frame_recv` as the SDK frame to return later | `ecam->frame_recv` is a single reusable scratch frame populated by each `EVT_CameraGetFrame`; it can be overwritten before downstream release requeues it | First fix should receive into a stable per-entry descriptor, with `imagePtr -> evt_frame[]` lookup as fallback; then add lease telemetry before increasing SDK buffer counts |
-| Recabled dual-camera `100 fps` `free_run` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in headless validation | artifact `2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`; both cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures | Validated operating point for the recabled A16 topology and headless free-run split-GOP HEVC path; still validate GUI, PTP-gated mode, longer runs, and more than two cameras separately |
+| Recabled dual-camera `100 fps` `free_run` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in headless validation | artifact `2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`; both cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures | Validated operating point for the recabled A16 topology and headless free-run split-GOP HEVC path; PTP-gated validation is tracked in the rows below |
+| Recabled dual-camera `100 fps` `ptp_gate` stream-only after stable GPUDirect receive/requeue fix | Passes cleanly in headless validation | artifact `2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`; both cameras `701` frames, `0` frame-ID gaps, `0` GetFrame errors; `runs.csv` reports about `100 fps` | PTP gate setup and synchronized acquisition are healthy on the recabled topology without recording work |
+| Recabled dual-camera `100 fps` `ptp_gate` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in short headless validation | best artifact `2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`; `2010095`: `1001` submitted, `2010096`: `1000` submitted, both `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures, `overflow_events = 0` | Validated operating point for recabled A16 headless PTP-gated split-GOP HEVC; early startup `PTP_STALE_DUMP` still appears and should be treated as a diagnostic/logging caveat, not a frame-loss failure |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
 
-## Current Validated Operating Point
+## Current Validated Operating Points
 
 As of commit `951f910` (`fix gpudirect receive buffer requeue`), Orange has a
 validated dual-camera `20 MP` `100 fps` recording point in the recabled A16
@@ -57,6 +59,7 @@ topology.
 Validated scope:
 
 - headless `free_run`
+- headless `ptp_gate` with no inter-camera stagger
 - cameras `2010095` and `2010096`
 - real GPUDirect input
 - split-GOP HEVC, `gop=25`
@@ -67,25 +70,45 @@ Validated scope:
 Validation artifact:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
 
 Checked-in recabled validation config and dual-camera spec:
 
 - `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
 
 Observed result:
 
-- `2010095`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
-  preprocess drops, `0` encode failures.
-- `2010096`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
-  preprocess drops, `0` encode failures.
+- `free_run` `2010095`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures.
+- `free_run` `2010096`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures.
+- `ptp_gate` `2010095`: `1001` submitted frames, `0` frame-ID gaps,
+  `0` GetFrame errors, `0` preprocess drops, `0` encode failures.
+- `ptp_gate` `2010096`: `1000` submitted frames, `0` frame-ID gaps,
+  `0` GetFrame errors, `0` preprocess drops, `0` encode failures.
+
+PTP caveat:
+
+- The short PTP real-recording runs still emit early `PTP_STALE_DUMP` messages
+  while encoders are starting, but the steady-state `ptp_sync_summary.json`
+  reports latch-minus-frame around `9.2 ms` and the run artifacts show no frame
+  loss or receive errors.
 
 Not yet claimed by this validation:
 
 - GUI recording path
-- PTP-gated synchronized recording
 - long-duration soak behavior
 - more than two cameras
+
+Historical note:
+
+- The earlier `100 fps` `ptp_gate` rows with nonzero stagger remain useful
+  failure-mode evidence, but they predate the recabled A16 topology and stable
+  receive/requeue fix. They should not be read as contradicting the current
+  no-stagger recabled PTP validation.
 
 ## Detailed Failure Modes
 
