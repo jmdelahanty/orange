@@ -161,6 +161,137 @@ ip route get <camera-ip>
 We should only rerun the 100 FPS two-camera split-GOP experiment after those
 routes confirm the cameras are using `mlnx2_*`.
 
+## Recabling Progress
+
+### 2026-04-20: Camera `2010096` moved to `mlnx2_p4_25g`
+
+Camera `2010096` was moved from the old `mlnx1_*` side onto `mlnx2_p4_25g`.
+
+Observed host state:
+
+```text
+mlx5_3 port 1 ==> mlnx1_p4_25g (Down)
+mlx5_7 port 1 ==> mlnx2_p4_25g (Up)
+
+mlnx1_p4_25g DOWN 192.168.140.1/24
+mlnx2_p4_25g UP   192.168.180.1/24
+```
+
+The moved camera was visible on the new subnet:
+
+```text
+ip neigh show dev mlnx2_p4_25g:
+192.168.180.2 lladdr e0:55:97:1e:ab:f0 STALE
+
+ip route get 192.168.180.2:
+192.168.180.2 dev mlnx2_p4_25g src 192.168.180.1
+```
+
+A short ping from `192.168.180.1` through `mlnx2_p4_25g` to `192.168.180.2`
+succeeded. Orange camera discovery was then run manually and confirmed the
+camera is up through the tool.
+
+This validated the first half of the recabling strategy.
+
+### 2026-04-20: Camera `2010095` moved to `mlnx2_p3_25g`
+
+Camera `2010095` was moved onto `mlnx2_p3_25g`.
+
+Observed host state:
+
+```text
+mlx5_2 port 1 ==> mlnx1_p3_25g (Down)
+mlx5_6 port 1 ==> mlnx2_p3_25g (Up)
+
+mlnx1_p3_25g DOWN
+mlnx2_p3_25g UP   192.168.170.1/24
+```
+
+The moved camera was visible on the new subnet:
+
+```text
+ip neigh show dev mlnx2_p3_25g:
+192.168.170.2 lladdr e0:55:97:1e:ab:ef STALE
+
+ip route get 192.168.170.2:
+192.168.170.2 dev mlnx2_p3_25g src 192.168.170.1
+```
+
+A short ping from `192.168.170.1` through `mlnx2_p3_25g` to `192.168.170.2`
+succeeded.
+
+Current recabled camera layout:
+
+- `2010095` -> `mlnx2_p3_25g`, host `192.168.170.1`, camera `192.168.170.2`
+- `2010096` -> `mlnx2_p4_25g`, host `192.168.180.1`, camera `192.168.180.2`
+
+Orange camera discovery confirmed both cameras are found and `2010095` /
+`2010096` are bound to the expected `mlnx2_*` NICs.
+
+The next two-camera split-GOP stress test should use source/helper GPUs entirely
+from the `GPU5..GPU8` `PIX` group.
+
+### 2026-04-20: Recabled two-camera preprocess-only test passed
+
+After rebooting to clear stale CUDA contexts, the two-camera recabled topology
+probe passed:
+
+```text
+experiment_id:
+2010095_2010096_split_gop_hevc_100fps_preprocessonly_mlnx2_gpu5_8_freerun2
+
+artifact:
+/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_preprocessonly_mlnx2_gpu5_8_freerun2
+```
+
+Test shape:
+
+- `recording_sink_mode = preprocess_only`
+- `sync_mode = free_run`
+- `2010095`: `mlnx2_p3_25g`, source `GPU7`, helper `GPU8`
+- `2010096`: `mlnx2_p4_25g`, source `GPU5`, helper `GPU6`
+- full-frame helper copy path active
+- no mux / final video output in this diagnostic run
+
+Run summary:
+
+- `pass_runs = 1`
+- `fail_runs = 0`
+- both cameras completed at about `100 fps`
+- `dropped_frames_camera = 0`
+- `pre_drops_final = 0`
+- `enc_fail_final = 0`
+- `helper_fallback_frames_final = 0`
+
+Pipeline CSV final counters showed the real helper path was exercised:
+
+```text
+Cam2010095: submitted=1402 primary=702 helper_requested=700 helper_dispatched=700
+Cam2010096: submitted=1402 primary=702 helper_requested=700 helper_dispatched=700
+```
+
+The acquisition cadence probes showed no frame-ID jumps in the `80..160` probe
+window:
+
+```text
+Cam2010095: jumps=0, receive_delta_ns range 9.73 ms .. 10.32 ms
+Cam2010096: jumps=0, receive_delta_ns range 9.55 ms .. 10.38 ms
+```
+
+The first helper-owned GOP started at recording frame `101` for both cameras and
+remained healthy:
+
+```text
+Cam2010095 frame 101 -> target GPU8, helper_requested=1, receive_delta ~= 10.04 ms
+Cam2010096 frame 101 -> target GPU6, helper_requested=1, receive_delta ~= 10.07 ms
+```
+
+This is the strongest evidence so far that the previous two-camera 100 FPS
+failure was topology-sensitive. Moving both camera ingress paths from the
+`mlnx1_*` `SYS` side to the `mlnx2_*` side near `GPU5..GPU8`, while keeping
+source/helper pairs `PIX`, removed the stale-frame onset in the same
+preprocess-only helper-copy diagnostic.
+
 ## Follow-Up Engineering
 
 If the recabled test helps, add a config/preflight concept for camera ingress
