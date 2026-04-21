@@ -18,6 +18,10 @@ easier to extend, especially now that the branch supports:
 - split-GOP recording
 - latest-recording pointer handling
 
+Related follow-up:
+
+- `docs/gui_display_recording_buffer_ownership_plan.md`
+
 ## Why This Needs A Design Pass
 
 Unlike the earlier Host PTP and frame IPC extractions, the current "recording"

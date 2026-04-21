@@ -42,6 +42,10 @@ So the branch is in a transitional state:
 - shared recording policy/validation: yes
 - shared session lifecycle/orchestration: not yet
 
+Related buffer-ownership follow-up:
+
+- `docs/gui_display_recording_buffer_ownership_plan.md`
+
 ## Design Principle
 
 The target is **one shared orchestration core**, not one monolithic class that

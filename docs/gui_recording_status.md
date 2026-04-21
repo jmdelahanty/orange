@@ -11,6 +11,7 @@ It is a status snapshot, not a full design document.
 Related note:
 
 - `docs/multi_camera_failure_modes.md`
+- `docs/gui_display_recording_buffer_ownership_plan.md`
 
 ## Current Architecture
 
