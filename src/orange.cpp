@@ -3001,7 +3001,8 @@ int main(int argc, char **args) {
                                     yolo_workers[i],
                                     image_writer,
                                     &camera_resources[i],
-                                    frame_ipc_managers[i].get()
+                                    frame_ipc_managers[i].get(),
+                                    nullptr
                                 );
                             }
                         }

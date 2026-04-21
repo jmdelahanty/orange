@@ -176,6 +176,8 @@ Detection semantics:
 - `queued`: Orange requested a live IPC update; final publish/suppress outcome
   may be represented by a later `citrus_live_ipc_decision` row.
 - `not_enabled`: frame IPC was not enabled for this camera.
+- `not_requested_synthetic`: headless synthetic YOLO emitted an audit row but
+  intentionally did not publish a detection update into the live Citrus queue.
 - `not_requested_zero_detections`: zero-detection results are not published to
   the current Citrus live queue.
 - `not_requested_failed`: failed/timeout results are not published to the
@@ -309,6 +311,8 @@ Current implementation emits:
 
 - `yolo_result` for every frame that reaches YOLO while the frame has a
   recording folder.
+- deterministic headless synthetic `yolo_result` rows when
+  `fixed.yolo_event_log.mode = "synthetic"` is enabled in an experiment spec.
 
 Phase 2 should add:
 

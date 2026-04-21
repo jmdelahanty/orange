@@ -20,6 +20,9 @@ class ImageWriterWorker;
 class CropAndEncodeWorker;
 class RecordingIngress;
 class FrameIPCManager;
+namespace yolo_event_log {
+class SyntheticYoloEventEmitter;
+}
 
 void acquire_frames(
     CameraEmergent *ecam,
@@ -33,6 +36,7 @@ void acquire_frames(
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources,
-    FrameIPCManager* frame_ipc_manager
+    FrameIPCManager* frame_ipc_manager,
+    yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter = nullptr
 );
 #endif

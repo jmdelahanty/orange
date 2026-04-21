@@ -22,6 +22,7 @@
 #include "fsuid_guard.h"
 #include "latency_stats.h"
 #include "project.h"
+#include "yolo_event_log.h"
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -910,7 +911,8 @@ void acquire_frames(
     YOLOv8Worker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources,
-    FrameIPCManager* frame_ipc_manager
+    FrameIPCManager* frame_ipc_manager,
+    yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter
 ){
     ck(cudaSetDevice(camera_params->gpu_id));
     NVTX_CAMERA("AcquireFrames_Main");
@@ -1596,6 +1598,21 @@ void acquire_frames(
             // FRAME_IPC: Store IPC manager pointer in entry for YOLO to use later
             // This allows YOLO to update the frame with detection data
             current_entry->frame_ipc_manager = ipc_manager;
+
+            if (synthetic_yolo_event_emitter) {
+                yolo_event_log::SyntheticYoloFrameInput synthetic_frame;
+                synthetic_frame.recording_folder = current_entry->recording_folder;
+                synthetic_frame.local_frame_id = current_entry->frame_id;
+                synthetic_frame.camera_frame_id = current_entry->camera_frame_id;
+                synthetic_frame.recording_frame_id = current_entry->recording_frame_id;
+                synthetic_frame.ipc_frame_id = current_entry->ipc_frame_id;
+                synthetic_frame.record_active = camera_control->record_video;
+                synthetic_frame.camera_timestamp = current_entry->timestamp;
+                synthetic_frame.timestamp_sys_ns = current_entry->timestamp_sys;
+                synthetic_frame.width = current_entry->width;
+                synthetic_frame.height = current_entry->height;
+                synthetic_yolo_event_emitter->EmitFrame(synthetic_frame);
+            }
 
             if (camera_select->frame_save_state == State_Write_New_Frame && image_writer) {
                 ImageWriter_Entry* save_job = new ImageWriter_Entry();

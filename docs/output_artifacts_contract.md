@@ -457,6 +457,7 @@ Path:
 
 Gate:
 - GUI YOLO worker receives frames that carry a non-empty recording folder.
+- Or headless experiment spec sets `fixed.yolo_event_log.mode = "synthetic"`.
 
 Current emitted row type:
 - `yolo_result`
@@ -468,6 +469,8 @@ Current behavior:
   Citrus live IPC request status.
 - Current runtime records whether a live IPC update was requested/queued, but
   does not yet emit final asynchronous `citrus_live_ipc_decision` rows.
+- Headless synthetic rows are audit-only and do not publish synthetic detection
+  updates into the live Citrus shared-memory queue.
 
 See [yolo_event_log_jsonl_contract.md](./yolo_event_log_jsonl_contract.md).
 

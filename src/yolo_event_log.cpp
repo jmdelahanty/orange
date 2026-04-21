@@ -5,11 +5,30 @@
 #include "project.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 #include <utility>
 
 namespace yolo_event_log {
+
+namespace {
+
+uint64_t epoch_time_us()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+
+uint64_t steady_time_us()
+{
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+}  // namespace
 
 YoloEventLogger::YoloEventLogger(const std::string& camera_serial,
                                  int camera_id,
@@ -229,6 +248,91 @@ void YoloEventLogger::ThreadMain() {
         std::cerr << "[YOLO_EVENT_LOG] " << worker_name_
                   << " dropped " << dropped_ << " events" << std::endl;
     }
+}
+
+SyntheticYoloEventEmitter::SyntheticYoloEventEmitter(
+    const std::string& camera_serial,
+    int camera_id,
+    int gpu_id,
+    const std::string& queue_name,
+    bool ipc_enabled,
+    SyntheticYoloEventConfig config)
+    : config_(std::move(config)),
+      camera_serial_(camera_serial),
+      camera_id_(camera_id),
+      gpu_id_(gpu_id),
+      queue_name_(queue_name),
+      ipc_enabled_(ipc_enabled),
+      logger_(camera_serial, camera_id, "SyntheticYOLO_Cam_" + camera_serial)
+{
+}
+
+pose::Object SyntheticYoloEventEmitter::BuildDetection(
+    uint64_t recording_frame_id,
+    int width,
+    int height) const
+{
+    const float box_width = 40.0f;
+    const float box_height = 30.0f;
+    const float max_x = std::max(0.0f, static_cast<float>(width) - box_width);
+    const float max_y = std::max(0.0f, static_cast<float>(height) - box_height);
+    pose::Object detection{};
+    detection.rect.x = std::min(100.0f + static_cast<float>(recording_frame_id % 50), max_x);
+    detection.rect.y = std::min(200.0f, max_y);
+    detection.rect.width = std::min(box_width, std::max(0.0f, static_cast<float>(width)));
+    detection.rect.height = std::min(box_height, std::max(0.0f, static_cast<float>(height)));
+    detection.label = config_.label;
+    detection.prob = static_cast<float>(config_.confidence);
+    detection.num_kps = 0;
+    return detection;
+}
+
+void SyntheticYoloEventEmitter::EmitFrame(const SyntheticYoloFrameInput& frame)
+{
+    if (!config_.enabled() ||
+        frame.recording_folder.empty() ||
+        frame.recording_frame_id == 0) {
+        return;
+    }
+
+    const int cadence = std::max(1, config_.every_n_frames);
+    const bool has_detection = (frame.recording_frame_id % static_cast<uint64_t>(cadence)) == 0;
+    if (!has_detection && !config_.emit_zero_detections) {
+        return;
+    }
+
+    YoloResultRecord record;
+    record.recording_folder = frame.recording_folder;
+    record.status = has_detection ? "detections" : "zero_detections";
+    record.local_frame_id = frame.local_frame_id;
+    record.camera_frame_id = frame.camera_frame_id;
+    record.recording_frame_id = frame.recording_frame_id;
+    record.ipc_frame_id = frame.ipc_frame_id;
+    record.record_active = frame.record_active;
+    record.camera_timestamp = frame.camera_timestamp;
+    record.timestamp_sys_ns = frame.timestamp_sys_ns;
+    record.event_epoch_us = epoch_time_us();
+    record.event_monotonic_us = steady_time_us();
+    record.gpu_id = gpu_id_;
+    record.model_id = "synthetic_headless_v1";
+    record.engine_path = "synthetic";
+    record.queue_name = queue_name_;
+    record.ipc_enabled = ipc_enabled_;
+    record.ipc_requested = false;
+    if (!ipc_enabled_) {
+        record.ipc_request_status = "not_enabled";
+    } else if (has_detection) {
+        record.ipc_request_status = "not_requested_synthetic";
+    } else {
+        record.ipc_request_status = "not_requested_zero_detections";
+    }
+    if (has_detection) {
+        record.detections.push_back(BuildDetection(
+            frame.recording_frame_id,
+            frame.width,
+            frame.height));
+    }
+    logger_.Enqueue(std::move(record));
 }
 
 }  // namespace yolo_event_log

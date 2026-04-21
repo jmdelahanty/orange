@@ -1,7 +1,7 @@
 # Headless Synthetic YOLO Event Log Plan
 
 Date: 2026-04-21
-Status: plan only.
+Status: implemented initial synthetic audit writer and validator.
 
 Purpose: make `Cam<serial>_yolo_events.jsonl` testable through headless
 experiments without requiring TensorRT YOLO, GUI workers, or real detections.
@@ -174,6 +174,20 @@ Add summary fields to `runs.csv` / `runs.json`:
 - `yolo_event_log_parse_errors`
 - `yolo_event_log_status`
 
+## Implementation Status
+
+- [x] Extract shared `YoloEventLogger` / `YoloResultRecord` into
+  `src/yolo_event_log.h` and `src/yolo_event_log.cpp`.
+- [x] Keep GUI YOLO using the shared logger unchanged.
+- [x] Add `fixed.yolo_event_log` experiment-spec parsing.
+- [x] Add headless synthetic `yolo_result` emission from acquisition metadata.
+- [x] Keep synthetic detection IPC independent from SHM updates for the first
+  implementation; detection rows use `not_requested_synthetic`.
+- [x] Add `runs.json` / `runs.csv` summary fields and pass/fail validation.
+- [ ] Add real synthetic `FrameIPCManager::updateFrameWithDetections(...)`
+  emission if we decide to test delayed detection updates through SHM.
+- [ ] Add dedicated unit tests for the JSONL summarizer.
+
 ## Example Test Spec
 
 Suggested checked-in spec:
@@ -189,12 +203,16 @@ Target:
 - `fixed.yolo_event_log.mode = "synthetic"`
 - `every_n_frames = 10`
 - `emit_zero_detections = true`
+- `fixed.frame_ipc.mode = "verify_drain"` to continue validating base-frame
+  serial-named SHM queue emission while synthetic detection updates stay
+  audit-only.
 
-Expected result for a 3 second 100 fps run:
+Expected result for the checked-in run:
 
-- roughly 300 `yolo_result` rows,
-- roughly 30 `detections` rows,
-- roughly 270 `zero_detections` rows,
+- roughly 600 `yolo_result` rows because experiment `warmup_s` is an analysis
+  exclusion window, not a delayed recording start,
+- roughly 60 `detections` rows,
+- roughly 540 `zero_detections` rows,
 - no parse errors,
 - `pass` status.
 
@@ -204,13 +222,29 @@ Expected result for a 3 second 100 fps run:
 - [x] Add CMake entries for `src/yolo_event_log.cpp` to GUI and headless
       targets.
 - [x] Keep GUI behavior unchanged after extraction.
-- [ ] Parse `fixed.yolo_event_log` in `orange_headless_client.cpp`.
-- [ ] Add deterministic synthetic generator.
-- [ ] Wire generator to per-frame recording metadata.
-- [ ] Add JSONL validation to headless result summarization.
-- [ ] Add checked-in experiment spec.
-- [ ] Build `orange` and `orange_client`.
-- [ ] Run a short headless validation with the existing sudo wrapper.
+- [x] Parse `fixed.yolo_event_log` in `orange_headless_client.cpp`.
+- [x] Add deterministic synthetic generator.
+- [x] Wire generator to per-frame recording metadata.
+- [x] Add JSONL validation to headless result summarization.
+- [x] Add checked-in experiment spec.
+- [x] Build `orange` and `orange_client`.
+- [x] Run a short headless validation with the existing sudo wrapper.
+
+## Validation Result
+
+2026-04-21 run:
+
+- Spec copy used by sudo wrapper:
+  `/tmp/2010096_synthetic_yolo_event_log_a16_gpu5.json`
+- Output root:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_synthetic_yolo_event_log_a16_gpu5`
+- `runs.csv` / `runs.json` row status: `pass`
+- `frame_ipc_status`: `pass`
+- `yolo_event_log_status`: `pass`
+- JSONL rows: `601`
+- Detection rows: `60`
+- Zero-detection rows: `541`
+- Parse/schema/sequence/cadence/metadata-join errors: `0`
 
 ## Non-Goals
 

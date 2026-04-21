@@ -38,6 +38,32 @@ struct YoloResultRecord {
     std::string ipc_request_status = "not_enabled";
 };
 
+struct SyntheticYoloEventConfig {
+    std::string mode = "off";
+    int every_n_frames = 10;
+    std::string pattern = "alternating";
+    bool emit_zero_detections = true;
+    int label = 0;
+    double confidence = 0.9;
+
+    bool enabled() const {
+        return mode == "synthetic";
+    }
+};
+
+struct SyntheticYoloFrameInput {
+    std::string recording_folder;
+    uint64_t local_frame_id = 0;
+    uint64_t camera_frame_id = 0;
+    uint64_t recording_frame_id = 0;
+    uint64_t ipc_frame_id = 0;
+    bool record_active = false;
+    uint64_t camera_timestamp = 0;
+    uint64_t timestamp_sys_ns = 0;
+    int width = 0;
+    int height = 0;
+};
+
 class YoloEventLogger {
 public:
     YoloEventLogger(const std::string& camera_serial,
@@ -85,6 +111,29 @@ private:
     std::unordered_set<std::string> opened_folders_;
     std::unordered_map<std::string, uint64_t> next_sequence_by_folder_;
     size_t dropped_ = 0;
+};
+
+class SyntheticYoloEventEmitter {
+public:
+    SyntheticYoloEventEmitter(const std::string& camera_serial,
+                              int camera_id,
+                              int gpu_id,
+                              const std::string& queue_name,
+                              bool ipc_enabled,
+                              SyntheticYoloEventConfig config);
+
+    void EmitFrame(const SyntheticYoloFrameInput& frame);
+
+private:
+    pose::Object BuildDetection(uint64_t recording_frame_id, int width, int height) const;
+
+    SyntheticYoloEventConfig config_;
+    std::string camera_serial_;
+    int camera_id_ = 0;
+    int gpu_id_ = -1;
+    std::string queue_name_;
+    bool ipc_enabled_ = false;
+    YoloEventLogger logger_;
 };
 
 }  // namespace yolo_event_log
