@@ -4,7 +4,7 @@ set -euo pipefail
 PTP_CONF="${PTP_CONF:-/etc/ptp4l.conf}"
 PTP_SOCKET="${PTP_SOCKET:-/var/run/ptp4l}"
 PTP_LOG_DIR="${PTP_LOG_DIR:-/tmp/ptp-stack}"
-PTP_IFACES_DEFAULT="mlnx1_p1_25g mlnx1_p2_25g mlnx1_p3_25g mlnx1_p4_25g"
+PTP_IFACES_DEFAULT="mlnx1_p1_25g mlnx1_p2_25g mlnx2_p3_25g mlnx2_p4_25g"
 PTP_IFACES="${PTP_IFACES:-$PTP_IFACES_DEFAULT}"
 
 PTP4L_LOG="${PTP_LOG_DIR}/ptp4l.log"
@@ -25,7 +25,7 @@ Optional environment variables:
   PTP_CONF     Default: /etc/ptp4l.conf
   PTP_SOCKET   Default: /var/run/ptp4l
   PTP_LOG_DIR  Default: /tmp/ptp-stack
-  PTP_IFACES   Default: "mlnx1_p1_25g mlnx1_p2_25g mlnx1_p3_25g mlnx1_p4_25g"
+  PTP_IFACES   Default: "mlnx1_p1_25g mlnx1_p2_25g mlnx2_p3_25g mlnx2_p4_25g"
 EOF
 }
 
