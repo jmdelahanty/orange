@@ -569,6 +569,30 @@ Emission behavior:
 - During recording, IPC `frame_id` uses `recording_frame_id`.
 - Outside recording, IPC `frame_id` uses absolute camera `frame_id`.
 
+### Headless `frame_ipc_summary.json`
+
+Headless local runs emit this file only when explicit frame IPC is enabled and a
+run folder exists.
+
+Top-level fields:
+- `schema_id = "orange.headless.frame_ipc_summary"`
+- `schema_version = 1`
+- `mode = "producer_only" | "verify_drain"`
+- `queue_naming = "serial"`
+- `cameras`: object keyed by camera serial
+
+Per-camera fields include:
+- `queue_name`: `/shm_cam_<camera_serial>`
+- `frames_sent`, `updates_sent`
+- `base_queue_drops`, `update_queue_drops`, `update_stale_drops`
+- `ipc_push_failures`
+- `reader_messages_popped`, `reader_base_messages`
+- `reader_frame_id_gaps`, `reader_camera_id_mismatches`
+- `status = "pass" | "fail"`
+
+`verify_drain` starts an internal single-consumer reader, so it is a test mode
+and should not be used while another consumer is expected to receive every slot.
+
 ## ENet / FlatBuffer Payload Contract
 
 ### Control/State Payloads (currently emitted)

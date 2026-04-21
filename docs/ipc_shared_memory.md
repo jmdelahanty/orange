@@ -81,6 +81,39 @@ This means:
 - one active reader can drain frames before another reader sees them
 - a reader should usually be started before or shortly after the writer
 
+## Headless IPC Testing
+
+Headless local runs keep frame IPC disabled by default. Enable it explicitly when
+the run is meant to exercise the shared-memory producer path:
+
+```bash
+orange_client --mode local --record-folder /abs/run --frame-ipc producer_only
+orange_client --mode local --record-folder /abs/run --frame-ipc verify_drain
+```
+
+Experiment specs use `fixed.frame_ipc`.
+
+- `producer_only` creates the same serial-named writers as the GUI and expects an
+  external consumer to drain `/shm_cam_<camera_serial>`.
+- `verify_drain` creates those writers plus one built-in reader per selected
+  camera and writes `frame_ipc_summary.json` into the run folder.
+- `verify_drain` consumes the queue contents. Do not use it for a Citrus
+  integration run where Citrus must see every IPC message.
+- `--frame-ipc-unlink-existing` or
+  `fixed.frame_ipc.unlink_existing_queues=true` removes stale serial-named SHM
+  objects before the writers are created.
+
+Validated 2026-04-21 smoke:
+
+- `verify_drain` on camera `2010096`
+- queue: `/shm_cam_2010096`
+- frames published: `901`
+- frames drained by verifier: `901`
+- frame-id gaps: `0`
+- push failures: `0`
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25/frame_ipc_summary.json`
+
 ## Troubleshooting
 
 ### Orange shows `init_error=shm_open failed ... Permission denied`

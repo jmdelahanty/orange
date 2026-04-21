@@ -1,0 +1,40 @@
+{
+  "experiment_id": "2010096_frame_ipc_verify_stream_only_a16_gpu5",
+  "notes": "Stream-only headless smoke for serial-named frame IPC. The built-in verifier drains /shm_cam_2010096, so do not run Citrus against this queue during this test.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 8,
+    "warmup_s": 1,
+    "display": false,
+    "yolo": false,
+    "stream_only": true,
+    "sync_mode": "free_run",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_recabled_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "frame_ipc": {
+      "enabled": true,
+      "mode": "verify_drain",
+      "unlink_existing_queues": true,
+      "require_base_frames": true,
+      "allow_push_failures": false
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true
+  }
+}

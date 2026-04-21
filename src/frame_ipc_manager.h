@@ -48,6 +48,10 @@ public:
         StopThread();
     }
 
+    void stop() {
+        StopThread();
+    }
+
     bool sendFrame(uint64_t frame_id,
                    uint64_t timestamp,
                    bool yolo_processing) {

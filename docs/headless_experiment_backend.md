@@ -45,7 +45,8 @@ The current headless startup path is:
    - `record = true`
    - `yolo = false`
    - `crop_and_encode = false`
-   - `send_frame_ipc = false`
+   - `send_frame_ipc = false` by default, or `true` when explicit headless
+     frame IPC is enabled
 7. launch one `acquire_frames(...)` thread per camera
 
 That means headless experiments now run through the same preprocess and hardware
@@ -116,6 +117,8 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.helper_noop_source_read = true | false`
 - `fixed.helper_copy_bytes = -1 | 0 | <positive byte count>`
 - `fixed.helper_copy_delay_ns = 0 | <positive nanoseconds>`
+- `fixed.frame_ipc.enabled = true | false`
+- `fixed.frame_ipc.mode = "producer_only" | "verify_drain"`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
@@ -134,6 +137,58 @@ for that run:
 
 That gives us a documented “stream-only experiment spec” mode instead of having
 to drop down to the ad hoc direct CLI.
+
+`fixed.frame_ipc` is an explicit testability knob for the same shared-memory
+frame IPC path used by the GUI:
+
+- queue names are always serial-based: `/shm_cam_<camera_serial>`
+- `producer_only` creates Orange `FrameIPCManager` writers and expects an
+  external consumer, such as Citrus, to drain the queues
+- `verify_drain` also starts a built-in headless reader per selected camera and
+  writes `frame_ipc_summary.json`
+- `verify_drain` is single-consumer test mode; do not run it while Citrus is
+  expected to consume the same queues
+- `unlink_existing_queues=true` removes stale `/dev/shm/shm_cam_<serial>`
+  objects before creating writers
+
+Example:
+
+```json
+"fixed": {
+  "frame_ipc": {
+    "enabled": true,
+    "mode": "verify_drain",
+    "unlink_existing_queues": true,
+    "require_base_frames": true,
+    "allow_push_failures": false
+  }
+}
+```
+
+Validated smoke:
+
+- Date: 2026-04-21
+- Spec template:
+  `experiment_specs/2010096_frame_ipc_verify_stream_only_a16_gpu5.json`
+- Successful retry spec:
+  `/tmp/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry.json`
+- Command:
+
+  ```bash
+  sudo -n /usr/local/bin/orange-local-benchmark \
+    --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
+    /tmp/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry.json
+  ```
+
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25/frame_ipc_summary.json`
+- Result:
+  - queue: `/shm_cam_2010096`
+  - `frames_sent = 901`
+  - `reader_messages_popped = 901`
+  - `reader_frame_id_gaps = 0`
+  - `ipc_push_failures = 0`
+  - run row `pass`
 
 `fixed.recording_sink_mode` is a separate experimental diagnostic knob for
 recording-enabled runs:

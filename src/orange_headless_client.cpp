@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <chrono>
 #include <cctype>
@@ -11,6 +12,7 @@
 #include <iostream>
 #include <memory>
 #include <limits>
+#include <mutex>
 #include <numeric>
 #include <sstream>
 #include <thread>
@@ -30,6 +32,7 @@
 #include "video_capture.h"
 #include "fetch_generated.h"
 #include "acquire_frames.h"
+#include "frame_ipc_manager.h"
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
 #include "fsuid_guard.h"
@@ -60,6 +63,23 @@ struct HeadlessEncoderSettings {
     std::vector<std::string> camera_serials;
 };
 
+enum class HeadlessFrameIpcMode {
+    Off,
+    ProducerOnly,
+    VerifyDrain,
+};
+
+struct HeadlessFrameIpcConfig {
+    HeadlessFrameIpcMode mode = HeadlessFrameIpcMode::Off;
+    bool unlink_existing_queues = false;
+    bool require_base_frames = true;
+    bool allow_push_failures = false;
+
+    bool enabled() const {
+        return mode != HeadlessFrameIpcMode::Off;
+    }
+};
+
 struct HeadlessCliOptions {
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
@@ -80,6 +100,7 @@ struct HeadlessCliOptions {
     std::vector<int> required_gpu_ids;
     HeadlessEncoderSettings encoder_settings;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
+    HeadlessFrameIpcConfig frame_ipc;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -113,6 +134,7 @@ struct ExperimentSpec {
     std::vector<int> gpu_ids;
     HeadlessEncoderSettings selection;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
+    HeadlessFrameIpcConfig frame_ipc;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -496,12 +518,86 @@ struct HeadlessThreadFailureState {
     }
 };
 
+struct HeadlessFrameIpcReaderStats {
+    std::string camera_serial;
+    uint32_t camera_id = 0;
+    std::string queue_name;
+    bool reader_started = false;
+    std::string reader_error;
+    uint64_t messages_popped = 0;
+    uint64_t base_messages = 0;
+    uint64_t detection_update_messages = 0;
+    uint64_t yolo_enabled_messages = 0;
+    uint64_t camera_id_mismatches = 0;
+    uint64_t frame_id_gaps = 0;
+    uint64_t non_monotonic_frame_ids = 0;
+    uint64_t first_frame_id = 0;
+    uint64_t last_frame_id = 0;
+};
+
+struct HeadlessFrameIpcRuntime {
+    HeadlessFrameIpcConfig config;
+    std::atomic<bool> stop_requested{false};
+    std::vector<std::thread> reader_threads;
+    std::vector<HeadlessFrameIpcReaderStats> reader_stats;
+
+    void reset(const HeadlessFrameIpcConfig& next_config) {
+        config = next_config;
+        stop_requested.store(false, std::memory_order_release);
+        reader_threads.clear();
+        reader_stats.clear();
+    }
+};
+
 using CameraGpuOverrideMap = std::unordered_map<std::string, int>;
 using RecordingOverrideMap = std::unordered_map<std::string, nlohmann::json>;
 
 constexpr int kGpuDmonStartupPollMs = 200;
 constexpr int kGpuDmonShutdownWaitMs = 2000;
 constexpr const char* kBundledFfprobePath = "/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe";
+
+std::string headless_frame_ipc_mode_to_string(HeadlessFrameIpcMode mode)
+{
+    switch (mode) {
+        case HeadlessFrameIpcMode::Off:
+            return "off";
+        case HeadlessFrameIpcMode::ProducerOnly:
+            return "producer_only";
+        case HeadlessFrameIpcMode::VerifyDrain:
+            return "verify_drain";
+    }
+    return "off";
+}
+
+bool parse_headless_frame_ipc_mode(const std::string& value, HeadlessFrameIpcMode* out)
+{
+    if (!out) {
+        return false;
+    }
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (char c : value) {
+        normalized.push_back(c == '-' ? '_' : static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    if (normalized == "off" || normalized == "false" || normalized == "disabled" || normalized == "none") {
+        *out = HeadlessFrameIpcMode::Off;
+        return true;
+    }
+    if (normalized == "producer_only" || normalized == "producer" || normalized == "on" || normalized == "true") {
+        *out = HeadlessFrameIpcMode::ProducerOnly;
+        return true;
+    }
+    if (normalized == "verify_drain" || normalized == "verify" || normalized == "drain") {
+        *out = HeadlessFrameIpcMode::VerifyDrain;
+        return true;
+    }
+    return false;
+}
+
+std::string build_frame_ipc_queue_name_for_serial(const std::string& camera_serial)
+{
+    return "/shm_cam_" + camera_serial;
+}
 
 struct ExperimentVideoArtifactStats {
     std::string video_path;
@@ -1502,6 +1598,11 @@ void print_headless_usage(const char* argv0)
         << "  --acquisition-buffer-mode <auto|force_ring_copy>\n"
         << "                              Optional. Experimental override for acquisition buffer ownership.\n"
         << "  --ptp-gate-stagger-ns <int>  Optional. Apply a per-camera gate-time offset for ptp_gate runs.\n"
+        << "  --frame-ipc <off|producer_only|verify_drain>\n"
+        << "                              Optional. Publish serial-named /shm_cam_<serial> frame IPC.\n"
+        << "  --frame-ipc-unlink-existing Optional. Remove stale serial-named IPC queues before creating writers.\n"
+        << "  --frame-ipc-allow-push-failures\n"
+        << "                              Optional. Do not fail verification on full/undrained IPC rings.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
@@ -1527,6 +1628,14 @@ bool pre_encoder_reference_capture_requested(const PreEncoderReferenceCaptureCon
            config.max_frames > 0 ||
            config.max_seconds > 0 ||
            !config.output_dir.empty();
+}
+
+bool headless_frame_ipc_requested(const HeadlessFrameIpcConfig& config)
+{
+    return config.enabled() ||
+           config.unlink_existing_queues ||
+           config.allow_push_failures ||
+           !config.require_base_frames;
 }
 
 bool validate_pre_encoder_reference_capture_config(const PreEncoderReferenceCaptureConfig& config,
@@ -1592,6 +1701,84 @@ bool parse_pre_encoder_reference_capture_json(const nlohmann::json& node,
     config.max_seconds = node.value("max_seconds", 0);
     config.output_dir = node.value("output_dir", "");
     if (!validate_pre_encoder_reference_capture_config(config, error_out, context)) {
+        return false;
+    }
+
+    *config_out = config;
+    return true;
+}
+
+nlohmann::json build_headless_frame_ipc_config_json(const HeadlessFrameIpcConfig& config)
+{
+    return {
+        {"enabled", config.enabled()},
+        {"mode", headless_frame_ipc_mode_to_string(config.mode)},
+        {"queue_naming", "serial"},
+        {"unlink_existing_queues", config.unlink_existing_queues},
+        {"require_base_frames", config.require_base_frames},
+        {"allow_push_failures", config.allow_push_failures}
+    };
+}
+
+bool parse_headless_frame_ipc_json(const nlohmann::json& node,
+                                   HeadlessFrameIpcConfig* config_out,
+                                   std::string* error_out,
+                                   const std::string& context)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out = context + ": internal error: null frame_ipc destination";
+        }
+        return false;
+    }
+
+    HeadlessFrameIpcConfig config;
+    if (node.is_boolean()) {
+        config.mode = node.get<bool>() ? HeadlessFrameIpcMode::ProducerOnly : HeadlessFrameIpcMode::Off;
+        *config_out = config;
+        return true;
+    }
+    if (!node.is_object()) {
+        if (error_out) {
+            *error_out = context + ": frame_ipc must be a boolean or JSON object";
+        }
+        return false;
+    }
+
+    const bool has_enabled_field = node.contains("enabled");
+    const bool has_mode_field = node.contains("mode");
+    const bool enabled = node.value("enabled", false);
+    const std::string mode_string = node.value("mode", enabled ? "producer_only" : "off");
+    if (!parse_headless_frame_ipc_mode(mode_string, &config.mode)) {
+        if (error_out) {
+            *error_out =
+                context + ": frame_ipc.mode must be off|producer_only|verify_drain";
+        }
+        return false;
+    }
+    if (!has_enabled_field && !has_mode_field) {
+        config.mode = HeadlessFrameIpcMode::Off;
+    } else if (has_enabled_field && !enabled) {
+        config.mode = HeadlessFrameIpcMode::Off;
+    } else if (config.mode == HeadlessFrameIpcMode::Off) {
+        if (enabled) {
+            if (error_out) {
+                *error_out =
+                    context + ": frame_ipc.enabled=true requires mode producer_only or verify_drain";
+            }
+            return false;
+        }
+    }
+    config.unlink_existing_queues = node.value("unlink_existing_queues", false);
+    config.require_base_frames = node.value("require_base_frames", true);
+    config.allow_push_failures = node.value("allow_push_failures", false);
+
+    if (!config.enabled() &&
+        (config.unlink_existing_queues || config.allow_push_failures || !config.require_base_frames)) {
+        if (error_out) {
+            *error_out =
+                context + ": frame_ipc options require enabled=true";
+        }
         return false;
     }
 
@@ -2009,6 +2196,29 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
                 }
                 return false;
             }
+            continue;
+        }
+        if (arg == "--frame-ipc") {
+            const std::string value = consume_value("--frame-ipc");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            HeadlessFrameIpcMode mode = HeadlessFrameIpcMode::Off;
+            if (!parse_headless_frame_ipc_mode(value, &mode)) {
+                if (error_out) {
+                    *error_out = "Invalid --frame-ipc value: " + value;
+                }
+                return false;
+            }
+            options->frame_ipc.mode = mode;
+            continue;
+        }
+        if (arg == "--frame-ipc-unlink-existing") {
+            options->frame_ipc.unlink_existing_queues = true;
+            continue;
+        }
+        if (arg == "--frame-ipc-allow-push-failures") {
+            options->frame_ipc.allow_push_failures = true;
             continue;
         }
         if (arg == "--recording-sink-mode") {
@@ -2479,6 +2689,132 @@ void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPip
     camera_control->recording_folder.clear();
 }
 
+void stop_headless_frame_ipc_managers(std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers)
+{
+    for (auto& manager : frame_ipc_managers) {
+        if (manager) {
+            manager->stop();
+        }
+    }
+}
+
+void clear_headless_frame_ipc_managers(std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers)
+{
+    stop_headless_frame_ipc_managers(frame_ipc_managers);
+    frame_ipc_managers.clear();
+}
+
+void stop_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime)
+{
+    if (!runtime) {
+        return;
+    }
+    runtime->stop_requested.store(true, std::memory_order_release);
+    for (auto& thread : runtime->reader_threads) {
+        if (thread.joinable()) {
+            thread.join();
+        }
+    }
+    runtime->reader_threads.clear();
+}
+
+bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
+                                      const HeadlessFrameIpcConfig& config,
+                                      const CameraParams* cameras_params,
+                                      const std::vector<int>& selected_indices,
+                                      std::string* error_out)
+{
+    if (!runtime) {
+        return true;
+    }
+    runtime->reset(config);
+    if (config.mode != HeadlessFrameIpcMode::VerifyDrain) {
+        return true;
+    }
+
+    runtime->reader_stats.resize(selected_indices.size());
+    for (std::size_t stats_index = 0; stats_index < selected_indices.size(); ++stats_index) {
+        const int camera_index = selected_indices[stats_index];
+        HeadlessFrameIpcReaderStats& stats = runtime->reader_stats[stats_index];
+        stats.camera_serial = cameras_params[camera_index].camera_serial;
+        stats.camera_id = static_cast<uint32_t>(cameras_params[camera_index].camera_id);
+        stats.queue_name = build_frame_ipc_queue_name_for_serial(stats.camera_serial);
+        HeadlessFrameIpcReaderStats* stats_ptr = &stats;
+
+        runtime->reader_threads.emplace_back([runtime, stats_ptr]() {
+            HeadlessFrameIpcReaderStats& stats = *stats_ptr;
+            try {
+                shaman::SharedBoxQueue reader(stats.queue_name.c_str(), false /* is_writer */);
+                stats.reader_started = true;
+                while (true) {
+                    bool popped_any = false;
+                    std::vector<shaman::Object> objects;
+                    uint64_t timestamp_epoch = 0;
+                    uint64_t timestamp_monotonic = 0;
+                    uint64_t frame_id = 0;
+                    uint32_t camera_id = 0;
+                    bool yolo_enabled = false;
+                    while (reader.pop(objects,
+                                      timestamp_epoch,
+                                      timestamp_monotonic,
+                                      frame_id,
+                                      camera_id,
+                                      yolo_enabled)) {
+                        (void)timestamp_epoch;
+                        (void)timestamp_monotonic;
+                        popped_any = true;
+                        stats.messages_popped++;
+                        if (objects.empty()) {
+                            stats.base_messages++;
+                        } else {
+                            stats.detection_update_messages++;
+                        }
+                        if (yolo_enabled) {
+                            stats.yolo_enabled_messages++;
+                        }
+                        if (camera_id != stats.camera_id) {
+                            stats.camera_id_mismatches++;
+                        }
+                        if (stats.messages_popped == 1) {
+                            stats.first_frame_id = frame_id;
+                        } else if (frame_id == stats.last_frame_id) {
+                            // Base and update messages may legitimately share a frame id.
+                        } else if (frame_id == stats.last_frame_id + 1) {
+                            // Expected next base frame.
+                        } else if (frame_id > stats.last_frame_id + 1) {
+                            stats.frame_id_gaps += frame_id - stats.last_frame_id - 1;
+                        } else if (frame_id < stats.last_frame_id) {
+                            stats.non_monotonic_frame_ids++;
+                        }
+                        stats.last_frame_id = frame_id;
+                    }
+
+                    if (runtime->stop_requested.load(std::memory_order_acquire)) {
+                        if (!popped_any) {
+                            break;
+                        }
+                        continue;
+                    }
+                    usleep(1000);
+                }
+            } catch (const std::exception& ex) {
+                stats.reader_error = ex.what();
+            } catch (...) {
+                stats.reader_error = "unknown frame IPC reader exception";
+            }
+        });
+    }
+
+    if (runtime->reader_threads.size() != selected_indices.size()) {
+        if (error_out) {
+            *error_out = "Failed to start all headless frame IPC verifier readers";
+        }
+        stop_headless_frame_ipc_runtime(runtime);
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 void quit_process(bool error = false, const std::string &reason = "")
@@ -2544,6 +2880,9 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     std::vector<CameraResources>& camera_resources,
     std::vector<int>& active_camera_indices,
     std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+    std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers,
+    HeadlessFrameIpcRuntime* frame_ipc_runtime,
+    const HeadlessFrameIpcConfig& frame_ipc_config,
     HeadlessThreadFailureState* thread_failure_state,
     HeadlessGpuDmonMonitor* gpu_dmon_monitor,
     CameraParams *cameras_params, CameraEmergent *ecams, CameraControl *camera_control, CameraEachSelect *cameras_select,
@@ -2627,6 +2966,58 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             return false;
         }
 
+        frame_ipc_managers.clear();
+        frame_ipc_managers.resize(num_cameras);
+        if (frame_ipc_config.enabled()) {
+            for (int idx : selected_indices) {
+                const std::string queue_name =
+                    build_frame_ipc_queue_name_for_serial(cameras_params[idx].camera_serial);
+                if (frame_ipc_config.unlink_existing_queues) {
+                    shaman::unlinkQueue(queue_name.c_str());
+                }
+                frame_ipc_managers[idx] =
+                    std::make_unique<FrameIPCManager>(&cameras_params[idx]);
+                if (!frame_ipc_managers[idx]->isEnabled()) {
+                    std::cerr << "Headless frame IPC initialization failed for camera "
+                              << cameras_params[idx].camera_serial
+                              << " queue=" << queue_name
+                              << ": " << frame_ipc_managers[idx]->getInitError()
+                              << std::endl;
+                    clear_headless_frame_ipc_managers(frame_ipc_managers);
+                    cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+                    return false;
+                }
+                if (frame_ipc_managers[idx]->getQueueName() != queue_name) {
+                    std::cerr << "Headless frame IPC queue-name mismatch for camera "
+                              << cameras_params[idx].camera_serial
+                              << " expected=" << queue_name
+                              << " actual=" << frame_ipc_managers[idx]->getQueueName()
+                              << std::endl;
+                    clear_headless_frame_ipc_managers(frame_ipc_managers);
+                    cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+                    return false;
+                }
+            }
+
+            std::string frame_ipc_error;
+            if (!start_headless_frame_ipc_runtime(
+                    frame_ipc_runtime,
+                    frame_ipc_config,
+                    cameras_params,
+                    selected_indices,
+                    &frame_ipc_error)) {
+                std::cerr << frame_ipc_error << std::endl;
+                clear_headless_frame_ipc_managers(frame_ipc_managers);
+                cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+                return false;
+            }
+
+            std::cout << "Headless frame IPC enabled."
+                      << " mode=" << headless_frame_ipc_mode_to_string(frame_ipc_config.mode)
+                      << " queue_naming=serial"
+                      << std::endl;
+        }
+
         camera_resources.clear();
         camera_resources.resize(num_cameras);
         for (int idx : selected_indices) {
@@ -2634,7 +3025,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             cameras_select[idx].record = enable_recording;
             cameras_select[idx].yolo = false;
             cameras_select[idx].crop_and_encode = false;
-            cameras_select[idx].send_frame_ipc = false;
+            cameras_select[idx].send_frame_ipc = frame_ipc_config.enabled();
             camera_resources[idx].initialize(
                 cameras_params[idx].gpu_id,
                 max_frame_size_bytes,
@@ -2644,6 +3035,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
     } catch (const std::exception& ex) {
         std::cerr << "Failed to start thread: " << ex.what() << std::endl;
+        stop_headless_frame_ipc_runtime(frame_ipc_runtime);
+        clear_headless_frame_ipc_managers(frame_ipc_managers);
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
         camera_resources.clear();
         return false;
@@ -2736,6 +3129,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
+        stop_headless_frame_ipc_runtime(frame_ipc_runtime);
+        clear_headless_frame_ipc_managers(frame_ipc_managers);
         if (enable_artifacts) {
             drain_and_shutdown_recording(recording_pipelines, camera_control);
             stop_headless_gpu_dmon_monitor(gpu_dmon_monitor);
@@ -2780,7 +3175,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         nullptr,
                         nullptr,
                         &camera_resources[idx],
-                        nullptr);
+                        frame_ipc_managers[idx].get());
                 } catch (const std::exception& ex) {
                     std::ostringstream message;
                     message << "Headless camera thread failed for camera "
@@ -2856,6 +3251,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
+    HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     CameraEachSelect *cameras_select = nullptr;
@@ -2887,6 +3284,9 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         camera_resources,
                         active_camera_indices,
                         recording_pipelines,
+                        frame_ipc_managers,
+                        &frame_ipc_runtime,
+                        HeadlessFrameIpcConfig{},
                         &thread_failure_state,
                         &gpu_dmon_monitor,
                         cameras_params,
@@ -2924,6 +3324,9 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         camera_control,
                         ptp_params,
                         true);
+                    stop_headless_frame_ipc_managers(frame_ipc_managers);
+                    stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+                    clear_headless_frame_ipc_managers(frame_ipc_managers);
                     delete[] ecams;
                     ecams = nullptr;
                     delete[] cameras_params;
@@ -2958,6 +3361,9 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 camera_control,
                 ptp_params,
                 true);
+            stop_headless_frame_ipc_managers(frame_ipc_managers);
+            stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+            clear_headless_frame_ipc_managers(frame_ipc_managers);
             delete[] ecams;
             ecams = nullptr;
             delete[] cameras_params;
@@ -2985,6 +3391,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             !options.acquisition_buffer_mode_override.empty() ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
+            headless_frame_ipc_requested(options.frame_ipc) ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
             !options.encoder_settings.select_all_cameras ||
             !options.encoder_settings.camera_serials.empty()) {
@@ -3010,6 +3417,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             !options.acquisition_buffer_mode_override.empty() ||
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
+            headless_frame_ipc_requested(options.frame_ipc) ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
             if (error_out) {
                 *error_out =
@@ -3018,7 +3426,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
                     "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
                     "--preenc-ref-max-seconds, --duration, --stream-start-delay, --nvenc-direct-input, "
                     "--ptp-gate-acquisition-mode, --acquisition-buffer-mode, --recording-sink-mode, "
-                    "--record-delay, and --gpu-id "
+                    "--record-delay, --frame-ipc, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
             return false;
@@ -3053,6 +3461,22 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
         if (error_out) {
             *error_out =
                 "--recording-sink-mode is only supported when recording is enabled and cannot be used with --stream-only.";
+        }
+        return false;
+    }
+
+    if (!options.frame_ipc.enabled() &&
+        (options.frame_ipc.unlink_existing_queues || options.frame_ipc.allow_push_failures)) {
+        if (error_out) {
+            *error_out =
+                "--frame-ipc-unlink-existing and --frame-ipc-allow-push-failures require --frame-ipc != off.";
+        }
+        return false;
+    }
+
+    if (options.frame_ipc.enabled() && options.record_folder.empty()) {
+        if (error_out) {
+            *error_out = "--record-folder is required when --frame-ipc is enabled so frame_ipc_summary.json can be written.";
         }
         return false;
     }
@@ -3117,6 +3541,146 @@ bool write_json_file(const std::filesystem::path& path, const nlohmann::json& va
     }
     output << value.dump(2) << "\n";
     return true;
+}
+
+bool write_headless_frame_ipc_summary(
+    const std::string& record_folder,
+    const HeadlessFrameIpcConfig& config,
+    const CameraParams* cameras_params,
+    const std::vector<int>& selected_indices,
+    const std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers,
+    const HeadlessFrameIpcRuntime& runtime,
+    std::string* error_out)
+{
+    if (!config.enabled() || record_folder.empty()) {
+        return true;
+    }
+
+    std::unordered_map<std::string, const HeadlessFrameIpcReaderStats*> reader_stats_by_serial;
+    for (const HeadlessFrameIpcReaderStats& stats : runtime.reader_stats) {
+        reader_stats_by_serial[stats.camera_serial] = &stats;
+    }
+
+    bool overall_ok = true;
+    nlohmann::json summary = {
+        {"schema_id", "orange.headless.frame_ipc_summary"},
+        {"schema_version", 1},
+        {"created_at_utc", get_current_utc_timestamp()},
+        {"enabled", config.enabled()},
+        {"mode", headless_frame_ipc_mode_to_string(config.mode)},
+        {"queue_naming", "serial"},
+        {"unlink_existing_queues", config.unlink_existing_queues},
+        {"require_base_frames", config.require_base_frames},
+        {"allow_push_failures", config.allow_push_failures},
+        {"cameras", nlohmann::json::object()}
+    };
+
+    for (int idx : selected_indices) {
+        const CameraParams& camera_params = cameras_params[idx];
+        const std::string camera_serial = camera_params.camera_serial;
+        const std::string queue_name = build_frame_ipc_queue_name_for_serial(camera_serial);
+        nlohmann::json camera_json = {
+            {"camera_serial", camera_serial},
+            {"camera_id", camera_params.camera_id},
+            {"queue_name", queue_name},
+            {"manager_enabled", false},
+            {"manager_init_error", ""},
+            {"frames_sent", 0ULL},
+            {"updates_sent", 0ULL},
+            {"base_queue_drops", 0ULL},
+            {"update_queue_drops", 0ULL},
+            {"update_stale_drops", 0ULL},
+            {"ipc_push_failures", 0ULL},
+            {"reader_started", false},
+            {"reader_error", ""},
+            {"reader_messages_popped", 0ULL},
+            {"reader_base_messages", 0ULL},
+            {"reader_detection_update_messages", 0ULL},
+            {"reader_yolo_enabled_messages", 0ULL},
+            {"reader_camera_id_mismatches", 0ULL},
+            {"reader_frame_id_gaps", 0ULL},
+            {"reader_non_monotonic_frame_ids", 0ULL},
+            {"reader_first_frame_id", 0ULL},
+            {"reader_last_frame_id", 0ULL},
+            {"status", "pass"},
+            {"failures", nlohmann::json::array()}
+        };
+
+        auto add_failure = [&](const std::string& reason) {
+            overall_ok = false;
+            camera_json["status"] = "fail";
+            camera_json["failures"].push_back(reason);
+        };
+
+        if (idx >= 0 &&
+            static_cast<std::size_t>(idx) < frame_ipc_managers.size() &&
+            frame_ipc_managers[idx]) {
+            const FrameIPCManager& manager = *frame_ipc_managers[idx];
+            camera_json["manager_enabled"] = manager.isEnabled();
+            camera_json["manager_init_error"] = manager.getInitError();
+            camera_json["frames_sent"] = manager.getFramesSent();
+            camera_json["updates_sent"] = manager.getUpdatesSent();
+            camera_json["base_queue_drops"] = manager.getBaseQueueDrops();
+            camera_json["update_queue_drops"] = manager.getUpdateQueueDrops();
+            camera_json["update_stale_drops"] = manager.getUpdateStaleDrops();
+            camera_json["ipc_push_failures"] = manager.getIpcPushFailures();
+            if (!manager.isEnabled()) {
+                add_failure("manager_not_enabled");
+            }
+            if (!config.allow_push_failures && manager.getIpcPushFailures() > 0) {
+                add_failure("ipc_push_failures");
+            }
+        } else {
+            add_failure("missing_frame_ipc_manager");
+        }
+
+        const auto stats_it = reader_stats_by_serial.find(camera_serial);
+        if (stats_it != reader_stats_by_serial.end() && stats_it->second) {
+            const HeadlessFrameIpcReaderStats& stats = *stats_it->second;
+            camera_json["reader_started"] = stats.reader_started;
+            camera_json["reader_error"] = stats.reader_error;
+            camera_json["reader_messages_popped"] = stats.messages_popped;
+            camera_json["reader_base_messages"] = stats.base_messages;
+            camera_json["reader_detection_update_messages"] = stats.detection_update_messages;
+            camera_json["reader_yolo_enabled_messages"] = stats.yolo_enabled_messages;
+            camera_json["reader_camera_id_mismatches"] = stats.camera_id_mismatches;
+            camera_json["reader_frame_id_gaps"] = stats.frame_id_gaps;
+            camera_json["reader_non_monotonic_frame_ids"] = stats.non_monotonic_frame_ids;
+            camera_json["reader_first_frame_id"] = stats.first_frame_id;
+            camera_json["reader_last_frame_id"] = stats.last_frame_id;
+
+            if (config.mode == HeadlessFrameIpcMode::VerifyDrain) {
+                if (!stats.reader_started) {
+                    add_failure("reader_not_started");
+                }
+                if (!stats.reader_error.empty()) {
+                    add_failure("reader_error");
+                }
+                if (config.require_base_frames && stats.base_messages == 0) {
+                    add_failure("no_base_messages_read");
+                }
+                if (stats.camera_id_mismatches > 0) {
+                    add_failure("reader_camera_id_mismatches");
+                }
+                if (stats.frame_id_gaps > 0) {
+                    add_failure("reader_frame_id_gaps");
+                }
+                if (stats.non_monotonic_frame_ids > 0) {
+                    add_failure("reader_non_monotonic_frame_ids");
+                }
+            }
+        } else if (config.mode == HeadlessFrameIpcMode::VerifyDrain) {
+            add_failure("missing_reader_stats");
+        }
+
+        summary["cameras"][camera_serial] = std::move(camera_json);
+    }
+
+    summary["status"] = overall_ok ? "pass" : "fail";
+    return write_json_file(
+        std::filesystem::path(record_folder) / "frame_ipc_summary.json",
+        summary,
+        error_out);
 }
 
 std::vector<std::string> parse_string_list_field(const nlohmann::json& node,
@@ -4039,6 +4603,15 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("frame_ipc")) {
+        if (!parse_headless_frame_ipc_json(
+                fixed["frame_ipc"],
+                &spec->frame_ipc,
+                error_out,
+                "Experiment spec fixed.frame_ipc")) {
+            return false;
+        }
+    }
     if (!parse_experiment_recording_overrides(fixed, spec, error_out)) {
         return false;
     }
@@ -4330,6 +4903,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.required_gpu_ids = spec.gpu_ids;
                                                             run.options.encoder_settings = spec.selection;
                                                             run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
+                                                            run.options.frame_ipc = spec.frame_ipc;
                                                             run.options.has_recording_override =
                                                                 spec.has_recording_override;
                                                             run.options.recording_override =
@@ -4407,6 +4981,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"pre_encoder_reference_capture",
                                                                  build_pre_encoder_reference_capture_json(
                                                                      run.options.pre_encoder_reference_capture)},
+                                                                {"frame_ipc",
+                                                                 build_headless_frame_ipc_config_json(
+                                                                     run.options.frame_ipc)},
                                                             };
                                                             if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
@@ -4648,6 +5225,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
+    HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     const bool enable_recording = !options.stream_only;
@@ -4659,6 +5238,9 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         camera_resources,
         active_camera_indices,
         recording_pipelines,
+        frame_ipc_managers,
+        &frame_ipc_runtime,
+        options.frame_ipc,
         &thread_failure_state,
         &gpu_dmon_monitor,
         cameras_params.get(),
@@ -4678,6 +5260,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         enable_recording);
 
     if (!started) {
+        stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+        clear_headless_frame_ipc_managers(frame_ipc_managers);
         close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
         return 1;
     }
@@ -4687,6 +5271,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
               << " folder=" << (active_record_folder.empty() ? "<none>" : active_record_folder)
               << " acquisition_buffer_mode=" << options.acquisition_buffer_mode_override
               << " recording_sink_mode=" << options.recording_sink_mode
+              << " frame_ipc=" << headless_frame_ipc_mode_to_string(options.frame_ipc.mode)
               << " cameras=" << format_selected_camera_serials(options.encoder_settings)
               << std::endl;
 
@@ -4740,6 +5325,23 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &ptp_params,
         false);
 
+    stop_headless_frame_ipc_managers(frame_ipc_managers);
+    stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+    std::string frame_ipc_summary_error;
+    if (!write_headless_frame_ipc_summary(
+            active_record_folder,
+            options.frame_ipc,
+            cameras_params.get(),
+            selected_inventory_indices,
+            frame_ipc_managers,
+            frame_ipc_runtime,
+            &frame_ipc_summary_error)) {
+        std::cerr << frame_ipc_summary_error << std::endl;
+        clear_headless_frame_ipc_managers(frame_ipc_managers);
+        return 1;
+    }
+    clear_headless_frame_ipc_managers(frame_ipc_managers);
+
     if (thread_failure_state.has_failure()) {
         std::cerr << thread_failure_state.get_first_error() << std::endl;
         return 1;
@@ -4792,6 +5394,12 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         ? "auto"
         : run.options.acquisition_buffer_mode_override;
     row["recording_sink_mode"] = run.options.recording_sink_mode;
+    row["frame_ipc_mode"] = headless_frame_ipc_mode_to_string(run.options.frame_ipc.mode);
+    row["frame_ipc_status"] = run.options.frame_ipc.enabled() ? "not_reported" : "disabled";
+    row["frame_ipc_frames_sent"] = 0ULL;
+    row["frame_ipc_reader_popped"] = 0ULL;
+    row["frame_ipc_reader_gaps"] = 0ULL;
+    row["frame_ipc_push_failures"] = 0ULL;
     row["display"] = false;
     row["yolo"] = false;
     row["recording_folder"] = run.recording_folder;
@@ -4864,6 +5472,30 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     }();
     const ExperimentVideoArtifactStats video_stats =
         summarize_video_artifact(run.recording_folder, camera_serial);
+    if (run.options.frame_ipc.enabled()) {
+        nlohmann::json frame_ipc_summary;
+        std::string frame_ipc_error;
+        if (read_json_file(
+                std::filesystem::path(run.recording_folder) / "frame_ipc_summary.json",
+                &frame_ipc_summary,
+                &frame_ipc_error)) {
+            const nlohmann::json frame_ipc_camera =
+                frame_ipc_summary.value("cameras", nlohmann::json::object())
+                                 .value(camera_serial, nlohmann::json::object());
+            if (frame_ipc_camera.is_object()) {
+                row["frame_ipc_status"] = frame_ipc_camera.value("status", "not_reported");
+                row["frame_ipc_frames_sent"] = frame_ipc_camera.value("frames_sent", 0ULL);
+                row["frame_ipc_reader_popped"] =
+                    frame_ipc_camera.value("reader_messages_popped", 0ULL);
+                row["frame_ipc_reader_gaps"] =
+                    frame_ipc_camera.value("reader_frame_id_gaps", 0ULL);
+                row["frame_ipc_push_failures"] =
+                    frame_ipc_camera.value("ipc_push_failures", 0ULL);
+            }
+        } else {
+            row["frame_ipc_status"] = "missing_summary";
+        }
+    }
 
     const bool metrics_only_run =
         run.options.stream_only || !is_real_recording_sink_mode(run.options.recording_sink_mode);
@@ -5161,6 +5793,14 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         row["reason"] = "missing encoder snapshot";
     }
 
+    if (run.options.frame_ipc.enabled()) {
+        const std::string frame_ipc_status = row.value("frame_ipc_status", "not_reported");
+        if (frame_ipc_status != "pass" && frame_ipc_status != "disabled") {
+            row["pass_fail"] = "fail";
+            row["reason"] = "frame IPC verification failed";
+        }
+    }
+
     return row;
 }
 
@@ -5186,7 +5826,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -5219,6 +5859,12 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << (row.value("stream_only", false) ? "true" : "false") << ","
                 << row.value("acquisition_buffer_mode", "auto") << ","
                 << row.value("recording_sink_mode", "real") << ","
+                << row.value("frame_ipc_mode", "off") << ","
+                << row.value("frame_ipc_status", "disabled") << ","
+                << row.value("frame_ipc_frames_sent", 0ULL) << ","
+                << row.value("frame_ipc_reader_popped", 0ULL) << ","
+                << row.value("frame_ipc_reader_gaps", 0ULL) << ","
+                << row.value("frame_ipc_push_failures", 0ULL) << ","
                 << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","
