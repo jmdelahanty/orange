@@ -16,6 +16,20 @@ The active runtime branch is:
 
 - `exp/gop-split-a16`
 
+The active experiment worktree for the current A16 split-GOP investigation is:
+
+- `/home/jeremy/orange-gop-split-a16`
+
+Use this worktree's binary for hardware validation unless a run note explicitly
+states otherwise:
+
+- `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
+
+Use the installed sudo wrapper for headless hardware runs that need camera stream
+open permissions:
+
+- `sudo -n /usr/local/bin/orange-local-benchmark --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client <experiment-spec.json>`
+
 Recent configuration/status commits on that branch:
 
 - `80fd97e` `experiment_specs: add validated split-gop 100fps gop25 runs`

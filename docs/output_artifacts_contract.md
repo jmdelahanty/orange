@@ -266,6 +266,7 @@ Important:
   - `totals.preprocess_frames_dropped: integer` (optional)
   - `totals.encode_failures: integer` (optional)
   - `totals.encode_slow_frames: integer` (optional)
+  - `totals.camera_dropped_frames: integer` (optional)
   - `totals.gpu_direct_frames: integer` (optional)
   - `totals.gpu_ring_copy_frames: integer` (optional)
   - `totals.gpu_copy_frames: integer` (optional)

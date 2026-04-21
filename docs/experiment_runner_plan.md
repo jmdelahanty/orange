@@ -280,7 +280,8 @@ Example shape:
     "target_fps_tolerance_pct": 1.0,
     "require_zero_acq_starve": true,
     "require_zero_pre_drops": true,
-    "require_zero_enc_fail": true
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true
   }
 }
 ```
@@ -395,6 +396,7 @@ For the first version, evaluate a run as:
 
 - `pass`
   - sustained `enc_fps` within configured tolerance of target
+  - `dropped_frames_camera == 0`
   - `acq_starve == 0`
   - `pre_drops == 0`
   - `enc_fail == 0`
@@ -403,6 +405,8 @@ For the first version, evaluate a run as:
   - no hard failures, but clear waits / low-watermark pressure / reduced
     sustained encode FPS
 - `fail`
+  - any nonzero `dropped_frames_camera` when
+    `require_zero_camera_drops=true`
   - any nonzero `pre_drops` or `enc_fail`
   - sustained encode deficit
   - obvious queue runaway
@@ -411,6 +415,8 @@ Keep camera `dropped_frames` separate from encode-path failure reasons:
 
 - `dropped_frames` is source-side camera health
 - `acq_starve`, `pre_drops`, `enc_fail` are pipeline health
+- strict experiment policy can fail on both classes, but the row reason should
+  preserve whether the failure came from source health or pipeline health
 
 ## Implementation Phases
 
