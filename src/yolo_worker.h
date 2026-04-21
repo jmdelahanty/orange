@@ -23,9 +23,7 @@ class CropAndEncodeWorker;
 namespace yolo_perf {
 class YoloPerfLogger;
 }
-namespace yolo_event_log {
-class YoloEventLogger;
-}
+namespace yolo_event_log { class YoloEventLogger; }
 
 class YOLOv8Worker : public CThreadWorker<WORKER_ENTRY>
 {

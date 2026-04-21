@@ -200,10 +200,10 @@ Expected result for a 3 second 100 fps run:
 
 ## Implementation Checklist
 
-- [ ] Extract shared logger from `src/yolo_worker.cpp`.
-- [ ] Add CMake entries for `src/yolo_event_log.cpp` to GUI and headless
+- [x] Extract shared logger from `src/yolo_worker.cpp`.
+- [x] Add CMake entries for `src/yolo_event_log.cpp` to GUI and headless
       targets.
-- [ ] Keep GUI behavior unchanged after extraction.
+- [x] Keep GUI behavior unchanged after extraction.
 - [ ] Parse `fixed.yolo_event_log` in `orange_headless_client.cpp`.
 - [ ] Add deterministic synthetic generator.
 - [ ] Wire generator to per-frame recording metadata.

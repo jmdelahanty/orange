@@ -226,6 +226,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/yolov8_det.cpp"
     "${SRC_DIR}/yolo_worker.cpp"
+    "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/enet_thread.cpp"
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/recording_validation.cpp"
@@ -273,6 +274,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     ${NVENCODER_SOURCES}
     "${SRC_DIR}/kernel.cu"
