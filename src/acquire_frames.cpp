@@ -385,6 +385,104 @@ private:
     RunningInt64Stats preprocess_events_available_{};
 };
 
+struct AcquisitionDropEventSample {
+    std::string timestamp_utc;
+    std::string event;
+    uint64_t frame_id = 0;
+    uint64_t recording_frame_id = 0;
+    uint64_t host_time_ns = 0;
+    unsigned short camera_frame_id = 0;
+    unsigned short previous_camera_frame_id = 0;
+    uint64_t dropped_frames_before = 0;
+    uint64_t dropped_frames_after = 0;
+    uint64_t dropped_frames_delta = 0;
+    int evt_error_code = 0;
+    bool record_active = false;
+};
+
+class AcquisitionDropEventRecorder {
+public:
+    explicit AcquisitionDropEventRecorder(const CameraParams* camera_params)
+        : camera_params_(camera_params) {}
+
+    ~AcquisitionDropEventRecorder() {
+        Close();
+    }
+
+    void Rotate(const std::string& folder) {
+        if (folder == current_folder_) {
+            return;
+        }
+        CloseCurrent();
+        if (!folder.empty()) {
+            OpenFile(folder);
+        }
+    }
+
+    void Record(const AcquisitionDropEventSample& sample) {
+        if (!file_.is_open()) {
+            return;
+        }
+
+        file_ << sample.timestamp_utc << ","
+              << sample.event << ","
+              << sample.frame_id << ","
+              << sample.recording_frame_id << ","
+              << sample.host_time_ns << ","
+              << sample.camera_frame_id << ","
+              << sample.previous_camera_frame_id << ","
+              << sample.dropped_frames_before << ","
+              << sample.dropped_frames_after << ","
+              << sample.dropped_frames_delta << ","
+              << sample.evt_error_code << ","
+              << (sample.record_active ? 1 : 0) << "\n";
+        file_.flush();
+    }
+
+    void Close() {
+        CloseCurrent();
+    }
+
+private:
+    void OpenFile(const std::string& folder) {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(folder);
+
+        current_folder_ = folder;
+        const std::string serial = camera_params_ ? camera_params_->camera_serial : "unknown";
+        file_path_ = (std::filesystem::path(current_folder_) /
+                      ("Cam" + serial + "_acquisition_drop_events.csv")).string();
+        file_.open(file_path_, std::ios::out | std::ios::trunc);
+        if (!file_) {
+            std::cerr << "[ACQ_DROP] Cam " << serial
+                      << " failed to open " << file_path_ << std::endl;
+            current_folder_.clear();
+            file_path_.clear();
+            return;
+        }
+        file_ << "timestamp_utc,event,frame_id,recording_frame_id,host_time_ns,"
+                 "camera_frame_id,previous_camera_frame_id,"
+                 "dropped_frames_before,dropped_frames_after,dropped_frames_delta,"
+                 "evt_error_code,record_active\n";
+        std::cout << "[ACQ_DROP] Cam " << serial
+                  << " logging to " << file_path_ << std::endl;
+    }
+
+    void CloseCurrent() {
+        if (file_.is_open()) {
+            file_.close();
+        }
+        current_folder_.clear();
+        file_path_.clear();
+    }
+
+    const CameraParams* camera_params_ = nullptr;
+    std::string current_folder_;
+    std::string file_path_;
+    std::ofstream file_;
+};
+
 std::string current_recording_folder(CameraControl* camera_control) {
     std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
     return camera_control->recording_folder;
@@ -505,6 +603,7 @@ void acquire_frames(
     uint64_t yolo_decimate_counter = 0;
     bool last_yolo_enabled = false;
     PipelinePerfRecorder pipeline_perf_recorder(camera_params);
+    AcquisitionDropEventRecorder acquisition_drop_event_recorder(camera_params);
     if (yolo_decimate > 1) {
         std::cout << "[YOLO] Cam " << camera_params->camera_serial
                   << " decimate=1/" << yolo_decimate << std::endl;
@@ -733,9 +832,12 @@ void acquire_frames(
             struct timespec ts_rt1;
             clock_gettime(CLOCK_REALTIME, &ts_rt1);
             uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
-            camera_state.dropped_frames += count_camera_frame_id_gaps(
-                camera_state.id_prev,
+            const unsigned short previous_camera_frame_id = camera_state.id_prev;
+            const uint64_t dropped_frames_before = camera_state.dropped_frames;
+            const uint64_t frame_id_gap_drops = count_camera_frame_id_gaps(
+                previous_camera_frame_id,
                 ecam->frame_recv.frame_id);
+            camera_state.dropped_frames += frame_id_gap_drops;
             camera_state.id_prev = next_camera_frame_id_prev(ecam->frame_recv.frame_id);
             camera_state.frames_recd++;
             camera_state.frame_count++;
@@ -809,6 +911,7 @@ void acquire_frames(
 
             const std::string live_recording_folder = current_recording_folder(camera_control);
             pipeline_perf_recorder.Rotate(live_recording_folder);
+            acquisition_drop_event_recorder.Rotate(live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
                     update_ptp_sync_summary_camera(
@@ -818,6 +921,22 @@ void acquire_frames(
                 }
                 ptp_summary_recording_folder = live_recording_folder;
                 reset_ptp_summary_stats();
+            }
+            if (frame_id_gap_drops > 0 && !live_recording_folder.empty()) {
+                AcquisitionDropEventSample sample;
+                sample.timestamp_utc = get_current_utc_timestamp();
+                sample.event = "frame_id_gap";
+                sample.frame_id = camera_state.frame_count;
+                sample.recording_frame_id = current_entry->recording_frame_id;
+                sample.host_time_ns = real_time;
+                sample.camera_frame_id = ecam->frame_recv.frame_id;
+                sample.previous_camera_frame_id = previous_camera_frame_id;
+                sample.dropped_frames_before = dropped_frames_before;
+                sample.dropped_frames_after = camera_state.dropped_frames;
+                sample.dropped_frames_delta = frame_id_gap_drops;
+                sample.evt_error_code = 0;
+                sample.record_active = camera_control->record_video;
+                acquisition_drop_event_recorder.Record(sample);
             }
 
             int dispatch_count = 0;
@@ -1111,7 +1230,29 @@ void acquire_frames(
                 break;
             }
         } else {
+            const uint64_t dropped_frames_before = camera_state.dropped_frames;
             camera_state.dropped_frames++;
+            const std::string live_recording_folder = current_recording_folder(camera_control);
+            acquisition_drop_event_recorder.Rotate(live_recording_folder);
+            if (!live_recording_folder.empty()) {
+                struct timespec ts_rt1;
+                clock_gettime(CLOCK_REALTIME, &ts_rt1);
+                const uint64_t real_time = (ts_rt1.tv_sec * 1000000000LL) + ts_rt1.tv_nsec;
+                AcquisitionDropEventSample sample;
+                sample.timestamp_utc = get_current_utc_timestamp();
+                sample.event = "get_frame_error";
+                sample.frame_id = camera_state.frame_count;
+                sample.recording_frame_id = last_recording_frame_count;
+                sample.host_time_ns = real_time;
+                sample.camera_frame_id = 0;
+                sample.previous_camera_frame_id = camera_state.id_prev;
+                sample.dropped_frames_before = dropped_frames_before;
+                sample.dropped_frames_after = camera_state.dropped_frames;
+                sample.dropped_frames_delta = 1;
+                sample.evt_error_code = camera_state.camera_return;
+                sample.record_active = camera_control->record_video;
+                acquisition_drop_event_recorder.Record(sample);
+            }
             std::cerr << "EVT_CameraGetFrame Error, " << camera_state.camera_return
                       << ", camera serial, " << camera_params->camera_serial << std::endl;
             if (current_event) {

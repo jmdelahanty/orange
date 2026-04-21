@@ -358,10 +358,11 @@ Follow-up:
 
 - repeat the real-recording run once to check whether the `2010096` camera drop
   is reproducible,
-- make headless experiment policy fail or at least mark marginal when
-  `dropped_frames_camera > 0`,
-- consider expanding cadence probing beyond frames `80..160` when investigating
-  late-run camera drops.
+- headless experiment policy now fails by default when
+  `dropped_frames_camera > 0` through `require_zero_camera_drops=true`,
+- acquisition now emits `Cam<serial>_acquisition_drop_events.csv` so late-run
+  frame-ID gaps and `EVT_CameraGetFrame` errors are visible even when the
+  low-rate cadence probe misses the onset.
 
 ## Follow-Up Engineering
 

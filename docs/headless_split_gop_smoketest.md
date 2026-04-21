@@ -166,7 +166,8 @@ Use the same experiment-spec structure as other headless runs, with one added
     "target_fps_tolerance_pct": 1.0,
     "require_zero_acq_starve": true,
     "require_zero_pre_drops": true,
-    "require_zero_enc_fail": true
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true
   }
 }
 ```

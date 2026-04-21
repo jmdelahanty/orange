@@ -91,6 +91,7 @@ struct ExperimentSpec {
     bool require_zero_acq_starve = true;
     bool require_zero_pre_drops = true;
     bool require_zero_enc_fail = true;
+    bool require_zero_camera_drops = true;
     std::vector<int> gpu_ids;
     HeadlessEncoderSettings selection;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
@@ -2977,6 +2978,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->require_zero_acq_starve = policy.value("require_zero_acq_starve", true);
     spec->require_zero_pre_drops = policy.value("require_zero_pre_drops", true);
     spec->require_zero_enc_fail = policy.value("require_zero_enc_fail", true);
+    spec->require_zero_camera_drops = policy.value("require_zero_camera_drops", true);
 
     spec->codecs = parse_string_list_field(matrix, "codec");
     spec->presets = parse_string_list_field(matrix, "preset");
@@ -3519,6 +3521,32 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["enc_slow_final"] = csv_stats.enc_slow_delta;
     row["dropped_frames_camera"] = static_cast<int64_t>(csv_stats.camera_dropped_frames_delta);
 
+    auto merge_camera_dropped_frames = [&](const nlohmann::json& value) {
+        if (!value.is_number_integer() && !value.is_number_unsigned()) {
+            return;
+        }
+        const int64_t candidate = value.get<int64_t>();
+        const int64_t current = row["dropped_frames_camera"].get<int64_t>();
+        if (candidate >= 0 && (current < 0 || candidate > current)) {
+            row["dropped_frames_camera"] = candidate;
+        }
+    };
+
+    const nlohmann::json pipeline_totals = pipeline_info.value("totals", nlohmann::json::object());
+    if (pipeline_totals.is_object() && pipeline_totals.contains("camera_dropped_frames")) {
+        merge_camera_dropped_frames(pipeline_totals["camera_dropped_frames"]);
+    }
+
+    if (ptp_summary.is_object()) {
+        const nlohmann::json cameras = ptp_summary.value("cameras", nlohmann::json::object());
+        if (cameras.is_object()) {
+            const nlohmann::json camera_summary = cameras.value(camera_serial, nlohmann::json::object());
+            if (camera_summary.is_object() && camera_summary.contains("dropped_frames")) {
+                merge_camera_dropped_frames(camera_summary["dropped_frames"]);
+            }
+        }
+    }
+
     if (encoder_info.is_object()) {
         row["nvenc_direct_input"] = encoder_info.value("path", "") == "hw_direct_input";
         if (row["gpu_id"].get<int>() < 0) {
@@ -3583,6 +3611,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
         const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
         const uint64_t enc_fail = row["enc_fail_final"].get<uint64_t>();
+        const int64_t camera_drops = row["dropped_frames_camera"].get<int64_t>();
         const double enc_fps_mean = row["enc_fps_mean"].get<double>();
         const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
         const bool fps_ok = (target_fps <= 0.0) || (enc_fps_mean + tolerance >= target_fps);
@@ -3596,6 +3625,23 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             row["pre_encoder_reference_raw_dump_present"].get<bool>() &&
             row["pre_encoder_reference_index_present"].get<bool>() &&
             row["pre_encoder_reference_metadata_present"].get<bool>();
+        const bool counter_policy_failed =
+            (spec.require_zero_camera_drops && camera_drops > 0) ||
+            (spec.require_zero_acq_starve && acq_starve > 0) ||
+            (spec.require_zero_pre_drops && pre_drops > 0) ||
+            (spec.require_zero_enc_fail && enc_fail > 0);
+        auto set_counter_policy_failure = [&]() {
+            row["pass_fail"] = "fail";
+            if (spec.require_zero_camera_drops && camera_drops > 0) {
+                row["reason"] = "nonzero camera dropped frames";
+            } else if (spec.require_zero_acq_starve && acq_starve > 0) {
+                row["reason"] = "nonzero acquisition starvation";
+            } else if (spec.require_zero_pre_drops && pre_drops > 0) {
+                row["reason"] = "nonzero preprocess drops";
+            } else {
+                row["reason"] = "nonzero encode failures";
+            }
+        };
 
         if (importance_map_requested && !importance_map_active) {
             row["pass_fail"] = "fail";
@@ -3613,17 +3659,8 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             } else if (preenc_status != "completed" && preenc_status != "budget_reached") {
                 row["pass_fail"] = "fail";
                 row["reason"] = "pre-encoder reference capture incomplete";
-            } else if ((spec.require_zero_acq_starve && acq_starve > 0) ||
-                       (spec.require_zero_pre_drops && pre_drops > 0) ||
-                       (spec.require_zero_enc_fail && enc_fail > 0)) {
-                row["pass_fail"] = "fail";
-                if (spec.require_zero_acq_starve && acq_starve > 0) {
-                    row["reason"] = "nonzero acquisition starvation";
-                } else if (spec.require_zero_pre_drops && pre_drops > 0) {
-                    row["reason"] = "nonzero preprocess drops";
-                } else {
-                    row["reason"] = "nonzero encode failures";
-                }
+            } else if (counter_policy_failed) {
+                set_counter_policy_failure();
             } else if (!fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "encode fps below target tolerance";
@@ -3632,17 +3669,8 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 row["reason"] = "meets current policy";
             }
         } else {
-            if ((spec.require_zero_acq_starve && acq_starve > 0) ||
-                (spec.require_zero_pre_drops && pre_drops > 0) ||
-                (spec.require_zero_enc_fail && enc_fail > 0)) {
-                row["pass_fail"] = "fail";
-                if (spec.require_zero_acq_starve && acq_starve > 0) {
-                    row["reason"] = "nonzero acquisition starvation";
-                } else if (spec.require_zero_pre_drops && pre_drops > 0) {
-                    row["reason"] = "nonzero preprocess drops";
-                } else {
-                    row["reason"] = "nonzero encode failures";
-                }
+            if (counter_policy_failed) {
+                set_counter_policy_failure();
             } else if (!fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "encode fps below target tolerance";
@@ -3655,23 +3683,6 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         row["status"] = "failed";
         row["pass_fail"] = "fail";
         row["reason"] = "missing encoder snapshot";
-    }
-
-    if (row["dropped_frames_camera"].get<int64_t>() < 0 && pipeline_info.is_object()) {
-        const nlohmann::json totals = pipeline_info.value("totals", nlohmann::json::object());
-        if (totals.is_object() && totals.contains("camera_dropped_frames")) {
-            row["dropped_frames_camera"] = totals.value("camera_dropped_frames", -1LL);
-        }
-    }
-
-    if (row["dropped_frames_camera"].get<int64_t>() < 0 && ptp_summary.is_object()) {
-        const nlohmann::json cameras = ptp_summary.value("cameras", nlohmann::json::object());
-        if (cameras.is_object()) {
-            const nlohmann::json camera_summary = cameras.value(camera_serial, nlohmann::json::object());
-            if (camera_summary.is_object()) {
-                row["dropped_frames_camera"] = camera_summary.value("dropped_frames", -1LL);
-            }
-        }
     }
 
     return row;

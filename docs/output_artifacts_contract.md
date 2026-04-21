@@ -262,6 +262,7 @@ Important:
   - `totals.preprocess_frames_dropped: integer` (optional)
   - `totals.encode_failures: integer` (optional)
   - `totals.encode_slow_frames: integer` (optional)
+  - `totals.camera_dropped_frames: integer` (optional)
   - `totals.gpu_direct_frames: integer` (optional)
   - `totals.gpu_ring_copy_frames: integer` (optional)
   - `totals.gpu_copy_frames: integer` (optional)
@@ -293,6 +294,38 @@ Contract note:
 - `sync` is a snapshot of synchronization state at recording start.
 - It is intended for session provenance and debugging, not as a full event log
   or per-frame timing stream.
+
+### Acquisition Drop Events CSV
+
+Path:
+- `<recording_folder>/Cam<serial>_acquisition_drop_events.csv`
+
+This file is created lazily when a recording folder is active for a camera. It
+contains one row per acquisition drop-counter increment, not one row per frame.
+
+Header:
+
+```text
+timestamp_utc,event,frame_id,recording_frame_id,host_time_ns,camera_frame_id,previous_camera_frame_id,dropped_frames_before,dropped_frames_after,dropped_frames_delta,evt_error_code,record_active
+```
+
+Field semantics:
+- `event`: `frame_id_gap` when the SDK returns a frame with a skipped camera
+  frame ID, or `get_frame_error` when `EVT_CameraGetFrame` returns an error.
+- `frame_id`: acquisition thread frame counter at the time of the event. For
+  `get_frame_error`, this is the last successfully received frame counter.
+- `recording_frame_id`: recording-frame counter when available. For
+  `get_frame_error`, this is the last successfully assigned recording frame ID.
+- `host_time_ns`: `CLOCK_REALTIME` nanoseconds captured near the event.
+- `camera_frame_id`: SDK camera frame ID for `frame_id_gap`; `0` for
+  `get_frame_error` because no frame payload was returned.
+- `previous_camera_frame_id`: previous accepted camera frame ID used for gap
+  detection.
+- `dropped_frames_before`, `dropped_frames_after`, and
+  `dropped_frames_delta`: camera-side drop counter transition.
+- `evt_error_code`: `0` for `frame_id_gap`; SDK error code for
+  `get_frame_error`.
+- `record_active`: `1` when recording was active, otherwise `0`.
 
 ### PTP Sync Summary JSON
 
