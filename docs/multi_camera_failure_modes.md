@@ -1,6 +1,6 @@
 # Multi-Camera Failure Modes
 
-Date: 2026-04-17
+Date: 2026-04-21
 Branch: `exp/gop-split-a16`
 
 Related notes:
@@ -44,8 +44,48 @@ It is meant to be a compact matrix of:
 | Split receive-error telemetry | Current builds split true frame-ID gaps from SDK receive errors | `camera_dropped_frames` / `dropped_frames_camera` now mean frame-ID gaps; `get_frame_errors`, `last_get_frame_error_code`, and `get_frame_errors_by_code` capture `EVT_CameraGetFrame` failures such as error `12` (`EVT_ERROR_NOMEM`) | The two recabled rows above were recorded before this split and likely mixed true gaps with SDK buffer-pressure errors; rerun with the split metrics before treating those counts as lost images |
 | Recabled dual-camera `100 fps` `free_run` real recording with split receive-error telemetry | Strict policy passes while SDK receive-buffer pressure is visible separately | `2010095`: `0` frame-ID gaps, `126` `GetFrame` errors, all code `12`; `2010096`: `0` frame-ID gaps, `0` `GetFrame` errors; both videos present near `100 fps` | Confirms the prior large drop counts were likely dominated by `EVT_ERROR_NOMEM` receive-buffer pressure, not lost frame IDs; next work should reduce/diagnose buffer pressure without conflating it with frame integrity |
 | GPUDirect buffer lifetime code review | Direct pass-through and ring-copy deferred requeue paths store `&ecam->frame_recv` as the SDK frame to return later | `ecam->frame_recv` is a single reusable scratch frame populated by each `EVT_CameraGetFrame`; it can be overwritten before downstream release requeues it | First fix should receive into a stable per-entry descriptor, with `imagePtr -> evt_frame[]` lookup as fallback; then add lease telemetry before increasing SDK buffer counts |
+| Recabled dual-camera `100 fps` `free_run` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in headless validation | artifact `2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`; both cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures | Validated operating point for the recabled A16 topology and headless free-run split-GOP HEVC path; still validate GUI, PTP-gated mode, longer runs, and more than two cameras separately |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
+
+## Current Validated Operating Point
+
+As of commit `951f910` (`fix gpudirect receive buffer requeue`), Orange has a
+validated dual-camera `20 MP` `100 fps` recording point in the recabled A16
+topology.
+
+Validated scope:
+
+- headless `free_run`
+- cameras `2010095` and `2010096`
+- real GPUDirect input
+- split-GOP HEVC, `gop=25`
+- recabled source/helper GPU pairs visible as PIX-local in the run snapshot
+- wrapper path:
+  `sudo -n /usr/local/bin/orange-local-benchmark --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client <spec>`
+
+Validation artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+
+Checked-in recabled validation config and dual-camera spec:
+
+- `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+
+Observed result:
+
+- `2010095`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, `0` encode failures.
+- `2010096`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, `0` encode failures.
+
+Not yet claimed by this validation:
+
+- GUI recording path
+- PTP-gated synchronized recording
+- long-duration soak behavior
+- more than two cameras
 
 ## Detailed Failure Modes
 

@@ -32,6 +32,8 @@ open permissions:
 
 Recent configuration/status commits on that branch:
 
+- `951f910` `fix gpudirect receive buffer requeue`
+- `b51cf01` `docs: add gpudirect buffer lifetime plan`
 - `80fd97e` `experiment_specs: add validated split-gop 100fps gop25 runs`
 - `2efef9d` `config: add schema 3 split-gop camera configs`
 - `9b4dc89` `config: fix schema 3 project integration`
@@ -50,6 +52,29 @@ includes:
 - validated `100 fps`, `HEVC`, `gop=25`, `hybrid_split`, `raw` transfer runs on:
   - camera `2010095` using `GPU1 + GPU2`
   - camera `2010096` using `GPU5 + GPU6`
+- validated recabled dual-camera `100 fps`, `HEVC`, `gop=25`, real
+  GPUDirect split-GOP run on:
+  - camera `2010095` using source/helper `GPU7 + GPU8`
+  - camera `2010096` using source/helper `GPU5 + GPU6`
+
+Latest clean dual-camera validation artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+
+Checked-in recabled config and specs:
+
+- `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
+- `experiment_specs/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+
+Latest clean dual-camera validation result:
+
+- both cameras recorded `1001` frames at about `100 fps`
+- `0` camera frame-ID gaps
+- `0` `EVT_CameraGetFrame` errors
+- `0` preprocess drops
+- `0` encode failures
 
 ## Current Config Model
 

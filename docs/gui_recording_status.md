@@ -182,17 +182,26 @@ After that fix:
 
 Current dual-camera headless findings:
 
-- `2 x 100 fps` is not stable
-- `2 x 80 fps` is currently the validated dual-camera baseline
+- `2 x 100 fps` is validated for the recabled A16 headless `free_run`
+  split-GOP HEVC path after commit `951f910`
+- `2 x 80 fps` remains a useful lower-rate baseline
 
-`2 x 100 fps` headless artifact:
+Historical pre-recable/pre-fix `2 x 100 fps` headless artifact:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_gop25_dual_pix_rerun2`
 
-That run proved the structure works, but both cameras underperformed badly:
+That historical run proved the structure works, but both cameras underperformed
+badly:
 
 - `2010095`: `enc_fps_mean = 66.5072`
 - `2010096`: `enc_fps_mean = 68.5529`
+
+Current clean recabled `2 x 100 fps` headless artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+
+That run completed with both cameras at `1001` frames, `0` frame-ID gaps,
+`0` GetFrame errors, `0` preprocess drops, and `0` encode failures.
 
 `2 x 80 fps` headless artifact:
 
@@ -266,10 +275,11 @@ GUI dual-camera split-GOP was also exercised with:
 - `2010096`
 - their disjoint PIX pairs
 
-The current result is:
+The current GUI result is:
 
 - multi-camera GUI recording is structurally working
-- `2 x 100 fps` is not currently stable
+- `2 x 100 fps` GUI recording is not yet revalidated after the recabled
+  headless receive/requeue fix
 
 Relevant GUI artifact:
 
@@ -288,10 +298,11 @@ split-GOP backlog overflow:
 - `2010095`: `peak_backlog_gops = 4`, `overflow_events = 53`
 - `2010096`: `peak_backlog_gops = 5`, `overflow_events = 83`
 
-So the current GUI conclusion matches headless:
+So the current GUI conclusion is:
 
 - multi-camera split-GOP works structurally
-- `2 x 100 fps` is not yet a validated operating point
+- this historical GUI artifact failed via split-GOP backlog overflow
+- the newer clean `2 x 100 fps` validation is headless-only so far
 
 ## Known Caveats
 
@@ -321,11 +332,13 @@ Status of that fix:
 The branch now has a clear current boundary:
 
 - one camera at `100 fps` on its own PIX split-GOP pair is validated
-- two cameras at `100 fps` on disjoint PIX split-GOP pairs are not yet
-  validated
+- two cameras at `100 fps` on recabled disjoint PIX split-GOP pairs are
+  validated for headless `free_run`
 - two cameras at `80 fps` on disjoint PIX split-GOP pairs do work in headless
+- GUI and PTP-gated `2 x 100 fps` still need separate validation
 
-For the failed `2 x 100 fps` cases, the dominant recorded failure mode is:
+For the historical failed `2 x 100 fps` cases, the dominant recorded failure
+mode is:
 
 - split-GOP pending GOP backlog overflow
 

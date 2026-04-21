@@ -147,10 +147,10 @@ associated with the borrowed buffer."
    pressure, but it is expensive and does not fix incorrect or delayed buffer
    return.
 
-## Proposed Next Patch
+## Implemented Patch And Validation
 
-Implement stable receive-frame descriptors in acquisition. The implementation
-checklist refines the first patch: receive into a per-`WORKER_ENTRY`
+Implemented in commit `951f910` (`fix gpudirect receive buffer requeue`).
+Acquisition now receives into a per-`WORKER_ENTRY`
 `Emergent::CEmergentFrame` descriptor for current-frame metadata, then resolve
 that frame's `imagePtr` back to the stable `ecam->evt_frame[]` descriptor used
 as the actual SDK requeue handle.
@@ -159,17 +159,39 @@ That split matters because direct pass-through keeps the `WORKER_ENTRY` alive
 until source release, but ring-copy can recycle the entry before the
 acquisition-thread pending requeue drains.
 
-After that patch, rerun the same recabled dual-camera `100 fps` split-GOP run
-and compare:
+Validation used the A16 worktree binary:
 
-- `camera_frame_id_gaps`
-- `get_frame_errors_final`
-- `get_frame_errors_by_code`
-- GPUDirect outstanding lease telemetry
+- `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
 
-Expected useful outcome:
+Checked-in validation config and specs:
 
-- If `EVT_ERROR_NOMEM` drops, the residual receive-buffer pressure was likely
-  caused by unstable or delayed SDK frame return.
-- If it remains, we should then tune receive pool size, source-release timing,
-  or cross-GPU copy scheduling with better observability.
+- `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
+- `experiment_specs/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+
+The clean dual-camera validation artifact is:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+
+The pre-fix comparison artifact was:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_receive_split_20260421_004637`
+
+Post-fix validation summary:
+
+| Run | Result |
+| --- | --- |
+| Single `2010095`, `100 fps`, real split-GOP GPUDirect | pass, `801` frames, `0` frame-ID gaps, `0` GetFrame errors |
+| Single `2010096`, `100 fps`, real split-GOP GPUDirect | pass, `801` frames, `0` frame-ID gaps, `0` GetFrame errors |
+| Dual `2010095 + 2010096`, `100 fps`, real split-GOP GPUDirect | pass, both cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures |
+
+Current conclusion:
+
+- The residual `EVT_ERROR_NOMEM` receive-buffer pressure seen in the pre-fix
+  recabled run was addressed by stable receive/requeue descriptor handling for
+  this headless free-run path.
+- Dual-camera `20 MP` `100 fps` split-GOP HEVC recording is now validated for
+  the recabled A16 topology used by this run.
+- This does not yet validate GUI recording, PTP-gated recording, longer-duration
+  soak runs, or more than two cameras.

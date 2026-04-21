@@ -40,38 +40,38 @@ mutable scratch frame:
 
 ### 1. Baseline Before Code Changes
 
-- [ ] Record current branch and commit hash.
-- [ ] Keep the latest known reference artifact handy:
+- [x] Record current branch and commit hash.
+- [x] Keep the latest known reference artifact handy:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_receive_split_20260421_004637`
-- [ ] Record current reference metrics:
+- [x] Record current reference metrics:
   `2010095 get_frame_errors_final = 126`, all code `12`
-- [ ] Record current reference metrics:
+- [x] Record current reference metrics:
   both cameras `camera_frame_id_gaps = 0`
-- [ ] Confirm current binary is the A16 worktree binary:
+- [x] Confirm current binary is the A16 worktree binary:
   `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
 
 ### 2. Replace Scratch Receive Descriptor With Stable Receive/Requeue Handles
 
 Preferred first implementation:
 
-- [ ] Add an `Emergent::CEmergentFrame` receive descriptor to `WORKER_ENTRY`.
-- [ ] In `acquire_frames()`, call `EVT_CameraGetFrame()` into the current
+- [x] Add an `Emergent::CEmergentFrame` receive descriptor to `WORKER_ENTRY`.
+- [x] In `acquire_frames()`, call `EVT_CameraGetFrame()` into the current
       `WORKER_ENTRY` receive descriptor rather than `ecam->frame_recv`.
-- [ ] Use a local pointer such as `received_frame` for all metadata reads in
+- [x] Use a local pointer such as `received_frame` for all metadata reads in
       that acquisition iteration.
-- [ ] Replace direct uses of `ecam->frame_recv.imagePtr`, `frame_id`,
+- [x] Replace direct uses of `ecam->frame_recv.imagePtr`, `frame_id`,
       `timestamp`, `bufferSize`, `size_x`, `size_y`, and `pixel_type` in the
       main acquisition loop with the stable per-entry descriptor.
-- [ ] Resolve the received `imagePtr` back to the stable `ecam->evt_frame[]`
+- [x] Resolve the received `imagePtr` back to the stable `ecam->evt_frame[]`
       descriptor that owns that SDK receive buffer.
-- [ ] For direct GPUDirect pass-through, set:
+- [x] For direct GPUDirect pass-through, set:
   `current_entry->camera_frame_struct = frame_to_requeue`.
-- [ ] For ring-copy pending requeues, store:
+- [x] For ring-copy pending requeues, store:
   `PendingRequeue::frame = frame_to_requeue`.
-- [ ] For immediate requeue error paths after a successful get-frame, call
+- [x] For immediate requeue error paths after a successful get-frame, call
       `EVT_CameraQueueFrame()` with `frame_to_requeue`, not
       `&ecam->frame_recv`.
-- [ ] Keep `ecam->frame_recv` only for legacy paths that are not part of the
+- [x] Keep `ecam->frame_recv` only for legacy paths that are not part of the
       main queued-worker recording path.
 
 Why this is preferred:
@@ -87,7 +87,8 @@ Why this is preferred:
 Fallback behavior if the `imagePtr -> evt_frame[]` lookup fails:
 
 - [ ] If lookup fails, copy into Orange-owned memory and requeue immediately
-      using the scratch descriptor.
+      using the scratch descriptor. The current patch falls back to the receive
+      descriptor; a stricter copy-and-requeue fallback is still future hardening.
 
 ### 3. Prevent Double Requeue And Make Errors Visible
 
@@ -125,47 +126,71 @@ stays reviewable.
 
 ### 5. Build And Non-Hardware Checks
 
-- [ ] Build `orange_client`:
+- [x] Build `orange_client`:
   `cmake --build /home/jeremy/orange-gop-split-a16/targets/release --target orange_client`
 - [ ] Run existing lightweight unit tests if available and relevant.
-- [ ] Search for remaining deferred uses of `&ecam->frame_recv`.
+- [x] Search for remaining deferred uses of `&ecam->frame_recv`.
 - [ ] Search for unchecked `EVT_CameraQueueFrame()` calls in the modified path.
-- [ ] Confirm unrelated dirty files are not included in the diff.
+- [x] Confirm unrelated dirty files are not included in the diff.
 
 ### 6. Hardware Validation Sequence
 
 Run short tests first. Only move to longer recording once the short run has
 healthy frame IDs and no obvious requeue errors.
 
-- [ ] Single-camera `100 fps` real recording on `2010095`.
-- [ ] Single-camera `100 fps` real recording on `2010096`.
+- [x] Single-camera `100 fps` real recording on `2010095`.
+- [x] Single-camera `100 fps` real recording on `2010096`.
 - [ ] Dual-camera `100 fps` stream-only run, if we want a source-only check.
-- [ ] Dual-camera `100 fps` split-GOP real recording with the recabled topology.
+- [x] Dual-camera `100 fps` split-GOP real recording with the recabled topology.
 - [ ] Optional dual-camera `100 fps` `force_ring_copy` real recording to confirm
       the ring-copy pending requeue path is also safe.
 
 Primary pass criteria:
 
-- [ ] `camera_frame_id_gaps = 0` on both cameras.
+- [x] `camera_frame_id_gaps = 0` on both cameras.
 - [ ] `EVT_CameraQueueFrame()` deferred requeue errors are `0`.
-- [ ] No new preprocess drops or encode failures.
-- [ ] Videos are present and near target duration.
+- [x] No new preprocess drops or encode failures.
+- [x] Videos are present and near target duration.
 
 Comparison metrics:
 
-- [ ] `get_frame_errors_final`
+- [x] `get_frame_errors_final`
 - [ ] `get_frame_errors_by_code`
 - [ ] max outstanding GPUDirect leases
 - [ ] source-safe-to-requeue max latency
-- [ ] acquisition FPS mean and p95
-- [ ] helper dispatched frames and primary/helper balance
+- [x] acquisition FPS mean and p95
+- [x] helper dispatched frames and primary/helper balance
+
+Completed validation artifacts:
+
+- Checked-in recabled config:
+  `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
+- Checked-in validation specs:
+  `experiment_specs/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`,
+  `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`,
+  and
+  `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
+- Single `2010095`:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+- Single `2010096`:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+- Dual `2010095 + 2010096`:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
+
+Dual-camera result:
+
+- `2010095`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, `0` encode failures.
+- `2010096`: `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, `0` encode failures.
 
 ### 7. Decision Points After Validation
 
 If `EVT_ERROR_NOMEM` drops substantially:
 
-- [ ] Treat the scratch receive descriptor as a confirmed contributor.
-- [ ] Keep the stable descriptor patch.
+- [x] Treat the scratch receive descriptor as a confirmed contributor for the
+      recabled headless free-run validation path.
+- [x] Keep the stable descriptor patch.
 - [ ] Expand telemetry only as needed for long-run confidence.
 - [ ] Rerun a longer dual-camera `100 fps` recording.
 
