@@ -1110,6 +1110,20 @@ void acquire_frames(
         return sample;
     };
 
+    auto finalize_pipeline_perf_recorder_if_drained = [&]() -> bool {
+        if (pipeline_perf_recorder.current_folder().empty()) {
+            return true;
+        }
+        if (recording_ingress && !recording_ingress->IsDrained()) {
+            return false;
+        }
+
+        const PipelinePerfSample final_pipeline_sample = build_pipeline_perf_sample();
+        pipeline_perf_recorder.Record(final_pipeline_sample);
+        pipeline_perf_recorder.Close();
+        return true;
+    };
+
     {
         NVTX_RANGE("Camera_Initialization");
         if (camera_control->sync_camera) {
@@ -1374,7 +1388,18 @@ void acquire_frames(
             }
 
             const std::string live_recording_folder = current_recording_folder(camera_control);
-            pipeline_perf_recorder.Rotate(live_recording_folder);
+            if (!live_recording_folder.empty()) {
+                if (live_recording_folder != pipeline_perf_recorder.current_folder()) {
+                    if (!pipeline_perf_recorder.current_folder().empty()) {
+                        (void)finalize_pipeline_perf_recorder_if_drained();
+                    }
+                    if (pipeline_perf_recorder.current_folder().empty()) {
+                        pipeline_perf_recorder.Rotate(live_recording_folder);
+                    }
+                }
+            } else {
+                (void)finalize_pipeline_perf_recorder_if_drained();
+            }
             acquisition_cadence_probe_recorder.Rotate(live_recording_folder);
             if (live_recording_folder != ptp_summary_recording_folder) {
                 if (!ptp_summary_recording_folder.empty() && camera_control->sync_camera) {
@@ -1776,7 +1801,8 @@ void acquire_frames(
                           << " record=" << (camera_control->record_video ? "on" : "off")
                           << std::endl;
                 const PipelinePerfSample pipeline_sample = build_pipeline_perf_sample();
-                if (!live_recording_folder.empty()) {
+                if (!live_recording_folder.empty() &&
+                    live_recording_folder == pipeline_perf_recorder.current_folder()) {
                     pipeline_perf_recorder.Record(pipeline_sample);
                 }
                 std::cout << "[PIPELINE] Cam " << camera_params->camera_serial
@@ -1895,11 +1921,7 @@ void acquire_frames(
             }
         }
 
-        if (!pipeline_perf_recorder.current_folder().empty()) {
-            const PipelinePerfSample final_pipeline_sample = build_pipeline_perf_sample();
-            pipeline_perf_recorder.Record(final_pipeline_sample);
-        }
-        pipeline_perf_recorder.Close();
+        (void)finalize_pipeline_perf_recorder_if_drained();
         acquisition_cadence_probe_recorder.Close();
 
         {
