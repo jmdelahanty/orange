@@ -292,6 +292,77 @@ failure was topology-sensitive. Moving both camera ingress paths from the
 source/helper pairs `PIX`, removed the stale-frame onset in the same
 preprocess-only helper-copy diagnostic.
 
+### 2026-04-20: Recabled two-camera real-recording test produced videos but was not fully clean
+
+The same recabled topology was then tested with real encode / mux output:
+
+```text
+experiment_id:
+2010095_2010096_split_gop_hevc_100fps_real_mlnx2_gpu5_8_freerun1
+
+artifact:
+/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_mlnx2_gpu5_8_freerun1
+```
+
+Test shape:
+
+- `recording_sink_mode = real`
+- `sync_mode = free_run`
+- `2010095`: `mlnx2_p3_25g`, source `GPU7`, helper `GPU8`
+- `2010096`: `mlnx2_p4_25g`, source `GPU5`, helper `GPU6`
+- full-frame helper copy path active
+- MP4 output enabled
+
+The run completed and produced both videos:
+
+```text
+Cam2010095.mp4: 264,168,821 bytes, 14.02 s, ~150.7 Mbps
+Cam2010096.mp4: 264,568,646 bytes, 14.02 s, ~151.0 Mbps
+```
+
+The helper path stayed active and did not fall back:
+
+```text
+Cam2010095: submitted=1402 primary=702 helper_requested=700 helper_dispatched=700 helper_fallback=0
+Cam2010096: submitted=1402 primary=702 helper_requested=700 helper_dispatched=700 helper_fallback=0
+```
+
+Pipeline health was mostly good:
+
+- `pre_drops_final = 0`
+- `enc_fail_final = 0`
+- `acq_starve_final = 0`
+- A16 GPU memory released cleanly after the run
+
+But this run was not fully clean:
+
+```text
+Cam2010095: dropped_frames_camera = 0
+Cam2010096: dropped_frames_camera = 17
+```
+
+The `2010096` camera drop counter first appeared around the middle of the run
+after repeated `EVT_CameraGetFrame Error, 12` messages. The acquisition cadence
+probe window `80..160` still showed zero frame-ID jumps for both cameras, so
+the observed drop onset was outside that narrow probe window.
+
+Interpretation:
+
+- the recabled topology is strong enough for dual-camera full-frame helper-copy
+  routing at 100 FPS,
+- real encode / mux output can complete and produce videos,
+- but the full real-recording path needs repeat testing and stricter policy
+  handling before being called validated.
+
+Follow-up:
+
+- repeat the real-recording run once to check whether the `2010096` camera drop
+  is reproducible,
+- make headless experiment policy fail or at least mark marginal when
+  `dropped_frames_camera > 0`,
+- consider expanding cadence probing beyond frames `80..160` when investigating
+  late-run camera drops.
+
 ## Follow-Up Engineering
 
 If the recabled test helps, add a config/preflight concept for camera ingress
