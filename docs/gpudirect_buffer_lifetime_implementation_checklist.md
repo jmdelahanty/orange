@@ -142,6 +142,9 @@ healthy frame IDs and no obvious requeue errors.
 - [x] Single-camera `100 fps` real recording on `2010096`.
 - [ ] Dual-camera `100 fps` stream-only run, if we want a source-only check.
 - [x] Dual-camera `100 fps` split-GOP real recording with the recabled topology.
+- [x] Four-camera `100 fps` stream-only and real recording smoke runs.
+- [x] Four-camera `100 fps` `ptp_gate` stream-only and real recording smoke
+      runs.
 - [ ] Optional dual-camera `100 fps` `force_ring_copy` real recording to confirm
       the ring-copy pending requeue path is also safe.
 
@@ -165,6 +168,8 @@ Completed validation artifacts:
 
 - Checked-in recabled config:
   `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
+- Checked-in four-camera config:
+  `config/validated_split_gop_hevc_100fps_gop25_fourcam_a16/`
 - Checked-in validation specs:
   `experiment_specs/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`,
   `experiment_specs/2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`,
@@ -174,6 +179,12 @@ Completed validation artifacts:
   `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
   and
   `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
+- Checked-in four-camera validation specs:
+  `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_stream_only_sys_pair.json`,
+  `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_real_sys_pair.json`,
+  `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_sys_pair.json`,
+  and
+  `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair.json`
 - Single `2010095`:
   `/home/jeremy/orange_data/exp/unsorted/2010095_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
 - Single `2010096`:
@@ -184,6 +195,14 @@ Completed validation artifacts:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`
 - Dual `2010095 + 2010096`, `ptp_gate`, real recording:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
+- Four `2010093 + 2010094 + 2010095 + 2010096`, stream-only:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_stream_only_sys_pair`
+- Four `2010093 + 2010094 + 2010095 + 2010096`, real recording:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_real_sys_pair`
+- Four `2010093 + 2010094 + 2010095 + 2010096`, `ptp_gate`, stream-only:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_sys_pair`
+- Four `2010093 + 2010094 + 2010095 + 2010096`, `ptp_gate`, real recording:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair`
 
 Dual-camera result:
 
@@ -196,6 +215,17 @@ Dual-camera result:
 - PTP real recording `12 s`: `2010095` `1001` submitted frames and `2010096`
   `1000` submitted frames, both with `0` frame-ID gaps, `0` GetFrame errors,
   `0` preprocess drops, and `0` encode failures.
+- Four-camera `free_run` stream-only: all cameras `1001` frames with `0`
+  frame-ID gaps and `0` GetFrame errors.
+- Four-camera `free_run` real recording: all cameras passed with `799-800`
+  submitted post-warmup frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, and `0` encode failures.
+- Four-camera `ptp_gate` stream-only: all cameras `701` frames with `0`
+  frame-ID gaps and `0` GetFrame errors.
+- Four-camera `ptp_gate` real recording: all cameras passed with `600`
+  submitted post-warmup frames, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, `0` encode failures, `overflow_events = 0`, and
+  `peak_backlog_gops = 2`.
 
 ### 7. Decision Points After Validation
 

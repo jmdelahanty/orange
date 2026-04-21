@@ -47,6 +47,10 @@ It is meant to be a compact matrix of:
 | Recabled dual-camera `100 fps` `free_run` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in headless validation | artifact `2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`; both cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures | Validated operating point for the recabled A16 topology and headless free-run split-GOP HEVC path; PTP-gated validation is tracked in the rows below |
 | Recabled dual-camera `100 fps` `ptp_gate` stream-only after stable GPUDirect receive/requeue fix | Passes cleanly in headless validation | artifact `2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`; both cameras `701` frames, `0` frame-ID gaps, `0` GetFrame errors; `runs.csv` reports about `100 fps` | PTP gate setup and synchronized acquisition are healthy on the recabled topology without recording work |
 | Recabled dual-camera `100 fps` `ptp_gate` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in short headless validation | best artifact `2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`; `2010095`: `1001` submitted, `2010096`: `1000` submitted, both `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures, `overflow_events = 0` | Validated operating point for recabled A16 headless PTP-gated split-GOP HEVC; early startup `PTP_STALE_DUMP` still appears and should be treated as a diagnostic/logging caveat, not a frame-loss failure |
+| Four-camera `100 fps` `free_run` stream-only after stable GPUDirect receive/requeue fix | Passes cleanly in short headless validation | artifact `2010093_2010094_2010095_2010096_split_gop_hevc_100fps_stream_only_sys_pair`; all cameras `1001` frames, `0` frame-ID gaps, `0` GetFrame errors | The two non-recabled `mlnx1` cameras can stream at target rate despite a SYS NIC-to-source-GPU path in this short test |
+| Four-camera `100 fps` `free_run` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in short headless validation | artifact `2010093_2010094_2010095_2010096_split_gop_hevc_100fps_real_sys_pair`; all cameras pass, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures, `overflow_events = 0` | Four-camera split-GOP recording is feasible on this host when every camera gets a disjoint PIX-local source/helper pair; longer soaks remain open |
+| Four-camera `100 fps` `ptp_gate` stream-only after stable GPUDirect receive/requeue fix | Passes cleanly in short headless validation | artifact `2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_sys_pair`; all cameras `701` frames, `0` frame-ID gaps, `0` GetFrame errors | PTP-gated synchronized acquisition is healthy for all four cameras in the short run |
+| Four-camera `100 fps` `ptp_gate` real recording after stable GPUDirect receive/requeue fix | Passes cleanly in short headless validation | artifact `2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair`; all cameras `600` post-warmup submitted, `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, `0` encode failures, `overflow_events = 0`, `peak_backlog_gops = 2` | Short four-camera synchronized split-GOP recording now has a validated path; GUI and long-soak validation are still required before treating it as production-ready |
 | Invalid split-GOP config | GUI shows red validation and blocks stream start | missing helper or overlapping GPU claims are rejected by preflight | Config/policy failure, not runtime throughput failure |
 | Headless PTP startup before hardening | Cameras open but local PTP gate never really engages, or host stack is absent | old post-reboot hangs and zero-participant barrier state | Operational setup failure; largely addressed by host-stack preflight/auto-start |
 
@@ -54,16 +58,21 @@ It is meant to be a compact matrix of:
 
 As of commit `951f910` (`fix gpudirect receive buffer requeue`), Orange has a
 validated dual-camera `20 MP` `100 fps` recording point in the recabled A16
-topology.
+topology. Short four-camera headless validation now also passes for
+`2010093 + 2010094 + 2010095 + 2010096`.
 
 Validated scope:
 
 - headless `free_run`
 - headless `ptp_gate` with no inter-camera stagger
-- cameras `2010095` and `2010096`
+- cameras `2010095` and `2010096` for the original recabled validation
+- cameras `2010093`, `2010094`, `2010095`, and `2010096` for the short
+  four-camera SYS-pair diagnostic
 - real GPUDirect input
 - split-GOP HEVC, `gop=25`
 - recabled source/helper GPU pairs visible as PIX-local in the run snapshot
+- four-camera source/helper GPU pairs visible as PIX-local in the run snapshot
+  with disjoint GPU claims: `3+4`, `1+2`, `7+8`, and `5+6`
 - wrapper path:
   `sudo -n /usr/local/bin/orange-local-benchmark --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client <spec>`
 
@@ -71,13 +80,20 @@ Validation artifact:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch`
 - `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
+- `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_real_sys_pair`
+- `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair`
 
 Checked-in recabled validation config and dual-camera spec:
 
 - `config/validated_split_gop_hevc_100fps_gop25_recabled_a16/`
+- `config/validated_split_gop_hevc_100fps_gop25_fourcam_a16/`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_real_gpudirect_stable_frame_patch.json`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
+- `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_stream_only_sys_pair.json`
+- `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_real_sys_pair.json`
+- `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_sys_pair.json`
+- `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair.json`
 
 Observed result:
 

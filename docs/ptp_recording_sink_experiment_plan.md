@@ -15,7 +15,8 @@ The original experiment plan below is now historical context for the older
 pre-recable/nonzero-stagger stale-frame investigations. After the recabled A16
 topology and the stable GPUDirect receive/requeue fix in commit `951f910`,
 no-stagger headless `ptp_gate` recording is validated in short dual-camera
-`100 fps` runs.
+`100 fps` runs. Short four-camera headless `ptp_gate` recording is also
+validated as of the `2026-04-21` SYS-pair diagnostic.
 
 Current validated artifacts:
 
@@ -23,11 +24,17 @@ Current validated artifacts:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch`
 - real recording, best `12 s` run:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s`
+- four-camera stream-only sanity:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_sys_pair`
+- four-camera real recording, short `8 s` run:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair`
 
 Checked-in specs:
 
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_recabled_stable_frame_patch.json`
 - `experiment_specs/2010095_2010096_split_gop_hevc_100fps_ptp_real_recabled_stable_frame_patch_12s.json`
+- `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_stream_only_sys_pair.json`
+- `experiment_specs/2010093_2010094_2010095_2010096_split_gop_hevc_100fps_ptp_real_sys_pair.json`
 
 Best real-recording result:
 
@@ -39,6 +46,18 @@ Best real-recording result:
 - `ptp_sync_summary.json`: sub-microsecond mean PTP offset and
   latch-minus-frame around `9.2 ms`
 
+Four-camera real-recording result:
+
+- `2010093`, `2010094`, `2010095`, and `2010096`: each reports `600`
+  submitted frames after warmup, `0` frame-ID gaps, `0` GetFrame errors, `0`
+  preprocess drops, and `0` encode failures
+- split-GOP output: `overflow_events = 0`, `writer_overflow_events = 0`,
+  `peak_backlog_gops = 2` on every camera
+- source/helper topology: each camera uses a disjoint A16 PIX-local helper pair
+  with peer access enabled
+- PTP summary: all four cameras report `701` received frames, `0` dropped
+  frames, `0` frame-ID gaps, and sub-microsecond PTP offsets
+
 Remaining caveat:
 
 - early startup `PTP_STALE_DUMP` logs still appear while encoders are coming up,
@@ -49,10 +68,12 @@ Current read:
 
 - current no-stagger recabled headless `ptp_gate` is a validated synchronized
   recording point for cameras `2010095` and `2010096`
+- short no-stagger headless `ptp_gate` is also validated for the four-camera
+  `2010093 + 2010094 + 2010095 + 2010096` A16 pairing
 - the old nonzero-stagger stale-frame artifacts remain useful historical failure
   evidence, but they should not be read as contradicting the current no-stagger
   recabled validation
-- GUI PTP recording, longer soaks, and more than two cameras remain unvalidated
+- GUI PTP recording and longer four-camera soaks remain unvalidated
 
 ## Purpose
 

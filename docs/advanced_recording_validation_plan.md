@@ -21,15 +21,23 @@ On `exp/gop-split-a16`, the split-GOP path that is actually validated today is:
 
 And the validated host-level patterns so far are:
 
-- one recording camera at a time
 - one source GPU plus one helper GPU
 - helper pair with `PIX` topology
 - peer-access-capable pair
+- disjoint split-GOP GPU claims across simultaneously recording cameras
 
 Examples already validated on this branch:
 
-- camera `2010095` on `GPU1 + GPU2`
+- camera `2010094` on `GPU1 + GPU2`
+- camera `2010093` on `GPU3 + GPU4`
 - camera `2010096` on `GPU5 + GPU6`
+- camera `2010095` on `GPU7 + GPU8`
+
+Short headless validation has passed with all four cameras recording together at
+`20 MP`, `100 fps`, HEVC, `gop=25`, and no-stagger `ptp_gate`. GUI validation
+for that same four-camera session is still open, so the GUI should expose the
+capability conservatively and keep preflight blocking for overlapping GPU
+claims or non-PIX helper pairs.
 
 That matters because the GUI should reflect the validated operating envelope,
 not the broader space that the config schema can theoretically express.

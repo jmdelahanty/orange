@@ -1,0 +1,57 @@
+{
+  "experiment_id": "2010093_2010094_2010095_2010096_split_gop_hevc_100fps_stream_only_sys_pair",
+  "notes": "Short four-camera stream-only diagnostic. Adds 2010093 on GPU3+GPU4 and 2010094 on GPU1+GPU2 to the recabled 2010095/2010096 pair; source/helper pairs are PIX, while the two mlnx1 camera NIC paths remain SYS to their source GPUs on pancake0.",
+  "selection": {
+    "camera_serials": [
+      "2010093",
+      "2010094",
+      "2010095",
+      "2010096"
+    ],
+    "gpu_ids": [
+      3,
+      1,
+      7,
+      5
+    ]
+  },
+  "fixed": {
+    "duration_s": 8,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": true,
+    "sync_mode": "free_run",
+    "recording_sink_mode": "real",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false
+  },
+  "matrix": {
+    "codec": [
+      "hevc"
+    ],
+    "preset": [
+      "p1"
+    ],
+    "tuning": [
+      "ll"
+    ],
+    "rate_control_mode": [
+      "vbr"
+    ],
+    "quality_value": [
+      20
+    ],
+    "gop_length": [
+      25
+    ]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true
+  }
+}
