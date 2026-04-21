@@ -81,7 +81,7 @@ ptp-stack stop
 Start `ptp4l` with all camera NIC ports:
 
 ```bash
-sudo ptp4l -i mlnx1_p1_25g -i mlnx1_p2_25g -i mlnx1_p3_25g -i mlnx1_p4_25g -f /etc/ptp4l.conf -m
+sudo ptp4l -i mlnx1_p1_25g -i mlnx1_p2_25g -i mlnx2_p3_25g -i mlnx2_p4_25g -f /etc/ptp4l.conf -m
 ```
 
 In another terminal, start `phc2sys`:

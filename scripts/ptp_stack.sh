@@ -11,7 +11,7 @@ PTP4L_LOG="${PTP_LOG_DIR}/ptp4l.log"
 PHC2SYS_LOG="${PTP_LOG_DIR}/phc2sys.log"
 
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage: ptp_stack.sh <command>
 
 Commands:
@@ -25,7 +25,7 @@ Optional environment variables:
   PTP_CONF     Default: /etc/ptp4l.conf
   PTP_SOCKET   Default: /var/run/ptp4l
   PTP_LOG_DIR  Default: /tmp/ptp-stack
-  PTP_IFACES   Default: "mlnx1_p1_25g mlnx1_p2_25g mlnx1_p3_25g mlnx1_p4_25g"
+  PTP_IFACES   Default: "${PTP_IFACES_DEFAULT}"
 EOF
 }
 
