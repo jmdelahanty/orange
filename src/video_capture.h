@@ -283,7 +283,7 @@ struct CameraEachSelect
     int pictures_counter = 0;
     bool selected_to_save = false;
     std::string picture_save_folder;
-    const char* yolo_model;
+    const char* yolo_model = nullptr;
 
     // Frame IPC settings (NEW)
     bool send_frame_ipc = true;      // Enable frame synchronization via IPC

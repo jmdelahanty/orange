@@ -98,6 +98,11 @@ bool update_recording_snapshot_pipeline_metrics(const std::string& recording_fol
 bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folder,
                                               const std::string& monitor_name,
                                               const nlohmann::json& monitor_info);
+bool update_recording_snapshot_model(const std::string& recording_folder,
+                                     const std::string& camera_serial,
+                                     const std::string& model_kind,
+                                     const nlohmann::json& model_info);
+std::string build_model_id_from_path(const std::string& model_path);
 nlohmann::json build_gpu_copy_path_static_topology_info(int source_gpu_id, int target_gpu_id);
 std::string lookup_nvidia_smi_topology_class(int source_gpu_id,
                                              int target_gpu_id,

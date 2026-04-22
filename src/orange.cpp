@@ -1931,6 +1931,61 @@ void render_aperture_characterization_window(
 }  // namespace
 
 
+nlohmann::json build_gui_detect_model_snapshot(const CameraParams& camera_params,
+                                               const CameraEachSelect& camera_select,
+                                               const std::string& selected_yolo_model)
+{
+    const bool enabled = camera_select.yolo;
+    std::string selected_engine_path = selected_yolo_model;
+    if (enabled && camera_select.yolo_model && camera_select.yolo_model[0] != '\0') {
+        selected_engine_path = camera_select.yolo_model;
+    }
+    const std::string engine_path = enabled ? selected_engine_path : "";
+    return {
+        {"enabled", enabled},
+        {"source", {
+            {"ui_selected", camera_select.yolo},
+            {"camera_config_path", camera_params.config_path}
+        }},
+        {"runtime", {
+            {"worker", "YoloWorker"},
+            {"backend", enabled ? "tensorrt" : "none"},
+            {"engine_path", engine_path},
+            {"model_id", enabled ? build_model_id_from_path(engine_path) : "none"},
+            {"gpu_id", camera_params.gpu_id}
+        }}
+    };
+}
+
+void update_gui_detect_model_snapshots(const std::string& recording_folder,
+                                       const CameraParams* cameras_params,
+                                       const CameraEachSelect* cameras_select,
+                                       const int num_cameras,
+                                       const std::string& selected_yolo_model)
+{
+    if (recording_folder.empty() || !cameras_params || !cameras_select || num_cameras <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        std::string camera_key = cameras_params[i].camera_serial;
+        if (camera_key.empty()) {
+            camera_key = std::to_string(cameras_params[i].camera_id);
+        }
+        if (!update_recording_snapshot_model(
+                recording_folder,
+                camera_key,
+                "detect",
+                build_gui_detect_model_snapshot(
+                    cameras_params[i],
+                    cameras_select[i],
+                    selected_yolo_model))) {
+            std::cerr << "Failed to update recording snapshot detect model metadata for camera "
+                      << camera_key << std::endl;
+        }
+    }
+}
+
 void RenderSpeedGraph(int camera_id, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
     if (!yolo_worker) return;
     
@@ -3156,6 +3211,14 @@ int main(int argc, char **args) {
                                         ptp_params);
                                 allow_transition = start_result.ok;
                                 resolved_recording_folder = start_result.recording_folder;
+                                if (start_result.ok) {
+                                    update_gui_detect_model_snapshots(
+                                        resolved_recording_folder,
+                                        cameras_params,
+                                        cameras_select,
+                                        num_cameras,
+                                        yolo_model);
+                                }
                             }
                         }
 

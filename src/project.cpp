@@ -29,6 +29,8 @@
 
 namespace {
 
+std::string read_file_to_string(const std::string& path, std::string* error);
+
 constexpr const char* kAppConfigSchemaId = "orange.app.config";
 constexpr int kAppConfigSchemaVersion = 1;
 
@@ -45,6 +47,35 @@ std::string default_canonical_pointer_root_for_orange_root(const std::string& or
 std::string default_run_pointer_path()
 {
     return "/run/orange/latest_recording.json";
+}
+
+bool read_recording_snapshot_locked(const std::filesystem::path& snapshot_path,
+                                    nlohmann::json* snapshot_out)
+{
+    if (!snapshot_out) {
+        return false;
+    }
+
+    std::string error;
+    std::string contents = read_file_to_string(snapshot_path.string(), &error);
+    if (contents.empty()) {
+        std::cerr << "Failed to read recording snapshot: " << snapshot_path.string()
+                  << " (" << (error.empty() ? "empty file" : error) << ")" << std::endl;
+        return false;
+    }
+
+    try {
+        *snapshot_out = nlohmann::json::parse(contents);
+    } catch (const std::exception& ex) {
+        std::cerr << "Failed to parse recording snapshot: " << snapshot_path.string()
+                  << " (" << ex.what() << ")" << std::endl;
+        return false;
+    }
+
+    if (!snapshot_out->is_object()) {
+        *snapshot_out = nlohmann::json::object();
+    }
+    return true;
 }
 
 std::string trim_ascii_copy(std::string value)
@@ -2892,6 +2923,63 @@ bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folde
     }
 
     return true;
+}
+
+bool update_recording_snapshot_model(const std::string& recording_folder,
+                                     const std::string& camera_serial,
+                                     const std::string& model_kind,
+                                     const nlohmann::json& model_info) {
+    if (recording_folder.empty() || camera_serial.empty() || model_kind.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+
+    if (!snapshot.contains("models") || !snapshot["models"].is_object()) {
+        snapshot["models"] = nlohmann::json::object();
+    }
+    if (!snapshot["models"].contains(camera_serial) ||
+        !snapshot["models"][camera_serial].is_object()) {
+        snapshot["models"][camera_serial] = nlohmann::json::object();
+    }
+
+    snapshot["models"][camera_serial][model_kind] = model_info;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
+    }
+
+    return true;
+}
+
+std::string build_model_id_from_path(const std::string& model_path)
+{
+    if (model_path.empty()) {
+        return "unknown";
+    }
+    try {
+        const std::filesystem::path path(model_path);
+        const std::string stem = path.stem().string();
+        if (!stem.empty()) {
+            return stem;
+        }
+        const std::string filename = path.filename().string();
+        if (!filename.empty()) {
+            return filename;
+        }
+    } catch (...) {
+    }
+    return model_path;
 }
 
 bool read_camera_config_snapshot(const CameraParams& camera_params,

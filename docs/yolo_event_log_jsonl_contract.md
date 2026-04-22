@@ -90,6 +90,14 @@ Field semantics:
 - `timestamps.event_monotonic_us`: Orange monotonic microseconds when this JSONL
   event was emitted.
 
+Consumer rule:
+
+- Use `frame.record_active == true` and `frame.recording_frame_id > 0` when
+  joining YOLO rows one-to-one with recorded video frames or `Cam*_meta.csv`.
+  Current GUI logging may include a small tail of post-recording stream frames
+  after recording stops; those rows intentionally preserve live YOLO state but
+  do not correspond to encoded video frames.
+
 ## Row Types
 
 ### `yolo_result`
@@ -123,8 +131,8 @@ result.
     "status": "detections",
     "detection_count": 1,
     "coordinate_space": "source_frame_pixels",
-    "model_id": "unknown",
-    "engine_path": "",
+    "model_id": "fish_jinyao",
+    "engine_path": "/abs/path/models/fish_jinyao.engine",
     "gpu_id": 5
   },
   "detections": [
@@ -182,6 +190,32 @@ Detection semantics:
   the current Citrus live queue.
 - `not_requested_failed`: failed/timeout results are not published to the
   current Citrus live queue.
+
+## Validation Notes
+
+### GUI YOLO Recording Smoke, 2026-04-22
+
+Artifact:
+
+```text
+/home/jeremy/orange_data/exp/unsorted/2026_04_22_15_07_45
+```
+
+Observed behavior:
+
+- Camera `2010096` produced `Cam2010096.mp4`, `Cam2010096_meta.csv`,
+  `Cam2010096_yolo_events.jsonl`, and `Cam2010096_yolo_perf.csv`.
+- Video and metadata matched at `2351` recorded frames.
+- YOLO JSONL emitted `2356` `yolo_result` rows with consecutive
+  `event_sequence` values.
+- The active recording subset was clean: `recording_frame_id` covered
+  `1..2351` with no gaps.
+- The final `5` YOLO rows had `record_active=false` and
+  `recording_frame_id=0` because streaming continued briefly after recording
+  stopped.
+- Status counts were `1720` `detections` and `636` `zero_detections`.
+- Citrus live IPC was requested for all non-empty detection rows and was not
+  requested for zero-detection rows, matching the current contract.
 
 ### `citrus_live_ipc_decision`
 

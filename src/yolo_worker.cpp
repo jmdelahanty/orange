@@ -925,6 +925,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             record.engine_path = associated_camera_select_->yolo_model
                 ? associated_camera_select_->yolo_model
                 : "";
+            record.model_id = build_model_id_from_path(record.engine_path);
             record.detections = entry->detections;
             record.queue_name = frame_ipc_queue_name;
             record.ipc_enabled = frame_ipc_enabled;

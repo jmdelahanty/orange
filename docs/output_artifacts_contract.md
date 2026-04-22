@@ -450,6 +450,14 @@ Gate:
 - Disabled when `ORANGE_YOLO_PERF_LOG=0`.
 - Sampling controlled by `ORANGE_YOLO_PERF_SAMPLE`.
 
+Behavior notes:
+- The GUI YOLO perf file is opened against the active recording folder.
+  Stream-only YOLO prints `[YOLO_TIME]` console rows when `YOLO_PROFILE=1`, but
+  does not create `Cam<serial>_yolo_perf.csv` until a recording folder exists.
+- Current GUI logging may include a small post-recording tail where
+  `recording_frame_id=0`; filter on `recording_frame_id > 0` when joining the
+  CSV to encoded video frames.
+
 ### YOLO Event JSONL (`Cam<serial>_yolo_events.jsonl`)
 
 Path:
@@ -471,8 +479,26 @@ Current behavior:
   does not yet emit final asynchronous `citrus_live_ipc_decision` rows.
 - Headless synthetic rows are audit-only and do not publish synthetic detection
   updates into the live Citrus shared-memory queue.
+- Current GUI logging can include a small post-recording stream tail after the
+  encoded recording stops. Consumers that need one row per recorded video frame
+  should filter to `frame.record_active == true` and
+  `frame.recording_frame_id > 0`.
 
 See [yolo_event_log_jsonl_contract.md](./yolo_event_log_jsonl_contract.md).
+
+Validation note, `2026-04-22` GUI YOLO smoke:
+
+- Artifact folder:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_15_07_45`
+- Camera `2010096` produced HEVC video at `4512x4512`, `100 fps`, `23.51 s`,
+  `2351` frames.
+- `Cam2010096_meta.csv` had `2351` data rows, matching the video.
+- `Cam2010096_yolo_events.jsonl` had `2356` rows, consecutive sequence ids,
+  and active recording ids `1..2351` with no gaps.
+- `Cam2010096_yolo_perf.csv` had `2356` rows, all `ok=1`; `total_ms` mean was
+  about `3.51 ms`, p95 about `4.02 ms`, and p99 about `5.05 ms`.
+- The run confirmed `models[2010096].detect` in `recording_snapshot.json`
+  captured the TensorRT engine path, model id, worker, backend, and GPU id.
 
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 

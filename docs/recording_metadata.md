@@ -742,15 +742,30 @@ Consumer rule:
 
 ## Detect Model Metadata
 
-`models[serial].detect` should capture the resolved detect runtime, including:
+`models[serial].detect` captures the resolved detect runtime when the GUI starts
+a recording. Current GUI fields include:
 
 - `enabled`
 - source provenance (`camera_config_path` and/or UI-driven selection metadata)
 - runtime identifiers:
-  - `backend`, `engine_path`, `engine_sha256`
+  - `worker`, `backend`, `engine_path`, `model_id`, `gpu_id`
+
+Future fields should add:
+
+  - `engine_sha256`
   - optional class mapping identifiers (for example `classes_path`,
     `classes_sha256`, `label_space`)
   - input/output interpretation fields used by downstream consumers
+
+Validation note:
+
+- The GUI YOLO smoke artifact
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_15_07_45` confirmed that
+  the snapshot records `models[2010096].detect.enabled=true` with worker
+  `YoloWorker`, backend `tensorrt`, engine path, model id, and GPU id.
+- The same snapshot records `models[2010095].detect.enabled=false` with backend
+  `none`, which is useful for consumers distinguishing disabled model state from
+  missing metadata.
 
 Suggested snapshot shape:
 
@@ -765,8 +780,11 @@ Suggested snapshot shape:
           "ui_selected": true
         },
         "runtime": {
+          "worker": "YoloWorker",
           "backend": "tensorrt",
           "engine_path": "/abs/path/models/fish_jinyao.engine",
+          "model_id": "fish_jinyao",
+          "gpu_id": 5,
           "engine_sha256": "123abc...",
           "classes_path": "/abs/path/models/fish_classes.txt",
           "classes_sha256": "789xyz...",
