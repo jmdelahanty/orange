@@ -501,6 +501,18 @@ Validation note, `2026-04-22` GUI YOLO smoke:
   the extra `5` rows had `recording_frame_id=0` and should be omitted by the
   current runtime.
 
+Validation note, `2026-04-22` strict recorded-frame GUI YOLO smoke:
+
+- Artifact folder:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_17_41_15`
+- Camera `2010096` produced HEVC video at `4512x4512`, `100 fps`, `11.51 s`,
+  `1151` frames.
+- `Cam2010096_meta.csv`, `Cam2010096_yolo_events.jsonl`, and
+  `Cam2010096_yolo_perf.csv` each had `1151` data rows.
+- `recording_frame_id` covered `1..1151` with no gaps and no zero ids.
+- `Cam2010096_yolo_perf.csv` had all `ok=1`; `total_ms` mean was about
+  `3.45 ms`, p95 about `4.06 ms`, and p99 about `4.12 ms`.
+
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 
 Header (exact order):

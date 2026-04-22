@@ -217,6 +217,27 @@ Observed behavior:
 - Citrus live IPC was requested for all non-empty detection rows and was not
   requested for zero-detection rows, matching the current contract.
 
+### Strict Recorded-Frame GUI YOLO Smoke, 2026-04-22
+
+Artifact:
+
+```text
+/home/jeremy/orange_data/exp/unsorted/2026_04_22_17_41_15
+```
+
+Observed behavior after the strict recorded-frame logging gate:
+
+- Camera `2010096` produced HEVC video at `4512x4512`, `100 fps`,
+  `11.51 s`, with `1151` encoded frames.
+- `Cam2010096_meta.csv` had `1151` data rows.
+- `Cam2010096_yolo_events.jsonl` had `1151` `yolo_result` rows.
+- `Cam2010096_yolo_perf.csv` had `1151` data rows.
+- `event_sequence` and `recording_frame_id` both covered `1..1151` with no
+  gaps and no zero recording-frame ids.
+- All YOLO rows were `record_active=true`; status count was `1151`
+  `detections`.
+- Citrus live IPC was requested for every detection row.
+
 ### `citrus_live_ipc_decision`
 
 Planned row. Required once Orange can observe the final live-IPC handling
