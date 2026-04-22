@@ -905,7 +905,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         ms_enet = std::chrono::duration<double, std::milli>(enet_end - enet_start).count();
 #endif
 
-        if (event_logger_ && !entry->recording_folder.empty()) {
+        const bool has_recording_frame = entry->recording_frame_id > 0;
+        if (event_logger_ && !entry->recording_folder.empty() && has_recording_frame) {
             yolo_event_log::YoloResultRecord record;
             record.recording_folder = entry->recording_folder;
             record.status = std::move(yolo_status);
@@ -966,7 +967,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         }
 #endif
 
-        if (perf_logger_ && !perf_log_folder_.empty()) {
+        if (perf_logger_ && !perf_log_folder_.empty() && has_recording_frame) {
             perf_sample_counter_++;
             if (perf_sample_counter_ % static_cast<uint64_t>(perf_sample_rate_) == 0) {
                 yolo_perf::YoloPerfRecord record;

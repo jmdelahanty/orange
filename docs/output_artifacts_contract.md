@@ -454,9 +454,8 @@ Behavior notes:
 - The GUI YOLO perf file is opened against the active recording folder.
   Stream-only YOLO prints `[YOLO_TIME]` console rows when `YOLO_PROFILE=1`, but
   does not create `Cam<serial>_yolo_perf.csv` until a recording folder exists.
-- Current GUI logging may include a small post-recording tail where
-  `recording_frame_id=0`; filter on `recording_frame_id > 0` when joining the
-  CSV to encoded video frames.
+- Current GUI logging only writes sampled rows when `recording_frame_id > 0`,
+  so the CSV should represent recorded frames only.
 
 ### YOLO Event JSONL (`Cam<serial>_yolo_events.jsonl`)
 
@@ -479,10 +478,9 @@ Current behavior:
   does not yet emit final asynchronous `citrus_live_ipc_decision` rows.
 - Headless synthetic rows are audit-only and do not publish synthetic detection
   updates into the live Citrus shared-memory queue.
-- Current GUI logging can include a small post-recording stream tail after the
-  encoded recording stops. Consumers that need one row per recorded video frame
-  should filter to `frame.record_active == true` and
-  `frame.recording_frame_id > 0`.
+- Current GUI logging only writes rows for frames that have
+  `frame.recording_frame_id > 0`, so rows should correspond to recorded frames
+  rather than post-recording stream tail frames.
 
 See [yolo_event_log_jsonl_contract.md](./yolo_event_log_jsonl_contract.md).
 
@@ -499,6 +497,9 @@ Validation note, `2026-04-22` GUI YOLO smoke:
   about `3.51 ms`, p95 about `4.02 ms`, and p99 about `5.05 ms`.
 - The run confirmed `models[2010096].detect` in `recording_snapshot.json`
   captured the TensorRT engine path, model id, worker, backend, and GPU id.
+- This validation was captured before the strict recorded-frame logging gate;
+  the extra `5` rows had `recording_frame_id=0` and should be omitted by the
+  current runtime.
 
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 

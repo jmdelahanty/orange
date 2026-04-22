@@ -94,9 +94,8 @@ Consumer rule:
 
 - Use `frame.record_active == true` and `frame.recording_frame_id > 0` when
   joining YOLO rows one-to-one with recorded video frames or `Cam*_meta.csv`.
-  Current GUI logging may include a small tail of post-recording stream frames
-  after recording stops; those rows intentionally preserve live YOLO state but
-  do not correspond to encoded video frames.
+  The current GUI runtime only writes YOLO JSONL rows for frames that have a
+  positive recording-local frame id.
 
 ## Row Types
 
@@ -212,7 +211,8 @@ Observed behavior:
   `1..2351` with no gaps.
 - The final `5` YOLO rows had `record_active=false` and
   `recording_frame_id=0` because streaming continued briefly after recording
-  stopped.
+  stopped. This was observed before the strict recorded-frame logging gate was
+  added; current GUI logging should omit that post-recording tail.
 - Status counts were `1720` `detections` and `636` `zero_detections`.
 - Citrus live IPC was requested for all non-empty detection rows and was not
   requested for zero-detection rows, matching the current contract.
