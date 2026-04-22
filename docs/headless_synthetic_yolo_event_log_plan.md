@@ -6,6 +6,10 @@ Status: implemented initial synthetic audit writer and validator.
 Purpose: make `Cam<serial>_yolo_events.jsonl` testable through headless
 experiments without requiring TensorRT YOLO, GUI workers, or real detections.
 
+See [headless_real_yolo_worker_plan.md](./headless_real_yolo_worker_plan.md)
+for the separate future path that would instantiate the real TensorRT
+`YOLOv8Worker` in headless experiments.
+
 ## Goal
 
 Add a deterministic headless mode that writes the same YOLO event JSONL artifact

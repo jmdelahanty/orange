@@ -204,6 +204,8 @@ Headless YOLO audit-log test mode:
 - Synthetic rows are audit-only for now; they do not call
   `FrameIPCManager::updateFrameWithDetections(...)`.
 - See [headless_synthetic_yolo_event_log_plan.md](./headless_synthetic_yolo_event_log_plan.md).
+- See [headless_real_yolo_worker_plan.md](./headless_real_yolo_worker_plan.md)
+  for the future opt-in TensorRT YOLO worker path.
 
 `fixed.recording_sink_mode` is a separate experimental diagnostic knob for
 recording-enabled runs:
