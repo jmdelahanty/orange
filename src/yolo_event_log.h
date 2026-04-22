@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.hpp"
+#include "yolo_event_log_config.h"
 
 #include <condition_variable>
 #include <cstdint>
@@ -36,19 +37,6 @@ struct YoloResultRecord {
     bool ipc_enabled = false;
     bool ipc_requested = false;
     std::string ipc_request_status = "not_enabled";
-};
-
-struct SyntheticYoloEventConfig {
-    std::string mode = "off";
-    int every_n_frames = 10;
-    std::string pattern = "alternating";
-    bool emit_zero_detections = true;
-    int label = 0;
-    double confidence = 0.9;
-
-    bool enabled() const {
-        return mode == "synthetic";
-    }
 };
 
 struct SyntheticYoloFrameInput {

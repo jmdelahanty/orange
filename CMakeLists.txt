@@ -275,6 +275,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/yolo_event_log.cpp"
+    "${SRC_DIR}/yolo_event_log_validation.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     ${NVENCODER_SOURCES}
     "${SRC_DIR}/kernel.cu"
@@ -311,6 +312,14 @@ if(BUILD_TESTING)
     target_include_directories(recording_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_validation_tests PRIVATE cxx_std_17)
     add_test(NAME recording_validation_tests COMMAND recording_validation_tests)
+
+    add_executable(yolo_event_log_validation_tests
+        "tools/yolo_event_log_validation_tests.cpp"
+        "${SRC_DIR}/yolo_event_log_validation.cpp"
+    )
+    target_include_directories(yolo_event_log_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(yolo_event_log_validation_tests PRIVATE cxx_std_17)
+    add_test(NAME yolo_event_log_validation_tests COMMAND yolo_event_log_validation_tests)
 endif()
 
 function(orange_configure_target target_name)
