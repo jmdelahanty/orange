@@ -141,7 +141,7 @@ This backend should own the modern worker path:
 - `EncoderPreprocessWorker`
 - `EncoderHwWorker`
 - optional `COpenGLDisplay`
-- optional `YOLOv8Worker`
+- optional `YoloWorker`
 - optional `CropAndEncodeWorker`
 
 Suggested types:

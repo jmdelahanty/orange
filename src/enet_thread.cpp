@@ -37,7 +37,7 @@ void create_enet_thread(EnetContext* server_enet_context,
                         std::cout << "enet_thread.cpp: Attempting to set target for YOLO workers. Current yolo_workers.size() = " << yolo_workers.size()
                                   << ". server_enet_context address: " << static_cast<void*>(server_enet_context) << std::endl;
 
-                        for (YOLOv8Worker* worker : yolo_workers) {
+                        for (YoloWorker* worker : yolo_workers) {
                             if (worker) {
                                 std::cout << "enet_thread.cpp: Calling SetENetTarget for worker at " << static_cast<void*>(worker)
                                           << " with server_enet_context: " << static_cast<void*>(server_enet_context)
@@ -92,7 +92,7 @@ void create_enet_thread(EnetContext* server_enet_context,
                                 indigo_signal_builder->indigo_connection = evnt.peer;
                                 if (external_data_consumer_peer == evnt.peer) {
                                     external_data_consumer_peer = nullptr;
-                                    for (YOLOv8Worker* worker : yolo_workers) {
+                                    for (YoloWorker* worker : yolo_workers) {
                                         if (worker) worker->SetENetTarget(server_enet_context, nullptr);
                                     }
                                 }
@@ -132,7 +132,7 @@ void create_enet_thread(EnetContext* server_enet_context,
                     if (evnt.peer == external_data_consumer_peer) {
                         std::cout << "External data consumer (YOLO ENet target) disconnected." << std::endl;
                         external_data_consumer_peer = nullptr;
-                        for (YOLOv8Worker* worker : yolo_workers) {
+                        for (YoloWorker* worker : yolo_workers) {
                             if (worker) {
                                 worker->SetENetTarget(server_enet_context, nullptr);
                             }

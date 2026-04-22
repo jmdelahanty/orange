@@ -7,7 +7,7 @@
 #include <thread>
 #include <unordered_map>
 #include "acquire_frames.h"
-#include "yolo_worker.h" // Include the YOLOv8Worker header
+#include "yolo_worker.h" // Include the YoloWorker header
 #include "network_base.h"
 #include "enet_thread.h"
 

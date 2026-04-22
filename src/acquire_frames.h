@@ -15,7 +15,7 @@
 // Forward declare worker classes to break include cycles
 class COpenGLDisplay;
 class GPUVideoEncoder;
-class YOLOv8Worker;
+class YoloWorker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
 class RecordingIngress;
@@ -33,7 +33,7 @@ void acquire_frames(
     INDIGOSignalBuilder* indigo_signal_builder,
     COpenGLDisplay* openGLDisplay,
     RecordingIngress* recording_ingress,
-    YOLOv8Worker* yolo_worker,
+    YoloWorker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources,
     FrameIPCManager* frame_ipc_manager,

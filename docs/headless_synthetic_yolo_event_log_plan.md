@@ -8,7 +8,7 @@ experiments without requiring TensorRT YOLO, GUI workers, or real detections.
 
 See [headless_real_yolo_worker_plan.md](./headless_real_yolo_worker_plan.md)
 for the separate future path that would instantiate the real TensorRT
-`YOLOv8Worker` in headless experiments.
+`YoloWorker` in headless experiments.
 
 ## Goal
 
@@ -47,7 +47,7 @@ The shared component should expose:
 - `YoloResultRecord`
 - helper conversion from detection objects to JSON
 
-The GUI `YOLOv8Worker` and headless synthetic emitter should use the same
+The GUI `YoloWorker` and headless synthetic emitter should use the same
 logger. That avoids creating two independent JSONL writers with subtly
 different schemas.
 
@@ -114,7 +114,7 @@ All coordinates are source-frame pixels.
 
 ## Where To Emit
 
-Headless currently does not create `YOLOv8Worker`. The synthetic emitter should
+Headless currently does not create `YoloWorker`. The synthetic emitter should
 sit in the headless experiment/acquisition path, not in the GUI YOLO path.
 
 Preferred implementation:

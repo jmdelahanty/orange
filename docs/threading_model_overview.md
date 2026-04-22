@@ -9,7 +9,7 @@ The codebase uses a small thread-per-stage pipeline model. Each stage is a `CThr
 Primary stages (per camera):
 - Acquisition thread (not a `CThreadWorker`): pulls frames from the camera, fills a `WORKER_ENTRY`, records a CUDA event for readiness, and dispatches to downstream workers.
 - Display (`COpenGLDisplay`): consumes frames for on-screen rendering (GPU → PBO), may wait for YOLO overlays.
-- YOLO (`YOLOv8Worker`): runs inference, writes detections into the entry, may dispatch to crop/encode.
+- YOLO (`YoloWorker`): runs inference, writes detections into the entry, may dispatch to crop/encode.
 - Encoder preprocess (`EncoderPreprocessWorker`): prepares frames for HW encoding and hands off `ENCODER_WORKER_ENTRY` to the HW encoder.
 - HW encoder (`EncoderHwWorker`): performs NVENC encoding and file I/O.
 - Crop/encode (`CropAndEncodeWorker`): creates a 256x256 crop for both preview and optional NVENC recording.
@@ -77,7 +77,7 @@ flowchart LR
 
     subgraph W[Workers]
         D[Display Worker\nCOpenGLDisplay]
-        Y[YOLO Worker\nYOLOv8Worker]
+        Y[YOLO Worker\nYoloWorker]
         P[Encoder Preprocess\nEncoderPreprocessWorker]
         H[HW Encoder\nEncoderHwWorker]
         C[Crop/Encode Worker\nCropAndEncodeWorker]

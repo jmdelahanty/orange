@@ -358,7 +358,7 @@ struct AppRuntimeState {
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::thread> camera_threads;
-    std::vector<YOLOv8Worker*> yolo_workers;
+    std::vector<YoloWorker*> yolo_workers;
     COpenGLDisplay** openGLDisplayWorkers;
     EncoderPreprocessWorker** encoderPreprocessWorkers;
     EncoderHwWorker** encoderHWWorkers;

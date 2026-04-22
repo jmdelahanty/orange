@@ -16,7 +16,7 @@
 
 class COpenGLDisplay;
 class GPUVideoEncoder;
-class YOLOv8Worker;
+class YoloWorker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
 class FrameIPCManager;

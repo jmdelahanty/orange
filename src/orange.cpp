@@ -49,7 +49,7 @@
 #include <limits>
 #include <sstream>
 
-std::vector<YOLOv8Worker*> yolo_workers; // For managing YOLO workers
+std::vector<YoloWorker*> yolo_workers; // For managing YOLO workers
 ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
 std::vector<SpeedTrackingData> speed_tracking_data;
 
@@ -1931,7 +1931,7 @@ void render_aperture_characterization_window(
 }  // namespace
 
 
-void RenderSpeedGraph(int camera_id, YOLOv8Worker* yolo_worker, SpeedTrackingData& speed_data) {
+void RenderSpeedGraph(int camera_id, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
     if (!yolo_worker) return;
     
     // Get current tracked objects from YOLO worker
@@ -2916,9 +2916,9 @@ int main(int argc, char **args) {
                                     openGLDisplayWorkers[i] = new COpenGLDisplay(name.c_str(), &cameras_params[i], &cameras_select[i], tex[i].cuda_buffer, &indigo_signal_builder, *camera_resources[i].recycle_queue);
                                 }
                                 if (cameras_select[i].yolo) {
-                                    std::string name = "YOLO_Worker_Cam_" + cameras_params[i].camera_serial;
+                                    std::string name = "YoloWorker_Cam_" + cameras_params[i].camera_serial;
                                     cameras_select[i].yolo_model = yolo_model.c_str();
-                                    yolo_workers[i] = new YOLOv8Worker(
+                                    yolo_workers[i] = new YoloWorker(
                                         name.c_str(),
                                         &cameras_params[i],
                                         &cameras_select[i],

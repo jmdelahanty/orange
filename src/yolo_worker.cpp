@@ -379,11 +379,11 @@ YoloPerfConfig GetYoloPerfConfig() {
 }
 } // namespace yolo_perf
 
-YOLOv8Worker::YOLOv8Worker(const char* name,
-                           CameraParams* cam_params,
-                           CameraEachSelect* cam_select,
-                           CameraControl* camera_control,
-                           SafeQueue<WORKER_ENTRY*>& recycle_queue)
+YoloWorker::YoloWorker(const char* name,
+                       CameraParams* cam_params,
+                       CameraEachSelect* cam_select,
+                       CameraControl* camera_control,
+                       SafeQueue<WORKER_ENTRY*>& recycle_queue)
     : CThreadWorker(name),
       yolov8_instance_(nullptr),
       associated_camera_params_(cam_params),
@@ -399,7 +399,7 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
       m_dump_next_frame(false)
 {
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
-    std::cout << "YOLOv8Worker constructor set to CUDA device: " << associated_camera_params_->gpu_id << std::endl;
+    std::cout << "YoloWorker constructor set to CUDA device: " << associated_camera_params_->gpu_id << std::endl;
 
     try {
         if (!associated_camera_params_ || !associated_camera_select_) {
@@ -423,7 +423,7 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
         initalize_gpu_frame(&frame_original_gpu_, associated_camera_params_);
         initialize_gpu_debayer(&debayer_gpu_, associated_camera_params_);
 
-        std::cout << "YOLOv8Worker for " << name << " initialized successfully." << std::endl;
+        std::cout << "YoloWorker for " << name << " initialized successfully." << std::endl;
         // IPC logging disabled: YOLO IPC note.
 
         event_logger_ = std::make_unique<yolo_event_log::YoloEventLogger>(
@@ -445,7 +445,7 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
         }
 
     } catch (const std::exception& e) {
-        std::cerr << "YOLOv8Worker Error for " << name << ": " << e.what() << std::endl;
+        std::cerr << "YoloWorker Error for " << name << ": " << e.what() << std::endl;
 
         if (fb_builder_) { delete fb_builder_; fb_builder_ = nullptr; }
         if (yolov8_instance_) { delete yolov8_instance_; yolov8_instance_ = nullptr; }
@@ -457,8 +457,8 @@ YOLOv8Worker::YOLOv8Worker(const char* name,
     }
 }
 
-YOLOv8Worker::~YOLOv8Worker() {
-    std::cout << "YOLOv8Worker destructor for " << threadName << std::endl;
+YoloWorker::~YoloWorker() {
+    std::cout << "YoloWorker destructor for " << threadName << std::endl;
 
     if (perf_logger_) {
         perf_logger_->Stop();
@@ -478,27 +478,27 @@ YOLOv8Worker::~YOLOv8Worker() {
 
     if (fb_builder_) delete fb_builder_;
 
-    std::cout << "YOLOv8Worker destructor complete for " << threadName << std::endl;
+    std::cout << "YoloWorker destructor complete for " << threadName << std::endl;
 }
 
-void YOLOv8Worker::SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker) {
+void YoloWorker::SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker) {
     m_crop_worker = crop_worker;
 }
 
-void YOLOv8Worker::SetDisplayWorker(COpenGLDisplay* display_worker) {
+void YoloWorker::SetDisplayWorker(COpenGLDisplay* display_worker) {
     m_display_worker = display_worker;
 }
 
-void YOLOv8Worker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
+void YoloWorker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
 {
-    std::cout << "YOLOv8Worker (" << this->threadName
+    std::cout << "YoloWorker (" << this->threadName
               << "): SetENetTarget called. Host_ctx: " << static_cast<void*>(host_ctx)
               << ". Target_peer: " << static_cast<void*>(target_peer) << std::endl;
     enet_host_context_ = host_ctx;
     enet_target_peer_ = target_peer;
 }
 
-bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
+bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     static thread_local bool affinity_set = false;
     if (!affinity_set) {
         ApplyYoloAffinity();
@@ -744,7 +744,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
                 auto elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - inference_start_time).count();
 
                 if (elapsed_us > timeout_us) {
-                    std::cerr << "[YOLOv8Worker] WARNING: Inference timed out after " << elapsed_us << "us. Dropping frame." << std::endl;
+                    std::cerr << "[YoloWorker] WARNING: Inference timed out after " << elapsed_us << "us. Dropping frame." << std::endl;
                     break; // Timed out
                 }
 
@@ -1019,7 +1019,7 @@ bool YOLOv8Worker::WorkerFunction(WORKER_ENTRY* entry) {
     return false;
 }
 
-void YOLOv8Worker::WorkerReset() {
+void YoloWorker::WorkerReset() {
     last_fps_update_time_ = std::chrono::steady_clock::now();
     frame_counter_ = 0;
     current_fps_ = 0.0;

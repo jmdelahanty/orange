@@ -25,15 +25,15 @@ class YoloPerfLogger;
 }
 namespace yolo_event_log { class YoloEventLogger; }
 
-class YOLOv8Worker : public CThreadWorker<WORKER_ENTRY>
+class YoloWorker : public CThreadWorker<WORKER_ENTRY>
 {
 public:
-    YOLOv8Worker(const char* name,
-                    CameraParams* cam_params,
-                    CameraEachSelect* cam_select,
-                    CameraControl* camera_control,
-                    SafeQueue<WORKER_ENTRY*>& recycle_queue);
-    ~YOLOv8Worker() override;
+    YoloWorker(const char* name,
+               CameraParams* cam_params,
+               CameraEachSelect* cam_select,
+               CameraControl* camera_control,
+               SafeQueue<WORKER_ENTRY*>& recycle_queue);
+    ~YoloWorker() override;
 
     void SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer);
     void SetDisplayWorker(COpenGLDisplay* display_worker);

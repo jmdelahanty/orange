@@ -16,10 +16,10 @@
 // Forward declarations if full definitions are not needed in this header
 // struct EnetContext;
 // struct ConnectedServer;
-// class YOLOv8Worker;
+// class YoloWorker;
 // struct INDIGOSignalBuilder;
 
-extern std::vector<YOLOv8Worker*> yolo_workers;
+extern std::vector<YoloWorker*> yolo_workers;
 extern ENetPeer* external_data_consumer_peer;
 
 // Only DECLARE the function here

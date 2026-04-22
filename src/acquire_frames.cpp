@@ -908,7 +908,7 @@ void acquire_frames(
     INDIGOSignalBuilder* indigo_signal_builder,
     COpenGLDisplay* openGLDisplay,
     RecordingIngress* recording_ingress,
-    YOLOv8Worker* yolo_worker,
+    YoloWorker* yolo_worker,
     ImageWriterWorker* image_writer,
     CameraResources* resources,
     FrameIPCManager* frame_ipc_manager,

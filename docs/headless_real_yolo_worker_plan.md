@@ -3,9 +3,10 @@
 Date: 2026-04-22
 Status: design and implementation checklist.
 
-Purpose: define what it would take to run the real TensorRT `YOLOv8Worker`
-from headless experiments, while preserving the current stable recording path
-and the Citrus live-control IPC contract.
+Purpose: define what it would take to run the real `YoloWorker` from headless
+experiments, while preserving the current stable recording path and the Citrus
+live-control IPC contract. The current worker implementation is backed by the
+TensorRT YOLOv8 detector, but the Orange worker name is model-version neutral.
 
 ## Current State
 
@@ -68,7 +69,7 @@ Initial fields:
 
 - `mode`
   - `off`: default.
-  - `real`: instantiate the TensorRT `YOLOv8Worker` in headless mode.
+  - `real`: instantiate `YoloWorker` in headless mode.
 - `engine_path`
   - Required for `mode=real`.
   - Should map to `CameraEachSelect::yolo_model` before worker construction.
@@ -90,7 +91,7 @@ Initial fields:
 
 ## Architecture
 
-Headless should use the same `YOLOv8Worker` class as GUI for the first real
+Headless should use the same `YoloWorker` class as GUI for the first real
 slice. Avoid creating a second inference implementation unless the GUI worker is
 too coupled to display/crop behavior.
 
@@ -104,7 +105,7 @@ Expected headless wiring:
    storage that outlives worker construction.
 5. Initialize `CameraResources` with YOLO support enabled so YOLO completion
    events and queues exist.
-6. Construct `YOLOv8Worker` for each selected camera.
+6. Construct `YoloWorker` for each selected camera.
 7. Pass the worker pointer into `acquire_frames(...)`.
 8. Start acquisition and worker threads.
 9. Drain/stop/join workers before freeing camera resources.
@@ -197,7 +198,7 @@ Optional performance counters:
 - [ ] Store per-camera YOLO engine paths in owned strings that outlive workers.
 - [ ] Initialize `CameraResources` with YOLO support when real headless YOLO is
   enabled.
-- [ ] Construct and start `YOLOv8Worker` in headless local runs.
+- [ ] Construct and start `YoloWorker` in headless local runs.
 - [ ] Pass the worker pointer into `acquire_frames(...)`.
 - [ ] Ensure shutdown stops YOLO workers before camera resources are freed.
 - [ ] Reuse existing JSONL summarization for real YOLO.
