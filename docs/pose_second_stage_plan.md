@@ -25,6 +25,20 @@ Implications:
   the pipeline should generate that larger crop first and downsample/convert
   only for crop-video encoding when needed.
 
+High-frame-rate note (2026-04-23):
+
+- A future `~2.8 MP Mono8 @ 500 fps` workflow is not automatically more
+  bandwidth-heavy than the current `4512x4512 Mono8 @ 100 fps` workflow.
+- Roughly:
+  - current `20 MP @ 100 fps` is about `2.04 GB/s` per camera,
+  - future `2.8 MP @ 500 fps` is about `1.4 GB/s` per camera.
+- The harder part at `500 fps` is the frame budget, not just the byte budget:
+  - `100 fps` leaves about `10 ms/frame`,
+  - `500 fps` leaves about `2 ms/frame`.
+- Therefore the pose architecture should optimize first for low per-frame host
+  overhead, explicit ownership boundaries, and bounded best-effort fanout,
+  rather than assuming raw bandwidth will be the dominant constraint.
+
 ## Current Assumptions (2026-02-13)
 - Pose runs on every frame that produces a crop (i.e., when YOLO fires and produces detections).
 - Output should be drawn on the overlay and published over IPC.

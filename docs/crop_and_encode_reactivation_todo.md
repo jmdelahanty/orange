@@ -542,6 +542,30 @@ Immediate next-step recommendation (2026-04-23):
 - After the split is complete, validate the first pose-on-crop path against the
   same two-camera `100 fps` workload.
 
+Future high-FPS takeaway (2026-04-23):
+
+- The current crop-detach work is also useful preparation for future
+  lower-pixel, higher-frame-rate cameras.
+- Important distinction:
+  - current `4512x4512 Mono8 @ 100 fps` is about `2.04 GB/s` per camera,
+  - future `~2.8 MP Mono8 @ 500 fps` would be about `1.4 GB/s` per camera.
+- That means the future regime is not automatically worse in raw bytes/sec.
+  The bigger problem is per-frame overhead:
+  - `100 fps` gives about `10 ms/frame`,
+  - `500 fps` gives about `2 ms/frame`.
+- For that regime, hidden host enqueue stalls, source-buffer ownership
+  mistakes, and CPU-visible synchronization become more dangerous than raw copy
+  bandwidth alone.
+- The architectural lesson to preserve is:
+  - treat GPUDirect camera memory as an ingress lease,
+  - detach only where independent asynchronous ownership requires it,
+  - keep downstream consumers bounded and best-effort,
+  - keep GPU handoff event-driven and avoid CPU sync in the hot path.
+- This does not imply that future `500 fps` workflows should blindly full-frame
+  detach every frame. It does mean the repo should continue toward explicit
+  ownership boundaries and reusable consumer fanout so detection/pose pipelines
+  can stay GPU-resident with minimal host work.
+
 Step 1: Define crop payload and pool.
 
 - [x] Add an internal `CropFrame` payload type with frame identity,
