@@ -320,6 +320,13 @@ if(BUILD_TESTING)
     target_include_directories(yolo_event_log_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(yolo_event_log_validation_tests PRIVATE cxx_std_17)
     add_test(NAME yolo_event_log_validation_tests COMMAND yolo_event_log_validation_tests)
+
+    add_executable(camera_config_validation_tests
+        "tools/camera_config_validation_tests.cpp"
+    )
+    target_include_directories(camera_config_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(camera_config_validation_tests PRIVATE cxx_std_17)
+    add_test(NAME camera_config_validation_tests COMMAND camera_config_validation_tests)
 endif()
 
 function(orange_configure_target target_name)
