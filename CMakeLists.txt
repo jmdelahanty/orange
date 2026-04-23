@@ -243,6 +243,8 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/usaf_resolution_calibration.cpp"
     "${SRC_DIR}/usaf_resolution_ui.cpp"
     "${SRC_DIR}/crop_and_encode_worker.cpp"
+    "${SRC_DIR}/crop_producer.cpp"
+    "${SRC_DIR}/pose_worker.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"

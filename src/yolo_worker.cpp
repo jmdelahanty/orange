@@ -68,6 +68,13 @@ bool UseEventSyncWait()
     return enabled;
 }
 
+uint64_t steady_time_now_ns()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 bool ParseCpuList(const char* env, cpu_set_t* out_set, std::string* out_str)
 {
     if (!env || !*env) {
@@ -822,6 +829,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         // Feed the crop worker for live preview whenever it exists. The crop
         // worker independently decides whether the frame should also be encoded.
         if (!skip_cpu_results && m_crop_worker) {
+            entry->yolo_detect_done_host_ns = steady_time_now_ns();
             // Increment the reference count because another worker will now use this entry
             entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
             m_crop_worker->PutObjectToQueueIn(entry);

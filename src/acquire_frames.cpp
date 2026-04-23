@@ -1500,6 +1500,7 @@ void acquire_frames(
             current_entry->camera_frame_id = received_frame->frame_id;
             current_entry->recording_folder = live_recording_folder;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
+            current_entry->yolo_detect_done_host_ns = 0;
             current_entry->recording_submit_host_ns = 0;
             current_entry->recording_target_gpu_id = -1;
             current_entry->recording_helper_requested = false;

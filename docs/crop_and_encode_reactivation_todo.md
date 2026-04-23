@@ -148,20 +148,55 @@ Notes:
 
 ### Phase A: Split Crop Production From Encoding
 
-- [ ] Introduce a crop payload type, for example `CropFrame`, that contains
+- [x] Introduce a crop payload type, for example `CropFrame`, that contains
       frame identity, timestamps, source geometry, crop geometry, detection
       geometry, confidence, GPU crop buffer, and CUDA ready event.
-- [ ] Add a bounded crop buffer/event pool. Do not use a single reusable crop
+- [x] Add a bounded crop buffer/event pool. Do not use a single reusable crop
       scratch buffer for asynchronous pose/encode consumers.
-- [ ] Create one crop producer path that writes the high-resolution crop once
+- [x] Create one crop producer path that writes the high-resolution crop once
       per selected YOLO/tracker ROI.
+- [x] Keep crop generation on GPU and pass readiness with CUDA events, not CPU
+      synchronization.
 - [ ] Allow independent bounded consumers:
       preview, lossless crop encoder, and future pose TensorRT worker.
 - [ ] Make consumer overload best-effort: drop crop/pose work when queues or
       pools are full rather than blocking acquisition, full-frame recording, or
       YOLO indefinitely.
-- [ ] Keep crop generation on GPU and pass readiness with CUDA events, not CPU
-      synchronization.
+
+Implementation note (2026-04-23):
+
+- `CropProducer` now owns the crop frame pool, source-release event pool,
+  staged-source detach path, ROI copy path, and crop-ready event recording.
+- `CropAndEncodeWorker` now acts as a consumer of producer-owned `CropFrame`
+  payloads for preview and lossless crop encode, instead of also owning the
+  crop pool and source-release lifecycle directly.
+- Current validation status for the extraction:
+  - `cmake --build targets/release -j 8`
+  - `recording_validation_tests`
+  - `camera_config_validation_tests`
+  - `yolo_event_log_validation_tests`
+  - `git diff --check`
+
+Architecture note (2026-04-23):
+
+- The current latency measurements reinforce that crop-video encode should be
+  treated as a downstream sidecar, not part of the low-latency pose path.
+- The intended fast path is:
+  - `detect -> crop produce -> pose`
+- The intended background path is:
+  - `crop -> crop-video encode`
+- Decoupling crop from encode does not remove the staged detach cost by itself;
+  it removes encode/preview work from the critical path so pose only waits on
+  crop production and not on archival side effects.
+- The staged detach is slow because the source is a GPUDirect-backed external
+  buffer, not ordinary `cudaMalloc` memory. The tail is dominated by external
+  buffer synchronization / submission overhead, not by the raw cost of moving
+  `~20 MB` inside the GPU.
+- For future high-rate analytics, the current working model should be:
+  - GPUDirect buffer = ingress lease,
+  - owned device buffer = analytics workspace,
+  - encode = sidecar consumer,
+  - pose = low-latency consumer.
 
 ### Phase B: Safety Patch Before Enabling
 

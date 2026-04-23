@@ -36,6 +36,7 @@ typedef struct {
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
     uint64_t acquisition_receive_host_ns = 0;
+    uint64_t yolo_detect_done_host_ns = 0;
     uint64_t recording_submit_host_ns = 0;
     int recording_target_gpu_id = -1;
     bool recording_helper_requested = false;
@@ -270,6 +271,7 @@ struct CameraEachSelect
     bool record = false;
     bool yolo = false;
     bool crop_and_encode = false;
+    bool pose = false;
     int downsample = 1;
     int display_preview_max_fps = 60;
     bool record_output_override = false;

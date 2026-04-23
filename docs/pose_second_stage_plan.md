@@ -25,6 +25,22 @@ Implications:
   the pipeline should generate that larger crop first and downsample/convert
   only for crop-video encoding when needed.
 
+Latency goal update (2026-04-23):
+
+- Pose should happen as close as possible to the detection result that selected
+  the ROI.
+- The desired ordering is:
+  - run detection on a reduced-resolution view of the frame,
+  - resolve the ROI immediately,
+  - produce the high-resolution crop once,
+  - launch pose from that crop before lower-priority consumers such as preview
+    or crop-video encode add avoidable delay.
+- This means the long-term pose path should be treated as the primary low-
+  latency continuation of detection, not merely as a background sidecar
+  consumer of the crop pipeline.
+- The current noop `PoseWorker` validates ownership and queueing, but it does
+  not yet prove the final low-latency ordering.
+
 High-frame-rate note (2026-04-23):
 
 - A future `~2.8 MP Mono8 @ 500 fps` workflow is not automatically more
@@ -51,6 +67,11 @@ High-frame-rate note (2026-04-23):
 - `CThreadWorker` stages rely on per-frame CUDA events for readiness.
 - Most stages are asynchronous and do not pass items to output queues.
 - `CropAndEncodeWorker` currently uses a single `d_cropped_rgba_` buffer.
+- Detection is intentionally run on a downsampled representation of the full
+  frame because `4512x4512` full-resolution detect is too slow to be practical.
+- Therefore the pose path is inherently hybrid:
+  - detect on reduced-resolution full-frame input,
+  - pose on a high-resolution crop extracted from the original source frame.
 
 ## Proposed Architecture
 Add a new worker stage:
@@ -114,19 +135,48 @@ Implementation checklist before pose:
       and crop recording.
 - [x] Add a bounded crop buffer/event pool so crop payloads are not overwritten
       while internal consumers are still using them.
-- [ ] Extract `CropProducer` from the current crop-video worker.
+- [x] Extract `CropProducer` from the current crop-video worker.
 - [x] Make crop-video encoding consume the internal `CropFrame`.
 - [ ] Make GUI crop preview an independent `CropFrame` consumer with
       drop/rate-limit policy. It currently consumes the internal crop payload
       inside the same worker.
-- [ ] Add consumer lease/ref-count handling so a crop buffer returns to the pool
+- [x] Add consumer lease/ref-count handling so a crop buffer returns to the pool
       only after all accepted consumers release it.
-- [ ] Add producer and per-consumer drop counters.
+- [x] Add producer and per-consumer aggregate counters.
+- [x] Add a noop `PoseWorker` consumer that waits on `crop_ready_event`,
+      exercises the shared crop queue/lease path, and releases its crop lease
+      without running TensorRT yet.
 - [x] Split first-pass perf logging into producer timing and consumer timing
       with `crop_pool_wait_ms`, `crop_producer_cpu_ms`,
       `crop_preview_cpu_ms`, and `encode_submit_cpu_ms`.
 - [ ] Revalidate GUI `100 fps` YOLO + full-frame record + crop record before
       adding pose.
+
+Current noop pose slice (2026-04-23):
+
+- `PoseWorker` is now a real bounded worker-stage with its own CUDA stream.
+- `CropProducer` can offer a `CropFrame` lease to that worker without creating
+  a second crop copy.
+- `CropAndEncodeWorker` retains one consumer lease for preview / crop-video
+  encode and releases it independently from the noop pose worker.
+- Shutdown ordering keeps the noop pose worker alive until crop production is
+  fully drained so queued crop leases can return safely.
+- This validates the ownership model for future pose TensorRT work, but it does
+  not yet implement model loading, tensor conversion, IPC output, or GUI pose
+  overlays.
+
+Current latency interpretation (2026-04-23):
+
+- The new `Cam<serial>_pose_perf.csv` aggregate summaries show that the noop
+  pose queue is not the main problem:
+  - `queue_high_water` stayed at `1`,
+  - `queue_full_drops` stayed at `0`,
+  - `crop_ready_to_pose_start` is tiny relative to the rest of the path.
+- The current tail is still upstream, mainly in `detect_to_crop_ready`, which
+  includes queue residence in the current combined crop worker plus the staged
+  detach / crop-producer host-side handoff.
+- Therefore the next architectural optimization target is not "make noop pose
+  faster"; it is to shorten and isolate the `detect -> crop_ready` path.
 
 ## Data Structures
 ### New: CropFrame / PoseEntry (pool item)
@@ -182,14 +232,76 @@ Implementation checklist before pose:
 - Run only when detection exists.
 - Keep queue sizes bounded and drop pose when overloaded.
 - Avoid extra GPU->CPU copies; only copy results.
+- Minimize latency from `detect_done -> crop_ready -> pose_start`. This matters
+  more than preview or crop-video latency if pose is intended for reactive use.
+- Because detect runs on a downsampled frame while pose needs a high-resolution
+  crop from the original source, the key optimization target is the handoff
+  between those two stages, not the elimination of downsampled detect itself.
+
+## Fast Path vs Sidecar Work
+
+- The intended low-latency path is:
+  - `detect -> crop produce -> pose`
+- Crop-video encoding is important, but it is not latency-critical in the same
+  way. It should behave as a downstream sidecar consumer of the produced crop,
+  not as a stage that pose must wait behind.
+- This means "decouple crop from encode" really means:
+  - crop production is realtime-critical,
+  - pose is realtime-critical,
+  - crop-video encode is throughput-critical and should be allowed to lag
+    behind without stalling pose.
+- This change alone does not remove the staged detach cost. It removes preview /
+  encode work from the critical path after crop production so that pose waits on
+  as little as possible.
+
+## Why GPUDirect Detach Looks Slow
+
+- A normal same-GPU VRAM-to-VRAM copy of a `4512x4512 Mono8` frame (`~20 MB`)
+  should be well under `1 ms` on modern hardware.
+- The measured `~6 ms` staged-detach tail is therefore not raw device-memory
+  bandwidth. It is mostly the cost of safely touching the GPUDirect-backed
+  source buffer from CUDA:
+  - external buffer ownership / fencing,
+  - driver/runtime synchronization before the detach can be submitted,
+  - then the actual copy.
+- This matches the measurements:
+  - once data is in ordinary `cudaMalloc` device memory, ROI crop submission is
+    cheap,
+  - the long tail follows "touch the GPUDirect source", not "copy bytes on the
+    GPU".
+- An earlier full-resolution stable copy can still help latency, but mostly by
+  moving and overlapping the detach, not by making the underlying GPUDirect
+  detach magically cheap.
+- Best case, if the camera/SDK can deliver directly into a stable buffer we own,
+  later copies behave like normal GPU memory operations. Until then, the
+  software plan should assume:
+  - GPUDirect buffer = ingress lease,
+  - owned device buffer = analytics workspace.
 
 ## CUDA Graph Capture (Pose TRT)
 - Prefer CUDA Graph launch for steady-state pose inference to reduce host enqueue
   overhead and internal TRT contention.
+- A future low-latency graph strategy may need two graph families rather than
+  one monolithic graph:
+  - `detect_only`: reduced-resolution detect path for frames with no pose work
+    accepted,
+  - `detect_plus_pose`: reduced-resolution detect followed immediately by
+    high-resolution crop preparation and pose launch for accepted ROI frames.
+- This is attractive because the detect stage and the pose stage do not consume
+  the same image representation:
+  - detect uses a downsampled full-frame view,
+  - pose uses a crop derived from the original-resolution source.
+- A single monolithic graph for every camera path is unlikely to fit the
+  conditional nature of the workflow. A pair of steady-state graphs, or graph
+  islands around the accepted detect->crop->pose path, is more plausible.
 - Proposed behavior:
   - default graph-capture enabled (with runtime opt-out flag),
   - warmup once, capture once per pose worker/model instance, then launch graph
     per frame.
+- If detect+pose graphing is explored later, the first timing comparison should
+  be:
+  - `detect_done -> pose_done` with ordinary enqueue,
+  - versus `detect_done -> pose_done` with the combined graph path.
 - Required fallback:
   - if capture fails or unsupported path is detected, continue with normal TRT
     enqueue path (no pipeline interruption).

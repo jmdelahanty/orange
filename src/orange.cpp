@@ -26,6 +26,7 @@
 #include "image_writer_worker.h"
 #include "yolov8_det.h"
 #include "crop_and_encode_worker.h"
+#include "pose_worker.h"
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
 #include "aperture_characterization.h"
@@ -254,6 +255,9 @@ RecordingPreflightResult run_gui_recording_preflight(const CameraParams* cameras
         }
 
         if (!cameras_select[i].crop_and_encode) {
+            if (cameras_select[i].pose) {
+                append_camera_error("Pose currently requires Crop+Encode enabled.");
+            }
             continue;
         }
 
@@ -262,6 +266,9 @@ RecordingPreflightResult run_gui_recording_preflight(const CameraParams* cameras
         }
         if (!cameras_select[i].yolo) {
             append_camera_error("Crop+Encode requires YOLO enabled.");
+        }
+        if (cameras_select[i].pose && !cameras_select[i].yolo) {
+            append_camera_error("Pose currently requires YOLO enabled.");
         }
         if (cameras_params[i].width < resolved_crop_size ||
             cameras_params[i].height < resolved_crop_size) {
@@ -286,6 +293,7 @@ bool gui_camera_has_acquisition_work(const CameraEachSelect& camera_select)
            camera_select.record ||
            camera_select.yolo ||
            camera_select.crop_and_encode ||
+           camera_select.pose ||
            camera_select.frame_save_state == State_Write_New_Frame;
 }
 
@@ -2179,6 +2187,63 @@ void update_gui_crop_output_snapshots(const std::string& recording_folder,
     }
 }
 
+nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
+                                             const CameraEachSelect& camera_select)
+{
+    const bool enabled = camera_select.pose;
+    const std::string camera_serial = camera_params.camera_serial;
+
+    nlohmann::json files = nlohmann::json::object();
+    if (enabled && !camera_serial.empty()) {
+        files = {
+            {"perf", "Cam" + camera_serial + "_pose_perf.csv"}
+        };
+    }
+
+    return {
+        {"enabled", enabled},
+        {"source", {
+            {"ui_selected", enabled},
+            {"requires_yolo", true},
+            {"requires_crop_output", true},
+            {"camera_config_path", camera_params.config_path}
+        }},
+        {"runtime", {
+            {"worker", "PoseWorker"},
+            {"backend", enabled ? "noop" : "none"},
+            {"mode", enabled ? "noop" : "disabled"},
+            {"gpu_id", camera_params.gpu_id},
+            {"queue_size", enabled ? 32 : 0},
+            {"files", files}
+        }}
+    };
+}
+
+void update_gui_pose_model_snapshots(const std::string& recording_folder,
+                                     const CameraParams* cameras_params,
+                                     const CameraEachSelect* cameras_select,
+                                     const int num_cameras)
+{
+    if (recording_folder.empty() || !cameras_params || !cameras_select || num_cameras <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        std::string camera_key = cameras_params[i].camera_serial;
+        if (camera_key.empty()) {
+            camera_key = std::to_string(cameras_params[i].camera_id);
+        }
+        if (!update_recording_snapshot_model(
+                recording_folder,
+                camera_key,
+                "pose",
+                build_gui_pose_model_snapshot(cameras_params[i], cameras_select[i]))) {
+            std::cerr << "Failed to update recording snapshot pose model metadata for camera "
+                      << camera_key << std::endl;
+        }
+    }
+}
+
 void RenderSpeedGraph(int camera_id, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
     if (!yolo_worker) return;
     
@@ -2310,6 +2375,7 @@ int main(int argc, char **args) {
     PTPParams *ptp_params = new PTPParams{0, 0, 0, 0, false, false, false, false};
     COpenGLDisplay** openGLDisplayWorkers = nullptr;
     CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
+    PoseWorker** poseWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
 
@@ -2638,7 +2704,15 @@ int main(int argc, char **args) {
                     }
                 }
 
-                if (ImGui::BeginTable("Camera Control Setting", 8,
+                bool pose_all_cameras = true;
+                for (int i = 0; i < num_cameras; i++) {
+                    if (!cameras_select[i].pose) {
+                        pose_all_cameras = false;
+                        break;
+                    }
+                }
+
+                if (ImGui::BeginTable("Camera Control Setting", 9,
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
                                       ImGuiTableFlags_Borders)) {
                     ImGui::TableNextRow();
@@ -2691,6 +2765,17 @@ int main(int argc, char **args) {
                     ImGui::EndDisabled();
 
                     ImGui::TableNextColumn();
+                    ImGui::Text("Pose "); ImGui::SameLine();
+                    ImGui::BeginDisabled(camera_control->subscribe);
+                    if(ImGui::Checkbox("All##pose", &pose_all_cameras))
+                    {
+                        for (int i = 0; i < num_cameras; i++) {
+                            cameras_select[i].pose = pose_all_cameras;
+                        }
+                    }
+                    ImGui::EndDisabled();
+
+                    ImGui::TableNextColumn();
                     ImGui::Text("YOLO Debug");
 
                     ImGui::TableNextColumn();
@@ -2721,6 +2806,16 @@ int main(int argc, char **args) {
                         if (cameras_select[i].crop_and_encode && (!cameras_select[i].yolo || !cameras_select[i].record)) {
                             ImGui::SameLine();
                             ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.25f, 1.0f), "needs rec+yolo");
+                        }
+
+                        ImGui::TableNextColumn();
+                        sprintf(temp_string, "##checkbox_pose%d", i);
+                        ImGui::BeginDisabled(camera_control->subscribe);
+                        ImGui::Checkbox(temp_string, &cameras_select[i].pose);
+                        ImGui::EndDisabled();
+                        if (cameras_select[i].pose && !cameras_select[i].crop_and_encode) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.25f, 1.0f), "needs crop");
                         }
 
                         ImGui::TableNextColumn();
@@ -3228,6 +3323,7 @@ int main(int argc, char **args) {
                             // Create worker thread objects and GPU textures
                             openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
                             cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
+                            poseWorkers = new PoseWorker*[num_cameras]();
                             tex = new GL_Texture[num_cameras];
                             crop_tex = new GL_Texture[num_cameras];
                             yolo_workers.assign(num_cameras, nullptr);
@@ -3235,6 +3331,7 @@ int main(int argc, char **args) {
                             for(int i = 0; i < num_cameras; ++i) {
                                 openGLDisplayWorkers[i] = nullptr;
                                 cropAndEncodeWorkers[i] = nullptr;
+                                poseWorkers[i] = nullptr;
                             }
                             cudaSetDevice(display_gpu_id);
 
@@ -3293,6 +3390,14 @@ int main(int argc, char **args) {
                                         yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
                                     }
                                 }
+                                if (cameras_select[i].pose && cropAndEncodeWorkers[i]) {
+                                    std::string name = "PoseWorker_Cam_" + cameras_params[i].camera_serial;
+                                    poseWorkers[i] = new PoseWorker(
+                                        name.c_str(),
+                                        &cameras_params[i],
+                                        cropAndEncodeWorkers[i]->GetCropProducer());
+                                    cropAndEncodeWorkers[i]->SetPoseWorker(poseWorkers[i]);
+                                }
                             }
 
                             orange::session::create_recording_pipelines_for_stream(
@@ -3313,6 +3418,10 @@ int main(int argc, char **args) {
                                 if (yolo_workers[i]) {
                                     yolo_workers[i]->SetMaxQueueSize(240);
                                     yolo_workers[i]->StartThread();
+                                }
+                                if (poseWorkers[i]) {
+                                    poseWorkers[i]->SetMaxQueueSize(32);
+                                    poseWorkers[i]->StartThread();
                                 }
                                 orange::session::start_recording_pipeline_for_camera(&recording_session, i);
                                 if (cropAndEncodeWorkers[i]) {
@@ -3419,6 +3528,13 @@ int main(int argc, char **args) {
                                 delete cropAndEncodeWorkers[i];
                                 cropAndEncodeWorkers[i] = nullptr;
                             }
+
+                            if (poseWorkers[i]) {
+                                poseWorkers[i]->StopThread();
+                                poseWorkers[i]->CloseRecording();
+                                delete poseWorkers[i];
+                                poseWorkers[i] = nullptr;
+                            }
                             
                             // Now the hardware encoder, which is fed by the preprocessor.
                             // The YOLO worker can be deleted now.
@@ -3435,6 +3551,7 @@ int main(int argc, char **args) {
                         orange::session::clear_recording_pipelines(&recording_session);
                         if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
+                        if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
                         frame_ipc_managers.clear();
                         frame_ipc_init_errors.clear();
@@ -3542,6 +3659,17 @@ int main(int argc, char **args) {
                                         cameras_select,
                                         num_cameras,
                                         crop_size_px);
+                                    update_gui_pose_model_snapshots(
+                                        resolved_recording_folder,
+                                        cameras_params,
+                                        cameras_select,
+                                        num_cameras);
+                                    for (int i = 0; i < num_cameras; ++i) {
+                                        if (poseWorkers[i]) {
+                                            poseWorkers[i]->RotateRecordingFolder(
+                                                resolved_recording_folder);
+                                        }
+                                    }
                                 }
                             }
                         }
