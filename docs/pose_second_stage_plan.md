@@ -56,6 +56,53 @@ production, buffer pooling, and readiness events. Preview, crop encoding, and
 pose inference are consumers. A slow consumer should drop its own work rather
 than backpressure acquisition or full-frame recording.
 
+## Why Split Crop Before Pose
+
+The current GUI crop path is useful as a validated transitional implementation,
+but it should not be extended directly into pose. In the current combined path,
+one worker owns crop selection, preview copy, crop-video encode submission,
+metadata writes, synchronization, and source-frame release. The measured crop
+worker tail latency can exceed one `100 fps` frame period even when there are no
+drops. That tail latency is a warning about ownership coupling, not necessarily
+about crop-kernel cost.
+
+Pose should be added after crop production is separated from crop consumers:
+
+```text
+YOLO result
+  -> CropProducer
+      -> bounded CropFrame buffer
+      -> crop_ready_event
+      -> release original source frame
+  -> consumers:
+      -> preview
+      -> crop video encoder
+      -> pose TensorRT
+```
+
+This is the important source-frame lifetime boundary. The original camera frame
+should only be held until the ROI has been copied into a crop-owned GPU buffer.
+After that, preview, encoding, and pose can run independently. If a downstream
+consumer is slow, it should drop or skip crop work rather than delaying original
+camera-buffer reuse.
+
+Implementation checklist before pose:
+
+- [ ] Define `CropFrame` as the shared crop payload and include all frame,
+      timestamp, geometry, detection, GPU pointer, and CUDA event fields needed
+      by preview, crop recording, and pose.
+- [ ] Add a bounded crop buffer/event pool so crop payloads are not overwritten
+      while consumers are still using them.
+- [ ] Extract `CropProducer` from the current crop-video worker.
+- [ ] Make crop-video encoding a `CropFrame` consumer.
+- [ ] Make GUI crop preview a `CropFrame` consumer with drop/rate-limit policy.
+- [ ] Add consumer lease/ref-count handling so a crop buffer returns to the pool
+      only after all accepted consumers release it.
+- [ ] Add producer and per-consumer drop counters.
+- [ ] Split perf logging into producer timing and consumer timing.
+- [ ] Revalidate GUI `100 fps` YOLO + full-frame record + crop record before
+      adding pose.
+
 ## Data Structures
 ### New: CropFrame / PoseEntry (pool item)
 - `unsigned char* d_crop` in the crop producer's canonical GPU layout

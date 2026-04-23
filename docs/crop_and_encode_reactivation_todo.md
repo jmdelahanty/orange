@@ -332,6 +332,57 @@ Crop observability validation result:
 - `Cam2010096_yolo_events.jsonl`: `366` rows, matching crop metadata frame IDs.
 - `scripts/validate_recording_artifacts.py` passed on the folder.
 
+### Design Update: Split Crop Production Before Pose
+
+The `2026_04_22_22_53_43` crop perf data is healthy enough for a short GUI
+smoke (`0` crop drops, max crop queue depth `1`), but the per-frame crop worker
+`total_ms` had p95 around `10.70 ms` and p99 around `14.27 ms` at `100 fps`.
+Because `100 fps` has a `10 ms` frame period, those tail latencies are a real
+headroom warning even though they did not cause backlog in the short run.
+
+The important nuance is that current `CropAndEncodeWorker::WorkerFunction`
+measures more than the crop operation. It serializes:
+
+```text
+YOLO result
+  -> source-frame event wait submission
+  -> crop selection
+  -> crop preview copy / possible cross-GPU host staging
+  -> crop video encode submission
+  -> metadata/perf row writes
+  -> stream/display synchronization
+  -> source WORKER_ENTRY release
+```
+
+So a high `total_ms` does not necessarily mean the crop kernel is slow. It means
+the source frame lease can be held until preview/encode/sync work finishes. That
+is the wrong long-term ownership model for pose, because pose would add another
+consumer to the same serialized path.
+
+Target ownership model:
+
+```text
+YOLO result
+  -> CropProducer quickly copies source ROI into a bounded CropFrame pool
+  -> records crop_ready_event
+  -> releases source WORKER_ENTRY as soon as the crop copy is safely detached
+
+CropFrame consumers:
+  -> crop preview
+  -> lossless crop encoder
+  -> future pose TensorRT worker
+```
+
+This makes crop generation the short source-frame lifetime boundary. Encode,
+preview, and pose become downstream consumers. If those consumers fall behind,
+they should drop their own crop outputs or skip preview/pose work rather than
+holding original camera frames or backpressuring full-frame recording.
+
+The next implementation should optimize for this separation before tuning the
+current combined crop worker. The goal is not to make the existing
+`CropAndEncodeWorker` faster in isolation; the goal is to make the original
+camera frame lifetime independent from crop-video encoding and preview.
+
 Still pending before pose:
 
 - Extract a true `CropProducer` with a bounded GPU crop buffer/event pool.
@@ -365,6 +416,75 @@ Next artifact validation checklist:
   we want crop validation to feed `runs.json` / `runs.csv`.
 
 ## TODO Plan
+
+## Immediate Implementation Checklist: Crop Producer Split
+
+Step 1: Define crop payload and pool.
+
+- [ ] Add a `CropFrame` payload type with frame identity, timestamps,
+      source-frame dimensions, crop rectangle, detection rectangle,
+      confidence, crop dimensions, GPU id, GPU crop pointer, and
+      `crop_ready_event`.
+- [ ] Add a bounded `CropFrame` pool with device buffers and CUDA events,
+      sized conservatively at first (`4-8` entries).
+- [ ] Add counters for pool unavailable, frames produced, and crop production
+      failures.
+
+Step 2: Extract crop production from crop encode.
+
+- [ ] Move ROI selection and source-to-crop GPU copy into a `CropProducer`
+      stage/class.
+- [ ] Make `CropProducer` record a readiness event after the crop copy.
+- [ ] Release the source `WORKER_ENTRY` after the crop copy is safely detached,
+      not after crop preview/encode finishes.
+- [ ] Keep crop production best-effort: if no crop buffer/event is available,
+      drop the crop for that frame and count it instead of blocking YOLO,
+      acquisition, or full-frame recording.
+
+Step 3: Convert crop video into a consumer.
+
+- [ ] Change crop video encoding to consume `CropFrame` payloads.
+- [ ] Preserve current crop artifact behavior:
+      `Cam<serial>_crop.mp4`, `Cam<serial>_crop_meta.csv`,
+      `Cam<serial>_crop_keyframe.json`, and `Cam<serial>_crop_perf.csv`.
+- [ ] Keep one crop metadata/perf row per encoded crop frame.
+- [ ] Return or release the crop consumer lease after the encoder no longer
+      needs the crop buffer.
+
+Step 4: Convert crop preview into a consumer.
+
+- [ ] Move preview copy/sync out of the producer hot path.
+- [ ] Make preview droppable/rate-limited so GUI display cannot hold crop
+      buffers or source frames.
+- [ ] Keep the preview cross-GPU host-staging path observable because it is a
+      likely source of timing spikes.
+
+Step 5: Add lease/ref-count semantics for crop payloads.
+
+- [ ] Track which consumers accepted each `CropFrame`.
+- [ ] Return a crop buffer to the pool only after all accepted consumers have
+      released it.
+- [ ] Treat consumer queue-full states as non-acceptance, not as blocking waits.
+- [ ] Add debug counters for producer drops and per-consumer drops.
+
+Step 6: Validate before adding pose.
+
+- [ ] Re-run one-camera GUI `100 fps` YOLO + full-frame record + crop record.
+- [ ] Validate artifact alignment with `scripts/validate_recording_artifacts.py`.
+- [ ] Compare crop producer timing separately from crop encoder/preview timing.
+- [ ] Confirm source-frame release timing no longer includes crop encode or
+      preview synchronization.
+- [ ] Confirm full-frame recording still has no frame gaps, receive errors,
+      encode failures, or acquisition starvation.
+
+Step 7: Add pose only after the producer split is stable.
+
+- [ ] Implement pose as a `CropFrame` consumer, not as part of crop-video
+      encoding.
+- [ ] Keep pose best-effort initially, with drop counters and no full-frame
+      backpressure.
+- [ ] Preserve both crop-local and full-frame coordinate mappings in pose
+      outputs.
 
 ## Phase 1: Re-expose Enablement Path
 
