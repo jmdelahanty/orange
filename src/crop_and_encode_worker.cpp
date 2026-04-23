@@ -13,6 +13,30 @@
 
 namespace {
 constexpr int kDisplayGpuId = 0;
+
+uint64_t steady_now_ns()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+double elapsed_ms(uint64_t start_ns, uint64_t end_ns)
+{
+    if (end_ns < start_ns) {
+        return 0.0;
+    }
+    return static_cast<double>(end_ns - start_ns) / 1000000.0;
+}
+
+size_t encoded_packet_bytes(const std::vector<std::vector<uint8_t>>& packets)
+{
+    size_t total = 0;
+    for (const auto& packet : packets) {
+        total += packet.size();
+    }
+    return total;
+}
 }
 
 int CropAndEncodeWorker::SanitizeCropSize(int requested_size_px)
@@ -172,8 +196,9 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
         make_folder(recording_folder);
 
         writer_.video_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop.mp4";
-        writer_.keyframe_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.csv";
+        writer_.keyframe_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.json";
         writer_.metadata_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
+        crop_perf_file_ = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_perf.csv";
 
         writer_.video = new FFmpegWriter(
             AV_CODEC_ID_HEVC,
@@ -194,6 +219,20 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
                 << "has_detection,blank_frame,detection_confidence,"
                 << "crop_x,crop_y,crop_w,crop_h,"
                 << "detection_x,detection_y,detection_w,detection_h\n";
+        }
+
+        crop_perf_.open(crop_perf_file_.c_str());
+        if (!crop_perf_) {
+            std::cout << "[CropAndEncodeWorker] Warning: Could not open crop perf file!" << std::endl;
+        } else {
+            crop_perf_
+                << "recording_frame_id,local_frame_id,camera_frame_id,"
+                << "worker_start_steady_ns,queue_depth_start,encode_active,"
+                << "has_detection,blank_frame,dropped,drop_reason,"
+                << "crop_x,crop_y,crop_w,crop_h,"
+                << "packet_count,encoded_bytes,"
+                << "event_wait_cpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,"
+                << "metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms\n";
         }
     }
 
@@ -266,6 +305,37 @@ void CropAndEncodeWorker::write_metadata_row(
                       << detection_y << ','
                       << detection_w << ','
                       << detection_h << '\n';
+}
+
+void CropAndEncodeWorker::write_perf_row(const WORKER_ENTRY* entry, const CropPerfSample& sample)
+{
+    if (!crop_perf_.is_open() || !entry) {
+        return;
+    }
+
+    crop_perf_ << entry->recording_frame_id << ','
+               << entry->frame_id << ','
+               << entry->camera_frame_id << ','
+               << sample.worker_start_steady_ns << ','
+               << sample.queue_depth_start << ','
+               << (sample.encode_active ? 1 : 0) << ','
+               << (sample.has_detection ? 1 : 0) << ','
+               << (sample.blank_frame ? 1 : 0) << ','
+               << (sample.dropped ? 1 : 0) << ','
+               << sample.drop_reason << ','
+               << sample.crop_x << ','
+               << sample.crop_y << ','
+               << sample.crop_w << ','
+               << sample.crop_h << ','
+               << sample.packet_count << ','
+               << sample.encoded_bytes << ','
+               << sample.event_wait_cpu_ms << ','
+               << sample.crop_preview_cpu_ms << ','
+               << sample.encode_submit_cpu_ms << ','
+               << sample.metadata_cpu_ms << ','
+               << sample.stream_sync_ms << ','
+               << sample.display_sync_ms << ','
+               << sample.total_ms << '\n';
 }
 
 void CropAndEncodeWorker::release_entry(WORKER_ENTRY* entry) {
@@ -438,6 +508,10 @@ void CropAndEncodeWorker::flush_and_close() {
         delete writer_.metadata;
         writer_.metadata = nullptr;
     }
+
+    if (crop_perf_.is_open()) {
+        crop_perf_.close();
+    }
 }
 
 void CropAndEncodeWorker::finalize_recording()
@@ -477,6 +551,10 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
         return false;
     }
 
+    CropPerfSample perf;
+    perf.worker_start_steady_ns = steady_now_ns();
+    perf.queue_depth_start = GetCountQueueInSize();
+
     // YOLO reaches this worker after acquisition, so global record_video can
     // change before a frame is processed. Use the per-frame recording identity
     // to avoid encoding stale pre-record frames or dropping valid late frames.
@@ -491,6 +569,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     }
 
     const bool encode_this_frame = frame_should_encode && is_recording_;
+    perf.encode_active = encode_this_frame;
 
     try {
         if (entry->width < crop_width_ || entry->height < crop_height_) {
@@ -500,16 +579,26 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                       << entry->width << "x" << entry->height
                       << " is smaller than crop "
                       << crop_width_ << "x" << crop_height_ << std::endl;
+            if (encode_this_frame) {
+                const uint64_t now_ns = steady_now_ns();
+                perf.dropped = true;
+                perf.drop_reason = "source_smaller_than_crop";
+                perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, now_ns);
+                write_perf_row(entry, perf);
+            }
             release_entry(entry);
             return false;
         }
 
         // Wait for the incoming frame data to be ready
         if (entry->event_ptr) {
+            const uint64_t event_wait_start_ns = steady_now_ns();
             ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+            perf.event_wait_cpu_ms = elapsed_ms(event_wait_start_ns, steady_now_ns());
         }
         
         bool has_detection = !entry->detections.empty();
+        perf.has_detection = has_detection;
 
         if (has_detection) {
             // --- DETECTION IS FOUND ---
@@ -523,18 +612,25 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             float cy = best_detection.rect.y + best_detection.rect.height * 0.5f;
             int ix = std::clamp(static_cast<int>(cx) - CROP_W / 2, 0, entry->width - CROP_W);
             int iy = std::clamp(static_cast<int>(cy) - CROP_H / 2, 0, entry->height - CROP_H);
+            perf.crop_x = ix;
+            perf.crop_y = iy;
+            perf.crop_w = CROP_W;
+            perf.crop_h = CROP_H;
             
             // --- LIVE PREVIEW LOGIC (ALWAYS RUNS) ---
             if (d_display_buffer_pbo_) {
+                const uint64_t preview_start_ns = steady_now_ns();
                 pose::Rect crop_rect = {(float)ix, (float)iy, (float)CROP_W, (float)CROP_H};
                 gpu_crop_and_resize_rgba(entry->d_image, d_cropped_rgba_, entry->width, entry->height,
                                          crop_rect, CROP_W, CROP_H, m_stream);
                 
                 copy_crop_to_display_preview();
+                perf.crop_preview_cpu_ms = elapsed_ms(preview_start_ns, steady_now_ns());
             }
             
             // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
             if (encode_this_frame) {
+                const uint64_t encode_start_ns = steady_now_ns();
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
                 unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
                 const uint64_t zero_based_recording_frame =
@@ -554,9 +650,13 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 std::vector<std::vector<uint8_t>> packets;
                 std::vector<uint64_t> output_timestamps;
                 encoder_->EncodeFrame(packets, &pic_params, nullptr, &output_timestamps);
+                perf.packet_count = packets.size();
+                perf.encoded_bytes = encoded_packet_bytes(packets);
                 push_encoded_packets(packets, output_timestamps, zero_based_recording_frame);
+                perf.encode_submit_cpu_ms = elapsed_ms(encode_start_ns, steady_now_ns());
 
                 // Write metadata to file
+                const uint64_t metadata_start_ns = steady_now_ns();
                 write_metadata_row(
                     entry,
                     true,
@@ -570,16 +670,21 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     best_detection.rect.y,
                     best_detection.rect.width,
                     best_detection.rect.height);
+                perf.metadata_cpu_ms = elapsed_ms(metadata_start_ns, steady_now_ns());
             }
         } else {
             // --- NO DETECTION ---
             // Always show a blank screen for the preview if no detection
             if (d_display_buffer_pbo_) {
+                const uint64_t preview_start_ns = steady_now_ns();
                 clear_display_preview();
+                perf.crop_preview_cpu_ms = elapsed_ms(preview_start_ns, steady_now_ns());
             }
             
             // Only encode a blank frame if recording is active
             if (encode_this_frame) {
+                perf.blank_frame = true;
+                const uint64_t encode_start_ns = steady_now_ns();
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
                 const uint64_t zero_based_recording_frame =
                     entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
@@ -594,7 +699,11 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 std::vector<std::vector<uint8_t>> packets;
                 std::vector<uint64_t> output_timestamps;
                 encoder_->EncodeFrame(packets, &pic_params, nullptr, &output_timestamps);
+                perf.packet_count = packets.size();
+                perf.encoded_bytes = encoded_packet_bytes(packets);
                 push_encoded_packets(packets, output_timestamps, zero_based_recording_frame);
+                perf.encode_submit_cpu_ms = elapsed_ms(encode_start_ns, steady_now_ns());
+                const uint64_t metadata_start_ns = steady_now_ns();
                 write_metadata_row(
                     entry,
                     false,
@@ -608,19 +717,34 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     0.0f,
                     0.0f,
                     0.0f);
+                perf.metadata_cpu_ms = elapsed_ms(metadata_start_ns, steady_now_ns());
             }
         }
 
         // Sync streams before releasing the source entry. This is transitional;
         // the future crop producer should replace this with readiness events.
+        const uint64_t stream_sync_start_ns = steady_now_ns();
         ck(cudaStreamSynchronize(m_stream));
+        perf.stream_sync_ms = elapsed_ms(stream_sync_start_ns, steady_now_ns());
         if (d_display_buffer_pbo_) {
+            const uint64_t display_sync_start_ns = steady_now_ns();
             synchronize_display_preview();
+            perf.display_sync_ms = elapsed_ms(display_sync_start_ns, steady_now_ns());
+        }
+        if (encode_this_frame) {
+            perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
+            write_perf_row(entry, perf);
         }
 
     } catch (const std::exception& e) {
         std::cerr << "[CropAndEncodeWorker] Exception processing frame " << entry->frame_id
                   << ": " << e.what() << std::endl;
+        if (encode_this_frame) {
+            perf.dropped = true;
+            perf.drop_reason = "exception";
+            perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
+            write_perf_row(entry, perf);
+        }
     }
 
     // Cleanup and recycle the entry

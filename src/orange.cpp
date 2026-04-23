@@ -2104,6 +2104,81 @@ void update_gui_detect_model_snapshots(const std::string& recording_folder,
     }
 }
 
+nlohmann::json build_gui_crop_output_snapshot(const CameraParams& camera_params,
+                                              const CameraEachSelect& camera_select,
+                                              const int crop_size_px)
+{
+    const bool enabled = camera_select.crop_and_encode;
+    const int resolved_crop_size = CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
+    const std::string camera_serial = camera_params.camera_serial;
+
+    nlohmann::json files = nlohmann::json::object();
+    if (enabled && !camera_serial.empty()) {
+        const std::string prefix = "Cam" + camera_serial + "_crop";
+        files = {
+            {"video", prefix + ".mp4"},
+            {"metadata", prefix + "_meta.csv"},
+            {"keyframes", prefix + "_keyframe.json"},
+            {"perf", prefix + "_perf.csv"}
+        };
+    }
+
+    return {
+        {"schema_version", 1},
+        {"enabled", enabled},
+        {"mode", enabled ? "yolo_centered_square" : "disabled"},
+        {"source", {
+            {"ui_selected", enabled},
+            {"requires_yolo", true},
+            {"requires_recording", true},
+            {"camera_config_path", camera_params.config_path}
+        }},
+        {"runtime", {
+            {"worker", "CropAndEncodeWorker"},
+            {"source_gpu_id", camera_params.gpu_id},
+            {"crop_size_px", resolved_crop_size},
+            {"width", enabled ? resolved_crop_size : 0},
+            {"height", enabled ? resolved_crop_size : 0},
+            {"coordinate_space", "full_frame_pixels"},
+            {"selection_policy", "largest_detection_by_confidence"},
+            {"blank_frame_policy", "encode_black_frame_when_no_detection"},
+            {"codec", enabled ? "hevc" : "none"},
+            {"container", enabled ? "mp4" : "none"},
+            {"tuning", enabled ? "lossless" : "none"},
+            {"frame_rate", camera_params.frame_rate},
+            {"files", files}
+        }}
+    };
+}
+
+void update_gui_crop_output_snapshots(const std::string& recording_folder,
+                                      const CameraParams* cameras_params,
+                                      const CameraEachSelect* cameras_select,
+                                      const int num_cameras,
+                                      const int crop_size_px)
+{
+    if (recording_folder.empty() || !cameras_params || !cameras_select || num_cameras <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        std::string camera_key = cameras_params[i].camera_serial;
+        if (camera_key.empty()) {
+            camera_key = std::to_string(cameras_params[i].camera_id);
+        }
+        if (!update_recording_snapshot_crop_output(
+                recording_folder,
+                camera_key,
+                build_gui_crop_output_snapshot(
+                    cameras_params[i],
+                    cameras_select[i],
+                    crop_size_px))) {
+            std::cerr << "Failed to update recording snapshot crop output metadata for camera "
+                      << camera_key << std::endl;
+        }
+    }
+}
+
 void RenderSpeedGraph(int camera_id, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
     if (!yolo_worker) return;
     
@@ -3461,6 +3536,12 @@ int main(int argc, char **args) {
                                         cameras_select,
                                         num_cameras,
                                         yolo_model);
+                                    update_gui_crop_output_snapshots(
+                                        resolved_recording_folder,
+                                        cameras_params,
+                                        cameras_select,
+                                        num_cameras,
+                                        crop_size_px);
                                 }
                             }
                         }

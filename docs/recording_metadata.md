@@ -770,9 +770,56 @@ Validation note:
   `/home/jeremy/orange_data/exp/unsorted/2026_04_22_21_47_28` confirmed that
   `recording_snapshot.json` captured the runtime camera
   `crop_pipeline.crop_size_px = 328`, matching the persisted camera config and
-  the `328x328` crop video dimensions. Crop encoder-specific snapshot metadata
-  is still pending; consumers should currently validate crop outputs from the
-  crop video, crop metadata CSV, and camera runtime config.
+  the `328x328` crop video dimensions.
+- Current GUI crop recordings also write `crop_outputs[serial]` with crop
+  enablement, effective geometry, codec/container, selection/blank-frame policy,
+  and expected crop artifact file names. Consumers should use this block as the
+  crop-output contract and cross-check it against the crop video, crop metadata
+  CSV, and crop perf CSV.
+- The GUI YOLO + crop observability smoke artifact
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_22_53_43` confirmed
+  `crop_outputs[2010096]` matched the emitted crop artifacts, including
+  `Cam2010096_crop_keyframe.json` and `Cam2010096_crop_perf.csv`.
+
+Crop output snapshot shape:
+
+```json
+{
+  "crop_outputs": {
+    "02010093": {
+      "schema_version": 1,
+      "enabled": true,
+      "mode": "yolo_centered_square",
+      "source": {
+        "ui_selected": true,
+        "requires_yolo": true,
+        "requires_recording": true,
+        "camera_config_path": "/abs/path/config/local/02010093.json"
+      },
+      "runtime": {
+        "worker": "CropAndEncodeWorker",
+        "source_gpu_id": 5,
+        "crop_size_px": 328,
+        "width": 328,
+        "height": 328,
+        "coordinate_space": "full_frame_pixels",
+        "selection_policy": "largest_detection_by_confidence",
+        "blank_frame_policy": "encode_black_frame_when_no_detection",
+        "codec": "hevc",
+        "container": "mp4",
+        "tuning": "lossless",
+        "frame_rate": 100,
+        "files": {
+          "video": "Cam02010093_crop.mp4",
+          "metadata": "Cam02010093_crop_meta.csv",
+          "keyframes": "Cam02010093_crop_keyframe.json",
+          "perf": "Cam02010093_crop_perf.csv"
+        }
+      }
+    }
+  }
+}
+```
 
 Suggested snapshot shape:
 

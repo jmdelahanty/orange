@@ -3018,6 +3018,38 @@ bool update_recording_snapshot_model(const std::string& recording_folder,
     return true;
 }
 
+bool update_recording_snapshot_crop_output(const std::string& recording_folder,
+                                           const std::string& camera_serial,
+                                           const nlohmann::json& crop_output_info) {
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+
+    if (!snapshot.contains("crop_outputs") || !snapshot["crop_outputs"].is_object()) {
+        snapshot["crop_outputs"] = nlohmann::json::object();
+    }
+
+    snapshot["crop_outputs"][camera_serial] = crop_output_info;
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
+    }
+
+    return true;
+}
+
 std::string build_model_id_from_path(const std::string& model_path)
 {
     if (model_path.empty()) {

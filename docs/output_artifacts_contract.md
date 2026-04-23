@@ -545,14 +545,41 @@ Validation note, `2026-04-22` GUI YOLO + crop smoke:
   main video, main metadata, crop video, crop metadata, YOLO audit events, and
   YOLO perf rows for a one-camera recording.
 
+Validation note, `2026-04-22` GUI YOLO + crop observability smoke:
+
+- Artifact folder:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_22_53_43`
+- `recording_snapshot.json` included `crop_outputs[2010096]` with
+  `enabled=true`, `mode=yolo_centered_square`, `crop_size_px=256`, and expected
+  file names for `Cam2010096_crop.mp4`, `Cam2010096_crop_meta.csv`,
+  `Cam2010096_crop_keyframe.json`, and `Cam2010096_crop_perf.csv`.
+- `Cam2010096.mp4` and `Cam2010096_meta.csv` both represented `366` recorded
+  frames.
+- `Cam2010096_crop.mp4` was `256x256` and had `366` frames.
+- `Cam2010096_crop_meta.csv`, `Cam2010096_crop_perf.csv`, and
+  `Cam2010096_yolo_events.jsonl` each had `366` rows with matching
+  `recording_frame_id` sequences.
+- `Cam2010096_crop_perf.csv` reported `0` dropped crop frames and max queue
+  depth `1`; crop worker `total_ms` mean was about `4.54 ms`, p95 about
+  `10.70 ms`, p99 about `14.27 ms`, and max about `17.85 ms`.
+- `scripts/validate_recording_artifacts.py` passed with the stricter crop
+  snapshot, keyframe-sidecar, crop-perf, and YOLO alignment checks.
+
 Artifact checker behavior:
 
 - Crop artifacts are optional unless crop mode was enabled for that camera.
+- When crop artifacts are present, `recording_snapshot.json` should contain
+  `crop_outputs[serial]` with enabled state, geometry, and expected artifact
+  file names.
+- `crop_outputs[serial].runtime.files.keyframes` should name the emitted
+  `Cam<serial>_crop_keyframe.json` sidecar.
 - When crop artifacts are present, `ffprobe` crop video dimensions should match
   the effective `crop_pipeline.crop_size_px` captured in
   `recording_snapshot.json`.
 - Crop metadata data rows should match crop video frame count.
 - `crop_w,crop_h` in crop metadata should match the configured crop size.
+- `Cam<serial>_crop_perf.csv` rows should match crop metadata rows and report
+  no drops for the current strict full-rate path.
 - For the current full-rate GUI YOLO path, YOLO event rows should match crop
   metadata rows. If YOLO decimation becomes configurable, validation should use
   the configured cadence instead of assuming one YOLO/crop event per recorded
@@ -565,10 +592,45 @@ python3 scripts/validate_recording_artifacts.py /path/to/recording_folder
 ```
 
 The validator checks main video/metadata alignment, optional crop video
-dimensions against `recording_snapshot.json` `crop_pipeline.crop_size_px`, crop
-metadata row count, crop geometry, and current full-rate YOLO event alignment.
-Use `--allow-yolo-decimation` for future intentionally decimated YOLO/crop
-runs.
+dimensions against `recording_snapshot.json` crop metadata, crop output snapshot
+metadata, crop keyframe JSON sidecar presence, crop metadata row count, crop
+geometry, crop perf row alignment, and current full-rate YOLO event alignment.
+Use `--allow-yolo-decimation` for future intentionally decimated YOLO/crop runs.
+
+### Crop Perf CSV (`Cam<serial>_crop_perf.csv`)
+
+Header (exact order):
+
+```text
+recording_frame_id,local_frame_id,camera_frame_id,worker_start_steady_ns,queue_depth_start,encode_active,has_detection,blank_frame,dropped,drop_reason,crop_x,crop_y,crop_w,crop_h,packet_count,encoded_bytes,event_wait_cpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms
+```
+
+Field semantics:
+- `recording_frame_id`, `local_frame_id`, `camera_frame_id`: recording, local
+  acquisition, and SDK frame identities for the crop-recorded frame.
+- `worker_start_steady_ns`: host steady-clock timestamp for worker processing
+  start. This is for duration ordering within one process, not wall-clock time.
+- `queue_depth_start`: crop worker input queue depth immediately after this
+  frame was dequeued.
+- `encode_active`: whether this row was part of a recording artifact.
+- `has_detection`, `blank_frame`: whether YOLO provided at least one detection
+  and whether the crop encoder wrote a black placeholder frame.
+- `dropped`, `drop_reason`: crop-worker drop diagnostics. Current strict GUI
+  validation expects zero dropped crop frames.
+- `crop_x,crop_y,crop_w,crop_h`: full-frame pixel crop rectangle used for the
+  encoded crop frame. Blank frames use zero geometry.
+- `packet_count`, `encoded_bytes`: immediate NVENC packet output returned for
+  the frame.
+- `event_wait_cpu_ms`: CPU time spent enqueuing the wait on source-frame GPU
+  readiness. This does not mean the GPU wait itself completed.
+- `crop_preview_cpu_ms`: CPU-side time for preview crop/copy submission. On
+  cross-GPU preview this can include the transitional host staging sync.
+- `encode_submit_cpu_ms`: CPU-side time for NVENC input copy/submission and
+  packet handoff.
+- `metadata_cpu_ms`: CPU time to append the crop metadata row.
+- `stream_sync_ms`, `display_sync_ms`: transitional synchronization waits before
+  source-frame release.
+- `total_ms`: total crop worker service time for this frame.
 
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 

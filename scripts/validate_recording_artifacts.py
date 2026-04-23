@@ -213,6 +213,14 @@ def camera_serial_from_crop_video(path: Path) -> str | None:
 
 
 def get_nested_crop_size(snapshot: dict[str, Any], serial: str) -> int | None:
+    crop_output = get_crop_output(snapshot, serial)
+    if crop_output is not None:
+        runtime = crop_output.get("runtime")
+        if isinstance(runtime, dict):
+            crop_size = runtime.get("crop_size_px")
+            if isinstance(crop_size, int) and crop_size > 0:
+                return crop_size
+
     runtime = snapshot.get("camera_runtime", {}).get(serial, {})
     if isinstance(runtime, dict):
         runtime_config = runtime.get("runtime", {})
@@ -228,6 +236,16 @@ def get_nested_crop_size(snapshot: dict[str, Any], serial: str) -> int | None:
             return crop_size
 
     return None
+
+
+def get_crop_output(snapshot: dict[str, Any], serial: str) -> dict[str, Any] | None:
+    crop_outputs = snapshot.get("crop_outputs")
+    if not isinstance(crop_outputs, dict):
+        return None
+    crop_output = crop_outputs.get(serial)
+    if not isinstance(crop_output, dict):
+        return None
+    return crop_output
 
 
 def crop_size_from_config(config: dict[str, Any]) -> int | None:
@@ -343,11 +361,15 @@ def validate_crop_artifacts(
         if serial is None:
             continue
         crop_meta_path = recording_folder / f"Cam{serial}_crop_meta.csv"
+        crop_perf_path = recording_folder / f"Cam{serial}_crop_perf.csv"
+        crop_keyframe_path = recording_folder / f"Cam{serial}_crop_keyframe.json"
         yolo_events_path = recording_folder / f"Cam{serial}_yolo_events.jsonl"
 
         try:
             crop_video = ffprobe_video(crop_video_path, ffprobe)
             crop_rows = read_csv_rows(crop_meta_path)
+            crop_perf_rows = read_csv_rows(crop_perf_path)
+            read_json(crop_keyframe_path)
             crop_size = get_nested_crop_size(snapshot, serial)
             if crop_size is None:
                 raise ValidationError(
@@ -357,6 +379,42 @@ def validate_crop_artifacts(
         except ValidationError as exc:
             reporter.fail(str(exc))
             continue
+
+        crop_output = get_crop_output(snapshot, serial)
+        reporter.check(
+            crop_output is not None,
+            f"Cam{serial} crop output snapshot exists",
+            f"Cam{serial} crop artifacts exist but recording_snapshot.json has no crop_outputs entry",
+        )
+        if crop_output is not None:
+            runtime = crop_output.get("runtime")
+            if not isinstance(runtime, dict):
+                reporter.fail(f"Cam{serial} crop output snapshot runtime is missing or not an object")
+                runtime = {}
+            files = runtime.get("files")
+            if not isinstance(files, dict):
+                files = {}
+            reporter.check(
+                crop_output.get("enabled") is True,
+                f"Cam{serial} crop output snapshot marks crop enabled",
+                f"Cam{serial} crop output snapshot does not mark crop enabled",
+            )
+            reporter.check(
+                runtime.get("crop_size_px") == crop_size
+                and runtime.get("width") == crop_size
+                and runtime.get("height") == crop_size,
+                f"Cam{serial} crop output snapshot geometry matches crop_size_px",
+                f"Cam{serial} crop output snapshot geometry does not match crop_size_px",
+            )
+            reporter.check(
+                files.get("video") == crop_video_path.name
+                and files.get("metadata") == crop_meta_path.name
+                and files.get("keyframes") == crop_keyframe_path.name
+                and files.get("perf") == crop_perf_path.name,
+                f"Cam{serial} crop output snapshot file names match artifacts",
+                f"Cam{serial} crop output snapshot file names do not match artifacts",
+            )
+        reporter.pass_(f"Cam{serial} crop keyframe sidecar exists and parses as JSON")
 
         reporter.check(
             crop_video["width"] == crop_size and crop_video["height"] == crop_size,
@@ -396,6 +454,32 @@ def validate_crop_artifacts(
         crop_ids = recording_frame_ids_from_csv(crop_rows, crop_meta_path)
         validate_monotonic_positive(crop_ids, f"Cam{serial} crop metadata", reporter)
 
+        crop_perf_ids = recording_frame_ids_from_csv(crop_perf_rows, crop_perf_path)
+        validate_monotonic_positive(crop_perf_ids, f"Cam{serial} crop perf", reporter)
+        reporter.check(
+            len(crop_perf_rows) == len(crop_rows),
+            f"Cam{serial} crop perf rows match crop metadata rows ({len(crop_perf_rows)})",
+            (
+                f"Cam{serial} crop perf rows ({len(crop_perf_rows)}) != "
+                f"crop metadata rows ({len(crop_rows)})"
+            ),
+        )
+        reporter.check(
+            crop_perf_ids == crop_ids,
+            f"Cam{serial} crop perf and crop metadata recording_frame_id sequences match",
+            f"Cam{serial} crop perf and crop metadata recording_frame_id sequences differ",
+        )
+        dropped_perf_rows = [
+            index
+            for index, row in enumerate(crop_perf_rows, start=2)
+            if int_field(row, "dropped", crop_perf_path) != 0
+        ]
+        reporter.check(
+            not dropped_perf_rows,
+            f"Cam{serial} crop perf reports no dropped crop frames",
+            f"Cam{serial} crop perf reports {len(dropped_perf_rows)} dropped crop frame(s)",
+        )
+
         yolo_statuses: dict[str, int] = {}
         try:
             yolo_events = read_yolo_events(yolo_events_path)
@@ -428,6 +512,7 @@ def validate_crop_artifacts(
             "crop_size_px": crop_size,
             "crop_frames": crop_video["frames"],
             "crop_metadata_rows": len(crop_rows),
+            "crop_perf_rows": len(crop_perf_rows),
             "yolo_statuses": yolo_statuses,
         }
 

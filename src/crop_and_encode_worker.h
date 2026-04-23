@@ -40,6 +40,29 @@ protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;
 
 private:
+    struct CropPerfSample {
+        uint64_t worker_start_steady_ns = 0;
+        int queue_depth_start = 0;
+        bool encode_active = false;
+        bool has_detection = false;
+        bool blank_frame = false;
+        bool dropped = false;
+        const char* drop_reason = "";
+        int crop_x = 0;
+        int crop_y = 0;
+        int crop_w = 0;
+        int crop_h = 0;
+        size_t packet_count = 0;
+        size_t encoded_bytes = 0;
+        double event_wait_cpu_ms = 0.0;
+        double crop_preview_cpu_ms = 0.0;
+        double encode_submit_cpu_ms = 0.0;
+        double metadata_cpu_ms = 0.0;
+        double stream_sync_ms = 0.0;
+        double display_sync_ms = 0.0;
+        double total_ms = 0.0;
+    };
+
     bool drain_ready();
     bool ensure_recording_started(const std::string& recording_folder);
     void push_encoded_packets(std::vector<std::vector<uint8_t>>& packets,
@@ -57,6 +80,7 @@ private:
                             float detection_y,
                             float detection_w,
                             float detection_h);
+    void write_perf_row(const WORKER_ENTRY* entry, const CropPerfSample& sample);
     void release_entry(WORKER_ENTRY* entry);
     bool display_cuda_ok(cudaError_t status, const char* operation);
     void copy_crop_to_display_preview();
@@ -80,6 +104,8 @@ private:
     int encoder_pitch_ = 0;
     cudaStream_t m_stream = nullptr;
     cudaStream_t m_display_stream = nullptr;
+    std::string crop_perf_file_;
+    std::ofstream crop_perf_;
     int frame_counter_ = 0;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     Debayer debayer_gpu_;
