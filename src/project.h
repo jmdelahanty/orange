@@ -26,6 +26,7 @@ struct ConnectedServer {
 struct AppStorageConfig {
     std::string schema_id;
     int schema_version = 0;
+    std::string default_detect_engine;
     std::string default_recording_root;
     bool write_local_pointer = true;
     std::string canonical_pointer_root;
@@ -40,6 +41,8 @@ std::string build_default_app_config_path(const std::string& orange_root_dir_str
 bool load_app_storage_config(const std::string& orange_root_dir_str,
                              AppStorageConfig* config_out,
                              std::string* error_out = nullptr);
+std::string resolve_default_detect_engine(const std::string& orange_root_dir_str,
+                                          std::string* warning_out = nullptr);
 std::string resolve_default_recording_root(const std::string& orange_root_dir_str,
                                            std::string* warning_out = nullptr);
 void intialize_servers(ConnectedServer* my_servers);

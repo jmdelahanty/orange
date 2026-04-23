@@ -640,6 +640,121 @@ Implementation preference for the first slice:
 - prove map wiring and benchmarking on that baseline,
 - add motion or semantic ROI only after the static-prior path is understood.
 
+## Dynamic YOLO ROI Plan After GUI YOLO Validation
+
+Date: 2026-04-22
+
+The current static ROI path is a successful NVENC plumbing test, but it is not
+fish-aware. The newer GUI path has now validated one-camera `100 fps` recording
+with YOLO enabled and clean one-to-one video/meta/YOLO log alignment. That makes
+YOLO-derived importance maps technically plausible, but the current priority is
+lossless high-resolution crop production that can feed pose TensorRT before crop
+video encoding. Dynamic QP maps should remain a later codec-quality experiment.
+
+Current code-path finding:
+
+- Acquisition dispatches the same `WORKER_ENTRY` to display, YOLO, and
+  recording according to the selected subscriptions.
+- Recording ingress sends the frame toward encoder preprocess immediately.
+- `YoloWorker` writes detections back onto `WORKER_ENTRY`, but encoder
+  preprocess and encoder HW do not currently wait for YOLO completion.
+- `ENCODER_WORKER_ENTRY` carries prepared-frame identity and timing, but no
+  detection or ROI payload.
+- Therefore a same-frame YOLO ROI would require blocking or extra
+  synchronization in the recording path.
+
+Design rule for the first dynamic implementation:
+
+- Do not block encode on same-frame YOLO.
+- Let `YoloWorker` publish a per-camera latest-good ROI state.
+- Let `EncoderHwWorker` read that state at encode time and build a per-frame
+  delta-QP map from the latest valid ROI.
+- If the latest ROI is stale or missing, fall back to a configured safe source:
+  static ROI, static dish/arena prior, or neutral map.
+
+This makes `yolo_roi` a "latest available semantic prior", not a strict
+same-frame semantic annotation. The distinction should be explicit in metadata.
+
+Recommended first runtime mode:
+
+```text
+importance_map_mode=yolo_roi
+```
+
+Accepted aliases can include:
+
+```text
+dynamic_roi
+yolo-roi
+semantic_roi
+```
+
+Initial behavior:
+
+- Convert the best YOLO/tracker box into source-frame pixel ROI.
+- Expand the ROI by a configurable margin/halo before mapping to CTBs.
+- Clamp ROI to the active source frame.
+- Transform source-frame ROI into encoder-output coordinates when output
+  downsampling/resizing is active.
+- Fill the HEVC `32x32` CTB delta-QP map:
+  - inside expanded ROI: protected negative QP delta
+  - optional halo: milder negative or neutral delta
+  - outside ROI: positive or neutral delta, depending on rate-control test
+- Reuse the last good ROI for a bounded number of frames.
+- Prefer a slightly-too-large ROI over clipping the fish.
+
+Suggested v1 policy defaults:
+
+- `inside_delta_qp = -3`
+- `outside_delta_qp = +3` for direct comparison with `static_roi`
+- `margin_px = 256` in source-frame pixels
+- `hold_frames = 30`
+- `smoothing_alpha = 0.25`
+- fallback source: `static_roi` when configured, otherwise neutral
+
+Metadata that should be emitted in `recording_snapshot.json`:
+
+- requested mode and active mode
+- block size and grid dimensions
+- inside/outside/halo deltas
+- source coordinate space
+- ROI source: `latest_yolo_detection`
+- whether same-frame ROI is guaranteed: `false`
+- hold-frame and smoothing parameters
+- fallback policy
+
+Per-run diagnostics that would make validation interpretable:
+
+- number of frames encoded with a fresh YOLO ROI
+- number of frames encoded with a held ROI
+- number of frames encoded with fallback/neutral map
+- latest ROI age in frames and milliseconds
+- ROI source frame id versus encoded recording frame id
+- optional sampled ROI rectangles in a compact CSV or JSONL sidecar
+
+Implementation checklist:
+
+- [ ] Keep `yolo_roi` behind the high-resolution crop/pose reactivation work
+      unless codec-quality evaluation becomes the immediate priority again.
+- [ ] Extract static centered-square QP-map generation into a reusable
+      `ImportanceMapBuilder` helper.
+- [ ] Add unit tests for ROI-to-CTB-grid conversion, clamping, margin expansion,
+      and source-to-output scaling.
+- [ ] Add a per-camera `LatestYoloRoiState` shared between `YoloWorker` and
+      encoder workers.
+- [ ] Update `YoloWorker` to publish best detection ROI with frame ids,
+      confidence, and timestamps.
+- [ ] Extend `ImportanceMapConfig` with `yolo_roi` mode and v1 policy fields.
+- [ ] Update headless CLI/spec parsing, run config, runs JSON/CSV, and analyzer
+      fields for the new mode.
+- [ ] Update `EncoderHwWorker` to build a per-frame QP map from the latest ROI
+      when `importance_map_mode=yolo_roi`.
+- [ ] Preserve the existing `static_roi` path as the baseline/off-vs-on proof.
+- [ ] Emit snapshot diagnostics explaining whether dynamic maps used fresh,
+      held, or fallback ROI data.
+- [ ] Validate with a short GUI YOLO recording and bounded pre-encoder
+      reference capture before any longer run.
+
 ## TODO Plan
 
 ## Phase 1: Schema and Contracts

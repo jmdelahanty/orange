@@ -1887,6 +1887,7 @@ void acquire_frames(
             camera_state.last_get_frame_error_code = camera_state.camera_return;
             get_frame_errors_by_code[camera_state.camera_return]++;
             std::cerr << "EVT_CameraGetFrame Error, " << camera_state.camera_return
+                      << " (" << get_evt_error_string(static_cast<EVT_ERROR>(camera_state.camera_return)) << ")"
                       << ", camera serial, " << camera_params->camera_serial << std::endl;
             if (current_event) {
                 resources->free_events_queue->push(current_event);

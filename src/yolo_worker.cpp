@@ -819,8 +819,9 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         ms_track = std::chrono::duration<double, std::milli>(track_end - track_start).count();
 #endif
 
-        // After detections are found, dispatch to the crop worker if it exists AND recording is on
-        if (!skip_cpu_results && m_crop_worker && camera_control_->record_video) {
+        // Feed the crop worker for live preview whenever it exists. The crop
+        // worker independently decides whether the frame should also be encoded.
+        if (!skip_cpu_results && m_crop_worker) {
             // Increment the reference count because another worker will now use this entry
             entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
             m_crop_worker->PutObjectToQueueIn(entry);

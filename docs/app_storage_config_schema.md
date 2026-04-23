@@ -1,7 +1,7 @@
-# App Storage Config Schema
+# App Config Schema
 
-This document proposes an app-level schema for Orange storage defaults and
-latest-recording pointer behavior.
+This document proposes an app-level schema for Orange storage defaults,
+model defaults, and latest-recording pointer behavior.
 
 This is intentionally separate from the camera config schema:
 
@@ -9,9 +9,10 @@ This is intentionally separate from the camera config schema:
   - how a specific camera should run
   - where its source GPU lives
   - how its recording path should behave
-- app storage config answers:
+- app config answers:
   - where recordings should go by default
   - where latest-recording pointers should be written
+  - which optional runtime model assets should be preselected
 
 This schema is meant for process/session defaults, not per-camera behavior.
 
@@ -37,8 +38,9 @@ See:
 - [recording_metadata.md](/home/jeremy/orange-gop-split-a16/docs/recording_metadata.md:14)
 - [recording_pointer_compatibility_plan.md](/home/jeremy/orange-gop-split-a16/docs/recording_pointer_compatibility_plan.md:1)
 
-We want a first-class config for the default recording root and a cleaner model
-for how the latest-recording pointers relate to it.
+We want a first-class config for the default recording root, optional model
+defaults, and a cleaner model for how the latest-recording pointers relate to
+the recording root.
 
 ## Schema Identity
 
@@ -76,6 +78,9 @@ Missing-file behavior should remain non-fatal:
 {
   "schema_id": "orange.app.config",
   "schema_version": 1,
+  "models": {
+    "default_detect_engine": ""
+  },
   "storage": {
     "default_recording_root": "/home/jeremy/orange_data/exp/unsorted",
     "latest_recording": {
@@ -89,6 +94,29 @@ Missing-file behavior should remain non-fatal:
 ```
 
 ## Field Semantics
+
+### `models.default_detect_engine`
+
+Type:
+
+- string
+
+Meaning:
+
+- optional TensorRT detect engine path to preselect in the GUI
+
+Recommended default:
+
+- empty string
+
+Orange should not silently fall back to a bundled or historical YOLO engine. If
+this field is empty, the GUI starts with no selected detect model. Enabling
+YOLO then requires the user to select an `.engine` file manually or configure a
+valid host-local path here.
+
+Example:
+
+- `/home/jeremy/orange_data/detect/my_detector.engine`
 
 ### `storage.default_recording_root`
 
@@ -210,6 +238,9 @@ The effective recording base folder should resolve in this order:
 
 Current implementation status:
 
+- `models.default_detect_engine` is used to preselect the GUI detect engine
+- if no detect engine is configured or selected, starting a YOLO-enabled stream
+  is blocked by GUI preflight
 - `storage.default_recording_root` is used for the GUI default recording root
 - headless CLI and experiment-spec flows still choose their recording folders
   explicitly

@@ -28,6 +28,29 @@ struct CameraGpioNodeConfig {
     uint32_t value_uint = 0;
 };
 
+struct CameraCropPipelineConfig {
+    static constexpr int kDefaultCropSizePx = 256;
+    static constexpr int kMinCropSizePx = 32;
+    static constexpr int kMaxCropSizePx = 2048;
+
+    int crop_size_px = kDefaultCropSizePx;
+};
+
+inline int sanitize_camera_crop_size_px(int requested_size_px)
+{
+    int size = requested_size_px > 0
+        ? requested_size_px
+        : CameraCropPipelineConfig::kDefaultCropSizePx;
+    size = std::clamp(
+        size,
+        CameraCropPipelineConfig::kMinCropSizePx,
+        CameraCropPipelineConfig::kMaxCropSizePx);
+    if ((size % 2) != 0) {
+        --size;
+    }
+    return std::max(size, CameraCropPipelineConfig::kMinCropSizePx);
+}
+
 struct CameraParams{
     unsigned int width;
     unsigned int height;
@@ -65,6 +88,7 @@ struct CameraParams{
     std::string acquisition_buffer_mode = "auto";
     std::vector<CameraGpioNodeConfig> gpio_nodes;
     CameraRecordingConfig recording;
+    CameraCropPipelineConfig crop_pipeline;
     unsigned int gain_max; 
     unsigned int gain_min;
     unsigned int gain_inc;

@@ -3,12 +3,12 @@
 ## Identifier
 
 - `schema_id = "orange.camera.config"`
-- `schema_version = 1`
+- `schema_version = 3`
 
 ## Compatibility
 
 - Legacy camera configs without schema metadata still load.
-- Saving a camera config rewrites it into schema version 1.
+- Saving a camera config rewrites it into schema version 3.
 - Explicit config metadata wins. If `camera_scan_type` or `gpio_connector_variant` is missing, Orange tries to infer it from `device_model_name`.
 - The current operator-facing behavior and recipe expansions are documented in [camera_gpio_configuration_guide.md](/home/jeremy/orange-jeremy/docs/camera_gpio_configuration_guide.md).
 
@@ -46,20 +46,22 @@ Schema and GPIO-related fields:
 - `trigger`
 - `ptp`
 - `gpio`
+- `recording`
+- `crop_pipeline`
 
 ## Camera Metadata
 
 ### `device_model_name`
 
 - Free-form model string from the camera, for example `HB-7000SC`.
-- This is the canonical on-disk model field in schema v1.
+- This is the canonical on-disk model field in schema v3.
 - Orange still maps it into the internal runtime `device_model` field.
 
 ### `device_serial_number`
 
 - Canonical camera serial string for the physical device.
 - Numeric serials should be stored without leading zeros.
-- Orange preserves this field in schema v1 for compatibility with older config sets and offline tooling.
+- Orange preserves this field in schema v3 for compatibility with older config sets and offline tooling.
 - Config lookup now prefers `device_serial_number` from the JSON body and only falls back to the filename stem if the field is missing.
 - When loading legacy configs, Orange can fall back to `device_serial_number` if runtime camera metadata is not already attached.
 
@@ -196,7 +198,7 @@ Notes:
 }
 ```
 
-Supported node types in schema version 1:
+Supported node types in schema version 3:
 
 - `enum`
 - `bool`
@@ -207,6 +209,27 @@ Runtime behavior:
 - Each requested node is applied by name during camera open.
 - Missing nodes or failed writes are treated as configuration errors.
 - `gpio.nodes` is generic and camera-specific; recipe validation does not guarantee that ad hoc node writes are valid on every model.
+
+## `crop_pipeline`
+
+```json
+"crop_pipeline": {
+  "crop_size_px": 256
+}
+```
+
+Notes:
+
+- `crop_size_px` is the square crop size used by the transitional GUI crop
+  preview/recording path.
+- The value is sanitized on load and save: default `256`, even integer,
+  clamped to `32..2048`.
+- The GUI uses one session crop size while streaming because GL textures and
+  NVENC dimensions are allocated at stream start. If multiple open cameras have
+  different configured crop sizes, the GUI uses the first open camera value for
+  the session and marks the in-memory open camera configs with that value.
+- Use `Save to config` from the camera properties panel to persist the currently
+  selected session crop size back to a camera JSON.
 
 ## Example
 
@@ -247,6 +270,9 @@ Runtime behavior:
   },
   "gpio": {
     "nodes": []
+  },
+  "crop_pipeline": {
+    "crop_size_px": 256
   }
 }
 ```

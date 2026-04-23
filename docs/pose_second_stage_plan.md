@@ -4,7 +4,26 @@ Date: 2026-01-27
 Author: Codex (outline)
 
 ## Goal
-Add a second-stage pose model (TensorRT) that consumes the 256x256 crop and produces real-time pose results without breaking current display/recording throughput.
+Add a second-stage pose model (TensorRT) that consumes a high-resolution GPU
+crop and produces real-time pose results without breaking current display or
+recording throughput.
+
+## Goal Update (2026-04-22)
+
+The intended path is pose inference on the high-resolution GPU crop before any
+crop-video encoding. The encoded crop video is an optional recording artifact,
+not the input to pose.
+
+Implications:
+
+- Crop generation should become a reusable producer stage.
+- `CropAndEncodeWorker` should not own the only crop-generation path.
+- Pose should consume a GPU crop payload before NVENC/NV12 conversion.
+- Crop recording should consume the same crop payload, or a derived resized copy,
+  after pose-compatible crop production.
+- If the pose model wants a larger crop than the current default `256x256`,
+  the pipeline should generate that larger crop first and downsample/convert
+  only for crop-video encoding when needed.
 
 ## Current Assumptions (2026-02-13)
 - Pose runs on every frame that produces a crop (i.e., when YOLO fires and produces detections).
@@ -14,7 +33,7 @@ Add a second-stage pose model (TensorRT) that consumes the 256x256 crop and prod
 - Note: YOLO does not necessarily run every frame (decimation is possible), so pose rate may be less than 60 FPS if YOLO is decimated.
 
 ## Constraints / Existing Architecture
-- `CropAndEncodeWorker` already generates a 256x256 crop on GPU.
+- `CropAndEncodeWorker` already generates a configurable square crop on GPU.
 - `CThreadWorker` stages rely on per-frame CUDA events for readiness.
 - Most stages are asynchronous and do not pass items to output queues.
 - `CropAndEncodeWorker` currently uses a single `d_cropped_rgba_` buffer.
@@ -27,18 +46,28 @@ Add a new worker stage:
 
 High-level flow:
 ```
-Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
-                            |--> preview (PBO)
-                            |--> encode (NVENC)
+Acquisition -> YOLO -> CropProducer -> PoseWorker -> (IPC/UI/log)
+                                |--> preview (PBO)
+                                |--> crop encode (NVENC)
 ```
 
+The crop producer owns ROI selection, source-to-crop geometry, GPU crop
+production, buffer pooling, and readiness events. Preview, crop encoding, and
+pose inference are consumers. A slow consumer should drop its own work rather
+than backpressure acquisition or full-frame recording.
+
 ## Data Structures
-### New: PoseEntry (pool item)
-- `unsigned char* d_crop_rgba` (or NV12 if pose model expects it)
+### New: CropFrame / PoseEntry (pool item)
+- `unsigned char* d_crop` in the crop producer's canonical GPU layout
+- Optional derived tensor buffer for pose if model layout differs
 - `cudaEvent_t* crop_ready_event`
 - `uint64_t frame_id / recording_frame_id`
 - `uint64_t timestamp / timestamp_sys`
-- Optional: camera id, bbox for traceability
+- camera id/serial
+- source frame dimensions
+- crop rectangle in source-frame coordinates
+- detection rectangle/confidence
+- transform from crop-local coordinates back to full-frame coordinates
 
 ### New: PoseResults (output)
 - Minimal output struct (pose keypoints + score)
@@ -46,19 +75,22 @@ Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
 
 ## Worker Integration
 ### CropAndEncodeWorker changes
-- Maintain a pool of `PoseEntry` buffers (size ~4-8 to start).
+- Maintain a pool of crop buffers/events (size ~4-8 to start).
 - When a detection exists:
-  - Acquire a free `PoseEntry` from the pool.
-  - Write the crop into `PoseEntry::d_crop_rgba` using `m_display_stream`.
+  - Acquire a free crop frame from the pool.
+  - Write the high-resolution crop into the crop frame using a crop stream.
   - Record `crop_ready_event` on that stream.
-  - Enqueue to `PoseWorker`.
-- If no `PoseEntry` is available, drop pose for that frame (do not block crop/encode).
+  - Offer the crop frame to pose, preview, and crop encode consumers according
+    to enabled config.
+- If no crop frame is available, drop crop/pose for that frame and count the
+  drop. Do not block full-frame recording.
 
 ### PoseWorker
 - Owns TRT engine and a CUDA stream.
 - On `WorkerFunction`:
   - `cudaStreamWaitEvent` on `crop_ready_event`.
-  - Run TRT inference on `d_crop_rgba`.
+  - Convert or bind the crop buffer into the model input layout if needed.
+  - Run TRT inference on the crop tensor.
   - Write results to output (IPC/UI/log).
   - Return buffer and event to pool.
 
@@ -73,7 +105,8 @@ Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
 - TRT engine path configurable per camera.
 
 ## Performance Notes
-- Keep pose model small (256x256, FP16/INT8).
+- Keep pose model small enough for the required rate; do not assume the default
+  `256x256` crop if the scientific need is a higher-resolution crop.
 - Run only when detection exists.
 - Keep queue sizes bounded and drop pose when overloaded.
 - Avoid extra GPU->CPU copies; only copy results.
@@ -102,12 +135,13 @@ Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
 - Requires a clean path for pose results into UI/IPC.
 
 ## Implementation Steps (high level)
-1. Define `PoseEntry` + pool (similar to encoder preprocess pool).
-2. Add `PoseWorker` class (similar to YOLO but simpler TRT-only).
-3. Extend `CropAndEncodeWorker` to enqueue pose work.
-4. Wire `PoseWorker` creation in `orange.cpp` when enabled.
-5. Add output path (IPC or UI overlay).
-6. Add configs + decimation + logging.
+1. Define `CropFrame`/`PoseEntry` + pool (similar to encoder preprocess pool).
+2. Extract a crop producer from the current crop/encode path.
+3. Add `PoseWorker` class (similar to YOLO but simpler TRT-only).
+4. Wire crop producer outputs to preview, crop encode, and pose consumers.
+5. Wire `PoseWorker` creation in `orange.cpp` when enabled.
+6. Add output path (IPC or UI overlay).
+7. Add configs + decimation + logging.
 
 ## Concrete implementation plan
 ### New files
@@ -117,15 +151,18 @@ Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
 ### Existing files to touch
 1. `src/video_capture.h`
    - Add per-camera toggles and model path fields (e.g. `pose`, `pose_model`).
-2. `src/crop_and_encode_worker.h` / `src/crop_and_encode_worker.cpp`
-   - Add a small pool of pose buffers + events.
-   - Add `SetPoseWorker(...)`.
-   - Enqueue pose work when detections exist.
-3. `src/orange.cpp`
+2. Crop producer files (new or extracted from `src/crop_and_encode_worker.*`)
+   - Add a bounded crop buffer/event pool.
+   - Add consumer registration for preview, crop encode, and pose.
+   - Enqueue pose work from produced `CropFrame` payloads when detections exist.
+3. `src/crop_and_encode_worker.h` / `src/crop_and_encode_worker.cpp`
+   - Convert to a crop-video consumer, or keep as transitional code until the
+     crop producer split is complete.
+4. `src/orange.cpp`
    - Create and start `PoseWorker` per camera when enabled.
-   - Wire to `CropAndEncodeWorker`.
+   - Wire to the crop producer, not directly to crop-video encoding.
    - Add UI toggles + model selection.
-4. `CMakeLists.txt`
+5. `CMakeLists.txt`
    - Probably no changes (glob on `src/*.cpp`), but verify on orange_client if needed.
 
 ## Skeletons (code outline)
@@ -135,14 +172,25 @@ Acquisition -> YOLO -> CropWorker -> PoseWorker -> (IPC/UI/log)
 #include <cuda_runtime.h>
 #include <vector>
 
-struct PoseEntry {
-    unsigned char* d_crop_rgba = nullptr; // 256x256x4
+struct CropFrame {
+    unsigned char* d_crop = nullptr;
+    int crop_width = 0;
+    int crop_height = 0;
+    int source_width = 0;
+    int source_height = 0;
+    float crop_x = 0.0f;
+    float crop_y = 0.0f;
+    float detection_x = 0.0f;
+    float detection_y = 0.0f;
+    float detection_w = 0.0f;
+    float detection_h = 0.0f;
+    float detection_confidence = 0.0f;
     cudaEvent_t* crop_ready_event = nullptr;
     uint64_t frame_id = 0;
     uint64_t recording_frame_id = 0;
     uint64_t timestamp = 0;
     uint64_t timestamp_sys = 0;
-    // Optional: bbox or camera id
+    int camera_id = 0;
 };
 
 struct PoseResult {
@@ -159,25 +207,25 @@ struct PoseResult {
 #include "pose_types.h"
 #include <atomic>
 
-class PoseWorker : public CThreadWorker<PoseEntry> {
+class PoseWorker : public CThreadWorker<CropFrame> {
 public:
-    PoseWorker(const char* name, SafeQueue<PoseEntry*>& free_pose_entries);
+    PoseWorker(const char* name, SafeQueue<CropFrame*>& free_crop_frames);
     ~PoseWorker() override;
 
 protected:
-    bool WorkerFunction(PoseEntry* entry) override;
+    bool WorkerFunction(CropFrame* entry) override;
 
 private:
     cudaStream_t m_stream = nullptr;
     // TensorRT engine wrapper (similar to yolov8_det)
     // PoseTrtEngine engine_;
-    SafeQueue<PoseEntry*>& free_pose_entries_;
+    SafeQueue<CropFrame*>& free_crop_frames_;
 };
 ```
 
 ### pose_worker.cpp (core logic sketch)
 ```cpp
-bool PoseWorker::WorkerFunction(PoseEntry* entry) {
+bool PoseWorker::WorkerFunction(CropFrame* entry) {
     if (!entry) return false;
 
     // Wait for crop to be ready
@@ -185,48 +233,52 @@ bool PoseWorker::WorkerFunction(PoseEntry* entry) {
         ck(cudaStreamWaitEvent(m_stream, *entry->crop_ready_event, 0));
     }
 
-    // Run TRT inference on entry->d_crop_rgba
-    // engine_.infer(entry->d_crop_rgba, ...);
+    // Convert/bind entry->d_crop into the pose model input layout.
+    // Run TRT inference on entry->d_crop or a derived tensor.
+    // engine_.infer(entry->d_crop, ...);
 
     // Publish results (IPC/UI/log)
 
     // Return buffer/event to pool
-    free_pose_entries_.push(entry);
+    free_crop_frames_.push(entry);
     return false;
 }
 ```
 
-### crop_and_encode_worker.h (additions)
+### crop producer sketch
 ```cpp
-class PoseWorker; // forward
+class PoseWorker;
+class CropEncodeWorker;
 
-class CropAndEncodeWorker : public CThreadWorker<WORKER_ENTRY> {
+class CropProducer : public CThreadWorker<WORKER_ENTRY> {
 public:
     void SetPoseWorker(PoseWorker* pose_worker);
-    SafeQueue<PoseEntry*>& GetPosePool() { return free_pose_entries_; }
+    void SetCropEncodeWorker(CropEncodeWorker* crop_encode_worker);
+    SafeQueue<CropFrame*>& GetCropPool() { return free_crop_frames_; }
 private:
     PoseWorker* pose_worker_ = nullptr;
-    SafeQueue<PoseEntry*> free_pose_entries_;
-    std::vector<PoseEntry> pose_entry_pool_;
-    std::vector<cudaEvent_t> pose_event_pool_;
+    CropEncodeWorker* crop_encode_worker_ = nullptr;
+    SafeQueue<CropFrame*> free_crop_frames_;
+    std::vector<CropFrame> crop_frame_pool_;
+    std::vector<cudaEvent_t> crop_event_pool_;
 };
 ```
 
-### crop_and_encode_worker.cpp (pose enqueue sketch)
+### crop producer enqueue sketch
 ```cpp
 if (pose_worker_ && has_detection) {
-    PoseEntry* pose_entry = nullptr;
-    if (free_pose_entries_.pop(pose_entry)) {
-        // Write crop into pose_entry->d_crop_rgba
-        gpu_crop_and_resize_rgba(entry->d_image, pose_entry->d_crop_rgba, ...);
-        ck(cudaEventRecord(*pose_entry->crop_ready_event, m_display_stream));
+    CropFrame* crop = nullptr;
+    if (free_crop_frames_.pop(crop)) {
+        // Write high-resolution crop into crop->d_crop.
+        gpu_crop_and_resize_rgba(entry->d_image, crop->d_crop, ...);
+        ck(cudaEventRecord(*crop->crop_ready_event, crop_stream_));
 
-        pose_entry->frame_id = entry->frame_id;
-        pose_entry->recording_frame_id = entry->recording_frame_id;
-        pose_entry->timestamp = entry->timestamp;
-        pose_entry->timestamp_sys = entry->timestamp_sys;
+        crop->frame_id = entry->frame_id;
+        crop->recording_frame_id = entry->recording_frame_id;
+        crop->timestamp = entry->timestamp;
+        crop->timestamp_sys = entry->timestamp_sys;
 
-        pose_worker_->PutObjectToQueueIn(pose_entry);
+        pose_worker_->PutObjectToQueueIn(crop);
     }
 }
 ```
@@ -235,8 +287,8 @@ if (pose_worker_ && has_detection) {
 ```cpp
 // Create
 if (cameras_select[i].pose) {
-    pose_workers[i] = new PoseWorker(name.c_str(), cropAndEncodeWorkers[i]->GetPosePool());
-    cropAndEncodeWorkers[i]->SetPoseWorker(pose_workers[i]);
+    pose_workers[i] = new PoseWorker(name.c_str(), cropProducers[i]->GetCropPool());
+    cropProducers[i]->SetPoseWorker(pose_workers[i]);
 }
 
 // Start/stop alongside other workers.

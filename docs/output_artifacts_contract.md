@@ -419,19 +419,29 @@ Field semantics:
 Header (exact):
 
 ```text
-frame_id,timestamp,timestamp_sys,detection_confidence,crop_x,crop_y,crop_w,crop_h
+recording_frame_id,local_frame_id,camera_frame_id,timestamp,timestamp_sys,has_detection,blank_frame,detection_confidence,crop_x,crop_y,crop_w,crop_h,detection_x,detection_y,detection_w,detection_h
 ```
 
 Field semantics:
-- `frame_id`: recording-frame counter (`uint64`).
+- `recording_frame_id`: recording-frame counter (`uint64`).
+- `local_frame_id`: Orange local acquisition frame counter (`uint64`).
+- `camera_frame_id`: camera SDK frame id (`uint64`).
 - `timestamp`: camera SDK timestamp (`uint64`, unit not explicitly documented).
 - `timestamp_sys`: realtime nanoseconds (`uint64`).
-- `detection_confidence`: detection confidence (`float`).
-- `crop_x,crop_y,crop_w,crop_h`: crop rectangle in source-frame pixels.
+- `has_detection`: integer boolean (`0|1`).
+- `blank_frame`: integer boolean (`0|1`), true when the encoded crop frame is
+  an explicit no-detection blank frame.
+- `detection_confidence`: source detection confidence (`float`, `0` when no
+  detection is present).
+- `crop_x,crop_y,crop_w,crop_h`: actual crop rectangle in source-frame pixels.
+- `detection_x,detection_y,detection_w,detection_h`: selected source detection
+  rectangle in source-frame pixels.
 
 Behavior note:
 - Blank crop frames may still be encoded when no detection exists.
-- Metadata row is only appended when detection exists.
+- Metadata is now intended to contain one row per encoded crop frame so crop
+  video frames can be joined against crop metadata without inferring missing
+  no-detection frames.
 
 ### YOLO Perf CSV (`Cam<serial>_yolo_perf.csv`)
 

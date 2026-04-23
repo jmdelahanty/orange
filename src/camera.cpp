@@ -915,8 +915,14 @@ std::string get_evt_error_string(EVT_ERROR error)
         case EVT_ERROR_SRCH: 
             error_string = "No such process.";
             break;
+        case EVT_ERROR_INTR:
+            error_string = "Interrupted system call.";
+            break;
         case EVT_ERROR_IO:
             error_string = "I/O error";
+            break;
+        case EVT_ERROR_BADF:
+            error_string = "Driver error getting camera packets.";
             break;
         case EVT_ERROR_ECHILD:
             error_string = "Child process or thread create error.";
@@ -930,11 +936,32 @@ std::string get_evt_error_string(EVT_ERROR error)
         case EVT_ERROR_ACCES:
             error_string = "No access or permission.";
             break;
+        case EVT_ERROR_FAULT:
+            error_string = "Bad address.";
+            break;
+        case EVT_ERROR_EXIST:
+            error_string = "File exists.";
+            break;
         case EVT_ERROR_ENODEV:
             error_string = "No such device.";
             break;
         case EVT_ERROR_INVAL:
             error_string = "Invalid argument.";
+            break;
+        case EVT_ERROR_FBIG:
+            error_string = "File too large.";
+            break;
+        case EVT_ERROR_BADFD:
+            error_string = "Frame data was overwritten by newly received data.";
+            break;
+        case EVT_ERROR_TIMEDOUT:
+            error_string = "Connection timed out.";
+            break;
+        case EVT_ERROR_ALREADY:
+            error_string = "Operation already in progress.";
+            break;
+        case EVT_ERROR_NOBUFS:
+            error_string = "No stream buffer was available for the next GVSP block.";
             break;
         case EVT_ERROR_NOT_SUPPORTED:
             error_string = "Not supported.";
@@ -977,6 +1004,9 @@ std::string get_evt_error_string(EVT_ERROR error)
             break;
         case EVT_GENERAL_ERROR:
             error_string = "General error.";
+            break;
+        default:
+            error_string = "Unknown EVT error " + std::to_string(static_cast<int>(error)) + ".";
             break;
     }
     return error_string;

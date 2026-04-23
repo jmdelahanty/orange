@@ -621,8 +621,8 @@ Preferred multi-output shape (full + crop):
 Output key semantics:
 
 - `full`: full-frame recording encoder.
-- `crop`: crop recording encoder (for example 256x256 detection/pose-driven ROI
-  path).
+- `crop`: crop recording encoder (for example configurable square
+  detection/pose-driven ROI path).
 
 Compatibility rule:
 

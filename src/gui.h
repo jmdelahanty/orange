@@ -27,6 +27,10 @@ void setup_texture(GL_Texture& tex, int width, int height) {
     register_pbo_to_cuda(&tex.pbo, &tex.cuda_resource);
     map_cuda_resource(&tex.cuda_resource, tex.streams);
     cuda_pointer_from_resource(&tex.cuda_buffer, &tex.cuda_pbo_storage_buffer_size, &tex.cuda_resource);
+    if (tex.cuda_buffer) {
+        cudaMemsetAsync(tex.cuda_buffer, 0, static_cast<size_t>(width) * height * 4, tex.streams);
+        cudaStreamSynchronize(tex.streams);
+    }
     create_texture(&tex.texture, width, height);
 }
 

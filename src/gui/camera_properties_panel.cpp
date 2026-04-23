@@ -276,12 +276,14 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         }
 
         ImGui::Separator();
-        ImGui::Text("Schema: orange.camera.config v1");
+        ImGui::Text("Schema: orange.camera.config v3");
         ImGui::TextWrapped("Device model: %s", cameras_params[selected_camera].device_model.empty()
                                                    ? "(unknown)"
                                                    : cameras_params[selected_camera].device_model.c_str());
         ImGui::TextWrapped("Device serial: %s", cameras_params[selected_camera].camera_serial.c_str());
-        ImGui::TextDisabled("Sync/GPIO changes are saved to config and applied the next time the camera is opened.");
+        ImGui::TextDisabled("Sync/GPIO/crop changes are saved to config and applied the next time the camera is opened.");
+        ImGui::Text("Crop pipeline crop_size_px: %d", cameras_params[selected_camera].crop_pipeline.crop_size_px);
+        ImGui::TextDisabled("Edit crop size in the main Orange panel; Save to config persists it for this camera.");
 
         ImGui::Separator();
         ImGui::Checkbox("Focus UART Bootstrap", &cameras_params[selected_camera].focus_uart_bootstrap);

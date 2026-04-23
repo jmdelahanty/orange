@@ -163,6 +163,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     AppStorageConfig config;
     config.schema_id = kAppConfigSchemaId;
     config.schema_version = kAppConfigSchemaVersion;
+    config.default_detect_engine.clear();
     config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir_str);
     config.write_local_pointer = true;
     config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
@@ -220,6 +221,28 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
 
     config.schema_id = schema_id.empty() ? kAppConfigSchemaId : schema_id;
     config.schema_version = (schema_version <= 0) ? kAppConfigSchemaVersion : schema_version;
+
+    if (root.contains("models")) {
+        if (!root["models"].is_object()) {
+            if (error_out) {
+                *error_out = "models must be an object in " + config_path.string();
+            }
+            return false;
+        }
+
+        const nlohmann::json& models = root["models"];
+        if (models.contains("default_detect_engine")) {
+            if (!models["default_detect_engine"].is_string()) {
+                if (error_out) {
+                    *error_out = "models.default_detect_engine must be a string in " +
+                                 config_path.string();
+                }
+                return false;
+            }
+            config.default_detect_engine =
+                trim_ascii_copy(models["default_detect_engine"].get<std::string>());
+        }
+    }
 
     if (root.contains("storage") && root["storage"].is_object()) {
         const nlohmann::json& storage = root["storage"];
@@ -294,6 +317,25 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
 
     *config_out = std::move(config);
     return true;
+}
+
+std::string resolve_default_detect_engine(const std::string& orange_root_dir_str,
+                                          std::string* warning_out)
+{
+    if (warning_out) {
+        warning_out->clear();
+    }
+
+    AppStorageConfig config;
+    std::string error;
+    if (!load_app_storage_config(orange_root_dir_str, &config, &error)) {
+        if (warning_out) {
+            *warning_out = error;
+        }
+        return std::string();
+    }
+
+    return config.default_detect_engine;
 }
 
 std::string resolve_default_recording_root(const std::string& orange_root_dir_str,
@@ -1084,6 +1126,46 @@ void parse_recording_config_from_json(const nlohmann::json& camera_config,
     }
 }
 
+void parse_crop_pipeline_config_from_json(const nlohmann::json& camera_config,
+                                          CameraParams* camera_params) {
+    if (!camera_params) {
+        return;
+    }
+
+    camera_params->crop_pipeline = CameraCropPipelineConfig();
+    if (!camera_config.contains("crop_pipeline") ||
+        !camera_config["crop_pipeline"].is_object()) {
+        return;
+    }
+
+    const nlohmann::json& crop_pipeline = camera_config["crop_pipeline"];
+    int crop_size_px = camera_params->crop_pipeline.crop_size_px;
+    if (!try_get_nonnegative_int(crop_pipeline, "crop_size_px", &crop_size_px) &&
+        !try_get_nonnegative_int(crop_pipeline, "size_px", &crop_size_px)) {
+        int crop_width = 0;
+        int crop_height = 0;
+        const bool has_width = try_get_nonnegative_int(crop_pipeline, "width", &crop_width);
+        const bool has_height = try_get_nonnegative_int(crop_pipeline, "height", &crop_height);
+        if (has_width && has_height && crop_width == crop_height) {
+            crop_size_px = crop_width;
+        } else if (has_width && !has_height) {
+            crop_size_px = crop_width;
+        } else if (has_height && !has_width) {
+            crop_size_px = crop_height;
+        }
+    }
+
+    camera_params->crop_pipeline.crop_size_px =
+        sanitize_camera_crop_size_px(crop_size_px);
+}
+
+nlohmann::json build_crop_pipeline_config_json_from_params(const CameraParams& camera_params)
+{
+    return {
+        {"crop_size_px", sanitize_camera_crop_size_px(camera_params.crop_pipeline.crop_size_px)}
+    };
+}
+
 nlohmann::json build_recording_strategy_json_object(const RecordingStrategyConfig& recording_strategy_in) {
     RecordingStrategyConfig recording_strategy = recording_strategy_in;
     normalize_recording_strategy_config(&recording_strategy);
@@ -1264,6 +1346,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->ptp_mode.clear();
     camera_params->gpio_nodes.clear();
     camera_params->recording = CameraRecordingConfig();
+    camera_params->crop_pipeline = CameraCropPipelineConfig();
 }
 
 void parse_gpio_nodes_from_json(const nlohmann::json& camera_config, CameraParams* camera_params) {
@@ -1509,6 +1592,7 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
         {"nodes", std::move(gpio_nodes)}
     };
     camera_config["recording"] = build_recording_config_json_from_params(camera_params);
+    camera_config["crop_pipeline"] = build_crop_pipeline_config_json_from_params(camera_params);
     return camera_config;
 }
 
@@ -1615,6 +1699,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
 
     parse_gpio_nodes_from_json(camera_config, camera_params);
     parse_recording_config_from_json(camera_config, camera_params);
+    parse_crop_pipeline_config_from_json(camera_config, camera_params);
     infer_camera_gpio_metadata(camera_params);
 }
 

@@ -18,8 +18,8 @@ struct Writer
     std::string video_file;
     std::string keyframe_file;
     std::string metadata_file;
-    FFmpegWriter *video;
-    std::ofstream* metadata;
+    FFmpegWriter *video = nullptr;
+    std::ofstream* metadata = nullptr;
 };
 
 struct EncoderContext

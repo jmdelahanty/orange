@@ -215,13 +215,131 @@ std::vector<RecordingValidationCameraInput> build_gui_recording_validation_input
 
 RecordingPreflightResult run_gui_recording_preflight(const CameraParams* cameras_params,
                                                      const CameraEachSelect* cameras_select,
-                                                     const int num_cameras)
+                                                     const int num_cameras,
+                                                     const std::string& selected_yolo_model,
+                                                     const int crop_size_px)
 {
-    return run_recording_preflight(
+    RecordingPreflightResult result = run_recording_preflight(
         build_gui_recording_validation_inputs(cameras_params, cameras_select, num_cameras),
         [](const int source_gpu_id, const int helper_gpu_id) {
             return build_recording_validation_gpu_path_info(source_gpu_id, helper_gpu_id);
         });
+    const int resolved_crop_size = CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
+
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return result;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        const std::string serial = cameras_params[i].camera_serial.empty()
+            ? ("camera_index_" + std::to_string(i))
+            : cameras_params[i].camera_serial;
+
+        auto append_camera_error = [&](const std::string& message) {
+            result.errors.push_back(serial + ": " + message);
+            result.ok = false;
+        };
+
+        if (cameras_select[i].yolo) {
+            std::string engine_path = selected_yolo_model;
+            if (cameras_select[i].yolo_model && cameras_select[i].yolo_model[0] != '\0') {
+                engine_path = cameras_select[i].yolo_model;
+            }
+
+            if (engine_path.empty()) {
+                append_camera_error("YOLO enabled but no detect engine is configured or selected.");
+            } else if (!std::filesystem::exists(engine_path)) {
+                append_camera_error("YOLO detect engine does not exist: " + engine_path);
+            }
+        }
+
+        if (!cameras_select[i].crop_and_encode) {
+            continue;
+        }
+
+        if (!cameras_select[i].record) {
+            append_camera_error("Crop+Encode currently requires full-frame Record enabled.");
+        }
+        if (!cameras_select[i].yolo) {
+            append_camera_error("Crop+Encode requires YOLO enabled.");
+        }
+        if (cameras_params[i].width < resolved_crop_size ||
+            cameras_params[i].height < resolved_crop_size) {
+            std::ostringstream error;
+            error << "Crop+Encode requires source frames at least "
+                  << resolved_crop_size << "x"
+                  << resolved_crop_size
+                  << "; configured frame is "
+                  << cameras_params[i].width << "x" << cameras_params[i].height
+                  << ".";
+            append_camera_error(error.str());
+        }
+    }
+
+    result.ok = result.errors.empty();
+    return result;
+}
+
+bool gui_camera_has_acquisition_work(const CameraEachSelect& camera_select)
+{
+    return camera_select.stream_on ||
+           camera_select.record ||
+           camera_select.yolo ||
+           camera_select.crop_and_encode ||
+           camera_select.frame_save_state == State_Write_New_Frame;
+}
+
+int resolve_gui_crop_size_from_camera_configs(const CameraParams* cameras_params,
+                                              const int num_cameras,
+                                              const int fallback_crop_size,
+                                              bool* mixed_values_out)
+{
+    if (mixed_values_out) {
+        *mixed_values_out = false;
+    }
+
+    if (!cameras_params || num_cameras <= 0) {
+        return CropAndEncodeWorker::SanitizeCropSize(fallback_crop_size);
+    }
+
+    const int resolved_crop_size =
+        CropAndEncodeWorker::SanitizeCropSize(cameras_params[0].crop_pipeline.crop_size_px);
+    bool mixed_values = false;
+    for (int i = 1; i < num_cameras; ++i) {
+        const int camera_crop_size =
+            CropAndEncodeWorker::SanitizeCropSize(cameras_params[i].crop_pipeline.crop_size_px);
+        if (camera_crop_size != resolved_crop_size) {
+            mixed_values = true;
+            break;
+        }
+    }
+
+    if (mixed_values_out) {
+        *mixed_values_out = mixed_values;
+    }
+    return resolved_crop_size;
+}
+
+void apply_gui_crop_size_to_camera_configs(CameraParams* cameras_params,
+                                           const int num_cameras,
+                                           const int crop_size_px)
+{
+    if (!cameras_params || num_cameras <= 0) {
+        return;
+    }
+
+    const int resolved_crop_size = CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
+    for (int i = 0; i < num_cameras; ++i) {
+        cameras_params[i].crop_pipeline.crop_size_px = resolved_crop_size;
+    }
+}
+
+YoloWorker* gui_yolo_worker_at(const int camera_index)
+{
+    if (camera_index < 0 || camera_index >= static_cast<int>(yolo_workers.size())) {
+        return nullptr;
+    }
+    return yolo_workers[static_cast<std::size_t>(camera_index)];
 }
 
 void log_recording_preflight_failure(const char* context,
@@ -2093,7 +2211,11 @@ int main(int argc, char **args) {
     }
 
     std::string yolo_model_folder = orange_root_dir_str + "/detect";
-    std::string yolo_model = yolo_model_folder + "/fish_jinyao.engine";
+    std::string app_model_warning;
+    std::string yolo_model = resolve_default_detect_engine(orange_root_dir_str, &app_model_warning);
+    if (!app_model_warning.empty()) {
+        std::cerr << "App model config warning: " << app_model_warning << std::endl;
+    }
     
     bool camera_is_selected[cam_count]{0};
     CameraParams *cameras_params = nullptr;
@@ -2104,6 +2226,9 @@ int main(int argc, char **args) {
     GL_Texture* crop_tex = nullptr;
     int num_cameras = 0;
     int stream_downsample = 1;
+    int crop_size_px = CropAndEncodeWorker::kDefaultCropSize;
+    std::string crop_size_config_status;
+    bool crop_size_config_status_warning = false;
     CameraControl *camera_control = new CameraControl();
 
     int evt_buffer_size{100};
@@ -2281,7 +2406,15 @@ int main(int argc, char **args) {
                 ImGuiFileDialog::Instance()->OpenDialog("ChooseYOLOFile", "Choose File", ".engine", config);
             }
             ImGui::SameLine();
-            ImGui::Text("%s", yolo_model.c_str());
+            if (!yolo_model.empty()) {
+                ImGui::Text("%s", yolo_model.c_str());
+                ImGui::SameLine();
+                if (ImGui::Button("Clear YOLO")) {
+                    yolo_model.clear();
+                }
+            } else {
+                ImGui::TextDisabled("No YOLO model selected");
+            }
 
             if (camera_control->subscribe) {
                 // ImGui::EndDisabled();
@@ -2326,6 +2459,32 @@ int main(int argc, char **args) {
                 if (fps_temp < 1) fps_temp = 1;
                 if (fps_temp > 240) fps_temp = 240;
                 streaming_target_fps.store(fps_temp); // write it back safely
+            }
+
+            ImGui::BeginDisabled(camera_control->subscribe);
+            int crop_size_input = crop_size_px;
+            if (ImGui::InputInt("crop size px", &crop_size_input, 16, 64)) {
+                crop_size_px = CropAndEncodeWorker::SanitizeCropSize(crop_size_input);
+                apply_gui_crop_size_to_camera_configs(cameras_params, num_cameras, crop_size_px);
+                if (camera_control->open) {
+                    crop_size_config_status =
+                        "Crop size updated in open camera configs; use Save to config to persist.";
+                    crop_size_config_status_warning = false;
+                }
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::TextDisabled(
+                "square, even, %d-%d px; fixed at stream start",
+                CropAndEncodeWorker::kMinCropSize,
+                CropAndEncodeWorker::kMaxCropSize);
+            if (!crop_size_config_status.empty()) {
+                ImGui::TextColored(
+                    crop_size_config_status_warning
+                        ? ImVec4(0.95f, 0.75f, 0.2f, 1.0f)
+                        : ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                    "%s",
+                    crop_size_config_status.c_str());
             }
             
    
@@ -2396,7 +2555,15 @@ int main(int argc, char **args) {
                     }
                 }
 
-                if (ImGui::BeginTable("Camera Control Setting", 7,
+                bool crop_all_cameras = true;
+                for (int i = 0; i < num_cameras; i++) {
+                    if (!cameras_select[i].crop_and_encode) {
+                        crop_all_cameras = false;
+                        break;
+                    }
+                }
+
+                if (ImGui::BeginTable("Camera Control Setting", 8,
                                       ImGuiTableFlags_Resizable | ImGuiTableFlags_NoSavedSettings |
                                       ImGuiTableFlags_Borders)) {
                     ImGui::TableNextRow();
@@ -2438,6 +2605,17 @@ int main(int argc, char **args) {
                     ImGui::Text("YOLO "); ImGui::SameLine();
 
                     ImGui::TableNextColumn();
+                    ImGui::Text("Crop "); ImGui::SameLine();
+                    ImGui::BeginDisabled(camera_control->subscribe);
+                    if(ImGui::Checkbox("All##crop", &crop_all_cameras))
+                    {
+                        for (int i = 0; i < num_cameras; i++) {
+                            cameras_select[i].crop_and_encode = crop_all_cameras;
+                        }
+                    }
+                    ImGui::EndDisabled();
+
+                    ImGui::TableNextColumn();
                     ImGui::Text("YOLO Debug");
 
                     ImGui::TableNextColumn();
@@ -2459,6 +2637,16 @@ int main(int argc, char **args) {
                         ImGui::TableNextColumn();
                         sprintf(temp_string, "##checkbox_yolo%d", i);
                         ImGui::Checkbox(temp_string, &cameras_select[i].yolo);
+
+                        ImGui::TableNextColumn();
+                        sprintf(temp_string, "##checkbox_crop%d", i);
+                        ImGui::BeginDisabled(camera_control->subscribe);
+                        ImGui::Checkbox(temp_string, &cameras_select[i].crop_and_encode);
+                        ImGui::EndDisabled();
+                        if (cameras_select[i].crop_and_encode && (!cameras_select[i].yolo || !cameras_select[i].record)) {
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4(0.95f, 0.35f, 0.25f, 1.0f), "needs rec+yolo");
+                        }
 
                         ImGui::TableNextColumn();
                         if (cameras_select[i].yolo)
@@ -2845,6 +3033,24 @@ int main(int argc, char **args) {
                             }
                             ptp_stream_sync = false;
                         }
+                        {
+                            bool mixed_crop_sizes = false;
+                            crop_size_px = resolve_gui_crop_size_from_camera_configs(
+                                cameras_params,
+                                num_cameras,
+                                crop_size_px,
+                                &mixed_crop_sizes);
+                            if (mixed_crop_sizes) {
+                                crop_size_config_status =
+                                    "Mixed crop sizes loaded; using first open camera value for this GUI session.";
+                                crop_size_config_status_warning = true;
+                                apply_gui_crop_size_to_camera_configs(cameras_params, num_cameras, crop_size_px);
+                            } else {
+                                crop_size_config_status =
+                                    "Loaded crop size from camera config: " + std::to_string(crop_size_px) + " px.";
+                                crop_size_config_status_warning = false;
+                            }
+                        }
                         realtime_plot_data = new ScrollingBuffer[num_cameras];
 
                     }
@@ -2852,6 +3058,8 @@ int main(int argc, char **args) {
                     camera_control->open = false;
                     recording_config_defaults_status.clear();
                     recording_config_defaults_status_warning = false;
+                    crop_size_config_status.clear();
+                    crop_size_config_status_warning = false;
                     ptp_stream_sync = false;
                     for (int i = 0; i < num_cameras; i++) {
                         close_camera(&ecams[i].camera, &cameras_params[i]);
@@ -2891,7 +3099,12 @@ int main(int argc, char **args) {
                     const bool start_streaming = !camera_control->subscribe;
                     if (start_streaming) {
                         const RecordingPreflightResult preflight =
-                            run_gui_recording_preflight(cameras_params, cameras_select, num_cameras);
+                            run_gui_recording_preflight(
+                                cameras_params,
+                                cameras_select,
+                                num_cameras,
+                                yolo_model,
+                                crop_size_px);
                         if (!preflight.ok) {
                             recording_preflight_errors = preflight.errors;
                             log_recording_preflight_failure("gui_start_streaming", preflight);
@@ -2920,6 +3133,9 @@ int main(int argc, char **args) {
                                 }
                             }
                             for (int i = 0; i < num_cameras; ++i) {
+                                if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+                                    continue;
+                                }
                                 std::cout << "Initializing resources for camera " << i << " on GPU " << cameras_params[i].gpu_id << std::endl;
                                 camera_resources[i].initialize(
                                     cameras_params[i].gpu_id,
@@ -2959,8 +3175,10 @@ int main(int argc, char **args) {
                             // Setup cropped textures for each crop/encode worker
                             for (int i = 0; i < num_cameras; i++) {
                                 if (cameras_select[i].crop_and_encode) {
-                                    // The crop view has a fixed size of 256x256
-                                    setup_texture(crop_tex[i], 256, 256);
+                                    setup_texture(
+                                        crop_tex[i],
+                                        crop_size_px,
+                                        crop_size_px);
                                 }
                             }
 
@@ -2992,7 +3210,8 @@ int main(int argc, char **args) {
                                         encoder_config->folder_name,
                                         *camera_resources[i].recycle_queue,
                                         crop_tex[i].cuda_buffer,
-                                        camera_control
+                                        camera_control,
+                                        crop_size_px
                                     );
                                     // Immediately link it to the YOLO worker if it exists
                                     if (yolo_workers[i]) {
@@ -3029,6 +3248,9 @@ int main(int argc, char **args) {
 
                             // PREPARE CAMERAS
                             for (int i = 0; i < num_cameras; i++) {
+                                if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+                                    continue;
+                                }
                                 camera_open_stream(&ecams[i].camera, &cameras_params[i], "gui_start_streaming");
                                 ecams[i].evt_frame = new Emergent::CEmergentFrame[evt_buffer_size];
                                 ecams[i].evt_frame_count = evt_buffer_size;
@@ -3036,6 +3258,9 @@ int main(int argc, char **args) {
                             }
                             if (ptp_stream_sync) {
                                 for (int i = 0; i < num_cameras; i++) {
+                                    if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+                                        continue;
+                                    }
                                     ptp_camera_sync(&ecams[i].camera, &cameras_params[i]);
                                 }
                                 camera_control->sync_camera = true;
@@ -3043,6 +3268,9 @@ int main(int argc, char **args) {
 
                             // Start acquisition threads
                             for (int i = 0; i < num_cameras; i++) {
+                                if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+                                    continue;
+                                }
                                 camera_threads.emplace_back(
                                     &acquire_frames,
                                     &ecams[i],
@@ -3065,6 +3293,10 @@ int main(int argc, char **args) {
                         camera_control->subscribe = false;
                         // STOP STREAMING
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
+                        if (camera_control->record_video) {
+                            orange::session::request_stop_recording_run(camera_control);
+                            std::cout << "Recording toggled OFF by stream shutdown. Encoders will drain queued frames." << std::endl;
+                        }
 
                         // 1. Stop the acquisition threads first.
                         // This prevents new frames from entering the pipeline.
@@ -3108,7 +3340,7 @@ int main(int argc, char **args) {
 
                             if (cropAndEncodeWorkers[i]) {
                                 std::cout << "Flushing final packets for crop encoder " << cameras_params[i].camera_serial << "..." << std::endl;
-                                cropAndEncodeWorkers[i]->flush_and_close();
+                                cropAndEncodeWorkers[i]->finalize_recording();
                                 delete cropAndEncodeWorkers[i];
                                 cropAndEncodeWorkers[i] = nullptr;
                             }
@@ -3134,6 +3366,9 @@ int main(int argc, char **args) {
 
                         // 4. Final resource cleanup
                         for (int i = 0; i < num_cameras; i++) {
+                            if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+                                continue;
+                            }
                             destroy_frame_buffer(&ecams[i].camera, ecams[i].evt_frame, evt_buffer_size, &cameras_params[i]);
                             delete[] ecams[i].evt_frame;
                             ecams[i].evt_frame = nullptr;
@@ -3149,7 +3384,10 @@ int main(int argc, char **args) {
                             }
                             // Add this block to clean up the crop textures
                             if (cameras_select[i].crop_and_encode) {
-                                clear_upload_and_cleanup(crop_tex[i], 256, 256);
+                                clear_upload_and_cleanup(
+                                    crop_tex[i],
+                                    crop_size_px,
+                                    crop_size_px);
                             }
                         }
 
@@ -3195,7 +3433,12 @@ int main(int argc, char **args) {
 
                         if (next_record_state) {
                             const RecordingPreflightResult preflight =
-                                run_gui_recording_preflight(cameras_params, cameras_select, num_cameras);
+                                run_gui_recording_preflight(
+                                    cameras_params,
+                                    cameras_select,
+                                    num_cameras,
+                                    yolo_model,
+                                    crop_size_px);
                             if (!preflight.ok) {
                                 recording_preflight_errors = preflight.errors;
                                 log_recording_preflight_failure("gui_start_recording", preflight);
@@ -3272,7 +3515,10 @@ int main(int argc, char **args) {
                     upload_texture_from_pbo(tex[i], camera_width, camera_height);
                 }
                 if (cameras_select[i].crop_and_encode) {
-                    upload_texture_from_pbo(crop_tex[i], 256, 256);
+                    upload_texture_from_pbo(
+                        crop_tex[i],
+                        crop_size_px,
+                        crop_size_px);
                 }
             }
             // Draw main camera views
@@ -3301,18 +3547,14 @@ int main(int argc, char **args) {
                             ImGui::TextColored(ImVec4{0.0, 1.0f, 0, 1.0f}, "Elapsed Time: %s", g_formatted_elapsed_time.c_str());
                         } else {
                             ImGui::TextColored(ImVec4{1.0, 1.0f, 0, 1.0f}, "Recording starting...");
-                        }ImGui::SameLine();
-                        if (yolo_workers[i])
-                        {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_workers[i]->get_fps());
                         }
                         ImGui::SameLine();
                         ImGui::Text("Streaming FPS: %.1f", streaming_fps.load());    
-                        
-                        if (cameras_select[i].yolo && i < yolo_workers.size() && yolo_workers[i]) {
+
+                        YoloWorker* yolo_worker = gui_yolo_worker_at(i);
+                        if (cameras_select[i].yolo && yolo_worker) {
                             ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_workers[i]->get_fps());
+                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_worker->get_fps());
                         }
             
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
@@ -3345,8 +3587,8 @@ int main(int argc, char **args) {
                             ImPlot::EndPlot();
                         }
 
-                        if (cameras_select[i].yolo && i < yolo_workers.size() && yolo_workers[i]) {
-                            RenderSpeedGraph(i, yolo_workers[i], speed_tracking_data[i]);
+                        if (cameras_select[i].yolo && yolo_worker) {
+                            RenderSpeedGraph(i, yolo_worker, speed_tracking_data[i]);
                         }
                         ImGui::End();
                     }
@@ -3361,9 +3603,10 @@ int main(int argc, char **args) {
                         ImGui::Text("Streaming FPS: %.1f", streaming_fps.load());    
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
 
-                        if (cameras_select[i].yolo && i < yolo_workers.size() && yolo_workers[i]) {
+                        YoloWorker* yolo_worker = gui_yolo_worker_at(i);
+                        if (cameras_select[i].yolo && yolo_worker) {
                             ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_workers[i]->get_fps());
+                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_worker->get_fps());
                         }
     
                         static ImVec2 bmin(0, 0);
@@ -3397,7 +3640,11 @@ int main(int argc, char **args) {
 
                         // Use ImPlot to display the texture, just like the main view
                         if (ImPlot::BeginPlot("##crop_plot", ImGui::GetContentRegionAvail(), ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
-                            ImPlot::PlotImage("##crop_image", (void*)(intptr_t)crop_tex[i].texture, ImVec2(0, 0), ImVec2(256, 256));
+                            ImPlot::PlotImage(
+                                "##crop_image",
+                                (void*)(intptr_t)crop_tex[i].texture,
+                                ImVec2(0, 0),
+                                ImVec2(crop_size_px, crop_size_px));
                             ImPlot::EndPlot();
                         }
                         ImGui::End();
