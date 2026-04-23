@@ -57,6 +57,15 @@ private:
         size_t packet_count = 0;
         size_t encoded_bytes = 0;
         double event_wait_cpu_ms = 0.0;
+        double crop_pool_wait_ms = 0.0;
+        double crop_producer_cpu_ms = 0.0;
+        double crop_source_wait_enqueue_cpu_ms = 0.0;
+        double source_stage_enqueue_cpu_ms = 0.0;
+        double crop_copy_start_event_record_cpu_ms = 0.0;
+        double crop_roi_copy_enqueue_cpu_ms = 0.0;
+        double crop_ready_event_record_cpu_ms = 0.0;
+        double source_release_event_record_cpu_ms = 0.0;
+        double crop_copy_gpu_ms = -1.0;
         double crop_preview_cpu_ms = 0.0;
         double encode_submit_cpu_ms = 0.0;
         double metadata_cpu_ms = 0.0;
@@ -91,6 +100,19 @@ private:
         cudaEvent_t* event = nullptr;
     };
 
+    struct CropFrame {
+        unsigned char* d_crop_mono = nullptr;
+        cudaEvent_t crop_copy_start_event = nullptr;
+        cudaEvent_t crop_copy_stop_event = nullptr;
+        cudaEvent_t crop_ready_event = nullptr;
+        cudaEvent_t recycle_event = nullptr;
+        CropFrameSnapshot frame;
+    };
+
+    struct PendingCropFrameRecycle {
+        CropFrame* crop_frame = nullptr;
+    };
+
     bool drain_ready();
     bool ensure_recording_started(const std::string& recording_folder);
     void push_encoded_packets(std::vector<std::vector<uint8_t>>& packets,
@@ -102,11 +124,17 @@ private:
     cudaEvent_t* acquire_source_release_event();
     void defer_source_release(WORKER_ENTRY* entry, cudaEvent_t* event);
     void drain_pending_source_releases(bool synchronize_all);
+    CropFrame* acquire_crop_frame();
+    void recycle_crop_frame(CropFrame* crop_frame);
+    void defer_crop_frame_recycle(CropFrame* crop_frame);
+    void drain_pending_crop_frames(bool synchronize_all);
     bool display_cuda_ok(cudaError_t status, const char* operation);
     void copy_crop_to_display_preview();
     void clear_display_preview();
     void synchronize_display_preview();
     size_t crop_preview_bytes() const;
+    size_t crop_mono_bytes() const;
+    void ensure_source_stage_buffer(int width, int height);
 
     uint64_t last_frame_id_used_ = 0;
     CameraParams* camera_params_;
@@ -119,18 +147,30 @@ private:
     unsigned char* d_yuv_buffer_ = nullptr;
     unsigned char* d_blank_frame_ = nullptr;
     unsigned char* d_cropped_rgba_ = nullptr;
+    unsigned char* d_source_stage_mono_ = nullptr;
     unsigned char* d_display_buffer_pbo_ = nullptr;
     unsigned char* h_display_crop_ = nullptr;
     int encoder_pitch_ = 0;
+    int source_stage_width_ = 0;
+    int source_stage_height_ = 0;
     cudaStream_t m_stream = nullptr;
+    cudaStream_t m_crop_producer_stream = nullptr;
     cudaStream_t m_display_stream = nullptr;
     std::string crop_perf_file_;
     std::ofstream crop_perf_;
     std::vector<cudaEvent_t> source_release_event_pool_;
     SafeQueue<cudaEvent_t*> free_source_release_events_;
     std::deque<PendingSourceRelease> pending_source_releases_;
+    std::vector<CropFrame> crop_frame_pool_;
+    SafeQueue<CropFrame*> free_crop_frames_;
+    std::deque<PendingCropFrameRecycle> pending_crop_frame_recycles_;
+    bool crop_copy_timing_enabled_ = true;
+    bool crop_copy_kernel_enabled_ = false;
+    bool crop_source_stage_enabled_ = false;
     std::atomic<int> pending_source_release_count_{0};
+    std::atomic<int> pending_crop_frame_recycle_count_{0};
     std::atomic<uint64_t> source_release_event_misses_{0};
+    std::atomic<uint64_t> crop_frame_pool_misses_{0};
     int frame_counter_ = 0;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     Debayer debayer_gpu_;

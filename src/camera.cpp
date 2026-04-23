@@ -9,6 +9,7 @@ namespace {
 constexpr useconds_t kFocusPollIntervalUs = 200 * 1000;  // 200ms
 constexpr int kFocusPollAttemptsBeforeUart = 5;          // 1s total
 constexpr int kFocusPollAttemptsAfterUart = 10;          // 2s total
+constexpr useconds_t kIrisPrimeSettleUs = 150 * 1000;    // 150ms
 
 bool has_param(Emergent::CEmergentCamera* camera, const char* name)
 {
@@ -596,6 +597,14 @@ bool has_usable_focus_range(const CameraParams* camera_params)
     return camera_params->focus_max > camera_params->focus_min;
 }
 
+bool refresh_iris_range(Emergent::CEmergentCamera* camera, CameraParams* camera_params)
+{
+    EVT_ERROR max_err = EVT_CameraGetUInt32ParamMax(camera, "Iris", &camera_params->iris_max);
+    EVT_ERROR min_err = EVT_CameraGetUInt32ParamMin(camera, "Iris", &camera_params->iris_min);
+    EVT_ERROR inc_err = EVT_CameraGetUInt32ParamInc(camera, "Iris", &camera_params->iris_inc);
+    return max_err == EVT_SUCCESS && min_err == EVT_SUCCESS && inc_err == EVT_SUCCESS;
+}
+
 void log_uart_step_result(const std::string& camera_serial, const char* context, const char* step, EVT_ERROR err)
 {
     if (err == EVT_SUCCESS)
@@ -790,9 +799,13 @@ bool set_iris_value_checked(
     CameraParams* camera_params,
     const char* context)
 {
-    EVT_CameraGetUInt32ParamMax(camera, "Iris", &camera_params->iris_max);
-    EVT_CameraGetUInt32ParamMin(camera, "Iris", &camera_params->iris_min);
-    EVT_CameraGetUInt32ParamInc(camera, "Iris", &camera_params->iris_inc);
+    if (!refresh_iris_range(camera, camera_params))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris set FAIL: unable to query iris range."
+                  << std::endl;
+        return false;
+    }
 
     if (iris_value < static_cast<int>(camera_params->iris_min) ||
         iris_value > static_cast<int>(camera_params->iris_max))
@@ -841,6 +854,39 @@ bool set_iris_value_checked(
               << " range=[" << camera_params->iris_min << "," << camera_params->iris_max << "]"
               << std::endl;
     return true;
+}
+
+bool set_startup_iris_value_checked(
+    Emergent::CEmergentCamera* camera,
+    int configured_iris_value,
+    CameraParams* camera_params,
+    const char* context)
+{
+    if (!camera_params->focus_uart_bootstrap)
+    {
+        return set_iris_value_checked(camera, configured_iris_value, camera_params, context);
+    }
+
+    if (!refresh_iris_range(camera, camera_params))
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris startup prime skipped: unable to query iris range."
+                  << std::endl;
+        return set_iris_value_checked(camera, configured_iris_value, camera_params, context);
+    }
+
+    const int iris_prime_value = static_cast<int>(camera_params->iris_min);
+    if (configured_iris_value != iris_prime_value)
+    {
+        std::cout << camera_params->camera_serial
+                  << " [" << context << "] Iris startup prime: iris_min=" << iris_prime_value
+                  << " then configured=" << configured_iris_value
+                  << std::endl;
+        (void)set_iris_value_checked(camera, iris_prime_value, camera_params, "open_camera_with_params iris_prime");
+        usleep(kIrisPrimeSettleUs);
+    }
+
+    return set_iris_value_checked(camera, configured_iris_value, camera_params, context);
 }
 }  // namespace
 
@@ -1292,7 +1338,8 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     // printf("FrameRate Set to: \t%d\n", camera_params.frame_rate);
     update_frame_rate_value(camera, camera_params->frame_rate, camera_params);
     const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
-    const bool iris_ok = set_iris_value_checked(camera, static_cast<int>(camera_params->iris), camera_params, "open_camera_with_params");
+    const int configured_iris = static_cast<int>(camera_params->iris);
+    const bool iris_ok = set_startup_iris_value_checked(camera, configured_iris, camera_params, "open_camera_with_params");
     std::cout << camera_params->camera_serial
               << " [open_camera_with_params] Lens init summary: focus=" << (focus_ok ? "PASS" : "FAIL")
               << " iris=" << (iris_ok ? "PASS" : "FAIL")

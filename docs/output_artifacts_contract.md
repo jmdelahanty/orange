@@ -602,7 +602,7 @@ Use `--allow-yolo-decimation` for future intentionally decimated YOLO/crop runs.
 Header (exact order):
 
 ```text
-recording_frame_id,local_frame_id,camera_frame_id,worker_start_steady_ns,queue_depth_start,encode_active,has_detection,blank_frame,dropped,drop_reason,crop_x,crop_y,crop_w,crop_h,packet_count,encoded_bytes,event_wait_cpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms
+recording_frame_id,local_frame_id,camera_frame_id,worker_start_steady_ns,queue_depth_start,encode_active,has_detection,blank_frame,dropped,drop_reason,crop_x,crop_y,crop_w,crop_h,packet_count,encoded_bytes,event_wait_cpu_ms,crop_pool_wait_ms,crop_producer_cpu_ms,crop_source_wait_enqueue_cpu_ms,source_stage_enqueue_cpu_ms,crop_copy_start_event_record_cpu_ms,crop_roi_copy_enqueue_cpu_ms,crop_ready_event_record_cpu_ms,source_release_event_record_cpu_ms,crop_copy_gpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms
 ```
 
 Field semantics:
@@ -623,8 +623,37 @@ Field semantics:
   the frame.
 - `event_wait_cpu_ms`: CPU time spent enqueuing the wait on source-frame GPU
   readiness. This does not mean the GPU wait itself completed.
-- `crop_preview_cpu_ms`: CPU-side time for preview crop/copy submission. On
-  cross-GPU preview this can include the transitional host staging sync.
+- `crop_pool_wait_ms`: CPU-side time spent acquiring a crop-owned GPU buffer.
+  This should stay near zero; nonzero tails indicate crop consumer pressure.
+- `crop_producer_cpu_ms`: CPU-side time to enqueue the source-to-crop GPU copy
+  and crop-ready event on the crop producer CUDA stream. The source camera
+  buffer is released from that producer stream after this copy is safe, not
+  after crop preview or crop-video encoding.
+- `crop_source_wait_enqueue_cpu_ms`: CPU-side time to enqueue the wait on the
+  source-frame readiness event on the crop producer stream.
+- `source_stage_enqueue_cpu_ms`: CPU-side time to stage the full source frame
+  into ordinary device memory when `ORANGE_CROP_STAGE_SOURCE=1`. This is `0`
+  when staged-source mode is disabled.
+- `crop_copy_start_event_record_cpu_ms`: CPU-side time to record the optional
+  crop-copy timing start event immediately before the ROI copy submission.
+- `crop_roi_copy_enqueue_cpu_ms`: CPU-side time to submit the source ROI
+  device-to-device copy into the crop-owned GPU buffer.
+- `crop_ready_event_record_cpu_ms`: CPU-side time to record the crop copy
+  timing/ready events after the ROI copy submission.
+- `source_release_event_record_cpu_ms`: CPU-side time to record the source-safe
+  release event after crop production has detached from the original frame. In
+  staged-source mode this release is recorded after the stage copy; otherwise
+  it is recorded after the ROI copy.
+- `crop_copy_gpu_ms`: CUDA event elapsed time for the source ROI copy itself,
+  or `-1` when copy timing is disabled or the nonblocking timing query has not
+  completed by row write. Set `ORANGE_CROP_COPY_TIMING=0` before launching
+  Orange to disable the timing events and test whether they perturb the crop
+  producer hot path.
+- `ORANGE_CROP_STAGE_SOURCE=1` stages the GPUDirect source frame into ordinary
+  device memory before crop extraction so the ROI path can be compared against
+  the direct GPUDirect-backed source path.
+- `crop_preview_cpu_ms`: CPU-side time for preview conversion/copy submission.
+  On cross-GPU preview this can include the transitional host staging sync.
 - `encode_submit_cpu_ms`: CPU-side time for NVENC input copy/submission and
   packet handoff.
 - `metadata_cpu_ms`: CPU time to append the crop metadata row.

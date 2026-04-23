@@ -49,6 +49,10 @@
 - Repo iris writes go through `EVT_CameraSetUInt32Param(camera, "Iris", value)` in `src/camera.cpp`.
 - UI slider limits come from runtime node attributes (`FocusMin/Max/Inc`, `IrisMin/Max/Inc`) loaded in `update_camera_params` (`src/camera.cpp`).
 - Startup path applies configured `focus` and `iris` immediately when opening a camera (`src/camera.cpp`, `open_camera_with_params`).
+- When `focus_uart_bootstrap=true`, startup now primes iris by setting
+  `iris_min`, waits briefly, then reapplies the configured iris. This matches
+  observed behavior where live slider updates work but the first startup iris
+  command can fail to physically take effect after UART/lens initialization.
 - Tracked repo configs do not enable UART bootstrap by default; the app only touches UART/GPIO nodes when `focus_uart_bootstrap=true` and focus range remains degenerate.
 - EVT UART docs/examples indicate UART requires explicit enable/config (`UartEnable`, `UartBaud`, `UartDataBits`, `UartStopBits`) and line routing mode.
 - EVT SDK headers/examples note focus-related writes can be slow enough to cause stale GVCP reply behavior if not handled carefully.

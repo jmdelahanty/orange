@@ -89,21 +89,28 @@ camera-buffer reuse.
 Implementation checklist before pose:
 
 - Current first split slice: `CropAndEncodeWorker` snapshots frame/detection
-      metadata and defers source `WORKER_ENTRY` release with CUDA source-safe
-      events. This reduces the original frame lifetime coupling, but preview and
-      crop video encoding are still inside the same worker.
-- [ ] Define `CropFrame` as the shared crop payload and include all frame,
-      timestamp, geometry, detection, GPU pointer, and CUDA event fields needed
-      by preview, crop recording, and pose.
-- [ ] Add a bounded crop buffer/event pool so crop payloads are not overwritten
-      while consumers are still using them.
+      metadata, copies detected ROIs into a bounded crop-owned Mono8 GPU buffer,
+      records a crop-ready event on a dedicated producer CUDA stream, and
+      releases the source `WORKER_ENTRY` after that source-to-crop copy
+      completes. Preview and crop video encoding now consume this internal crop
+      payload from the consumer stream, but they are still inside the same
+      worker.
+- [x] Define the first internal `CropFrame` payload with frame, timestamp,
+      geometry, detection, GPU pointer, and CUDA event fields needed by preview
+      and crop recording.
+- [x] Add a bounded crop buffer/event pool so crop payloads are not overwritten
+      while internal consumers are still using them.
 - [ ] Extract `CropProducer` from the current crop-video worker.
-- [ ] Make crop-video encoding a `CropFrame` consumer.
-- [ ] Make GUI crop preview a `CropFrame` consumer with drop/rate-limit policy.
+- [x] Make crop-video encoding consume the internal `CropFrame`.
+- [ ] Make GUI crop preview an independent `CropFrame` consumer with
+      drop/rate-limit policy. It currently consumes the internal crop payload
+      inside the same worker.
 - [ ] Add consumer lease/ref-count handling so a crop buffer returns to the pool
       only after all accepted consumers release it.
 - [ ] Add producer and per-consumer drop counters.
-- [ ] Split perf logging into producer timing and consumer timing.
+- [x] Split first-pass perf logging into producer timing and consumer timing
+      with `crop_pool_wait_ms`, `crop_producer_cpu_ms`,
+      `crop_preview_cpu_ms`, and `encode_submit_cpu_ms`.
 - [ ] Revalidate GUI `100 fps` YOLO + full-frame record + crop record before
       adding pose.
 

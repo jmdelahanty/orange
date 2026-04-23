@@ -10,11 +10,15 @@
 #include <nppi_color_conversion.h>
 #include <nppi_geometry_transforms.h>
 #include <algorithm> // For std::max_element
+#include <cctype>
+#include <cstdlib>
+#include <string>
 #include <thread>
 
 namespace {
 constexpr int kDisplayGpuId = 0;
 constexpr int kCropSourceReleaseEventPoolSize = 256;
+constexpr int kCropFramePoolSize = 8;
 
 uint64_t steady_now_ns()
 {
@@ -38,6 +42,25 @@ size_t encoded_packet_bytes(const std::vector<std::vector<uint8_t>>& packets)
         total += packet.size();
     }
     return total;
+}
+
+bool env_flag_enabled(const char* name, bool default_value)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+
+    std::string normalized(value);
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return normalized != "0" &&
+           normalized != "false" &&
+           normalized != "off" &&
+           normalized != "no";
 }
 }
 
@@ -69,11 +92,34 @@ d_cropped_rgba_(nullptr)
 
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreateWithFlags(&m_stream, cudaStreamNonBlocking));
+    ck(cudaStreamCreateWithFlags(&m_crop_producer_stream, cudaStreamNonBlocking));
+    crop_copy_timing_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_TIMING", true);
+    crop_copy_kernel_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_KERNEL", false);
+    crop_source_stage_enabled_ = env_flag_enabled("ORANGE_CROP_STAGE_SOURCE", false);
+    std::cout << "[CropAndEncodeWorker] Crop copy mode "
+              << (crop_copy_kernel_enabled_ ? "kernel" : "memcpy2d")
+              << ", source stage "
+              << (crop_source_stage_enabled_ ? "enabled" : "disabled")
+              << ", GPU timing "
+              << (crop_copy_timing_enabled_ ? "enabled" : "disabled")
+              << " for " << threadName << std::endl;
 
     source_release_event_pool_.resize(kCropSourceReleaseEventPoolSize);
     for (int i = 0; i < kCropSourceReleaseEventPoolSize; ++i) {
         ck(cudaEventCreateWithFlags(&source_release_event_pool_[i], cudaEventDisableTiming));
         free_source_release_events_.push(&source_release_event_pool_[i]);
+    }
+
+    crop_frame_pool_.resize(kCropFramePoolSize);
+    for (auto& crop_frame : crop_frame_pool_) {
+        ck(cudaMalloc(&crop_frame.d_crop_mono, crop_mono_bytes()));
+        if (crop_copy_timing_enabled_) {
+            ck(cudaEventCreate(&crop_frame.crop_copy_start_event));
+            ck(cudaEventCreate(&crop_frame.crop_copy_stop_event));
+        }
+        ck(cudaEventCreateWithFlags(&crop_frame.crop_ready_event, cudaEventDisableTiming));
+        ck(cudaEventCreateWithFlags(&crop_frame.recycle_event, cudaEventDisableTiming));
+        free_crop_frames_.push(&crop_frame);
     }
 
     // Transitional crop buffer: this will become the shared crop payload for pose.
@@ -151,6 +197,7 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
     }
 
     drain_pending_source_releases(true);
+    drain_pending_crop_frames(true);
 
     if (is_recording_) {
         finalize_recording();
@@ -169,6 +216,10 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         cudaFree(d_cropped_rgba_);
         d_cropped_rgba_ = nullptr;
     }
+    if (d_source_stage_mono_) {
+        cudaFree(d_source_stage_mono_);
+        d_source_stage_mono_ = nullptr;
+    }
     if (d_blank_frame_) {
         cudaFree(d_blank_frame_);
         d_blank_frame_ = nullptr;
@@ -183,9 +234,36 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         }
     }
     source_release_event_pool_.clear();
+    for (auto& crop_frame : crop_frame_pool_) {
+        if (crop_frame.d_crop_mono) {
+            cudaFree(crop_frame.d_crop_mono);
+            crop_frame.d_crop_mono = nullptr;
+        }
+        if (crop_frame.crop_copy_start_event) {
+            cudaEventDestroy(crop_frame.crop_copy_start_event);
+            crop_frame.crop_copy_start_event = nullptr;
+        }
+        if (crop_frame.crop_copy_stop_event) {
+            cudaEventDestroy(crop_frame.crop_copy_stop_event);
+            crop_frame.crop_copy_stop_event = nullptr;
+        }
+        if (crop_frame.crop_ready_event) {
+            cudaEventDestroy(crop_frame.crop_ready_event);
+            crop_frame.crop_ready_event = nullptr;
+        }
+        if (crop_frame.recycle_event) {
+            cudaEventDestroy(crop_frame.recycle_event);
+            crop_frame.recycle_event = nullptr;
+        }
+    }
+    crop_frame_pool_.clear();
     if (m_stream) {
         cudaStreamDestroy(m_stream);
         m_stream = nullptr;
+    }
+    if (m_crop_producer_stream) {
+        cudaStreamDestroy(m_crop_producer_stream);
+        m_crop_producer_stream = nullptr;
     }
     if (m_display_stream) {
         cudaSetDevice(kDisplayGpuId);
@@ -247,7 +325,13 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
                 << "has_detection,blank_frame,dropped,drop_reason,"
                 << "crop_x,crop_y,crop_w,crop_h,"
                 << "packet_count,encoded_bytes,"
-                << "event_wait_cpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,"
+                << "event_wait_cpu_ms,crop_pool_wait_ms,crop_producer_cpu_ms,"
+                << "crop_source_wait_enqueue_cpu_ms,source_stage_enqueue_cpu_ms,"
+                << "crop_copy_start_event_record_cpu_ms,"
+                << "crop_roi_copy_enqueue_cpu_ms,"
+                << "crop_ready_event_record_cpu_ms,source_release_event_record_cpu_ms,"
+                << "crop_copy_gpu_ms,"
+                << "crop_preview_cpu_ms,encode_submit_cpu_ms,"
                 << "metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms\n";
         }
     }
@@ -334,6 +418,15 @@ void CropAndEncodeWorker::write_perf_row(const CropFrameSnapshot& frame, const C
                << sample.packet_count << ','
                << sample.encoded_bytes << ','
                << sample.event_wait_cpu_ms << ','
+               << sample.crop_pool_wait_ms << ','
+               << sample.crop_producer_cpu_ms << ','
+               << sample.crop_source_wait_enqueue_cpu_ms << ','
+               << sample.source_stage_enqueue_cpu_ms << ','
+               << sample.crop_copy_start_event_record_cpu_ms << ','
+               << sample.crop_roi_copy_enqueue_cpu_ms << ','
+               << sample.crop_ready_event_record_cpu_ms << ','
+               << sample.source_release_event_record_cpu_ms << ','
+               << sample.crop_copy_gpu_ms << ','
                << sample.crop_preview_cpu_ms << ','
                << sample.encode_submit_cpu_ms << ','
                << sample.metadata_cpu_ms << ','
@@ -418,9 +511,113 @@ void CropAndEncodeWorker::drain_pending_source_releases(bool synchronize_all)
     }
 }
 
+CropAndEncodeWorker::CropFrame* CropAndEncodeWorker::acquire_crop_frame()
+{
+    CropFrame* crop_frame = nullptr;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        drain_pending_crop_frames(false);
+        if (free_crop_frames_.pop(crop_frame)) {
+            crop_frame->frame = CropFrameSnapshot{};
+            return crop_frame;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    crop_frame_pool_misses_.fetch_add(1, std::memory_order_relaxed);
+    std::cerr << "[CropAndEncodeWorker] No free CropFrame available for "
+              << threadName
+              << "; dropping crop output for this frame." << std::endl;
+    return nullptr;
+}
+
+void CropAndEncodeWorker::recycle_crop_frame(CropFrame* crop_frame)
+{
+    if (!crop_frame) {
+        return;
+    }
+    crop_frame->frame = CropFrameSnapshot{};
+    free_crop_frames_.push(crop_frame);
+}
+
+void CropAndEncodeWorker::defer_crop_frame_recycle(CropFrame* crop_frame)
+{
+    if (!crop_frame) {
+        return;
+    }
+    pending_crop_frame_recycles_.push_back({crop_frame});
+    pending_crop_frame_recycle_count_.store(
+        static_cast<int>(pending_crop_frame_recycles_.size()),
+        std::memory_order_relaxed);
+}
+
+void CropAndEncodeWorker::drain_pending_crop_frames(bool synchronize_all)
+{
+    for (auto it = pending_crop_frame_recycles_.begin();
+         it != pending_crop_frame_recycles_.end(); ) {
+        CropFrame* crop_frame = it->crop_frame;
+        if (!crop_frame || !crop_frame->recycle_event) {
+            it = pending_crop_frame_recycles_.erase(it);
+            continue;
+        }
+
+        cudaError_t status = synchronize_all
+            ? cudaEventSynchronize(crop_frame->recycle_event)
+            : cudaEventQuery(crop_frame->recycle_event);
+
+        if (status == cudaErrorNotReady) {
+            ++it;
+            continue;
+        }
+
+        if (status != cudaSuccess) {
+            std::cerr << "[CropAndEncodeWorker] CropFrame recycle event wait/query failed for "
+                      << threadName
+                      << ": " << cudaGetErrorString(status) << std::endl;
+            cudaGetLastError();
+        }
+
+        recycle_crop_frame(crop_frame);
+        it = pending_crop_frame_recycles_.erase(it);
+        pending_crop_frame_recycle_count_.store(
+            static_cast<int>(pending_crop_frame_recycles_.size()),
+            std::memory_order_relaxed);
+    }
+
+    pending_crop_frame_recycle_count_.store(
+        static_cast<int>(pending_crop_frame_recycles_.size()),
+        std::memory_order_relaxed);
+}
+
 size_t CropAndEncodeWorker::crop_preview_bytes() const
 {
     return static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_) * 4;
+}
+
+size_t CropAndEncodeWorker::crop_mono_bytes() const
+{
+    return static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_);
+}
+
+void CropAndEncodeWorker::ensure_source_stage_buffer(int width, int height)
+{
+    if (!crop_source_stage_enabled_) {
+        return;
+    }
+
+    if (d_source_stage_mono_ &&
+        source_stage_width_ == width &&
+        source_stage_height_ == height) {
+        return;
+    }
+
+    if (d_source_stage_mono_) {
+        ck(cudaFree(d_source_stage_mono_));
+        d_source_stage_mono_ = nullptr;
+    }
+
+    ck(cudaMalloc(&d_source_stage_mono_, static_cast<size_t>(width) * static_cast<size_t>(height)));
+    source_stage_width_ = width;
+    source_stage_height_ = height;
 }
 
 bool CropAndEncodeWorker::display_cuda_ok(cudaError_t status, const char* operation)
@@ -607,8 +804,10 @@ void CropAndEncodeWorker::finalize_recording()
 bool CropAndEncodeWorker::drain_ready()
 {
     drain_pending_source_releases(false);
+    drain_pending_crop_frames(false);
     return (GetCountQueueInSize() == 0) &&
-           (pending_source_release_count_.load(std::memory_order_relaxed) == 0);
+           (pending_source_release_count_.load(std::memory_order_relaxed) == 0) &&
+           (pending_crop_frame_recycle_count_.load(std::memory_order_relaxed) == 0);
 }
 
 
@@ -617,6 +816,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);
     drain_pending_source_releases(false);
+    drain_pending_crop_frames(false);
 
     if (!entry) {
         return false;
@@ -637,6 +837,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
 
     bool source_entry_released = false;
     bool source_work_queued = false;
+    cudaStream_t source_release_stream = m_stream;
     auto release_source_now = [&]() {
         if (!source_entry_released && entry) {
             release_entry(entry);
@@ -645,14 +846,18 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
         }
     };
 
-    auto defer_source_after_stream_work = [&]() {
+    auto defer_source_after_stream_work = [&](cudaStream_t stream) {
         if (source_entry_released || !entry) {
             return;
         }
 
         cudaEvent_t* source_release_event = acquire_source_release_event();
         if (source_release_event) {
-            ck(cudaEventRecord(*source_release_event, m_stream));
+            const uint64_t source_release_event_record_start_ns = steady_now_ns();
+            ck(cudaEventRecord(*source_release_event, stream));
+            perf.source_release_event_record_cpu_ms += elapsed_ms(
+                source_release_event_record_start_ns,
+                steady_now_ns());
             defer_source_release(entry, source_release_event);
             source_entry_released = true;
             entry = nullptr;
@@ -660,11 +865,33 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
         }
 
         // Event pool exhaustion is unexpected. Keep correctness by waiting only
-        // for this worker stream, then release the original source entry.
+        // for the stream that last touched the source, then release the entry.
         const uint64_t stream_sync_start_ns = steady_now_ns();
-        ck(cudaStreamSynchronize(m_stream));
+        ck(cudaStreamSynchronize(stream));
         perf.stream_sync_ms += elapsed_ms(stream_sync_start_ns, steady_now_ns());
         release_source_now();
+    };
+
+    CropFrame* active_crop_frame = nullptr;
+    CropFrame* timing_crop_frame = nullptr;
+    bool crop_frame_work_queued = false;
+    auto recycle_active_crop_frame_now = [&]() {
+        if (active_crop_frame) {
+            recycle_crop_frame(active_crop_frame);
+            active_crop_frame = nullptr;
+            crop_frame_work_queued = false;
+        }
+    };
+
+    auto defer_active_crop_frame_after_stream_work = [&]() {
+        if (!active_crop_frame) {
+            return;
+        }
+
+        ck(cudaEventRecord(active_crop_frame->recycle_event, m_stream));
+        defer_crop_frame_recycle(active_crop_frame);
+        active_crop_frame = nullptr;
+        crop_frame_work_queued = false;
     };
 
     // YOLO reaches this worker after acquisition, so global record_video can
@@ -732,11 +959,110 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             frame.detection_w = best_detection.rect.width;
             frame.detection_h = best_detection.rect.height;
 
-            const bool needs_source_frame = d_display_buffer_pbo_ || encode_this_frame;
-            if (needs_source_frame && entry->event_ptr) {
-                const uint64_t event_wait_start_ns = steady_now_ns();
-                ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
-                perf.event_wait_cpu_ms = elapsed_ms(event_wait_start_ns, steady_now_ns());
+            const bool needs_crop_frame = d_display_buffer_pbo_ || encode_this_frame;
+            if (needs_crop_frame) {
+                const uint64_t crop_pool_wait_start_ns = steady_now_ns();
+                active_crop_frame = acquire_crop_frame();
+                perf.crop_pool_wait_ms = elapsed_ms(crop_pool_wait_start_ns, steady_now_ns());
+
+                if (!active_crop_frame) {
+                    perf.dropped = true;
+                    perf.drop_reason = "crop_frame_pool_empty";
+                    perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
+                    if (encode_this_frame) {
+                        write_perf_row(frame, perf);
+                    }
+                    release_source_now();
+                    return false;
+                }
+                active_crop_frame->frame = frame;
+                timing_crop_frame = active_crop_frame;
+
+                if (entry->event_ptr) {
+                    const uint64_t event_wait_start_ns = steady_now_ns();
+                    ck(cudaStreamWaitEvent(m_crop_producer_stream, *entry->event_ptr, 0));
+                    perf.event_wait_cpu_ms = elapsed_ms(event_wait_start_ns, steady_now_ns());
+                    perf.crop_source_wait_enqueue_cpu_ms = perf.event_wait_cpu_ms;
+                }
+
+                const unsigned char* crop_source_ptr = entry->d_image;
+                int crop_source_pitch = entry->width;
+                if (crop_source_stage_enabled_) {
+                    ensure_source_stage_buffer(entry->width, entry->height);
+                    const uint64_t source_stage_enqueue_start_ns = steady_now_ns();
+                    ck(cudaMemcpy2DAsync(
+                        d_source_stage_mono_,
+                        entry->width,
+                        entry->d_image,
+                        entry->width,
+                        entry->width,
+                        entry->height,
+                        cudaMemcpyDeviceToDevice,
+                        m_crop_producer_stream));
+                    perf.source_stage_enqueue_cpu_ms = elapsed_ms(
+                        source_stage_enqueue_start_ns,
+                        steady_now_ns());
+                    source_work_queued = true;
+                    source_release_stream = m_crop_producer_stream;
+                    // In staged-source mode the GPUDirect frame is detached once
+                    // the full-frame stage copy completes; the ROI crop below
+                    // reads only from ordinary device memory.
+                    defer_source_after_stream_work(m_crop_producer_stream);
+                    crop_source_ptr = d_source_stage_mono_;
+                    crop_source_pitch = frame.source_width;
+                }
+
+                const uint64_t crop_producer_start_ns = steady_now_ns();
+                const uint64_t crop_copy_start_event_record_start_ns = steady_now_ns();
+                if (crop_copy_timing_enabled_ && active_crop_frame->crop_copy_start_event) {
+                    ck(cudaEventRecord(active_crop_frame->crop_copy_start_event, m_crop_producer_stream));
+                }
+                perf.crop_copy_start_event_record_cpu_ms = elapsed_ms(
+                    crop_copy_start_event_record_start_ns,
+                    steady_now_ns());
+                const uint64_t crop_roi_copy_enqueue_start_ns = steady_now_ns();
+                if (crop_copy_kernel_enabled_) {
+                    launch_mono_roi_copy_kernel(
+                        crop_source_ptr,
+                        active_crop_frame->d_crop_mono,
+                        crop_source_pitch,
+                        ix,
+                        iy,
+                        CROP_W,
+                        CROP_H,
+                        m_crop_producer_stream);
+                } else {
+                    ck(cudaMemcpy2DAsync(active_crop_frame->d_crop_mono, CROP_W,
+                                         crop_source_ptr + (iy * crop_source_pitch + ix),
+                                         crop_source_pitch, CROP_W, CROP_H,
+                                         cudaMemcpyDeviceToDevice, m_crop_producer_stream));
+                }
+                perf.crop_roi_copy_enqueue_cpu_ms = elapsed_ms(
+                    crop_roi_copy_enqueue_start_ns,
+                    steady_now_ns());
+                if (!crop_source_stage_enabled_) {
+                    source_work_queued = true;
+                    source_release_stream = m_crop_producer_stream;
+                }
+                crop_frame_work_queued = true;
+                const uint64_t crop_ready_event_record_start_ns = steady_now_ns();
+                if (crop_copy_timing_enabled_ && active_crop_frame->crop_copy_stop_event) {
+                    ck(cudaEventRecord(active_crop_frame->crop_copy_stop_event, m_crop_producer_stream));
+                }
+                ck(cudaEventRecord(active_crop_frame->crop_ready_event, m_crop_producer_stream));
+                perf.crop_ready_event_record_cpu_ms = elapsed_ms(
+                    crop_ready_event_record_start_ns,
+                    steady_now_ns());
+                perf.crop_producer_cpu_ms = elapsed_ms(crop_producer_start_ns, steady_now_ns());
+
+                if (!crop_source_stage_enabled_) {
+                    // The source GPUDirect frame is no longer needed once the ROI
+                    // copy completes. Preview/encode consume the crop-owned frame
+                    // below.
+                    defer_source_after_stream_work(m_crop_producer_stream);
+                }
+            } else {
+                release_source_now();
             }
             
             const uint64_t zero_based_recording_frame =
@@ -745,35 +1071,36 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
             bool encode_prepared = false;
 
-            if (d_display_buffer_pbo_) {
+            if (active_crop_frame) {
+                ck(cudaStreamWaitEvent(m_stream, active_crop_frame->crop_ready_event, 0));
+            }
+
+            if (d_display_buffer_pbo_ && active_crop_frame) {
                 const uint64_t preview_start_ns = steady_now_ns();
-                pose::Rect crop_rect = {(float)ix, (float)iy, (float)CROP_W, (float)CROP_H};
-                gpu_crop_and_resize_rgba(entry->d_image, d_cropped_rgba_, entry->width, entry->height,
+                pose::Rect crop_rect = {0.0f, 0.0f, (float)CROP_W, (float)CROP_H};
+                gpu_crop_and_resize_rgba(active_crop_frame->d_crop_mono, d_cropped_rgba_, CROP_W, CROP_H,
                                          crop_rect, CROP_W, CROP_H, m_stream);
-                source_work_queued = true;
                 perf.crop_preview_cpu_ms = elapsed_ms(preview_start_ns, steady_now_ns());
             }
             
-            if (encode_this_frame) {
+            if (encode_this_frame && active_crop_frame) {
                 encIn = encoder_->GetNextInputFrame();
                 unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
                 pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
                 pic_params.inputTimeStamp = zero_based_recording_frame;
                 pic_params.inputDuration = 1;
 
-                ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch, entry->d_image + (iy * entry->width + ix),
-                                     entry->width, CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
-                source_work_queued = true;
+                ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch,
+                                     active_crop_frame->d_crop_mono, CROP_W,
+                                     CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
                 
                 unsigned char* d_uv_plane_dst = d_nv12_dst + encIn->pitch * CROP_H;
                 ck(cudaMemset2DAsync(d_uv_plane_dst, encIn->pitch, 128, CROP_W, CROP_H / 2, m_stream));
                 encode_prepared = true;
             }
 
-            if (needs_source_frame) {
-                defer_source_after_stream_work();
-            } else {
-                release_source_now();
+            if (active_crop_frame && crop_frame_work_queued) {
+                defer_active_crop_frame_after_stream_work();
             }
 
             // --- LIVE PREVIEW LOGIC (ALWAYS RUNS) ---
@@ -783,6 +1110,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 synchronize_display_preview();
                 perf.display_sync_ms = elapsed_ms(display_sync_start_ns, steady_now_ns());
                 drain_pending_source_releases(false);
+                drain_pending_crop_frames(false);
             }
 
             // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
@@ -842,6 +1170,33 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             }
         }
 
+        if (crop_copy_timing_enabled_ &&
+            timing_crop_frame &&
+            timing_crop_frame->crop_copy_start_event &&
+            timing_crop_frame->crop_copy_stop_event) {
+            cudaError_t copy_done = cudaEventQuery(timing_crop_frame->crop_copy_stop_event);
+            if (copy_done == cudaSuccess) {
+                float copy_gpu_ms = 0.0f;
+                cudaError_t elapsed_status = cudaEventElapsedTime(
+                    &copy_gpu_ms,
+                    timing_crop_frame->crop_copy_start_event,
+                    timing_crop_frame->crop_copy_stop_event);
+                if (elapsed_status == cudaSuccess) {
+                    perf.crop_copy_gpu_ms = static_cast<double>(copy_gpu_ms);
+                } else {
+                    std::cerr << "[CropAndEncodeWorker] Crop copy timing failed for frame "
+                              << frame.local_frame_id
+                              << ": " << cudaGetErrorString(elapsed_status) << std::endl;
+                    cudaGetLastError();
+                }
+            } else if (copy_done != cudaErrorNotReady) {
+                std::cerr << "[CropAndEncodeWorker] Crop copy timing query failed for frame "
+                          << frame.local_frame_id
+                          << ": " << cudaGetErrorString(copy_done) << std::endl;
+                cudaGetLastError();
+            }
+        }
+
         if (encode_this_frame) {
             perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
             write_perf_row(frame, perf);
@@ -859,16 +1214,41 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     }
 
     // Cleanup and recycle the entry
+    if (active_crop_frame) {
+        if (crop_frame_work_queued) {
+            try {
+                defer_active_crop_frame_after_stream_work();
+            } catch (const std::exception& e) {
+                std::cerr << "[CropAndEncodeWorker] Failed to defer crop frame recycle for frame "
+                          << frame.local_frame_id
+                          << ": " << e.what()
+                          << "; synchronizing crop stream before recycle." << std::endl;
+                const uint64_t stream_sync_start_ns = steady_now_ns();
+                cudaError_t status = cudaStreamSynchronize(m_stream);
+                perf.stream_sync_ms += elapsed_ms(stream_sync_start_ns, steady_now_ns());
+                if (status != cudaSuccess) {
+                    std::cerr << "[CropAndEncodeWorker] CropFrame fallback sync failed for frame "
+                              << frame.local_frame_id
+                              << ": " << cudaGetErrorString(status) << std::endl;
+                    cudaGetLastError();
+                }
+                recycle_active_crop_frame_now();
+            }
+        } else {
+            recycle_active_crop_frame_now();
+        }
+    }
+
     if (!source_entry_released && source_work_queued) {
         try {
-            defer_source_after_stream_work();
+            defer_source_after_stream_work(source_release_stream);
         } catch (const std::exception& e) {
             std::cerr << "[CropAndEncodeWorker] Failed to defer source release for frame "
                       << frame.local_frame_id
                       << ": " << e.what()
-                      << "; synchronizing crop stream before release." << std::endl;
+                      << "; synchronizing source-use stream before release." << std::endl;
             const uint64_t stream_sync_start_ns = steady_now_ns();
-            cudaError_t status = cudaStreamSynchronize(m_stream);
+            cudaError_t status = cudaStreamSynchronize(source_release_stream);
             perf.stream_sync_ms += elapsed_ms(stream_sync_start_ns, steady_now_ns());
             if (status != cudaSuccess) {
                 std::cerr << "[CropAndEncodeWorker] Source-release fallback sync failed for frame "
@@ -882,6 +1262,7 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
         release_source_now();
     }
     drain_pending_source_releases(false);
+    drain_pending_crop_frames(false);
 
     return false; // This worker does not pass items to its own output queue
 }

@@ -461,44 +461,131 @@ Next artifact validation checklist:
 
 ## Immediate Implementation Checklist: Crop Producer Split
 
+Current implementation note (2026-04-23):
+
+- The first crop-producer split is implemented inside
+  `CropAndEncodeWorker`, not as a standalone `CropProducer` class yet.
+- Detected frames now copy the source ROI once into a bounded crop-owned Mono8
+  GPU buffer on a dedicated producer CUDA stream, record a `crop_ready_event`,
+  then release the source `WORKER_ENTRY` from a CUDA source-safe event after
+  that ROI copy completes.
+- Crop preview and crop-video encoding now read the crop-owned buffer instead
+  of rereading the original GPUDirect camera frame.
+- `Cam<serial>_crop_perf.csv` now separates `crop_pool_wait_ms`,
+  `crop_producer_cpu_ms`, crop-producer enqueue substeps,
+  `crop_copy_gpu_ms`, `crop_preview_cpu_ms`, and `encode_submit_cpu_ms`.
+- Crop-copy GPU timing is enabled by default and can be disabled with
+  `ORANGE_CROP_COPY_TIMING=0` to test whether the timing events themselves are
+  perturbing the producer hot path.
+- Crop ROI copy can also be switched from `cudaMemcpy2DAsync` to a dedicated
+  CUDA kernel with `ORANGE_CROP_COPY_KERNEL=1` so we can compare memcpy
+  submission stalls against kernel launch overhead on the same workload.
+- The GPUDirect source can also be staged first with
+  `ORANGE_CROP_STAGE_SOURCE=1`, which copies the full source frame into
+  ordinary device memory before crop extraction. That isolates GPUDirect-source
+  access costs from the ROI crop path.
+- Remaining architectural work is to make preview, crop recording, and pose
+  independent `CropFrame` consumers with explicit leases/ref-counting.
+
+Validation update (2026-04-23):
+
+- One-camera direct-source crop runs showed the pathological tail on the ROI
+  path itself. Representative detected-frame result:
+  - direct source (`2026_04_23_12_01_18`):
+    - `crop_producer_cpu_ms p95=6.6866 ms`
+    - `crop_roi_copy_enqueue_cpu_ms p95=6.6594 ms`
+- Replacing ROI `cudaMemcpy2DAsync` with a custom CUDA kernel did not remove
+  that tail. The stall followed "touch GPUDirect source memory", not the ROI
+  API.
+- One-camera staged-source runs moved the cost out of ROI extraction and into a
+  single explicit full-frame detach copy:
+  - staged source (`2026_04_23_12_29_32`):
+    - `crop_producer_cpu_ms p95=0.0098 ms`
+    - `crop_roi_copy_enqueue_cpu_ms p95=0.0070 ms`
+    - `source_stage_enqueue_cpu_ms p95=6.3012 ms`
+- Two-camera staged-source validation also held at `100 fps` with real
+  detections on both cameras and zero camera/crop drops:
+  - run: `2026_04_23_12_55_27`
+  - `Cam2010095` detected frames:
+    - `crop_producer_cpu_ms p95=0.0379 ms`
+    - `crop_roi_copy_enqueue_cpu_ms p95=0.0224 ms`
+    - `source_stage_enqueue_cpu_ms p95=7.6983 ms`
+  - `Cam2010096` detected frames:
+    - `crop_producer_cpu_ms p95=0.0226 ms`
+    - `crop_roi_copy_enqueue_cpu_ms p95=0.0136 ms`
+    - `source_stage_enqueue_cpu_ms p95=6.1465 ms`
+- Current conclusion:
+  - The GPUDirect camera frame is a good ingress/lease buffer but a bad
+    general-purpose workspace buffer for crop/pose fanout.
+  - The defensible ownership model is:
+    - GPUDirect source for ingress and current stable full-frame recording path.
+    - One explicit detach into ordinary device memory for crop/pose-style
+      downstream consumers.
+  - The measured cost did not disappear; it moved into the explicit detach.
+    That is still preferable because it is predictable, bounded, and no longer
+    couples ROI consumers directly to GPUDirect-backed memory behavior.
+
+Immediate next-step recommendation (2026-04-23):
+
+- Treat the staged full-frame device buffer as the canonical source for future
+  crop/pose consumers.
+- Do not move the already-stable full-frame recording/preprocess path off the
+  GPUDirect source unless new measurements show the same source-touch
+  pathology there.
+- Finish the producer/consumer split so preview, crop encode, and future pose
+  become independent best-effort consumers of detached frame/crop payloads.
+- Add aggregate counters so runtime status can report:
+  - staged-source frames,
+  - crop frames produced,
+  - per-consumer accepted/dropped counts,
+  - and detach/crop producer tail summaries.
+- After the split is complete, validate the first pose-on-crop path against the
+  same two-camera `100 fps` workload.
+
 Step 1: Define crop payload and pool.
 
-- [ ] Add a `CropFrame` payload type with frame identity, timestamps,
-      source-frame dimensions, crop rectangle, detection rectangle,
-      confidence, crop dimensions, GPU id, GPU crop pointer, and
-      `crop_ready_event`.
-- [ ] Add a bounded `CropFrame` pool with device buffers and CUDA events,
-      sized conservatively at first (`4-8` entries).
-- [ ] Add counters for pool unavailable, frames produced, and crop production
-      failures.
+- [x] Add an internal `CropFrame` payload type with frame identity,
+      timestamps, source-frame dimensions, crop rectangle, detection
+      rectangle, confidence, crop dimensions, GPU crop pointer,
+      `crop_ready_event`, and `recycle_event`.
+- [x] Add a bounded `CropFrame` pool with device buffers and CUDA events,
+      sized conservatively at first (`8` entries).
+- [ ] Add complete counters for pool unavailable, frames produced, and crop
+      production failures. Current code tracks pool misses; produced/failure
+      counters still need explicit telemetry.
 
 Step 2: Extract crop production from crop encode.
 
-- [ ] Move ROI selection and source-to-crop GPU copy into a `CropProducer`
-      stage/class.
-- [ ] Make `CropProducer` record a readiness event after the crop copy.
-- [ ] Release the source `WORKER_ENTRY` after the crop copy is safely detached,
+- [ ] Move ROI selection and source-to-crop GPU copy into a standalone
+      `CropProducer` stage/class. Current code has the producer sub-path inside
+      `CropAndEncodeWorker`.
+- [x] Make the producer sub-path record a readiness event after the crop copy.
+- [x] Run source-frame wait, source-to-crop copy, crop-ready event, and
+      source-release event on a dedicated producer CUDA stream so preview and
+      crop encode work cannot extend the source-frame lease.
+- [x] Release the source `WORKER_ENTRY` after the crop copy is safely detached,
       not after crop preview/encode finishes.
-- [ ] Keep crop production best-effort: if no crop buffer/event is available,
+- [x] Keep crop production best-effort: if no crop buffer/event is available,
       drop the crop for that frame and count it instead of blocking YOLO,
       acquisition, or full-frame recording.
 
 Step 3: Convert crop video into a consumer.
 
-- [ ] Change crop video encoding to consume `CropFrame` payloads.
-- [ ] Preserve current crop artifact behavior:
+- [x] Change crop video encoding to consume the internal `CropFrame` payload.
+- [x] Preserve current crop artifact behavior:
       `Cam<serial>_crop.mp4`, `Cam<serial>_crop_meta.csv`,
       `Cam<serial>_crop_keyframe.json`, and `Cam<serial>_crop_perf.csv`.
-- [ ] Keep one crop metadata/perf row per encoded crop frame.
-- [ ] Return or release the crop consumer lease after the encoder no longer
+- [x] Keep one crop metadata/perf row per encoded crop frame.
+- [x] Return or release the crop consumer lease after the encoder no longer
       needs the crop buffer.
 
 Step 4: Convert crop preview into a consumer.
 
-- [ ] Move preview copy/sync out of the producer hot path.
+- [x] Move preview copy/sync out of the source-frame lifetime. It still runs
+      inside the same worker and should become an independent consumer later.
 - [ ] Make preview droppable/rate-limited so GUI display cannot hold crop
       buffers or source frames.
-- [ ] Keep the preview cross-GPU host-staging path observable because it is a
+- [x] Keep the preview cross-GPU host-staging path observable because it is a
       likely source of timing spikes.
 
 Step 5: Add lease/ref-count semantics for crop payloads.
@@ -514,6 +601,19 @@ Step 6: Validate before adding pose.
 - [ ] Re-run one-camera GUI `100 fps` YOLO + full-frame record + crop record.
 - [ ] Validate artifact alignment with `scripts/validate_recording_artifacts.py`.
 - [ ] Compare crop producer timing separately from crop encoder/preview timing.
+- [ ] Use the crop-producer substep columns to determine whether remaining
+      tails are CPU enqueue stalls, crop-copy GPU execution, or source-release
+      event recording.
+- [ ] Compare one run with default crop-copy timing against one run with
+      `ORANGE_CROP_COPY_TIMING=0`; if the producer tails disappear when timing
+      is disabled, the measurement path is perturbing the crop producer.
+- [ ] Compare one run with default `cudaMemcpy2DAsync` crop copy against one
+      run with `ORANGE_CROP_COPY_KERNEL=1`; if `crop_roi_copy_enqueue_cpu_ms`
+      drops materially, the memcpy submission path is the bottleneck.
+- [ ] Compare one run with direct GPUDirect source access against one run with
+      `ORANGE_CROP_STAGE_SOURCE=1`; if `crop_roi_copy_enqueue_cpu_ms` drops but
+      `source_stage_enqueue_cpu_ms` rises, the issue is the GPUDirect-backed
+      source path rather than the crop extraction API.
 - [ ] Confirm source-frame release timing no longer includes crop encode or
       preview synchronization.
 - [ ] Confirm full-frame recording still has no frame gaps, receive errors,

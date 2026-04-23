@@ -165,6 +165,57 @@ __global__ void crop_and_resize_rgba_kernel(
     d_dst_rgba[dst_idx + 3] = 255;         // A (Opaque)
 }
 
+__global__ void mono_roi_copy_kernel(
+    const unsigned char* __restrict__ d_src,
+    unsigned char* __restrict__ d_dst_mono,
+    int src_width,
+    int crop_x,
+    int crop_y,
+    int crop_w,
+    int crop_h)
+{
+    const int dst_x = blockIdx.x * blockDim.x + threadIdx.x;
+    const int dst_y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (dst_x >= crop_w || dst_y >= crop_h) {
+        return;
+    }
+
+    const int src_x = crop_x + dst_x;
+    const int src_y = crop_y + dst_y;
+    d_dst_mono[dst_y * crop_w + dst_x] = d_src[src_y * src_width + src_x];
+}
+
+void launch_mono_roi_copy_kernel(
+    const unsigned char* d_src,
+    unsigned char* d_dst_mono,
+    int src_width,
+    int crop_x,
+    int crop_y,
+    int crop_w,
+    int crop_h,
+    cudaStream_t stream)
+{
+    dim3 block(32, 8);
+    dim3 grid(
+        (crop_w + block.x - 1) / block.x,
+        (crop_h + block.y - 1) / block.y);
+
+    mono_roi_copy_kernel<<<grid, block, 0, stream>>>(
+        d_src,
+        d_dst_mono,
+        src_width,
+        crop_x,
+        crop_y,
+        crop_w,
+        crop_h);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        printf("mono_roi_copy_kernel failed: %s\n", cudaGetErrorString(err));
+    }
+}
+
 
 __global__ void Mono8ToRGBMonoKernel(unsigned char* dest, const unsigned char* src, int width, int height)
 {
