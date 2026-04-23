@@ -766,6 +766,13 @@ Validation note:
 - The same snapshot records `models[2010095].detect.enabled=false` with backend
   `none`, which is useful for consumers distinguishing disabled model state from
   missing metadata.
+- The GUI YOLO + crop smoke artifact
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_21_47_28` confirmed that
+  `recording_snapshot.json` captured the runtime camera
+  `crop_pipeline.crop_size_px = 328`, matching the persisted camera config and
+  the `328x328` crop video dimensions. Crop encoder-specific snapshot metadata
+  is still pending; consumers should currently validate crop outputs from the
+  crop video, crop metadata CSV, and camera runtime config.
 
 Suggested snapshot shape:
 

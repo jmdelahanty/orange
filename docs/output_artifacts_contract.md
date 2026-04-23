@@ -523,6 +523,53 @@ Validation note, `2026-04-22` strict recorded-frame GUI YOLO smoke:
 - `Cam2010096_yolo_perf.csv` had all `ok=1`; `total_ms` mean was about
   `3.45 ms`, p95 about `4.06 ms`, and p99 about `4.12 ms`.
 
+Validation note, `2026-04-22` GUI YOLO + crop smoke:
+
+- Artifact folder:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_21_47_28`
+- Active camera config:
+  `/home/jeremy/orange_data/config/local/100_cam4/2010096.json`
+  persisted `crop_pipeline.crop_size_px = 328`.
+- `recording_snapshot.json` captured `crop_pipeline.crop_size_px = 328` for
+  the runtime camera config.
+- Camera `2010096` produced the main HEVC video at `4512x4512`, `100 fps`,
+  `4.75 s`, `475` frames.
+- `Cam2010096.mp4` and `Cam2010096_meta.csv` both represented `475` recorded
+  frames.
+- `Cam2010096_crop.mp4` was `328x328`, `100 fps`, `4.75 s`, `475` frames.
+- `Cam2010096_crop_meta.csv` had `475` data rows, and the sampled rows used
+  `crop_w,crop_h = 328,328`.
+- `Cam2010096_yolo_events.jsonl` had `475` rows.
+- `Cam2010096_yolo_perf.csv` had `475` data rows.
+- This confirms the current full-rate GUI YOLO + crop path can produce aligned
+  main video, main metadata, crop video, crop metadata, YOLO audit events, and
+  YOLO perf rows for a one-camera recording.
+
+Artifact checker behavior:
+
+- Crop artifacts are optional unless crop mode was enabled for that camera.
+- When crop artifacts are present, `ffprobe` crop video dimensions should match
+  the effective `crop_pipeline.crop_size_px` captured in
+  `recording_snapshot.json`.
+- Crop metadata data rows should match crop video frame count.
+- `crop_w,crop_h` in crop metadata should match the configured crop size.
+- For the current full-rate GUI YOLO path, YOLO event rows should match crop
+  metadata rows. If YOLO decimation becomes configurable, validation should use
+  the configured cadence instead of assuming one YOLO/crop event per recorded
+  frame.
+
+Validation tool:
+
+```bash
+python3 scripts/validate_recording_artifacts.py /path/to/recording_folder
+```
+
+The validator checks main video/metadata alignment, optional crop video
+dimensions against `recording_snapshot.json` `crop_pipeline.crop_size_px`, crop
+metadata row count, crop geometry, and current full-rate YOLO event alignment.
+Use `--allow-yolo-decimation` for future intentionally decimated YOLO/crop
+runs.
+
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 
 Header (exact order):

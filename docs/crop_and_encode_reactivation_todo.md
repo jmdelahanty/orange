@@ -285,6 +285,29 @@ Completed in the first code slice:
   rectangle.
 - Crop worker synchronizes its encode stream before releasing the source
   `WORKER_ENTRY` reference.
+- `camera_config_validation_tests` covers `crop_pipeline.crop_size_px` parse,
+  save-shape, defaulting, clamp behavior, odd-value sanitization, and legacy
+  `size_px` / square `width,height` aliases.
+
+GUI validation result:
+
+- Artifact folder:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_21_47_28`
+- Camera `2010096`, `100 fps`, `4512x4512` full-frame recording with YOLO and
+  crop enabled.
+- Saved camera config:
+  `/home/jeremy/orange_data/config/local/100_cam4/2010096.json` contained
+  `crop_pipeline.crop_size_px = 328`.
+- `recording_snapshot.json` captured `crop_pipeline.crop_size_px = 328` in the
+  saved camera/runtime config snapshot.
+- `Cam2010096.mp4`: `4512x4512`, `100 fps`, `475` frames, `4.75 s`.
+- `Cam2010096_crop.mp4`: `328x328`, `100 fps`, `475` frames, `4.75 s`.
+- `Cam2010096_meta.csv`: `475` data rows.
+- `Cam2010096_crop_meta.csv`: `475` data rows with `crop_w,crop_h = 328,328`.
+- `Cam2010096_yolo_events.jsonl`: `475` rows.
+- `Cam2010096_yolo_perf.csv`: `475` data rows.
+- Operator-visible video check was good, and stop/finalize completed without
+  the earlier crop shutdown segfault.
 
 Still pending before pose:
 
@@ -293,6 +316,27 @@ Still pending before pose:
 - Replace transitional per-frame stream sync with CUDA readiness events for
   downstream consumers.
 - Add crop perf CSV/counters and snapshot metadata for crop outputs.
+- Add automated recording artifact validation for crop outputs.
+
+Implemented artifact validation tool:
+
+- `scripts/validate_recording_artifacts.py`
+- Current checks:
+  - main video frame count equals `Cam<serial>_meta.csv` data rows,
+  - optional crop video dimensions equal snapshot `crop_pipeline.crop_size_px`,
+  - crop video frame count equals `Cam<serial>_crop_meta.csv` data rows,
+  - crop metadata `crop_w,crop_h` equal configured crop size,
+  - crop and YOLO `recording_frame_id` sequences are positive, monotonic, and
+    equal for current full-rate GUI YOLO mode.
+- Use `--allow-yolo-decimation` for future runs where YOLO/crop cadence is
+  intentionally less than recorded frame rate.
+
+Next artifact validation checklist:
+
+- Verify full-frame video and full-frame metadata still match, so crop
+  validation cannot hide a regression in the primary recording artifact.
+- Add a machine-readable output summary to downstream experiment analysis if
+  we want crop validation to feed `runs.json` / `runs.csv`.
 
 ## TODO Plan
 
@@ -343,9 +387,14 @@ Still pending before pose:
 
 ## Phase 5: Validation
 
-- [ ] Integration test: enable crop+encode, start streaming, start/stop recording, confirm output files are produced.
-- [ ] Integration test: stop streaming while recording drain is active; confirm clean finalize.
+- [x] GUI smoke: enable crop+encode, start streaming, start/stop recording,
+      confirm output files are produced.
+- [x] GUI smoke: stop streaming after crop recording and confirm clean finalize.
 - [ ] Integration test: YOLO off + crop enabled policy behaves as specified (auto-enable or explicit block).
+- [x] Automated artifact check: crop video dimensions match
+      `crop_pipeline.crop_size_px`.
+- [x] Automated artifact check: crop metadata row count, crop video frame
+      count, and YOLO event count match for current full-rate GUI YOLO mode.
 - [ ] Stress test: long recording run with crop enabled; verify no deadlock and stable frame-id continuity.
 
 ## Phase 6: Pose TRT Readiness (Crop Consumer)
