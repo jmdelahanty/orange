@@ -436,18 +436,30 @@ def validate_crop_artifacts(
             ),
         )
 
-        bad_geometry_rows = [
-            index
-            for index, row in enumerate(crop_rows, start=2)
-            if int_field(row, "crop_w", crop_meta_path) != crop_size
-            or int_field(row, "crop_h", crop_meta_path) != crop_size
-        ]
+        bad_geometry_rows = []
+        for index, row in enumerate(crop_rows, start=2):
+            crop_w = int_field(row, "crop_w", crop_meta_path)
+            crop_h = int_field(row, "crop_h", crop_meta_path)
+            blank_frame = int_field(row, "blank_frame", crop_meta_path) != 0
+            has_detection = int_field(row, "has_detection", crop_meta_path) != 0
+
+            if blank_frame and not has_detection:
+                if crop_w != 0 or crop_h != 0:
+                    bad_geometry_rows.append(index)
+                continue
+
+            if crop_w != crop_size or crop_h != crop_size:
+                bad_geometry_rows.append(index)
+
         reporter.check(
             not bad_geometry_rows,
-            f"Cam{serial} crop metadata crop_w/crop_h match crop_size_px",
+            (
+                f"Cam{serial} crop metadata geometry matches crop_size_px "
+                "for detections and 0x0 for blank frames"
+            ),
             (
                 f"Cam{serial} crop metadata has {len(bad_geometry_rows)} rows "
-                "with crop_w/crop_h not matching crop_size_px"
+                "with invalid crop_w/crop_h geometry"
             ),
         )
 

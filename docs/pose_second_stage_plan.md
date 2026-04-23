@@ -88,6 +88,10 @@ camera-buffer reuse.
 
 Implementation checklist before pose:
 
+- Current first split slice: `CropAndEncodeWorker` snapshots frame/detection
+      metadata and defers source `WORKER_ENTRY` release with CUDA source-safe
+      events. This reduces the original frame lifetime coupling, but preview and
+      crop video encoding are still inside the same worker.
 - [ ] Define `CropFrame` as the shared crop payload and include all frame,
       timestamp, geometry, detection, GPU pointer, and CUDA event fields needed
       by preview, crop recording, and pose.

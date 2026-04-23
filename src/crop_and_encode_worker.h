@@ -7,8 +7,10 @@
 #include "FFmpegWriter.h"
 #include "NvEncoder/NvEncoderCuda.h"
 #include "image_processing.h"
+#include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <fstream>
 #include <vector>
 
@@ -63,25 +65,43 @@ private:
         double total_ms = 0.0;
     };
 
+    struct CropFrameSnapshot {
+        uint64_t recording_frame_id = 0;
+        uint64_t local_frame_id = 0;
+        uint64_t camera_frame_id = 0;
+        uint64_t timestamp = 0;
+        uint64_t timestamp_sys = 0;
+        int source_width = 0;
+        int source_height = 0;
+        bool has_detection = false;
+        bool blank_frame = false;
+        float detection_confidence = 0.0f;
+        int crop_x = 0;
+        int crop_y = 0;
+        int crop_w = 0;
+        int crop_h = 0;
+        float detection_x = 0.0f;
+        float detection_y = 0.0f;
+        float detection_w = 0.0f;
+        float detection_h = 0.0f;
+    };
+
+    struct PendingSourceRelease {
+        WORKER_ENTRY* entry = nullptr;
+        cudaEvent_t* event = nullptr;
+    };
+
     bool drain_ready();
     bool ensure_recording_started(const std::string& recording_folder);
     void push_encoded_packets(std::vector<std::vector<uint8_t>>& packets,
                               const std::vector<uint64_t>& output_timestamps,
                               uint64_t fallback_zero_based_frame);
-    void write_metadata_row(const WORKER_ENTRY* entry,
-                            bool has_detection,
-                            bool blank_frame,
-                            float detection_confidence,
-                            int crop_x,
-                            int crop_y,
-                            int crop_w,
-                            int crop_h,
-                            float detection_x,
-                            float detection_y,
-                            float detection_w,
-                            float detection_h);
-    void write_perf_row(const WORKER_ENTRY* entry, const CropPerfSample& sample);
+    void write_metadata_row(const CropFrameSnapshot& frame);
+    void write_perf_row(const CropFrameSnapshot& frame, const CropPerfSample& sample);
     void release_entry(WORKER_ENTRY* entry);
+    cudaEvent_t* acquire_source_release_event();
+    void defer_source_release(WORKER_ENTRY* entry, cudaEvent_t* event);
+    void drain_pending_source_releases(bool synchronize_all);
     bool display_cuda_ok(cudaError_t status, const char* operation);
     void copy_crop_to_display_preview();
     void clear_display_preview();
@@ -106,6 +126,11 @@ private:
     cudaStream_t m_display_stream = nullptr;
     std::string crop_perf_file_;
     std::ofstream crop_perf_;
+    std::vector<cudaEvent_t> source_release_event_pool_;
+    SafeQueue<cudaEvent_t*> free_source_release_events_;
+    std::deque<PendingSourceRelease> pending_source_releases_;
+    std::atomic<int> pending_source_release_count_{0};
+    std::atomic<uint64_t> source_release_event_misses_{0};
     int frame_counter_ = 0;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     Debayer debayer_gpu_;

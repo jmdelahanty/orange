@@ -10,9 +10,11 @@
 #include <nppi_color_conversion.h>
 #include <nppi_geometry_transforms.h>
 #include <algorithm> // For std::max_element
+#include <thread>
 
 namespace {
 constexpr int kDisplayGpuId = 0;
+constexpr int kCropSourceReleaseEventPoolSize = 256;
 
 uint64_t steady_now_ns()
 {
@@ -66,7 +68,13 @@ d_cropped_rgba_(nullptr)
     std::cout << "[CropAndEncodeWorker] Initializing " << name << " on GPU " << camera_params_->gpu_id << std::endl;
 
     ck(cudaSetDevice(camera_params_->gpu_id));
-    ck(cudaStreamCreate(&m_stream));
+    ck(cudaStreamCreateWithFlags(&m_stream, cudaStreamNonBlocking));
+
+    source_release_event_pool_.resize(kCropSourceReleaseEventPoolSize);
+    for (int i = 0; i < kCropSourceReleaseEventPoolSize; ++i) {
+        ck(cudaEventCreateWithFlags(&source_release_event_pool_[i], cudaEventDisableTiming));
+        free_source_release_events_.push(&source_release_event_pool_[i]);
+    }
 
     // Transitional crop buffer: this will become the shared crop payload for pose.
     ck(cudaMalloc(&d_cropped_rgba_, crop_preview_bytes()));
@@ -76,7 +84,7 @@ d_cropped_rgba_(nullptr)
         // stage only the small preview crop through host memory.
         ck(cudaHostAlloc(&h_display_crop_, crop_preview_bytes(), cudaHostAllocDefault));
         ck(cudaSetDevice(kDisplayGpuId));
-        ck(cudaStreamCreate(&m_display_stream));
+        ck(cudaStreamCreateWithFlags(&m_display_stream, cudaStreamNonBlocking));
         ck(cudaSetDevice(camera_params_->gpu_id));
     }
 
@@ -142,6 +150,8 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         ck(cudaSetDevice(camera_params_->gpu_id));
     }
 
+    drain_pending_source_releases(true);
+
     if (is_recording_) {
         finalize_recording();
     } else {
@@ -167,6 +177,12 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         cudaFreeHost(h_display_crop_);
         h_display_crop_ = nullptr;
     }
+    for (auto& event : source_release_event_pool_) {
+        if (event) {
+            cudaEventDestroy(event);
+        }
+    }
+    source_release_event_pool_.clear();
     if (m_stream) {
         cudaStreamDestroy(m_stream);
         m_stream = nullptr;
@@ -271,51 +287,39 @@ void CropAndEncodeWorker::push_encoded_packets(
     }
 }
 
-void CropAndEncodeWorker::write_metadata_row(
-    const WORKER_ENTRY* entry,
-    bool has_detection,
-    bool blank_frame,
-    float detection_confidence,
-    int crop_x,
-    int crop_y,
-    int crop_w,
-    int crop_h,
-    float detection_x,
-    float detection_y,
-    float detection_w,
-    float detection_h)
+void CropAndEncodeWorker::write_metadata_row(const CropFrameSnapshot& frame)
 {
-    if (!writer_.metadata || !writer_.metadata->is_open() || !entry) {
+    if (!writer_.metadata || !writer_.metadata->is_open()) {
         return;
     }
 
-    *writer_.metadata << entry->recording_frame_id << ','
-                      << entry->frame_id << ','
-                      << entry->camera_frame_id << ','
-                      << entry->timestamp << ','
-                      << entry->timestamp_sys << ','
-                      << (has_detection ? 1 : 0) << ','
-                      << (blank_frame ? 1 : 0) << ','
-                      << detection_confidence << ','
-                      << crop_x << ','
-                      << crop_y << ','
-                      << crop_w << ','
-                      << crop_h << ','
-                      << detection_x << ','
-                      << detection_y << ','
-                      << detection_w << ','
-                      << detection_h << '\n';
+    *writer_.metadata << frame.recording_frame_id << ','
+                      << frame.local_frame_id << ','
+                      << frame.camera_frame_id << ','
+                      << frame.timestamp << ','
+                      << frame.timestamp_sys << ','
+                      << (frame.has_detection ? 1 : 0) << ','
+                      << (frame.blank_frame ? 1 : 0) << ','
+                      << frame.detection_confidence << ','
+                      << frame.crop_x << ','
+                      << frame.crop_y << ','
+                      << frame.crop_w << ','
+                      << frame.crop_h << ','
+                      << frame.detection_x << ','
+                      << frame.detection_y << ','
+                      << frame.detection_w << ','
+                      << frame.detection_h << '\n';
 }
 
-void CropAndEncodeWorker::write_perf_row(const WORKER_ENTRY* entry, const CropPerfSample& sample)
+void CropAndEncodeWorker::write_perf_row(const CropFrameSnapshot& frame, const CropPerfSample& sample)
 {
-    if (!crop_perf_.is_open() || !entry) {
+    if (!crop_perf_.is_open()) {
         return;
     }
 
-    crop_perf_ << entry->recording_frame_id << ','
-               << entry->frame_id << ','
-               << entry->camera_frame_id << ','
+    crop_perf_ << frame.recording_frame_id << ','
+               << frame.local_frame_id << ','
+               << frame.camera_frame_id << ','
                << sample.worker_start_steady_ns << ','
                << sample.queue_depth_start << ','
                << (sample.encode_active ? 1 : 0) << ','
@@ -348,6 +352,69 @@ void CropAndEncodeWorker::release_entry(WORKER_ENTRY* entry) {
             EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
         }
         m_recycle_queue.push(entry);
+    }
+}
+
+cudaEvent_t* CropAndEncodeWorker::acquire_source_release_event()
+{
+    cudaEvent_t* event = nullptr;
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        drain_pending_source_releases(false);
+        if (free_source_release_events_.pop(event)) {
+            return event;
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    source_release_event_misses_.fetch_add(1, std::memory_order_relaxed);
+    std::cerr << "[CropAndEncodeWorker] No source-release CUDA event available for "
+              << threadName
+              << "; falling back to source-stream synchronization." << std::endl;
+    return nullptr;
+}
+
+void CropAndEncodeWorker::defer_source_release(WORKER_ENTRY* entry, cudaEvent_t* event)
+{
+    if (!entry || !event) {
+        if (event) {
+            free_source_release_events_.push(event);
+        }
+        release_entry(entry);
+        return;
+    }
+
+    pending_source_releases_.push_back({entry, event});
+    pending_source_release_count_.store(
+        static_cast<int>(pending_source_releases_.size()),
+        std::memory_order_relaxed);
+}
+
+void CropAndEncodeWorker::drain_pending_source_releases(bool synchronize_all)
+{
+    for (auto it = pending_source_releases_.begin();
+         it != pending_source_releases_.end(); ) {
+        cudaError_t status = synchronize_all
+            ? cudaEventSynchronize(*it->event)
+            : cudaEventQuery(*it->event);
+
+        if (status == cudaErrorNotReady) {
+            ++it;
+            continue;
+        }
+
+        if (status != cudaSuccess) {
+            std::cerr << "[CropAndEncodeWorker] Source-release event wait/query failed for "
+                      << threadName
+                      << ": " << cudaGetErrorString(status) << std::endl;
+            cudaGetLastError();
+        }
+
+        release_entry(it->entry);
+        free_source_release_events_.push(it->event);
+        it = pending_source_releases_.erase(it);
+        pending_source_release_count_.store(
+            static_cast<int>(pending_source_releases_.size()),
+            std::memory_order_relaxed);
     }
 }
 
@@ -460,6 +527,7 @@ void CropAndEncodeWorker::synchronize_display_preview()
     }
 
     if (camera_params_->gpu_id == kDisplayGpuId) {
+        display_cuda_ok(cudaStreamSynchronize(m_stream), "cudaStreamSynchronize(crop preview same GPU)");
         return;
     }
 
@@ -538,7 +606,9 @@ void CropAndEncodeWorker::finalize_recording()
 
 bool CropAndEncodeWorker::drain_ready()
 {
-    return (GetCountQueueInSize() == 0);
+    drain_pending_source_releases(false);
+    return (GetCountQueueInSize() == 0) &&
+           (pending_source_release_count_.load(std::memory_order_relaxed) == 0);
 }
 
 
@@ -546,14 +616,56 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
     // Set the correct CUDA device for this worker's operations.
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);
+    drain_pending_source_releases(false);
 
     if (!entry) {
         return false;
     }
 
+    CropFrameSnapshot frame;
+    frame.recording_frame_id = entry->recording_frame_id;
+    frame.local_frame_id = entry->frame_id;
+    frame.camera_frame_id = entry->camera_frame_id;
+    frame.timestamp = entry->timestamp;
+    frame.timestamp_sys = entry->timestamp_sys;
+    frame.source_width = entry->width;
+    frame.source_height = entry->height;
+
     CropPerfSample perf;
     perf.worker_start_steady_ns = steady_now_ns();
     perf.queue_depth_start = GetCountQueueInSize();
+
+    bool source_entry_released = false;
+    bool source_work_queued = false;
+    auto release_source_now = [&]() {
+        if (!source_entry_released && entry) {
+            release_entry(entry);
+            source_entry_released = true;
+            entry = nullptr;
+        }
+    };
+
+    auto defer_source_after_stream_work = [&]() {
+        if (source_entry_released || !entry) {
+            return;
+        }
+
+        cudaEvent_t* source_release_event = acquire_source_release_event();
+        if (source_release_event) {
+            ck(cudaEventRecord(*source_release_event, m_stream));
+            defer_source_release(entry, source_release_event);
+            source_entry_released = true;
+            entry = nullptr;
+            return;
+        }
+
+        // Event pool exhaustion is unexpected. Keep correctness by waiting only
+        // for this worker stream, then release the original source entry.
+        const uint64_t stream_sync_start_ns = steady_now_ns();
+        ck(cudaStreamSynchronize(m_stream));
+        perf.stream_sync_ms += elapsed_ms(stream_sync_start_ns, steady_now_ns());
+        release_source_now();
+    };
 
     // YOLO reaches this worker after acquisition, so global record_video can
     // change before a frame is processed. Use the per-frame recording identity
@@ -584,21 +696,15 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 perf.dropped = true;
                 perf.drop_reason = "source_smaller_than_crop";
                 perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, now_ns);
-                write_perf_row(entry, perf);
+                write_perf_row(frame, perf);
             }
-            release_entry(entry);
+            release_source_now();
             return false;
-        }
-
-        // Wait for the incoming frame data to be ready
-        if (entry->event_ptr) {
-            const uint64_t event_wait_start_ns = steady_now_ns();
-            ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
-            perf.event_wait_cpu_ms = elapsed_ms(event_wait_start_ns, steady_now_ns());
         }
         
         bool has_detection = !entry->detections.empty();
         perf.has_detection = has_detection;
+        frame.has_detection = has_detection;
 
         if (has_detection) {
             // --- DETECTION IS FOUND ---
@@ -616,35 +722,72 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             perf.crop_y = iy;
             perf.crop_w = CROP_W;
             perf.crop_h = CROP_H;
+            frame.detection_confidence = best_detection.prob;
+            frame.crop_x = ix;
+            frame.crop_y = iy;
+            frame.crop_w = CROP_W;
+            frame.crop_h = CROP_H;
+            frame.detection_x = best_detection.rect.x;
+            frame.detection_y = best_detection.rect.y;
+            frame.detection_w = best_detection.rect.width;
+            frame.detection_h = best_detection.rect.height;
+
+            const bool needs_source_frame = d_display_buffer_pbo_ || encode_this_frame;
+            if (needs_source_frame && entry->event_ptr) {
+                const uint64_t event_wait_start_ns = steady_now_ns();
+                ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+                perf.event_wait_cpu_ms = elapsed_ms(event_wait_start_ns, steady_now_ns());
+            }
             
-            // --- LIVE PREVIEW LOGIC (ALWAYS RUNS) ---
+            const uint64_t zero_based_recording_frame =
+                frame.recording_frame_id > 0 ? frame.recording_frame_id - 1 : 0;
+            const NvEncInputFrame* encIn = nullptr;
+            NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
+            bool encode_prepared = false;
+
             if (d_display_buffer_pbo_) {
                 const uint64_t preview_start_ns = steady_now_ns();
                 pose::Rect crop_rect = {(float)ix, (float)iy, (float)CROP_W, (float)CROP_H};
                 gpu_crop_and_resize_rgba(entry->d_image, d_cropped_rgba_, entry->width, entry->height,
                                          crop_rect, CROP_W, CROP_H, m_stream);
-                
-                copy_crop_to_display_preview();
+                source_work_queued = true;
                 perf.crop_preview_cpu_ms = elapsed_ms(preview_start_ns, steady_now_ns());
             }
             
-            // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
             if (encode_this_frame) {
-                const uint64_t encode_start_ns = steady_now_ns();
-                const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
+                encIn = encoder_->GetNextInputFrame();
                 unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
-                const uint64_t zero_based_recording_frame =
-                    entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
-                NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
                 pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
                 pic_params.inputTimeStamp = zero_based_recording_frame;
                 pic_params.inputDuration = 1;
 
                 ck(cudaMemcpy2DAsync(d_nv12_dst, encIn->pitch, entry->d_image + (iy * entry->width + ix),
                                      entry->width, CROP_W, CROP_H, cudaMemcpyDeviceToDevice, m_stream));
+                source_work_queued = true;
                 
                 unsigned char* d_uv_plane_dst = d_nv12_dst + encIn->pitch * CROP_H;
                 ck(cudaMemset2DAsync(d_uv_plane_dst, encIn->pitch, 128, CROP_W, CROP_H / 2, m_stream));
+                encode_prepared = true;
+            }
+
+            if (needs_source_frame) {
+                defer_source_after_stream_work();
+            } else {
+                release_source_now();
+            }
+
+            // --- LIVE PREVIEW LOGIC (ALWAYS RUNS) ---
+            if (d_display_buffer_pbo_) {
+                copy_crop_to_display_preview();
+                const uint64_t display_sync_start_ns = steady_now_ns();
+                synchronize_display_preview();
+                perf.display_sync_ms = elapsed_ms(display_sync_start_ns, steady_now_ns());
+                drain_pending_source_releases(false);
+            }
+
+            // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
+            if (encode_prepared) {
+                const uint64_t encode_start_ns = steady_now_ns();
 
                 // Encode and write the frame to file
                 std::vector<std::vector<uint8_t>> packets;
@@ -657,22 +800,11 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
 
                 // Write metadata to file
                 const uint64_t metadata_start_ns = steady_now_ns();
-                write_metadata_row(
-                    entry,
-                    true,
-                    false,
-                    best_detection.prob,
-                    ix,
-                    iy,
-                    CROP_W,
-                    CROP_H,
-                    best_detection.rect.x,
-                    best_detection.rect.y,
-                    best_detection.rect.width,
-                    best_detection.rect.height);
+                write_metadata_row(frame);
                 perf.metadata_cpu_ms = elapsed_ms(metadata_start_ns, steady_now_ns());
             }
         } else {
+            release_source_now();
             // --- NO DETECTION ---
             // Always show a blank screen for the preview if no detection
             if (d_display_buffer_pbo_) {
@@ -684,10 +816,11 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
             // Only encode a blank frame if recording is active
             if (encode_this_frame) {
                 perf.blank_frame = true;
+                frame.blank_frame = true;
                 const uint64_t encode_start_ns = steady_now_ns();
                 const NvEncInputFrame* encIn = encoder_->GetNextInputFrame();
                 const uint64_t zero_based_recording_frame =
-                    entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
+                    frame.recording_frame_id > 0 ? frame.recording_frame_id - 1 : 0;
                 NV_ENC_PIC_PARAMS pic_params = { NV_ENC_PIC_PARAMS_VER };
                 pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
                 pic_params.inputTimeStamp = zero_based_recording_frame;
@@ -704,51 +837,51 @@ bool CropAndEncodeWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 push_encoded_packets(packets, output_timestamps, zero_based_recording_frame);
                 perf.encode_submit_cpu_ms = elapsed_ms(encode_start_ns, steady_now_ns());
                 const uint64_t metadata_start_ns = steady_now_ns();
-                write_metadata_row(
-                    entry,
-                    false,
-                    true,
-                    0.0f,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0.0f,
-                    0.0f,
-                    0.0f,
-                    0.0f);
+                write_metadata_row(frame);
                 perf.metadata_cpu_ms = elapsed_ms(metadata_start_ns, steady_now_ns());
             }
         }
 
-        // Sync streams before releasing the source entry. This is transitional;
-        // the future crop producer should replace this with readiness events.
-        const uint64_t stream_sync_start_ns = steady_now_ns();
-        ck(cudaStreamSynchronize(m_stream));
-        perf.stream_sync_ms = elapsed_ms(stream_sync_start_ns, steady_now_ns());
-        if (d_display_buffer_pbo_) {
-            const uint64_t display_sync_start_ns = steady_now_ns();
-            synchronize_display_preview();
-            perf.display_sync_ms = elapsed_ms(display_sync_start_ns, steady_now_ns());
-        }
         if (encode_this_frame) {
             perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
-            write_perf_row(entry, perf);
+            write_perf_row(frame, perf);
         }
 
     } catch (const std::exception& e) {
-        std::cerr << "[CropAndEncodeWorker] Exception processing frame " << entry->frame_id
+        std::cerr << "[CropAndEncodeWorker] Exception processing frame " << frame.local_frame_id
                   << ": " << e.what() << std::endl;
         if (encode_this_frame) {
             perf.dropped = true;
             perf.drop_reason = "exception";
             perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
-            write_perf_row(entry, perf);
+            write_perf_row(frame, perf);
         }
     }
 
     // Cleanup and recycle the entry
-    release_entry(entry);
+    if (!source_entry_released && source_work_queued) {
+        try {
+            defer_source_after_stream_work();
+        } catch (const std::exception& e) {
+            std::cerr << "[CropAndEncodeWorker] Failed to defer source release for frame "
+                      << frame.local_frame_id
+                      << ": " << e.what()
+                      << "; synchronizing crop stream before release." << std::endl;
+            const uint64_t stream_sync_start_ns = steady_now_ns();
+            cudaError_t status = cudaStreamSynchronize(m_stream);
+            perf.stream_sync_ms += elapsed_ms(stream_sync_start_ns, steady_now_ns());
+            if (status != cudaSuccess) {
+                std::cerr << "[CropAndEncodeWorker] Source-release fallback sync failed for frame "
+                          << frame.local_frame_id
+                          << ": " << cudaGetErrorString(status) << std::endl;
+                cudaGetLastError();
+            }
+            release_source_now();
+        }
+    } else {
+        release_source_now();
+    }
+    drain_pending_source_releases(false);
 
     return false; // This worker does not pass items to its own output queue
 }

@@ -628,8 +628,10 @@ Field semantics:
 - `encode_submit_cpu_ms`: CPU-side time for NVENC input copy/submission and
   packet handoff.
 - `metadata_cpu_ms`: CPU time to append the crop metadata row.
-- `stream_sync_ms`, `display_sync_ms`: transitional synchronization waits before
-  source-frame release.
+- `stream_sync_ms`: fallback synchronization time if the crop source-release
+  event pool is exhausted. This should normally be `0`.
+- `display_sync_ms`: transitional GUI preview synchronization time. Crop source
+  release is now guarded separately by a CUDA source-safe event.
 - `total_ms`: total crop worker service time for this frame.
 
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)

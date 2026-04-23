@@ -283,8 +283,11 @@ Completed in the first code slice:
   no-detection blank frames.
 - Crop metadata now separates actual crop rectangle from source detection
   rectangle.
-- Crop worker synchronizes its encode stream before releasing the source
-  `WORKER_ENTRY` reference.
+- Crop worker snapshots frame/detection metadata before downstream crop work, so
+  crop metadata/perf rows no longer need to hold the original `WORKER_ENTRY`.
+- Crop worker records a CUDA source-safe event and defers source
+  `WORKER_ENTRY` release behind that event. The original camera frame is no
+  longer intentionally held until the full crop encode/preview tail completes.
 - `camera_config_validation_tests` covers `crop_pipeline.crop_size_px` parse,
   save-shape, defaulting, clamp behavior, odd-value sanitization, and legacy
   `size_px` / square `width,height` aliases.
@@ -332,6 +335,31 @@ Crop observability validation result:
 - `Cam2010096_yolo_events.jsonl`: `366` rows, matching crop metadata frame IDs.
 - `scripts/validate_recording_artifacts.py` passed on the folder.
 
+Source-release split validation result:
+
+- Artifact folder:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_22_23_20_41`
+- Camera `2010096`, `100 fps`, `4512x4512` full-frame recording with YOLO and
+  crop enabled.
+- `scripts/validate_recording_artifacts.py` passed after updating the validator
+  to accept documented blank crop frames (`blank_frame=1`, `has_detection=0`,
+  `crop_w,crop_h=0,0`).
+- `Cam2010096.mp4`: `748` frames, matching `Cam2010096_meta.csv`.
+- `Cam2010096_crop.mp4`: `256x256`, `748` frames, matching
+  `Cam2010096_crop_meta.csv`.
+- `Cam2010096_yolo_events.jsonl`: `748` rows, with `713` detection frames and
+  `35` zero-detection frames.
+- `Cam2010096_crop_perf.csv`: `748` rows, `0` dropped crop frames, max queue
+  depth `1`.
+- Crop worker `stream_sync_ms` was nonzero on `0/748` rows, versus `366/366`
+  rows in the previous transitional run. This indicates the CUDA source-release
+  event path is active and the fallback source-stream synchronization is not
+  being used.
+- Crop worker `total_ms`: mean `4.55 ms`, p95 `13.40 ms`, p99 `18.50 ms`,
+  max `30.85 ms`. The source-frame release path improved, but total crop worker
+  tail latency remains because preview and crop video encoding still run inside
+  the same combined worker.
+
 ### Design Update: Split Crop Production Before Pose
 
 The `2026_04_22_22_53_43` crop perf data is healthy enough for a short GUI
@@ -358,6 +386,20 @@ So a high `total_ms` does not necessarily mean the crop kernel is slow. It means
 the source frame lease can be held until preview/encode/sync work finishes. That
 is the wrong long-term ownership model for pose, because pose would add another
 consumer to the same serialized path.
+
+Current first split slice:
+
+- `CropAndEncodeWorker` copies frame identity, timestamps, crop geometry, and
+  detection geometry into a local snapshot before any source-frame release.
+- It owns a small CUDA source-release event pool and drains pending releases
+  with `cudaEventQuery`, synchronizing only during teardown or rare event-pool
+  exhaustion.
+- Detection frames release the source `WORKER_ENTRY` after source-dependent
+  crop/encode input work is queued and the source-safe CUDA event is recorded.
+- No-detection crop frames release the source immediately because blank preview
+  and blank crop video encoding do not need the source image.
+- Preview and crop video encoding still run inside the same worker, so this is
+  not yet the full `CropFrame` producer/consumer architecture.
 
 Target ownership model:
 
