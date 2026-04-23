@@ -52,6 +52,10 @@ public:
         StopThread();
     }
 
+    // `timestamp` is the original camera/acquisition timestamp from Orange
+    // (`camera_timestamp_ns` terminology). The current `/shm_cam_<serial>`
+    // queue does not expose that value; SharedBoxQueue stamps publish-time SHM
+    // timestamps when the writer thread pushes the slot.
     bool sendFrame(uint64_t frame_id,
                    uint64_t timestamp,
                    bool yolo_processing) {
@@ -109,7 +113,7 @@ public:
 private:
     struct FrameEvent {
         uint64_t frame_id = 0;
-        uint64_t timestamp = 0;
+        uint64_t timestamp = 0;  // Original camera/acquisition timestamp, not current SHM slot timestamp.
         bool yolo_processing = false;
     };
 
@@ -224,9 +228,13 @@ private:
                     pending_update_ = std::move(update);
                     pending_update_valid_ = true;
                 } else {
+                    // Preserve Citrus latest-state semantics by suppressing
+                    // older delayed detections from the live queue.
                     update_stale_drops_++;
                 }
             } else {
+                // Preserve Citrus latest-state semantics by suppressing
+                // older delayed detections from the live queue.
                 update_stale_drops_++;
             }
         }
@@ -234,6 +242,9 @@ private:
 
     bool EmitBase(const FrameEvent& frame) {
         static const std::vector<shaman::Object> empty_detections;
+        // Current SHM ABI only carries publish-time timestamps stamped inside
+        // SharedBoxQueue::push(...). `frame.timestamp` is intentionally not
+        // written into `/shm_cam_<serial>`.
         bool success = ipc_queue_->push(
             empty_detections,
             frame.frame_id,
@@ -285,6 +296,6 @@ private:
     std::atomic<uint64_t> updates_sent_{0};
     std::atomic<uint64_t> base_queue_drops_{0};
     std::atomic<uint64_t> update_queue_drops_{0};
-    std::atomic<uint64_t> update_stale_drops_{0};
+    std::atomic<uint64_t> update_stale_drops_{0};  // Delayed older-frame detections suppressed from Citrus live IPC.
     std::atomic<uint64_t> ipc_push_failures_{0};
 };

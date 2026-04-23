@@ -8,6 +8,9 @@ Purpose: define the Orange-owned recording/audit artifact for YOLO semantic
 history. This file is separate from the Citrus live-control shared-memory queue.
 Citrus IPC remains a latest-state stream; this JSONL file is where Orange should
 preserve complete YOLO results and Citrus live-IPC publish/suppress decisions.
+The current SHM `timestamp_us_*` fields are Orange publish-time timestamps, not
+the original camera/acquisition timestamp; this JSONL artifact is one place
+where Orange already preserves the original camera timestamp domain.
 
 See also:
 [headless_synthetic_yolo_event_log_plan.md](./headless_synthetic_yolo_event_log_plan.md)
@@ -82,7 +85,11 @@ Field semantics:
 - `frame.ipc_frame_id`: frame id Orange would use for the Citrus live IPC queue.
 - `frame.record_active`: whether Orange considered recording active for this
   frame.
-- `timestamps.camera_timestamp`: camera SDK timestamp from the frame.
+- `timestamps.camera_timestamp`: original camera/acquisition timestamp from the
+  frame. In current Orange terminology, this is the `camera_timestamp_ns`
+  domain. Current Orange/Emergent deployments treat this timestamp domain as
+  nanoseconds. It is distinct from the current SHM publish timestamp fields
+  `timestamp_us_epoch` and `timestamp_us_monotonic`.
 - `timestamps.timestamp_sys_ns`: Orange realtime/system timestamp captured for
   the frame.
 - `timestamps.event_epoch_us`: wall-clock microseconds when this JSONL event was
@@ -96,6 +103,9 @@ Consumer rule:
   joining YOLO rows one-to-one with recorded video frames or `Cam*_meta.csv`.
   The current GUI runtime only writes YOLO JSONL rows for frames that have a
   positive recording-local frame id.
+- Citrus should not infer `camera_timestamp_ns` from the current live SHM
+  `timestamp_us_*` fields. If Citrus later needs live camera timestamps, that
+  requires a versioned `/shm_cam_<camera_serial>_v2` queue contract.
 
 ## Row Types
 

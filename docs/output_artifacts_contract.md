@@ -409,8 +409,10 @@ frame_id,timestamp,timestamp_sys
 Field semantics:
 - `frame_id`: recording-frame counter (`recording_frame_id`, uint64), not the
   absolute camera frame counter.
-- `timestamp`: camera SDK timestamp (`uint64`, unit not explicitly documented
-  in code contract).
+- `timestamp`: camera/acquisition timestamp from the SDK (`uint64`). In current
+  Orange terminology this is the `camera_timestamp_ns` domain and is distinct
+  from any Orange SHM publish timestamp. Current Orange/Emergent deployments
+  treat this timestamp domain as nanoseconds.
 - `timestamp_sys`: system wall-clock timestamp from `CLOCK_REALTIME` in
   nanoseconds (`uint64`).
 
@@ -426,7 +428,9 @@ Field semantics:
 - `recording_frame_id`: recording-frame counter (`uint64`).
 - `local_frame_id`: Orange local acquisition frame counter (`uint64`).
 - `camera_frame_id`: camera SDK frame id (`uint64`).
-- `timestamp`: camera SDK timestamp (`uint64`, unit not explicitly documented).
+- `timestamp`: camera/acquisition timestamp from the SDK (`uint64`), in the
+  `camera_timestamp_ns` domain used by Orange docs and diagnostics. Current
+  Orange/Emergent deployments treat this timestamp domain as nanoseconds.
 - `timestamp_sys`: realtime nanoseconds (`uint64`).
 - `has_detection`: integer boolean (`0|1`).
 - `blank_frame`: integer boolean (`0|1`), true when the encoded crop frame is
@@ -771,8 +775,12 @@ Slot payload (`VectorSlot`) fields:
   - `prob: float`
   - `kps[32]: float`
   - `num_kps: size_t`
-- `timestamp_us_epoch: uint64` (producer wall-clock `system_clock` microseconds at push)
-- `timestamp_us_monotonic: uint64` (producer local `steady_clock` microseconds at push)
+- `timestamp_us_epoch: uint64` (current ABI field name; semantically
+  `orange_shm_publish_timestamp_us_epoch`, producer wall-clock
+  `system_clock` microseconds at SHM enqueue/publish)
+- `timestamp_us_monotonic: uint64` (current ABI field name; semantically
+  `orange_shm_publish_timestamp_us_monotonic`, producer local
+  `steady_clock` microseconds at SHM enqueue/publish)
 - `frame_id: uint64`
 - `camera_id: uint32` (camera index, not serial)
 - `yolo_enabled: bool`
@@ -784,6 +792,9 @@ Emission behavior:
   from the live queue and counted as stale update drops.
 - During recording, IPC `frame_id` uses `recording_frame_id`.
 - Outside recording, IPC `frame_id` uses absolute camera `frame_id`.
+- The current queue does not carry `camera_timestamp_ns`; the SHM timestamp
+  fields above are Orange publish-time timestamps, not original frame
+  acquisition timestamps.
 - The current Citrus consumer treats this queue as latest live-control state,
   not as a complete Orange semantic event log. Do not rely on this queue to
   preserve every base frame, delayed YOLO update, or zero-detection completion.
@@ -805,6 +816,8 @@ Per-camera fields include:
 - `queue_name`: `/shm_cam_<camera_serial>`
 - `frames_sent`, `updates_sent`
 - `base_queue_drops`, `update_queue_drops`, `update_stale_drops`
+- `update_stale_drops` means delayed older-frame detection updates were
+  intentionally suppressed from the Citrus live queue
 - `ipc_push_failures`
 - `reader_messages_popped`, `reader_base_messages`
 - `reader_frame_id_gaps`, `reader_camera_id_mismatches`
@@ -844,12 +857,21 @@ Current runtime note:
 - `frame_id` (camera-local absolute) and `recording_frame_id` (session-local)
   are distinct.
 - Main/crop metadata CSV `frame_id` currently means `recording_frame_id`.
-- `timestamp_sys` in metadata rows is realtime nanoseconds.
-- IPC `timestamp_us_epoch` is enqueue-time epoch microseconds.
-- IPC `timestamp_us_monotonic` is enqueue-time steady-clock microseconds.
-- Neither IPC timestamp field is the camera SDK timestamp.
-- Camera SDK `timestamp` units are not explicitly specified by the runtime
-  contract and should be treated as source-native ticks.
+- Main/crop metadata `timestamp` is the camera/acquisition timestamp
+  (`camera_timestamp_ns` terminology in current Orange docs/diagnostics). In the
+  current Orange/Emergent path this is treated as nanoseconds.
+- `timestamp_sys` in metadata rows is Orange realtime nanoseconds captured at
+  frame receive.
+- IPC `timestamp_us_epoch` is the current ABI field name for
+  `orange_shm_publish_timestamp_us_epoch`.
+- IPC `timestamp_us_monotonic` is the current ABI field name for
+  `orange_shm_publish_timestamp_us_monotonic`.
+- Neither IPC timestamp field is the original camera/acquisition timestamp.
+- Citrus consumer-side timestamps should be described separately as
+  `citrus_ipc_receive_timestamp_*` and `citrus_stimulus_output_timestamp_*`.
+- If Citrus later needs live `camera_timestamp_ns`, keep the current queue
+  unchanged and add a versioned `/shm_cam_<camera_serial>_v2` contract with
+  explicit schema/version fields and the same stale-update suppression rules.
 
 ## Known Inconsistencies and Caveats
 

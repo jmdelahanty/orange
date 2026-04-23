@@ -66,9 +66,20 @@ Frame IPC in Orange is a per-camera shared-memory ring:
 - queue name: `/shm_cam_<camera_serial>`
 - writer: Orange `FrameIPCManager`
 - reader: Citrus or another SHM consumer
-- slot timestamps:
-  - `timestamp_us_epoch` = enqueue-time epoch microseconds
-  - `timestamp_us_monotonic` = enqueue-time steady-clock microseconds
+- slot timestamps (current ABI field names):
+  - `timestamp_us_epoch` = `orange_shm_publish_timestamp_us_epoch`:
+    Orange enqueue/publish wall-clock microseconds written when Orange pushes a
+    slot into SHM
+  - `timestamp_us_monotonic` = `orange_shm_publish_timestamp_us_monotonic`:
+    Orange enqueue/publish steady-clock microseconds written when Orange pushes
+    a slot into SHM
+
+These SHM timestamps are publish-time metadata for the Orange producer. They are
+not the original camera/acquisition timestamp for the frame.
+
+Orange already carries the original camera/acquisition timestamp separately in
+recording metadata and YOLO event artifacts. In current Orange terminology, that
+timestamp domain should be referred to as `camera_timestamp_ns`.
 
 The current queue is effectively single-consumer:
 
@@ -92,8 +103,36 @@ behavior on this queue. Delayed YOLO detections for older frames should not be
 published as older-frame updates because Citrus may treat any non-empty payload
 as current stimulus state.
 
+Current timestamp naming guidance for this queue:
+
+- Orange producer SHM publish timestamps:
+  - `orange_shm_publish_timestamp_us_epoch`
+  - `orange_shm_publish_timestamp_us_monotonic`
+- Citrus consumer-side receive timestamps in docs should be described as:
+  - `citrus_ipc_receive_timestamp_*`
+- Citrus stimulus/frame-output timestamps in docs should be described as:
+  - `citrus_stimulus_output_timestamp_*`
+
+Citrus should not interpret current SHM `timestamp_us_*` fields as
+`camera_timestamp_ns`.
+
 See [yolo_ipc_citrus_contract_plan.md](./yolo_ipc_citrus_contract_plan.md) for
 the live-control vs Orange audit-log split.
+
+## Future Live Camera Timestamp Path
+
+If Citrus later needs live access to `camera_timestamp_ns`, do not change the
+current `/shm_cam_<camera_serial>` queue in place.
+
+Recommended safe path:
+
+- keep the current `/shm_cam_<camera_serial>` behavior, field meanings, and
+  binary layout unchanged
+- add a versioned `/shm_cam_<camera_serial>_v2` queue
+- include explicit schema/version fields in the v2 slot payload
+- add `camera_timestamp_ns` to that v2 payload
+- preserve the same monotonic live-state contract and stale-update suppression
+  rules so delayed older-frame detections still cannot regress Citrus state
 
 ## Headless IPC Testing
 
@@ -193,6 +232,8 @@ you are in:
 - `manager unavailable` + `init_error=...`: queue creation/open failure
 - `base` increasing: writer is publishing
 - `push_fail` increasing: SHM ring full / not being drained
+- `stale_live_suppress` increasing: delayed older-frame detection updates are
+  being intentionally suppressed to preserve Citrus latest-state semantics
 - `updates=0`: normal unless YOLO IPC updates are expected
 
 See also: [frame_ipc_hardening_todo.md](./frame_ipc_hardening_todo.md)

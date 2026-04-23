@@ -26,7 +26,8 @@ inline uint64_t get_epoch_time_us() {
     ).count();
 }
 
-// Backward-compatible alias for older callers. This is monotonic/steady time, not epoch time.
+// Backward-compatible alias for older callers. This is monotonic/steady time,
+// not epoch time, and not any camera/acquisition timestamp.
 inline uint64_t get_time_us() {
     return get_steady_time_us();
 }
@@ -53,11 +54,15 @@ struct Object {
     size_t num_kps;
 };
 
+// SHM ABI note: keep the existing field names/layout for compatibility.
+// `timestamp_us_epoch` and `timestamp_us_monotonic` are Orange producer
+// enqueue/publish-time timestamps written when SharedBoxQueue::push(...) runs.
+// They are not the original camera/acquisition timestamp for the frame.
 struct VectorSlot {
     size_t count;
     Object objects[MAX_OBJECTS];
-    uint64_t timestamp_us_epoch;
-    uint64_t timestamp_us_monotonic;
+    uint64_t timestamp_us_epoch;      // Semantically: orange_shm_publish_timestamp_us_epoch
+    uint64_t timestamp_us_monotonic;  // Semantically: orange_shm_publish_timestamp_us_monotonic
     uint64_t frame_id;
     uint32_t camera_id;  // FIXED: Changed from uint16_t to uint32_t
     bool yolo_enabled;   // Indicates if YOLO processing was active
@@ -160,7 +165,8 @@ public:
         // if (writer && creator) shm_unlink(shm_name_.c_str());
     }
     
-    // UPDATED: Writer pushes with uint32_t camera_id and optional yolo_enabled flag
+    // Writer stamps Orange publish-time SHM timestamps here. The current SHM
+    // ABI does not carry the original camera/acquisition timestamp.
     bool push(const std::vector<Object>& vec, uint64_t frame_id, uint32_t camera_id, bool yolo_enabled = false) {
         if (!writer) return false;
         if (vec.size() > MAX_OBJECTS) return false;
@@ -214,7 +220,7 @@ public:
         return true;
     }
 
-    // UPDATED: Pop with timestamp and uint32_t camera_id
+    // Pop with Orange publish-time monotonic timestamp and uint32_t camera_id.
     bool pop(std::vector<Object>& out, uint64_t& timestamp_us_monotonic, uint64_t& frame_id, uint32_t& camera_id) {
         if (writer) return false;
 
@@ -270,7 +276,7 @@ public:
         return result;
     }
     
-    // NEW: Full pop with all info including YOLO flag
+    // Full pop with Orange publish-time SHM timestamps and YOLO flag.
     bool pop(std::vector<Object>& out, uint64_t& timestamp_us_monotonic, uint64_t& frame_id, 
              uint32_t& camera_id, bool& yolo_enabled) {
         uint64_t timestamp_us_epoch_discarded = 0;

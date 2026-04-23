@@ -60,7 +60,7 @@ void render_frame_ipc_status_panel(
             cameras_params[i].camera_serial.c_str(),
             ipc_manager->getQueueName().c_str());
         ImGui::TextDisabled(
-            "    base=%llu updates=%llu push_fail=%llu base_drop=%llu update_drop=%llu stale=%llu",
+            "    base=%llu updates=%llu push_fail=%llu base_drop=%llu update_drop=%llu stale_live_suppress=%llu",
             static_cast<unsigned long long>(ipc_manager->getFramesSent()),
             static_cast<unsigned long long>(ipc_manager->getUpdatesSent()),
             static_cast<unsigned long long>(ipc_manager->getIpcPushFailures()),
@@ -68,6 +68,8 @@ void render_frame_ipc_status_panel(
             static_cast<unsigned long long>(ipc_manager->getUpdateQueueDrops()),
             static_cast<unsigned long long>(ipc_manager->getUpdateStaleDrops()));
     }
+    ImGui::TextDisabled(
+        "  SHM slot timestamps are Orange publish-time us, not camera_timestamp_ns");
     ImGui::TextDisabled("  Run './dummy_reader' to monitor");
 }
 
