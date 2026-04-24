@@ -127,7 +127,19 @@ CropProducerWorker::RecordingCounters CropProducerWorker::GetRecordingCounters()
     return counters;
 }
 
+bool CropProducerWorker::ProcessEntryInline(WORKER_ENTRY* entry)
+{
+    std::lock_guard<std::mutex> lock(process_mutex_);
+    return ProcessEntryImpl(entry, false);
+}
+
 bool CropProducerWorker::WorkerFunction(WORKER_ENTRY* entry)
+{
+    std::lock_guard<std::mutex> lock(process_mutex_);
+    return ProcessEntryImpl(entry, true);
+}
+
+bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_source_entry)
 {
     if (crop_producer_) {
         crop_producer_->DrainPending(false);
@@ -227,7 +239,9 @@ bool CropProducerWorker::WorkerFunction(WORKER_ENTRY* entry)
             if (frame_should_encode) {
                 (void)enqueue_job(std::move(job));
             }
-            crop_producer_->ReleaseSourceEntry(entry);
+            if (release_source_entry) {
+                crop_producer_->ReleaseSourceEntry(entry);
+            }
             if (crop_producer_) {
                 crop_producer_->DrainPending(false);
             }
@@ -270,7 +284,8 @@ bool CropProducerWorker::WorkerFunction(WORKER_ENTRY* entry)
                     ix,
                     iy,
                     true,
-                    &perf);
+                    &perf,
+                    release_source_entry);
                 job->crop_frame = produce_result.crop_frame;
                 if (produce_result.dropped) {
                     perf.dropped = true;
@@ -285,12 +300,16 @@ bool CropProducerWorker::WorkerFunction(WORKER_ENTRY* entry)
                     return false;
                 }
             } else {
-                crop_producer_->ReleaseSourceEntry(entry);
+                if (release_source_entry) {
+                    crop_producer_->ReleaseSourceEntry(entry);
+                }
             }
         } else {
             frame.blank_frame = true;
             perf.blank_frame = true;
-            crop_producer_->ReleaseSourceEntry(entry);
+            if (release_source_entry) {
+                crop_producer_->ReleaseSourceEntry(entry);
+            }
         }
 
         if (job->crop_frame && crop_worker_) {
@@ -327,7 +346,7 @@ bool CropProducerWorker::WorkerFunction(WORKER_ENTRY* entry)
         }
     }
 
-    if (entry && crop_producer_) {
+    if (entry && crop_producer_ && release_source_entry) {
         crop_producer_->ReleaseSourceEntry(entry);
     }
     if (crop_producer_) {

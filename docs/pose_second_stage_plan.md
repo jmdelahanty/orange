@@ -548,6 +548,49 @@ Current latency interpretation (2026-04-23):
   - GPUDirect buffer = ingress lease,
   - owned device buffer = analytics workspace.
 
+## Detect-Side Synchronization Findings (2026-04-23)
+
+- Detailed follow-up design for reducing the remaining detect-side latency now
+  lives in `docs/detect_hot_path_rework_plan.md`.
+- Latest in-app detect instrumentation says the detect path is usually **not**
+  waiting on real ingress readiness:
+  - on run `2026_04_23_22_12_54`, `ingress_event_ready_before_wait` was already
+    true on `1023/1027` frames for `Cam2010095` and `1018/1029` frames for
+    `Cam2010096`,
+  - but `cpu_wait_event_ms p95` was still `7.30 ms` / `6.54 ms`,
+  - while GPU-side `wait_ms p95` stayed tiny at `0.018 ms` / `0.266 ms`.
+- Therefore the large wall-clock region currently labeled `cpu_wait_event_ms`
+  is not mostly true upstream waiting. The ingress event is usually already
+  satisfied by the time YOLO reaches `cudaStreamWaitEvent(...)`.
+- A follow-up Nsight Systems CLI/SQLite trace with CPU context-switch capture
+  confirmed the same conclusion:
+  - on the two `YoloWorker_Cam_` threads, `cudaStreamWaitEvent` averaged only
+    about `2.5 us` and maxed at `17-32 us`,
+  - `cudaEventSynchronize` on those threads averaged only `4.5-4.9 us` and
+    maxed at `23-27 us`,
+  - the largest scheduler-inflated CUDA API outliers on the YOLO threads were
+    actually `cudaEventRecord` calls, with worst cases around `7.6-10.7 ms`.
+- The Nsight trace also showed why those outliers were so long:
+  - each worst-case `cudaEventRecord` call contained a sched-out followed by a
+    sched-in pair spanning almost the full wall-clock duration,
+  - YOLO-thread deschedule gaps had `p95` around `154 us`, `p99` around
+    `156 us`, and rare maxima around `10.6 ms`.
+- Current interpretation:
+  - detect-side ingress readiness is usually already available,
+  - TRT inference itself is not the main latency issue,
+  - the dominant remaining detect-side tax is host scheduling/runtime jitter on
+    the YOLO threads and hot-path CUDA API chatter, not crop or source-buffer
+    readiness.
+- One caveat from this instrumentation pass:
+  - `ingress_event_record_to_worker_start_ms` is currently invalid because the
+    timestamp is being reset later in acquisition; do not use that field for
+    decisions until it is fixed.
+- Near-term optimization direction should therefore shift toward:
+  - CPU affinity / thread isolation for the YOLO workers,
+  - reducing unnecessary YOLO-thread CUDA API calls on the hot path,
+  - and only revisiting detect-side buffer ownership again if those scheduler
+    experiments fail to help.
+
 ## CUDA Graph Capture (Pose TRT)
 - Prefer CUDA Graph launch for steady-state pose inference to reduce host enqueue
   overhead and internal TRT contention.

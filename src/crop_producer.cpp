@@ -397,7 +397,8 @@ CropProducer::ProduceResult CropProducer::Produce(
     int crop_x,
     int crop_y,
     bool needs_crop_frame,
-    CropProducerPerfSample* perf)
+    CropProducerPerfSample* perf,
+    bool release_source_entry)
 {
     ProduceResult result;
     ck(cudaSetDevice(camera_params_->gpu_id));
@@ -408,7 +409,9 @@ CropProducer::ProduceResult CropProducer::Produce(
     }
 
     if (!needs_crop_frame) {
-        ReleaseSourceEntry(entry);
+        if (release_source_entry) {
+            ReleaseSourceEntry(entry);
+        }
         return result;
     }
 
@@ -420,7 +423,9 @@ CropProducer::ProduceResult CropProducer::Produce(
     if (!active_crop_frame) {
         result.dropped = true;
         result.drop_reason = "crop_frame_pool_empty";
-        ReleaseSourceEntry(entry);
+        if (release_source_entry) {
+            ReleaseSourceEntry(entry);
+        }
         return result;
     }
 
@@ -429,6 +434,9 @@ CropProducer::ProduceResult CropProducer::Produce(
 
     auto defer_source_after_stream_work = [&](WORKER_ENTRY*& source_entry) {
         if (!source_entry) {
+            return;
+        }
+        if (!release_source_entry) {
             return;
         }
 
@@ -502,7 +510,9 @@ CropProducer::ProduceResult CropProducer::Produce(
                 source_stage_enqueue_start_ns,
                 steady_now_ns());
         }
-        defer_source_after_stream_work(entry);
+        if (release_source_entry) {
+            defer_source_after_stream_work(entry);
+        }
         crop_source_ptr = d_source_stage_mono_;
         crop_source_pitch = frame.source_width;
     }
@@ -570,7 +580,7 @@ CropProducer::ProduceResult CropProducer::Produce(
         }
     }
 
-    if (!needs_source_stage_copy) {
+    if (!needs_source_stage_copy && release_source_entry) {
         defer_source_after_stream_work(entry);
     }
 

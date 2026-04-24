@@ -6,6 +6,7 @@
 #include "video_capture.h"
 
 #include <atomic>
+#include <mutex>
 #include <memory>
 #include <string>
 
@@ -45,11 +46,14 @@ public:
     void CloseRecording();
     void ResetRecordingCounters();
     RecordingCounters GetRecordingCounters() const;
+    bool ProcessEntryInline(WORKER_ENTRY* entry);
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
 
 private:
+    bool ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_source_entry);
+
     CameraParams* camera_params_ = nullptr;
     SafeQueue<WORKER_ENTRY*>& recycle_queue_;
     CameraControl* camera_control_ = nullptr;
@@ -73,6 +77,7 @@ private:
     std::atomic<uint64_t> run_dropped_jobs_offered_{0};
     std::atomic<uint64_t> run_dropped_jobs_enqueued_{0};
     std::string current_recording_folder_;
+    std::mutex process_mutex_;
 };
 
 #endif  // ORANGE_CROP_PRODUCER_WORKER_H

@@ -31,6 +31,7 @@
 #include <thread>
 #include <utility>
 #include <cstring>
+#include <cctype>
 #include <pthread.h>
 #include <sched.h>
 
@@ -62,6 +63,19 @@ bool UseEventSyncWait()
         const bool on = env && *env && std::strcmp(env, "0") != 0;
         if (on) {
             std::cout << "[YOLO] Using cudaEventSynchronize for GPU sync." << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+
+bool UseInlineCropProducer()
+{
+    static const bool enabled = []() {
+        const char* env = std::getenv("ORANGE_INLINE_CROP_PRODUCER");
+        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        if (on) {
+            std::cout << "[YOLO] Inline crop producer enabled." << std::endl;
         }
         return on;
     }();
@@ -124,9 +138,50 @@ bool ParseCpuList(const char* env, cpu_set_t* out_set, std::string* out_str)
     return any;
 }
 
-void ApplyYoloAffinity()
+std::string SanitizeEnvSuffix(const std::string& value)
 {
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char ch : value) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(std::toupper(ch)));
+        } else {
+            out.push_back('_');
+        }
+    }
+    return out;
+}
+
+const char* ResolveYoloAffinitySpec(const CameraParams* params, std::string* env_key_out)
+{
+    if (params && !params->camera_serial.empty()) {
+        const std::string env_key =
+            "ORANGE_YOLO_AFFINITY_CAM_" + SanitizeEnvSuffix(params->camera_serial);
+        const char* env = std::getenv(env_key.c_str());
+        if (env && *env) {
+            if (env_key_out) {
+                *env_key_out = env_key;
+            }
+            return env;
+        }
+    }
     const char* env = std::getenv("ORANGE_YOLO_AFFINITY");
+    if (env && *env) {
+        if (env_key_out) {
+            *env_key_out = "ORANGE_YOLO_AFFINITY";
+        }
+        return env;
+    }
+    if (env_key_out) {
+        env_key_out->clear();
+    }
+    return nullptr;
+}
+
+void ApplyYoloAffinity(const CameraParams* params, const char* thread_name)
+{
+    std::string env_key;
+    const char* env = ResolveYoloAffinitySpec(params, &env_key);
     cpu_set_t cpuset;
     std::string spec;
     if (!ParseCpuList(env, &cpuset, &spec)) {
@@ -134,9 +189,16 @@ void ApplyYoloAffinity()
     }
     int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     if (rc != 0) {
-        std::cerr << "[YOLO] Failed to set affinity (" << spec << "): " << std::strerror(rc) << std::endl;
+        std::cerr << "[YOLO] Failed to set affinity for "
+                  << (thread_name ? thread_name : "YoloWorker")
+                  << " via " << env_key
+                  << "=" << spec << ": "
+                  << std::strerror(rc) << std::endl;
     } else {
-        std::cout << "[YOLO] Applied CPU affinity: " << spec << std::endl;
+        std::cout << "[YOLO] Applied CPU affinity for "
+                  << (thread_name ? thread_name : "YoloWorker")
+                  << " via " << env_key
+                  << "=" << spec << std::endl;
     }
 }
 }  // namespace
@@ -150,12 +212,18 @@ struct YoloPerfRecord {
     int queue_depth = 0;
     double fps = 0.0;
     int ok = 0;
+    double acquisition_to_worker_start_ms = -1.0;
+    double ingress_event_record_to_worker_start_ms = -1.0;
+    double acquisition_to_detect_done_ms = -1.0;
+    double worker_start_to_detect_done_ms = -1.0;
+    int ingress_event_ready_before_wait = -1;
     double wait_ms = -1.0;
     double pre_ms = -1.0;
     double gap_ms = -1.0;
     double enqueue_ms = -1.0;
     double infer_ms = -1.0;
     double sync_ms = -1.0;
+    int completion_event_ready_before_sync = -1;
     double cpu_wait_event_ms = -1.0;
     double cpu_npp_set_stream_ms = -1.0;
     double cpu_preprocess_ms = -1.0;
@@ -264,7 +332,8 @@ private:
             return;
         }
         file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,fps,ok,"
-                 "wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,"
+                 "acquisition_to_worker_start_ms,ingress_event_record_to_worker_start_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,"
+                 "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
                  "cpu_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
                  "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms\n";
         file_ << std::fixed << std::setprecision(6);
@@ -290,12 +359,18 @@ private:
               << record.queue_depth << ","
               << record.fps << ","
               << record.ok << ","
+              << record.acquisition_to_worker_start_ms << ","
+              << record.ingress_event_record_to_worker_start_ms << ","
+              << record.acquisition_to_detect_done_ms << ","
+              << record.worker_start_to_detect_done_ms << ","
+              << record.ingress_event_ready_before_wait << ","
               << record.wait_ms << ","
               << record.pre_ms << ","
               << record.gap_ms << ","
               << record.enqueue_ms << ","
               << record.infer_ms << ","
               << record.sync_ms << ","
+              << record.completion_event_ready_before_sync << ","
               << record.cpu_wait_event_ms << ","
               << record.cpu_npp_set_stream_ms << ","
               << record.cpu_preprocess_ms << ","
@@ -508,7 +583,7 @@ void YoloWorker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
 bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     static thread_local bool affinity_set = false;
     if (!affinity_set) {
-        ApplyYoloAffinity();
+        ApplyYoloAffinity(associated_camera_params_, threadName);
         affinity_set = true;
     }
     if (!yolov8_instance_ || !entry || !entry->d_image) {
@@ -576,7 +651,23 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         double ms_cpu_pre_sync_other = -1.0;
         double ms_cpu_post_sync = -1.0;
         double ms_total = -1.0;
+        double ms_acquisition_to_worker_start = -1.0;
+        double ms_ingress_event_record_to_worker_start = -1.0;
+        double ms_acquisition_to_detect_done = -1.0;
+        double ms_worker_start_to_detect_done = -1.0;
+        int ingress_event_ready_before_wait = -1;
+        int completion_event_ready_before_sync = -1;
+        uint64_t worker_start_host_ns = steady_time_now_ns();
         const auto cpu_start = std::chrono::steady_clock::now();
+        if (entry->acquisition_receive_host_ns > 0) {
+            ms_acquisition_to_worker_start = static_cast<double>(
+                worker_start_host_ns - entry->acquisition_receive_host_ns) / 1000000.0;
+        }
+        if (entry->ingress_event_record_host_ns > 0 &&
+            worker_start_host_ns >= entry->ingress_event_record_host_ns) {
+            ms_ingress_event_record_to_worker_start = static_cast<double>(
+                worker_start_host_ns - entry->ingress_event_record_host_ns) / 1000000.0;
+        }
 #if YOLO_PROFILE
         struct YoloProfileEvents {
             cudaEvent_t pre_start{};
@@ -636,6 +727,15 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         // Wait for the previous stage (acquire_frames) to finish copying data.
         if (entry->event_ptr) {
             const auto cpu_wait_start = std::chrono::steady_clock::now();
+            cudaError_t wait_ready_status = cudaEventQuery(*entry->event_ptr);
+            if (wait_ready_status == cudaSuccess) {
+                ingress_event_ready_before_wait = 1;
+            } else if (wait_ready_status == cudaErrorNotReady) {
+                ingress_event_ready_before_wait = 0;
+            } else {
+                ingress_event_ready_before_wait = -2;
+                cudaGetLastError();
+            }
 #if YOLO_PROFILE
             ck(cudaEventRecord(prof_events.wait_start, yolov8_instance_->stream));
 #endif
@@ -727,6 +827,17 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         bool finished_in_time = false;
 
         const auto sync_wait_start = std::chrono::steady_clock::now();
+        if (entry->yolo_completion_event) {
+            cudaError_t completion_ready_status = cudaEventQuery(*entry->yolo_completion_event);
+            if (completion_ready_status == cudaSuccess) {
+                completion_event_ready_before_sync = 1;
+            } else if (completion_ready_status == cudaErrorNotReady) {
+                completion_event_ready_before_sync = 0;
+            } else {
+                completion_event_ready_before_sync = -2;
+                cudaGetLastError();
+            }
+        }
         if (UseEventSyncWait() && entry->yolo_completion_event) {
             cudaError_t result = cudaEventSynchronize(*entry->yolo_completion_event);
             if (result == cudaSuccess) {
@@ -826,18 +937,37 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         ms_track = std::chrono::duration<double, std::milli>(track_end - track_start).count();
 #endif
 
-        // Feed the crop worker for live preview whenever it exists. The crop
-        // worker independently decides whether the frame should also be encoded.
-        if (!skip_cpu_results && m_crop_worker) {
+        if (!skip_cpu_results) {
             entry->yolo_detect_done_host_ns = steady_time_now_ns();
-            // Increment the reference count because another worker will now use this entry
-            entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
-            m_crop_worker->PutObjectToQueueIn(entry);
+            if (entry->acquisition_receive_host_ns > 0) {
+                ms_acquisition_to_detect_done = static_cast<double>(
+                    entry->yolo_detect_done_host_ns - entry->acquisition_receive_host_ns) / 1000000.0;
+            }
+            ms_worker_start_to_detect_done = static_cast<double>(
+                entry->yolo_detect_done_host_ns - worker_start_host_ns) / 1000000.0;
         }
 
         // Mark if we have detections
         entry->has_detections = !entry->detections.empty();
         entry->detections_ready.store(true);
+
+        // Feed crop production after detections are finalized. In inline mode we
+        // keep the WORKER_ENTRY alive until this worker finishes its remaining
+        // CPU-side bookkeeping, then release it normally at the end.
+        const bool inline_crop_producer =
+            !skip_cpu_results &&
+            m_crop_worker &&
+            entry->analytics_owned_frame_valid &&
+            UseInlineCropProducer();
+        if (!skip_cpu_results && m_crop_worker) {
+            if (inline_crop_producer) {
+                m_crop_worker->ProcessEntryInline(entry);
+            } else {
+                // Increment the reference count because another worker will now use this entry.
+                entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
+                m_crop_worker->PutObjectToQueueIn(entry);
+            }
+        }
 
         // NEW: Update Frame IPC with YOLO detection results
 #if YOLO_PROFILE
@@ -987,12 +1117,18 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.queue_depth = GetCountQueueInSize();
                 record.fps = current_fps_.load(std::memory_order_relaxed);
                 record.ok = finished_in_time ? 1 : 0;
+                record.acquisition_to_worker_start_ms = ms_acquisition_to_worker_start;
+                record.ingress_event_record_to_worker_start_ms = ms_ingress_event_record_to_worker_start;
+                record.acquisition_to_detect_done_ms = ms_acquisition_to_detect_done;
+                record.worker_start_to_detect_done_ms = ms_worker_start_to_detect_done;
+                record.ingress_event_ready_before_wait = ingress_event_ready_before_wait;
                 record.wait_ms = ms_wait;
                 record.pre_ms = ms_pre;
                 record.gap_ms = ms_gap;
                 record.enqueue_ms = ms_enqueue;
                 record.infer_ms = ms_infer;
                 record.sync_ms = ms_sync_wait;
+                record.completion_event_ready_before_sync = completion_event_ready_before_sync;
                 record.cpu_wait_event_ms = ms_cpu_wait_event;
                 record.cpu_npp_set_stream_ms = ms_cpu_npp_set_stream;
                 record.cpu_preprocess_ms = ms_cpu_preprocess;

@@ -37,6 +37,7 @@ typedef struct {
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
     uint64_t acquisition_receive_host_ns = 0;
+    uint64_t ingress_event_record_host_ns = 0;
     uint64_t yolo_detect_done_host_ns = 0;
     uint64_t recording_submit_host_ns = 0;
     int recording_target_gpu_id = -1;
@@ -74,6 +75,28 @@ typedef struct {
     // Optional event for an acquisition-time owned analytics copy
     cudaEvent_t analytics_ready_event = nullptr;
     bool analytics_owned_frame_valid = false;
+
+    bool has_analytics_owned_source() const
+    {
+        return analytics_owned_frame_valid &&
+               d_analytics_image != nullptr &&
+               analytics_ready_event != nullptr;
+    }
+
+    unsigned char* delayed_consumer_image() const
+    {
+        return has_analytics_owned_source() ? d_analytics_image : d_image;
+    }
+
+    cudaEvent_t* delayed_consumer_event()
+    {
+        return has_analytics_owned_source() ? &analytics_ready_event : event_ptr;
+    }
+
+    const cudaEvent_t* delayed_consumer_event() const
+    {
+        return has_analytics_owned_source() ? &analytics_ready_event : event_ptr;
+    }
 
     // New event specifically for YOLO completion
     cudaEvent_t* yolo_completion_event; 

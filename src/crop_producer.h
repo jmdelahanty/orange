@@ -133,7 +133,8 @@ public:
         int crop_x,
         int crop_y,
         bool needs_crop_frame,
-        CropProducerPerfSample* perf);
+        CropProducerPerfSample* perf,
+        bool release_source_entry = true);
 
     void ReleaseSourceEntry(WORKER_ENTRY*& entry);
     void SetPoseWorker(PoseWorker* pose_worker);

@@ -775,6 +775,48 @@ Future high-FPS takeaway (2026-04-23):
   ownership boundaries and reusable consumer fanout so detection/pose pipelines
   can stay GPU-resident with minimal host work.
 
+Detect-side synchronization findings (2026-04-23):
+
+- Detailed hot-path rework proposal now lives in
+  `docs/detect_hot_path_rework_plan.md`.
+- After the hybrid detect/owned-buffer split, the remaining latency question
+  moved upstream from crop into the detect handoff.
+- In-app instrumentation on run `2026_04_23_22_12_54` showed that the ingress
+  readiness event was already complete before YOLO called
+  `cudaStreamWaitEvent(...)` on almost every frame:
+  - `Cam2010095`: `1023/1027` frames ready before wait
+  - `Cam2010096`: `1018/1029` frames ready before wait
+- But the measured host-side wall time around that region was still large:
+  - `cpu_wait_event_ms p95 = 7.30 ms` / `6.54 ms`
+  - while actual GPU-side `wait_ms p95 = 0.018 ms` / `0.266 ms`
+- So the detect-side tail is not mostly true upstream buffer readiness.
+- Nsight Systems CLI/SQLite tracing with CPU context-switch capture confirmed
+  the same thing:
+  - on the YOLO threads, `cudaStreamWaitEvent` itself averaged only about
+    `2.5 us` and never exceeded `32 us`,
+  - `cudaEventSynchronize` on those threads was also only a few microseconds,
+  - the worst scheduler-inflated CUDA API outliers on the YOLO threads were
+    `cudaEventRecord` calls, reaching about `7.6-10.7 ms`.
+- The trace showed those worst `cudaEventRecord` calls being interrupted by
+  sched-out/sched-in pairs covering almost the full wall-clock duration.
+- Reconstructed YOLO-thread deschedule gaps were:
+  - `p95 ~= 154 us`
+  - `p99 ~= 156 us`
+  - rare max gaps around `10.6 ms`
+- Current interpretation:
+  - detect-side ingress readiness is usually already satisfied,
+  - the big remaining detect tax is host scheduling/runtime jitter and
+    multi-thread CUDA orchestration on the YOLO path,
+  - crop/pose ownership work helped, but it is no longer the primary target.
+- Next optimization focus should be:
+  - CPU affinity / thread isolation for YOLO,
+  - reducing hot-path CUDA API chatter on the YOLO thread,
+  - and only revisiting detect-side ownership again if those scheduler-focused
+    experiments do not improve `capture_to_detect_done`.
+- Known instrumentation caveat:
+  - `ingress_event_record_to_worker_start_ms` is currently invalid due to a
+    timestamp-reset bug in acquisition and should not be used yet.
+
 Step 1: Define crop payload and pool.
 
 - [x] Add an internal `CropFrame` payload type with frame identity,

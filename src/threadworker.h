@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <condition_variable>
+#include <mutex>
 #include <queue>
 #include <vector>
 #include "offthreadmachine.h"
@@ -60,15 +62,20 @@ protected:
 private:
     // This overrides the pure virtual function in the base class COffThreadMachine.
     void ThreadRunning() override;
+    void DoStopThread() override;
 
     void ResetInner();
+    T* WaitForObjectFromQueueIn();
 
 private:
     int id = 0;
-    CGenericMutex mutexQueueIn;
+    std::mutex mutexQueueIn;
+    std::condition_variable queueInNotEmptyCv;
+    std::condition_variable queueInNotFullCv;
     std::queue<T*> queueIn;
     CGenericMutex mutexQueueOut;
     std::queue<T*> queueOut;
+    bool stopRequested = false;
 
     // Tracing counts
     int countQueueIn = 0;
@@ -120,6 +127,10 @@ void CThreadWorker<T>::Reset()
 template<typename T>
 void CThreadWorker<T>::ResetInner()
 {
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        stopRequested = false;
+    }
     myWork = 0;
     countQueueIn = 0;
     countQueueOut = 0;
@@ -128,10 +139,13 @@ void CThreadWorker<T>::ResetInner()
     countQueueInMax = 0;
 
     // Safely clear the queues
-    mutexQueueIn.Lock();
-    std::queue<T*> emptyIn;
-    std::swap(queueIn, emptyIn);
-    mutexQueueIn.Unlock();
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        std::queue<T*> emptyIn;
+        std::swap(queueIn, emptyIn);
+    }
+    queueInNotEmptyCv.notify_all();
+    queueInNotFullCv.notify_all();
 
     mutexQueueOut.Lock();
     std::queue<T*> emptyOut;
@@ -142,24 +156,21 @@ void CThreadWorker<T>::ResetInner()
 template<typename T>
 void CThreadWorker<T>::PutObjectToQueueIn(T* f)
 {
-    // This loop will now block until there is space in the queue.
-    // The IsMachineOn() check is removed to prevent the race condition on startup.
-    while (true) {
-        mutexQueueIn.Lock();
-        if (queueIn.size() < maxQueueSize) {
-            queueIn.push(f);
-            countQueueIn++;
-            countInTotal++;
-            if (countQueueInMax < countQueueIn) {
-                countQueueInMax = countQueueIn;
-            }
-            mutexQueueIn.Unlock();
-            return; // Exit the loop and function once the item is pushed
-        }
-        mutexQueueIn.Unlock();
-        // Wait a moment if the queue is full before trying again.
-        usleep(1000);
+    std::unique_lock<std::mutex> lock(mutexQueueIn);
+    queueInNotFullCv.wait(lock, [this]() {
+        return queueIn.size() < static_cast<size_t>(maxQueueSize) || stopRequested;
+    });
+    if (stopRequested) {
+        return;
     }
+    queueIn.push(f);
+    countQueueIn++;
+    countInTotal++;
+    if (countQueueInMax < countQueueIn) {
+        countQueueInMax = countQueueIn;
+    }
+    lock.unlock();
+    queueInNotEmptyCv.notify_one();
 }
 
 template<typename T>
@@ -206,9 +217,9 @@ template<typename T>
 int CThreadWorker<T>::GetCountQueueInSize()
 {
     int size = -1;
-    mutexQueueIn.Lock();
+    mutexQueueIn.lock();
     size = static_cast<int>(queueIn.size());
-    mutexQueueIn.Unlock();
+    mutexQueueIn.unlock();
     return size;
 }
 
@@ -226,15 +237,47 @@ template<typename T>
 T* CThreadWorker<T>::GetObjectFromQueueIn()
 {
     T* f = nullptr;
-    mutexQueueIn.Lock();
+    mutexQueueIn.lock();
     if (!queueIn.empty())
     {
         f = queueIn.front();
         queueIn.pop();
         countQueueIn--;
     }
-    mutexQueueIn.Unlock();
+    mutexQueueIn.unlock();
+    if (f) {
+        queueInNotFullCv.notify_one();
+    }
     return f;
+}
+
+template<typename T>
+T* CThreadWorker<T>::WaitForObjectFromQueueIn()
+{
+    std::unique_lock<std::mutex> lock(mutexQueueIn);
+    queueInNotEmptyCv.wait(lock, [this]() {
+        return !queueIn.empty() || stopRequested;
+    });
+    if (queueIn.empty()) {
+        return nullptr;
+    }
+    T* f = queueIn.front();
+    queueIn.pop();
+    countQueueIn--;
+    lock.unlock();
+    queueInNotFullCv.notify_one();
+    return f;
+}
+
+template<typename T>
+void CThreadWorker<T>::DoStopThread()
+{
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        stopRequested = true;
+    }
+    queueInNotEmptyCv.notify_all();
+    queueInNotFullCv.notify_all();
 }
 
 template<typename T>
@@ -242,9 +285,14 @@ void CThreadWorker<T>::ThreadRunning()
 {
     printf("Child Thread Start %d (%s)\n", id, threadName);
 
-    while (this->IsMachineOn() || this->GetCountQueueInSize() > 0)
     {
-        T* f = this->GetObjectFromQueueIn();
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        stopRequested = false;
+    }
+
+    while (true)
+    {
+        T* f = this->WaitForObjectFromQueueIn();
 
         // The worker function is now called even with a nullptr.
         // It is the responsibility of the derived class to handle the nullptr case.
@@ -263,13 +311,6 @@ void CThreadWorker<T>::ThreadRunning()
             if (!this->IsMachineOn()) {
                 break;
             }
-
-            // If the queue was empty, wait a bit before trying again.
-#if defined(__GNUC__)
-            usleep(interval);
-#else
-            Sleep(intervalMilliSeconds);
-#endif
         }
     }
     printf("Child Thread DONE %d (%s)\n", id, threadName);

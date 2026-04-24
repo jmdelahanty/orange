@@ -1015,7 +1015,8 @@ void acquire_frames(
     struct PendingRequeue {
         Emergent::CEmergentCamera* camera;
         Emergent::CEmergentFrame* frame;
-        cudaEvent_t* event;
+        cudaEvent_t* copy_ready_event;
+        cudaEvent_t* consumer_done_event;
     };
     std::deque<PendingRequeue> pending_requeues;
     int yolo_decimate = 1;
@@ -1230,18 +1231,32 @@ void acquire_frames(
 #endif
 
         for (auto it = pending_requeues.begin(); it != pending_requeues.end(); ) {
-            cudaError_t status = cudaEventQuery(*it->event);
-            if (status == cudaSuccess) {
+            const auto query_requeue_event = [](cudaEvent_t* event, const char* label) {
+                if (!event) {
+                    return cudaSuccess;
+                }
+                cudaError_t status = cudaEventQuery(*event);
+                if (status == cudaSuccess || status == cudaErrorNotReady) {
+                    return status;
+                }
+                std::cerr << "[GPU_DIRECT] Requeue " << label << " event query failed: "
+                          << cudaGetErrorString(status) << std::endl;
+                return status;
+            };
+
+            const cudaError_t copy_status =
+                query_requeue_event(it->copy_ready_event, "copy-ready");
+            const cudaError_t consumer_status =
+                query_requeue_event(it->consumer_done_event, "consumer-done");
+            if (copy_status == cudaSuccess && consumer_status == cudaSuccess) {
                 EVT_CameraQueueFrame(it->camera, it->frame);
                 it = pending_requeues.erase(it);
                 continue;
             }
-            if (status == cudaErrorNotReady) {
+            if (copy_status == cudaErrorNotReady || consumer_status == cudaErrorNotReady) {
                 ++it;
                 continue;
             }
-            std::cerr << "[GPU_DIRECT] Requeue event query failed: "
-                      << cudaGetErrorString(status) << std::endl;
             EVT_CameraQueueFrame(it->camera, it->frame);
             it = pending_requeues.erase(it);
         }
@@ -1451,10 +1466,18 @@ void acquire_frames(
             bool use_direct_pointer = (attr_status == cudaSuccess &&
                                        attrs.type == cudaMemoryTypeDevice &&
                                        attrs.device == camera_params->gpu_id);
-            bool use_ring_copy = (use_direct_pointer && dispatch_count > 1);
-            if (use_direct_pointer &&
+            const bool force_ring_copy =
+                use_direct_pointer &&
                 camera_params &&
-                camera_params->acquisition_buffer_mode == "force_ring_copy") {
+                camera_params->acquisition_buffer_mode == "force_ring_copy";
+            const bool analytics_owned_frame_enabled =
+                env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false) &&
+                will_yolo &&
+                use_direct_pointer &&
+                !force_ring_copy;
+            const bool use_analytics_hybrid = analytics_owned_frame_enabled;
+            bool use_ring_copy = use_direct_pointer && dispatch_count > 1 && !use_analytics_hybrid;
+            if (force_ring_copy) {
                 use_ring_copy = true;
             }
 
@@ -1466,7 +1489,33 @@ void acquire_frames(
                 }
             }
 
-            if (use_direct_pointer && !use_ring_copy) {
+            current_entry->event_ptr = current_event;
+            current_entry->yolo_completion_event = yolo_event;
+
+            if (use_analytics_hybrid) {
+                gpu_direct_frames++;
+                gpu_direct_frames_total++;
+                current_entry->d_image = static_cast<unsigned char*>(received_frame->imagePtr);
+                current_entry->d_analytics_image = current_entry->d_image_pool;
+                current_entry->analytics_owned_frame_valid = true;
+                current_entry->gpu_direct_mode = false;
+                current_entry->owns_memory = true;
+                current_entry->camera_buffer_ptr = nullptr;
+                current_entry->camera_instance = nullptr;
+                current_entry->camera_frame_struct = nullptr;
+
+                // Let YOLO consume the ingress lease immediately while the owned
+                // analytics copy is produced for delayed consumers.
+                ck(cudaEventRecord(*current_entry->event_ptr, stream));
+                current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
+                ck(cudaMemcpyAsync(
+                    current_entry->d_analytics_image,
+                    received_frame->imagePtr,
+                    received_frame->bufferSize,
+                    cudaMemcpyDeviceToDevice,
+                    stream));
+                ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
+            } else if (use_direct_pointer && !use_ring_copy) {
                 gpu_direct_frames++;
                 gpu_direct_frames_total++;
                 current_entry->d_image = static_cast<unsigned char*>(received_frame->imagePtr);
@@ -1507,30 +1556,19 @@ void acquire_frames(
                 }
             }
 
-            current_entry->event_ptr = current_event;
-            current_entry->yolo_completion_event = yolo_event;
-            const bool analytics_early_owned_frame_enabled =
-                env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false) && will_yolo;
-            const bool use_analytics_early_owned_frame =
-                analytics_early_owned_frame_enabled && use_direct_pointer && !use_ring_copy;
-            if (use_analytics_early_owned_frame) {
-                // Let immediate consumers (notably YOLO) proceed on the ingress lease
-                // without waiting for the experimental owned-frame copy.
+            if (!use_analytics_hybrid) {
                 ck(cudaEventRecord(*current_entry->event_ptr, stream));
-                ck(cudaMemcpyAsync(
-                    current_entry->d_image_pool,
-                    received_frame->imagePtr,
-                    received_frame->bufferSize,
-                    cudaMemcpyDeviceToDevice,
-                    stream));
-                ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
-                current_entry->d_analytics_image = current_entry->d_image_pool;
-                current_entry->analytics_owned_frame_valid = true;
-            } else {
-                ck(cudaEventRecord(*current_entry->event_ptr, stream));
+                current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
             }
             if (use_ring_copy) {
-                pending_requeues.push_back({&ecam->camera, frame_to_requeue, current_entry->event_ptr});
+                pending_requeues.push_back(
+                    {&ecam->camera, frame_to_requeue, current_entry->event_ptr, nullptr});
+            } else if (use_analytics_hybrid) {
+                pending_requeues.push_back(
+                    {&ecam->camera,
+                     frame_to_requeue,
+                     &current_entry->analytics_ready_event,
+                     current_entry->yolo_completion_event});
             }
 
             current_entry->width = received_frame->size_x;
@@ -1542,6 +1580,7 @@ void acquire_frames(
             current_entry->camera_frame_id = received_frame->frame_id;
             current_entry->recording_folder = live_recording_folder;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
+            current_entry->ingress_event_record_host_ns = 0;
             current_entry->yolo_detect_done_host_ns = 0;
             current_entry->recording_submit_host_ns = 0;
             current_entry->recording_target_gpu_id = -1;
@@ -1671,7 +1710,7 @@ void acquire_frames(
             if (dispatch_count > 0) {
                 current_entry->ref_count.store(dispatch_count);
 
-                if (use_direct_pointer && !use_ring_copy) {
+                if (use_direct_pointer && !use_ring_copy && !use_analytics_hybrid) {
                     current_entry->camera_buffer_ptr = received_frame->imagePtr;
                     current_entry->camera_instance = &ecam->camera;
                     current_entry->camera_frame_struct = frame_to_requeue;
@@ -1949,7 +1988,12 @@ void acquire_frames(
     }
 
     for (const auto& pending : pending_requeues) {
-        cudaEventSynchronize(*pending.event);
+        if (pending.copy_ready_event) {
+            cudaEventSynchronize(*pending.copy_ready_event);
+        }
+        if (pending.consumer_done_event) {
+            cudaEventSynchronize(*pending.consumer_done_event);
+        }
         EVT_CameraQueueFrame(pending.camera, pending.frame);
     }
     pending_requeues.clear();

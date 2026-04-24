@@ -490,8 +490,9 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         
         {
             NVTX_SYNC("Stream_Wait_For_Data_Ready_Event");
-            if (entry->event_ptr) {
-                ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+            cudaEvent_t* source_ready_event = entry->delayed_consumer_event();
+            if (source_ready_event) {
+                ck(cudaStreamWaitEvent(m_stream, *source_ready_event, 0));
                 // Event is consumed, no need to destroy here as the pool manages it.
             }
         }
@@ -516,6 +517,7 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         ENCODER_CTX_LOG("Processing frame dimensions", entry->frame_id);
         
         NVTX_RANGE_PUSH("Input_Frame_Processing");
+        unsigned char* input_source = entry->delayed_consumer_image();
         // GPU DIRECT OPTIMIZATION: Check if we can skip the copy
         if (entry->gpu_direct_mode) {
             NVTX_RANGE_PUSH("GPU_Direct_Zero_Copy");
@@ -523,7 +525,7 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
                       << " - Using camera buffer directly (ZERO COPY!)" << std::endl;
             
             // Use the GPU Direct pointer directly!
-            frame_original.d_orig = entry->d_image;
+            frame_original.d_orig = input_source;
             
             ENCODER_CTX_LOG("GPU Direct path - no copy needed", entry->frame_id);
             NVTX_RANGE_POP();
@@ -533,9 +535,9 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
                       << " - Copying frame data (" << (width * height / 1024 / 1024) << "MB)" << std::endl;
             
             // Traditional copy path
-            CUDA_MEM_LOG("Copying frame data from entry", entry->d_image, width * height, entry->frame_id);
+            CUDA_MEM_LOG("Copying frame data from entry", input_source, width * height, entry->frame_id);
             ENCODER_CTX_LOG("About to copy frame data", entry->frame_id);
-            ck(cudaMemcpyAsync(frame_original.d_orig, entry->d_image, 
+            ck(cudaMemcpyAsync(frame_original.d_orig, input_source,
                                (size_t)width * height, cudaMemcpyDeviceToDevice, m_stream));
         }
         NVTX_RANGE_POP();

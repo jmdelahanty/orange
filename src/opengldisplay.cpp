@@ -102,8 +102,9 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     EnsureNppStream(m_stream);
 
     // Wait for the data to be ready from the acquisition thread
-    if (latest_frame->event_ptr) {
-        ck(cudaStreamWaitEvent(m_stream, *latest_frame->event_ptr, 0));
+    cudaEvent_t* source_ready_event = latest_frame->delayed_consumer_event();
+    if (source_ready_event) {
+        ck(cudaStreamWaitEvent(m_stream, *source_ready_event, 0));
     }
     
     // Also wait for YOLO detections if they exist for this frame, so we can draw them
@@ -126,13 +127,15 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     // --- Perform image processing on the GPU ---
     size_t frame_size = (size_t)camera_params->width * camera_params->height;
 
+    unsigned char* display_source = latest_frame->delayed_consumer_image();
+
     // Handle P2P copy if the acquisition GPU is different from the display GPU
     if (camera_params->gpu_id != display_gpu_id) {
-        ck(cudaMemcpyAsync(h_p2p_copy_buffer_, latest_frame->d_image, frame_size, cudaMemcpyDeviceToHost, m_stream));
+        ck(cudaMemcpyAsync(h_p2p_copy_buffer_, display_source, frame_size, cudaMemcpyDeviceToHost, m_stream));
         ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, h_p2p_copy_buffer_, frame_size, cudaMemcpyHostToDevice, m_stream));
         display_cross_gpu_frames_++;
     } else {
-        ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, latest_frame->d_image, frame_size, cudaMemcpyDeviceToDevice, m_stream));
+        ck(cudaMemcpyAsync(frame_original_gpu_.d_orig, display_source, frame_size, cudaMemcpyDeviceToDevice, m_stream));
         display_same_gpu_frames_++;
     }
 

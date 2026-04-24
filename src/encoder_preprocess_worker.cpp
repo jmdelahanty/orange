@@ -790,8 +790,10 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                 frames_dropped_.load(std::memory_order_relaxed);
             append_helper_preprocess_host_sample(helper_host_sample);
         }
-        if (!entry->gpu_direct_mode && entry->event_ptr) {
-            cudaError_t sync_status = cudaEventSynchronize(*entry->event_ptr);
+        if (!entry->gpu_direct_mode) {
+            cudaEvent_t* source_ready_event = entry->delayed_consumer_event();
+            cudaError_t sync_status =
+                source_ready_event ? cudaEventSynchronize(*source_ready_event) : cudaSuccess;
             if (sync_status != cudaSuccess) {
                 std::cerr << "[EncoderPreprocessWorker] Helper source-read noop event sync "
                           << "failed for camera " << camera_params_->camera_serial
@@ -940,11 +942,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 #endif
 
     // Wait for the raw frame data to be ready from the acquisition thread.
-    if (entry->event_ptr) {
-        ck(cudaStreamWaitEvent(m_stream, *entry->event_ptr, 0));
+    cudaEvent_t* source_ready_event = entry->delayed_consumer_event();
+    if (source_ready_event) {
+        ck(cudaStreamWaitEvent(m_stream, *source_ready_event, 0));
     }
 
-    unsigned char* input_source = entry->d_image;
+    unsigned char* input_source = entry->delayed_consumer_image();
     bool sample_helper_cross_gpu = false;
     HelperPreprocessHostSample helper_host_sample;
     if (entry->image_gpu_id >= 0 && entry->image_gpu_id != preprocess_gpu_id_) {
