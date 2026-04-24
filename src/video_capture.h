@@ -24,6 +24,7 @@ class FrameIPCManager;
 typedef struct {
     unsigned char* d_image;
     unsigned char* d_image_pool;
+    unsigned char* d_analytics_image = nullptr;
     int width;
     int height;
     int pixelFormat;
@@ -69,6 +70,10 @@ typedef struct {
     
     // Event for synchronization between workers
     cudaEvent_t* event_ptr; 
+
+    // Optional event for an acquisition-time owned analytics copy
+    cudaEvent_t analytics_ready_event = nullptr;
+    bool analytics_owned_frame_valid = false;
 
     // New event specifically for YOLO completion
     cudaEvent_t* yolo_completion_event; 
@@ -200,6 +205,7 @@ struct CameraResources {
         for (int i = 0; i < acquire_work_entries_max; ++i) {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
+            ck(cudaEventCreateWithFlags(&worker_entry_pool[i].analytics_ready_event, cudaEventDisableTiming));
             worker_entry_pool[i].image_gpu_id = gpu_id;
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
@@ -236,11 +242,16 @@ struct CameraResources {
     void cleanup() {
         if (worker_entry_pool) {
             for (int i = 0; i < acquire_work_entries_max; ++i) {
+                if (worker_entry_pool[i].analytics_ready_event) {
+                    cudaEventDestroy(worker_entry_pool[i].analytics_ready_event);
+                }
                 if (worker_entry_pool[i].d_image_pool) {
                     cudaFree(worker_entry_pool[i].d_image_pool);
                 }
                 worker_entry_pool[i].d_image = nullptr;
                 worker_entry_pool[i].d_image_pool = nullptr;
+                worker_entry_pool[i].d_analytics_image = nullptr;
+                worker_entry_pool[i].analytics_ready_event = nullptr;
             }
             delete[] worker_entry_pool;
             worker_entry_pool = nullptr;

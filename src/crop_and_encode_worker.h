@@ -1,7 +1,7 @@
 #ifndef CROP_AND_ENCODE_WORKER_H
 #define CROP_AND_ENCODE_WORKER_H
 
-#include "crop_producer.h"
+#include "crop_pipeline_types.h"
 #include "threadworker.h"
 #include "video_capture.h"
 #include "gpu_video_encoder.h" // For Writer struct
@@ -15,7 +15,10 @@
 #include <memory>
 #include <vector>
 
-class CropAndEncodeWorker : public CThreadWorker<WORKER_ENTRY> {
+class CropProducer;
+class CropProducerWorker;
+
+class CropAndEncodeWorker : public CThreadWorker<CropEncodeJob> {
 public:
     static constexpr int kDefaultCropSize = CameraCropPipelineConfig::kDefaultCropSizePx;
     static constexpr int kMinCropSize = CameraCropPipelineConfig::kMinCropSizePx;
@@ -36,44 +39,27 @@ public:
 
     void flush_and_close();
     void finalize_recording();
-    void SetPoseWorker(class PoseWorker* pose_worker);
-    CropProducer* GetCropProducer() const { return crop_producer_.get(); }
+    void SetMaxQueueSize(int size);
+    bool TryEnqueueJob(CropEncodeJob* job);
+    void SetCropProducer(CropProducer* crop_producer) { crop_producer_ = crop_producer; }
+    void SetCropProducerWorker(CropProducerWorker* crop_producer_worker) { crop_producer_worker_ = crop_producer_worker; }
+    void RotateRecordingFolder(const std::string& recording_folder);
     int crop_width() const { return crop_width_; }
     int crop_height() const { return crop_height_; }
 
 protected:
-    bool WorkerFunction(WORKER_ENTRY* f) override;
+    bool WorkerFunction(CropEncodeJob* f) override;
 
 private:
-    struct CropPerfSample : CropProducerPerfSample {
-        uint64_t worker_start_steady_ns = 0;
-        int queue_depth_start = 0;
-        bool encode_active = false;
-        bool has_detection = false;
-        bool blank_frame = false;
-        bool dropped = false;
-        const char* drop_reason = "";
-        int crop_x = 0;
-        int crop_y = 0;
-        int crop_w = 0;
-        int crop_h = 0;
-        size_t packet_count = 0;
-        size_t encoded_bytes = 0;
-        double crop_preview_cpu_ms = 0.0;
-        double encode_submit_cpu_ms = 0.0;
-        double metadata_cpu_ms = 0.0;
-        double stream_sync_ms = 0.0;
-        double display_sync_ms = 0.0;
-        double total_ms = 0.0;
-    };
-
     bool drain_ready();
     bool ensure_recording_started(const std::string& recording_folder);
     void push_encoded_packets(std::vector<std::vector<uint8_t>>& packets,
                               const std::vector<uint64_t>& output_timestamps,
                               uint64_t fallback_zero_based_frame);
     void write_metadata_row(const CropFrameSnapshot& frame);
-    void write_perf_row(const CropFrameSnapshot& frame, const CropPerfSample& sample);
+    void write_perf_row(const CropFrameSnapshot& frame, const CropEncodePerfSample& sample);
+    void write_sidecar_summary();
+    void reset_recording_counters();
     bool display_cuda_ok(cudaError_t status, const char* operation);
     void copy_crop_to_display_preview();
     void clear_display_preview();
@@ -98,7 +84,17 @@ private:
     cudaStream_t m_display_stream = nullptr;
     std::string crop_perf_file_;
     std::ofstream crop_perf_;
-    std::unique_ptr<CropProducer> crop_producer_;
+    CropProducer* crop_producer_ = nullptr;
+    CropProducerWorker* crop_producer_worker_ = nullptr;
+    std::string crop_sidecar_perf_file_;
+    std::string current_sidecar_recording_folder_;
+    int max_queue_size_ = 40;
+    std::atomic<uint64_t> jobs_enqueued_{0};
+    std::atomic<uint64_t> queue_full_drops_{0};
+    std::atomic<int> queue_high_water_{0};
+    uint64_t run_jobs_enqueued_ = 0;
+    uint64_t run_queue_full_drops_ = 0;
+    int run_queue_high_water_ = 0;
     int frame_counter_ = 0;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     Debayer debayer_gpu_;

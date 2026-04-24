@@ -66,11 +66,14 @@ CropProducer::CropProducer(
     crop_copy_timing_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_TIMING", true);
     crop_copy_kernel_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_KERNEL", false);
     crop_source_stage_enabled_ = env_flag_enabled("ORANGE_CROP_STAGE_SOURCE", false);
+    crop_early_owned_frame_enabled_ = env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false);
 
     std::cout << "[CropProducer] Crop copy mode "
               << (crop_copy_kernel_enabled_ ? "kernel" : "memcpy2d")
               << ", source stage "
               << (crop_source_stage_enabled_ ? "enabled" : "disabled")
+              << ", analytics early owned frame "
+              << (crop_early_owned_frame_enabled_ ? "enabled" : "disabled")
               << ", GPU timing "
               << (crop_copy_timing_enabled_ ? "enabled" : "disabled")
               << " for camera " << camera_params_->camera_serial << std::endl;
@@ -212,14 +215,18 @@ void CropProducer::defer_source_release(WORKER_ENTRY* entry, cudaEvent_t* event)
         return;
     }
 
-    pending_source_releases_.push_back({entry, event});
-    pending_source_release_count_.store(
-        static_cast<int>(pending_source_releases_.size()),
-        std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(pending_source_releases_mutex_);
+        pending_source_releases_.push_back({entry, event});
+        pending_source_release_count_.store(
+            static_cast<int>(pending_source_releases_.size()),
+            std::memory_order_relaxed);
+    }
 }
 
 void CropProducer::drain_pending_source_releases(bool synchronize_all)
 {
+    std::lock_guard<std::mutex> lock(pending_source_releases_mutex_);
     for (auto it = pending_source_releases_.begin();
          it != pending_source_releases_.end();) {
         cudaError_t status = synchronize_all
@@ -309,14 +316,18 @@ void CropProducer::defer_crop_frame_recycle(CropFrame* crop_frame)
     if (!crop_frame) {
         return;
     }
-    pending_crop_frame_recycles_.push_back({crop_frame});
-    pending_crop_frame_recycle_count_.store(
-        static_cast<int>(pending_crop_frame_recycles_.size()),
-        std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(pending_crop_frame_recycles_mutex_);
+        pending_crop_frame_recycles_.push_back({crop_frame});
+        pending_crop_frame_recycle_count_.store(
+            static_cast<int>(pending_crop_frame_recycles_.size()),
+            std::memory_order_relaxed);
+    }
 }
 
 void CropProducer::drain_pending_crop_frames(bool synchronize_all)
 {
+    std::lock_guard<std::mutex> lock(pending_crop_frame_recycles_mutex_);
     for (auto it = pending_crop_frame_recycles_.begin();
          it != pending_crop_frame_recycles_.end();) {
         CropFrame* crop_frame = it->crop_frame;
@@ -441,7 +452,24 @@ CropProducer::ProduceResult CropProducer::Produce(
         ReleaseSourceEntry(source_entry);
     };
 
-    if (entry->event_ptr) {
+    const bool use_analytics_owned_frame =
+        crop_early_owned_frame_enabled_ &&
+        entry->analytics_owned_frame_valid &&
+        entry->d_analytics_image != nullptr &&
+        entry->analytics_ready_event != nullptr;
+    const bool use_entry_owned_source_frame =
+        !entry->gpu_direct_mode &&
+        entry->d_image != nullptr &&
+        entry->d_image == entry->d_image_pool;
+
+    if (use_analytics_owned_frame) {
+        const uint64_t analytics_wait_start_ns = steady_now_ns();
+        ck(cudaStreamWaitEvent(producer_stream_, entry->analytics_ready_event, 0));
+        if (perf) {
+            perf->analytics_owned_wait_cpu_ms = elapsed_ms(analytics_wait_start_ns, steady_now_ns());
+            perf->crop_source_wait_enqueue_cpu_ms = perf->analytics_owned_wait_cpu_ms;
+        }
+    } else if (entry->event_ptr) {
         const uint64_t event_wait_start_ns = steady_now_ns();
         ck(cudaStreamWaitEvent(producer_stream_, *entry->event_ptr, 0));
         if (perf) {
@@ -450,9 +478,14 @@ CropProducer::ProduceResult CropProducer::Produce(
         }
     }
 
-    const unsigned char* crop_source_ptr = entry->d_image;
+    const unsigned char* crop_source_ptr =
+        use_analytics_owned_frame ? entry->d_analytics_image : entry->d_image;
     int crop_source_pitch = entry->width;
-    if (crop_source_stage_enabled_) {
+    const bool needs_source_stage_copy =
+        crop_source_stage_enabled_ &&
+        !use_analytics_owned_frame &&
+        !use_entry_owned_source_frame;
+    if (needs_source_stage_copy) {
         ensure_source_stage_buffer(entry->width, entry->height);
         const uint64_t source_stage_enqueue_start_ns = steady_now_ns();
         ck(cudaMemcpy2DAsync(
@@ -537,7 +570,7 @@ CropProducer::ProduceResult CropProducer::Produce(
         }
     }
 
-    if (!crop_source_stage_enabled_) {
+    if (!needs_source_stage_copy) {
         defer_source_after_stream_work(entry);
     }
 

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -21,6 +22,7 @@ struct CropFrameSnapshot {
     int source_height = 0;
     uint64_t acquisition_receive_host_ns = 0;
     uint64_t yolo_detect_done_host_ns = 0;
+    uint64_t crop_producer_worker_start_host_ns = 0;
     uint64_t crop_ready_host_ns = 0;
     bool has_detection = false;
     bool blank_frame = false;
@@ -98,6 +100,7 @@ struct CropProducerPerfSample {
     double crop_pool_wait_ms = 0.0;
     double crop_producer_cpu_ms = 0.0;
     double crop_source_wait_enqueue_cpu_ms = 0.0;
+    double analytics_owned_wait_cpu_ms = 0.0;
     double source_stage_enqueue_cpu_ms = 0.0;
     double crop_copy_start_event_record_cpu_ms = 0.0;
     double crop_roi_copy_enqueue_cpu_ms = 0.0;
@@ -173,12 +176,15 @@ private:
     std::vector<cudaEvent_t> source_release_event_pool_;
     SafeQueue<cudaEvent_t*> free_source_release_events_;
     std::deque<PendingSourceRelease> pending_source_releases_;
+    std::mutex pending_source_releases_mutex_;
     std::vector<CropFrame> crop_frame_pool_;
     SafeQueue<CropFrame*> free_crop_frames_;
     std::deque<PendingCropFrameRecycle> pending_crop_frame_recycles_;
+    std::mutex pending_crop_frame_recycles_mutex_;
     bool crop_copy_timing_enabled_ = true;
     bool crop_copy_kernel_enabled_ = false;
     bool crop_source_stage_enabled_ = false;
+    bool crop_early_owned_frame_enabled_ = false;
     PoseWorker* pose_worker_ = nullptr;
     std::atomic<int> pending_source_release_count_{0};
     std::atomic<int> pending_crop_frame_recycle_count_{0};

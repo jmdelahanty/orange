@@ -19,7 +19,7 @@
 #include "common.hpp"         // For pose::Object
 
 class COpenGLDisplay;
-class CropAndEncodeWorker;
+class CropProducerWorker;
 namespace yolo_perf {
 class YoloPerfLogger;
 }
@@ -37,7 +37,7 @@ public:
 
     void SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer);
     void SetDisplayWorker(COpenGLDisplay* display_worker);
-    void SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker);
+    void SetCropProducerWorker(CropProducerWorker* crop_worker);
     void DumpNextFrame() { m_dump_next_frame.store(true);}
     std::vector<TrackedObject> getTrackedObjects() const {
         return velocity_tracker_.getTrackedObjects();
@@ -84,7 +84,7 @@ private:
 
     shaman::SharedBoxQueue* shaman_ipc_queue_;
     COpenGLDisplay* m_display_worker = nullptr;
-    CropAndEncodeWorker* m_crop_worker = nullptr;
+    CropProducerWorker* m_crop_worker = nullptr;
     VelocityTracker velocity_tracker_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue;
     std::unique_ptr<yolo_perf::YoloPerfLogger> perf_logger_;

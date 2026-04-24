@@ -17,7 +17,7 @@
 #include "global.h"
 #include "cuda_context_debug.h"
 #include "opencv2/opencv.hpp"
-#include "crop_and_encode_worker.h"
+#include "crop_producer_worker.h"
 #include "frame_ipc_manager.h"
 #include "yolo_event_log.h"
 #include "project.h"
@@ -488,7 +488,7 @@ YoloWorker::~YoloWorker() {
     std::cout << "YoloWorker destructor complete for " << threadName << std::endl;
 }
 
-void YoloWorker::SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker) {
+void YoloWorker::SetCropProducerWorker(CropProducerWorker* crop_worker) {
     m_crop_worker = crop_worker;
 }
 

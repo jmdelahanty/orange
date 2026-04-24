@@ -150,6 +150,10 @@ void PoseWorker::RotateRecordingFolder(const std::string& recording_folder)
 
     pose_perf << "camera_serial,gpu_id,worker,backend,mode,queue_size,"
                  "frames_enqueued,frames_processed,queue_full_drops,queue_high_water,"
+                 "detect_to_crop_worker_start_count,detect_to_crop_worker_start_mean_ms,detect_to_crop_worker_start_p50_ms,"
+                 "detect_to_crop_worker_start_p95_ms,detect_to_crop_worker_start_p99_ms,detect_to_crop_worker_start_max_ms,"
+                 "crop_worker_start_to_crop_ready_count,crop_worker_start_to_crop_ready_mean_ms,crop_worker_start_to_crop_ready_p50_ms,"
+                 "crop_worker_start_to_crop_ready_p95_ms,crop_worker_start_to_crop_ready_p99_ms,crop_worker_start_to_crop_ready_max_ms,"
                  "detect_to_crop_ready_count,detect_to_crop_ready_mean_ms,detect_to_crop_ready_p50_ms,"
                  "detect_to_crop_ready_p95_ms,detect_to_crop_ready_p99_ms,detect_to_crop_ready_max_ms,"
                  "crop_ready_to_pose_start_count,crop_ready_to_pose_start_mean_ms,crop_ready_to_pose_start_p50_ms,"
@@ -229,6 +233,18 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
     if (record_active) {
         std::lock_guard<std::mutex> lock(recording_mutex_);
         if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
+            crop_frame->frame.crop_producer_worker_start_host_ns > 0) {
+            detect_to_crop_worker_start_samples_ms_.push_back(elapsed_ms(
+                crop_frame->frame.yolo_detect_done_host_ns,
+                crop_frame->frame.crop_producer_worker_start_host_ns));
+        }
+        if (crop_frame->frame.crop_producer_worker_start_host_ns > 0 &&
+            crop_frame->frame.crop_ready_host_ns > 0) {
+            crop_worker_start_to_crop_ready_samples_ms_.push_back(elapsed_ms(
+                crop_frame->frame.crop_producer_worker_start_host_ns,
+                crop_frame->frame.crop_ready_host_ns));
+        }
+        if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
             crop_frame->frame.crop_ready_host_ns > 0) {
             detect_to_crop_ready_samples_ms_.push_back(elapsed_ms(
                 crop_frame->frame.yolo_detect_done_host_ns,
@@ -261,6 +277,8 @@ void PoseWorker::reset_run_counters()
     run_frames_processed_.store(0, std::memory_order_relaxed);
     run_queue_full_drops_.store(0, std::memory_order_relaxed);
     run_queue_high_water_.store(0, std::memory_order_relaxed);
+    detect_to_crop_worker_start_samples_ms_.clear();
+    crop_worker_start_to_crop_ready_samples_ms_.clear();
     detect_to_crop_ready_samples_ms_.clear();
     crop_ready_to_pose_start_samples_ms_.clear();
     pose_start_to_pose_done_samples_ms_.clear();
@@ -283,6 +301,10 @@ void PoseWorker::write_recording_summary_locked()
         return;
     }
 
+    const LatencySummary detect_to_crop_worker_start =
+        summarize_latency(detect_to_crop_worker_start_samples_ms_);
+    const LatencySummary crop_worker_start_to_crop_ready =
+        summarize_latency(crop_worker_start_to_crop_ready_samples_ms_);
     const LatencySummary detect_to_crop_ready =
         summarize_latency(detect_to_crop_ready_samples_ms_);
     const LatencySummary crop_ready_to_pose_start =
@@ -300,6 +322,18 @@ void PoseWorker::write_recording_summary_locked()
               << run_frames_processed_.load(std::memory_order_relaxed) << ','
               << run_queue_full_drops_.load(std::memory_order_relaxed) << ','
               << run_queue_high_water_.load(std::memory_order_relaxed) << ','
+              << detect_to_crop_worker_start.count << ','
+              << detect_to_crop_worker_start.mean_ms << ','
+              << detect_to_crop_worker_start.p50_ms << ','
+              << detect_to_crop_worker_start.p95_ms << ','
+              << detect_to_crop_worker_start.p99_ms << ','
+              << detect_to_crop_worker_start.max_ms << ','
+              << crop_worker_start_to_crop_ready.count << ','
+              << crop_worker_start_to_crop_ready.mean_ms << ','
+              << crop_worker_start_to_crop_ready.p50_ms << ','
+              << crop_worker_start_to_crop_ready.p95_ms << ','
+              << crop_worker_start_to_crop_ready.p99_ms << ','
+              << crop_worker_start_to_crop_ready.max_ms << ','
               << detect_to_crop_ready.count << ','
               << detect_to_crop_ready.mean_ms << ','
               << detect_to_crop_ready.p50_ms << ','

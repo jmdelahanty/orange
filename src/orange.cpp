@@ -26,6 +26,7 @@
 #include "image_writer_worker.h"
 #include "yolov8_det.h"
 #include "crop_and_encode_worker.h"
+#include "crop_producer_worker.h"
 #include "pose_worker.h"
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
@@ -2127,7 +2128,8 @@ nlohmann::json build_gui_crop_output_snapshot(const CameraParams& camera_params,
             {"video", prefix + ".mp4"},
             {"metadata", prefix + "_meta.csv"},
             {"keyframes", prefix + "_keyframe.json"},
-            {"perf", prefix + "_perf.csv"}
+            {"perf", prefix + "_perf.csv"},
+            {"sidecar_perf", prefix + "_sidecar_perf.csv"}
         };
     }
 
@@ -2374,6 +2376,7 @@ int main(int argc, char **args) {
     int evt_buffer_size{100};
     PTPParams *ptp_params = new PTPParams{0, 0, 0, 0, false, false, false, false};
     COpenGLDisplay** openGLDisplayWorkers = nullptr;
+    CropProducerWorker** cropProducerWorkers = nullptr;
     CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
     PoseWorker** poseWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
@@ -3322,6 +3325,7 @@ int main(int argc, char **args) {
                             }
                             // Create worker thread objects and GPU textures
                             openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
+                            cropProducerWorkers = new CropProducerWorker*[num_cameras]();
                             cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
                             poseWorkers = new PoseWorker*[num_cameras]();
                             tex = new GL_Texture[num_cameras];
@@ -3330,6 +3334,7 @@ int main(int argc, char **args) {
                             // Initialize all worker pointers to nullptr
                             for(int i = 0; i < num_cameras; ++i) {
                                 openGLDisplayWorkers[i] = nullptr;
+                                cropProducerWorkers[i] = nullptr;
                                 cropAndEncodeWorkers[i] = nullptr;
                                 poseWorkers[i] = nullptr;
                             }
@@ -3374,6 +3379,19 @@ int main(int argc, char **args) {
                                         yolo_workers[i]->SetDisplayWorker(openGLDisplayWorkers[i]);
                                     }
                                 }
+                                if (cameras_select[i].crop_and_encode || cameras_select[i].pose) {
+                                    std::string name = "CropProducer_Cam_" + cameras_params[i].camera_serial;
+                                    cropProducerWorkers[i] = new CropProducerWorker(
+                                        name.c_str(),
+                                        &cameras_params[i],
+                                        *camera_resources[i].recycle_queue,
+                                        camera_control,
+                                        crop_size_px
+                                    );
+                                    if (yolo_workers[i]) {
+                                        yolo_workers[i]->SetCropProducerWorker(cropProducerWorkers[i]);
+                                    }
+                                }
                                 if (cameras_select[i].crop_and_encode) {
                                     std::string name = "CropEncode_Cam_" + cameras_params[i].camera_serial;
                                     cropAndEncodeWorkers[i] = new CropAndEncodeWorker(
@@ -3385,18 +3403,21 @@ int main(int argc, char **args) {
                                         camera_control,
                                         crop_size_px
                                     );
-                                    // Immediately link it to the YOLO worker if it exists
-                                    if (yolo_workers[i]) {
-                                        yolo_workers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
+                                    if (cropProducerWorkers[i]) {
+                                        cropAndEncodeWorkers[i]->SetCropProducer(
+                                            cropProducerWorkers[i]->GetCropProducer());
+                                        cropAndEncodeWorkers[i]->SetCropProducerWorker(
+                                            cropProducerWorkers[i]);
+                                        cropProducerWorkers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
                                     }
                                 }
-                                if (cameras_select[i].pose && cropAndEncodeWorkers[i]) {
+                                if (cameras_select[i].pose && cropProducerWorkers[i]) {
                                     std::string name = "PoseWorker_Cam_" + cameras_params[i].camera_serial;
                                     poseWorkers[i] = new PoseWorker(
                                         name.c_str(),
                                         &cameras_params[i],
-                                        cropAndEncodeWorkers[i]->GetCropProducer());
-                                    cropAndEncodeWorkers[i]->SetPoseWorker(poseWorkers[i]);
+                                        cropProducerWorkers[i]->GetCropProducer());
+                                    cropProducerWorkers[i]->SetPoseWorker(poseWorkers[i]);
                                 }
                             }
 
@@ -3415,19 +3436,23 @@ int main(int argc, char **args) {
                                     openGLDisplayWorkers[i]->SetMaxQueueSize(240); 
                                     openGLDisplayWorkers[i]->StartThread();
                                 }
-                                if (yolo_workers[i]) {
-                                    yolo_workers[i]->SetMaxQueueSize(240);
-                                    yolo_workers[i]->StartThread();
+                                if (cropAndEncodeWorkers[i]) {
+                                    cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
+                                    cropAndEncodeWorkers[i]->StartThread();
                                 }
                                 if (poseWorkers[i]) {
                                     poseWorkers[i]->SetMaxQueueSize(32);
                                     poseWorkers[i]->StartThread();
                                 }
-                                orange::session::start_recording_pipeline_for_camera(&recording_session, i);
-                                if (cropAndEncodeWorkers[i]) {
-                                    cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
-                                    cropAndEncodeWorkers[i]->StartThread();
+                                if (cropProducerWorkers[i]) {
+                                    cropProducerWorkers[i]->SetMaxQueueSize(240);
+                                    cropProducerWorkers[i]->StartThread();
                                 }
+                                if (yolo_workers[i]) {
+                                    yolo_workers[i]->SetMaxQueueSize(240);
+                                    yolo_workers[i]->StartThread();
+                                }
+                                orange::session::start_recording_pipeline_for_camera(&recording_session, i);
                             }
 
                             // PREPARE CAMERAS
@@ -3509,7 +3534,9 @@ int main(int argc, char **args) {
                         for (int i = 0; i < num_cameras; i++) {
                             if (yolo_workers[i]) yolo_workers[i]->StopThread();
                             if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
+                            if (cropProducerWorkers[i]) cropProducerWorkers[i]->StopThread();
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
+                            if (poseWorkers[i]) poseWorkers[i]->StopThread();
                             orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
                         }
                         std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
@@ -3530,10 +3557,15 @@ int main(int argc, char **args) {
                             }
 
                             if (poseWorkers[i]) {
-                                poseWorkers[i]->StopThread();
                                 poseWorkers[i]->CloseRecording();
                                 delete poseWorkers[i];
                                 poseWorkers[i] = nullptr;
+                            }
+
+                            if (cropProducerWorkers[i]) {
+                                cropProducerWorkers[i]->CloseRecording();
+                                delete cropProducerWorkers[i];
+                                cropProducerWorkers[i] = nullptr;
                             }
                             
                             // Now the hardware encoder, which is fed by the preprocessor.
@@ -3550,6 +3582,7 @@ int main(int argc, char **args) {
                         yolo_workers.clear();
                         orange::session::clear_recording_pipelines(&recording_session);
                         if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
+                        if(cropProducerWorkers) { delete[] cropProducerWorkers; cropProducerWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
@@ -3665,6 +3698,14 @@ int main(int argc, char **args) {
                                         cameras_select,
                                         num_cameras);
                                     for (int i = 0; i < num_cameras; ++i) {
+                                        if (cropProducerWorkers[i]) {
+                                            cropProducerWorkers[i]->RotateRecordingFolder(
+                                                resolved_recording_folder);
+                                        }
+                                        if (cropAndEncodeWorkers[i]) {
+                                            cropAndEncodeWorkers[i]->RotateRecordingFolder(
+                                                resolved_recording_folder);
+                                        }
                                         if (poseWorkers[i]) {
                                             poseWorkers[i]->RotateRecordingFolder(
                                                 resolved_recording_folder);

@@ -23,6 +23,8 @@
 #include "latency_stats.h"
 #include "project.h"
 #include "yolo_event_log.h"
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -46,6 +48,25 @@ static constexpr uint64_t kAcquisitionCadenceProbeFrameMin = 80;
 static constexpr uint64_t kAcquisitionCadenceProbeFrameMax = 160;
 
 namespace {
+bool env_flag_enabled(const char* name, bool default_value)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+
+    std::string normalized(value);
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return normalized != "0" &&
+           normalized != "false" &&
+           normalized != "off" &&
+           normalized != "no";
+}
+
 struct RunningInt64Stats {
     int64_t min = std::numeric_limits<int64_t>::max();
     int64_t max = std::numeric_limits<int64_t>::min();
@@ -1321,6 +1342,8 @@ void acquire_frames(
             if (current_entry->d_image_pool) {
                 current_entry->d_image = current_entry->d_image_pool;
             }
+            current_entry->d_analytics_image = nullptr;
+            current_entry->analytics_owned_frame_valid = false;
             current_entry->gpu_direct_mode = false;
             current_entry->owns_memory = true;
             current_entry->camera_buffer_ptr = nullptr;
@@ -1486,7 +1509,26 @@ void acquire_frames(
 
             current_entry->event_ptr = current_event;
             current_entry->yolo_completion_event = yolo_event;
-            ck(cudaEventRecord(*current_entry->event_ptr, stream));
+            const bool analytics_early_owned_frame_enabled =
+                env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false) && will_yolo;
+            const bool use_analytics_early_owned_frame =
+                analytics_early_owned_frame_enabled && use_direct_pointer && !use_ring_copy;
+            if (use_analytics_early_owned_frame) {
+                // Let immediate consumers (notably YOLO) proceed on the ingress lease
+                // without waiting for the experimental owned-frame copy.
+                ck(cudaEventRecord(*current_entry->event_ptr, stream));
+                ck(cudaMemcpyAsync(
+                    current_entry->d_image_pool,
+                    received_frame->imagePtr,
+                    received_frame->bufferSize,
+                    cudaMemcpyDeviceToDevice,
+                    stream));
+                ck(cudaEventRecord(current_entry->analytics_ready_event, stream));
+                current_entry->d_analytics_image = current_entry->d_image_pool;
+                current_entry->analytics_owned_frame_valid = true;
+            } else {
+                ck(cudaEventRecord(*current_entry->event_ptr, stream));
+            }
             if (use_ring_copy) {
                 pending_requeues.push_back({&ecam->camera, frame_to_requeue, current_entry->event_ptr});
             }

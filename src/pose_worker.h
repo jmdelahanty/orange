@@ -40,6 +40,8 @@ private:
     std::atomic<uint64_t> run_frames_processed_{0};
     std::atomic<uint64_t> run_queue_full_drops_{0};
     std::atomic<int> run_queue_high_water_{0};
+    std::vector<double> detect_to_crop_worker_start_samples_ms_;
+    std::vector<double> crop_worker_start_to_crop_ready_samples_ms_;
     std::vector<double> detect_to_crop_ready_samples_ms_;
     std::vector<double> crop_ready_to_pose_start_samples_ms_;
     std::vector<double> pose_start_to_pose_done_samples_ms_;

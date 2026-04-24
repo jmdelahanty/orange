@@ -197,6 +197,180 @@ Architecture note (2026-04-23):
   - owned device buffer = analytics workspace,
   - encode = sidecar consumer,
   - pose = low-latency consumer.
+- The crop payload lifetime model uses both ref counting and synchronized
+  bookkeeping:
+  - `CropFrame::active_leases` tracks when the shared crop buffer is no longer
+    in use by pose and crop-video sidecars,
+  - mutex-protected pending release/recycle queues ensure those deferred
+    actions are only enqueued and drained once even though producer, pose, and
+    encode threads all touch the same `CropProducer`.
+- Rule of thumb:
+  - ref counting solves shared payload lifetime,
+  - locking solves shared mutation of deferred-action containers.
+- Future workload placement guide:
+  - `ingress lease`:
+    - acquisition handoff,
+    - immediate detect,
+    - current stable full-frame recording/preprocess path while it remains
+      validated under measurement.
+  - `owned analytics workspace`:
+    - detached full-frame analytics buffer when independent asynchronous
+      ownership is required,
+    - crop production for pose,
+    - pose inference itself,
+    - any consumer that may lag, queue, branch, or retry.
+  - `sidecar output`:
+    - crop-video encode,
+    - debug dumps,
+    - optional IPC mirrors or overlays,
+    - any non-latency-critical archival/logging consumer.
+- Decision rule:
+  - if a consumer is always behind a fresher frame, it should not depend on the
+    live GPUDirect ingress lease.
+  - if a consumer is the immediate first continuation of acquisition and can
+    release quickly, it can remain on the ingress lease.
+
+### Ownership Placement Checklist
+
+- Before assigning a new workload to the frame path, answer:
+  1. Is it the immediate continuation of acquisition?
+  2. Can it lag, queue, be rate-limited, or be dropped?
+  3. Does it branch into more work or fan out to more than one consumer?
+  4. Does it need the full frame, or only a crop / derived payload?
+- Placement shortcut:
+  - immediate + single-step + no fanout -> `ingress lease`
+  - delayed, queued, or branching -> `owned analytics workspace`
+  - archival / debug / UI side work -> `sidecar output`
+
+### Current Default Placement Table
+
+| Workload | Preferred model | Why |
+| --- | --- | --- |
+| Detection | `ingress lease` | First urgent consumer; benefits from freshest frame and no extra detach. |
+| Current full-frame record / preprocess | `ingress lease` for now | Already validated at `100 fps`; do not move it without a measurement-driven reason. |
+| Crop production for pose | `owned analytics workspace` | Pose is behind detect and should not depend on a live SDK-owned lease. |
+| Pose inference | `owned analytics workspace` | Delayed, bounded, and naturally queueable. |
+| Crop-video encode | `sidecar output` from owned crop | Throughput-critical, not latency-critical; must not block pose. |
+| Preview / overlays / debug / IPC mirrors | `sidecar output` | Should be droppable and must not hold ingress or crop resources. |
+
+### Why Detection Still Uses the Ingress Lease
+
+- Detection is part of the analytics workflow, but it is still the immediate
+  first consumer of the acquired frame.
+- Its use of the frame is short-lived:
+  - read source pixels,
+  - preprocess into model input,
+  - run inference,
+  - choose an ROI for downstream work.
+- That is different from crop/pose, which needs stable high-resolution
+  ownership after detect has already run.
+- So today:
+  - detection stays on the ingress lease,
+  - `CropProducer` remains the stage that creates the owned payload for delayed
+    analytics consumers.
+- Revisit this only if measurements later show that even immediate detect
+  access on the lease becomes too expensive at higher rates.
+
+### Detection-Gated Does Not Mean Sparse
+
+- Crop/pose remains detection-gated logically:
+  - `detect -> choose ROI -> crop -> pose`
+  - if no ROI exists, there is no crop/pose for that frame unless a separate
+    hold-last-good or tracker-assisted policy is introduced later.
+- But if detections are expected on nearly every frame, the system should be
+  planned and budgeted like a near-every-frame high-resolution analytics path.
+- Working rule:
+  - sparse detections -> late, detection-gated owned crop is favored
+  - near-continuous detections -> earlier owned full-frame analytics ownership
+    becomes more defensible
+- So:
+  - keep the semantic contract detection-gated
+  - but evaluate performance as if pose may run on almost every frame in the
+    best-case operating regime
+
+### Strategy Choice For Future Higher-FPS Cameras
+
+- The repo should be shaped now for a stricter future `500 fps` path, but the
+  next implementation should still be the intermediate benchmarkable design.
+- Working strategy:
+  - implement the simplest measurable `100 fps` path first,
+  - keep ownership and consumer boundaries explicit,
+  - only move to the stricter high-FPS architecture when the measurements say
+    the intermediate path is no longer good enough.
+- Current recommended progression:
+  - near-term:
+    - `detect on ingress lease -> owned crop -> pose`
+  - later if needed:
+    - earlier acquisition/analytics-owned frame path for the latency-critical
+      detect + pose workflow
+- This means we should future-proof:
+  - the lease/workspace boundary,
+  - exactly-once release/recycle accounting,
+  - explicit consumer drop policy,
+  - and the perf artifacts needed to prove when the stricter path is actually
+    required.
+
+### Contracts To Make Explicit Before Broader Refactors
+
+- Ownership contract:
+  - choose one stage to create the owned analytics payload
+  - choose one stage to return the ingress lease / SDK frame
+  - avoid split responsibility across unrelated stages
+- Admission contract:
+  - define queue-full behavior for pose, preview, crop-video, and future
+    sidecars
+  - delayed consumers should drop or skip; they must not silently block the
+    fast path
+- Scope contract:
+  - the next owned payload should be exactly one of:
+    - detection-gated owned crop, or
+    - full-frame analytics ring
+  - do not expand to both until the first is stable and measured
+- Observability contract:
+  - keep per-consumer accepted / dropped / processed counters
+  - preserve exactly-once source-release and crop recycle invariants
+  - keep ingress-lease hold time visible in perf artifacts
+
+### Current Admission Policy
+
+- `PoseWorker`:
+  - queue-full policy: drop newest pose input
+  - effect: pose does not backpressure crop production or acquisition
+  - counters: `frames_enqueued`, `frames_processed`, `queue_full_drops`,
+    `queue_high_water`
+- `CropAndEncodeWorker` sidecar queue:
+  - queue-full policy: drop newest sidecar job
+  - effect: crop preview + crop-video encode are skipped together for that
+    frame, and the crop payload is recycled instead of blocking the fast path
+  - counters:
+    - `CropProducerWorker` summary: jobs offered / accepted / queue-full drops
+    - `CropAndEncodeWorker` summary: jobs enqueued / queue-full drops /
+      queue-high-water
+- recording artifact:
+  - `Cam<serial>_crop_sidecar_perf.csv` persists the per-run sidecar admission
+    summary and is listed in `recording_snapshot.json`
+- Practical rule:
+  - delayed consumers are allowed to lose work
+  - the fast path is not allowed to wait behind sidecar queue saturation
+
+### Earlier-Owned-Frame Experiment
+
+- Optional env:
+  - `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`
+- Current experiment behavior:
+  - acquisition still exposes the ingress lease to immediate consumers such as
+    detect,
+  - acquisition also starts an async copy into the entry-owned
+    `d_image_pool`,
+  - `CropProducer` may then crop from that earlier owned full-frame buffer
+    rather than paying the later staged full-frame detach.
+- Goal:
+  - measure whether earlier ownership transfer plus overlap reduces the
+    `detect -> crop_ready` latency tail without forcing a full architecture
+    rewrite yet.
+- Observability:
+  - `Cam<serial>_crop_perf.csv` now includes
+    `analytics_owned_wait_cpu_ms` for this source mode.
 
 ### Phase B: Safety Patch Before Enabling
 
@@ -615,9 +789,10 @@ Step 1: Define crop payload and pool.
 
 Step 2: Extract crop production from crop encode.
 
-- [ ] Move ROI selection and source-to-crop GPU copy into a standalone
-      `CropProducer` stage/class. Current code has the producer sub-path inside
-      `CropAndEncodeWorker`.
+- [x] Move ROI selection and source-to-crop GPU copy into a standalone
+      `CropProducerWorker` + `CropProducer` stage. `YoloWorker` now hands off
+      to the producer fast path, and `CropAndEncodeWorker` consumes the
+      resulting crop job as a downstream sidecar.
 - [x] Make the producer sub-path record a readiness event after the crop copy.
 - [x] Run source-frame wait, source-to-crop copy, crop-ready event, and
       source-release event on a dedicated producer CUDA stream so preview and
