@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cctype>
 #include <cerrno>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -18,6 +19,7 @@
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -150,6 +152,7 @@ struct ExperimentSpec {
     bool require_zero_pre_drops = true;
     bool require_zero_enc_fail = true;
     bool require_zero_camera_drops = true;
+    bool require_valid_video_content = true;
     std::vector<int> gpu_ids;
     HeadlessEncoderSettings selection;
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
@@ -576,6 +579,11 @@ using RecordingOverrideMap = std::unordered_map<std::string, nlohmann::json>;
 constexpr int kGpuDmonStartupPollMs = 200;
 constexpr int kGpuDmonShutdownWaitMs = 2000;
 constexpr const char* kBundledFfprobePath = "/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe";
+constexpr const char* kBundledFfmpegPath = "/opt/orange/lib/ffmpeg-nvidia/bin/ffmpeg";
+constexpr double kVideoSanityMinLumaStddev = 1.0;
+constexpr double kVideoSanityMaxBlackFraction = 0.995;
+constexpr unsigned char kVideoSanityBlackThreshold = 2;
+constexpr size_t kVideoSanityMaxDecodeBytes = 256ULL * 1024ULL * 1024ULL;
 
 std::string headless_frame_ipc_mode_to_string(HeadlessFrameIpcMode mode)
 {
@@ -664,6 +672,13 @@ struct ExperimentVideoArtifactStats {
     uint64_t file_size_bytes = 0;
     double duration_s = 0.0;
     uint64_t achieved_bitrate_bps = 0;
+    bool content_checked = false;
+    bool content_valid = false;
+    std::string content_status = "not_checked";
+    double first_frame_luma_mean = 0.0;
+    double first_frame_luma_stddev = 0.0;
+    double first_frame_black_fraction = 0.0;
+    uint64_t first_frame_decoded_bytes = 0;
 };
 
 class ScopedEnvVarOverride {
@@ -747,6 +762,45 @@ bool read_command_stdout(const std::string& command, std::string* stdout_out)
 
     const int status = pclose(pipe);
     return status == 0;
+}
+
+bool read_command_binary(const std::string& command,
+                         std::vector<unsigned char>* stdout_out,
+                         size_t max_bytes)
+{
+    if (stdout_out) {
+        stdout_out->clear();
+    }
+
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return false;
+    }
+
+    bool read_error = false;
+    std::array<unsigned char, 65536> buffer{};
+    while (true) {
+        const size_t read = fread(buffer.data(), 1, buffer.size(), pipe);
+        if (read > 0 && stdout_out) {
+            if (stdout_out->size() + read > max_bytes) {
+                read_error = true;
+                break;
+            }
+            stdout_out->insert(stdout_out->end(), buffer.data(), buffer.data() + read);
+        }
+        if (read < buffer.size()) {
+            if (feof(pipe)) {
+                break;
+            }
+            if (ferror(pipe)) {
+                read_error = true;
+                break;
+            }
+        }
+    }
+
+    const int status = pclose(pipe);
+    return !read_error && status == 0;
 }
 
 double json_number_or_default(const nlohmann::json& value, double fallback)
@@ -850,6 +904,62 @@ ExperimentVideoArtifactStats summarize_video_artifact(const std::string& recordi
             std::llround((static_cast<long double>(stats.file_size_bytes) * 8.0L) / stats.duration_s));
     }
     stats.achieved_bitrate_bps = achieved_bitrate_bps;
+
+    const std::filesystem::path ffmpeg_path =
+        std::filesystem::exists(kBundledFfmpegPath)
+            ? std::filesystem::path(kBundledFfmpegPath)
+            : std::filesystem::path("ffmpeg");
+    const std::string decode_command =
+        shell_single_quote(ffmpeg_path.string()) +
+        " -v error -i " +
+        shell_single_quote(video_path.string()) +
+        " -frames:v 1 -vf format=gray -f rawvideo pipe:1 2>/dev/null";
+
+    std::vector<unsigned char> frame_bytes;
+    if (!read_command_binary(decode_command, &frame_bytes, kVideoSanityMaxDecodeBytes) ||
+        frame_bytes.empty()) {
+        stats.content_checked = true;
+        stats.content_status = "decode_failed";
+        stats.content_valid = false;
+        return stats;
+    }
+
+    long double sum = 0.0L;
+    long double sum_sq = 0.0L;
+    uint64_t black_count = 0;
+    for (const unsigned char value : frame_bytes) {
+        const long double v = static_cast<long double>(value);
+        sum += v;
+        sum_sq += v * v;
+        if (value <= kVideoSanityBlackThreshold) {
+            ++black_count;
+        }
+    }
+
+    const long double count = static_cast<long double>(frame_bytes.size());
+    const long double mean = sum / count;
+    long double variance = (sum_sq / count) - (mean * mean);
+    if (variance < 0.0L) {
+        variance = 0.0L;
+    }
+
+    stats.content_checked = true;
+    stats.first_frame_decoded_bytes = static_cast<uint64_t>(frame_bytes.size());
+    stats.first_frame_luma_mean = static_cast<double>(mean);
+    stats.first_frame_luma_stddev = static_cast<double>(std::sqrt(variance));
+    stats.first_frame_black_fraction =
+        static_cast<double>(static_cast<long double>(black_count) / count);
+
+    if (stats.first_frame_black_fraction >= kVideoSanityMaxBlackFraction) {
+        stats.content_status = "black_frame";
+        stats.content_valid = false;
+    } else if (stats.first_frame_luma_stddev < kVideoSanityMinLumaStddev) {
+        stats.content_status = "low_luma_stddev";
+        stats.content_valid = false;
+    } else {
+        stats.content_status = "pass";
+        stats.content_valid = true;
+    }
 
     return stats;
 }
@@ -5176,6 +5286,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->require_zero_pre_drops = policy.value("require_zero_pre_drops", true);
     spec->require_zero_enc_fail = policy.value("require_zero_enc_fail", true);
     spec->require_zero_camera_drops = policy.value("require_zero_camera_drops", true);
+    spec->require_valid_video_content = policy.value("require_valid_video_content", true);
 
     spec->codecs = parse_string_list_field(matrix, "codec");
     spec->presets = parse_string_list_field(matrix, "preset");
@@ -5891,6 +6002,13 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["video_file_size_bytes"] = 0ULL;
     row["video_duration_s"] = 0.0;
     row["video_achieved_bitrate_bps"] = 0ULL;
+    row["video_content_checked"] = false;
+    row["video_content_valid"] = false;
+    row["video_content_status"] = "not_checked";
+    row["video_first_frame_luma_mean"] = 0.0;
+    row["video_first_frame_luma_stddev"] = 0.0;
+    row["video_first_frame_black_fraction"] = 0.0;
+    row["video_first_frame_decoded_bytes"] = 0ULL;
     row["status"] = "completed";
     row["pass_fail"] = "marginal";
     row["reason"] = "not_evaluated";
@@ -6014,6 +6132,17 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["video_file_size_bytes"] = video_stats.file_size_bytes;
     row["video_duration_s"] = video_stats.duration_s;
     row["video_achieved_bitrate_bps"] = video_stats.achieved_bitrate_bps;
+    row["video_content_checked"] = metrics_only_run ? false : video_stats.content_checked;
+    row["video_content_valid"] = metrics_only_run ? false : video_stats.content_valid;
+    row["video_content_status"] = metrics_only_run ? "not_checked" : video_stats.content_status;
+    row["video_first_frame_luma_mean"] =
+        metrics_only_run ? 0.0 : video_stats.first_frame_luma_mean;
+    row["video_first_frame_luma_stddev"] =
+        metrics_only_run ? 0.0 : video_stats.first_frame_luma_stddev;
+    row["video_first_frame_black_fraction"] =
+        metrics_only_run ? 0.0 : video_stats.first_frame_black_fraction;
+    row["video_first_frame_decoded_bytes"] =
+        metrics_only_run ? 0ULL : video_stats.first_frame_decoded_bytes;
 
     if (!pipeline_info.is_object()) {
         row["status"] = "failed";
@@ -6242,6 +6371,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             row["pre_encoder_reference_raw_dump_present"].get<bool>() &&
             row["pre_encoder_reference_index_present"].get<bool>() &&
             row["pre_encoder_reference_metadata_present"].get<bool>();
+        const bool video_content_policy_failed =
+            spec.require_valid_video_content &&
+            (!row["video_present"].get<bool>() || !row["video_content_valid"].get<bool>());
         const bool counter_policy_failed =
             (spec.require_zero_camera_drops && camera_drops > 0) ||
             (spec.require_zero_acq_starve && acq_starve > 0) ||
@@ -6263,6 +6395,14 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         if (importance_map_requested && !importance_map_active) {
             row["pass_fail"] = "fail";
             row["reason"] = "importance map inactive";
+        } else if (video_content_policy_failed) {
+            row["pass_fail"] = "fail";
+            if (!row["video_present"].get<bool>()) {
+                row["reason"] = "missing full-frame video";
+            } else {
+                row["reason"] = std::string("invalid video content: ") +
+                    row["video_content_status"].get<std::string>();
+            }
         } else if (preenc_enabled) {
             if (preenc_status == "error") {
                 row["pass_fail"] = "fail";
@@ -6343,7 +6483,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -6412,6 +6552,13 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("video_file_size_bytes", 0ULL) << ","
                 << row.value("video_duration_s", 0.0) << ","
                 << row.value("video_achieved_bitrate_bps", 0ULL) << ","
+                << (row.value("video_content_checked", false) ? "true" : "false") << ","
+                << (row.value("video_content_valid", false) ? "true" : "false") << ","
+                << row.value("video_content_status", "not_checked") << ","
+                << row.value("video_first_frame_luma_mean", 0.0) << ","
+                << row.value("video_first_frame_luma_stddev", 0.0) << ","
+                << row.value("video_first_frame_black_fraction", 0.0) << ","
+                << row.value("video_first_frame_decoded_bytes", 0ULL) << ","
                 << row.value("status", "") << ","
                 << row.value("pass_fail", "") << ","
                 << "\"" << row.value("reason", "") << "\","

@@ -581,6 +581,13 @@ main-video artifact metrics derived from `Cam<serial>.mp4`:
 - `video_file_size_bytes`
 - `video_duration_s`
 - `video_achieved_bitrate_bps`
+- `video_content_checked`
+- `video_content_valid`
+- `video_content_status`
+- `video_first_frame_luma_mean`
+- `video_first_frame_luma_stddev`
+- `video_first_frame_black_fraction`
+- `video_first_frame_decoded_bytes`
 
 Notes:
 
@@ -597,6 +604,9 @@ Notes:
   recording starts immediately and warmup is applied only during evaluation.
 - `video_achieved_bitrate_bps` reflects the written MP4 output and may differ
   from requested bitrate overrides or resolved NVENC target bitrate settings.
+- `video_content_*` fields summarize the first decoded full-frame video frame.
+  They are intended to catch invalid black/blank output that can otherwise pass
+  throughput counters.
 
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value
 captures resolved runtime encoder parameters for one or more outputs for that

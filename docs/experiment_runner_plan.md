@@ -282,7 +282,8 @@ Example shape:
     "require_zero_acq_starve": true,
     "require_zero_pre_drops": true,
     "require_zero_enc_fail": true,
-    "require_zero_camera_drops": true
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": true
   }
 }
 ```
@@ -401,6 +402,8 @@ For the first version, evaluate a run as:
   - `acq_starve == 0`
   - `pre_drops == 0`
   - `enc_fail == 0`
+  - full-frame video content sanity passes when
+    `require_valid_video_content=true`
   - no steady queue growth
 - `marginal`
   - no hard failures, but clear waits / low-watermark pressure / reduced
@@ -409,6 +412,8 @@ For the first version, evaluate a run as:
   - any nonzero `dropped_frames_camera` / `camera_frame_id_gaps` when
     `require_zero_camera_drops=true`
   - any nonzero `pre_drops` or `enc_fail`
+  - missing, undecodable, black, or near-zero-variance full-frame video content
+    when `require_valid_video_content=true`
   - sustained encode deficit
   - obvious queue runaway
 

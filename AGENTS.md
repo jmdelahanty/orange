@@ -134,8 +134,8 @@ crop/pose/track latency solved.
 
 ## Remaining Work
 
-- Add an automated decoded-frame entropy/black-frame sanity check to recording
-  validation so invalid camera content cannot pass as a meaningful load test.
+- Automated decoded-frame entropy/black-frame sanity checking is now part of
+  headless experiment validation via `require_valid_video_content`.
 - Start the process-isolated full-frame encode/output experiment. The key
   discriminator is whether YOLO `cpu_pre_sync_ms` / CUDA launch p95 drops while
   valid two-camera PTP split-GOP recording remains active.

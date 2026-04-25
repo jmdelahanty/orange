@@ -434,6 +434,13 @@ Current per-camera row fields include:
 - `video_file_size_bytes: integer`
 - `video_duration_s: number`
 - `video_achieved_bitrate_bps: integer`
+- `video_content_checked: boolean`
+- `video_content_valid: boolean`
+- `video_content_status: string`
+- `video_first_frame_luma_mean: number`
+- `video_first_frame_luma_stddev: number`
+- `video_first_frame_black_fraction: number`
+- `video_first_frame_decoded_bytes: integer`
 
 Field semantics:
 - `importance_map_mode` is the requested headless importance-map mode for the
@@ -454,12 +461,20 @@ Field semantics:
 - `video_achieved_bitrate_bps` is the actual written file bitrate reported by
   `ffprobe`, or a fallback `size * 8 / duration` calculation when `bit_rate`
   is not present.
+- `video_content_*` fields are the decoded-frame sanity check for the main
+  full-frame video. The current check decodes the first video frame to luma and
+  rejects effectively black or near-zero-variance content.
+- `video_content_status` is `pass`, `decode_failed`, `black_frame`,
+  `low_luma_stddev`, or `not_checked`.
 
 Important:
 - `video_duration_s` includes warmup time in current headless experiment runs,
   because recording starts immediately and warmup is only excluded from scoring.
 - `video_achieved_bitrate_bps` is an output metric and can differ from
   requested or resolved encoder bitrate settings.
+- For real-recording experiment runs, policy field
+  `require_valid_video_content` defaults to `true`. Set it to `false` only for
+  explicit dark-frame or synthetic-output diagnostics.
 
 ### Main Metadata CSV (`Cam<serial>_meta.csv`)
 

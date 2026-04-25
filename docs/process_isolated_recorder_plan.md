@@ -560,7 +560,7 @@ Phase 0:
 - [ ] Run separate-GPU external NVENC load only after same-GPU result is known.
 - [x] Validate two-camera headless PTP real-YOLO plus real split-GOP baseline.
 - [x] Validate two-camera GUI PTP/AQ-off real split-GOP baseline.
-- [ ] Add decoded-frame entropy / black-frame sanity check to benchmark
+- [x] Add decoded-frame entropy / black-frame sanity check to benchmark
       validation.
 
 Phase 1:
