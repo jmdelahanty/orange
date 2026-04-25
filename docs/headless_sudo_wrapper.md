@@ -81,6 +81,24 @@ sudo -n /usr/local/bin/orange-local-benchmark \
   /home/jeremy/orange-gop-split-a16/experiment_specs/2010096_headless_real_yolo_preprocessonly_a16_gpu5.json
 ```
 
+GOP-split two-camera headless real-YOLO plus real split-GOP recording with PTP:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+sudo -n /usr/local/bin/orange-local-benchmark \
+  --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
+  --yolo-perf-log \
+  --yolo-perf-sample 1 \
+  /home/jeremy/orange-gop-split-a16/experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp.json
+```
+
+Use the PTP spec for two-camera `100_cam4` headless validation. The free-run
+variant can produce misleading artifacts on this setup; one recent free-run run
+encoded `2010095` as an all-black stream while `2010096` encoded real content.
+The PTP version should show both cameras near `100 fps`, zero camera gaps, zero
+encode failures, and roughly similar high bitrates around `150 Mbps` per camera
+for real dish content.
+
 Temporary retry spec:
 
 ```bash

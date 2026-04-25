@@ -51,6 +51,31 @@ are now suspect for this imaging regime:
   `recording.encode.temporal_aq = off` the highest-signal next two-camera GUI
   validation before deeper process-isolation work.
 
+The newest two-camera headless result is that PTP is required for a valid
+dual-camera headless comparison on the local `100_cam4` setup:
+
+- A free-run two-camera headless run produced valid-looking artifacts but
+  `2010095` encoded an all-black stream at only about `24.6 Mbps`, while
+  `2010096` encoded real dish content at about `151 Mbps`.
+- The same headless real-YOLO plus real split-GOP test with
+  `fixed.sync_mode = "ptp_gate"` produced real high-bitrate streams on both
+  cameras: `2010095` about `150.8 Mbps`, `2010096` about `151.3 Mbps`.
+- The PTP run sustained about `100 fps`, had `0` camera frame-ID gaps, and had
+  `0` encode failures on both cameras.
+- With both cameras producing real content, detect p95 returned to the
+  `11-12 ms` range: `2010095` `11.009 ms`, `2010096` `12.181 ms`.
+- YOLO queue wait stayed tiny, about `0.014-0.020 ms p95`; the tail was again
+  mostly `cpu_pre_sync_ms` at about `6.8-7.9 ms p95`.
+
+Interpretation:
+
+```text
+Free-run headless was not a clean two-camera content/load comparison.
+PTP gate made both cameras produce real 20 MP streams at roughly equal bitrate.
+Under that valid two-camera load, the detect tail remains CUDA/NVENC-side
+submission/synchronization contention, not YOLO queue backlog.
+```
+
 Non-negotiable recording constraint:
 
 - At the current `4512x4512 Mono8 @ 100 fps` full-frame resolution, one GPU /
