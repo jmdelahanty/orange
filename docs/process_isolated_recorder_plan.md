@@ -11,12 +11,25 @@ bitstream harvest cannot block YOLO through same-process runtime locks.
 The next high-signal architecture experiment is process isolation for
 full-frame recording.
 
-The first implementation should be a headless discriminator, not the final
-production recorder. It should answer one question:
+The first synthetic headless discriminator has already run. It supports, but
+does not fully prove, the process-boundary hypothesis because the synthetic
+encoder did not reproduce the long in-process Linux NVENC harvest waits seen in
+the real GUI path.
+
+The next implementation step should therefore be:
+
+```text
+1. add decoded-frame entropy / black-frame sanity checks to validation,
+2. prototype a real-frame external recorder detach path,
+3. compare YOLO timing against the validated two-camera PTP baseline.
+```
+
+The key architecture question remains:
 
 ```text
 Does YOLO return toward the no-full-frame fast path when NVENC encode/harvest
-is active on the same physical GPU but in a separate process?
+is active, but full-frame recording APIs and nvEncLockBitstream are outside the
+analytics process?
 ```
 
 If yes, build the external recorder backend. If no, the dominant contention is
@@ -52,6 +65,37 @@ Current interpretation:
   thread.
 - Same-process CUDA/NVENC runtime or driver-lock coupling remains the main
   hypothesis to test.
+
+New two-camera PTP evidence from 2026-04-25:
+
+- Free-run two-camera headless artifacts were misleading on the local
+  `100_cam4` setup because `2010095` encoded all-black frames at only about
+  `24.6 Mbps` while `2010096` encoded real dish content around `151 Mbps`.
+- The PTP headless spec
+  `experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp.json`
+  produced valid real content on both cameras:
+  `2010095` about `150.8 Mbps`, `2010096` about `151.3 Mbps`.
+- The GUI PTP/AQ-off run using local config folder
+  `/home/jeremy/orange_data/config/local/100_cam4_ptp` also produced valid
+  real content on both cameras:
+  `2010095` about `150.64 Mbps`, `2010096` about `150.75 Mbps`.
+- GUI PTP and headless PTP both landed around `11-12 ms`
+  `capture_to_detect_done_ms p95`.
+- YOLO queue wait stayed tiny in the GUI PTP run, about `0.014-0.015 ms p95`;
+  the tail was mostly `cpu_pre_sync_ms`, about `6.6-7.7 ms p95`.
+
+Interpretation:
+
+```text
+PTP is required for valid two-camera load comparisons on this host/config.
+GUI is not adding a new large regression versus headless PTP.
+The remaining tail is still host-side CUDA/NVENC submission/sync contention.
+```
+
+No-fish/zero-detection runs are acceptable for this process-isolation layer
+because acquisition, YOLO CUDA/TensorRT submission, and full-frame split-GOP
+recording still run. They do not validate crop ROI, pose, tracking, or
+positive-detection end-to-end crop/pose latency.
 
 ## Design Principle
 
@@ -276,6 +320,12 @@ Initial scope:
 - `60 fps` for `4512x4512` full-frame,
 - headless only.
 
+Before Phase 1 is treated as meaningful, add or run a decoded-frame validity
+check. The earlier free-run headless run showed that a run can pass throughput
+while one camera encodes black frames. The minimum sanity gate should decode at
+least one representative frame per output video and record/fail on extremely
+low luminance entropy or near-zero spatial standard deviation.
+
 Main process responsibilities:
 
 - acquire frames,
@@ -357,6 +407,18 @@ Responsibilities:
 - shards copy/import frames into local encode surfaces,
 - shards submit and harvest independently,
 - output coordinator preserves GOP order and writer policy.
+
+The target validation shape for Phase 2 is the now-validated two-camera PTP
+load, not free-run:
+
+- config folder equivalent to `100_cam4_ptp`,
+- schema-4 AQ off and temporal AQ off,
+- `sync_mode = "ptp_gate"`,
+- full-frame videos present and valid,
+- both cameras near real-content `150 Mbps`,
+- no camera frame-ID gaps or encode failures,
+- YOLO `cpu_pre_sync_ms` and `capture_to_detect_done_ms p95` compared against
+  the GUI/headless PTP in-process baseline.
 
 Supported modes behind one interface:
 
@@ -496,6 +558,10 @@ Phase 0:
 - [x] Summarize YOLO timing p95 and recorder NVENC p95 from CSV artifacts.
 - [x] Run same-GPU external NVENC load.
 - [ ] Run separate-GPU external NVENC load only after same-GPU result is known.
+- [x] Validate two-camera headless PTP real-YOLO plus real split-GOP baseline.
+- [x] Validate two-camera GUI PTP/AQ-off real split-GOP baseline.
+- [ ] Add decoded-frame entropy / black-frame sanity check to benchmark
+      validation.
 
 Phase 1:
 

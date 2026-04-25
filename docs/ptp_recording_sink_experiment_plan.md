@@ -73,7 +73,19 @@ Current read:
 - the old nonzero-stagger stale-frame artifacts remain useful historical failure
   evidence, but they should not be read as contradicting the current no-stagger
   recabled validation
-- GUI PTP recording and longer four-camera soaks remain unvalidated
+- longer four-camera soaks remain unvalidated
+
+GUI update from 2026-04-25:
+
+- Two-camera GUI PTP/AQ-off recording is now validated for the local
+  `100_cam4_ptp` setup.
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_25_18_22_25`
+- Both cameras produced valid real-content HEVC at about `150 Mbps`, with
+  `0` camera frame-ID gaps, `0` GetFrame errors, `0` preprocess drops, and
+  `0` encode failures.
+- This GUI validation did not include positive fish detections, so crop/pose
+  positive-detection latency remains unvalidated.
 
 ## Purpose
 

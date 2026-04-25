@@ -187,9 +187,12 @@ Current dual-camera headless findings:
   split-GOP HEVC path after commit `951f910`
 - `2 x 100 fps` is also validated for the recabled A16 headless no-stagger
   `ptp_gate` split-GOP HEVC path in short runs after commit `951f910`
+- `2 x 100 fps` GUI PTP/AQ-off recording is validated for the local
+  `100_cam4_ptp` setup as of artifact
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_25_18_22_25`
 - `2 x 80 fps` remains a useful lower-rate baseline
-- `2 x 100 fps` GUI recording still needs separate validation on the same
-  recabled/stable-requeue build
+- positive-detection crop/pose/track latency still needs separate validation
+  with a detectable subject
 
 Historical pre-recable/pre-fix `2 x 100 fps` headless artifact:
 
@@ -215,6 +218,17 @@ Current clean recabled `2 x 100 fps` headless no-stagger `ptp_gate` artifact:
 That run completed with `2010095` at `1001` submitted frames and `2010096` at
 `1000` submitted frames. Both cameras reported `0` frame-ID gaps, `0` GetFrame
 errors, `0` preprocess drops, and `0` encode failures.
+
+Current clean GUI `2 x 100 fps` PTP/AQ-off artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_04_25_18_22_25`
+
+That run used local config folder `100_cam4_ptp`, recorded
+`sync_mode = ptp_gate`, and produced real-content full-frame HEVC videos at
+about `150 Mbps` on both cameras. Both cameras reported `0` camera frame-ID
+gaps, `0` GetFrame errors, `0` preprocess drops, and `0` encode failures.
+YOLO detect p95 remained about `11-12 ms`, matching the headless PTP profile;
+the remaining tail is therefore not a GUI-only regression.
 
 `2 x 80 fps` headless artifact:
 
