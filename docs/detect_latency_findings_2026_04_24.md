@@ -131,6 +131,113 @@ Design implication:
   candidate is process isolation for full-frame encode/output so YOLO and
   recording do not share the same process-level CUDA/NVENC driver state.
 
+## Fundamental Boundary Versus Architecture Choice
+
+The current issue has one fundamental part and one architecture-dependent part.
+
+Fundamental:
+
+- On Linux, NVENC output completion is synchronous at the API level.
+- The practical completion boundary is `nvEncLockBitstream`.
+- If the requested bitstream is not ready, the call can block unless the code
+  uses `NV_ENC_LOCK_BITSTREAM::doNotWait = 1` and implements a retry/pending
+  output state machine.
+- There is no supported Linux equivalent of Windows NVENC event-driven
+  `enableEncodeAsync` completion.
+
+Not fundamental:
+
+- The blocking bitstream harvest does not have to happen on the same logical
+  submit path as encode submission.
+- The low-latency YOLO path does not have to share all process-level CUDA
+  runtime, CUDA context, NVENC interop, thread scheduling, and allocator state
+  with bulk full-frame recording.
+- YOLO does not necessarily have to expose a raw host-side
+  `cudaLaunchKernel` call for every frame's preprocess step.
+
+Current belief:
+
+- The current single-process architecture is probably suboptimal for this
+  workload because it mixes a hard real-time-ish detect path with a bulk
+  full-frame split-GOP recording path inside one CUDA/NVENC runtime contention
+  domain.
+- The evidence does not prove that multiprocessing is the only possible fix,
+  but it does make process isolation the cleanest long-term QoS boundary if
+  in-process experiments fail to reduce YOLO's `cudaLaunchKernel` /
+  `pthread_rwlock_rdlock` p95.
+- The strongest non-multiprocess idea is not only moving
+  `nvEncLockBitstream`; it is reducing or eliminating YOLO's exposed raw CUDA
+  launch point, for example through CUDA graph capture or a TensorRT-integrated
+  preprocess path.
+
+## Non-Multiprocess Architecture Options
+
+Option A: split NVENC submit and harvest in-process.
+
+- Submit thread waits for preprocess readiness, maps/copies input as needed,
+  calls `nvEncEncodePicture`, enqueues an output token, and returns quickly.
+- Harvest thread consumes output tokens in submission order and calls
+  `nvEncLockBitstream`, copies packets, unlocks/unmaps, and retires resources.
+- Expected result: helper encoder submit p95 and encoder slow-frame counts
+  improve.
+- Expected risk: YOLO p95 may improve little, because the depth-8 experiment
+  already hid most average `nvEncLockBitstream` wait without reducing YOLO
+  launch p95.
+- Value: high as an architectural discriminator. If YOLO remains blocked in
+  libcuda after this, the case for process isolation becomes much stronger.
+
+Option B: nonblocking/polling NVENC harvest in-process.
+
+- Use `NV_ENC_LOCK_BITSTREAM::doNotWait = 1` and retry when NVENC returns
+  `NV_ENC_ERR_LOCK_BUSY`.
+- This avoids parking a thread inside `nvEncLockBitstream`, but it is still
+  synchronous Linux NVENC with polling.
+- Expected result: better control over where CPU time is spent, not true async
+  completion.
+- Expected risk: excessive polling can create more driver/API traffic and make
+  YOLO contention worse unless backoff and queue depth are tuned carefully.
+
+Option C: reduce YOLO host CUDA submission exposure.
+
+- Capture YOLO preprocess plus inference launch into a CUDA graph where
+  practical, or move preprocess into a TensorRT plugin/integrated model input
+  path.
+- Nsight has repeatedly shown `cudaGraphLaunch` is much cheaper than the raw
+  YOLO preprocess `cudaLaunchKernel` tail.
+- Expected result: even if recording remains noisy, the detect path has fewer
+  vulnerable host CUDA calls.
+- Expected risk: implementation complexity and constraints around dynamic input
+  addresses, source-frame ownership, and current CPU postprocess/ROI flow.
+
+Option D: centralized in-process CUDA/NVENC submission scheduler.
+
+- Route latency-critical CUDA/NVENC host API calls through a small number of
+  priority submit threads instead of allowing many workers to contend directly
+  inside the driver/runtime.
+- YOLO submissions get first service; recording submits opportunistically.
+- Expected result: better in-process fairness and fewer lock convoys.
+- Expected risk: substantial redesign, possible throughput regression, and no
+  guarantee if contention is below the user-space scheduling layer.
+
+Option E: pure offload / cleaner GPU placement.
+
+- Keep the source/YOLO GPU as clean as possible and push full-frame recording
+  encode/output pressure to helper GPUs.
+- Expected result: reduced source-GPU hardware and driver traffic.
+- Expected risk: this does not remove same-process CUDA/NVENC runtime locks and
+  must preserve the validated split-GOP output contract.
+
+Option F: process isolation for recording encode/output.
+
+- Move full-frame split-GOP encode/output into one or more separate processes.
+- Expected result: strongest QoS boundary for low-latency detect versus bulk
+  recording; likely reduces process-level CUDA/NVENC runtime lock coupling.
+- Expected risk: larger architecture change with IPC/shared-buffer design,
+  lifecycle management, crash handling, and throughput validation.
+- Important caveat: process isolation will not remove all shared contention.
+  The same kernel driver, GPUs, NVENC engines, PCIe fabric, CPU memory, and
+  NUMA topology still exist.
+
 ## Current Pipeline Shape
 
 The latency-critical detect path is:
@@ -859,147 +966,20 @@ Interpretation:
   problem is likely broader same-process CUDA/NVENC driver contention rather
   than only the blocking location of `nvEncLockBitstream`.
 
-### Architecture candidates
-
-Candidate 1: preserve split-GOP but move source-GPU pressure away from YOLO.
-
-- Goal: keep multi-GPU split-GOP full-frame recording, but move more
-  full-frame preprocess/encode work away from the source/YOLO GPU.
-- Benefit: lower implementation risk than a process split.
-- Risk: `pure_offload` is not yet the validated GUI split-GOP path. It needs
-  careful artifact and throughput validation.
-- Constraint: this cannot collapse to one encoder session or one GPU.
-
-Candidate 2: full-frame encoder/output isolation inside the process.
-
-- Goal: keep current recording architecture but reduce how aggressively
-  full-frame HW encoder threads contend with YOLO CUDA submission.
-- Possible levers:
-  - increase NVENC output delay / encoder buffer depth as a cheap diagnostic,
-  - make bitstream lock/output less synchronous with source-GPU work,
-  - increase or restructure encoder output buffering,
-  - add explicit timing/NVTX around bitstream lock, output copies, and writer
-    operations,
-  - bind encoder/output threads to CPUs away from YOLO as a mitigation, not as
-    the main fix.
-- Risk: if contention is inside shared NVIDIA driver locks, thread placement
-  alone may not help.
-
-Candidate 3: recording encode/output in a separate process.
-
-- Goal: keep the required multi-GPU split-GOP recorder, but move its
-  encode/output work into one or more separate processes so YOLO and recording
-  have separate CUDA contexts/process-level driver state.
-- Benefit: most aligned with the evidence if in-process CUDA/NVENC contention
-  remains the dominant issue.
-- Risk: more architecture work. Requires an IPC/shared-buffer boundary,
-  lifecycle design, failure handling, and careful throughput validation.
-
-Candidate 4: keep YOLO source lease only until input-ready.
-
-- Status: started with `ORANGE_YOLO_DETACH_INPUT=1`.
-- Goal: make YOLO own only the small TensorRT input tensor as early as
-  possible.
-- Benefit: reduces source-frame lifetime coupling.
-- Risk: does not solve driver submission contention by itself.
-
-Candidate 5: revisit inline crop/pose after recording interference is reduced.
-
-- Goal: shorten `detect -> crop_ready -> pose_done` after the dominant detect
-  bottleneck is controlled.
-- Benefit: may matter once YOLO detect p95 is consistently near the
-  `preprocess_only` result.
-- Risk: previous inline crop test introduced multi-camera service skew.
-
 ## Recommended Next Plan
 
-1. Add an env-controlled NVENC output-delay depth diagnostic.
-
-Current full-frame encoder buffer count is `4`, derived from:
-
-```text
-frameIntervalP + lookaheadDepth + nExtraOutputDelay = 1 + 0 + 3
-```
-
-Implemented diagnostic:
-
-```text
-ORANGE_NVENC_EXTRA_OUTPUT_DELAY=<3|7|11|15>
-```
-
-Optional per-camera overrides:
-
-```text
-ORANGE_NVENC_EXTRA_OUTPUT_DELAY_CAM_2010095=<3|7|11|15>
-ORANGE_NVENC_EXTRA_OUTPUT_DELAY_CAM_2010096=<3|7|11|15>
-```
-
-The setting is full-frame `EncoderHwWorker` only; crop encoders remain on their
-default depth so this isolates the full-frame path. With the current low-latency
-HEVC settings, it maps to encoder buffer counts of about:
-
-```text
-4, 8, 12, 16
-```
-
-The resolved values are recorded in `recording_snapshot.json` as:
-
-- `encoders.<serial>.nvenc_extra_output_delay`
-- `encoders.<serial>.encoder_buffer_count`
-- `encoders.<serial>.resolved_config.buffers.nvenc_extra_output_delay`
-
-Acceptance criteria:
-
-- full-frame and crop artifacts remain present,
-- both cameras sustain about `100 fps`,
-- zero camera drops,
-- zero preprocess drops,
-- zero helper fallback,
-- `nvenc_lock_bitstream` p95/max improve materially,
-- YOLO `cudaLaunchKernel_v7000` and `cpu_preprocess_ms` p95 improve,
-- extra buffering does not create unacceptable GOP/output latency or pending
-  GOP growth.
+1. Implement the in-process split-submit/harvest experiment as a bounded
+discriminator.
 
 Reason:
 
-- helper-route `nvEncLockBitstream` is now the measured blocking boundary,
-- increasing output delay tests whether we are harvesting helper-GPU bitstreams
-  too early,
-- this is much cheaper than implementing the full submit/harvest split first.
-
-2. Run the helper-route substage instrumentation before building a new
-architecture.
-
-Depth `8` already showed that output depth can hide much of the mean
-`nvEncLockBitstream` wait, but it did not improve YOLO p95. The next run should
-return to the normal control depth unless specifically testing depth again, and
-use the new snapshot fields to determine where the helper-route p95 burst
-comes from:
-
-- `encoder_cuda_set_device`,
-- `preprocess_complete_stream_wait_enqueue`,
-- `source_to_helper_copy_sync_wait`,
-- `source_to_helper_copy_elapsed_query`,
-- `pre_encoder_reference_capture_enqueue`,
-- `nvenc_get_next_input_frame`,
-- `nvenc_encode_frame_total`,
-- `encoder_output_accounting`,
-- existing `shared_submit_total`, `writer_queue_wait`, and
-  `packet_mux_write`.
-
-Use the normal light Nsight wrapper first:
-
-```bash
-cd /home/jeremy/orange-gop-split-a16
-./run_yolo_detach_nsys.sh
-```
-
-Do not run heavy Nsight by default. The light trace already captured the
-driver-lock callchains. Reserve heavy mode for a case where the light trace no
-longer explains the stall.
-
-3. If the substage timing still points at in-process CUDA/NVENC driver
-contention, split submit from harvest.
+- normal-depth helper-route substage instrumentation shows helper-route
+  `nvEncLockBitstream` is the measured p95 stall,
+- depth `8` shows extra buffering can hide much of the mean lock wait but does
+  not fix YOLO p95,
+- therefore split harvest is useful mainly to answer whether moving the lock
+  off the submit path is enough, not because it is expected to be the final
+  architecture.
 
 Target architecture:
 
@@ -1020,19 +1000,71 @@ Encoder harvest worker:
   push packet to SharedRecordingOutput / FFmpegWriter
 ```
 
-Use the measured best output depth as the starting in-flight token depth.
+Guard it behind an experimental env flag, for example:
 
-4. If submit/harvest split still leaves YOLO blocked in libcuda locks, move to
-process isolation.
+```text
+ORANGE_NVENC_SPLIT_HARVEST=1
+```
+
+Keep the first version narrow:
+
+- current low-latency/no-B-frame path only,
+- strict submission-order output harvest,
+- bounded in-flight token queue,
+- full-frame `EncoderHwWorker` only,
+- preserve split-GOP full-frame MP4 output and existing crop artifacts.
+
+Expected outcome:
+
+- helper encoder submit p95 and encoder slow-frame count improve,
+- helper `nvEncLockBitstream` wait moves to the harvest thread,
+- YOLO p95 may improve little or not at all if the dominant issue is
+  same-process CUDA/NVENC driver contention.
+
+Success criteria:
+
+- full-frame and crop artifacts remain present,
+- both cameras sustain about `100 fps`,
+- zero camera drops,
+- zero preprocess drops,
+- zero helper fallback,
+- encoder submit path p95 drops materially,
+- YOLO `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, and
+  `cpu_preprocess_ms` p95 drop materially.
+
+Stop criteria:
+
+- artifact correctness regresses,
+- throughput drops or queues grow without bound,
+- YOLO p95 remains around the current `8 ms` driver-lock tail after encoder
+  submit p95 improves.
+
+2. If split harvest improves encoder stats but not YOLO, prioritize process
+isolation.
 
 Process isolation becomes the stronger architecture when:
 
-- `nvEncLockBitstream` remains expensive,
+- `nvEncLockBitstream` remains expensive somewhere in the recording process,
 - moving the lock to another in-process thread does not reduce YOLO
   `cudaLaunchKernel` / `pthread_rwlock_rdlock` p95,
 - and full-frame split-GOP recording must remain active.
 
-5. Keep the explicit full-frame encoder/output instrumentation.
+3. Investigate YOLO launch exposure reduction in parallel or next.
+
+This is the strongest non-multiprocess alternative if split harvest is not
+enough:
+
+- CUDA graph capture for YOLO preprocess plus inference where possible,
+- TensorRT plugin or integrated input preprocessing path,
+- fewer per-frame host CUDA calls on the latency-critical thread.
+
+Acceptance rule:
+
+- YOLO `cudaLaunchKernel_v7000` / `cpu_preprocess_ms` p95 moves materially
+  toward the `preprocess_only` control while full-frame split-GOP recording
+  stays enabled.
+
+4. Keep the explicit full-frame encoder/output instrumentation.
 
 Measure these with per-camera thread labels and NVTX:
 
@@ -1043,7 +1075,7 @@ Measure these with per-camera thread labels and NVTX:
 - source/primary route versus helper route,
 - CPU thread id and camera serial for the output threads.
 
-6. Use the `preprocess_only` run as the control.
+5. Use the `preprocess_only` run as the control.
 
 Any candidate architecture should be compared against:
 
@@ -1051,7 +1083,7 @@ Any candidate architecture should be compared against:
 - preprocess-only,
 - no-full-frame immediate recycle.
 
-7. Do not optimize crop or display further for detect p95 until full-frame
+6. Do not optimize crop or display further for detect p95 until full-frame
 encode/output is addressed.
 
 Crop preview disable remains useful for crop/pose latency. Display throttle is

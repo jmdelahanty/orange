@@ -382,6 +382,17 @@ Important caveat:
   `nvenc_get_next_input_frame`,
   `nvenc_encode_frame_total`, and
   `encoder_output_accounting`.
+- Fundamental boundary: on Linux, NVENC output completion still requires
+  synchronous `nvEncLockBitstream` or a `doNotWait` polling/retry state
+  machine.
+- Architecture choice: the blocking/polling harvest does not have to run on
+  the encode submit path, and YOLO does not have to share every process-level
+  CUDA/NVENC runtime lock with the full-frame recorder.
+- Non-multiprocess options to test or consider before committing to process
+  isolation include split submit/harvest, `doNotWait` polling harvest,
+  reducing YOLO's raw host CUDA launches with CUDA graph or TensorRT-integrated
+  preprocessing, centralized/prioritized in-process GPU submission, and cleaner
+  pure-offload GPU placement.
 - If `nvEncLockBitstream` still causes YOLO to block inside libcuda after the
   lock is moved to a separate in-process harvest thread, the remaining issue is
   likely process-level CUDA/NVENC driver contention.

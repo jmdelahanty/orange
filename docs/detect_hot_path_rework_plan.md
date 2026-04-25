@@ -551,9 +551,24 @@ Next useful architecture tests:
   shared-output submission are not the p95 bottleneck,
 - source-to-helper copy readiness is a secondary wait at about `5 ms p95`,
   but the main helper-route p95 stall is still Linux synchronous NVENC harvest,
+- fundamental versus not fundamental:
+  - Linux NVENC output completion fundamentally requires synchronous
+    `nvEncLockBitstream` or a `doNotWait` polling state machine,
+  - it is not fundamental that this harvest happens on the encoder submit
+    path or that YOLO shares one process-level CUDA/NVENC runtime contention
+    domain with bulk recording,
+- non-multiprocess alternatives remain worth understanding:
+  - split NVENC submit from harvest in-process,
+  - poll `nvEncLockBitstream` with `doNotWait`,
+  - reduce YOLO's exposed raw CUDA launches with CUDA graph or TensorRT
+    integrated preprocessing,
+  - centralize/prioritize CUDA/NVENC submissions inside the process,
+  - test cleaner pure-offload GPU placement,
 - reserve `ORANGE_NSYS_HEAVY=1 ./run_yolo_detach_nsys.sh` for cases where the
   light trace no longer exposes the driver/runtime wait callchain,
-- after depth testing, split encode submit from bitstream harvest if needed,
+- next bounded experiment: split encode submit from bitstream harvest behind an
+  env flag, expecting encoder submit p95 to improve and treating YOLO p95 as
+  the deciding metric,
 - consider process isolation for full-frame recording if in-process
   CUDA/NVENC driver contention remains the dominant effect.
 
