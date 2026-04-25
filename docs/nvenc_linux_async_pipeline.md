@@ -410,11 +410,32 @@ Measured split-harvest result:
 - YOLO `pthread_rwlock_rdlock p95` stayed about `8.44 -> 8.45 ms`,
 - YOLO `cpu_preprocess_ms p95` stayed about `7.5-8.6 ms` depending on camera.
 
+Measured split-harvest plus harvest-delay result:
+
+- run:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_25_00_18_44`
+  with `/tmp/orange_yolo_detach_nsys_20260425_001810.sqlite`,
+- `ORANGE_NVENC_SPLIT_HARVEST=1`,
+- `ORANGE_NVENC_HARVEST_DELAY_US=1000`,
+- `recording_snapshot.json` confirmed `path = hw_split_harvest`,
+  `split_harvest_enabled = true`, and `nvenc_harvest_delay_us = 1000`,
+- Nsight confirmed `NVENC split harvest delay p95 = 1.105 ms`,
+- YOLO `cudaLaunchKernel_v7000 p95` stayed high, about
+  `8.287 -> 8.396 ms`,
+- YOLO `pthread_rwlock_rdlock p95` stayed high, about `8.448 -> 8.444 ms`,
+- `Cam2010095 cpu_preprocess_ms p95` stayed about `7.601 -> 7.593 ms`,
+- `Cam2010096 cpu_preprocess_ms p95` stayed about `8.639 -> 8.629 ms`,
+- `nvEncLockBitstream p95` improved slightly, about `11.689 -> 10.774 ms`,
+  but not in a way that helped YOLO latency.
+
 Conclusion:
 
 - Linux NVENC can be pipelined so submit no longer waits for bitstream harvest.
 - That is an encoder-worker architecture improvement, but it is not the detect
   latency fix.
+- Delaying split harvest by `1000 us` is a useful negative result for
+  same-process phase scheduling: it gives YOLO a nominal launch window, but
+  YOLO still hits the same CUDA/runtime lock tail.
 - The remaining YOLO tail is likely same-process CUDA/NVENC runtime or driver
   lock contention from the harvest/output side.
 - The next high-signal architecture experiment is process isolation for

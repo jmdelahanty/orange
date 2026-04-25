@@ -36,6 +36,15 @@ from about `11.85 ms` to about `0.31 ms`, but YOLO `cudaLaunchKernel_v7000`,
 unchanged. That is a useful negative result: the remaining detect tail is not
 just a bad submit/harvest call-site structure.
 
+The follow-up `ORANGE_NVENC_HARVEST_DELAY_US=1000` phase-window diagnostic is
+also complete. Nsight confirmed a real `1.105 ms p95` harvest delay before
+`nvEncLockBitstream`, and `nvEncLockBitstream p95` moved slightly from about
+`11.689 ms` to about `10.774 ms`. YOLO did not improve:
+`cudaLaunchKernel_v7000 p95` stayed around `8.3-8.4 ms`,
+`pthread_rwlock_rdlock p95` stayed around `8.44 ms`, and
+`cpu_preprocess_ms p95` stayed about `7.6/8.6 ms` for the two cameras. This is
+another negative result for same-process phasing as the main architecture fix.
+
 Implications:
 
 - Crop-side staging and crop preview are no longer the main detect bottleneck.
@@ -622,6 +631,8 @@ Only after Phases 1-3 are measured:
       enqueue/write.
 - [x] Add experimental in-process NVENC split submit/harvest path and measure
       it as a discriminator.
+- [x] Add and measure an experimental split-harvest delay window
+      (`ORANGE_NVENC_HARVEST_DELAY_US`) as an in-process phasing discriminator.
 - [x] Re-run the two-camera `100 fps` benchmark and compare:
       - `capture_to_detect_done`
       - `worker_start_to_detect_done`

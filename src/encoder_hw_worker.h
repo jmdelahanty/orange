@@ -119,6 +119,7 @@ private:
     void start_split_harvest_thread();
     void stop_split_harvest_thread();
     void notify_split_harvest_thread();
+    void delay_split_harvest_if_configured();
     void split_harvest_loop();
     void set_split_harvest_error(const std::string& message);
     bool split_harvest_failed(std::string* message_out);
@@ -178,6 +179,7 @@ private:
         uint32_t max_num_ref_frames = 0;
         uint32_t max_num_ref_frames_in_dpb = 0;
         int nvenc_extra_output_delay = 3;
+        int nvenc_harvest_delay_us = 0;
         uint32_t rc_mode = 0;
         uint32_t average_bitrate = 0;
         uint32_t max_bitrate = 0;
@@ -242,6 +244,7 @@ private:
     bool split_harvest_enabled_ = false;
     bool importance_map_enabled_ = false;
     int nvenc_extra_output_delay_ = 3;
+    int nvenc_harvest_delay_us_ = 0;
     int encoder_input_pitch_ = 0;
     int encoder_buffer_count_ = 0;
     bool pre_encoder_reference_async_enabled_ = false;

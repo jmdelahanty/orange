@@ -20,6 +20,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <thread>
 
 namespace {
 constexpr uint64_t kMinQualityBitrate = 10000000ULL;
@@ -36,6 +37,9 @@ constexpr int8_t kStaticRoiOutsideDelta = 3;
 constexpr int kDefaultNvencExtraOutputDelay = 3;
 constexpr int kMinNvencExtraOutputDelay = 1;
 constexpr int kMaxNvencExtraOutputDelay = 64;
+constexpr int kDefaultNvencHarvestDelayUs = 0;
+constexpr int kMinNvencHarvestDelayUs = 0;
+constexpr int kMaxNvencHarvestDelayUs = 20000;
 
 bool env_flag_enabled(const char* name)
 {
@@ -201,6 +205,66 @@ int resolve_nvenc_extra_output_delay(const CameraParams* camera_params)
                   << std::endl;
     }
     return delay;
+}
+
+int parse_nvenc_harvest_delay_us_env(const char* name,
+                                     int default_value,
+                                     bool* used_override)
+{
+    const char* env = std::getenv(name);
+    if (!env || !*env) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0') {
+        std::cerr << "[EncoderHwWorker] Ignoring invalid " << name
+                  << "='" << env << "', using " << default_value << std::endl;
+        return default_value;
+    }
+    if (parsed < kMinNvencHarvestDelayUs || parsed > kMaxNvencHarvestDelayUs) {
+        std::cerr << "[EncoderHwWorker] " << name << " must be within ["
+                  << kMinNvencHarvestDelayUs << "," << kMaxNvencHarvestDelayUs
+                  << "], using " << default_value << std::endl;
+        return default_value;
+    }
+    if (used_override) {
+        *used_override = true;
+    }
+    return static_cast<int>(parsed);
+}
+
+int resolve_nvenc_harvest_delay_us(const CameraParams* camera_params)
+{
+    bool used_global = false;
+    int delay_us = parse_nvenc_harvest_delay_us_env(
+        "ORANGE_NVENC_HARVEST_DELAY_US",
+        kDefaultNvencHarvestDelayUs,
+        &used_global);
+
+    if (camera_params && !camera_params->camera_serial.empty()) {
+        const std::string env_key =
+            "ORANGE_NVENC_HARVEST_DELAY_US_CAM_" + camera_params->camera_serial;
+        bool used_camera = false;
+        delay_us = parse_nvenc_harvest_delay_us_env(
+            env_key.c_str(),
+            delay_us,
+            &used_camera);
+        if (used_camera) {
+            std::cout << "[EncoderHwWorker] " << env_key << "=" << delay_us
+                      << " for split-harvest launch-window diagnostic"
+                      << std::endl;
+            return delay_us;
+        }
+    }
+
+    if (used_global) {
+        std::cout << "[EncoderHwWorker] ORANGE_NVENC_HARVEST_DELAY_US="
+                  << delay_us
+                  << " for split-harvest launch-window diagnostic"
+                  << std::endl;
+    }
+    return delay_us;
 }
 
 void merge_nvenc_timing(RecordingOutputTimingSample* sample,
@@ -768,6 +832,7 @@ EncoderHwWorker::EncoderHwWorker(
   pre_encoder_reference_capture_config_(resolved_recording_config.pre_encoder_reference_capture),
   direct_input_enabled_(resolved_recording_config.encode.nvenc_direct_input),
   nvenc_extra_output_delay_(resolve_nvenc_extra_output_delay(camera_params)),
+  nvenc_harvest_delay_us_(resolve_nvenc_harvest_delay_us(camera_params)),
   quality_value_(clamp_quality_value(resolved_recording_config.encode.quality_value)),
   gop_length_(sanitize_recording_gop_length(resolved_recording_config.encode.gop_length)),
   recording_strategy_config_(resolved_recording_config.strategy),
@@ -974,6 +1039,7 @@ EncoderHwWorker::EncoderHwWorker(
         recording_gop_length_ = std::max<uint32_t>(1u, resolved_config.gopLength);
         encoder_snapshot_.frame_interval_p = resolved_config.frameIntervalP;
         encoder_snapshot_.nvenc_extra_output_delay = nvenc_extra_output_delay_;
+        encoder_snapshot_.nvenc_harvest_delay_us = nvenc_harvest_delay_us_;
         encoder_snapshot_.rc_mode = resolved_config.rcParams.rateControlMode;
         encoder_snapshot_.average_bitrate = resolved_config.rcParams.averageBitRate;
         encoder_snapshot_.max_bitrate = resolved_config.rcParams.maxBitRate;
@@ -1889,6 +1955,16 @@ void EncoderHwWorker::notify_split_harvest_thread()
     split_harvest_cv_.notify_one();
 }
 
+void EncoderHwWorker::delay_split_harvest_if_configured()
+{
+    if (nvenc_harvest_delay_us_ <= 0) {
+        return;
+    }
+    NVTX_SYNC_DYNAMIC(std::string("NVENC split harvest delay"));
+    std::this_thread::sleep_for(
+        std::chrono::microseconds(nvenc_harvest_delay_us_));
+}
+
 void EncoderHwWorker::set_split_harvest_error(const std::string& message)
 {
     {
@@ -1996,6 +2072,8 @@ void EncoderHwWorker::split_harvest_loop()
                 split_harvest_wake_ = false;
             }
 
+            delay_split_harvest_if_configured();
+
             while (true) {
                 std::vector<std::vector<uint8_t>> packets;
                 std::vector<uint64_t> output_timestamps;
@@ -2075,6 +2153,7 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     info["gop_length"] = encoder_snapshot_.gop_length;
     info["frame_interval_p"] = encoder_snapshot_.frame_interval_p;
     info["nvenc_extra_output_delay"] = encoder_snapshot_.nvenc_extra_output_delay;
+    info["nvenc_harvest_delay_us"] = encoder_snapshot_.nvenc_harvest_delay_us;
     info["encoder_buffer_count"] = encoder_buffer_count_;
     info["idr_period"] = encoder_snapshot_.idr_period;
 

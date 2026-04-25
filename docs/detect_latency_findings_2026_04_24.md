@@ -1011,6 +1011,57 @@ Interpretation:
 - Further in-process submit/harvest tweaks are now lower signal than a process
   isolation experiment.
 
+Follow-up diagnostic:
+
+- `ORANGE_NVENC_HARVEST_DELAY_US=<microseconds>` intentionally delays the
+  split-harvest thread before it tries to retrieve bitstreams with
+  `nvEncLockBitstream`.
+- Use it only with `ORANGE_NVENC_SPLIT_HARVEST=1`.
+- This tests whether a small YOLO launch window, for example `500`, `1000`, or
+  `2000 us`, reduces YOLO `cudaLaunchKernel_v7000` /
+  `cpu_preprocess_ms` p95.
+- A positive result would mean same-process phasing can help; a negative result
+  would further support process isolation or a broader driver/hardware
+  contention explanation.
+
+Measured `1000 us` harvest-delay result:
+
+- run:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_25_00_18_44`
+- Nsight SQLite:
+  `/tmp/orange_yolo_detach_nsys_20260425_001810.sqlite`
+- `recording_snapshot.json` confirmed `path = hw_split_harvest`,
+  `split_harvest_enabled = true`, and `nvenc_harvest_delay_us = 1000`.
+- Nsight confirmed the delay actually happened:
+  `NVENC split harvest delay p95 = 1.105 ms`.
+- YOLO did not improve:
+  - `cudaLaunchKernel_v7000 p95` changed from about `8.287 ms` without delay
+    to about `8.396 ms` with the delay,
+  - `pthread_rwlock_rdlock p95` changed from about `8.448 ms` to about
+    `8.444 ms`,
+  - `Cam2010095 cpu_preprocess_ms p95` changed from about `7.601 ms` to
+    about `7.593 ms`,
+  - `Cam2010096 cpu_preprocess_ms p95` changed from about `8.639 ms` to
+    about `8.629 ms`.
+- NVENC harvest p95 moved slightly:
+  - `nvEncLockBitstream p95` changed from about `11.689 ms` to about
+    `10.774 ms`,
+  - `NVENC SubmitFrameOnly p95` changed from about `0.308 ms` to about
+    `0.281 ms`.
+- The run was otherwise healthy: about `100 fps`, no camera drops, no
+  preprocess drops, no encoder failures, and no crop-sidecar drops.
+
+Interpretation:
+
+- The harvest-delay phase window was real and was visible in Nsight.
+- It changed NVENC timing slightly, but did not reduce YOLO's host-side
+  CUDA/runtime lock tail.
+- This is another negative result for in-process phasing as the main
+  architecture fix.
+- A final `2000 us` point could be used as a sanity check, but the higher-signal
+  next experiment remains process isolation for full-frame
+  encode/harvest/output.
+
 ## Recommended Next Plan
 
 1. Prioritize process isolation for full-frame encode/output.
@@ -1019,6 +1070,9 @@ Reason:
 
 - split harvest reduced encoder submit p95 from about `11.85 ms` to about
   `0.31 ms`,
+- split-harvest plus a `1000 us` harvest delay did not reduce YOLO
+  `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, or `cpu_preprocess_ms`
+  p95,
 - the expensive `nvEncLockBitstream` work still exists in-process,
 - YOLO `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, and
   `cpu_preprocess_ms` p95 did not improve,
