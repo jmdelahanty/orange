@@ -76,6 +76,38 @@ Under that valid two-camera load, the detect tail remains CUDA/NVENC-side
 submission/synchronization contention, not YOLO queue backlog.
 ```
 
+The follow-up GUI PTP/AQ-off run matched the headless PTP result rather than
+showing a new GUI-only regression:
+
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_25_18_22_25`
+- GUI selected the local `100_cam4_ptp` config folder.
+- Runtime config recorded `sync_mode = "ptp_gate"`, `ptp.enabled = true`, and
+  `ptp.mode = "TwoStep"` for both cameras.
+- Both full-frame videos were valid real content:
+  - `2010095`: `150.64 Mbps`, decoded first-frame mean/std `220.4 / 81.6`
+  - `2010096`: `150.75 Mbps`, decoded first-frame mean/std `176.8 / 86.1`
+- Both cameras sustained about `100 fps` with `0` camera frame-ID gaps,
+  `0` GetFrame errors, `0` preprocess drops, and `0` encode failures.
+- Detect p95 stayed in the same band as headless PTP:
+  - `2010095 capture_to_detect_done_ms p95 = 11.150`
+  - `2010096 capture_to_detect_done_ms p95 = 12.100`
+- YOLO queue wait p95 stayed tiny, about `0.014-0.015 ms`.
+- The remaining tail was again mostly host-side preprocess/sync submission:
+  - `2010095 cpu_pre_sync_ms p95 = 6.641`
+  - `2010096 cpu_pre_sync_ms p95 = 7.690`
+
+This means the current GUI path is not the main explanation for the detect
+tail. With valid two-camera PTP full-frame split-GOP recording, GUI and
+headless both show the same basic `11-12 ms` detect p95 shape.
+
+The no-fish/zero-detection condition is acceptable for this specific
+CUDA/NVENC submission investigation. It still exercises acquisition, ingress
+lease handling, YOLO worker scheduling, YOLO CUDA/TensorRT submission, and
+full-frame split-GOP recording. It does not validate positive-detection crop
+ROI behavior, pose second-stage latency, or tracking behavior; those remain
+later validation requirements once detect p95 is under control.
+
 Non-negotiable recording constraint:
 
 - At the current `4512x4512 Mono8 @ 100 fps` full-frame resolution, one GPU /
@@ -1393,6 +1425,23 @@ cd /home/jeremy/orange-gop-split-a16
 ORANGE_CROP_PREVIEW_DISABLE=1 ORANGE_DISPLAY_PREVIEW_MAX_FPS=1 ORANGE_NVENC_SPLIT_HARVEST=1 ./run_yolo_detach_nsys.sh
 ```
 
+GUI PTP/AQ-off validation:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+./scripts/run_gui_aq_off_validation.sh
+```
+
+This script defaults to the local config folder
+`/home/jeremy/orange_data/config/local/100_cam4_ptp`, validates schema-4
+`aq = off`, `temporal_aq = off`, and PTP fields, then launches the GUI. Use:
+
+```bash
+ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh
+```
+
+to validate the selected config folder without launching the GUI.
+
 Important caveat:
 
 - `preprocess_only` is not a production recording mode for this workload
@@ -1419,3 +1468,15 @@ Every proposed change should be evaluated against:
 - Nsight host CUDA API attribution for YOLO worker threads,
 - full-frame MP4 presence and validity when the run claims to test production
   recording.
+
+Additional remaining validation:
+
+- Positive-detection crop/pose/track validation still requires fish or another
+  valid detectable subject.
+- Until then, no-fish runs are valid for the current encoder/YOLO submission
+  contention work but should not be used to conclude crop/pose performance.
+- Add an automated decoded-frame entropy/black-frame sanity check so invalid
+  two-camera content cannot pass as a meaningful recording-load comparison.
+- Proceed to process-isolated full-frame encode/output experiments because GUI
+  PTP and headless PTP now agree that the remaining detect tail is not queue
+  backlog or a GUI-only effect.

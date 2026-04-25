@@ -51,6 +51,53 @@ comparison for this setup. A recent free-run run produced valid-looking
 artifacts while `2010095` encoded all-black frames at about `24.6 Mbps`; the PTP
 run produced real high-bitrate content from both cameras.
 
+## Two-Camera GUI PTP Run
+
+For production-like GUI validation, use the local PTP config folder:
+
+```text
+/home/jeremy/orange_data/config/local/100_cam4_ptp
+```
+
+That folder was cloned from `100_cam4` and only changes:
+
+- `sync_mode = "ptp_gate"`
+- `ptp = { "enabled": true, "mode": "TwoStep" }`
+
+Run the GUI validation launcher:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+./scripts/run_gui_aq_off_validation.sh
+```
+
+The launcher defaults to `100_cam4_ptp`, validates schema-4 `aq = off`,
+`temporal_aq = off`, and PTP fields, then starts the GUI. Use this to validate
+without launching the GUI:
+
+```bash
+ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh
+```
+
+Recent measured GUI PTP/AQ-off result:
+
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_25_18_22_25`
+- Runtime config used `sync_mode = "ptp_gate"`, `ptp.enabled = true`, and
+  `ptp.mode = "TwoStep"` for both cameras.
+- Both full-frame MP4s were valid real content at about `150 Mbps`.
+- `2010095`: `0` camera gaps, `0` GetFrame errors, `0` encode failures,
+  `capture_to_detect_done_ms p95 = 11.150`.
+- `2010096`: `0` camera gaps, `0` GetFrame errors, `0` encode failures,
+  `capture_to_detect_done_ms p95 = 12.100`.
+- YOLO queue wait p95 stayed tiny, about `0.014-0.015 ms`.
+- The remaining tail was mostly `cpu_pre_sync_ms`: `6.641 ms p95` for
+  `2010095`, `7.690 ms p95` for `2010096`.
+
+Interpretation: GUI PTP matches headless PTP. The GUI/display lifecycle is not
+the main remaining regression source; valid two-camera split-GOP recording load
+still inflates YOLO host-side submission/sync latency.
+
 ## Current Interpretation
 
 - Generic NVENC AQ and temporal AQ are disabled in the schema-4 `100_cam4`
@@ -62,3 +109,35 @@ run produced real high-bitrate content from both cameras.
   recording path.
 - Process isolation for full-frame encode/output remains the next high-signal
   architecture experiment.
+
+## No-Fish Test Caveat
+
+No-fish runs are still valid for the current CUDA/NVENC submission work because
+they exercise:
+
+- acquisition,
+- ingress lease/source readiness,
+- YOLO worker scheduling,
+- YOLO CUDA/TensorRT submission,
+- full-frame split-GOP encode/output.
+
+No-fish runs do not validate:
+
+- positive-detection crop ROI behavior,
+- pose second-stage latency,
+- tracking behavior,
+- end-to-end positive detection-to-crop/pose latency.
+
+Do not block process-isolation or encoder-contention experiments on having fish
+available. Do require fish or another valid detectable subject before declaring
+crop/pose/track latency solved.
+
+## Remaining Work
+
+- Add an automated decoded-frame entropy/black-frame sanity check to recording
+  validation so invalid camera content cannot pass as a meaningful load test.
+- Start the process-isolated full-frame encode/output experiment. The key
+  discriminator is whether YOLO `cpu_pre_sync_ms` / CUDA launch p95 drops while
+  valid two-camera PTP split-GOP recording remains active.
+- Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
+  production-like runs on this host.
