@@ -281,15 +281,24 @@ Real-frame external load status:
   - YOLO `cpu_preprocess_ms p95 = 0.0149 ms` and
     `cpu_pre_sync_ms p95 = 0.0776 ms`, essentially unchanged from the
     preprocess-only baseline (`0.0165 ms` and `0.0798 ms`).
-  - `acquisition_to_detect_done_ms p95` rose from `3.4894 ms` to `4.4122 ms`.
-    That is a small shared-GPU/fabric cost, not the `6-8 ms` same-process
-    CUDA/NVENC launch stall.
+  - `acquisition_to_detect_done_ms p95` rose from `3.4894 ms` to `4.4122 ms`
+    and `total_ms p95` rose from `3.4606 ms` to `4.3865 ms`.
+  - The added latency was visible in GPU completion timing:
+    `infer_ms p95` rose from `2.8012 ms` to `3.5419 ms`, and `sync_ms p95`
+    rose from `3.3545 ms` to `4.3012 ms`.
+  - The added latency was not visible in CPU launch/preprocess timing:
+    `cpu_preprocess_ms p95` and `cpu_pre_sync_ms p95` were slightly lower than
+    baseline.
   - External NVENC wrote about `150.4 Mbps`; `nvEncLockBitstream p95` stayed
     only `0.0029 ms`, with `encode_total_ms p95 = 0.1886 ms`.
 - Interpretation: real-frame external NVENC on the same GPU still does not
-  reproduce the in-process YOLO host-side stall. This strengthens the
-  process-boundary hypothesis, with the caveat that this is cached raw-file
-  input and not yet live CUDA IPC / split-GOP recorder handoff.
+  reproduce the in-process YOLO host-side stall. It does still add about
+  `0.9 ms p95` of same-GPU hardware/fabric completion latency. This means
+  process isolation should be treated as a way to remove same-process
+  runtime-lock coupling, not as a way to make shared GPU/NVENC/copy resources
+  free. Encode GPU placement and split-GOP routing remain first-class design
+  choices. This result is still from cached raw-file input, not yet live CUDA
+  IPC / split-GOP recorder handoff.
 
 Candidate command shape:
 

@@ -145,8 +145,14 @@ crop/pose/track latency solved.
 - The first same-GPU real-frame external run on 2026-04-25 stayed near the
   preprocess-only fast path for YOLO CPU submission
   (`cpu_preprocess_ms p95 = 0.0149 ms`, `cpu_pre_sync_ms p95 = 0.0776 ms`)
-  while Process B wrote about `150.4 Mbps`; next implementation work is the
-  live external-recorder detach prototype with CUDA IPC or an exportable detach
-  ring.
+  while Process B wrote about `150.4 Mbps`.
+- That same run still increased `capture_to_detect_done_ms p95` from
+  `3.4894 ms` to `4.4122 ms`. The added latency landed in GPU completion
+  timing (`infer_ms` / `sync_ms`), not CPU launch/preprocess timing, so process
+  isolation should be treated as solving same-process runtime-lock contention,
+  not as eliminating same-GPU hardware/fabric contention.
+- Next implementation work is the live external-recorder detach prototype with
+  CUDA IPC or an exportable detach ring. Keep encode GPU placement/routing as a
+  first-class design variable.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
