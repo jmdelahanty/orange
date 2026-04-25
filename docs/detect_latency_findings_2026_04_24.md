@@ -40,6 +40,17 @@ The YOLO CPU thread is sometimes blocked while submitting CUDA work.
 Full-frame NVENC/output activity is the strongest observed source of that block.
 ```
 
+The newest configuration-level result is that generic NVENC AQ and temporal AQ
+are now suspect for this imaging regime:
+
+- A focused headless real-YOLO plus real split-GOP VBR A/B showed
+  `AQ on + temporalAQ on` at `10.487 ms` detect p95.
+- The same setup with `AQ off + temporalAQ off` dropped to `3.820 ms` detect
+  p95 while still sustaining about `100 fps` and about `150 Mbps`.
+- This makes schema-level `recording.encode.aq = off` and
+  `recording.encode.temporal_aq = off` the highest-signal next two-camera GUI
+  validation before deeper process-isolation work.
+
 Non-negotiable recording constraint:
 
 - At the current `4512x4512 Mono8 @ 100 fps` full-frame resolution, one GPU /
@@ -1062,9 +1073,156 @@ Interpretation:
   next experiment remains process isolation for full-frame
   encode/harvest/output.
 
+### External NVENC process discriminator
+
+Artifacts:
+
+- baseline analytics-only:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_preprocessonly_a16_gpu5_run2`
+- same-GPU external solid-frame NVENC:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_preprocessonly_a16_gpu5_external_nvenc_20260425_151858`
+- same-GPU external host-noise NVENC:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_preprocessonly_a16_gpu5_external_nvenc_20260425_152234`
+
+Command shape:
+
+- Process A: headless real-YOLO analytics on camera `2010096`, A16 GPU `5`,
+  full-frame recording disabled.
+- Process B: separate synthetic NVENC process on the same GPU at
+  `4512x4512 @ 60 fps`.
+- Tested both `solid` and `host-noise` synthetic input patterns.
+
+Result:
+
+- analytics-only baseline:
+  - `acquisition_to_detect_done_ms p95 = 3.4894 ms`
+  - `total_ms p95 = 3.4606 ms`
+  - `cpu_preprocess_ms p95 = 0.0165 ms`
+  - `sync_ms p95 = 3.3545 ms`
+- external solid-frame same-GPU NVENC:
+  - `acquisition_to_detect_done_ms p95 = 4.4383 ms`
+  - `cpu_preprocess_ms p95 = 0.0137 ms`
+  - external `nvEncLockBitstream p95 = 0.0030 ms`
+- external host-noise same-GPU NVENC:
+  - `acquisition_to_detect_done_ms p95 = 4.4115 ms`
+  - `cpu_preprocess_ms p95 = 0.0154 ms`
+  - external `nvEncLockBitstream p95 = 0.0031 ms`
+
+Interpretation:
+
+- Separate-process same-GPU NVENC added about `0.9 ms` of shared-GPU work to
+  YOLO completion time.
+- It did not recreate the same-process GUI/NVENC `cpu_preprocess_ms` tail of
+  about `8 ms`.
+- This is evidence that process isolation is still plausible as a QoS
+  boundary, but the synthetic external process did not reproduce the long
+  Linux NVENC harvest waits seen in the real GUI recording path.
+- The next process-isolation discriminator needs either real camera-frame
+  detach/copy into the recorder process or a synthetic source that actually
+  blocks in `nvEncLockBitstream` at production-like depth.
+
+### Encoder rate-control and AQ result
+
+Artifacts:
+
+- broad short matrix:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_encoder_settings_a16_gpu5`
+- focused VBR AQ/temporal-AQ A/B:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_vbr_aq_ab_a16_gpu5`
+
+Command shape:
+
+- camera `2010096`, A16 GPU `5`,
+- headless real YOLO,
+- real full-frame split-GOP recording,
+- `4512x4512 @ 100 fps`,
+- HEVC `p1`, `ll`, GOP `25`, about `150 Mbps`,
+- focused run length `15 s` plus `2 s` warmup.
+
+Focused VBR result:
+
+```text
+VBR AQ on  + temporalAQ on : detect p95 10.487 ms, total p95 10.086 ms, pre_sync p95 6.891 ms
+VBR AQ on  + temporalAQ off: detect p95  4.312 ms, total p95  4.130 ms, pre_sync p95 3.623 ms
+VBR AQ off + temporalAQ on : detect p95  4.141 ms, total p95  4.110 ms, pre_sync p95 3.632 ms
+VBR AQ off + temporalAQ off: detect p95  3.820 ms, total p95  3.717 ms, pre_sync p95 0.346 ms
+```
+
+Run health:
+
+- all focused runs sustained about `100 fps`,
+- no encoder failures,
+- no camera frame-id gaps,
+- output bitrate remained about `150 Mbps`.
+
+Interpretation:
+
+- In the headless real-YOLO plus real split-GOP path, the strongest signal is
+  not rate-control mode by itself.
+- The strongest signal is generic NVENC AQ/temporal-AQ.
+- Disabling both AQ features moved the focused VBR run from a `10.487 ms`
+  detect p95 tail to `3.820 ms`, while preserving throughput and output
+  bitrate.
+- The broad short matrix was noisier, including duplicate/equivalent rows with
+  different p95 tails, but it pointed in the same direction.
+- This does not prove the two-camera GUI tail is solved, because the focused
+  run was single-camera headless. It is still the highest-signal production
+  config change to validate before spending more time on process isolation.
+
+Design consequence:
+
+- `recording.encode.aq` and `recording.encode.temporal_aq` should be
+  first-class camera config fields, not hidden environment flags.
+- Schema 4 promotes those fields as tri-state `auto|off|on`.
+- The current low-latency candidate for the A16 split-GOP 100 fps configs is
+  `aq = off` and `temporal_aq = off`.
+
 ## Recommended Next Plan
 
-1. Prioritize process isolation for full-frame encode/output.
+1. Validate schema-4 AQ-off recording configs in the real two-camera GUI path.
+
+Reason:
+
+- this is a persistent encoder config change, not an env-only diagnostic,
+- the focused headless VBR A/B moved `acquisition_to_detect_done_ms p95` from
+  `10.487 ms` to `3.820 ms`,
+- throughput and output bitrate remained healthy,
+- it preserves the required split-GOP full-frame recording architecture.
+
+Command shape:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+sudo env DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+  ORANGE_YOLO_PERF_LOG=1 \
+  ORANGE_YOLO_PERF_SAMPLE=1 \
+  ORANGE_CROP_COPY_TIMING=0 \
+  ORANGE_CROP_STAGE_SOURCE=1 \
+  ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1 \
+  ORANGE_YOLO_AFFINITY_CAM_2010095=2 \
+  ORANGE_YOLO_AFFINITY_CAM_2010096=4 \
+  ORANGE_YOLO_READY_EVENT_FASTPATH=1 \
+  ./targets/release/orange
+```
+
+Expected GUI setup:
+
+- use schema-4 `100_cam4` or equivalent split-GOP configs,
+- recording panel should show `spatial AQ = off` and `temporal AQ = off`,
+- full-frame split-GOP recording remains enabled.
+
+Success criteria:
+
+- both cameras sustain about `100 fps`,
+- full-frame MP4s are present and valid,
+- zero camera drops,
+- zero preprocess drops,
+- zero crop-sidecar drops,
+- `capture_to_detect_done p95` and `cpu_preprocess_ms p95` move materially
+  toward the headless AQ-off result.
+
+2. If the two-camera GUI tail remains, prioritize process isolation for
+full-frame encode/output.
 
 Reason:
 
@@ -1073,11 +1231,11 @@ Reason:
 - split-harvest plus a `1000 us` harvest delay did not reduce YOLO
   `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, or `cpu_preprocess_ms`
   p95,
-- the expensive `nvEncLockBitstream` work still exists in-process,
-- YOLO `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, and
-  `cpu_preprocess_ms` p95 did not improve,
-- therefore the remaining detect p95 tail is probably not caused by the
-  encoder worker's submit call-site structure.
+- synthetic external same-GPU NVENC did not recreate the same-process
+  `cpu_preprocess_ms` tail,
+- if AQ-off does not fix the real GUI path, the remaining issue is probably a
+  same-process CUDA/NVENC runtime contention boundary or a real-recording
+  resource path that the synthetic external load did not exercise.
 
 Smallest useful process-boundary experiment:
 
@@ -1124,7 +1282,7 @@ Stop criteria:
 - YOLO p95 remains around the current `8 ms` driver-lock tail after the full
   encode/output process boundary is introduced.
 
-2. Keep split harvest as an experimental architecture checkpoint, not a proven
+3. Keep split harvest as an experimental architecture checkpoint, not a proven
 latency fix.
 
 Use it when we need to:
@@ -1133,7 +1291,7 @@ Use it when we need to:
 - isolate encoder-worker accounting from harvest latency,
 - compare in-process versus out-of-process harvest behavior.
 
-3. Investigate YOLO launch exposure reduction in parallel or next.
+4. Investigate YOLO launch exposure reduction in parallel or next.
 
 This is the strongest non-multiprocess alternative if split harvest is not
 enough:
@@ -1148,7 +1306,7 @@ Acceptance rule:
   toward the `preprocess_only` control while full-frame split-GOP recording
   stays enabled.
 
-4. Keep the explicit full-frame encoder/output instrumentation.
+5. Keep the explicit full-frame encoder/output instrumentation.
 
 Measure these with per-camera thread labels and NVTX:
 
@@ -1159,7 +1317,7 @@ Measure these with per-camera thread labels and NVTX:
 - source/primary route versus helper route,
 - CPU thread id and camera serial for the output threads.
 
-5. Use the `preprocess_only` run as the control.
+6. Use the `preprocess_only` run as the control.
 
 Any candidate architecture should be compared against:
 
@@ -1167,7 +1325,7 @@ Any candidate architecture should be compared against:
 - preprocess-only,
 - no-full-frame immediate recycle.
 
-6. Do not optimize crop or display further for detect p95 until full-frame
+7. Do not optimize crop or display further for detect p95 until full-frame
 encode/output is addressed.
 
 Crop preview disable remains useful for crop/pose latency. Display throttle is

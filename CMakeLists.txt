@@ -307,11 +307,17 @@ set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "${SRC_DIR}/project.cpp"
 )
 
+set(NVENC_STRESS_LOAD_SOURCES
+    "tools/nvenc_stress_load.cpp"
+    ${NVENCODER_SOURCES}
+)
+
 add_executable(orange ${ORANGE_SOURCES})
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
+add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
 
 if(BUILD_TESTING)
     add_executable(recording_validation_tests
@@ -363,6 +369,7 @@ orange_configure_target(orange_client)
 orange_configure_target(yolo_offline)
 orange_configure_target(evt_lens_probe)
 orange_configure_target(evt_aperture_characterize)
+orange_configure_target(nvenc_stress_load)
 
 target_link_libraries(orange PRIVATE
     ${ENET_LIBRARY}
@@ -455,6 +462,14 @@ target_link_libraries(evt_aperture_characterize PRIVATE
     ${CUDA_CUDART_LIBRARY}
     ${CUDA_DRIVER_LIBRARY}
     ${ENET_LIBRARY}
+    m
+    pthread
+)
+
+target_link_libraries(nvenc_stress_load PRIVATE
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_DRIVER_LIBRARY}
+    ${NVIDIA_ENCODE_LIBRARY}
     m
     pthread
 )

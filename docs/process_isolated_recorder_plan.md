@@ -179,22 +179,62 @@ The external load can start as synthetic. It does not need real camera frames
 for the first discriminator as long as it exercises the same CUDA/NVENC encode
 and bitstream harvest APIs at comparable resolution and cadence.
 
+Phase 0 first discriminator status:
+
+- Implemented `tools/nvenc_stress_load.cpp` as a separate-process synthetic
+  NVENC stressor and `scripts/run_process_isolation_discriminator.sh` to run it
+  beside headless real-YOLO analytics.
+- The first same-GPU tests used camera `2010096` analytics on A16 GPU `5` and
+  external NVENC stress on the same GPU at `4512x4512 @ 60 fps`.
+- Synthetic solid-frame NVENC was too compressible/light:
+  `nvEncLockBitstream p95 = 0.0030 ms`, `encode_total p95 = 0.1406 ms`.
+- Host-noise NVENC increased output volume but still did not recreate the
+  same-process GUI/NVENC blocking pattern:
+  `nvEncLockBitstream p95 = 0.0031 ms`, `encode_total p95 = 0.1780 ms`.
+- Headless YOLO baseline `acquisition_to_detect_done_ms p95 = 3.4894 ms`.
+- Same-GPU external solid NVENC:
+  `acquisition_to_detect_done_ms p95 = 4.4383 ms`,
+  `cpu_preprocess_ms p95 = 0.0137 ms`.
+- Same-GPU external host-noise NVENC:
+  `acquisition_to_detect_done_ms p95 = 4.4115 ms`,
+  `cpu_preprocess_ms p95 = 0.0154 ms`.
+
+Interpretation:
+
+- A separate NVENC process on the same GPU adds real shared-GPU work and moves
+  YOLO p95 up by about `0.9 ms`, mostly in GPU completion/sync time.
+- It does not reproduce the same-process multi-ms YOLO CPU launch/preprocess
+  stalls where `cpu_preprocess_ms` was around `8 ms`.
+- This supports, but does not fully prove, the process-boundary hypothesis:
+  same-process CUDA/NVENC runtime contention is likely a major component, while
+  shared GPU/NVENC/copy load remains a secondary cost.
+- The next discriminator should make the external process block harder in
+  `nvEncLockBitstream` or move real camera-frame detach/copy into the external
+  recorder. The current synthetic process does not yet reproduce the long
+  Linux NVENC harvest waits seen in the GUI path.
+
 Candidate command shape:
 
 ```bash
 ./scripts/run_process_isolation_discriminator.sh \
-  --mode same-gpu-60fps \
-  --camera 2010096 \
-  --duration 20
+  --gpu-id 5 \
+  --nvenc-gpu-id 5 \
+  --nvenc-fps 60 \
+  --nvenc-duration 45 \
+  --nvenc-pattern host-noise
 ```
 
 Required outputs:
 
 - analytics recording folder,
 - analytics `Cam*_yolo_perf.csv`,
-- Nsight SQLite for Process A,
-- recorder load timing CSV or JSON,
-- combined summary JSON.
+- recorder load timing CSV,
+- terminal output listing analytics and recorder artifact paths.
+
+Optional outputs:
+
+- Nsight SQLite for Process A, when the discriminator is run under Nsight.
+- combined summary JSON, if added to the wrapper later.
 
 Primary success metrics:
 
@@ -448,13 +488,13 @@ Cross-process:
 
 Phase 0:
 
-- [ ] Add or reuse a headless analytics mode with full-frame recording disabled
+- [x] Add or reuse a headless analytics mode with full-frame recording disabled
       and YOLO enabled.
-- [ ] Add an external NVENC load/stress process at `4512x4512 @ 60 fps`.
-- [ ] Add `scripts/run_process_isolation_discriminator.sh`.
+- [x] Add an external NVENC load/stress process at `4512x4512 @ 60 fps`.
+- [x] Add `scripts/run_process_isolation_discriminator.sh`.
 - [ ] Attach Nsight to the analytics process first.
-- [ ] Summarize YOLO CUDA runtime / OSRT p95 and recorder NVENC p95.
-- [ ] Run same-GPU external NVENC load.
+- [x] Summarize YOLO timing p95 and recorder NVENC p95 from CSV artifacts.
+- [x] Run same-GPU external NVENC load.
 - [ ] Run separate-GPU external NVENC load only after same-GPU result is known.
 
 Phase 1:
