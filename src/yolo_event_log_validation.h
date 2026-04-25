@@ -16,6 +16,8 @@ struct YoloEventLogValidationStats {
     uint64_t rows = 0;
     uint64_t detection_rows = 0;
     uint64_t zero_rows = 0;
+    uint64_t timeout_rows = 0;
+    uint64_t failed_rows = 0;
     uint64_t parse_errors = 0;
     uint64_t schema_errors = 0;
     uint64_t sequence_errors = 0;

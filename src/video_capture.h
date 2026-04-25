@@ -341,6 +341,7 @@ struct CameraEachSelect
 
     // Frame IPC settings (NEW)
     bool send_frame_ipc = true;      // Enable frame synchronization via IPC
+    bool send_yolo_via_frame_ipc = true;
     
     // Legacy/deprecated settings (kept for backward compatibility)
     bool send_yolo_via_enet = false;

@@ -1,7 +1,8 @@
 # Headless Real YOLO Worker Plan
 
 Date: 2026-04-22
-Status: design and implementation checklist.
+Status: first audit-only real-YOLO slice implemented; live IPC and broader
+validation remain future work.
 
 Purpose: define what it would take to run the real `YoloWorker` from headless
 experiments, while preserving the current stable recording path and the Citrus
@@ -19,14 +20,16 @@ As of this plan:
   detection update IPC.
 - Headless frame IPC can verify serial-named base-frame queues such as
   `/shm_cam_2010096`.
-- Local headless experiments intentionally reject `fixed.yolo=true`; the
-  current runner only supports `yolo=false`.
+- Local headless experiments still reject legacy `fixed.yolo=true`.
+- Local headless experiments now support explicit real inference through
+  `fixed.yolo_worker.mode = "real"` or direct CLI `--yolo-engine`.
 
 Interpretation:
 
 - We have good headless coverage for recording, base-frame IPC, and the YOLO
   audit-log contract.
-- We do not yet have headless coverage for real model inference.
+- We now have the first real model-inference path in headless. It is
+  audit-only by default and uses the same `YoloWorker` as GUI.
 
 ## Recommendation
 
@@ -34,15 +37,16 @@ Do not make real headless YOLO the default next implementation unless headless
 inference is needed soon. It touches TensorRT lifecycle, CUDA resources,
 acquisition fanout, worker shutdown, and live IPC policy.
 
-If we choose to start it, use a narrow opt-in first slice:
+The implemented first slice is intentionally narrow and opt-in:
 
-- single camera,
+- one or more selected cameras, with single-camera recommended for first smoke
+  tests,
 - real TensorRT YOLO worker,
 - JSONL audit output enabled,
 - live Citrus detection IPC disabled,
 - no crop/encode coupling,
 - no display coupling,
-- no multi-camera promises until the single-camera path is stable.
+- no multi-camera performance promises until the single-camera path is stable.
 
 This keeps the change useful without mixing model inference with Citrus
 live-control semantics too early.
@@ -186,29 +190,141 @@ Optional performance counters:
 - Live detection IPC can corrupt Citrus live-control semantics if stale updates
   are not suppressed correctly.
 
-## Implementation Checklist
+## Implementation Status
 
-- [ ] Define `HeadlessYoloWorkerConfig`.
-- [ ] Parse `fixed.yolo_worker` in `orange_headless_client.cpp`.
-- [ ] Add run config serialization for `yolo_worker`.
-- [ ] Add summary fields:
+- [x] Define `HeadlessYoloWorkerConfig`.
+- [x] Parse `fixed.yolo_worker` in `orange_headless_client.cpp`.
+- [x] Add direct local CLI flags:
+  `--yolo-engine`, `--yolo-decimate`, `--yolo-publish-live-ipc`.
+- [x] Add run config serialization for `yolo_worker`.
+- [x] Add summary fields:
   `yolo_worker_mode`, `yolo_worker_status`, `yolo_worker_engine_path`.
-- [ ] Keep `fixed.yolo=true` rejected or map it explicitly to
+- [x] Keep `fixed.yolo=true` rejected or map it explicitly to
   `fixed.yolo_worker.mode = "real"` only after the config is implemented.
-- [ ] Store per-camera YOLO engine paths in owned strings that outlive workers.
-- [ ] Initialize `CameraResources` with YOLO support when real headless YOLO is
+- [x] Store YOLO engine paths in owned config strings that outlive workers.
+- [x] Initialize `CameraResources` with YOLO support when real headless YOLO is
   enabled.
-- [ ] Construct and start `YoloWorker` in headless local runs.
-- [ ] Pass the worker pointer into `acquire_frames(...)`.
-- [ ] Ensure shutdown stops YOLO workers before camera resources are freed.
-- [ ] Reuse existing JSONL summarization for real YOLO.
-- [ ] Extend JSONL summarization with timeout/failed row counts.
-- [ ] Add a checked-in single-camera real-YOLO smoke spec, if an engine path can
+- [x] Initialize TensorRT plugins in the headless path before constructing
+  `YoloWorker`.
+- [x] Construct and start `YoloWorker` in headless local runs.
+- [x] Pass the worker pointer into `acquire_frames(...)`.
+- [x] Ensure shutdown stops YOLO workers before camera resources are freed.
+- [x] Reuse existing JSONL summarization for real YOLO.
+- [x] Extend JSONL summarization with timeout/failed row counts.
+- [x] Add a checked-in single-camera real-YOLO smoke spec, if an engine path can
   be made host-local and configurable.
-- [ ] Build `orange_client`.
-- [ ] Run a short single-camera headless real-YOLO smoke.
+- [x] Build `orange_client`.
+- [x] Run a short single-camera headless real-YOLO smoke.
 - [ ] Only after audit-only real YOLO is stable, design and test
   `publish_live_ipc=true`.
+
+## Baseline Validation
+
+Validated on 2026-04-25 with the sudo wrapper and the checked-in spec shape.
+The successful run used a temporary experiment id because the first failed
+attempt left its output folder intact:
+
+```text
+/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_preprocessonly_a16_gpu5_run2
+```
+
+Initial failure:
+
+- Headless real YOLO reached `YoloWorker` construction but TensorRT could not
+  deserialize the engine because the `EfficientNMS_TRT` plugin creator was not
+  registered.
+- Cause: GUI called `YOLOv8::initialize_plugins()` at startup, but the headless
+  entrypoint did not.
+- Fix: call `YOLOv8::initialize_plugins()` in the headless real-YOLO path before
+  constructing workers.
+
+Successful run summary:
+
+- `status=completed`, `pass_fail=pass`.
+- Acquisition held `~100 fps` with no camera drops, no frame-id gaps, and no
+  get-frame errors.
+- Real YOLO wrote `3203` event rows and `3203` perf rows.
+- All event rows had zero detections, which is valid for this smoke because no
+  subject was present.
+- `recording_sink_mode=preprocess_only`, so no full-frame video and `enc_fps=0`
+  are expected.
+
+Steady-state YOLO metrics after frame 200:
+
+| Metric | p95 |
+| --- | ---: |
+| `acquisition_to_worker_start_ms` | `0.0388 ms` |
+| `yolo_queue_wait_ms` | `0.0181 ms` |
+| `worker_start_to_detect_done_ms` | `3.4549 ms` |
+| `acquisition_to_detect_done_ms` | `3.4894 ms` |
+| `cpu_preprocess_ms` | `0.0165 ms` |
+| `cpu_pre_sync_ms` | `0.0798 ms` |
+| `cpu_infer_call_ms` | `0.0486 ms` |
+| `total_ms` | `3.4606 ms` |
+
+Interpretation:
+
+- This is a clean Process A baseline for later process-isolation tests.
+- It confirms that camera acquisition plus real TensorRT YOLO can sustain
+  `100 fps` without GUI and without in-process full-frame NVENC.
+- The YOLO hot path is not intrinsically slow in this setup. The large GUI
+  detect-latency regressions are still most consistent with contention
+  introduced by full-frame encode/output in the same process.
+- Shutdown printed one source-release drain timeout. The run summary still
+  passed and steady-state had no drops or starve, so treat this as a shutdown
+  drain issue rather than a hot-path latency result.
+
+## Current Invocation Shape
+
+Direct local smoke example:
+
+```bash
+ORANGE_YOLO_PERF_LOG=1 ORANGE_YOLO_PERF_SAMPLE=1 \
+./targets/release/orange_client \
+  --mode local \
+  --camera 2010096 \
+  --record-folder /home/jeremy/orange_data/exp/headless_real_yolo_smoke \
+  --recording-sink-mode preprocess_only \
+  --duration 30 \
+  --yolo-engine /home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine
+```
+
+Experiment spec smoke shape:
+
+Checked-in spec:
+`experiment_specs/2010096_headless_real_yolo_preprocessonly_a16_gpu5.json`
+
+Sudo-wrapper invocation with explicit YOLO perf artifacts:
+
+```bash
+sudo -n /usr/local/bin/orange-local-benchmark \
+  --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
+  --yolo-perf-log \
+  --yolo-perf-sample 1 \
+  /home/jeremy/orange-gop-split-a16/experiment_specs/2010096_headless_real_yolo_preprocessonly_a16_gpu5.json
+```
+
+```json
+"fixed": {
+  "stream_only": false,
+  "recording_sink_mode": "preprocess_only",
+  "yolo_worker": {
+    "mode": "real",
+    "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine",
+    "decimate": 1,
+    "publish_live_ipc": false
+  }
+}
+```
+
+Local engine inventory checked on 2026-04-25:
+
+- App default:
+  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine`
+- Camera-config historical engine:
+  `/home/jeremy/orange_data/detect/cam2010096_detect_v12_fp16.engine`
+- Additional historical engine:
+  `/home/jeremy/orange_data/detect/b.engine`
 
 ## Non-Goals For First Slice
 

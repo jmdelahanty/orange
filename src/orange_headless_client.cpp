@@ -36,6 +36,8 @@
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
 #include "fsuid_guard.h"
+#include "yolov8_det.h"
+#include "yolo_worker.h"
 #include "yolo_event_log.h"
 #include "yolo_event_log_validation.h"
 #include <signal.h>
@@ -82,6 +84,19 @@ struct HeadlessFrameIpcConfig {
     }
 };
 
+struct HeadlessYoloWorkerConfig {
+    std::string mode = "off";
+    std::string engine_path;
+    int decimate = 1;
+    bool publish_live_ipc = false;
+    int timeout_ms = 500;
+    bool fail_on_init_error = true;
+
+    bool enabled() const {
+        return mode == "real";
+    }
+};
+
 struct HeadlessCliOptions {
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
@@ -104,6 +119,7 @@ struct HeadlessCliOptions {
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
     HeadlessFrameIpcConfig frame_ipc;
     yolo_event_log::SyntheticYoloEventConfig yolo_event_log;
+    HeadlessYoloWorkerConfig yolo_worker;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -139,6 +155,7 @@ struct ExperimentSpec {
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture;
     HeadlessFrameIpcConfig frame_ipc;
     yolo_event_log::SyntheticYoloEventConfig yolo_event_log;
+    HeadlessYoloWorkerConfig yolo_worker;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -613,6 +630,31 @@ nlohmann::json build_headless_yolo_event_log_config_json(
         {"emit_zero_detections", config.emit_zero_detections},
         {"label", config.label},
         {"confidence", config.confidence}
+    };
+}
+
+std::string normalize_headless_token(std::string value)
+{
+    std::transform(
+        value.begin(),
+        value.end(),
+        value.begin(),
+        [](unsigned char c) {
+            return c == '-' ? '_' : static_cast<char>(std::tolower(c));
+        });
+    return value;
+}
+
+nlohmann::json build_headless_yolo_worker_config_json(
+    const HeadlessYoloWorkerConfig& config)
+{
+    return {
+        {"mode", config.mode},
+        {"engine_path", config.engine_path},
+        {"decimate", config.decimate},
+        {"publish_live_ipc", config.publish_live_ipc},
+        {"timeout_ms", config.timeout_ms},
+        {"fail_on_init_error", config.fail_on_init_error}
     };
 }
 
@@ -1620,6 +1662,9 @@ void print_headless_usage(const char* argv0)
         << "  --frame-ipc-unlink-existing Optional. Remove stale serial-named IPC queues before creating writers.\n"
         << "  --frame-ipc-allow-push-failures\n"
         << "                              Optional. Do not fail verification on full/undrained IPC rings.\n"
+        << "  --yolo-engine <path>        Optional. Enable real audit-only YOLO with this TensorRT engine.\n"
+        << "  --yolo-decimate <int>       Optional. Process 1/N frames when real YOLO is enabled.\n"
+        << "  --yolo-publish-live-ipc     Optional. Let real YOLO publish detections to frame IPC.\n"
         << "  --experiment-spec <path>     Run a local single-host experiment matrix.\n"
         << "  --list-cameras               List local cameras and exit.\n"
         << "  --help\n";
@@ -1653,6 +1698,62 @@ bool headless_frame_ipc_requested(const HeadlessFrameIpcConfig& config)
            config.unlink_existing_queues ||
            config.allow_push_failures ||
            !config.require_base_frames;
+}
+
+bool headless_yolo_worker_requested(const HeadlessYoloWorkerConfig& config)
+{
+    return config.enabled() ||
+           config.mode != "off" ||
+           !config.engine_path.empty() ||
+           config.decimate != 1 ||
+           config.publish_live_ipc ||
+           config.timeout_ms != 500 ||
+           !config.fail_on_init_error;
+}
+
+bool validate_headless_yolo_worker_config(const HeadlessYoloWorkerConfig& config,
+                                          std::string* error_out,
+                                          const std::string& context)
+{
+    const std::string prefix = context.empty() ? "" : context + ": ";
+    if (config.mode != "off" && config.mode != "real") {
+        if (error_out) {
+            *error_out = prefix + "yolo_worker.mode must be off|real";
+        }
+        return false;
+    }
+    if (config.mode == "off") {
+        if (!config.engine_path.empty() ||
+            config.decimate != 1 ||
+            config.publish_live_ipc ||
+            config.timeout_ms != 500 ||
+            !config.fail_on_init_error) {
+            if (error_out) {
+                *error_out = prefix + "yolo_worker options require mode=real";
+            }
+            return false;
+        }
+        return true;
+    }
+    if (config.engine_path.empty()) {
+        if (error_out) {
+            *error_out = prefix + "yolo_worker.engine_path is required when mode=real";
+        }
+        return false;
+    }
+    if (config.decimate <= 0) {
+        if (error_out) {
+            *error_out = prefix + "yolo_worker.decimate must be > 0";
+        }
+        return false;
+    }
+    if (config.timeout_ms <= 0) {
+        if (error_out) {
+            *error_out = prefix + "yolo_worker.timeout_ms must be > 0";
+        }
+        return false;
+    }
+    return true;
 }
 
 bool validate_pre_encoder_reference_capture_config(const PreEncoderReferenceCaptureConfig& config,
@@ -1883,6 +1984,52 @@ bool parse_headless_yolo_event_log_json(
             }
             return false;
         }
+    }
+
+    *config_out = config;
+    return true;
+}
+
+bool parse_headless_yolo_worker_json(
+    const nlohmann::json& node,
+    HeadlessYoloWorkerConfig* config_out,
+    std::string* error_out,
+    const std::string& context)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out = context + ": internal error: null yolo_worker destination";
+        }
+        return false;
+    }
+
+    HeadlessYoloWorkerConfig config;
+    if (node.is_boolean()) {
+        config.mode = node.get<bool>() ? "real" : "off";
+    } else if (node.is_object()) {
+        config.mode = normalize_headless_token(node.value("mode", "off"));
+        if (config.mode == "true" || config.mode == "on") {
+            config.mode = "real";
+        } else if (config.mode == "false" || config.mode == "disabled" ||
+                   config.mode == "none") {
+            config.mode = "off";
+        }
+        config.engine_path = node.value("engine_path", "");
+        config.decimate = node.value("decimate", config.decimate);
+        config.publish_live_ipc =
+            node.value("publish_live_ipc", config.publish_live_ipc);
+        config.timeout_ms = node.value("timeout_ms", config.timeout_ms);
+        config.fail_on_init_error =
+            node.value("fail_on_init_error", config.fail_on_init_error);
+    } else {
+        if (error_out) {
+            *error_out = context + ": yolo_worker must be a boolean or JSON object";
+        }
+        return false;
+    }
+
+    if (!validate_headless_yolo_worker_config(config, error_out, context)) {
+        return false;
     }
 
     *config_out = config;
@@ -2324,6 +2471,32 @@ bool parse_headless_cli_options(int argc, char* argv[], HeadlessCliOptions* opti
             options->frame_ipc.allow_push_failures = true;
             continue;
         }
+        if (arg == "--yolo-engine") {
+            options->yolo_worker.mode = "real";
+            options->yolo_worker.engine_path = consume_value("--yolo-engine");
+            if (options->yolo_worker.engine_path.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--yolo-decimate") {
+            const std::string value = consume_value("--yolo-decimate");
+            if (value.empty() && error_out && !error_out->empty()) {
+                return false;
+            }
+            if (!parse_non_negative_int(value, &options->yolo_worker.decimate) ||
+                options->yolo_worker.decimate <= 0) {
+                if (error_out) {
+                    *error_out = "Invalid --yolo-decimate value: " + value;
+                }
+                return false;
+            }
+            continue;
+        }
+        if (arg == "--yolo-publish-live-ipc") {
+            options->yolo_worker.publish_live_ipc = true;
+            continue;
+        }
         if (arg == "--recording-sink-mode") {
             options->recording_sink_mode = consume_value("--recording-sink-mode");
             if (options->recording_sink_mode.empty() && error_out && !error_out->empty()) {
@@ -2590,6 +2763,16 @@ void cleanup_selected_camera_buffers(const std::vector<int>& active_camera_indic
     }
 }
 
+void stop_headless_yolo_workers(std::vector<std::unique_ptr<YoloWorker>>& yolo_workers)
+{
+    for (auto& worker : yolo_workers) {
+        if (worker) {
+            worker->StopThread();
+        }
+    }
+    yolo_workers.clear();
+}
+
 void close_all_cameras(CameraEmergent* ecams,
                        CameraParams* cameras_params,
                        int num_cameras)
@@ -2631,6 +2814,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            std::vector<CameraResources>& camera_resources,
                            std::vector<int>& active_camera_indices,
                            std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+                           std::vector<std::unique_ptr<YoloWorker>>& yolo_workers,
                            HeadlessGpuDmonMonitor* gpu_dmon_monitor,
                            CameraEmergent* ecams,
                            CameraParams* cameras_params,
@@ -2650,6 +2834,8 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
         }
     }
     camera_threads.clear();
+
+    stop_headless_yolo_workers(yolo_workers);
 
     if (camera_control) {
         drain_and_shutdown_recording(recording_pipelines, camera_control);
@@ -2985,6 +3171,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     std::vector<CameraResources>& camera_resources,
     std::vector<int>& active_camera_indices,
     std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+    std::vector<std::unique_ptr<YoloWorker>>& yolo_workers,
     std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers,
     HeadlessFrameIpcRuntime* frame_ipc_runtime,
     const HeadlessFrameIpcConfig& frame_ipc_config,
@@ -3000,7 +3187,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     int record_start_delay_seconds = 0,
     bool enable_recording = true,
     const yolo_event_log::SyntheticYoloEventConfig& yolo_event_log_config =
-        yolo_event_log::SyntheticYoloEventConfig{})
+        yolo_event_log::SyntheticYoloEventConfig{},
+    const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{})
 {
     std::cout << "start camera sthread..." << std::endl;
     if (thread_failure_state) {
@@ -3127,21 +3315,32 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
 
         camera_resources.clear();
         camera_resources.resize(num_cameras);
+        yolo_workers.clear();
+        yolo_workers.resize(num_cameras);
+        if (yolo_worker_config.enabled()) {
+            YOLOv8::initialize_plugins();
+        }
         for (int idx : selected_indices) {
+            const bool enable_real_yolo = yolo_worker_config.enabled();
             cameras_select[idx].stream_on = false;
             cameras_select[idx].record = enable_recording;
-            cameras_select[idx].yolo = false;
+            cameras_select[idx].yolo = enable_real_yolo;
+            cameras_select[idx].yolo_model =
+                enable_real_yolo ? yolo_worker_config.engine_path.c_str() : nullptr;
             cameras_select[idx].crop_and_encode = false;
             cameras_select[idx].send_frame_ipc = frame_ipc_config.enabled();
+            cameras_select[idx].send_yolo_via_frame_ipc =
+                frame_ipc_config.enabled() && yolo_worker_config.publish_live_ipc;
             camera_resources[idx].initialize(
                 cameras_params[idx].gpu_id,
                 max_frame_size_bytes,
-                false,
+                enable_real_yolo,
                 cameras_params[idx].recording.resources.acquire_work_entries);
         }
 
     } catch (const std::exception& ex) {
         std::cerr << "Failed to start thread: " << ex.what() << std::endl;
+        stop_headless_yolo_workers(yolo_workers);
         stop_headless_frame_ipc_runtime(frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
@@ -3256,11 +3455,48 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             }
         }
 
+        if (yolo_worker_config.enabled()) {
+            std::cout << "Headless real YOLO enabled."
+                      << " source=TensorRT"
+                      << " audit_only="
+                      << (yolo_worker_config.publish_live_ipc ? "false" : "true")
+                      << " live_detection_ipc="
+                      << (yolo_worker_config.publish_live_ipc ? "true" : "false")
+                      << " decimate=1/" << yolo_worker_config.decimate
+                      << " engine_path=" << yolo_worker_config.engine_path
+                      << std::endl;
+            for (int idx : selected_indices) {
+                std::string name = "HeadlessYoloWorker_Cam_" +
+                    cameras_params[idx].camera_serial;
+                try {
+                    yolo_workers[idx] = std::make_unique<YoloWorker>(
+                        name.c_str(),
+                        &cameras_params[idx],
+                        &cameras_select[idx],
+                        camera_control,
+                        *camera_resources[idx].recycle_queue);
+                    yolo_workers[idx]->SetMaxQueueSize(240);
+                    yolo_workers[idx]->StartThread();
+                } catch (const std::exception& ex) {
+                    if (yolo_worker_config.fail_on_init_error) {
+                        throw;
+                    }
+                    std::cerr << "Headless real YOLO disabled for camera "
+                              << cameras_params[idx].camera_serial
+                              << " after init failure: " << ex.what()
+                              << std::endl;
+                    cameras_select[idx].yolo = false;
+                    cameras_select[idx].yolo_model = nullptr;
+                }
+            }
+        }
+
         // Match the GUI path: build the recording pipeline first, then open the
         // camera stream and allocate EVT frame buffers against the active GPU.
         allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
+        stop_headless_yolo_workers(yolo_workers);
         stop_headless_frame_ipc_runtime(frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
         if (enable_artifacts) {
@@ -3305,7 +3541,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         nullptr,
                         nullptr,
                         recording_pipelines[idx] ? recording_pipelines[idx]->recording_ingress() : nullptr,
-                        nullptr,
+                        yolo_workers[idx].get(),
                         nullptr,
                         &camera_resources[idx],
                         frame_ipc_managers[idx].get(),
@@ -3385,6 +3621,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    std::vector<std::unique_ptr<YoloWorker>> yolo_workers;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
@@ -3418,6 +3655,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         camera_resources,
                         active_camera_indices,
                         recording_pipelines,
+                        yolo_workers,
                         frame_ipc_managers,
                         &frame_ipc_runtime,
                         HeadlessFrameIpcConfig{},
@@ -3450,6 +3688,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         camera_resources,
                         active_camera_indices,
                         recording_pipelines,
+                        yolo_workers,
                         &gpu_dmon_monitor,
                         ecams,
                         cameras_params,
@@ -3487,6 +3726,7 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 camera_resources,
                 active_camera_indices,
                 recording_pipelines,
+                yolo_workers,
                 &gpu_dmon_monitor,
                 ecams,
                 cameras_params,
@@ -3526,6 +3766,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             headless_frame_ipc_requested(options.frame_ipc) ||
+            headless_yolo_worker_requested(options.yolo_worker) ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
             !options.encoder_settings.select_all_cameras ||
             !options.encoder_settings.camera_serials.empty()) {
@@ -3552,6 +3793,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             !options.required_gpu_ids.empty() ||
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             headless_frame_ipc_requested(options.frame_ipc) ||
+            headless_yolo_worker_requested(options.yolo_worker) ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
             if (error_out) {
                 *error_out =
@@ -3560,7 +3802,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
                     "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
                     "--preenc-ref-max-seconds, --duration, --stream-start-delay, --nvenc-direct-input, "
                     "--ptp-gate-acquisition-mode, --acquisition-buffer-mode, --recording-sink-mode, "
-                    "--record-delay, --frame-ipc, and --gpu-id "
+                    "--record-delay, --frame-ipc, --yolo-engine, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
             return false;
@@ -3572,6 +3814,27 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             options.pre_encoder_reference_capture,
             error_out,
             "Local headless CLI")) {
+        return false;
+    }
+    if (!validate_headless_yolo_worker_config(
+            options.yolo_worker,
+            error_out,
+            "Local headless CLI")) {
+        return false;
+    }
+
+    if (options.yolo_worker.enabled() && options.stream_only) {
+        if (error_out) {
+            *error_out =
+                "real headless YOLO currently requires recording artifacts and is not supported with --stream-only.";
+        }
+        return false;
+    }
+    if (options.yolo_worker.enabled() && options.yolo_event_log.enabled()) {
+        if (error_out) {
+            *error_out =
+                "real headless YOLO writes its own event log; do not combine --yolo-engine with synthetic yolo_event_log.";
+        }
         return false;
     }
 
@@ -4755,6 +5018,15 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("yolo_worker")) {
+        if (!parse_headless_yolo_worker_json(
+                fixed["yolo_worker"],
+                &spec->yolo_worker,
+                error_out,
+                "Experiment spec fixed.yolo_worker")) {
+            return false;
+        }
+    }
     if (!parse_experiment_recording_overrides(fixed, spec, error_out)) {
         return false;
     }
@@ -4780,6 +5052,20 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         if (error_out) {
             *error_out =
                 "Experiment spec fixed.yolo_event_log requires recording; stream_only must be false.";
+        }
+        return false;
+    }
+    if (spec->stream_only && spec->yolo_worker.enabled()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.yolo_worker requires recording artifacts; stream_only must be false.";
+        }
+        return false;
+    }
+    if (spec->yolo_event_log.enabled() && spec->yolo_worker.enabled()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec cannot combine fixed.yolo_event_log synthetic mode with fixed.yolo_worker real mode.";
         }
         return false;
     }
@@ -5055,6 +5341,7 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.pre_encoder_reference_capture = spec.pre_encoder_reference_capture;
                                                             run.options.frame_ipc = spec.frame_ipc;
                                                             run.options.yolo_event_log = spec.yolo_event_log;
+                                                            run.options.yolo_worker = spec.yolo_worker;
                                                             run.options.has_recording_override =
                                                                 spec.has_recording_override;
                                                             run.options.recording_override =
@@ -5138,6 +5425,9 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"yolo_event_log",
                                                                  build_headless_yolo_event_log_config_json(
                                                                      run.options.yolo_event_log)},
+                                                                {"yolo_worker",
+                                                                 build_headless_yolo_worker_config_json(
+                                                                     run.options.yolo_worker)},
                                                             };
                                                             if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
@@ -5379,12 +5669,21 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::vector<CameraResources> camera_resources;
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    std::vector<std::unique_ptr<YoloWorker>> yolo_workers;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     const bool enable_recording = !options.stream_only;
     const std::string active_record_folder = options.record_folder;
+    const std::string yolo_decimate_value =
+        options.yolo_worker.enabled() ? std::to_string(options.yolo_worker.decimate) : "";
+    std::unique_ptr<ScopedEnvVarOverride> yolo_decimate_override;
+    if (options.yolo_worker.enabled()) {
+        yolo_decimate_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_YOLO_DECIMATE",
+            yolo_decimate_value.c_str());
+    }
 
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool started = start_camera_thread(
@@ -5392,6 +5691,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         camera_resources,
         active_camera_indices,
         recording_pipelines,
+        yolo_workers,
         frame_ipc_managers,
         &frame_ipc_runtime,
         options.frame_ipc,
@@ -5412,7 +5712,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.pre_encoder_reference_capture,
         options.record_start_delay_seconds,
         enable_recording,
-        options.yolo_event_log);
+        options.yolo_event_log,
+        options.yolo_worker);
 
     if (!started) {
         stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
@@ -5428,6 +5729,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
               << " recording_sink_mode=" << options.recording_sink_mode
               << " frame_ipc=" << headless_frame_ipc_mode_to_string(options.frame_ipc.mode)
               << " yolo_event_log=" << options.yolo_event_log.mode
+              << " yolo_worker=" << options.yolo_worker.mode
               << " cameras=" << format_selected_camera_serials(options.encoder_settings)
               << std::endl;
 
@@ -5472,6 +5774,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         camera_resources,
         active_camera_indices,
         recording_pipelines,
+        yolo_workers,
         &gpu_dmon_monitor,
         ecams.get(),
         cameras_params.get(),
@@ -5557,15 +5860,26 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["frame_ipc_reader_gaps"] = 0ULL;
     row["frame_ipc_push_failures"] = 0ULL;
     row["display"] = false;
-    row["yolo"] = false;
+    row["yolo"] = run.options.yolo_worker.enabled();
+    row["yolo_worker_mode"] = run.options.yolo_worker.mode;
+    row["yolo_worker_status"] =
+        run.options.yolo_worker.enabled() ? "enabled" : "disabled";
+    row["yolo_worker_engine_path"] = run.options.yolo_worker.engine_path;
+    row["yolo_worker_decimate"] = run.options.yolo_worker.decimate;
+    row["yolo_worker_publish_live_ipc"] =
+        run.options.yolo_worker.publish_live_ipc;
     row["yolo_event_log_mode"] = run.options.yolo_event_log.mode;
     row["yolo_event_log_status"] =
-        run.options.yolo_event_log.enabled() ? "not_reported" : "disabled";
+        (run.options.yolo_event_log.enabled() || run.options.yolo_worker.enabled())
+            ? "not_reported"
+            : "disabled";
     row["yolo_event_log_present"] = false;
     row["yolo_event_log_path"] = "";
     row["yolo_event_log_rows"] = 0ULL;
     row["yolo_event_log_detection_rows"] = 0ULL;
     row["yolo_event_log_zero_rows"] = 0ULL;
+    row["yolo_event_log_timeout_rows"] = 0ULL;
+    row["yolo_event_log_failed_rows"] = 0ULL;
     row["yolo_event_log_parse_errors"] = 0ULL;
     row["yolo_event_log_schema_errors"] = 0ULL;
     row["yolo_event_log_sequence_errors"] = 0ULL;
@@ -5641,18 +5955,25 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     }();
     const ExperimentVideoArtifactStats video_stats =
         summarize_video_artifact(run.recording_folder, camera_serial);
+    yolo_event_log::SyntheticYoloEventConfig yolo_summary_config =
+        run.options.yolo_event_log;
+    if (run.options.yolo_worker.enabled() && !yolo_summary_config.enabled()) {
+        yolo_summary_config.mode = "real";
+    }
     const yolo_event_log::YoloEventLogValidationStats yolo_event_stats =
         yolo_event_log::summarize_yolo_event_log(
             run.recording_folder,
             camera_serial,
-            run.options.yolo_event_log);
-    if (run.options.yolo_event_log.enabled()) {
+            yolo_summary_config);
+    if (run.options.yolo_event_log.enabled() || run.options.yolo_worker.enabled()) {
         row["yolo_event_log_status"] = yolo_event_stats.status;
         row["yolo_event_log_present"] = yolo_event_stats.present;
         row["yolo_event_log_path"] = yolo_event_stats.path;
         row["yolo_event_log_rows"] = yolo_event_stats.rows;
         row["yolo_event_log_detection_rows"] = yolo_event_stats.detection_rows;
         row["yolo_event_log_zero_rows"] = yolo_event_stats.zero_rows;
+        row["yolo_event_log_timeout_rows"] = yolo_event_stats.timeout_rows;
+        row["yolo_event_log_failed_rows"] = yolo_event_stats.failed_rows;
         row["yolo_event_log_parse_errors"] = yolo_event_stats.parse_errors;
         row["yolo_event_log_schema_errors"] = yolo_event_stats.schema_errors;
         row["yolo_event_log_sequence_errors"] = yolo_event_stats.sequence_errors;
@@ -5988,7 +6309,7 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             row["reason"] = "frame IPC verification failed";
         }
     }
-    if (run.options.yolo_event_log.enabled()) {
+    if (run.options.yolo_event_log.enabled() || run.options.yolo_worker.enabled()) {
         const std::string yolo_event_status =
             row.value("yolo_event_log_status", "not_reported");
         if (yolo_event_status != "pass") {
@@ -6022,7 +6343,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -6066,12 +6387,19 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("warmup_s", 0) << ","
                 << (row.value("display", false) ? "true" : "false") << ","
                 << (row.value("yolo", false) ? "true" : "false") << ","
+                << row.value("yolo_worker_mode", "off") << ","
+                << row.value("yolo_worker_status", "disabled") << ","
+                << "\"" << row.value("yolo_worker_engine_path", "") << "\","
+                << row.value("yolo_worker_decimate", 1) << ","
+                << (row.value("yolo_worker_publish_live_ipc", false) ? "true" : "false") << ","
                 << row.value("yolo_event_log_mode", "off") << ","
                 << row.value("yolo_event_log_status", "disabled") << ","
                 << (row.value("yolo_event_log_present", false) ? "true" : "false") << ","
                 << row.value("yolo_event_log_rows", 0ULL) << ","
                 << row.value("yolo_event_log_detection_rows", 0ULL) << ","
                 << row.value("yolo_event_log_zero_rows", 0ULL) << ","
+                << row.value("yolo_event_log_timeout_rows", 0ULL) << ","
+                << row.value("yolo_event_log_failed_rows", 0ULL) << ","
                 << row.value("yolo_event_log_parse_errors", 0ULL) << ","
                 << row.value("yolo_event_log_schema_errors", 0ULL) << ","
                 << row.value("yolo_event_log_sequence_errors", 0ULL) << ","

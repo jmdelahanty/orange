@@ -1748,7 +1748,8 @@ void acquire_frames(
             
             // FRAME_IPC: Store IPC manager pointer in entry for YOLO to use later
             // This allows YOLO to update the frame with detection data
-            current_entry->frame_ipc_manager = ipc_manager;
+            current_entry->frame_ipc_manager =
+                camera_select->send_yolo_via_frame_ipc ? ipc_manager : nullptr;
 
             if (synthetic_yolo_event_emitter) {
                 yolo_event_log::SyntheticYoloFrameInput synthetic_frame;

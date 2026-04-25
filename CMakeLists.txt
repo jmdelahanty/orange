@@ -277,11 +277,17 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/yolov8_det.cpp"
+    "${SRC_DIR}/yolo_worker.cpp"
     "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/yolo_event_log_validation.cpp"
     "${SRC_DIR}/recording_validation.cpp"
+    "${SRC_DIR}/crop_and_encode_worker.cpp"
+    "${SRC_DIR}/crop_producer.cpp"
+    "${SRC_DIR}/crop_producer_worker.cpp"
+    "${SRC_DIR}/pose_worker.cpp"
     ${NVENCODER_SOURCES}
-    "${SRC_DIR}/kernel.cu"
+    ${ORANGE_CUDA_SOURCES}
 )
 
 set(YOLO_OFFLINE_SOURCES
@@ -407,6 +413,9 @@ target_link_libraries(orange_client PRIVATE
     ${SWRESAMPLE_LIBRARY}
     ${AVUTIL_LIBRARY}
     ${AVCODEC_LIBRARY}
+    ${OpenCV_LIBS}
+    ${TENSORRT_LIBRARY}
+    ${TENSORRT_PLUGIN_LIBRARY}
     m
     pthread
 )

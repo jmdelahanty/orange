@@ -13,11 +13,27 @@ The repo includes a narrow wrapper script:
 It only allows:
 
 - `orange_client --mode local --experiment-spec <spec>`
+- `orange_client --mode local --stream-only ...`
 
 It only accepts spec files under:
 
 - `/home/jeremy/orange-jeremy/experiment_specs`
+- `/home/jeremy/orange-gop-split-a16/experiment_specs`
 - `/tmp`
+
+It only accepts `orange_client` binaries at:
+
+- `/home/jeremy/orange-jeremy/build/orange_client`
+- `/home/jeremy/orange-gop-split-a16/targets/release/orange_client`
+
+The wrapper also exposes a narrow allowlist of experiment env passthroughs:
+
+- `--acquire-work-entries-max <n>` exports `ORANGE_ACQUIRE_WORK_ENTRIES_MAX`.
+- `--encoder-entry-pool-size <n>` exports `ORANGE_ENCODER_ENTRY_POOL_SIZE`.
+- `--yolo-perf-log` exports `ORANGE_YOLO_PERF_LOG=1`.
+- `--no-yolo-perf-log` exports `ORANGE_YOLO_PERF_LOG=0`.
+- `--yolo-perf-sample <n>` exports `ORANGE_YOLO_PERF_SAMPLE=<n>` and enables
+  YOLO perf logging unless logging was explicitly disabled.
 
 After the run, it chowns the experiment output folder back to the invoking
 user so artifacts are not left root-owned.
@@ -27,9 +43,7 @@ user so artifacts are not left root-owned.
 Install the wrapper as a root-owned executable:
 
 ```bash
-sudo install -o root -g root -m 0755 \
-  /home/jeremy/orange-jeremy/scripts/orange_local_benchmark_wrapper.sh \
-  /usr/local/bin/orange-local-benchmark
+/home/jeremy/orange-gop-split-a16/scripts/install_orange_local_benchmark_wrapper.sh
 ```
 
 Add a narrow sudoers entry for user `jeremy`:
@@ -55,6 +69,16 @@ Full Block A:
 ```bash
 sudo /usr/local/bin/orange-local-benchmark \
   /home/jeremy/orange-jeremy/experiment_specs/2010096_block_a_a6000.json
+```
+
+GOP-split branch headless real-YOLO smoke with explicit perf CSVs:
+
+```bash
+sudo -n /usr/local/bin/orange-local-benchmark \
+  --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
+  --yolo-perf-log \
+  --yolo-perf-sample 1 \
+  /home/jeremy/orange-gop-split-a16/experiment_specs/2010096_headless_real_yolo_preprocessonly_a16_gpu5.json
 ```
 
 Temporary retry spec:

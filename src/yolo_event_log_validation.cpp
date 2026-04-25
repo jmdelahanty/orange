@@ -91,7 +91,9 @@ YoloEventLogValidationStats summarize_yolo_event_log(
     const SyntheticYoloEventConfig& config)
 {
     YoloEventLogValidationStats stats;
-    if (!config.enabled()) {
+    const bool validate_synthetic_cadence = config.enabled();
+    const bool validate_real_worker = config.mode == "real";
+    if (!validate_synthetic_cadence && !validate_real_worker) {
         return stats;
     }
     stats.status = "missing";
@@ -174,19 +176,25 @@ YoloEventLogValidationStats summarize_yolo_event_log(
 
         if (status == "detections") {
             stats.detection_rows++;
-            if (!should_have_detection ||
+            if (validate_synthetic_cadence &&
+                (!should_have_detection ||
                 detection_count != 1 ||
-                detections.size() != 1) {
+                detections.size() != 1)) {
                 stats.cadence_errors++;
             }
         } else if (status == "zero_detections") {
             stats.zero_rows++;
-            if (should_have_detection ||
+            if (validate_synthetic_cadence &&
+                (should_have_detection ||
                 !config.emit_zero_detections ||
                 detection_count != 0 ||
-                !detections.empty()) {
+                !detections.empty())) {
                 stats.cadence_errors++;
             }
+        } else if (status == "timeout") {
+            stats.timeout_rows++;
+        } else if (status == "failed") {
+            stats.failed_rows++;
         } else {
             stats.schema_errors++;
         }

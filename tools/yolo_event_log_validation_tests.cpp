@@ -226,6 +226,36 @@ void test_unknown_status_fails_schema()
     require(stats.schema_errors == 1, "expected one schema error");
 }
 
+void test_real_worker_log_skips_synthetic_cadence()
+{
+    TestDir dir("real_worker");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        if (line == 9) {
+            (*event)["yolo"]["status"] = "detections";
+            (*event)["yolo"]["detection_count"] = 1;
+            (*event)["detections"] = nlohmann::json::array({{{"label", 0}}});
+        } else if (line == 12) {
+            (*event)["yolo"]["status"] = "timeout";
+            (*event)["yolo"]["detection_count"] = 0;
+            (*event)["detections"] = nlohmann::json::array();
+        } else if (line == 13) {
+            (*event)["yolo"]["status"] = "failed";
+            (*event)["yolo"]["detection_count"] = 0;
+            (*event)["detections"] = nlohmann::json::array();
+        }
+    });
+
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "pass", "real worker logs should not enforce synthetic cadence");
+    require(stats.cadence_errors == 0, "expected no real-worker cadence errors");
+    require(stats.detection_rows == 3, "expected three detection rows");
+    require(stats.timeout_rows == 1, "expected one timeout row");
+    require(stats.failed_rows == 1, "expected one failed row");
+}
+
 }  // namespace
 
 int main()
@@ -243,6 +273,7 @@ int main()
         {"metadata_join_miss_fails", &test_metadata_join_miss_fails},
         {"malformed_json_fails", &test_malformed_json_fails},
         {"unknown_status_fails_schema", &test_unknown_status_fails_schema},
+        {"real_worker_log_skips_synthetic_cadence", &test_real_worker_log_skips_synthetic_cadence},
     };
 
     for (const auto& test : tests) {

@@ -120,6 +120,38 @@ recording. Process isolation does not remove that constraint.
 Goal: prove or reject the process-boundary hypothesis with the smallest useful
 experiment.
 
+Prerequisite status:
+
+- Real headless YOLO now has an audit-only first slice through
+  `orange_client --yolo-engine` and `fixed.yolo_worker.mode = "real"`.
+- Use `recording_sink_mode=preprocess_only` for the analytics process when the
+  external encoder load is supplied by Process B.
+- Checked-in Process A baseline spec:
+  `experiment_specs/2010096_headless_real_yolo_preprocessonly_a16_gpu5.json`.
+- Launch the baseline through the sudo wrapper with `--yolo-perf-log` and
+  `--yolo-perf-sample 1` so Process A always emits `Cam*_yolo_perf.csv` without
+  relying on arbitrary sudo environment passthrough.
+
+Process A baseline result:
+
+- Validated on 2026-04-25 with:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_preprocessonly_a16_gpu5_run2`.
+- The analytics-only process ran camera `2010096` on A16 GPU `5` with real
+  TensorRT YOLO and `recording_sink_mode=preprocess_only`.
+- Acquisition held `~100 fps`; no camera drops, no frame-id gaps, and no
+  get-frame errors were reported.
+- Steady-state after frame 200:
+  `acquisition_to_worker_start_ms p95 = 0.0388 ms`,
+  `yolo_queue_wait_ms p95 = 0.0181 ms`,
+  `acquisition_to_detect_done_ms p95 = 3.4894 ms`,
+  `cpu_preprocess_ms p95 = 0.0165 ms`,
+  `total_ms p95 = 3.4606 ms`.
+- This is the no-full-frame, no-GUI Process A reference. If external same-GPU
+  NVENC load regresses these numbers toward the GUI in-process behavior, the
+  process boundary alone is insufficient or the remaining contention is
+  hardware/fabric-level. If these numbers stay close, same-process
+  CUDA/NVENC/runtime coupling remains the strongest explanation.
+
 Process A:
 
 ```text
@@ -447,4 +479,3 @@ Phase 3:
 - [ ] Add GUI backend selection.
 - [ ] Run GUI smoke with external recorder.
 - [ ] Decide whether external recording becomes default.
-

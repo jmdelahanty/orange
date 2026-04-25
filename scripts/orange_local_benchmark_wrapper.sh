@@ -2,21 +2,41 @@
 set -euo pipefail
 
 ORANGE_ROOT="/home/jeremy/orange-jeremy"
-ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
+DEFAULT_ORANGE_CLIENT="$ORANGE_ROOT/build/orange_client"
+EXPERIMENT_ORANGE_ROOT="/home/jeremy/orange-gop-split-a16"
+EXPERIMENT_ORANGE_CLIENT="$EXPERIMENT_ORANGE_ROOT/targets/release/orange_client"
+ORANGE_CLIENT="$DEFAULT_ORANGE_CLIENT"
+ACQUIRE_WORK_ENTRIES_MAX=""
+ENCODER_ENTRY_POOL_SIZE=""
+YOLO_PERF_LOG=""
+YOLO_PERF_SAMPLE=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
+ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
 EVT_PROFILE="/etc/profile.d/evt.sh"
 
 usage() {
   cat <<'EOF'
 Usage:
-  orange_local_benchmark_wrapper.sh <experiment-spec.json>
-  orange_local_benchmark_wrapper.sh --stream-only --config-folder <path> --camera <serial|all> [options]
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] [options] <experiment-spec.json>
+  orange_local_benchmark_wrapper.sh [--orange-client <path>] [options] --stream-only --config-folder <path> --camera <serial|all> [stream-options]
+
+Options:
+  --orange-client <path>             Use an allowed orange_client binary.
+  --acquire-work-entries-max <n>     Export ORANGE_ACQUIRE_WORK_ENTRIES_MAX.
+  --encoder-entry-pool-size <n>      Export ORANGE_ENCODER_ENTRY_POOL_SIZE.
+  --yolo-perf-log                    Export ORANGE_YOLO_PERF_LOG=1.
+  --no-yolo-perf-log                 Export ORANGE_YOLO_PERF_LOG=0.
+  --yolo-perf-sample <n>             Export ORANGE_YOLO_PERF_SAMPLE=<n>; also enables YOLO perf logging unless explicitly disabled.
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
+  - Only accepts orange_client binaries at:
+      /home/jeremy/orange-jeremy/build/orange_client
+      /home/jeremy/orange-gop-split-a16/targets/release/orange_client
   - Only accepts spec files under:
       /home/jeremy/orange-jeremy/experiment_specs
+      /home/jeremy/orange-gop-split-a16/experiment_specs
       /tmp
   - Stream-only mode only accepts config folders under:
       /home/jeremy/orange_data/config/local
@@ -33,11 +53,6 @@ fi
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "This wrapper must be run as root (typically via sudo)." >&2
-  exit 1
-fi
-
-if [[ ! -x "$ORANGE_CLIENT" ]]; then
-  echo "orange_client not found or not executable at $ORANGE_CLIENT" >&2
   exit 1
 fi
 
@@ -60,6 +75,89 @@ if [[ $# -eq 0 ]]; then
   usage >&2
   exit 2
 fi
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --orange-client)
+      shift
+      [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
+      ORANGE_CLIENT="$(realpath -e "$1")"
+      case "$ORANGE_CLIENT" in
+        "$DEFAULT_ORANGE_CLIENT"|"$EXPERIMENT_ORANGE_CLIENT")
+          ;;
+        *)
+          echo "Refusing to use orange_client outside allowed binaries: $ORANGE_CLIENT" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
+    --acquire-work-entries-max)
+      shift
+      [[ $# -gt 0 ]] || { echo "--acquire-work-entries-max requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]+$ ]] || { echo "--acquire-work-entries-max must be a non-negative integer." >&2; exit 2; }
+      ACQUIRE_WORK_ENTRIES_MAX="$1"
+      shift
+      ;;
+    --encoder-entry-pool-size)
+      shift
+      [[ $# -gt 0 ]] || { echo "--encoder-entry-pool-size requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[0-9]+$ ]] || { echo "--encoder-entry-pool-size must be a non-negative integer." >&2; exit 2; }
+      ENCODER_ENTRY_POOL_SIZE="$1"
+      shift
+      ;;
+    --yolo-perf-log)
+      YOLO_PERF_LOG="1"
+      shift
+      ;;
+    --no-yolo-perf-log)
+      YOLO_PERF_LOG="0"
+      shift
+      ;;
+    --yolo-perf-sample)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-perf-sample requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[1-9][0-9]*$ ]] || { echo "--yolo-perf-sample must be a positive integer." >&2; exit 2; }
+      YOLO_PERF_SAMPLE="$1"
+      if [[ -z "$YOLO_PERF_LOG" ]]; then
+        YOLO_PERF_LOG="1"
+      fi
+      shift
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+if [[ $# -eq 0 ]]; then
+  usage >&2
+  exit 2
+fi
+
+if [[ ! -x "$ORANGE_CLIENT" ]]; then
+  echo "orange_client not found or not executable at $ORANGE_CLIENT" >&2
+  exit 1
+fi
+
+export_optional_runtime_env() {
+  if [[ -n "$ACQUIRE_WORK_ENTRIES_MAX" ]]; then
+    echo "[sudo-wrapper] acquire_work_entries_max=$ACQUIRE_WORK_ENTRIES_MAX"
+    export ORANGE_ACQUIRE_WORK_ENTRIES_MAX="$ACQUIRE_WORK_ENTRIES_MAX"
+  fi
+  if [[ -n "$ENCODER_ENTRY_POOL_SIZE" ]]; then
+    echo "[sudo-wrapper] encoder_entry_pool_size=$ENCODER_ENTRY_POOL_SIZE"
+    export ORANGE_ENCODER_ENTRY_POOL_SIZE="$ENCODER_ENTRY_POOL_SIZE"
+  fi
+  if [[ -n "$YOLO_PERF_LOG" ]]; then
+    echo "[sudo-wrapper] yolo_perf_log=$YOLO_PERF_LOG"
+    export ORANGE_YOLO_PERF_LOG="$YOLO_PERF_LOG"
+  fi
+  if [[ -n "$YOLO_PERF_SAMPLE" ]]; then
+    echo "[sudo-wrapper] yolo_perf_sample=$YOLO_PERF_SAMPLE"
+    export ORANGE_YOLO_PERF_SAMPLE="$YOLO_PERF_SAMPLE"
+  fi
+}
 
 if [[ "$1" == "--stream-only" ]]; then
   shift
@@ -134,6 +232,7 @@ if [[ "$1" == "--stream-only" ]]; then
   fi
 
   echo "[sudo-wrapper] running stream-only local check"
+  echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
   echo "[sudo-wrapper] config_folder=$CONFIG_FOLDER"
   echo "[sudo-wrapper] cameras=${CAMERAS[*]}"
   if [[ "${#GPU_IDS[@]}" -gt 0 ]]; then
@@ -145,6 +244,7 @@ if [[ "$1" == "--stream-only" ]]; then
   if [[ -n "$STREAM_START_DELAY" ]]; then
     echo "[sudo-wrapper] stream_start_delay_s=$STREAM_START_DELAY"
   fi
+  export_optional_runtime_env
 
   exec "${CMD[@]}"
 fi
@@ -156,7 +256,7 @@ fi
 
 SPEC_PATH="$(realpath -e "$1")"
 case "$SPEC_PATH" in
-  "$ALLOWED_SPEC_DIR_1"/*|"$ALLOWED_SPEC_DIR_2"/*)
+  "$ALLOWED_SPEC_DIR_1"/*|"$ALLOWED_SPEC_DIR_2"/*|"$ALLOWED_SPEC_DIR_3"/*)
     ;;
   *)
     echo "Refusing to use experiment spec outside allowed roots: $SPEC_PATH" >&2
@@ -194,8 +294,10 @@ OUTPUT_ROOT="${SPEC_FIELDS[1]}"
 EXPERIMENT_ROOT="$(realpath -m "$OUTPUT_ROOT/$EXPERIMENT_ID")"
 
 echo "[sudo-wrapper] running experiment_id=$EXPERIMENT_ID"
+echo "[sudo-wrapper] orange_client=$ORANGE_CLIENT"
 echo "[sudo-wrapper] spec=$SPEC_PATH"
 echo "[sudo-wrapper] output_root=$EXPERIMENT_ROOT"
+export_optional_runtime_env
 
 set +e
 "$ORANGE_CLIENT" --mode local --experiment-spec "$SPEC_PATH"
