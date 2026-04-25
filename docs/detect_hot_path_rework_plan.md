@@ -10,6 +10,9 @@ Current evidence log:
 - See [detect_latency_findings_2026_04_24.md](/home/jeremy/orange-gop-split-a16/docs/detect_latency_findings_2026_04_24.md)
   for the current experiment chronology, metric interpretation, and next
   architecture options.
+- See [process_isolated_recorder_plan.md](/home/jeremy/orange-gop-split-a16/docs/process_isolated_recorder_plan.md)
+  for the planned headless process-isolation discriminator and external
+  recorder implementation path.
 
 ## Current Status Update - 2026-04-24 Evening
 
