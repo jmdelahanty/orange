@@ -80,7 +80,8 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const std::string& base_folder,
                               bool update_latest_pointer = true,
                               bool sync_camera_enabled = false,
-                              const PTPParams* ptp_params = nullptr);
+                              const PTPParams* ptp_params = nullptr,
+                              const std::string& recording_sink_mode = "real");
 nlohmann::json build_gpu_runtime_info(int gpu_id);
 RecordingValidationGpuPathInfo build_recording_validation_gpu_path_info(int source_gpu_id,
                                                                         int helper_gpu_id);

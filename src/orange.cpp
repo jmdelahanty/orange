@@ -3654,6 +3654,7 @@ int main(int argc, char **args) {
                     } else {
                         bool next_record_state = !camera_control->record_video;
                         std::string resolved_recording_folder;
+                        std::string resolved_recording_sink_mode = recording_session.recording_sink_mode;
                         bool allow_transition = true;
 
                         if (next_record_state) {
@@ -3676,9 +3677,11 @@ int main(int argc, char **args) {
                                         cameras_params,
                                         num_cameras,
                                         encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name,
-                                        ptp_params);
+                                        ptp_params,
+                                        recording_session.recording_sink_mode);
                                 allow_transition = start_result.ok;
                                 resolved_recording_folder = start_result.recording_folder;
+                                resolved_recording_sink_mode = start_result.recording_sink_mode;
                                 if (start_result.ok) {
                                     update_gui_detect_model_snapshots(
                                         resolved_recording_folder,
@@ -3720,6 +3723,10 @@ int main(int argc, char **args) {
                                 // START RECORDING
                                 try_start_timer();
                                 std::cout << "Recording toggled ON." << std::endl;
+                                if (resolved_recording_sink_mode != "real") {
+                                    std::cout << "Full-frame video disabled by GUI recording sink mode: "
+                                              << resolved_recording_sink_mode << std::endl;
+                                }
                                 if (!resolved_recording_folder.empty()) {
                                     std::cout << "Recording folder: " << resolved_recording_folder << std::endl;
                                 }

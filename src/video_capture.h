@@ -38,6 +38,13 @@ typedef struct {
     int image_gpu_id = -1;
     uint64_t acquisition_receive_host_ns = 0;
     uint64_t ingress_event_record_host_ns = 0;
+    uint64_t yolo_enqueue_host_ns = 0;
+    int yolo_queue_depth_at_enqueue = -1;
+    bool yolo_dispatched = false;
+    bool yolo_input_detach_requested = false;
+    uint64_t yolo_input_ready_host_ns = 0;
+    std::atomic<bool> yolo_input_ready_event_recorded;
+    std::atomic<bool> yolo_completion_event_recorded;
     uint64_t yolo_detect_done_host_ns = 0;
     uint64_t recording_submit_host_ns = 0;
     int recording_target_gpu_id = -1;
@@ -100,6 +107,10 @@ typedef struct {
 
     // New event specifically for YOLO completion
     cudaEvent_t* yolo_completion_event; 
+
+    // Per-entry event recorded after YOLO has copied/preprocessed into its
+    // owned TensorRT input buffer.
+    cudaEvent_t yolo_input_ready_event = nullptr;
 
     // Frame IPC manager pointer (NEW)
     // This allows workers (especially YOLO) to update frame data with detections
@@ -229,7 +240,10 @@ struct CameraResources {
             ck(cudaMalloc(&worker_entry_pool[i].d_image, frame_size));
             worker_entry_pool[i].d_image_pool = worker_entry_pool[i].d_image;
             ck(cudaEventCreateWithFlags(&worker_entry_pool[i].analytics_ready_event, cudaEventDisableTiming));
+            ck(cudaEventCreateWithFlags(&worker_entry_pool[i].yolo_input_ready_event, cudaEventDisableTiming));
             worker_entry_pool[i].image_gpu_id = gpu_id;
+            worker_entry_pool[i].yolo_input_ready_event_recorded.store(false);
+            worker_entry_pool[i].yolo_completion_event_recorded.store(false);
             // Initialize the new frame_ipc_manager pointer to nullptr
             worker_entry_pool[i].frame_ipc_manager = nullptr;
             worker_entry_pool[i].camera_frame_id = 0;
@@ -268,6 +282,9 @@ struct CameraResources {
                 if (worker_entry_pool[i].analytics_ready_event) {
                     cudaEventDestroy(worker_entry_pool[i].analytics_ready_event);
                 }
+                if (worker_entry_pool[i].yolo_input_ready_event) {
+                    cudaEventDestroy(worker_entry_pool[i].yolo_input_ready_event);
+                }
                 if (worker_entry_pool[i].d_image_pool) {
                     cudaFree(worker_entry_pool[i].d_image_pool);
                 }
@@ -275,6 +292,7 @@ struct CameraResources {
                 worker_entry_pool[i].d_image_pool = nullptr;
                 worker_entry_pool[i].d_analytics_image = nullptr;
                 worker_entry_pool[i].analytics_ready_event = nullptr;
+                worker_entry_pool[i].yolo_input_ready_event = nullptr;
             }
             delete[] worker_entry_pool;
             worker_entry_pool = nullptr;

@@ -11,10 +11,28 @@
 #include <nppi_color_conversion.h>
 #include <nppi_geometry_transforms.h>
 #include <algorithm> // For std::max_element
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 
 namespace {
 constexpr int kDisplayGpuId = 0;
+constexpr const char* kCropPreviewDisableEnv = "ORANGE_CROP_PREVIEW_DISABLE";
+
+bool env_flag_enabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0 &&
+           std::strcmp(value, "false") != 0 &&
+           std::strcmp(value, "FALSE") != 0 &&
+           std::strcmp(value, "off") != 0 &&
+           std::strcmp(value, "OFF") != 0 &&
+           std::strcmp(value, "no") != 0 &&
+           std::strcmp(value, "NO") != 0;
+}
 
 uint64_t steady_now_ns()
 {
@@ -70,8 +88,16 @@ d_cropped_rgba_(nullptr)
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreateWithFlags(&m_stream, cudaStreamNonBlocking));
 
-    // Transitional crop buffer: this will become the shared crop payload for pose.
-    ck(cudaMalloc(&d_cropped_rgba_, crop_preview_bytes()));
+    if (env_flag_enabled(kCropPreviewDisableEnv)) {
+        display_preview_disabled_ = true;
+        d_display_buffer_pbo_ = nullptr;
+        std::cout << "[CropAndEncodeWorker] Crop live preview CUDA path disabled for "
+                  << name << " via " << kCropPreviewDisableEnv << std::endl;
+    }
+
+    if (d_display_buffer_pbo_) {
+        ck(cudaMalloc(&d_cropped_rgba_, crop_preview_bytes()));
+    }
 
     if (d_display_buffer_pbo_ && camera_params_->gpu_id != kDisplayGpuId) {
         // OpenGL PBOs are mapped on the display GPU. For cross-GPU cameras,

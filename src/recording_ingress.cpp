@@ -381,6 +381,13 @@ RecordingIngressStats RecordingIngress::GetStats() const
 
         stats.preprocess_resource_waits += worker->get_resource_waits();
         stats.preprocess_frames_dropped += worker->get_frames_dropped();
+        stats.detect_priority_gated_frames += worker->get_detect_priority_gated_frames();
+        stats.detect_priority_waited_frames += worker->get_detect_priority_waited_frames();
+        stats.detect_priority_wait_timeouts += worker->get_detect_priority_wait_timeouts();
+        stats.detect_priority_wait_total_ns += worker->get_detect_priority_wait_total_ns();
+        stats.detect_priority_wait_max_ns = std::max(
+            stats.detect_priority_wait_max_ns,
+            worker->get_detect_priority_wait_max_ns());
         stats.encode_failures += worker->get_hw_encode_failures();
         stats.encode_slow_frames += worker->get_hw_slow_frames();
     };

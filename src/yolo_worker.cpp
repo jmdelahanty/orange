@@ -22,8 +22,11 @@
 #include "yolo_event_log.h"
 #include "project.h"
 #include "fsuid_guard.h"
+#include "nvtx_profiling.h"
+#include <atomic>
 #include <condition_variable>
 #include <deque>
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
 #include <iomanip>
@@ -32,8 +35,11 @@
 #include <utility>
 #include <cstring>
 #include <cctype>
+#include <cstdint>
+#include <sstream>
 #include <pthread.h>
 #include <sched.h>
+#include <unordered_map>
 
 #ifndef YOLO_PROFILE
 #define YOLO_PROFILE 0
@@ -69,6 +75,19 @@ bool UseEventSyncWait()
     return enabled;
 }
 
+bool UseReadyEventFastPath()
+{
+    static const bool enabled = []() {
+        const char* env = std::getenv("ORANGE_YOLO_READY_EVENT_FASTPATH");
+        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        if (on) {
+            std::cout << "[YOLO] Ready ingress event fast path enabled." << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+
 bool UseInlineCropProducer()
 {
     static const bool enabled = []() {
@@ -81,6 +100,43 @@ bool UseInlineCropProducer()
     }();
     return enabled;
 }
+
+bool UseYoloDetachInput()
+{
+    static const bool enabled = []() {
+        const char* env = std::getenv("ORANGE_YOLO_DETACH_INPUT");
+        const bool on = env && *env && std::strcmp(env, "0") != 0;
+        if (on) {
+            std::cout << "[YOLO] Input detach enabled." << std::endl;
+        }
+        return on;
+    }();
+    return enabled;
+}
+
+#ifdef ENABLE_NVTX_PROFILING
+std::string BuildYoloNvtxLabel(const char* stage,
+                               const char* worker_name,
+                               const std::string& camera_serial,
+                               const WORKER_ENTRY* entry,
+                               int gpu_id)
+{
+    std::ostringstream oss;
+    oss << stage
+        << " cam=" << (camera_serial.empty() ? "unknown" : camera_serial)
+        << " gpu=" << gpu_id;
+    if (entry) {
+        oss << " rec_frame=" << entry->recording_frame_id
+            << " local_frame=" << entry->frame_id
+            << " source_gpu=" << entry->image_gpu_id
+            << " detach=" << (entry->yolo_input_detach_requested ? 1 : 0);
+    }
+    if (worker_name) {
+        oss << " worker=" << worker_name;
+    }
+    return oss.str();
+}
+#endif
 
 uint64_t steady_time_now_ns()
 {
@@ -178,6 +234,59 @@ const char* ResolveYoloAffinitySpec(const CameraParams* params, std::string* env
     return nullptr;
 }
 
+const char* ResolveYoloRtPrioritySpec(const CameraParams* params, std::string* env_key_out)
+{
+    if (params && !params->camera_serial.empty()) {
+        const std::string env_key =
+            "ORANGE_YOLO_RT_PRIORITY_CAM_" + SanitizeEnvSuffix(params->camera_serial);
+        const char* env = std::getenv(env_key.c_str());
+        if (env && *env) {
+            if (env_key_out) {
+                *env_key_out = env_key;
+            }
+            return env;
+        }
+    }
+    const char* env = std::getenv("ORANGE_YOLO_RT_PRIORITY");
+    if (env && *env) {
+        if (env_key_out) {
+            *env_key_out = "ORANGE_YOLO_RT_PRIORITY";
+        }
+        return env;
+    }
+    if (env_key_out) {
+        env_key_out->clear();
+    }
+    return nullptr;
+}
+
+int ResolveYoloRtPolicy(std::string* policy_name)
+{
+    const char* env = std::getenv("ORANGE_YOLO_RT_POLICY");
+    std::string value = env && *env ? env : "fifo";
+    for (char& ch : value) {
+        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    if (value == "rr" || value == "round_robin" || value == "sched_rr") {
+        if (policy_name) {
+            *policy_name = "SCHED_RR";
+        }
+        return SCHED_RR;
+    }
+    if (value == "fifo" || value == "sched_fifo") {
+        if (policy_name) {
+            *policy_name = "SCHED_FIFO";
+        }
+        return SCHED_FIFO;
+    }
+    if (policy_name) {
+        *policy_name = "SCHED_FIFO";
+    }
+    std::cerr << "[YOLO] Unknown ORANGE_YOLO_RT_POLICY=" << value
+              << ", using SCHED_FIFO" << std::endl;
+    return SCHED_FIFO;
+}
+
 void ApplyYoloAffinity(const CameraParams* params, const char* thread_name)
 {
     std::string env_key;
@@ -201,21 +310,217 @@ void ApplyYoloAffinity(const CameraParams* params, const char* thread_name)
                   << "=" << spec << std::endl;
     }
 }
+
+void ApplyYoloRealtimeScheduling(const CameraParams* params, const char* thread_name)
+{
+    std::string env_key;
+    const char* priority_env = ResolveYoloRtPrioritySpec(params, &env_key);
+    if (!priority_env || !*priority_env) {
+        return;
+    }
+
+    char* end = nullptr;
+    long requested_priority = std::strtol(priority_env, &end, 10);
+    if (end == priority_env || *end != '\0') {
+        std::cerr << "[YOLO] Ignoring invalid " << env_key << "="
+                  << priority_env << " for "
+                  << (thread_name ? thread_name : "YoloWorker")
+                  << std::endl;
+        return;
+    }
+    if (requested_priority <= 0) {
+        return;
+    }
+
+    std::string policy_name;
+    const int policy = ResolveYoloRtPolicy(&policy_name);
+    const int min_priority = sched_get_priority_min(policy);
+    const int max_priority = sched_get_priority_max(policy);
+    if (min_priority < 0 || max_priority < 0) {
+        std::cerr << "[YOLO] Failed to query " << policy_name
+                  << " priority range for "
+                  << (thread_name ? thread_name : "YoloWorker")
+                  << ": " << std::strerror(errno) << std::endl;
+        return;
+    }
+
+    if (requested_priority < min_priority) {
+        requested_priority = min_priority;
+    } else if (requested_priority > max_priority) {
+        requested_priority = max_priority;
+    }
+
+    sched_param param{};
+    param.sched_priority = static_cast<int>(requested_priority);
+    const int rc = pthread_setschedparam(pthread_self(), policy, &param);
+    if (rc != 0) {
+        std::cerr << "[YOLO] Failed to set " << policy_name
+                  << " priority " << requested_priority
+                  << " for " << (thread_name ? thread_name : "YoloWorker")
+                  << " via " << env_key << "=" << priority_env
+                  << ": " << std::strerror(rc) << std::endl;
+        return;
+    }
+
+    std::cout << "[YOLO] Applied " << policy_name
+              << " priority " << requested_priority
+              << " for " << (thread_name ? thread_name : "YoloWorker")
+              << " via " << env_key << "=" << priority_env
+              << std::endl;
+}
 }  // namespace
 
 namespace yolo_perf {
+struct YoloServiceSkewSnapshot {
+    uint64_t service_sequence = 0;
+    uint64_t camera_service_sequence = 0;
+    int active_camera_count = 0;
+    double same_camera_service_gap_ms = -1.0;
+    double service_skew_latest_other_ms = -1.0;
+    double service_skew_oldest_other_ms = -1.0;
+    int64_t service_count_skew_vs_min = -1;
+    int64_t service_count_skew_range = -1;
+};
+
+namespace {
+struct YoloServiceState {
+    uint64_t service_count = 0;
+    uint64_t last_start_ns = 0;
+};
+
+std::mutex& ServiceSkewMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, YoloServiceState>& ServiceSkewStates()
+{
+    static std::unordered_map<std::string, YoloServiceState> states;
+    return states;
+}
+
+uint64_t& ServiceSkewGlobalSequence()
+{
+    static uint64_t sequence = 0;
+    return sequence;
+}
+}  // namespace
+
+void RegisterServiceCamera(const std::string& camera_serial)
+{
+    if (camera_serial.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ServiceSkewMutex());
+    ServiceSkewStates().emplace(camera_serial, YoloServiceState{});
+}
+
+void UnregisterServiceCamera(const std::string& camera_serial)
+{
+    if (camera_serial.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(ServiceSkewMutex());
+    ServiceSkewStates().erase(camera_serial);
+}
+
+YoloServiceSkewSnapshot RecordServiceStart(
+    const std::string& camera_serial,
+    uint64_t worker_start_host_ns)
+{
+    YoloServiceSkewSnapshot snapshot;
+    if (camera_serial.empty() || worker_start_host_ns == 0) {
+        return snapshot;
+    }
+
+    std::lock_guard<std::mutex> lock(ServiceSkewMutex());
+    auto& states = ServiceSkewStates();
+    auto& state = states[camera_serial];
+    snapshot.active_camera_count = static_cast<int>(states.size());
+    snapshot.service_sequence = ++ServiceSkewGlobalSequence();
+    snapshot.camera_service_sequence = ++state.service_count;
+    if (state.last_start_ns > 0 && worker_start_host_ns >= state.last_start_ns) {
+        snapshot.same_camera_service_gap_ms =
+            static_cast<double>(worker_start_host_ns - state.last_start_ns) / 1000000.0;
+    }
+    state.last_start_ns = worker_start_host_ns;
+
+    uint64_t latest_other_start_ns = 0;
+    uint64_t oldest_other_start_ns = 0;
+    uint64_t min_service_count = 0;
+    uint64_t max_service_count = 0;
+    int observed_camera_count = 0;
+
+    for (const auto& kv : states) {
+        const YoloServiceState& other_state = kv.second;
+        if (other_state.service_count == 0) {
+            continue;
+        }
+        observed_camera_count++;
+        if (min_service_count == 0 || other_state.service_count < min_service_count) {
+            min_service_count = other_state.service_count;
+        }
+        if (other_state.service_count > max_service_count) {
+            max_service_count = other_state.service_count;
+        }
+        if (kv.first == camera_serial || other_state.last_start_ns == 0) {
+            continue;
+        }
+        if (latest_other_start_ns == 0 ||
+            other_state.last_start_ns > latest_other_start_ns) {
+            latest_other_start_ns = other_state.last_start_ns;
+        }
+        if (oldest_other_start_ns == 0 ||
+            other_state.last_start_ns < oldest_other_start_ns) {
+            oldest_other_start_ns = other_state.last_start_ns;
+        }
+    }
+
+    if (observed_camera_count >= 2 && min_service_count > 0) {
+        snapshot.service_count_skew_vs_min =
+            static_cast<int64_t>(state.service_count - min_service_count);
+        snapshot.service_count_skew_range =
+            static_cast<int64_t>(max_service_count - min_service_count);
+    }
+    if (latest_other_start_ns > 0 && worker_start_host_ns >= latest_other_start_ns) {
+        snapshot.service_skew_latest_other_ms =
+            static_cast<double>(worker_start_host_ns - latest_other_start_ns) / 1000000.0;
+    }
+    if (oldest_other_start_ns > 0 && worker_start_host_ns >= oldest_other_start_ns) {
+        snapshot.service_skew_oldest_other_ms =
+            static_cast<double>(worker_start_host_ns - oldest_other_start_ns) / 1000000.0;
+    }
+    return snapshot;
+}
+
 struct YoloPerfRecord {
     uint64_t frame_id = 0;
     uint64_t recording_frame_id = 0;
     uint64_t timestamp = 0;
     uint64_t timestamp_sys = 0;
     int queue_depth = 0;
+    int queue_depth_at_enqueue = -1;
+    int queue_depth_at_worker_start = -1;
     double fps = 0.0;
     int ok = 0;
     double acquisition_to_worker_start_ms = -1.0;
+    double yolo_queue_wait_ms = -1.0;
+    double oldest_frame_age_at_worker_start_ms = -1.0;
+    double oldest_queued_frame_age_at_worker_start_ms = -1.0;
     double ingress_event_record_to_worker_start_ms = -1.0;
+    double acquisition_to_yolo_input_ready_ms = -1.0;
+    double worker_start_to_yolo_input_ready_ms = -1.0;
     double acquisition_to_detect_done_ms = -1.0;
     double worker_start_to_detect_done_ms = -1.0;
+    uint64_t service_sequence = 0;
+    uint64_t camera_service_sequence = 0;
+    int active_camera_count = 0;
+    double same_camera_service_gap_ms = -1.0;
+    double service_skew_latest_other_ms = -1.0;
+    double service_skew_oldest_other_ms = -1.0;
+    int64_t service_count_skew_vs_min = -1;
+    int64_t service_count_skew_range = -1;
     int ingress_event_ready_before_wait = -1;
     double wait_ms = -1.0;
     double pre_ms = -1.0;
@@ -225,8 +530,11 @@ struct YoloPerfRecord {
     double sync_ms = -1.0;
     int completion_event_ready_before_sync = -1;
     double cpu_wait_event_ms = -1.0;
+    double cpu_ingress_event_query_ms = -1.0;
+    double cpu_stream_wait_event_ms = -1.0;
     double cpu_npp_set_stream_ms = -1.0;
     double cpu_preprocess_ms = -1.0;
+    double cpu_input_ready_event_record_ms = -1.0;
     double cpu_dump_ms = -1.0;
     double cpu_infer_call_ms = -1.0;
     double cpu_event_record_ms = -1.0;
@@ -331,10 +639,12 @@ private:
                       << " failed to open " << file_path_ << std::endl;
             return;
         }
-        file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,fps,ok,"
-                 "acquisition_to_worker_start_ms,ingress_event_record_to_worker_start_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,"
+        file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_at_worker_start,fps,ok,"
+                 "acquisition_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,"
+                 "ingress_event_record_to_worker_start_ms,acquisition_to_yolo_input_ready_ms,worker_start_to_yolo_input_ready_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,"
+                 "service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,"
                  "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
-                 "cpu_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
+                 "cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,"
                  "queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms\n";
         file_ << std::fixed << std::setprecision(6);
         std::cout << "[YOLO_PERF] " << worker_name_ << " logging to " << file_path_ << std::endl;
@@ -357,12 +667,27 @@ private:
               << record.timestamp << ","
               << record.timestamp_sys << ","
               << record.queue_depth << ","
+              << record.queue_depth_at_enqueue << ","
+              << record.queue_depth_at_worker_start << ","
               << record.fps << ","
               << record.ok << ","
               << record.acquisition_to_worker_start_ms << ","
+              << record.yolo_queue_wait_ms << ","
+              << record.oldest_frame_age_at_worker_start_ms << ","
+              << record.oldest_queued_frame_age_at_worker_start_ms << ","
               << record.ingress_event_record_to_worker_start_ms << ","
+              << record.acquisition_to_yolo_input_ready_ms << ","
+              << record.worker_start_to_yolo_input_ready_ms << ","
               << record.acquisition_to_detect_done_ms << ","
               << record.worker_start_to_detect_done_ms << ","
+              << record.service_sequence << ","
+              << record.camera_service_sequence << ","
+              << record.active_camera_count << ","
+              << record.same_camera_service_gap_ms << ","
+              << record.service_skew_latest_other_ms << ","
+              << record.service_skew_oldest_other_ms << ","
+              << record.service_count_skew_vs_min << ","
+              << record.service_count_skew_range << ","
               << record.ingress_event_ready_before_wait << ","
               << record.wait_ms << ","
               << record.pre_ms << ","
@@ -372,8 +697,11 @@ private:
               << record.sync_ms << ","
               << record.completion_event_ready_before_sync << ","
               << record.cpu_wait_event_ms << ","
+              << record.cpu_ingress_event_query_ms << ","
+              << record.cpu_stream_wait_event_ms << ","
               << record.cpu_npp_set_stream_ms << ","
               << record.cpu_preprocess_ms << ","
+              << record.cpu_input_ready_event_record_ms << ","
               << record.cpu_dump_ms << ","
               << record.cpu_infer_call_ms << ","
               << record.cpu_event_record_ms << ","
@@ -520,6 +848,7 @@ YoloWorker::YoloWorker(const char* name,
                 associated_camera_params_->camera_serial,
                 threadName
             );
+            yolo_perf::RegisterServiceCamera(associated_camera_params_->camera_serial);
             perf_sample_rate_ = perf_cfg.sample_rate;
             if (perf_sample_rate_ < 1) {
                 perf_sample_rate_ = 1;
@@ -545,6 +874,9 @@ YoloWorker::~YoloWorker() {
     if (perf_logger_) {
         perf_logger_->Stop();
         perf_logger_.reset();
+    }
+    if (associated_camera_params_) {
+        yolo_perf::UnregisterServiceCamera(associated_camera_params_->camera_serial);
     }
     if (event_logger_) {
         event_logger_->Stop();
@@ -584,6 +916,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     static thread_local bool affinity_set = false;
     if (!affinity_set) {
         ApplyYoloAffinity(associated_camera_params_, threadName);
+        ApplyYoloRealtimeScheduling(associated_camera_params_, threadName);
         affinity_set = true;
     }
     if (!yolov8_instance_ || !entry || !entry->d_image) {
@@ -595,9 +928,17 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
 
     // Set the CUDA device for this thread.
     ck(cudaSetDevice(associated_camera_params_->gpu_id));
+    NVTX_YOLO_DYNAMIC(BuildYoloNvtxLabel(
+        "YOLO worker",
+        threadName,
+        associated_camera_params_->camera_serial,
+        entry,
+        associated_camera_params_->gpu_id));
 
     try {
         const bool skip_cpu_results = SkipCpuResults();
+        const bool ready_event_fast_path = UseReadyEventFastPath();
+        const bool yolo_detach_input = UseYoloDetachInput();
         if (perf_logger_) {
             std::string recording_folder;
             {
@@ -642,8 +983,11 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         double ms_ipc = -1.0;
         double ms_enet = -1.0;
         double ms_cpu_wait_event = 0.0;
+        double ms_cpu_ingress_event_query = 0.0;
+        double ms_cpu_stream_wait_event = 0.0;
         double ms_cpu_npp_set_stream = 0.0;
         double ms_cpu_preprocess = -1.0;
+        double ms_cpu_input_ready_event_record = 0.0;
         double ms_cpu_dump = 0.0;
         double ms_cpu_infer_call = -1.0;
         double ms_cpu_event_record = 0.0;
@@ -652,16 +996,44 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         double ms_cpu_post_sync = -1.0;
         double ms_total = -1.0;
         double ms_acquisition_to_worker_start = -1.0;
+        double ms_yolo_queue_wait = -1.0;
+        double ms_oldest_frame_age_at_worker_start = -1.0;
+        double ms_oldest_queued_frame_age_at_worker_start = -1.0;
         double ms_ingress_event_record_to_worker_start = -1.0;
+        double ms_acquisition_to_yolo_input_ready = -1.0;
+        double ms_worker_start_to_yolo_input_ready = -1.0;
         double ms_acquisition_to_detect_done = -1.0;
         double ms_worker_start_to_detect_done = -1.0;
         int ingress_event_ready_before_wait = -1;
         int completion_event_ready_before_sync = -1;
         uint64_t worker_start_host_ns = steady_time_now_ns();
+        int queue_depth_at_worker_start = -1;
+        WORKER_ENTRY* oldest_queued_entry = nullptr;
+        GetQueueInSnapshotForInstrumentation(
+            &queue_depth_at_worker_start,
+            &oldest_queued_entry);
+        const yolo_perf::YoloServiceSkewSnapshot service_skew =
+            perf_logger_
+                ? yolo_perf::RecordServiceStart(
+                      associated_camera_params_->camera_serial,
+                      worker_start_host_ns)
+                : yolo_perf::YoloServiceSkewSnapshot{};
         const auto cpu_start = std::chrono::steady_clock::now();
         if (entry->acquisition_receive_host_ns > 0) {
             ms_acquisition_to_worker_start = static_cast<double>(
                 worker_start_host_ns - entry->acquisition_receive_host_ns) / 1000000.0;
+            ms_oldest_frame_age_at_worker_start = ms_acquisition_to_worker_start;
+        }
+        if (entry->yolo_enqueue_host_ns > 0 &&
+            worker_start_host_ns >= entry->yolo_enqueue_host_ns) {
+            ms_yolo_queue_wait = static_cast<double>(
+                worker_start_host_ns - entry->yolo_enqueue_host_ns) / 1000000.0;
+        }
+        if (oldest_queued_entry &&
+            oldest_queued_entry->acquisition_receive_host_ns > 0 &&
+            worker_start_host_ns >= oldest_queued_entry->acquisition_receive_host_ns) {
+            ms_oldest_queued_frame_age_at_worker_start = static_cast<double>(
+                worker_start_host_ns - oldest_queued_entry->acquisition_receive_host_ns) / 1000000.0;
         }
         if (entry->ingress_event_record_host_ns > 0 &&
             worker_start_host_ns >= entry->ingress_event_record_host_ns) {
@@ -726,24 +1098,47 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
 
         // Wait for the previous stage (acquire_frames) to finish copying data.
         if (entry->event_ptr) {
+            NVTX_SYNC_DYNAMIC(BuildYoloNvtxLabel(
+                "YOLO source event wait",
+                threadName,
+                associated_camera_params_->camera_serial,
+                entry,
+                associated_camera_params_->gpu_id));
             const auto cpu_wait_start = std::chrono::steady_clock::now();
+            const auto cpu_query_start = std::chrono::steady_clock::now();
             cudaError_t wait_ready_status = cudaEventQuery(*entry->event_ptr);
+            const auto cpu_query_end = std::chrono::steady_clock::now();
+            ms_cpu_ingress_event_query =
+                std::chrono::duration<double, std::milli>(cpu_query_end - cpu_query_start).count();
+            bool issue_stream_wait = true;
             if (wait_ready_status == cudaSuccess) {
                 ingress_event_ready_before_wait = 1;
+                issue_stream_wait = !ready_event_fast_path;
             } else if (wait_ready_status == cudaErrorNotReady) {
                 ingress_event_ready_before_wait = 0;
             } else {
                 ingress_event_ready_before_wait = -2;
                 cudaGetLastError();
             }
+            if (issue_stream_wait) {
 #if YOLO_PROFILE
-            ck(cudaEventRecord(prof_events.wait_start, yolov8_instance_->stream));
+                ck(cudaEventRecord(prof_events.wait_start, yolov8_instance_->stream));
 #endif
-            ck(cudaStreamWaitEvent(yolov8_instance_->stream, *entry->event_ptr, 0));
+                const auto cpu_stream_wait_start = std::chrono::steady_clock::now();
+                ck(cudaStreamWaitEvent(yolov8_instance_->stream, *entry->event_ptr, 0));
+                const auto cpu_stream_wait_end = std::chrono::steady_clock::now();
+                ms_cpu_stream_wait_event =
+                    std::chrono::duration<double, std::milli>(
+                        cpu_stream_wait_end - cpu_stream_wait_start).count();
 #if YOLO_PROFILE
-            ck(cudaEventRecord(prof_events.wait_end, yolov8_instance_->stream));
-            timed_wait = true;
+                ck(cudaEventRecord(prof_events.wait_end, yolov8_instance_->stream));
+                timed_wait = true;
 #endif
+            } else {
+#if YOLO_PROFILE
+                ms_wait = 0.0f;
+#endif
+            }
             const auto cpu_wait_end = std::chrono::steady_clock::now();
             ms_cpu_wait_event = std::chrono::duration<double, std::milli>(cpu_wait_end - cpu_wait_start).count();
         } else {
@@ -755,23 +1150,63 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         debayer_gpu_.size.height = camera_height;
 
         // Debayer or duplicate mono channel to prepare for color conversion.
+        {
+        NVTX_YOLO_DYNAMIC(BuildYoloNvtxLabel(
+            "YOLO preprocess/input_ready",
+            threadName,
+            associated_camera_params_->camera_serial,
+            entry,
+            associated_camera_params_->gpu_id));
         const auto cpu_preprocess_start = std::chrono::steady_clock::now();
 #if YOLO_PROFILE
         ck(cudaEventRecord(prof_events.pre_start, yolov8_instance_->stream));
 #endif
-        if (associated_camera_params_->color) {
-            // If color, debayer to RGBA first, then our kernel will handle the rest.
-            debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_);
-            yolov8_instance_->preprocess_gpu(debayer_gpu_.d_debayer, camera_width, camera_height, true);
-        } else {
-            // If mono, pass the raw mono buffer directly to the kernel.
-            yolov8_instance_->preprocess_gpu(frame_original_gpu_.d_orig, camera_width, camera_height, false);
+        {
+            NVTX_YOLO_DYNAMIC(BuildYoloNvtxLabel(
+                "YOLO preprocess_gpu call",
+                threadName,
+                associated_camera_params_->camera_serial,
+                entry,
+                associated_camera_params_->gpu_id));
+            if (associated_camera_params_->color) {
+                // If color, debayer to RGBA first, then our kernel will handle the rest.
+                debayer_frame_gpu(associated_camera_params_, &frame_original_gpu_, &debayer_gpu_);
+                yolov8_instance_->preprocess_gpu(debayer_gpu_.d_debayer, camera_width, camera_height, true);
+            } else {
+                // If mono, pass the raw mono buffer directly to the kernel.
+                yolov8_instance_->preprocess_gpu(frame_original_gpu_.d_orig, camera_width, camera_height, false);
+            }
+        }
+        if (yolo_detach_input &&
+            entry->yolo_input_detach_requested &&
+            entry->yolo_input_ready_event) {
+            NVTX_SYNC_DYNAMIC(BuildYoloNvtxLabel(
+                "YOLO input_ready event record",
+                threadName,
+                associated_camera_params_->camera_serial,
+                entry,
+                associated_camera_params_->gpu_id));
+            const auto cpu_input_ready_event_start = std::chrono::steady_clock::now();
+            ck(cudaEventRecord(entry->yolo_input_ready_event, yolov8_instance_->stream));
+            const auto cpu_input_ready_event_end = std::chrono::steady_clock::now();
+            ms_cpu_input_ready_event_record =
+                std::chrono::duration<double, std::milli>(
+                    cpu_input_ready_event_end - cpu_input_ready_event_start).count();
+            entry->yolo_input_ready_host_ns = steady_time_now_ns();
+            entry->yolo_input_ready_event_recorded.store(true, std::memory_order_release);
+            if (entry->acquisition_receive_host_ns > 0) {
+                ms_acquisition_to_yolo_input_ready = static_cast<double>(
+                    entry->yolo_input_ready_host_ns - entry->acquisition_receive_host_ns) / 1000000.0;
+            }
+            ms_worker_start_to_yolo_input_ready = static_cast<double>(
+                entry->yolo_input_ready_host_ns - worker_start_host_ns) / 1000000.0;
         }
 #if YOLO_PROFILE
         ck(cudaEventRecord(prof_events.pre_end, yolov8_instance_->stream));
 #endif
         const auto cpu_preprocess_end = std::chrono::steady_clock::now();
         ms_cpu_preprocess = std::chrono::duration<double, std::milli>(cpu_preprocess_end - cpu_preprocess_start).count();
+        }
 
         // Logic for dumping a debug frame if requested.
         bool dump_this_frame = m_dump_next_frame.exchange(false);
@@ -804,7 +1239,15 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
 #if YOLO_PROFILE
         ck(cudaEventRecord(prof_events.infer_start, yolov8_instance_->stream));
 #endif
-        yolov8_instance_->infer();
+        {
+            NVTX_YOLO_DYNAMIC(BuildYoloNvtxLabel(
+                "YOLO infer enqueue",
+                threadName,
+                associated_camera_params_->camera_serial,
+                entry,
+                associated_camera_params_->gpu_id));
+            yolov8_instance_->infer();
+        }
 #if YOLO_PROFILE
         const auto infer_call_end = std::chrono::steady_clock::now();
         ms_enqueue = std::chrono::duration<double, std::milli>(infer_call_end - infer_call_start).count();
@@ -820,13 +1263,23 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ck(cudaEventRecord(*entry->yolo_completion_event, yolov8_instance_->stream));
             const auto cpu_event_end = std::chrono::steady_clock::now();
             ms_cpu_event_record = std::chrono::duration<double, std::milli>(cpu_event_end - cpu_event_start).count();
+            entry->yolo_completion_event_recorded.store(true, std::memory_order_release);
         }
 
         // Wait for the GPU to finish, with a timeout.
         const int timeout_us = 100000; // 100ms timeout
         bool finished_in_time = false;
 
-        const auto sync_wait_start = std::chrono::steady_clock::now();
+        auto sync_wait_start = std::chrono::steady_clock::now();
+        auto sync_wait_end = sync_wait_start;
+        {
+            NVTX_SYNC_DYNAMIC(BuildYoloNvtxLabel(
+                "YOLO completion wait",
+                threadName,
+                associated_camera_params_->camera_serial,
+                entry,
+                associated_camera_params_->gpu_id));
+            sync_wait_start = std::chrono::steady_clock::now();
         if (entry->yolo_completion_event) {
             cudaError_t completion_ready_status = cudaEventQuery(*entry->yolo_completion_event);
             if (completion_ready_status == cudaSuccess) {
@@ -870,7 +1323,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 usleep(100);
             }
         }
-        const auto sync_wait_end = std::chrono::steady_clock::now();
+            sync_wait_end = std::chrono::steady_clock::now();
+        }
 #if YOLO_PROFILE
         ms_sync_wait = std::chrono::duration<double, std::milli>(sync_wait_end - sync_wait_start).count();
 #endif
@@ -879,6 +1333,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             ms_cpu_wait_event +
             ms_cpu_npp_set_stream +
             ms_cpu_preprocess +
+            ms_cpu_input_ready_event_record +
             ms_cpu_dump +
             ms_cpu_infer_call +
             ms_cpu_event_record
@@ -1115,12 +1570,33 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.timestamp = entry->timestamp;
                 record.timestamp_sys = entry->timestamp_sys;
                 record.queue_depth = GetCountQueueInSize();
+                record.queue_depth_at_enqueue = entry->yolo_queue_depth_at_enqueue;
+                record.queue_depth_at_worker_start = queue_depth_at_worker_start;
                 record.fps = current_fps_.load(std::memory_order_relaxed);
                 record.ok = finished_in_time ? 1 : 0;
                 record.acquisition_to_worker_start_ms = ms_acquisition_to_worker_start;
+                record.yolo_queue_wait_ms = ms_yolo_queue_wait;
+                record.oldest_frame_age_at_worker_start_ms =
+                    ms_oldest_frame_age_at_worker_start;
+                record.oldest_queued_frame_age_at_worker_start_ms =
+                    ms_oldest_queued_frame_age_at_worker_start;
                 record.ingress_event_record_to_worker_start_ms = ms_ingress_event_record_to_worker_start;
+                record.acquisition_to_yolo_input_ready_ms = ms_acquisition_to_yolo_input_ready;
+                record.worker_start_to_yolo_input_ready_ms = ms_worker_start_to_yolo_input_ready;
                 record.acquisition_to_detect_done_ms = ms_acquisition_to_detect_done;
                 record.worker_start_to_detect_done_ms = ms_worker_start_to_detect_done;
+                record.service_sequence = service_skew.service_sequence;
+                record.camera_service_sequence = service_skew.camera_service_sequence;
+                record.active_camera_count = service_skew.active_camera_count;
+                record.same_camera_service_gap_ms = service_skew.same_camera_service_gap_ms;
+                record.service_skew_latest_other_ms =
+                    service_skew.service_skew_latest_other_ms;
+                record.service_skew_oldest_other_ms =
+                    service_skew.service_skew_oldest_other_ms;
+                record.service_count_skew_vs_min =
+                    service_skew.service_count_skew_vs_min;
+                record.service_count_skew_range =
+                    service_skew.service_count_skew_range;
                 record.ingress_event_ready_before_wait = ingress_event_ready_before_wait;
                 record.wait_ms = ms_wait;
                 record.pre_ms = ms_pre;
@@ -1130,8 +1606,11 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.sync_ms = ms_sync_wait;
                 record.completion_event_ready_before_sync = completion_event_ready_before_sync;
                 record.cpu_wait_event_ms = ms_cpu_wait_event;
+                record.cpu_ingress_event_query_ms = ms_cpu_ingress_event_query;
+                record.cpu_stream_wait_event_ms = ms_cpu_stream_wait_event;
                 record.cpu_npp_set_stream_ms = ms_cpu_npp_set_stream;
                 record.cpu_preprocess_ms = ms_cpu_preprocess;
+                record.cpu_input_ready_event_record_ms = ms_cpu_input_ready_event_record;
                 record.cpu_dump_ms = ms_cpu_dump;
                 record.cpu_infer_call_ms = ms_cpu_infer_call;
                 record.cpu_event_record_ms = ms_cpu_event_record;
@@ -1151,6 +1630,12 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         std::cerr << "[" << threadName << "] Exception in WorkerFunction: " << e.what() << std::endl;
         if (yolov8_instance_ && yolov8_instance_->stream) {
             cudaStreamSynchronize(yolov8_instance_->stream);
+        }
+        if (entry->yolo_input_detach_requested) {
+            entry->yolo_input_ready_event_recorded.store(true, std::memory_order_release);
+        }
+        if (entry->yolo_completion_event) {
+            entry->yolo_completion_event_recorded.store(true, std::memory_order_release);
         }
     }
 

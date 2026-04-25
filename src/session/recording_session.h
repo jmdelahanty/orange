@@ -5,17 +5,20 @@
 #include "video_capture.h"
 
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace orange::session {
 
 struct RecordingSessionState {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
+    std::string recording_sink_mode = "real";
 };
 
 struct RecordingRunStartResult {
     bool ok = false;
     std::string recording_folder;
+    std::string recording_sink_mode = "real";
 };
 
 void create_recording_pipelines_for_stream(RecordingSessionState* state,
@@ -29,7 +32,8 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
                                             CameraParams* cameras_params,
                                             int num_cameras,
                                             const std::string& base_folder,
-                                            PTPParams* ptp_params);
+                                            PTPParams* ptp_params,
+                                            const std::string& recording_sink_mode = "real");
 void request_stop_recording_run(CameraControl* camera_control);
 std::string current_recording_folder(CameraControl* camera_control);
 void start_recording_pipeline_for_camera(RecordingSessionState* state, int camera_index);

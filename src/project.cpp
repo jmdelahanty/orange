@@ -2676,7 +2676,8 @@ bool write_recording_snapshot(const std::string& recording_folder,
                               const std::string& base_folder,
                               bool update_latest_pointer,
                               bool sync_camera_enabled,
-                              const PTPParams* ptp_params) {
+                              const PTPParams* ptp_params,
+                              const std::string& recording_sink_mode) {
     if (!cameras_params || num_cameras <= 0) {
         return false;
     }
@@ -2689,6 +2690,11 @@ bool write_recording_snapshot(const std::string& recording_folder,
     snapshot["recording_id"] = resolved_recording_id;
     snapshot["timestamp_utc"] = timestamp_utc;
     snapshot["producer_version"] = "unknown";
+    snapshot["session"] = {
+        {"recording_sink_mode", recording_sink_mode.empty() ? "real" : recording_sink_mode},
+        {"full_frame_video_enabled",
+         recording_sink_mode.empty() || recording_sink_mode == "real"}
+    };
 
     nlohmann::json cameras = nlohmann::json::object();
     nlohmann::json camera_runtime = nlohmann::json::object();

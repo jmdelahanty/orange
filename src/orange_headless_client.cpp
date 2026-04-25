@@ -2695,7 +2695,8 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
                                           CameraParams* cameras_params,
                                           int num_cameras,
                                           PTPParams* ptp_params,
-                                          bool update_latest_pointer)
+                                          bool update_latest_pointer,
+                                          const std::string& recording_sink_mode)
 {
     if (record_folder.empty()) {
         std::cerr << "Headless recording folder is empty." << std::endl;
@@ -2733,7 +2734,8 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
             base_path.string(),
             update_latest_pointer,
             camera_control->sync_camera,
-            ptp_params)) {
+            ptp_params,
+            recording_sink_mode)) {
         std::cerr << "Failed to write headless recording snapshot for " << record_folder << std::endl;
         return false;
     }
@@ -3209,7 +3211,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     selected_camera_params.data(),
                     static_cast<int>(selected_camera_params.size()),
                     ptp_params,
-                    update_latest_pointer)) {
+                    update_latest_pointer,
+                    recording_sink_mode)) {
                 cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                 return false;
             }

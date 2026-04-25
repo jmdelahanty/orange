@@ -5,6 +5,9 @@
 // NVTX profiling wrapper for conditional compilation
 #ifdef ENABLE_NVTX_PROFILING
 #include <nvtx3/nvToolsExt.h>
+#include <cstdint>
+#include <string>
+#include <utility>
 
 // Convenient macros for NVTX markers
 #define NVTX_RANGE_PUSH(name) nvtxRangePushA(name)
@@ -25,8 +28,52 @@ public:
     NvtxRange& operator=(const NvtxRange&) = delete;
 };
 
+class NvtxDynamicRange {
+public:
+    explicit NvtxDynamicRange(std::string name)
+        : name_(std::move(name)) {
+        nvtxRangePushA(name_.c_str());
+    }
+    ~NvtxDynamicRange() {
+        nvtxRangePop();
+    }
+
+    NvtxDynamicRange(const NvtxDynamicRange&) = delete;
+    NvtxDynamicRange& operator=(const NvtxDynamicRange&) = delete;
+
+private:
+    std::string name_;
+};
+
+class NvtxDynamicColoredRange {
+public:
+    NvtxDynamicColoredRange(std::string name, uint32_t color)
+        : name_(std::move(name)) {
+        nvtxEventAttributes_t attrib = {0};
+        attrib.version = NVTX_VERSION;
+        attrib.size = NVTX_EVENT_ATTRIB_STRUCT_SIZE;
+        attrib.colorType = NVTX_COLOR_ARGB;
+        attrib.color = color;
+        attrib.messageType = NVTX_MESSAGE_TYPE_ASCII;
+        attrib.message.ascii = name_.c_str();
+        nvtxRangePushEx(&attrib);
+    }
+    ~NvtxDynamicColoredRange() {
+        nvtxRangePop();
+    }
+
+    NvtxDynamicColoredRange(const NvtxDynamicColoredRange&) = delete;
+    NvtxDynamicColoredRange& operator=(const NvtxDynamicColoredRange&) = delete;
+
+private:
+    std::string name_;
+};
+
 // Convenient macro for RAII ranges
 #define NVTX_RANGE(name) NvtxRange nvtx_range_##__LINE__(name)
+#define NVTX_RANGE_DYNAMIC(name_expr) NvtxDynamicRange nvtx_dynamic_range_##__LINE__(name_expr)
+#define NVTX_RANGE_COLORED_DYNAMIC(name_expr, color_val) \
+    NvtxDynamicColoredRange nvtx_dynamic_colored_range_##__LINE__((name_expr), (color_val))
 
 // FIX: Updated colored ranges macro to properly handle the color parameter
 #define NVTX_RANGE_COLORED(name, color_val) \
@@ -58,13 +105,22 @@ public:
 #define NVTX_DISPLAY(name)    NVTX_RANGE_COLORED(name, NVTX_COLOR_DISPLAY)
 #define NVTX_SYNC(name)       NVTX_RANGE_COLORED(name, NVTX_COLOR_SYNC)
 #define NVTX_QUEUE(name)      NVTX_RANGE_COLORED(name, NVTX_COLOR_QUEUE)
+#define NVTX_CAMERA_DYNAMIC(name_expr)   NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_CAMERA)
+#define NVTX_GPU_COPY_DYNAMIC(name_expr) NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_GPU_COPY)
+#define NVTX_ENCODE_DYNAMIC(name_expr)   NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_ENCODE)
+#define NVTX_YOLO_DYNAMIC(name_expr)     NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_YOLO)
+#define NVTX_DISPLAY_DYNAMIC(name_expr)  NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_DISPLAY)
+#define NVTX_SYNC_DYNAMIC(name_expr)     NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_SYNC)
+#define NVTX_QUEUE_DYNAMIC(name_expr)    NVTX_RANGE_COLORED_DYNAMIC(name_expr, NVTX_COLOR_QUEUE)
 
 #else
 // No-op macros when NVTX is disabled
 #define NVTX_RANGE_PUSH(name) do {} while(0)
 #define NVTX_RANGE_POP() do {} while(0)
 #define NVTX_RANGE(name) do {} while(0)
+#define NVTX_RANGE_DYNAMIC(name_expr) do {} while(0)
 #define NVTX_RANGE_COLORED(name, color_val) do {} while(0)
+#define NVTX_RANGE_COLORED_DYNAMIC(name_expr, color_val) do {} while(0)
 #define NVTX_CAMERA(name) do {} while(0)
 #define NVTX_GPU_COPY(name) do {} while(0)
 #define NVTX_ENCODE(name) do {} while(0)
@@ -72,6 +128,13 @@ public:
 #define NVTX_DISPLAY(name) do {} while(0)
 #define NVTX_SYNC(name) do {} while(0)
 #define NVTX_QUEUE(name) do {} while(0)
+#define NVTX_CAMERA_DYNAMIC(name_expr) do {} while(0)
+#define NVTX_GPU_COPY_DYNAMIC(name_expr) do {} while(0)
+#define NVTX_ENCODE_DYNAMIC(name_expr) do {} while(0)
+#define NVTX_YOLO_DYNAMIC(name_expr) do {} while(0)
+#define NVTX_DISPLAY_DYNAMIC(name_expr) do {} while(0)
+#define NVTX_SYNC_DYNAMIC(name_expr) do {} while(0)
+#define NVTX_QUEUE_DYNAMIC(name_expr) do {} while(0)
 
 class NvtxRange {
 public:

@@ -13,6 +13,16 @@
 
 #include <chrono>
 
+#include "../nvtx_profiling.h"
+
+namespace {
+uint64_t elapsed_ns(std::chrono::steady_clock::time_point start)
+{
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count());
+}
+} // namespace
+
 #ifndef _WIN32
 #include <cstring>
 static inline bool operator==(const GUID &guid1, const GUID &guid2) {
@@ -377,7 +387,7 @@ const NvEncInputFrame* NvEncoder::GetNextReferenceFrame()
     return &m_vReferenceFrames[i];
 }
 
-void NvEncoder::MapResources(uint32_t bfrIdx)
+void NvEncoder::MapResources(uint32_t bfrIdx, NvEncoderEncodeFrameTiming* timing)
 {
     if (m_vRegisteredResources.size() != static_cast<size_t>(m_nEncoderBuffer))
     {
@@ -387,13 +397,27 @@ void NvEncoder::MapResources(uint32_t bfrIdx)
     NV_ENC_MAP_INPUT_RESOURCE mapInputResource = { NV_ENC_MAP_INPUT_RESOURCE_VER };
 
     mapInputResource.registeredResource = m_vRegisteredResources[bfrIdx];
-    NVENC_API_CALL(m_nvenc.nvEncMapInputResource(m_hEncoder, &mapInputResource));
+    {
+        NVTX_ENCODE_DYNAMIC(std::string("NVENC map input resource"));
+        const auto stage_start = std::chrono::steady_clock::now();
+        NVENC_API_CALL(m_nvenc.nvEncMapInputResource(m_hEncoder, &mapInputResource));
+        if (timing) {
+            timing->map_input_resource_ns += elapsed_ns(stage_start);
+        }
+    }
     m_vMappedInputBuffers[bfrIdx] = mapInputResource.mappedResource;
 
     if (m_bMotionEstimationOnly)
     {
         mapInputResource.registeredResource = m_vRegisteredResourcesForReference[bfrIdx];
-        NVENC_API_CALL(m_nvenc.nvEncMapInputResource(m_hEncoder, &mapInputResource));
+        {
+            NVTX_ENCODE_DYNAMIC(std::string("NVENC map reference resource"));
+            const auto stage_start = std::chrono::steady_clock::now();
+            NVENC_API_CALL(m_nvenc.nvEncMapInputResource(m_hEncoder, &mapInputResource));
+            if (timing) {
+                timing->map_reference_resource_ns += elapsed_ns(stage_start);
+            }
+        }
         m_vMappedRefBuffers[bfrIdx] = mapInputResource.mappedResource;
     }
 }
@@ -402,9 +426,14 @@ void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket,
     NV_ENC_PIC_PARAMS *pPicParams,
     std::vector<uint32_t>* retiredInputIndices,
     std::vector<uint64_t>* outputTimeStamps,
-    uint64_t* bitstreamFetchDurationNs)
+    uint64_t* bitstreamFetchDurationNs,
+    NvEncoderEncodeFrameTiming* timing)
 {
+    NVTX_ENCODE_DYNAMIC(std::string("NVENC EncodeFrame"));
     vPacket.clear();
+    if (timing) {
+        *timing = {};
+    }
     if (outputTimeStamps) {
         outputTimeStamps->clear();
     }
@@ -415,9 +444,13 @@ void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket,
 
     int bfrIdx = m_iToSend % m_nEncoderBuffer;
 
-    MapResources(bfrIdx);
+    MapResources(bfrIdx, timing);
 
-    NVENCSTATUS nvStatus = DoEncode(m_vMappedInputBuffers[bfrIdx], m_vBitstreamOutputBuffer[bfrIdx], pPicParams);
+    NVENCSTATUS nvStatus = DoEncode(
+        m_vMappedInputBuffers[bfrIdx],
+        m_vBitstreamOutputBuffer[bfrIdx],
+        pPicParams,
+        timing);
 
     if (nvStatus == NV_ENC_SUCCESS || nvStatus == NV_ENC_ERR_NEED_MORE_INPUT)
     {
@@ -428,7 +461,8 @@ void NvEncoder::EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket,
             true,
             retiredInputIndices,
             outputTimeStamps,
-            bitstreamFetchDurationNs);
+            bitstreamFetchDurationNs,
+            timing);
     }
     else
     {
@@ -493,7 +527,10 @@ void NvEncoder::GetSequenceParams(std::vector<uint8_t> &seqParams)
     seqParams.insert(seqParams.end(), &spsppsData[0], &spsppsData[spsppsSize]);
 }
 
-NVENCSTATUS NvEncoder::DoEncode(NV_ENC_INPUT_PTR inputBuffer, NV_ENC_OUTPUT_PTR outputBuffer, NV_ENC_PIC_PARAMS *pPicParams)
+NVENCSTATUS NvEncoder::DoEncode(NV_ENC_INPUT_PTR inputBuffer,
+    NV_ENC_OUTPUT_PTR outputBuffer,
+    NV_ENC_PIC_PARAMS *pPicParams,
+    NvEncoderEncodeFrameTiming* timing)
 {
     NV_ENC_PIC_PARAMS picParams = {};
     if (pPicParams)
@@ -508,9 +545,14 @@ NVENCSTATUS NvEncoder::DoEncode(NV_ENC_INPUT_PTR inputBuffer, NV_ENC_OUTPUT_PTR 
     picParams.inputHeight = GetEncodeHeight();
     picParams.outputBitstream = outputBuffer;
     picParams.completionEvent = GetCompletionEvent(m_iToSend % m_nEncoderBuffer);
+    NVTX_ENCODE_DYNAMIC(std::string("NVENC encode picture"));
+    const auto stage_start = std::chrono::steady_clock::now();
     NVENCSTATUS nvStatus = m_nvenc.nvEncEncodePicture(m_hEncoder, &picParams);
+    if (timing) {
+        timing->encode_picture_ns += elapsed_ns(stage_start);
+    }
 
-    return nvStatus; 
+    return nvStatus;
 }
 
 void NvEncoder::SendEOS()
@@ -524,9 +566,14 @@ void NvEncoder::SendEOS()
 void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
     std::vector<uint32_t>* retiredInputIndices,
     std::vector<uint64_t>* outputTimeStamps,
-    uint64_t* bitstreamFetchDurationNs)
+    uint64_t* bitstreamFetchDurationNs,
+    NvEncoderEncodeFrameTiming* timing)
 {
+    NVTX_ENCODE_DYNAMIC(std::string("NVENC EndEncode"));
     vPacket.clear();
+    if (timing) {
+        *timing = {};
+    }
     if (outputTimeStamps) {
         outputTimeStamps->clear();
     }
@@ -546,7 +593,8 @@ void NvEncoder::EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
         false,
         retiredInputIndices,
         outputTimeStamps,
-        bitstreamFetchDurationNs);
+        bitstreamFetchDurationNs,
+        timing);
 }
 
 void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer,
@@ -554,36 +602,73 @@ void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer,
     bool bOutputDelay,
     std::vector<uint32_t>* retiredInputIndices,
     std::vector<uint64_t>* outputTimeStamps,
-    uint64_t* bitstreamFetchDurationNs)
+    uint64_t* bitstreamFetchDurationNs,
+    NvEncoderEncodeFrameTiming* timing)
 {
+    NVTX_ENCODE_DYNAMIC(std::string("NVENC get encoded packet"));
     uint64_t totalFetchDurationNs = 0;
     unsigned i = 0;
     int iEnd = bOutputDelay ? m_iToSend - m_nOutputDelay : m_iToSend;
     for (; m_iGot < iEnd; m_iGot++)
     {
-        WaitForCompletionEvent(m_iGot % m_nEncoderBuffer);
+        {
+            NVTX_SYNC_DYNAMIC(std::string("NVENC completion wait"));
+            const auto stage_start = std::chrono::steady_clock::now();
+            WaitForCompletionEvent(m_iGot % m_nEncoderBuffer);
+            if (timing) {
+                timing->completion_wait_ns += elapsed_ns(stage_start);
+            }
+        }
         const auto fetchStart = std::chrono::steady_clock::now();
         NV_ENC_LOCK_BITSTREAM lockBitstreamData = { NV_ENC_LOCK_BITSTREAM_VER };
         lockBitstreamData.outputBitstream = vOutputBuffer[m_iGot % m_nEncoderBuffer];
         lockBitstreamData.doNotWait = false;
-        NVENC_API_CALL(m_nvenc.nvEncLockBitstream(m_hEncoder, &lockBitstreamData));
-  
+        {
+            NVTX_ENCODE_DYNAMIC(std::string("NVENC lock bitstream"));
+            const auto stage_start = std::chrono::steady_clock::now();
+            NVENC_API_CALL(m_nvenc.nvEncLockBitstream(m_hEncoder, &lockBitstreamData));
+            if (timing) {
+                timing->lock_bitstream_ns += elapsed_ns(stage_start);
+            }
+        }
+
         uint8_t *pData = (uint8_t *)lockBitstreamData.bitstreamBufferPtr;
         if (vPacket.size() < i + 1)
         {
             vPacket.push_back(std::vector<uint8_t>());
         }
-        vPacket[i].clear();
-        vPacket[i].insert(vPacket[i].end(), &pData[0], &pData[lockBitstreamData.bitstreamSizeInBytes]);
+        {
+            NVTX_ENCODE_DYNAMIC(std::string("NVENC bitstream host copy"));
+            const auto stage_start = std::chrono::steady_clock::now();
+            vPacket[i].clear();
+            vPacket[i].insert(vPacket[i].end(), &pData[0], &pData[lockBitstreamData.bitstreamSizeInBytes]);
+            if (timing) {
+                timing->bitstream_copy_ns += elapsed_ns(stage_start);
+                timing->output_bytes += lockBitstreamData.bitstreamSizeInBytes;
+                timing->output_packets++;
+            }
+        }
         if (outputTimeStamps) {
             outputTimeStamps->push_back(lockBitstreamData.outputTimeStamp);
         }
         i++;
 
-        NVENC_API_CALL(m_nvenc.nvEncUnlockBitstream(m_hEncoder, lockBitstreamData.outputBitstream));
+        {
+            NVTX_ENCODE_DYNAMIC(std::string("NVENC unlock bitstream"));
+            const auto stage_start = std::chrono::steady_clock::now();
+            NVENC_API_CALL(m_nvenc.nvEncUnlockBitstream(m_hEncoder, lockBitstreamData.outputBitstream));
+            if (timing) {
+                timing->unlock_bitstream_ns += elapsed_ns(stage_start);
+            }
+        }
         totalFetchDurationNs += static_cast<uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - fetchStart).count());
+        if (timing) {
+            timing->bitstream_fetch_ns += static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - fetchStart).count());
+        }
 
         if (m_vMappedInputBuffers[m_iGot % m_nEncoderBuffer])
         {
@@ -591,13 +676,27 @@ void NvEncoder::GetEncodedPacket(std::vector<NV_ENC_OUTPUT_PTR> &vOutputBuffer,
             {
                 retiredInputIndices->push_back(static_cast<uint32_t>(m_iGot % m_nEncoderBuffer));
             }
-            NVENC_API_CALL(m_nvenc.nvEncUnmapInputResource(m_hEncoder, m_vMappedInputBuffers[m_iGot % m_nEncoderBuffer]));
+            {
+                NVTX_ENCODE_DYNAMIC(std::string("NVENC unmap input resource"));
+                const auto stage_start = std::chrono::steady_clock::now();
+                NVENC_API_CALL(m_nvenc.nvEncUnmapInputResource(m_hEncoder, m_vMappedInputBuffers[m_iGot % m_nEncoderBuffer]));
+                if (timing) {
+                    timing->unmap_input_resource_ns += elapsed_ns(stage_start);
+                }
+            }
             m_vMappedInputBuffers[m_iGot % m_nEncoderBuffer] = nullptr;
         }
 
         if (m_bMotionEstimationOnly && m_vMappedRefBuffers[m_iGot % m_nEncoderBuffer])
         {
-            NVENC_API_CALL(m_nvenc.nvEncUnmapInputResource(m_hEncoder, m_vMappedRefBuffers[m_iGot % m_nEncoderBuffer]));
+            {
+                NVTX_ENCODE_DYNAMIC(std::string("NVENC unmap reference resource"));
+                const auto stage_start = std::chrono::steady_clock::now();
+                NVENC_API_CALL(m_nvenc.nvEncUnmapInputResource(m_hEncoder, m_vMappedRefBuffers[m_iGot % m_nEncoderBuffer]));
+                if (timing) {
+                    timing->unmap_reference_resource_ns += elapsed_ns(stage_start);
+                }
+            }
             m_vMappedRefBuffers[m_iGot % m_nEncoderBuffer] = nullptr;
         }
     }

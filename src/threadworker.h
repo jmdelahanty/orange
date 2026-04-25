@@ -59,6 +59,8 @@ protected:
     // This function is called when the worker is reset.
     virtual void WorkerReset() {}
 
+    void GetQueueInSnapshotForInstrumentation(int* size, T** oldest);
+
 private:
     // This overrides the pure virtual function in the base class COffThreadMachine.
     void ThreadRunning() override;
@@ -249,6 +251,18 @@ T* CThreadWorker<T>::GetObjectFromQueueIn()
         queueInNotFullCv.notify_one();
     }
     return f;
+}
+
+template<typename T>
+void CThreadWorker<T>::GetQueueInSnapshotForInstrumentation(int* size, T** oldest)
+{
+    std::lock_guard<std::mutex> lock(mutexQueueIn);
+    if (size) {
+        *size = static_cast<int>(queueIn.size());
+    }
+    if (oldest) {
+        *oldest = queueIn.empty() ? nullptr : queueIn.front();
+    }
 }
 
 template<typename T>

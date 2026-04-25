@@ -2,9 +2,13 @@
 
 #include "FFmpegWriter.h"
 #include "fsuid_guard.h"
+#include "nvtx_profiling.h"
 #include <algorithm>
 #include <unistd.h>
 #include <filesystem>
+#ifdef __linux__
+#include <pthread.h>
+#endif
 
 namespace {
 bool is_start_code(const uint8_t* data, size_t size, size_t* start_code_len) {
@@ -54,6 +58,9 @@ FFmpegWriter::FFmpegWriter(
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
 
+    if (szOutFilePath) {
+        output_label_ = std::filesystem::path(szOutFilePath).stem().string();
+    }
     codec_id_ = eCodecId;
     if (metadata_file) {
         keyframe_file_ = metadata_file;
@@ -129,6 +136,13 @@ void FFmpegWriter::push_packet(uint8_t* pData,
                                bool is_last_packet_in_gop,
                                uint64_t gop_release_started_ns)
 {
+    NVTX_ENCODE_DYNAMIC([&]() {
+        return "FFmpegWriter push_packet label=" + output_label_ +
+               " pts=" + std::to_string(nPts) +
+               " gop=" + std::to_string(gop_index) +
+               " bytes=" + std::to_string(nBytes);
+    }());
+    const uint64_t push_start_ns = steady_clock_now_ns();
     if (nBytes <= 0) {
         return;
     }
@@ -155,6 +169,7 @@ void FFmpegWriter::push_packet(uint8_t* pData,
         return;
     }
 
+    const uint64_t alloc_copy_start_ns = steady_clock_now_ns();
     AVPacket *pkt = av_packet_alloc();
     if (av_new_packet(pkt, nBytes) < 0) {
         std::cout << "Error, av_new_packet..." << std::endl;
@@ -162,6 +177,7 @@ void FFmpegWriter::push_packet(uint8_t* pData,
         return;
     }
     memcpy(pkt->data, pData, nBytes);
+    const uint64_t alloc_copy_end_ns = steady_clock_now_ns();
     
     const bool has_explicit_pts = nPts >= 0;
     const int64_t frame_index = has_explicit_pts ? nPts : sequential_frame_counter_;
@@ -191,12 +207,41 @@ void FFmpegWriter::push_packet(uint8_t* pData,
     queued_packet.gop_index = gop_index;
     queued_packet.is_last_packet_in_gop = is_last_packet_in_gop;
     queued_packet.gop_release_started_ns = gop_release_started_ns;
+    const uint64_t queue_push_start_ns = steady_clock_now_ns();
     m_queue.push(queued_packet);
+    const uint64_t push_end_ns = steady_clock_now_ns();
+    {
+        std::lock_guard<std::mutex> lock(latency_mutex_);
+        if (alloc_copy_end_ns >= alloc_copy_start_ns) {
+            observe_latency_ns(
+                &latency_stats_.packet_alloc_copy,
+                alloc_copy_end_ns - alloc_copy_start_ns);
+        }
+        if (push_end_ns >= queue_push_start_ns) {
+            observe_latency_ns(
+                &latency_stats_.queue_push,
+                push_end_ns - queue_push_start_ns);
+        }
+        if (push_end_ns >= push_start_ns) {
+            observe_latency_ns(
+                &latency_stats_.push_packet_total,
+                push_end_ns - push_start_ns);
+        }
+    }
 }
 
 void FFmpegWriter::create_thread()
 {
     m_thread = std::thread(&FFmpegWriter::write_thread, this);
+#ifdef __linux__
+    std::string thread_name = output_label_.empty()
+        ? "FFmpegWriter"
+        : "FFm_" + output_label_;
+    if (thread_name.size() > 15) {
+        thread_name.resize(15);
+    }
+    (void)pthread_setname_np(m_thread.native_handle(), thread_name.c_str());
+#endif
 }
 
 void FFmpegWriter::quit_thread()
@@ -213,6 +258,7 @@ void FFmpegWriter::join_thread()
 
 void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 {
+    NVTX_ENCODE_DYNAMIC(std::string("FFmpegWriter av_interleaved_write_frame"));
     int ret = av_interleaved_write_frame(oc, pkt);
     if (ret < 0) {
         std::cout << "FFMPEG: Error while writing video frame" << std::endl;
@@ -240,6 +286,11 @@ void FFmpegWriter::write_thread()
                 }
 
                 const uint64_t write_started_ns = steady_clock_now_ns();
+                NVTX_ENCODE_DYNAMIC([&]() {
+                    return "FFmpegWriter write_packet label=" + output_label_ +
+                           " gop=" + std::to_string(queued_packet.gop_index) +
+                           " bytes=" + std::to_string(queued_packet.packet->size);
+                }());
                 write_one_pkt(queued_packet.packet);
                 const uint64_t write_finished_ns = steady_clock_now_ns();
                 {

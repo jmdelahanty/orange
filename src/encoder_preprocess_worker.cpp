@@ -4,11 +4,13 @@
 #include "encoder_hw_worker.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
+#include "nvtx_profiling.h"
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
 #include <algorithm>
 #include <cstdlib>
+#include <sstream>
 #include <stdexcept>
 #include <thread>
 
@@ -25,6 +27,8 @@ static constexpr int kEncProfileLogEvery = 60;
 static constexpr size_t kHelperPreprocessHostHistoryLimit = 32;
 static constexpr uint64_t kSourceReleaseProbeFrameMin = 90;
 static constexpr uint64_t kSourceReleaseProbeFrameMax = 140;
+static constexpr uint64_t kDetectPriorityWaitTimeoutNs = 50ULL * 1000ULL * 1000ULL;
+static constexpr auto kDetectPriorityWaitPollInterval = std::chrono::microseconds(50);
 
 namespace {
 void check_npp_status(NppStatus status, const char* operation)
@@ -33,6 +37,29 @@ void check_npp_status(NppStatus status, const char* operation)
         throw std::runtime_error(std::string(operation) + " failed with NPP status " + std::to_string(status));
     }
 }
+
+#ifdef ENABLE_NVTX_PROFILING
+std::string BuildRecordingNvtxLabel(const char* stage,
+                                    const std::string& camera_serial,
+                                    const WORKER_ENTRY* entry,
+                                    int preprocess_gpu_id)
+{
+    std::ostringstream oss;
+    oss << stage
+        << " cam=" << (camera_serial.empty() ? "unknown" : camera_serial)
+        << " preprocess_gpu=" << preprocess_gpu_id;
+    if (entry) {
+        oss << " rec_frame=" << entry->recording_frame_id
+            << " local_frame=" << entry->frame_id
+            << " source_gpu=" << entry->image_gpu_id
+            << " route=" << (entry->recording_route_helper ? "helper" : "primary")
+            << " helper_requested=" << (entry->recording_helper_requested ? 1 : 0)
+            << " yolo_dispatched=" << (entry->yolo_dispatched ? 1 : 0)
+            << " yolo_detach=" << (entry->yolo_input_detach_requested ? 1 : 0);
+    }
+    return oss.str();
+}
+#endif
 
 int resolve_encoder_entry_pool_size(bool direct_input_enabled,
                                     int direct_input_slot_count,
@@ -160,6 +187,10 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
         env_flag_enabled_by_default("ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE");
     helper_noop_source_read_enabled_ =
         env_flag_disabled_by_default("ORANGE_PREPROCESS_HELPER_NOOP_SOURCE_READ");
+    detect_priority_wait_enabled_ =
+        env_flag_disabled_by_default("ORANGE_RECORDING_DETECT_PRIORITY");
+    yolo_detach_input_enabled_ =
+        env_flag_disabled_by_default("ORANGE_YOLO_DETACH_INPUT");
     helper_copy_limit_bytes_ =
         env_int64_or_default("ORANGE_PREPROCESS_HELPER_COPY_BYTES", -1);
     helper_copy_delay_ns_ =
@@ -174,6 +205,19 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     }
     if (helper_noop_source_read_enabled_) {
         std::cout << "[EncoderPreprocessWorker] Helper source-read noop enabled for camera "
+                  << camera_params_->camera_serial
+                  << " preprocess_gpu=" << preprocess_gpu_id_
+                  << std::endl;
+    }
+    if (detect_priority_wait_enabled_) {
+        std::cout << "[EncoderPreprocessWorker] Recording detect-priority gate enabled for camera "
+                  << camera_params_->camera_serial
+                  << " preprocess_gpu=" << preprocess_gpu_id_
+                  << " timeout_ns=" << kDetectPriorityWaitTimeoutNs
+                  << std::endl;
+    }
+    if (yolo_detach_input_enabled_) {
+        std::cout << "[EncoderPreprocessWorker] YOLO input detach gate enabled for camera "
                   << camera_params_->camera_serial
                   << " preprocess_gpu=" << preprocess_gpu_id_
                   << std::endl;
@@ -715,6 +759,23 @@ bool EncoderPreprocessWorker::ensure_peer_access_enabled(int source_gpu_id)
     return true;
 }
 
+void EncoderPreprocessWorker::record_detect_priority_wait(uint64_t wait_ns, bool timeout)
+{
+    detect_priority_waited_frames_.fetch_add(1, std::memory_order_relaxed);
+    detect_priority_wait_total_ns_.fetch_add(wait_ns, std::memory_order_relaxed);
+    uint64_t observed_max = detect_priority_wait_max_ns_.load(std::memory_order_relaxed);
+    while (wait_ns > observed_max &&
+           !detect_priority_wait_max_ns_.compare_exchange_weak(
+               observed_max,
+               wait_ns,
+               std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+    if (timeout) {
+        detect_priority_wait_timeouts_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 {
     auto start_time = std::chrono::steady_clock::now();
@@ -740,6 +801,11 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     in_flight_.fetch_add(1, std::memory_order_relaxed);
+    NVTX_ENCODE_DYNAMIC(BuildRecordingNvtxLabel(
+        "Recording preprocess worker",
+        camera_params_->camera_serial,
+        entry,
+        preprocess_gpu_id_));
 
     // Track successful frame processing
     frame_counter_.fetch_add(1, std::memory_order_relaxed);
@@ -807,6 +873,75 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         release_source_entry(entry);
         in_flight_.fetch_sub(1, std::memory_order_relaxed);
         return false;
+    }
+
+    if (detect_priority_wait_enabled_ &&
+        entry->yolo_dispatched &&
+        !entry->recording_route_helper &&
+        entry->image_gpu_id == preprocess_gpu_id_) {
+        NVTX_SYNC_DYNAMIC(BuildRecordingNvtxLabel(
+            "Recording detect_priority wait",
+            camera_params_->camera_serial,
+            entry,
+            preprocess_gpu_id_));
+        detect_priority_gated_frames_.fetch_add(1, std::memory_order_relaxed);
+        const bool wait_for_yolo_input =
+            yolo_detach_input_enabled_ &&
+            entry->yolo_input_detach_requested &&
+            entry->yolo_input_ready_event;
+        const auto wait_start = std::chrono::steady_clock::now();
+        bool waited = false;
+        bool timed_out = false;
+        auto wait_target_ready = [&]() {
+            if (!wait_for_yolo_input) {
+                return entry->detections_ready.load(std::memory_order_acquire);
+            }
+            if (!entry->yolo_input_ready_event_recorded.load(std::memory_order_acquire)) {
+                return false;
+            }
+            cudaError_t status = cudaEventQuery(entry->yolo_input_ready_event);
+            if (status == cudaSuccess) {
+                return true;
+            }
+            if (status == cudaErrorNotReady) {
+                return false;
+            }
+            std::cerr << "[EncoderPreprocessWorker] YOLO input-ready event query failed for camera "
+                      << camera_params_->camera_serial
+                      << " preprocess_gpu=" << preprocess_gpu_id_
+                      << " recording_frame=" << entry->recording_frame_id
+                      << " error=" << cudaGetErrorString(status)
+                      << std::endl;
+            cudaGetLastError();
+            return true;
+        };
+        while (!wait_target_ready()) {
+            waited = true;
+            const uint64_t elapsed_ns =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - wait_start).count());
+            if (elapsed_ns >= kDetectPriorityWaitTimeoutNs) {
+                timed_out = true;
+                break;
+            }
+            std::this_thread::sleep_for(kDetectPriorityWaitPollInterval);
+        }
+        if (waited) {
+            const uint64_t wait_ns =
+                static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - wait_start).count());
+            record_detect_priority_wait(wait_ns, timed_out);
+            if (timed_out &&
+                !detect_priority_timeout_logged_.exchange(true, std::memory_order_relaxed)) {
+                std::cerr << "[EncoderPreprocessWorker] Recording detect-priority wait timed out for camera "
+                          << camera_params_->camera_serial
+                          << " preprocess_gpu=" << preprocess_gpu_id_
+                          << " recording_frame=" << entry->recording_frame_id
+                          << " target=" << (wait_for_yolo_input ? "yolo_input_ready" : "detections_ready")
+                          << " wait_ns=" << wait_ns
+                          << std::endl;
+            }
+        }
     }
 
 #if PIPELINE_PROFILE
@@ -944,6 +1079,11 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     // Wait for the raw frame data to be ready from the acquisition thread.
     cudaEvent_t* source_ready_event = entry->delayed_consumer_event();
     if (source_ready_event) {
+        NVTX_SYNC_DYNAMIC(BuildRecordingNvtxLabel(
+            "Recording source_ready stream_wait",
+            camera_params_->camera_serial,
+            entry,
+            preprocess_gpu_id_));
         ck(cudaStreamWaitEvent(m_stream, *source_ready_event, 0));
     }
 
@@ -951,6 +1091,11 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     bool sample_helper_cross_gpu = false;
     HelperPreprocessHostSample helper_host_sample;
     if (entry->image_gpu_id >= 0 && entry->image_gpu_id != preprocess_gpu_id_) {
+        NVTX_GPU_COPY_DYNAMIC(BuildRecordingNvtxLabel(
+            "Recording helper peer_copy",
+            camera_params_->camera_serial,
+            entry,
+            preprocess_gpu_id_));
         if (!ensure_peer_access_enabled(entry->image_gpu_id)) {
             throw std::runtime_error(
                 "Cross-GPU preprocess requested from source GPU " +
@@ -1019,6 +1164,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     // --- Perform the copy and color conversion ---
+    {
+    NVTX_ENCODE_DYNAMIC(BuildRecordingNvtxLabel(
+        "Recording source_gpu preprocess",
+        camera_params_->camera_serial,
+        entry,
+        preprocess_gpu_id_));
     if (camera_params_->color) {
         // Full Color Pipeline: RAW -> RGBA -> NV12
         frame_original_gpu_.d_orig = input_source;
@@ -1085,13 +1236,21 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         size_t uv_plane_size = encoder_entry->surface_pitch * output_height_ / 2;
         ck(cudaMemcpyAsync(d_uv_plane_dst, d_uv_default_plane_, uv_plane_size, cudaMemcpyDeviceToDevice, m_stream));
     }
+    }
     
     // Record an event in the stream once all the above GPU work is queued.
+    {
+    NVTX_SYNC_DYNAMIC(BuildRecordingNvtxLabel(
+        "Recording preprocess_complete event record",
+        camera_params_->camera_serial,
+        entry,
+        preprocess_gpu_id_));
     ck(cudaEventRecord(*encoder_entry->preprocess_complete_event, m_stream));
     if (source_release_event && !source_release_event_recorded) {
         ck(cudaEventRecord(*source_release_event, m_stream));
         source_release_event_recorded = true;
         source_release_event_record_host_ns = helper_host_now_ns();
+    }
     }
     if (sample_helper_cross_gpu) {
         helper_host_sample.done_host_ns = helper_host_now_ns();

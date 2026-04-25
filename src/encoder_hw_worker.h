@@ -163,6 +163,7 @@ private:
         uint32_t idr_period = 0;
         uint32_t max_num_ref_frames = 0;
         uint32_t max_num_ref_frames_in_dpb = 0;
+        int nvenc_extra_output_delay = 3;
         uint32_t rc_mode = 0;
         uint32_t average_bitrate = 0;
         uint32_t max_bitrate = 0;
@@ -225,6 +226,7 @@ private:
     bool direct_input_enabled_ = false;
     bool direct_input_registered_ = false;
     bool importance_map_enabled_ = false;
+    int nvenc_extra_output_delay_ = 3;
     int encoder_input_pitch_ = 0;
     int encoder_buffer_count_ = 0;
     bool pre_encoder_reference_async_enabled_ = false;

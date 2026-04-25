@@ -82,6 +82,22 @@ struct NvEncInputFrame
 /**
 * @brief Shared base class for different encoder interfaces.
 */
+struct NvEncoderEncodeFrameTiming
+{
+    uint64_t map_input_resource_ns = 0;
+    uint64_t map_reference_resource_ns = 0;
+    uint64_t encode_picture_ns = 0;
+    uint64_t completion_wait_ns = 0;
+    uint64_t lock_bitstream_ns = 0;
+    uint64_t bitstream_copy_ns = 0;
+    uint64_t unlock_bitstream_ns = 0;
+    uint64_t unmap_input_resource_ns = 0;
+    uint64_t unmap_reference_resource_ns = 0;
+    uint64_t bitstream_fetch_ns = 0;
+    uint64_t output_bytes = 0;
+    uint32_t output_packets = 0;
+};
+
 class NvEncoder
 {
 public:
@@ -126,7 +142,8 @@ public:
     virtual void EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams = nullptr,
         std::vector<uint32_t>* retiredInputIndices = nullptr,
         std::vector<uint64_t>* outputTimeStamps = nullptr,
-        uint64_t* bitstreamFetchDurationNs = nullptr);
+        uint64_t* bitstreamFetchDurationNs = nullptr,
+        NvEncoderEncodeFrameTiming* timing = nullptr);
 
     /**
     *  @brief  This function to flush the encoder queue.
@@ -138,7 +155,8 @@ public:
     virtual void EndEncode(std::vector<std::vector<uint8_t>> &vPacket,
         std::vector<uint32_t>* retiredInputIndices = nullptr,
         std::vector<uint64_t>* outputTimeStamps = nullptr,
-        uint64_t* bitstreamFetchDurationNs = nullptr);
+        uint64_t* bitstreamFetchDurationNs = nullptr,
+        NvEncoderEncodeFrameTiming* timing = nullptr);
 
     /**
     *  @brief  This function is used to query hardware encoder capabilities.
@@ -330,7 +348,10 @@ protected:
     *  @brief This function is used to submit the encode commands to the  
     *         NVENC hardware.
     */
-    NVENCSTATUS DoEncode(NV_ENC_INPUT_PTR inputBuffer, NV_ENC_OUTPUT_PTR outputBuffer, NV_ENC_PIC_PARAMS *pPicParams);
+    NVENCSTATUS DoEncode(NV_ENC_INPUT_PTR inputBuffer,
+        NV_ENC_OUTPUT_PTR outputBuffer,
+        NV_ENC_PIC_PARAMS *pPicParams,
+        NvEncoderEncodeFrameTiming* timing = nullptr);
 
     /**
     *  @brief This function is used to submit the encode commands to the 
@@ -341,7 +362,7 @@ protected:
     /**
     *  @brief This function is used to map the input buffers to NvEncodeAPI.
     */
-    void MapResources(uint32_t bfrIdx);
+    void MapResources(uint32_t bfrIdx, NvEncoderEncodeFrameTiming* timing = nullptr);
 
     /**
     *  @brief This function is used to wait for completion of encode command.
@@ -377,7 +398,8 @@ private:
         bool bOutputDelay,
         std::vector<uint32_t>* retiredInputIndices = nullptr,
         std::vector<uint64_t>* outputTimeStamps = nullptr,
-        uint64_t* bitstreamFetchDurationNs = nullptr);
+        uint64_t* bitstreamFetchDurationNs = nullptr,
+        NvEncoderEncodeFrameTiming* timing = nullptr);
 
     /**
     *  @brief This is a private function which is used to initialize the bitstream buffers.

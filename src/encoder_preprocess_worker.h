@@ -98,6 +98,11 @@ public:
     double get_fps() const { return current_fps_.load(); }
     uint64_t get_frames_dropped() const { return frames_dropped_.load(); }
     uint64_t get_resource_waits() const { return resource_waits_.load(); }
+    uint64_t get_detect_priority_gated_frames() const { return detect_priority_gated_frames_.load(); }
+    uint64_t get_detect_priority_waited_frames() const { return detect_priority_waited_frames_.load(); }
+    uint64_t get_detect_priority_wait_timeouts() const { return detect_priority_wait_timeouts_.load(); }
+    uint64_t get_detect_priority_wait_total_ns() const { return detect_priority_wait_total_ns_.load(); }
+    uint64_t get_detect_priority_wait_max_ns() const { return detect_priority_wait_max_ns_.load(); }
     double get_hw_fps() const;
     uint64_t get_hw_encode_failures() const;
     uint64_t get_hw_slow_frames() const;
@@ -132,6 +137,7 @@ private:
     void drain_pending_source_releases(bool synchronize_all);
     void release_source_entry(WORKER_ENTRY* entry);
     bool ensure_peer_access_enabled(int source_gpu_id);
+    void record_detect_priority_wait(uint64_t wait_ns, bool timeout);
     CameraParams* camera_params_;
     int preprocess_gpu_id_;
     SafeQueue<WORKER_ENTRY*>& m_recycle_queue_;
@@ -175,10 +181,18 @@ private:
     std::deque<PendingSourceRelease> pending_source_releases_;
     bool defer_source_release_enabled_ = true;
     bool helper_noop_source_read_enabled_ = false;
+    bool detect_priority_wait_enabled_ = false;
+    bool yolo_detach_input_enabled_ = false;
     int64_t helper_copy_limit_bytes_ = -1;
     int64_t helper_copy_delay_ns_ = 0;
     std::atomic<int> pending_source_release_count_{0};
     std::atomic<uint64_t> source_release_event_misses_{0};
+    std::atomic<uint64_t> detect_priority_gated_frames_{0};
+    std::atomic<uint64_t> detect_priority_waited_frames_{0};
+    std::atomic<uint64_t> detect_priority_wait_timeouts_{0};
+    std::atomic<uint64_t> detect_priority_wait_total_ns_{0};
+    std::atomic<uint64_t> detect_priority_wait_max_ns_{0};
+    std::atomic<bool> detect_priority_timeout_logged_{false};
     
     // Performance monitoring members
     std::chrono::steady_clock::time_point last_fps_update_time_;

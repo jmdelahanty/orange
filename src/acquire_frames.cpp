@@ -23,6 +23,7 @@
 #include "latency_stats.h"
 #include "project.h"
 #include "yolo_event_log.h"
+#include <atomic>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -172,6 +173,11 @@ struct PipelinePerfSample {
     int preprocess_events_available = -1;
     uint64_t preprocess_resource_waits = 0;
     uint64_t preprocess_frames_dropped = 0;
+    uint64_t detect_priority_gated_frames = 0;
+    uint64_t detect_priority_waited_frames = 0;
+    uint64_t detect_priority_wait_timeouts = 0;
+    uint64_t detect_priority_wait_total_ns = 0;
+    uint64_t detect_priority_wait_max_ns = 0;
     uint64_t encode_failures = 0;
     uint64_t encode_slow_frames = 0;
     uint64_t submitted_frames = 0;
@@ -610,6 +616,11 @@ public:
               << sample.preprocess_events_available << ","
               << sample.preprocess_resource_waits << ","
               << sample.preprocess_frames_dropped << ","
+              << sample.detect_priority_gated_frames << ","
+              << sample.detect_priority_waited_frames << ","
+              << sample.detect_priority_wait_timeouts << ","
+              << sample.detect_priority_wait_total_ns << ","
+              << sample.detect_priority_wait_max_ns << ","
               << sample.encode_failures << ","
               << sample.encode_slow_frames << ","
               << sample.submitted_frames << ","
@@ -680,7 +691,10 @@ private:
                  "yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
-                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,"
+                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,"
+                 "detect_priority_gated_frames,detect_priority_waited_frames,detect_priority_wait_timeouts,"
+                 "detect_priority_wait_total_ns,detect_priority_wait_max_ns,"
+                 "enc_fail,enc_slow,"
                  "submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
                  "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
@@ -782,6 +796,11 @@ private:
             totals["acquisition_resource_starvations"] = last_sample_.acquisition_resource_starvations;
             totals["preprocess_resource_waits"] = last_sample_.preprocess_resource_waits;
             totals["preprocess_frames_dropped"] = last_sample_.preprocess_frames_dropped;
+            totals["detect_priority_gated_frames"] = last_sample_.detect_priority_gated_frames;
+            totals["detect_priority_waited_frames"] = last_sample_.detect_priority_waited_frames;
+            totals["detect_priority_wait_timeouts"] = last_sample_.detect_priority_wait_timeouts;
+            totals["detect_priority_wait_total_ns"] = last_sample_.detect_priority_wait_total_ns;
+            totals["detect_priority_wait_max_ns"] = last_sample_.detect_priority_wait_max_ns;
             totals["encode_failures"] = last_sample_.encode_failures;
             totals["encode_slow_frames"] = last_sample_.encode_slow_frames;
             totals["submitted_frames"] = last_sample_.submitted_frames;
@@ -1017,6 +1036,7 @@ void acquire_frames(
         Emergent::CEmergentFrame* frame;
         cudaEvent_t* copy_ready_event;
         cudaEvent_t* consumer_done_event;
+        std::atomic<bool>* consumer_done_event_recorded;
     };
     std::deque<PendingRequeue> pending_requeues;
     int yolo_decimate = 1;
@@ -1038,6 +1058,20 @@ void acquire_frames(
     if (yolo_decimate > 1) {
         std::cout << "[YOLO] Cam " << camera_params->camera_serial
                   << " decimate=1/" << yolo_decimate << std::endl;
+    }
+    const bool detect_priority_recording =
+        env_flag_enabled("ORANGE_RECORDING_DETECT_PRIORITY", false);
+    if (detect_priority_recording) {
+        std::cout << "[RECORDING_DETECT_PRIORITY] Cam "
+                  << camera_params->camera_serial
+                  << " enqueues YOLO before full-frame recording" << std::endl;
+    }
+    const bool yolo_detach_input =
+        env_flag_enabled("ORANGE_YOLO_DETACH_INPUT", false);
+    if (yolo_detach_input) {
+        std::cout << "[YOLO_DETACH_INPUT] Cam "
+                  << camera_params->camera_serial
+                  << " will release source after YOLO input is ready" << std::endl;
     }
 
     auto reset_ptp_summary_stats = [&]() {
@@ -1115,6 +1149,11 @@ void acquire_frames(
         sample.preprocess_events_available = recording_stats.preprocess_events_available;
         sample.preprocess_resource_waits = recording_stats.preprocess_resource_waits;
         sample.preprocess_frames_dropped = recording_stats.preprocess_frames_dropped;
+        sample.detect_priority_gated_frames = recording_stats.detect_priority_gated_frames;
+        sample.detect_priority_waited_frames = recording_stats.detect_priority_waited_frames;
+        sample.detect_priority_wait_timeouts = recording_stats.detect_priority_wait_timeouts;
+        sample.detect_priority_wait_total_ns = recording_stats.detect_priority_wait_total_ns;
+        sample.detect_priority_wait_max_ns = recording_stats.detect_priority_wait_max_ns;
         sample.encode_failures = recording_stats.encode_failures;
         sample.encode_slow_frames = recording_stats.encode_slow_frames;
         sample.submitted_frames = recording_stats.submitted_frames;
@@ -1231,9 +1270,16 @@ void acquire_frames(
 #endif
 
         for (auto it = pending_requeues.begin(); it != pending_requeues.end(); ) {
-            const auto query_requeue_event = [](cudaEvent_t* event, const char* label) {
+            const auto query_requeue_event =
+                [](cudaEvent_t* event,
+                   const char* label,
+                   const std::atomic<bool>* event_recorded = nullptr) {
                 if (!event) {
                     return cudaSuccess;
+                }
+                if (event_recorded &&
+                    !event_recorded->load(std::memory_order_acquire)) {
+                    return cudaErrorNotReady;
                 }
                 cudaError_t status = cudaEventQuery(*event);
                 if (status == cudaSuccess || status == cudaErrorNotReady) {
@@ -1247,7 +1293,10 @@ void acquire_frames(
             const cudaError_t copy_status =
                 query_requeue_event(it->copy_ready_event, "copy-ready");
             const cudaError_t consumer_status =
-                query_requeue_event(it->consumer_done_event, "consumer-done");
+                query_requeue_event(
+                    it->consumer_done_event,
+                    "consumer-done",
+                    it->consumer_done_event_recorded);
             if (copy_status == cudaSuccess && consumer_status == cudaSuccess) {
                 EVT_CameraQueueFrame(it->camera, it->frame);
                 it = pending_requeues.erase(it);
@@ -1364,6 +1413,14 @@ void acquire_frames(
             current_entry->camera_buffer_ptr = nullptr;
             current_entry->camera_instance = nullptr;
             current_entry->camera_frame_struct = nullptr;
+            current_entry->ingress_event_record_host_ns = 0;
+            current_entry->yolo_enqueue_host_ns = 0;
+            current_entry->yolo_queue_depth_at_enqueue = -1;
+            current_entry->yolo_dispatched = false;
+            current_entry->yolo_input_detach_requested = false;
+            current_entry->yolo_input_ready_host_ns = 0;
+            current_entry->yolo_input_ready_event_recorded.store(false);
+            current_entry->yolo_completion_event_recorded.store(false);
 
             bool will_display = false;
             if (camera_select->stream_on && openGLDisplay) {
@@ -1560,15 +1617,26 @@ void acquire_frames(
                 ck(cudaEventRecord(*current_entry->event_ptr, stream));
                 current_entry->ingress_event_record_host_ns = steady_clock_now_ns();
             }
+            current_entry->yolo_input_detach_requested = yolo_detach_input && will_yolo;
             if (use_ring_copy) {
                 pending_requeues.push_back(
-                    {&ecam->camera, frame_to_requeue, current_entry->event_ptr, nullptr});
+                    {&ecam->camera, frame_to_requeue, current_entry->event_ptr, nullptr, nullptr});
             } else if (use_analytics_hybrid) {
+                cudaEvent_t* yolo_source_done_event = current_entry->yolo_completion_event;
+                std::atomic<bool>* yolo_source_done_event_recorded =
+                    &current_entry->yolo_completion_event_recorded;
+                if (current_entry->yolo_input_detach_requested &&
+                    current_entry->yolo_input_ready_event) {
+                    yolo_source_done_event = &current_entry->yolo_input_ready_event;
+                    yolo_source_done_event_recorded =
+                        &current_entry->yolo_input_ready_event_recorded;
+                }
                 pending_requeues.push_back(
                     {&ecam->camera,
                      frame_to_requeue,
                      &current_entry->analytics_ready_event,
-                     current_entry->yolo_completion_event});
+                     yolo_source_done_event,
+                     yolo_source_done_event_recorded});
             }
 
             current_entry->width = received_frame->size_x;
@@ -1580,7 +1648,6 @@ void acquire_frames(
             current_entry->camera_frame_id = received_frame->frame_id;
             current_entry->recording_folder = live_recording_folder;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
-            current_entry->ingress_event_record_host_ns = 0;
             current_entry->yolo_detect_done_host_ns = 0;
             current_entry->recording_submit_host_ns = 0;
             current_entry->recording_target_gpu_id = -1;
@@ -1591,6 +1658,8 @@ void acquire_frames(
             current_entry->helper_enqueue_available_buffers = -1;
             current_entry->helper_enqueue_available_events = -1;
             current_entry->has_detections = will_yolo;
+            current_entry->yolo_dispatched = will_yolo;
+            current_entry->yolo_input_detach_requested = yolo_detach_input && will_yolo;
             current_entry->detections_ready.store(false);
             current_entry->ipc_frame_id = 0;
 
@@ -1716,7 +1785,19 @@ void acquire_frames(
                     current_entry->camera_frame_struct = frame_to_requeue;
                 }
 
+                auto enqueue_yolo = [&]() {
+                    current_entry->yolo_queue_depth_at_enqueue =
+                        yolo_worker->GetCountQueueInSize();
+                    current_entry->yolo_enqueue_host_ns = steady_clock_now_ns();
+                    yolo_worker->PutObjectToQueueIn(current_entry);
+                };
+                const bool dispatch_yolo_before_recording =
+                    detect_priority_recording && will_record && will_yolo;
+
                 if (will_display) openGLDisplay->PutObjectToQueueIn(current_entry);
+                if (dispatch_yolo_before_recording) {
+                    enqueue_yolo();
+                }
                 if (will_record) {
                     recording_ingress->SubmitFrame(current_entry);
                     if (camera_control->sync_camera) {
@@ -1811,7 +1892,9 @@ void acquire_frames(
                                           : RecordingIngressStats{};
                     acquisition_cadence_probe_recorder.Record(cadence_sample);
                 }
-                if (will_yolo) yolo_worker->PutObjectToQueueIn(current_entry);
+                if (!dispatch_yolo_before_recording && will_yolo) {
+                    enqueue_yolo();
+                }
 
             } else {
                 // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above
@@ -1927,6 +2010,9 @@ void acquire_frames(
                           << " enc_evt=" << pipeline_sample.preprocess_events_available
                           << " enc_waits=" << pipeline_sample.preprocess_resource_waits
                           << " pre_drop=" << pipeline_sample.preprocess_frames_dropped
+                          << " detect_gate=" << pipeline_sample.detect_priority_gated_frames
+                          << " detect_wait=" << pipeline_sample.detect_priority_waited_frames
+                          << " detect_wait_timeout=" << pipeline_sample.detect_priority_wait_timeouts
                           << " enc_fail=" << pipeline_sample.encode_failures
                           << " enc_slow=" << pipeline_sample.encode_slow_frames
                           << " frame_id_gaps=" << pipeline_sample.camera_dropped_frames

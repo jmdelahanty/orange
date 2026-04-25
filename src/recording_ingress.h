@@ -26,6 +26,11 @@ struct RecordingIngressStats {
     int preprocess_events_available = -1;
     uint64_t preprocess_resource_waits = 0;
     uint64_t preprocess_frames_dropped = 0;
+    uint64_t detect_priority_gated_frames = 0;
+    uint64_t detect_priority_waited_frames = 0;
+    uint64_t detect_priority_wait_timeouts = 0;
+    uint64_t detect_priority_wait_total_ns = 0;
+    uint64_t detect_priority_wait_max_ns = 0;
     uint64_t encode_failures = 0;
     uint64_t encode_slow_frames = 0;
     uint64_t submitted_frames = 0;

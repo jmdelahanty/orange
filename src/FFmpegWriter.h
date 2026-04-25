@@ -25,6 +25,9 @@ struct FFmpegWriterQueueConfig {
 };
 
 struct FFmpegWriterLatencyStats {
+    LatencyAggregateStats push_packet_total;
+    LatencyAggregateStats packet_alloc_copy;
+    LatencyAggregateStats queue_push;
     LatencyAggregateStats queue_wait;
     LatencyAggregateStats packet_write;
     LatencyAggregateStats gop_release_to_last_write;
@@ -74,6 +77,7 @@ private:
     std::thread m_thread;
     int64_t sequential_frame_counter_ = 0; // Counter for sequential frame numbers
     AVCodecID codec_id_ = AV_CODEC_ID_NONE;
+    std::string output_label_;
     std::string keyframe_file_;
     std::vector<int64_t> keyframe_frames_;
     FFmpegWriterQueueConfig queue_config_;

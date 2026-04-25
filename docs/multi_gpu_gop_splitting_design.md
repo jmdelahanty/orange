@@ -11,6 +11,9 @@ not priority for v1.
 
 - A GOP-splitting prototype is feasible in Orange, but it is not a small local
   change inside `EncoderHwWorker::EncodeFrame(...)`.
+- For the current large-frame workload, split-GOP is not just an optimization:
+  a single GPU / single NVENC path cannot be relied on to save the full
+  `4512x4512 Mono8 @ 100 fps` stream.
 - Orange already understands multi-GPU placement at the camera / worker level.
   The missing pieces are:
   - a GOP scheduler,

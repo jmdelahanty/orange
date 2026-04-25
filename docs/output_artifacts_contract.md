@@ -59,6 +59,24 @@ Default configured base path in runtime:
 | YOLO event JSONL | `<recording_folder>/Cam<serial>_yolo_events.jsonl` | Optional | GUI YOLO worker receives frames during recording |
 | YOLO debug PNG | `./debug_pre_yolo_<serial>_<frame_id>.png` | Optional | `Dump Input` action |
 
+Diagnostic note:
+- `ORANGE_GUI_DIAGNOSTIC_NO_FULL_FRAME=1` starts a GUI recording session with
+  `session.recording_sink_mode = "immediate_recycle"`. It creates the recording
+  folder and timing artifacts, assigns `recording_frame_id`, and skips the main
+  full-frame video pipeline. In that mode, main `Cam<serial>.mp4` and
+  `Cam<serial>_meta.csv` artifacts are intentionally absent while YOLO, pose,
+  crop, pipeline, and acquisition diagnostics may still be present.
+- `ORANGE_GUI_RECORDING_SINK_MODE=preprocess_only` starts a GUI recording
+  session that exercises full-frame preprocess routing but intentionally omits
+  full-frame encode/output. Main `Cam<serial>.mp4`, main metadata, and main
+  keyframe sidecars are absent by design; crop MP4s, YOLO perf, pose perf,
+  crop perf, pipeline perf, and acquisition diagnostics may still be present
+  when their normal producers are active.
+- `ORANGE_CROP_PREVIEW_DISABLE=1` disables only the crop live-preview CUDA path.
+  Full-frame `Cam<serial>.mp4`, crop `Cam<serial>_crop.mp4`, crop metadata,
+  YOLO, pose, crop sidecar, pipeline, and acquisition diagnostics remain
+  expected when their normal producers are active.
+
 Note: still-image save path is currently not a stable output contract (writer
 handoff fields are underspecified at present).
 
@@ -96,6 +114,7 @@ Current emitted top-level fields:
 - `recording_id: string`
 - `timestamp_utc: string` (UTC ISO8601)
 - `producer_version: string` (currently `"unknown"`)
+- `session: object` (optional in older artifacts)
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
 - `camera_runtime: object` (resolved per-recording camera config keyed by camera id/serial)
@@ -103,6 +122,11 @@ Current emitted top-level fields:
 - `gpu_monitoring: object` (optional host-level GPU monitor sidecars keyed by monitor name)
 - `encoders: object` (added later by encoder worker updates)
 - `pipeline_metrics: object` (optional, added when acquisition worker finalizes per-camera pipeline summaries)
+
+`session` object:
+- `recording_sink_mode: string` (`real`, `immediate_recycle`,
+  `preprocess_only`, or `threaded_handoff_only`)
+- `full_frame_video_enabled: boolean`
 
 `cameras` object:
 - Keys are camera identifiers (usually serial strings, fallback may use camera
@@ -198,6 +222,39 @@ Current emitted top-level fields:
       - `common: object`
       - `rc: object`
       - `codec: object`
+  - `latency: object` (optional, full-frame encoder/output timing aggregates)
+    - values are stats objects with `samples`, `mean_ms`, `max_ms`, and
+      `last_ms`
+    - may include `encoder_cuda_set_device`,
+      `preprocess_complete_stream_wait_enqueue`,
+      `source_to_helper_copy_sync_wait`,
+      `source_to_helper_copy_elapsed_query`,
+      `source_to_helper_copy`,
+      `pre_encoder_reference_capture_enqueue`,
+      `nvenc_get_next_input_frame`,
+      `bitstream_fetch`,
+      `nvenc_copy_to_input`,
+      `nvenc_encode_frame_total`,
+      `nvenc_map_input_resource`,
+      `nvenc_map_reference_resource`,
+      `nvenc_encode_picture`,
+      `nvenc_completion_wait`,
+      `nvenc_lock_bitstream`,
+      `nvenc_bitstream_copy`,
+      `nvenc_unlock_bitstream`,
+      `nvenc_unmap_input_resource`,
+      `nvenc_unmap_reference_resource`,
+      `encoder_output_accounting`,
+      `shared_submit_total`,
+      `shared_submit_lock_wait`,
+      `shared_gop_buffering`,
+      `gop_hold_before_release`,
+      `writer_push_packet_total`,
+      `writer_packet_alloc_copy`,
+      `writer_queue_push`,
+      `writer_queue_wait`,
+      `packet_mux_write`,
+      and `gop_release_to_last_write`
   - Optional:
     - `pre_encoder_reference_capture: object`
       - `capture_mode: string` (currently `pre_encoder_reference`)
@@ -452,17 +509,50 @@ Behavior note:
 Header (exact order):
 
 ```text
-frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,fps,ok,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,cpu_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms
+frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_at_worker_start,fps,ok,acquisition_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,ingress_event_record_to_worker_start_ms,acquisition_to_yolo_input_ready_ms,worker_start_to_yolo_input_ready_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms
 ```
 
 Field semantics:
 - ID/timestamp fields: integer counters/timestamps.
 - `ok`: integer success flag.
+- `queue_depth`: YOLO queue depth sampled at log emission, after processing.
+- `queue_depth_at_enqueue`: YOLO input queue depth just before acquisition
+  enqueued this frame.
+- `queue_depth_at_worker_start`: YOLO input queue depth immediately after this
+  worker popped the frame for service.
+- `yolo_queue_wait_ms`: host time from YOLO enqueue to worker start.
+- `oldest_frame_age_at_worker_start_ms`: age of the frame being serviced at
+  worker start, measured from acquisition receive.
+- `oldest_queued_frame_age_at_worker_start_ms`: age of the next queued frame at
+  worker start, or `-1` when no frame is waiting behind the current one.
+- `acquisition_to_yolo_input_ready_ms` and
+  `worker_start_to_yolo_input_ready_ms`: host timing to the point where YOLO has
+  enqueued its input-ready event. These fields are populated when
+  `ORANGE_YOLO_DETACH_INPUT=1`, otherwise `-1`.
+- `service_*`: cross-camera YOLO service-order instrumentation used to spot
+  multi-camera fairness skew.
+- `cpu_wait_event_ms`: aggregate host time spent checking and optionally
+  enqueuing the ingress event dependency.
+- `cpu_ingress_event_query_ms`: host time spent in `cudaEventQuery` for the
+  ingress event.
+- `cpu_stream_wait_event_ms`: host time spent in `cudaStreamWaitEvent` for the
+  ingress event. This should be near zero when
+  `ORANGE_YOLO_READY_EVENT_FASTPATH=1` and
+  `ingress_event_ready_before_wait=1`.
+- `cpu_input_ready_event_record_ms`: host time spent recording the
+  YOLO-input-ready CUDA event when `ORANGE_YOLO_DETACH_INPUT=1`.
 - `*_ms` and fps fields: floating-point timing/throughput metrics.
 
 Gate:
 - Disabled when `ORANGE_YOLO_PERF_LOG=0`.
 - Sampling controlled by `ORANGE_YOLO_PERF_SAMPLE`.
+- `ORANGE_YOLO_READY_EVENT_FASTPATH=1` skips `cudaStreamWaitEvent` when
+  `cudaEventQuery` has already proven the ingress event is complete. It
+  preserves the wait path when the event is not ready.
+- `ORANGE_YOLO_DETACH_INPUT=1` records an event after YOLO has copied/preprocessed
+  the source frame into its owned TensorRT input buffer. With
+  `ORANGE_RECORDING_DETECT_PRIORITY=1`, source/primary recording gates on this
+  event instead of full detection completion.
 
 Behavior notes:
 - The GUI YOLO perf file is opened against the active recording folder.
@@ -672,7 +762,7 @@ Field semantics:
 Header (exact order):
 
 ```text
-timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,display_q,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow,submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,camera_dropped_frames,get_frame_errors,last_get_frame_error_code,gpu_direct,gpu_ring,gpu_copy
+timestamp_utc,frame_id,recording_frame_id,acq_fps,pre_fps,pre_fps_primary,pre_fps_helpers,enc_fps,enc_fps_primary,enc_fps_helpers,display_q,display_preview_max_fps,display_preview_eligible,display_preview_selected,display_preview_skipped,yolo_q,pre_q,enc_q,acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,yolo_events,yolo_events_low,pending_requeues,acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,detect_priority_gated_frames,detect_priority_waited_frames,detect_priority_wait_timeouts,detect_priority_wait_total_ns,detect_priority_wait_max_ns,enc_fail,enc_slow,submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,camera_dropped_frames,get_frame_errors,last_get_frame_error_code,gpu_direct,gpu_ring,gpu_copy
 ```
 
 Field semantics:
@@ -693,6 +783,7 @@ Field semantics:
 - `acq_starve`: cumulative count of acquisition-loop iterations that could not reserve the required work entry or events before attempting to fetch another camera frame.
 - `pre_buffers`, `pre_events`: available preprocess NV12 buffers and CUDA events.
 - `pre_waits`, `pre_drops`: cumulative preprocess resource-wait and drop counters.
+- `detect_priority_gated_frames`, `detect_priority_waited_frames`, `detect_priority_wait_timeouts`, `detect_priority_wait_total_ns`, `detect_priority_wait_max_ns`: cumulative source-route recording gates and wait timing for `ORANGE_RECORDING_DETECT_PRIORITY=1`; zero when the experiment is disabled or no source-route frame needed to wait.
 - `enc_fail`, `enc_slow`: cumulative encode-failure and slow-frame counters.
 - `submitted_frames`, `primary_routed_frames`, `helper_requested_frames`, `helper_fallback_frames`, `helper_dispatched_frames`, `last_target_gpu_id`, `last_route_mode`: recording ingress routing counters and latest route state.
 - `camera_dropped_frames`: cumulative camera frame-ID gaps.
@@ -702,6 +793,13 @@ Field semantics:
 Behavior notes:
 - Emitted at approximately one row per second while the camera has a non-empty recording folder.
 - Short recordings may create the file with only the header if no one-second sample boundary is crossed.
+- In `ORANGE_GUI_DIAGNOSTIC_NO_FULL_FRAME=1` runs, `submitted_frames` and route
+  counters come from the lightweight `immediate_recycle` sink. Full-frame
+  `pre_*` and `enc_*` fields should remain zero or unavailable because no
+  full-frame preprocess/encode workers are started.
+- In `ORANGE_GUI_RECORDING_SINK_MODE=preprocess_only` runs, full-frame
+  preprocess routing counters may be active while full-frame `enc_*` throughput
+  remains zero because main full-frame encode/output is intentionally skipped.
 
 ### Acquisition Cadence Probe CSV (`Cam<serial>_acquisition_cadence_probe.csv`)
 

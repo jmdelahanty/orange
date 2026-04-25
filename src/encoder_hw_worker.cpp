@@ -33,6 +33,9 @@ constexpr int kMaxLookaheadDepth = 32;
 constexpr size_t kPreEncoderReferenceCaptureRingSize = 3;
 constexpr int8_t kStaticRoiInsideDelta = -3;
 constexpr int8_t kStaticRoiOutsideDelta = 3;
+constexpr int kDefaultNvencExtraOutputDelay = 3;
+constexpr int kMinNvencExtraOutputDelay = 1;
+constexpr int kMaxNvencExtraOutputDelay = 64;
 
 uint32_t clamp_bitrate(uint64_t value) {
     if (value < kMinQualityBitrate) {
@@ -102,6 +105,106 @@ nlohmann::json latency_stats_to_json(const LatencyAggregateStats& stats) {
         {"max_ms", stats.max_ms()},
         {"last_ms", stats.last_ms()}
     };
+}
+
+bool has_recording_output_timing(const RecordingOutputTimingSample& timing)
+{
+    return timing.encoder_cuda_set_device_ns > 0 ||
+           timing.preprocess_complete_stream_wait_enqueue_ns > 0 ||
+           timing.source_to_helper_copy_sync_wait_ns > 0 ||
+           timing.source_to_helper_copy_elapsed_query_ns > 0 ||
+           timing.has_source_to_helper_copy ||
+           timing.pre_encoder_reference_capture_enqueue_ns > 0 ||
+           timing.nvenc_get_next_input_frame_ns > 0 ||
+           timing.has_bitstream_fetch ||
+           timing.nvenc_copy_to_input_ns > 0 ||
+           timing.nvenc_encode_frame_total_ns > 0 ||
+           timing.nvenc_map_input_resource_ns > 0 ||
+           timing.nvenc_map_reference_resource_ns > 0 ||
+           timing.nvenc_encode_picture_ns > 0 ||
+           timing.nvenc_completion_wait_ns > 0 ||
+           timing.nvenc_lock_bitstream_ns > 0 ||
+           timing.nvenc_bitstream_copy_ns > 0 ||
+           timing.nvenc_unlock_bitstream_ns > 0 ||
+           timing.nvenc_unmap_input_resource_ns > 0 ||
+           timing.nvenc_unmap_reference_resource_ns > 0 ||
+           timing.encoder_output_accounting_ns > 0;
+}
+
+int parse_nvenc_extra_output_delay_env(const char* name,
+                                       int default_value,
+                                       bool* used_override)
+{
+    const char* env = std::getenv(name);
+    if (!env || !*env) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0') {
+        std::cerr << "[EncoderHwWorker] Ignoring invalid " << name
+                  << "='" << env << "', using " << default_value << std::endl;
+        return default_value;
+    }
+    if (parsed < kMinNvencExtraOutputDelay || parsed > kMaxNvencExtraOutputDelay) {
+        std::cerr << "[EncoderHwWorker] " << name << " must be within ["
+                  << kMinNvencExtraOutputDelay << "," << kMaxNvencExtraOutputDelay
+                  << "], using " << default_value << std::endl;
+        return default_value;
+    }
+    if (used_override) {
+        *used_override = true;
+    }
+    return static_cast<int>(parsed);
+}
+
+int resolve_nvenc_extra_output_delay(const CameraParams* camera_params)
+{
+    bool used_global = false;
+    int delay = parse_nvenc_extra_output_delay_env(
+        "ORANGE_NVENC_EXTRA_OUTPUT_DELAY",
+        kDefaultNvencExtraOutputDelay,
+        &used_global);
+
+    if (camera_params && !camera_params->camera_serial.empty()) {
+        const std::string env_key =
+            "ORANGE_NVENC_EXTRA_OUTPUT_DELAY_CAM_" + camera_params->camera_serial;
+        bool used_camera = false;
+        delay = parse_nvenc_extra_output_delay_env(
+            env_key.c_str(),
+            delay,
+            &used_camera);
+        if (used_camera) {
+            std::cout << "[EncoderHwWorker] " << env_key << "=" << delay
+                      << " for full-frame NVENC output-depth diagnostic"
+                      << std::endl;
+            return delay;
+        }
+    }
+
+    if (used_global) {
+        std::cout << "[EncoderHwWorker] ORANGE_NVENC_EXTRA_OUTPUT_DELAY=" << delay
+                  << " for full-frame NVENC output-depth diagnostic"
+                  << std::endl;
+    }
+    return delay;
+}
+
+void merge_nvenc_timing(RecordingOutputTimingSample* sample,
+                        const NvEncoderEncodeFrameTiming& timing)
+{
+    if (!sample) {
+        return;
+    }
+    sample->nvenc_map_input_resource_ns += timing.map_input_resource_ns;
+    sample->nvenc_map_reference_resource_ns += timing.map_reference_resource_ns;
+    sample->nvenc_encode_picture_ns += timing.encode_picture_ns;
+    sample->nvenc_completion_wait_ns += timing.completion_wait_ns;
+    sample->nvenc_lock_bitstream_ns += timing.lock_bitstream_ns;
+    sample->nvenc_bitstream_copy_ns += timing.bitstream_copy_ns;
+    sample->nvenc_unlock_bitstream_ns += timing.unlock_bitstream_ns;
+    sample->nvenc_unmap_input_resource_ns += timing.unmap_input_resource_ns;
+    sample->nvenc_unmap_reference_resource_ns += timing.unmap_reference_resource_ns;
 }
 
 std::string normalize_importance_map_mode(std::string mode) {
@@ -196,7 +299,8 @@ nlohmann::json build_resolved_encoder_config_json(const NV_ENC_INITIALIZE_PARAMS
                                                   const NV_ENC_CONFIG& encode_config,
                                                   int encoder_buffer_count,
                                                   int encoder_input_pitch,
-                                                  bool direct_input_enabled)
+                                                  bool direct_input_enabled,
+                                                  int nvenc_extra_output_delay)
 {
     nlohmann::json info = nlohmann::json::object();
 
@@ -222,7 +326,8 @@ nlohmann::json build_resolved_encoder_config_json(const NV_ENC_INITIALIZE_PARAMS
     info["buffers"] = {
         {"encoder_buffer_count", encoder_buffer_count},
         {"encoder_input_pitch", encoder_input_pitch},
-        {"direct_input_enabled", direct_input_enabled}
+        {"direct_input_enabled", direct_input_enabled},
+        {"nvenc_extra_output_delay", nvenc_extra_output_delay}
     };
 
     info["common"] = {
@@ -649,6 +754,7 @@ EncoderHwWorker::EncoderHwWorker(
   importance_map_config_(resolved_recording_config.importance_map),
   pre_encoder_reference_capture_config_(resolved_recording_config.pre_encoder_reference_capture),
   direct_input_enabled_(resolved_recording_config.encode.nvenc_direct_input),
+  nvenc_extra_output_delay_(resolve_nvenc_extra_output_delay(camera_params)),
   quality_value_(clamp_quality_value(resolved_recording_config.encode.quality_value)),
   gop_length_(sanitize_recording_gop_length(resolved_recording_config.encode.gop_length)),
   recording_strategy_config_(resolved_recording_config.strategy),
@@ -683,7 +789,8 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_.cuContext,
         recording_output_config_.resolved_width,
         recording_output_config_.resolved_height,
-        NV_ENC_BUFFER_FORMAT_NV12);
+        NV_ENC_BUFFER_FORMAT_NV12,
+        static_cast<uint32_t>(nvenc_extra_output_delay_));
     if (direct_input_enabled_) {
         encoder_.pEnc->SetExternalInputBufferMode(true);
     }
@@ -832,6 +939,7 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.gop_length = resolved_config.gopLength;
         recording_gop_length_ = std::max<uint32_t>(1u, resolved_config.gopLength);
         encoder_snapshot_.frame_interval_p = resolved_config.frameIntervalP;
+        encoder_snapshot_.nvenc_extra_output_delay = nvenc_extra_output_delay_;
         encoder_snapshot_.rc_mode = resolved_config.rcParams.rateControlMode;
         encoder_snapshot_.average_bitrate = resolved_config.rcParams.averageBitRate;
         encoder_snapshot_.max_bitrate = resolved_config.rcParams.maxBitRate;
@@ -869,7 +977,8 @@ EncoderHwWorker::EncoderHwWorker(
             resolved_config,
             encoder_buffer_count_,
             encoder_input_pitch_,
-            direct_input_enabled_);
+            direct_input_enabled_,
+            nvenc_extra_output_delay_);
         encoder_snapshot_.color = camera_params_->color;
         encoder_snapshot_.recording_strategy = recording_strategy_config_;
 
@@ -1747,6 +1856,8 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     info["fps"] = encoder_snapshot_.fps;
     info["gop_length"] = encoder_snapshot_.gop_length;
     info["frame_interval_p"] = encoder_snapshot_.frame_interval_p;
+    info["nvenc_extra_output_delay"] = encoder_snapshot_.nvenc_extra_output_delay;
+    info["encoder_buffer_count"] = encoder_buffer_count_;
     info["idr_period"] = encoder_snapshot_.idr_period;
 
     nlohmann::json refs;
@@ -1933,9 +2044,33 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
         };
     }
     info["latency"] = {
+        {"encoder_cuda_set_device", latency_stats_to_json(shared_output_stats.encoder_cuda_set_device)},
+        {"preprocess_complete_stream_wait_enqueue", latency_stats_to_json(shared_output_stats.preprocess_complete_stream_wait_enqueue)},
+        {"source_to_helper_copy_sync_wait", latency_stats_to_json(shared_output_stats.source_to_helper_copy_sync_wait)},
+        {"source_to_helper_copy_elapsed_query", latency_stats_to_json(shared_output_stats.source_to_helper_copy_elapsed_query)},
         {"source_to_helper_copy", latency_stats_to_json(shared_output_stats.source_to_helper_copy)},
+        {"pre_encoder_reference_capture_enqueue", latency_stats_to_json(shared_output_stats.pre_encoder_reference_capture_enqueue)},
+        {"nvenc_get_next_input_frame", latency_stats_to_json(shared_output_stats.nvenc_get_next_input_frame)},
         {"bitstream_fetch", latency_stats_to_json(shared_output_stats.bitstream_fetch)},
+        {"nvenc_copy_to_input", latency_stats_to_json(shared_output_stats.nvenc_copy_to_input)},
+        {"nvenc_encode_frame_total", latency_stats_to_json(shared_output_stats.nvenc_encode_frame_total)},
+        {"nvenc_map_input_resource", latency_stats_to_json(shared_output_stats.nvenc_map_input_resource)},
+        {"nvenc_map_reference_resource", latency_stats_to_json(shared_output_stats.nvenc_map_reference_resource)},
+        {"nvenc_encode_picture", latency_stats_to_json(shared_output_stats.nvenc_encode_picture)},
+        {"nvenc_completion_wait", latency_stats_to_json(shared_output_stats.nvenc_completion_wait)},
+        {"nvenc_lock_bitstream", latency_stats_to_json(shared_output_stats.nvenc_lock_bitstream)},
+        {"nvenc_bitstream_copy", latency_stats_to_json(shared_output_stats.nvenc_bitstream_copy)},
+        {"nvenc_unlock_bitstream", latency_stats_to_json(shared_output_stats.nvenc_unlock_bitstream)},
+        {"nvenc_unmap_input_resource", latency_stats_to_json(shared_output_stats.nvenc_unmap_input_resource)},
+        {"nvenc_unmap_reference_resource", latency_stats_to_json(shared_output_stats.nvenc_unmap_reference_resource)},
+        {"encoder_output_accounting", latency_stats_to_json(shared_output_stats.encoder_output_accounting)},
+        {"shared_submit_total", latency_stats_to_json(shared_output_stats.shared_submit_total)},
+        {"shared_submit_lock_wait", latency_stats_to_json(shared_output_stats.shared_submit_lock_wait)},
+        {"shared_gop_buffering", latency_stats_to_json(shared_output_stats.shared_gop_buffering)},
         {"gop_hold_before_release", latency_stats_to_json(shared_output_stats.gop_hold_before_release)},
+        {"writer_push_packet_total", latency_stats_to_json(writer_latency.push_packet_total)},
+        {"writer_packet_alloc_copy", latency_stats_to_json(writer_latency.packet_alloc_copy)},
+        {"writer_queue_push", latency_stats_to_json(writer_latency.queue_push)},
         {"writer_queue_wait", latency_stats_to_json(writer_latency.queue_wait)},
         {"packet_mux_write", latency_stats_to_json(writer_latency.packet_write)},
         {"gop_release_to_last_write", latency_stats_to_json(writer_latency.gop_release_to_last_write)}
@@ -1955,11 +2090,13 @@ void EncoderHwWorker::flush_and_close()
             std::vector<uint32_t> retired_slots;
             std::vector<uint64_t> output_timestamps;
             uint64_t bitstream_fetch_duration_ns = 0;
+            NvEncoderEncodeFrameTiming encode_timing;
             encoder_.pEnc->EndEncode(
                 encoder_.vPacket,
                 direct_input_enabled_ ? &retired_slots : nullptr,
                 &output_timestamps,
-                &bitstream_fetch_duration_ns);
+                &bitstream_fetch_duration_ns,
+                &encode_timing);
             const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
                 encoder_.vPacket.size(),
                 output_timestamps,
@@ -1970,6 +2107,12 @@ void EncoderHwWorker::flush_and_close()
             const int64_t fallback_sample_index = last_recording_frame_id_ > 0
                 ? static_cast<int64_t>(last_recording_frame_id_ - 1)
                 : 0;
+            RecordingOutputTimingSample timing_sample;
+            if (bitstream_fetch_duration_ns > 0) {
+                timing_sample.has_bitstream_fetch = true;
+                timing_sample.bitstream_fetch_ns = bitstream_fetch_duration_ns;
+            }
+            merge_nvenc_timing(&timing_sample, encode_timing);
             buffer_encoded_packets(
                 encoder_.vPacket,
                 packet_sample_indices,
@@ -1978,13 +2121,8 @@ void EncoderHwWorker::flush_and_close()
                     std::max<uint32_t>(1u, recording_gop_length_),
                 false,
                 std::nullopt,
-                bitstream_fetch_duration_ns > 0
-                    ? std::optional<RecordingOutputTimingSample>(
-                          RecordingOutputTimingSample{
-                              false,
-                              0,
-                              true,
-                              bitstream_fetch_duration_ns})
+                has_recording_output_timing(timing_sample)
+                    ? std::optional<RecordingOutputTimingSample>(timing_sample)
                     : std::nullopt);
             for (uint64_t completed_gop_index : completed_gops) {
                 buffer_encoded_packets(
@@ -2168,7 +2306,17 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         last_fps_update_time_ = now;
     }
 
-    ck(cudaSetDevice(encode_gpu_id_));
+    RecordingOutputTimingSample timing_sample;
+    {
+        NVTX_ENCODE_DYNAMIC(std::string("Encoder worker cudaSetDevice"));
+        const uint64_t cuda_set_device_start_ns = steady_clock_now_ns();
+        ck(cudaSetDevice(encode_gpu_id_));
+        const uint64_t cuda_set_device_end_ns = steady_clock_now_ns();
+        if (cuda_set_device_end_ns >= cuda_set_device_start_ns) {
+            timing_sample.encoder_cuda_set_device_ns +=
+                cuda_set_device_end_ns - cuda_set_device_start_ns;
+        }
+    }
     std::vector<uint32_t> retired_slots;
     bool capture_scheduled = false;
     size_t capture_staging_slot = 0;
@@ -2186,23 +2334,69 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     NV_ENC_PIC_PARAMS* pic_params_ptr = &pic_params;
 
     try {
+        NVTX_ENCODE_DYNAMIC([&]() {
+            std::ostringstream oss;
+            oss << "Full-frame encode/output"
+                << " cam=" << camera_params_->camera_serial
+                << " src_gpu=" << resolved_recording_config_.source_gpu_id
+                << " enc_gpu=" << encode_gpu_id_
+                << " route="
+                << (encode_gpu_id_ == resolved_recording_config_.source_gpu_id ? "source" : "helper")
+                << " rec_frame=" << entry->recording_frame_id
+                << " gop=" << entry->gop_index;
+            return oss.str();
+        }());
         std::vector<uint64_t> output_timestamps;
-        RecordingOutputTimingSample timing_sample;
         if (entry->preprocess_complete_event) {
+            NVTX_SYNC_DYNAMIC(std::string("Encoder preprocess event stream wait enqueue"));
+            const uint64_t preprocess_wait_start_ns = steady_clock_now_ns();
             ck(cudaStreamWaitEvent(m_stream, *entry->preprocess_complete_event, 0));
+            const uint64_t preprocess_wait_end_ns = steady_clock_now_ns();
+            if (preprocess_wait_end_ns >= preprocess_wait_start_ns) {
+                timing_sample.preprocess_complete_stream_wait_enqueue_ns +=
+                    preprocess_wait_end_ns - preprocess_wait_start_ns;
+            }
         }
         if (entry->cross_gpu_copy_performed && entry->copy_start_event && entry->copy_end_event) {
             float copy_ms = 0.0f;
-            ck(cudaEventSynchronize(entry->copy_end_event));
-            ck(cudaEventElapsedTime(&copy_ms, entry->copy_start_event, entry->copy_end_event));
+            {
+                NVTX_SYNC_DYNAMIC(std::string("Encoder source-to-helper copy sync wait"));
+                const uint64_t copy_sync_start_ns = steady_clock_now_ns();
+                ck(cudaEventSynchronize(entry->copy_end_event));
+                const uint64_t copy_sync_end_ns = steady_clock_now_ns();
+                if (copy_sync_end_ns >= copy_sync_start_ns) {
+                    timing_sample.source_to_helper_copy_sync_wait_ns +=
+                        copy_sync_end_ns - copy_sync_start_ns;
+                }
+            }
+            {
+                NVTX_SYNC_DYNAMIC(std::string("Encoder source-to-helper copy elapsed query"));
+                const uint64_t copy_elapsed_query_start_ns = steady_clock_now_ns();
+                ck(cudaEventElapsedTime(&copy_ms, entry->copy_start_event, entry->copy_end_event));
+                const uint64_t copy_elapsed_query_end_ns = steady_clock_now_ns();
+                if (copy_elapsed_query_end_ns >= copy_elapsed_query_start_ns) {
+                    timing_sample.source_to_helper_copy_elapsed_query_ns +=
+                        copy_elapsed_query_end_ns - copy_elapsed_query_start_ns;
+                }
+            }
             timing_sample.has_source_to_helper_copy = true;
             timing_sample.source_to_helper_copy_ns =
                 static_cast<uint64_t>(copy_ms * 1000000.0f);
         }
-        capture_scheduled = begin_pre_encoder_reference_capture(
-            entry, &capture_staging_slot, &capture_frame_size);
+        {
+            NVTX_GPU_COPY_DYNAMIC(std::string("Pre-encoder reference capture enqueue"));
+            const uint64_t reference_capture_start_ns = steady_clock_now_ns();
+            capture_scheduled = begin_pre_encoder_reference_capture(
+                entry, &capture_staging_slot, &capture_frame_size);
+            const uint64_t reference_capture_end_ns = steady_clock_now_ns();
+            if (reference_capture_end_ns >= reference_capture_start_ns) {
+                timing_sample.pre_encoder_reference_capture_enqueue_ns +=
+                    reference_capture_end_ns - reference_capture_start_ns;
+            }
+        }
 
         uint64_t bitstream_fetch_duration_ns = 0;
+        NvEncoderEncodeFrameTiming encode_timing;
         if (direct_input_enabled_) {
             if (!direct_input_registered_) {
                 throw std::runtime_error("Direct NVENC input pool is not registered");
@@ -2214,15 +2408,34 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                       << " but got " << entry->slot_id;
                 throw std::runtime_error(error.str());
             }
-            encoder_.pEnc->EncodeFrame(
-                encoder_.vPacket,
-                pic_params_ptr,
-                &retired_slots,
-                &output_timestamps,
-                &bitstream_fetch_duration_ns);
+            {
+                const uint64_t encode_frame_start_ns = steady_clock_now_ns();
+                encoder_.pEnc->EncodeFrame(
+                    encoder_.vPacket,
+                    pic_params_ptr,
+                    &retired_slots,
+                    &output_timestamps,
+                    &bitstream_fetch_duration_ns,
+                    &encode_timing);
+                const uint64_t encode_frame_end_ns = steady_clock_now_ns();
+                if (encode_frame_end_ns >= encode_frame_start_ns) {
+                    timing_sample.nvenc_encode_frame_total_ns +=
+                        encode_frame_end_ns - encode_frame_start_ns;
+                }
+            }
             slot_submitted = true;
         } else {
-            const NvEncInputFrame* encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
+            const NvEncInputFrame* encoderInputFrame = nullptr;
+            {
+                NVTX_ENCODE_DYNAMIC(std::string("NVENC get next input frame"));
+                const uint64_t get_next_input_start_ns = steady_clock_now_ns();
+                encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
+                const uint64_t get_next_input_end_ns = steady_clock_now_ns();
+                if (get_next_input_end_ns >= get_next_input_start_ns) {
+                    timing_sample.nvenc_get_next_input_frame_ns +=
+                        get_next_input_end_ns - get_next_input_start_ns;
+                }
+            }
             
             if (!encoderInputFrame) {
                 encode_failures_++;
@@ -2231,32 +2444,52 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 throw std::runtime_error("No encoder input frame available");
             }
 
-            NvEncoderCuda::CopyToDeviceFrame(
-                encoder_.cuContext,
-                entry->d_prepared_frame,
-                static_cast<uint32_t>(entry->surface_pitch),
-                (CUdeviceptr)encoderInputFrame->inputPtr,
-                encoderInputFrame->pitch,
-                encoder_.pEnc->GetEncodeWidth(),
-                encoder_.pEnc->GetEncodeHeight(),
-                CU_MEMORYTYPE_DEVICE,
-                encoderInputFrame->bufferFormat,
-                encoderInputFrame->chromaOffsets,
-                encoderInputFrame->numChromaPlanes
-            );
+            {
+                NVTX_GPU_COPY_DYNAMIC(std::string("NVENC input CopyToDeviceFrame"));
+                const uint64_t copy_to_input_start_ns = steady_clock_now_ns();
+                NvEncoderCuda::CopyToDeviceFrame(
+                    encoder_.cuContext,
+                    entry->d_prepared_frame,
+                    static_cast<uint32_t>(entry->surface_pitch),
+                    (CUdeviceptr)encoderInputFrame->inputPtr,
+                    encoderInputFrame->pitch,
+                    encoder_.pEnc->GetEncodeWidth(),
+                    encoder_.pEnc->GetEncodeHeight(),
+                    CU_MEMORYTYPE_DEVICE,
+                    encoderInputFrame->bufferFormat,
+                    encoderInputFrame->chromaOffsets,
+                    encoderInputFrame->numChromaPlanes
+                );
+                const uint64_t copy_to_input_end_ns = steady_clock_now_ns();
+                if (copy_to_input_end_ns >= copy_to_input_start_ns) {
+                    timing_sample.nvenc_copy_to_input_ns +=
+                        copy_to_input_end_ns - copy_to_input_start_ns;
+                }
+            }
 
-            encoder_.pEnc->EncodeFrame(
-                encoder_.vPacket,
-                pic_params_ptr,
-                nullptr,
-                &output_timestamps,
-                &bitstream_fetch_duration_ns);
+            {
+                const uint64_t encode_frame_start_ns = steady_clock_now_ns();
+                encoder_.pEnc->EncodeFrame(
+                    encoder_.vPacket,
+                    pic_params_ptr,
+                    nullptr,
+                    &output_timestamps,
+                    &bitstream_fetch_duration_ns,
+                    &encode_timing);
+                const uint64_t encode_frame_end_ns = steady_clock_now_ns();
+                if (encode_frame_end_ns >= encode_frame_start_ns) {
+                    timing_sample.nvenc_encode_frame_total_ns +=
+                        encode_frame_end_ns - encode_frame_start_ns;
+                }
+            }
         }
         if (bitstream_fetch_duration_ns > 0) {
             timing_sample.has_bitstream_fetch = true;
             timing_sample.bitstream_fetch_ns = bitstream_fetch_duration_ns;
         }
+        merge_nvenc_timing(&timing_sample, encode_timing);
 
+        const uint64_t output_accounting_start_ns = steady_clock_now_ns();
         note_submitted_frame(entry->gop_index, entry->is_last_frame_in_gop);
         size_t packets_generated = encoder_.vPacket.size();
         const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
@@ -2272,6 +2505,11 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             entry->recording_frame_id,
             entry->timestamp,
             entry->timestamp_sys};
+        const uint64_t output_accounting_end_ns = steady_clock_now_ns();
+        if (output_accounting_end_ns >= output_accounting_start_ns) {
+            timing_sample.encoder_output_accounting_ns +=
+                output_accounting_end_ns - output_accounting_start_ns;
+        }
         buffer_encoded_packets(
             encoder_.vPacket,
             packet_sample_indices,
@@ -2279,7 +2517,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             entry->gop_index,
             false,
             metadata_row,
-            timing_sample.has_source_to_helper_copy || timing_sample.has_bitstream_fetch
+            has_recording_output_timing(timing_sample)
                 ? std::optional<RecordingOutputTimingSample>(timing_sample)
                 : std::nullopt);
         for (uint64_t completed_gop_index : completed_gops) {

@@ -7,9 +7,17 @@
 
 #include "camera.h"
 #include "fsuid_guard.h"
+#include "nvtx_profiling.h"
 #include "project.h"
 
 namespace {
+void observe_if_nonzero(LatencyAggregateStats* stats, uint64_t duration_ns)
+{
+    if (duration_ns > 0) {
+        observe_latency_ns(stats, duration_ns);
+    }
+}
+
 void initialize_writer_locked(Writer* writer,
                               const SharedRecordingOutputOpenParams& params)
 {
@@ -108,10 +116,19 @@ void SharedRecordingOutput::submit_frame_output(
     const std::optional<RecordingMetadataRow>& metadata_row,
     const std::optional<RecordingOutputTimingSample>& timing_sample)
 {
-    std::lock_guard<std::mutex> lock(mutex_);
+    NVTX_ENCODE_DYNAMIC(std::string("SharedRecordingOutput submit frame"));
+    const uint64_t submit_start_ns = steady_clock_now_ns();
+    std::unique_lock<std::mutex> lock(mutex_);
+    const uint64_t lock_acquired_ns = steady_clock_now_ns();
+    if (lock_acquired_ns >= submit_start_ns) {
+        observe_latency_ns(
+            &shared_submit_lock_wait_latency_,
+            lock_acquired_ns - submit_start_ns);
+    }
     if (!is_open_) {
         throw std::runtime_error("SharedRecordingOutput received packets before open");
     }
+    const uint64_t buffering_start_ns = steady_clock_now_ns();
     buffer_packets_locked(
         packets,
         output_timestamps,
@@ -120,6 +137,17 @@ void SharedRecordingOutput::submit_frame_output(
         mark_complete,
         metadata_row,
         timing_sample);
+    const uint64_t submit_end_ns = steady_clock_now_ns();
+    if (submit_end_ns >= buffering_start_ns) {
+        observe_latency_ns(
+            &shared_gop_buffering_latency_,
+            submit_end_ns - buffering_start_ns);
+    }
+    if (submit_end_ns >= submit_start_ns) {
+        observe_latency_ns(
+            &shared_submit_total_latency_,
+            submit_end_ns - submit_start_ns);
+    }
 }
 
 void SharedRecordingOutput::buffer_packets_locked(
@@ -132,16 +160,70 @@ void SharedRecordingOutput::buffer_packets_locked(
     const std::optional<RecordingOutputTimingSample>& timing_sample)
 {
     if (timing_sample.has_value()) {
+        observe_if_nonzero(
+            &encoder_cuda_set_device_latency_,
+            timing_sample->encoder_cuda_set_device_ns);
+        observe_if_nonzero(
+            &preprocess_complete_stream_wait_enqueue_latency_,
+            timing_sample->preprocess_complete_stream_wait_enqueue_ns);
+        observe_if_nonzero(
+            &source_to_helper_copy_sync_wait_latency_,
+            timing_sample->source_to_helper_copy_sync_wait_ns);
+        observe_if_nonzero(
+            &source_to_helper_copy_elapsed_query_latency_,
+            timing_sample->source_to_helper_copy_elapsed_query_ns);
         if (timing_sample->has_source_to_helper_copy) {
             observe_latency_ns(
                 &source_to_helper_copy_latency_,
                 timing_sample->source_to_helper_copy_ns);
         }
+        observe_if_nonzero(
+            &pre_encoder_reference_capture_enqueue_latency_,
+            timing_sample->pre_encoder_reference_capture_enqueue_ns);
+        observe_if_nonzero(
+            &nvenc_get_next_input_frame_latency_,
+            timing_sample->nvenc_get_next_input_frame_ns);
         if (timing_sample->has_bitstream_fetch) {
             observe_latency_ns(
                 &bitstream_fetch_latency_,
                 timing_sample->bitstream_fetch_ns);
         }
+        observe_if_nonzero(
+            &nvenc_copy_to_input_latency_,
+            timing_sample->nvenc_copy_to_input_ns);
+        observe_if_nonzero(
+            &nvenc_encode_frame_total_latency_,
+            timing_sample->nvenc_encode_frame_total_ns);
+        observe_if_nonzero(
+            &nvenc_map_input_resource_latency_,
+            timing_sample->nvenc_map_input_resource_ns);
+        observe_if_nonzero(
+            &nvenc_map_reference_resource_latency_,
+            timing_sample->nvenc_map_reference_resource_ns);
+        observe_if_nonzero(
+            &nvenc_encode_picture_latency_,
+            timing_sample->nvenc_encode_picture_ns);
+        observe_if_nonzero(
+            &nvenc_completion_wait_latency_,
+            timing_sample->nvenc_completion_wait_ns);
+        observe_if_nonzero(
+            &nvenc_lock_bitstream_latency_,
+            timing_sample->nvenc_lock_bitstream_ns);
+        observe_if_nonzero(
+            &nvenc_bitstream_copy_latency_,
+            timing_sample->nvenc_bitstream_copy_ns);
+        observe_if_nonzero(
+            &nvenc_unlock_bitstream_latency_,
+            timing_sample->nvenc_unlock_bitstream_ns);
+        observe_if_nonzero(
+            &nvenc_unmap_input_resource_latency_,
+            timing_sample->nvenc_unmap_input_resource_ns);
+        observe_if_nonzero(
+            &nvenc_unmap_reference_resource_latency_,
+            timing_sample->nvenc_unmap_reference_resource_ns);
+        observe_if_nonzero(
+            &encoder_output_accounting_latency_,
+            timing_sample->encoder_output_accounting_ns);
     }
 
     if (!split_gop_config_.enabled) {
@@ -243,6 +325,7 @@ void SharedRecordingOutput::buffer_packets_locked(
 
 void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
 {
+    NVTX_ENCODE_DYNAMIC(std::string("SharedRecordingOutput flush pending GOPs"));
     if (!split_gop_config_.enabled) {
         return;
     }
@@ -279,6 +362,7 @@ void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
         for (size_t packet_index = 0; packet_index < pending.packets.size(); ++packet_index) {
             const auto& packet = pending.packets[packet_index];
             if (writer_.video) {
+                NVTX_ENCODE_DYNAMIC(std::string("SharedRecordingOutput push packet to writer"));
                 writer_.video->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
                     static_cast<int>(packet.bytes.size()),
@@ -438,8 +522,32 @@ SharedRecordingOutputStats SharedRecordingOutput::stats() const
     out.pending_gop_overflow_frontier_present = pending_gop_overflow_frontier_present_;
     out.pending_gop_overflow_frontier_complete = pending_gop_overflow_frontier_complete_;
     out.pending_gop_overflow_pending_keys = pending_gop_overflow_pending_keys_;
+    out.encoder_cuda_set_device = encoder_cuda_set_device_latency_;
+    out.preprocess_complete_stream_wait_enqueue =
+        preprocess_complete_stream_wait_enqueue_latency_;
+    out.source_to_helper_copy_sync_wait = source_to_helper_copy_sync_wait_latency_;
+    out.source_to_helper_copy_elapsed_query =
+        source_to_helper_copy_elapsed_query_latency_;
     out.source_to_helper_copy = source_to_helper_copy_latency_;
+    out.pre_encoder_reference_capture_enqueue =
+        pre_encoder_reference_capture_enqueue_latency_;
+    out.nvenc_get_next_input_frame = nvenc_get_next_input_frame_latency_;
     out.bitstream_fetch = bitstream_fetch_latency_;
+    out.nvenc_copy_to_input = nvenc_copy_to_input_latency_;
+    out.nvenc_encode_frame_total = nvenc_encode_frame_total_latency_;
+    out.nvenc_map_input_resource = nvenc_map_input_resource_latency_;
+    out.nvenc_map_reference_resource = nvenc_map_reference_resource_latency_;
+    out.nvenc_encode_picture = nvenc_encode_picture_latency_;
+    out.nvenc_completion_wait = nvenc_completion_wait_latency_;
+    out.nvenc_lock_bitstream = nvenc_lock_bitstream_latency_;
+    out.nvenc_bitstream_copy = nvenc_bitstream_copy_latency_;
+    out.nvenc_unlock_bitstream = nvenc_unlock_bitstream_latency_;
+    out.nvenc_unmap_input_resource = nvenc_unmap_input_resource_latency_;
+    out.nvenc_unmap_reference_resource = nvenc_unmap_reference_resource_latency_;
+    out.encoder_output_accounting = encoder_output_accounting_latency_;
+    out.shared_submit_total = shared_submit_total_latency_;
+    out.shared_submit_lock_wait = shared_submit_lock_wait_latency_;
+    out.shared_gop_buffering = shared_gop_buffering_latency_;
     out.gop_hold_before_release = gop_hold_before_release_latency_;
     out.writer_latency = writer_latency_stats_;
     return out;
@@ -517,8 +625,29 @@ void SharedRecordingOutput::reset_pending_state_locked()
     pending_gop_overflow_frontier_present_ = false;
     pending_gop_overflow_frontier_complete_ = false;
     pending_gop_overflow_pending_keys_.clear();
+    encoder_cuda_set_device_latency_ = {};
+    preprocess_complete_stream_wait_enqueue_latency_ = {};
+    source_to_helper_copy_sync_wait_latency_ = {};
+    source_to_helper_copy_elapsed_query_latency_ = {};
     source_to_helper_copy_latency_ = {};
+    pre_encoder_reference_capture_enqueue_latency_ = {};
+    nvenc_get_next_input_frame_latency_ = {};
     bitstream_fetch_latency_ = {};
+    nvenc_copy_to_input_latency_ = {};
+    nvenc_encode_frame_total_latency_ = {};
+    nvenc_map_input_resource_latency_ = {};
+    nvenc_map_reference_resource_latency_ = {};
+    nvenc_encode_picture_latency_ = {};
+    nvenc_completion_wait_latency_ = {};
+    nvenc_lock_bitstream_latency_ = {};
+    nvenc_bitstream_copy_latency_ = {};
+    nvenc_unlock_bitstream_latency_ = {};
+    nvenc_unmap_input_resource_latency_ = {};
+    nvenc_unmap_reference_resource_latency_ = {};
+    encoder_output_accounting_latency_ = {};
+    shared_submit_total_latency_ = {};
+    shared_submit_lock_wait_latency_ = {};
+    shared_gop_buffering_latency_ = {};
     gop_hold_before_release_latency_ = {};
     writer_latency_stats_ = {};
 }

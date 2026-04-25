@@ -1,8 +1,12 @@
 #include "session/recording_session.h"
 
 #include "project.h"
+#include "recording_ingress.h"
 #include "recording_output_utils.h"
 
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 
@@ -14,6 +18,42 @@ bool is_valid_pipeline_index(const RecordingSessionState& state, const int camer
 {
     return camera_index >= 0 &&
            camera_index < static_cast<int>(state.recording_pipelines.size());
+}
+
+bool env_flag_enabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (!value) {
+        return false;
+    }
+    std::string text(value);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return !(text.empty() || text == "0" || text == "false" || text == "no" || text == "off");
+}
+
+std::string resolve_gui_recording_sink_mode()
+{
+    std::string requested;
+    if (const char* env = std::getenv("ORANGE_GUI_RECORDING_SINK_MODE")) {
+        requested = env;
+    }
+    if (env_flag_enabled("ORANGE_GUI_DIAGNOSTIC_NO_FULL_FRAME")) {
+        requested = "immediate_recycle";
+    }
+
+    std::string normalized = normalize_recording_sink_mode(requested);
+    if (normalized.empty()) {
+        std::cerr << "[recording_session] Unsupported ORANGE_GUI_RECORDING_SINK_MODE='"
+                  << requested << "'; using real full-frame recording." << std::endl;
+        normalized = "real";
+    }
+    if (normalized != "real") {
+        std::cout << "[recording_session] GUI recording sink mode: " << normalized
+                  << " (full-frame video disabled for non-real sink modes)" << std::endl;
+    }
+    return normalized;
 }
 
 }  // namespace
@@ -32,6 +72,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
 
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
+    state->recording_sink_mode = resolve_gui_recording_sink_mode();
 
     for (int i = 0; i < num_cameras; ++i) {
         if (!cameras_select[i].record) {
@@ -79,7 +120,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
             &cameras_params[i],
             resolved_recording_config,
             *camera_resources[i].recycle_queue,
-            camera_control);
+            camera_control,
+            state->recording_sink_mode);
     }
 }
 
@@ -87,7 +129,8 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
                                             CameraParams* cameras_params,
                                             const int num_cameras,
                                             const std::string& base_folder,
-                                            PTPParams* ptp_params)
+                                            PTPParams* ptp_params,
+                                            const std::string& recording_sink_mode)
 {
     RecordingRunStartResult result;
     if (!camera_control || !cameras_params || num_cameras <= 0) {
@@ -128,7 +171,8 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
         resolved_base_folder,
         true,
         camera_control->sync_camera,
-        ptp_params);
+        ptp_params,
+        recording_sink_mode);
     initialize_ptp_sync_summary(
         recording_folder,
         recording_id,
@@ -139,6 +183,7 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
     camera_control->record_video = true;
     result.ok = true;
     result.recording_folder = std::move(recording_folder);
+    result.recording_sink_mode = recording_sink_mode;
     return result;
 }
 
@@ -154,6 +199,8 @@ void request_stop_recording_run(CameraControl* camera_control)
     if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
         camera_control->recording_draining = false;
         camera_control->stop_record = false;
+        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+        camera_control->recording_folder.clear();
     }
 }
 
