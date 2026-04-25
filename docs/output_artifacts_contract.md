@@ -154,6 +154,11 @@ Current emitted top-level fields:
   - `lookup_error: string` (optional, when lookup fails)
   - `pci_bus_id_lookup_error: string` (optional, when bus-id lookup fails)
 
+Camera config schema 4 promotes `recording.encode.aq` and
+`recording.encode.temporal_aq` to persistent tri-state fields
+(`auto|off|on`). The encoder snapshot records the resolved NVENC state in
+`aq.*` and the effective request in `requested_overrides.*`.
+
 `encoders` object (current shape):
 - Key: camera identifier string (serial or camera_id string).
 - Value: encoder info object:
@@ -222,6 +227,7 @@ Current emitted top-level fields:
       - `common: object`
       - `rc: object`
       - `codec: object`
+
   - `latency: object` (optional, full-frame encoder/output timing aggregates)
     - values are stats objects with `samples`, `mean_ms`, `max_ms`, and
       `last_ms`

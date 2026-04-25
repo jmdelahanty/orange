@@ -779,7 +779,7 @@ std::vector<std::string> string_split_char(char* string_c, std::string delimiter
 
 namespace {
 constexpr const char* kCameraConfigSchemaId = "orange.camera.config";
-constexpr int kCameraConfigSchemaVersion = 3;
+constexpr int kCameraConfigSchemaVersion = 4;
 
 std::string lower_ascii_copy(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
@@ -857,6 +857,107 @@ std::string normalize_recording_output_mode_string(std::string value) {
         return value;
     }
     return "factor";
+}
+
+int normalize_encoder_toggle_value(int value) {
+    return (value == 0 || value == 1) ? value : -1;
+}
+
+std::string format_encoder_toggle_value(int value) {
+    value = normalize_encoder_toggle_value(value);
+    if (value == 0) {
+        return "off";
+    }
+    if (value == 1) {
+        return "on";
+    }
+    return "auto";
+}
+
+bool parse_encoder_toggle_json_value(const nlohmann::json& value, int* out_value) {
+    if (!out_value) {
+        return false;
+    }
+    if (value.is_boolean()) {
+        *out_value = value.get<bool>() ? 1 : 0;
+        return true;
+    }
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        const int parsed = value.get<int>();
+        if (parsed == -1 || parsed == 0 || parsed == 1) {
+            *out_value = parsed;
+            return true;
+        }
+        return false;
+    }
+    if (value.is_string()) {
+        const std::string normalized = lower_ascii_copy(trim_ascii_copy(value.get<std::string>()));
+        if (normalized == "auto" || normalized == "default" || normalized == "inherit") {
+            *out_value = -1;
+            return true;
+        }
+        if (normalized == "off" || normalized == "false" || normalized == "disabled" ||
+            normalized == "0") {
+            *out_value = 0;
+            return true;
+        }
+        if (normalized == "on" || normalized == "true" || normalized == "enabled" ||
+            normalized == "1") {
+            *out_value = 1;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool try_parse_encoder_toggle_field(const nlohmann::json& object,
+                                    const char* key,
+                                    int* out_value,
+                                    std::string* error_out) {
+    if (!out_value || !object.contains(key)) {
+        return true;
+    }
+    int parsed = -1;
+    if (!parse_encoder_toggle_json_value(object[key], &parsed)) {
+        if (error_out) {
+            *error_out = std::string("recording.encode.") + key +
+                         " must be one of auto, off, on, false, true, -1, 0, or 1";
+        }
+        return false;
+    }
+    *out_value = parsed;
+    return true;
+}
+
+EncoderControlOverrides resolve_encoder_control_overrides(
+    const CameraRecordingEncodeConfig& encode,
+    const EncoderControlOverrides& runtime_overrides) {
+    EncoderControlOverrides resolved;
+    resolved.aq = normalize_encoder_toggle_value(encode.aq);
+    resolved.temporal_aq = normalize_encoder_toggle_value(encode.temporal_aq);
+
+    if (runtime_overrides.aq >= 0) {
+        resolved.aq = runtime_overrides.aq;
+    }
+    if (runtime_overrides.temporal_aq >= 0) {
+        resolved.temporal_aq = runtime_overrides.temporal_aq;
+    }
+    if (runtime_overrides.lookahead >= 0) {
+        resolved.lookahead = runtime_overrides.lookahead;
+    }
+    if (runtime_overrides.lookahead_depth >= 0) {
+        resolved.lookahead_depth = runtime_overrides.lookahead_depth;
+    }
+    if (runtime_overrides.target_bitrate_bps >= 0) {
+        resolved.target_bitrate_bps = runtime_overrides.target_bitrate_bps;
+    }
+    if (runtime_overrides.max_bitrate_bps >= 0) {
+        resolved.max_bitrate_bps = runtime_overrides.max_bitrate_bps;
+    }
+    if (runtime_overrides.vbv_buffer_size >= 0) {
+        resolved.vbv_buffer_size = runtime_overrides.vbv_buffer_size;
+    }
+    return resolved;
 }
 
 std::string normalize_preferred_topology_class_string(std::string value) {
@@ -956,6 +1057,8 @@ void normalize_camera_recording_config(CameraRecordingConfig* config) {
     config->encode.preset = lower_ascii_copy(config->encode.preset);
     config->encode.tuning = lower_ascii_copy(config->encode.tuning);
     config->encode.rate_control_mode = lower_ascii_copy(config->encode.rate_control_mode);
+    config->encode.aq = normalize_encoder_toggle_value(config->encode.aq);
+    config->encode.temporal_aq = normalize_encoder_toggle_value(config->encode.temporal_aq);
     config->output.mode = normalize_recording_output_mode_string(config->output.mode);
     config->constraints.preferred_topology_class =
         normalize_preferred_topology_class_string(config->constraints.preferred_topology_class);
@@ -1063,6 +1166,12 @@ bool parse_camera_recording_json_impl(const nlohmann::json& recording_json,
             encode.value("quality_value", recording.encode.quality_value);
         recording.encode.gop_length =
             encode.value("gop_length", recording.encode.gop_length);
+        if (!try_parse_encoder_toggle_field(
+                encode, "aq", &recording.encode.aq, error_out) ||
+            !try_parse_encoder_toggle_field(
+                encode, "temporal_aq", &recording.encode.temporal_aq, error_out)) {
+            return false;
+        }
         recording.encode.nvenc_direct_input =
             encode.value("nvenc_direct_input", recording.encode.nvenc_direct_input);
     }
@@ -1174,6 +1283,8 @@ nlohmann::json build_camera_recording_json_impl(const CameraRecordingConfig& rec
         {"rate_control_mode", recording.encode.rate_control_mode},
         {"quality_value", recording.encode.quality_value},
         {"gop_length", recording.encode.gop_length},
+        {"aq", format_encoder_toggle_value(recording.encode.aq)},
+        {"temporal_aq", format_encoder_toggle_value(recording.encode.temporal_aq)},
         {"nvenc_direct_input", recording.encode.nvenc_direct_input}
     };
     recording_json["output"] = {
@@ -1431,7 +1542,8 @@ std::vector<std::string>::const_iterator find_camera_config_for_serial(
 }
 
 bool camera_config_schema_version_supported(int schema_version) {
-    return schema_version == 1 || schema_version == 2 || schema_version == 3;
+    return schema_version == 1 || schema_version == 2 || schema_version == 3 ||
+           schema_version == 4;
 }
 
 bool try_parse_source_gpu_id_from_json(const nlohmann::json& camera_config,
@@ -2047,7 +2159,8 @@ ResolvedRecordingConfig build_resolved_recording_config(
     resolved.strategy = resolve_runtime_recording_strategy_config(camera_params);
     resolved.constraints = camera_params.recording.constraints;
     resolved.resources = camera_params.recording.resources;
-    resolved.encoder_control_overrides = overrides.encoder_control_overrides;
+    resolved.encoder_control_overrides =
+        resolve_encoder_control_overrides(resolved.encode, overrides.encoder_control_overrides);
     resolved.importance_map = overrides.importance_map;
     resolved.base_folder_name = overrides.base_folder_name;
     resolved.pre_encoder_reference_capture = overrides.pre_encoder_reference_capture;

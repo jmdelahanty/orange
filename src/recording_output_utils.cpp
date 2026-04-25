@@ -21,6 +21,8 @@ bool encode_defaults_match(const CameraRecordingEncodeConfig& lhs,
            lhs.rate_control_mode == rhs.rate_control_mode &&
            lhs.quality_value == rhs.quality_value &&
            lhs.gop_length == rhs.gop_length &&
+           lhs.aq == rhs.aq &&
+           lhs.temporal_aq == rhs.temporal_aq &&
            lhs.nvenc_direct_input == rhs.nvenc_direct_input;
 }
 
@@ -31,6 +33,17 @@ bool output_defaults_match(const CameraRecordingOutputConfig& lhs,
            lhs.downsample_factor == rhs.downsample_factor &&
            lhs.requested_width == rhs.requested_width &&
            lhs.requested_height == rhs.requested_height;
+}
+
+const char* format_encoder_toggle(const int value)
+{
+    if (value == 0) {
+        return "off";
+    }
+    if (value == 1) {
+        return "on";
+    }
+    return "auto";
 }
 
 }  // namespace
@@ -132,6 +145,8 @@ RecordingConfigSyncResult sync_encoder_config_from_camera_defaults(const CameraP
     encoder_config->rate_control_mode = reference_encode.rate_control_mode;
     encoder_config->quality_value = reference_encode.quality_value;
     encoder_config->gop_length = reference_encode.gop_length;
+    encoder_config->aq = reference_encode.aq;
+    encoder_config->temporal_aq = reference_encode.temporal_aq;
     encoder_config->record_output_mode = reference_output.mode;
     encoder_config->record_downsample_factor = reference_output.downsample_factor;
     encoder_config->record_output_width = reference_output.requested_width;
@@ -148,6 +163,10 @@ RecordingConfigSyncResult sync_encoder_config_from_camera_defaults(const CameraP
            << encoder_config->encoder_codec
            << ", GOP "
            << encoder_config->gop_length
+           << ", AQ "
+           << format_encoder_toggle(encoder_config->aq)
+           << ", temporal AQ "
+           << format_encoder_toggle(encoder_config->temporal_aq)
            << ", "
            << record_output_summary(
                   encoder_config->record_output_mode,

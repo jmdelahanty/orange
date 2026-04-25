@@ -1,6 +1,6 @@
 {
   "schema_id": "orange.camera.config",
-  "schema_version": 3,
+  "schema_version": 4,
   "device_model_name": "HB-20000SBM",
   "device_serial_number": "2010096",
   "camera_scan_type": "area_scan",
@@ -45,6 +45,8 @@
       "rate_control_mode": "vbr",
       "quality_value": 20,
       "gop_length": 25,
+      "aq": "off",
+      "temporal_aq": "off",
       "nvenc_direct_input": false
     },
     "output": {

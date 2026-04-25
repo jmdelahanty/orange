@@ -1056,6 +1056,13 @@ Legacy single-output example (currently emitted for full-frame HW encoder):
 }
 ```
 
+For camera config schema 4 and newer, `recording.encode.aq` and
+`recording.encode.temporal_aq` are persistent tri-state encoder config fields:
+`auto`, `off`, or `on`. The resolved values are reflected in the encoder
+snapshot under `aq.enable_aq` and `aq.enable_temporal_aq`; `requested_overrides`
+records the effective request after combining camera config and runtime
+experiment overrides.
+
 Target multi-output example (full + crop):
 
 ```json

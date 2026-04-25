@@ -9,6 +9,8 @@ struct EncoderConfig {
     std::string rate_control_mode;
     int quality_value;
     int gop_length;
+    int aq;
+    int temporal_aq;
     std::string record_output_mode;
     int record_downsample_factor;
     int record_output_width;

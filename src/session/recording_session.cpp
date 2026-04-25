@@ -112,6 +112,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
         recording_overrides.rate_control_mode = encoder_config.rate_control_mode;
         recording_overrides.quality_value = encoder_config.quality_value;
         recording_overrides.gop_length = encoder_config.gop_length;
+        recording_overrides.encoder_control_overrides.aq = encoder_config.aq;
+        recording_overrides.encoder_control_overrides.temporal_aq = encoder_config.temporal_aq;
         recording_overrides.base_folder_name = encoder_config.folder_name;
 
         const ResolvedRecordingConfig resolved_recording_config =

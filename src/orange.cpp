@@ -2397,6 +2397,8 @@ int main(int argc, char **args) {
         "vbr",
         20,
         0,
+        -1,
+        -1,
         "factor",
         1,
         1024,

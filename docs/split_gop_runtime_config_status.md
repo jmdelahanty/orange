@@ -93,7 +93,7 @@ Latest clean PTP-gated dual-camera validation result:
 
 ## Current Config Model
 
-Schema 3 camera configs now persist a top-level `recording` object. That object
+Schema 4 camera configs now persist a top-level `recording` object. That object
 contains the broader recording intent for a camera:
 
 - `recording.encode`
@@ -226,12 +226,25 @@ Schema 3 added more than just strategy:
 - `recording.output`
 - `recording.resources`
 
+Schema 4 extends `recording.encode` with latency-critical NVENC feature toggles:
+
+- `aq`: `auto|off|on`
+- `temporal_aq`: `auto|off|on`
+
+Omitted fields still behave as `auto`, so existing schema-3 configs preserve
+their previous behavior. Runtime experiment overrides can still force these
+values for headless matrices, but the normal persistent source of truth is now
+the camera recording config.
+
 But runtime is not yet consistently driven from those persisted fields.
 
 Today:
 
 - codec/preset/tuning/rate-control/quality/GOP now flow through a single
   override struct into `ResolvedRecordingConfig`
+- `recording.encode.aq` and `recording.encode.temporal_aq` now flow into
+  `ResolvedRecordingConfig.encoder_control_overrides`, with runtime experiment
+  overrides taking precedence
 - direct-input now also flows through that same override path for GUI/headless
   runs
 - requested output preferences now flow through that same override path, and the
@@ -247,7 +260,7 @@ Today:
   - `ORANGE_NVENC_DIRECT_INPUT` remains supported as a fallback for older
     workflows, but it is no longer the normal headless control path
 
-So schema 3 currently persists the desired shape cleanly, but runtime still
+So schema 4 currently persists the desired shape cleanly, but runtime still
 pulls some parts of the effective configuration from multiple sources.
 
 ## Goal State

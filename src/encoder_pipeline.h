@@ -88,6 +88,8 @@ struct CameraRecordingEncodeConfig {
     std::string rate_control_mode = "vbr";
     int quality_value = 20;
     int gop_length = 0;
+    int aq = -1;
+    int temporal_aq = -1;
     bool nvenc_direct_input = false;
 };
 

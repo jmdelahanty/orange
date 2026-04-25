@@ -47,6 +47,36 @@ bool combo_select_string(const char* label,
     return changed;
 }
 
+bool combo_select_encoder_toggle(const char* label, int* value)
+{
+    static const int kValues[] = {-1, 0, 1};
+    static const char* const kLabels[] = {"auto", "off", "on"};
+
+    int current_index = 0;
+    for (int i = 0; i < IM_ARRAYSIZE(kValues); ++i) {
+        if (*value == kValues[i]) {
+            current_index = i;
+            break;
+        }
+    }
+
+    bool changed = false;
+    if (ImGui::BeginCombo(label, kLabels[current_index])) {
+        for (int i = 0; i < IM_ARRAYSIZE(kValues); ++i) {
+            const bool is_selected = (i == current_index);
+            if (ImGui::Selectable(kLabels[i], is_selected)) {
+                *value = kValues[i];
+                changed = true;
+            }
+            if (is_selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
 std::string join_gpu_ids(const std::vector<int>& gpu_ids)
 {
     if (gpu_ids.empty()) {
@@ -473,6 +503,10 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
     if (encoder_config->rate_control_mode.empty()) {
         encoder_config->rate_control_mode = "vbr";
     }
+
+    combo_select_encoder_toggle("spatial AQ", &encoder_config->aq);
+    combo_select_encoder_toggle("temporal AQ", &encoder_config->temporal_aq);
+    ImGui::TextDisabled("auto uses the NVENC profile default; off is the current low-latency candidate.");
 
     if (encoder_config->rate_control_mode != "vbr") {
         ImGui::SliderInt("quality value", &encoder_config->quality_value, 1, 51, "%d");
