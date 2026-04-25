@@ -68,6 +68,8 @@ Current conclusion:
 The dominant full-frame recording stall is helper-route nvEncLockBitstream.
 The current EncodeFrame() submit+harvest coupling puts that Linux synchronous
 completion boundary directly in the hardware encoder worker.
+The split-harvest implementation fixes that submit-path coupling, but the
+same-process harvest still leaves YOLO blocked in libcuda runtime locks.
 ```
 
 The light Nsight run was enough to capture useful OSRT callchains:
@@ -367,9 +369,56 @@ harvest encoded frame
   -> block or poll in nvEncLockBitstream on a separate thread
 ```
 
-That change would move the Linux blocking point out of the hardware encoder
-submit worker and make it easier to isolate NVENC output stalls from capture,
-preprocess, and inference scheduling.
+This is now implemented as an experimental full-frame path:
+
+```text
+ORANGE_NVENC_SPLIT_HARVEST=1
+```
+
+Current scope:
+
+- full-frame `EncoderHwWorker` only,
+- shared recording output only,
+- non-direct NVENC input only,
+- default path unchanged when the flag is absent,
+- direct-input NVENC workers ignore the flag because external slot retirement
+  needs a separate safety pass.
+
+The submit side records metadata and submit-side timing immediately after
+`nvEncEncodePicture`; the harvest side retrieves encoded packets in submission
+order and records `nvEncLockBitstream`, bitstream-copy, unlock, and unmap
+timing from the harvest thread.
+
+The goal is to move the Linux blocking point out of the hardware encoder submit
+worker and isolate whether NVENC output stalls are still visible to YOLO through
+process-level CUDA/NVENC driver contention.
+
+Measured split-harvest result:
+
+- baseline run:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_24_23_32_32`
+  with `/tmp/orange_yolo_detach_nsys_20260424_233157.sqlite`,
+- split-harvest run:
+  `/home/jeremy/orange_data/exp/unsorted/2026_04_24_23_39_55`
+  with `/tmp/orange_yolo_detach_nsys_20260424_233912.sqlite`,
+- `recording_snapshot.json` confirmed `path = hw_split_harvest` and
+  `split_harvest_enabled = true`,
+- encoder submit p95 improved from about `11.85 ms` to about `0.31 ms`,
+- `nvEncLockBitstream p95` stayed about `11.67 -> 11.69 ms`, now on the
+  harvest thread,
+- YOLO `cudaLaunchKernel_v7000 p95` stayed about `8.29 -> 8.29 ms`,
+- YOLO `pthread_rwlock_rdlock p95` stayed about `8.44 -> 8.45 ms`,
+- YOLO `cpu_preprocess_ms p95` stayed about `7.5-8.6 ms` depending on camera.
+
+Conclusion:
+
+- Linux NVENC can be pipelined so submit no longer waits for bitstream harvest.
+- That is an encoder-worker architecture improvement, but it is not the detect
+  latency fix.
+- The remaining YOLO tail is likely same-process CUDA/NVENC runtime or driver
+  lock contention from the harvest/output side.
+- The next high-signal architecture experiment is process isolation for
+  full-frame encode/harvest/output.
 
 Important caveat:
 

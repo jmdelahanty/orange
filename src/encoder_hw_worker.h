@@ -7,12 +7,15 @@
 #include "video_capture.h"
 #include "gpu_video_encoder.h"
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
+#include <thread>
 #include "encoder_pipeline.h"
 #include "json.hpp"
 #include "pre_encoder_reference_writer.h"
@@ -112,6 +115,17 @@ private:
     void flush_pending_gops(bool flush_all);
     size_t pending_gop_backlog_count() const;
     int64_t oldest_pending_gop_age_ms() const;
+    bool split_harvest_requested() const;
+    void start_split_harvest_thread();
+    void stop_split_harvest_thread();
+    void notify_split_harvest_thread();
+    void split_harvest_loop();
+    void set_split_harvest_error(const std::string& message);
+    bool split_harvest_failed(std::string* message_out);
+    void publish_harvested_packets(std::vector<std::vector<uint8_t>> packets,
+                                   std::vector<uint64_t> output_timestamps,
+                                   uint64_t bitstream_fetch_duration_ns,
+                                   const NvEncoderEncodeFrameTiming& encode_timing);
 
     struct ReferenceCaptureStagingSlot {
         unsigned char* host_buffer = nullptr;
@@ -225,6 +239,7 @@ private:
     PreEncoderReferenceCaptureConfig pre_encoder_reference_capture_config_;
     bool direct_input_enabled_ = false;
     bool direct_input_registered_ = false;
+    bool split_harvest_enabled_ = false;
     bool importance_map_enabled_ = false;
     int nvenc_extra_output_delay_ = 3;
     int encoder_input_pitch_ = 0;
@@ -266,6 +281,14 @@ private:
     std::map<uint64_t, uint32_t> submitted_frames_by_gop_;
     std::map<uint64_t, uint32_t> emitted_frames_by_gop_;
     std::set<uint64_t> submitted_complete_gops_;
+    std::mutex split_output_mutex_;
+    std::thread split_harvest_thread_;
+    std::mutex split_harvest_mutex_;
+    std::condition_variable split_harvest_cv_;
+    bool split_harvest_stop_ = false;
+    bool split_harvest_wake_ = false;
+    bool split_harvest_error_ = false;
+    std::string split_harvest_error_message_;
 
     uint64_t last_recording_frame_id_ = 0;
     std::chrono::steady_clock::time_point last_fps_update_time_;

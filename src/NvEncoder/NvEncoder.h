@@ -14,6 +14,7 @@
 #include <vector>
 #include <nvEncodeAPI.h>
 #include <stdint.h>
+#include <condition_variable>
 #include <mutex>
 #include <string>
 #include <iostream>
@@ -140,6 +141,24 @@ public:
     *  GetNextInputFrame() function.
     */
     virtual void EncodeFrame(std::vector<std::vector<uint8_t>> &vPacket, NV_ENC_PIC_PARAMS *pPicParams = nullptr,
+        std::vector<uint32_t>* retiredInputIndices = nullptr,
+        std::vector<uint64_t>* outputTimeStamps = nullptr,
+        uint64_t* bitstreamFetchDurationNs = nullptr,
+        NvEncoderEncodeFrameTiming* timing = nullptr);
+
+    /**
+    *  @brief  Experimental split-harvest submit path. This maps and submits
+    *  exactly one frame but does not retrieve any completed bitstreams.
+    */
+    virtual void SubmitFrameOnly(NV_ENC_PIC_PARAMS *pPicParams = nullptr,
+        NvEncoderEncodeFrameTiming* timing = nullptr);
+
+    /**
+    *  @brief  Experimental split-harvest retrieval path. This retrieves
+    *  encoded packets that are ready under the normal output-delay policy.
+    */
+    virtual void HarvestEncodedPackets(std::vector<std::vector<uint8_t>> &vPacket,
+        bool bOutputDelay = true,
         std::vector<uint32_t>* retiredInputIndices = nullptr,
         std::vector<uint64_t>* outputTimeStamps = nullptr,
         uint64_t* bitstreamFetchDurationNs = nullptr,
@@ -282,6 +301,12 @@ public:
     *  @brief This function returns the next input-frame slot index.
     */
     uint32_t GetNextInputFrameIndex() const { return m_nEncoderBuffer > 0 ? static_cast<uint32_t>(m_iToSend % m_nEncoderBuffer) : 0U; }
+
+    /**
+    *  @brief Waits until the next input slot is safe to reuse. A timeout of
+    *  zero waits indefinitely.
+    */
+    bool WaitForNextInputFrameAvailable(uint32_t timeoutMs = 0);
 protected:
 
     /**
@@ -401,6 +426,8 @@ private:
         uint64_t* bitstreamFetchDurationNs = nullptr,
         NvEncoderEncodeFrameTiming* timing = nullptr);
 
+    bool HasAvailableInputFrameLocked() const;
+
     /**
     *  @brief This is a private function which is used to initialize the bitstream buffers.
     *  This is only used in the encoding mode.
@@ -467,6 +494,8 @@ protected:
     int32_t m_iGot = 0;
     int32_t m_nEncoderBuffer = 0;
     int32_t m_nOutputDelay = 0;
+    mutable std::mutex m_stateMutex;
+    std::condition_variable m_stateCv;
 
 private:
     uint32_t m_nWidth;

@@ -37,6 +37,19 @@ constexpr int kDefaultNvencExtraOutputDelay = 3;
 constexpr int kMinNvencExtraOutputDelay = 1;
 constexpr int kMaxNvencExtraOutputDelay = 64;
 
+bool env_flag_enabled(const char* name)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return false;
+    }
+    return std::strcmp(value, "0") != 0 &&
+           std::strcmp(value, "false") != 0 &&
+           std::strcmp(value, "FALSE") != 0 &&
+           std::strcmp(value, "off") != 0 &&
+           std::strcmp(value, "OFF") != 0;
+}
+
 uint32_t clamp_bitrate(uint64_t value) {
     if (value < kMinQualityBitrate) {
         return static_cast<uint32_t>(kMinQualityBitrate);
@@ -778,6 +791,25 @@ EncoderHwWorker::EncoderHwWorker(
     pre_encoder_reference_writer_.Configure(pre_encoder_reference_capture_config_);
     pre_encoder_reference_async_enabled_ =
         pre_encoder_reference_capture_config_.enabled && !direct_input_enabled_;
+    if (split_harvest_requested()) {
+        if (direct_input_enabled_) {
+            std::cout << "[EncoderHwWorker] ORANGE_NVENC_SPLIT_HARVEST=1 ignored for "
+                      << threadName
+                      << " because direct NVENC input slot retirement is not split-harvest safe yet"
+                      << std::endl;
+        } else if (!shared_output_) {
+            std::cout << "[EncoderHwWorker] ORANGE_NVENC_SPLIT_HARVEST=1 ignored for "
+                      << threadName
+                      << " because this worker does not use SharedRecordingOutput"
+                      << std::endl;
+        } else {
+            split_harvest_enabled_ = true;
+            std::cout << "[EncoderHwWorker] ORANGE_NVENC_SPLIT_HARVEST=1 enabled for "
+                      << threadName
+                      << " (submit and bitstream harvest run on separate host threads)"
+                      << std::endl;
+        }
+    }
 
     ck(cudaSetDevice(encode_gpu_id_));
     ck(cudaStreamCreate(&m_stream));
@@ -922,7 +954,9 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_.pEnc->GetInitializeParams(&resolved_params);
 
         encoder_snapshot_.backend = "nvenc";
-        encoder_snapshot_.path = direct_input_enabled_ ? "hw_direct_input" : "hw";
+        encoder_snapshot_.path = direct_input_enabled_
+            ? "hw_direct_input"
+            : (split_harvest_enabled_ ? "hw_split_harvest" : "hw");
         encoder_snapshot_.codec = codec_;
         encoder_snapshot_.preset = preset_;
         encoder_snapshot_.tuning = tuning_;
@@ -1002,6 +1036,7 @@ EncoderHwWorker::EncoderHwWorker(
 
 EncoderHwWorker::~EncoderHwWorker()
 {
+    stop_split_harvest_thread();
     // Safeguard: Ensure resources are released if the worker is destroyed.
     if(is_recording_)
     {
@@ -1808,6 +1843,188 @@ int64_t EncoderHwWorker::oldest_pending_gop_age_ms() const
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - oldest->second.created_at).count();
 }
 
+bool EncoderHwWorker::split_harvest_requested() const
+{
+    return env_flag_enabled("ORANGE_NVENC_SPLIT_HARVEST");
+}
+
+void EncoderHwWorker::start_split_harvest_thread()
+{
+    if (!split_harvest_enabled_ || split_harvest_thread_.joinable()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(split_harvest_mutex_);
+        split_harvest_stop_ = false;
+        split_harvest_wake_ = false;
+        split_harvest_error_ = false;
+        split_harvest_error_message_.clear();
+    }
+    split_harvest_thread_ = std::thread(&EncoderHwWorker::split_harvest_loop, this);
+}
+
+void EncoderHwWorker::stop_split_harvest_thread()
+{
+    if (!split_harvest_thread_.joinable()) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(split_harvest_mutex_);
+        split_harvest_stop_ = true;
+        split_harvest_wake_ = true;
+    }
+    split_harvest_cv_.notify_all();
+    split_harvest_thread_.join();
+}
+
+void EncoderHwWorker::notify_split_harvest_thread()
+{
+    if (!split_harvest_enabled_) {
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(split_harvest_mutex_);
+        split_harvest_wake_ = true;
+    }
+    split_harvest_cv_.notify_one();
+}
+
+void EncoderHwWorker::set_split_harvest_error(const std::string& message)
+{
+    {
+        std::lock_guard<std::mutex> lock(split_harvest_mutex_);
+        split_harvest_error_ = true;
+        split_harvest_error_message_ = message;
+        split_harvest_wake_ = true;
+    }
+    split_harvest_cv_.notify_all();
+}
+
+bool EncoderHwWorker::split_harvest_failed(std::string* message_out)
+{
+    std::lock_guard<std::mutex> lock(split_harvest_mutex_);
+    if (!split_harvest_error_) {
+        return false;
+    }
+    if (message_out) {
+        *message_out = split_harvest_error_message_;
+    }
+    return true;
+}
+
+void EncoderHwWorker::publish_harvested_packets(std::vector<std::vector<uint8_t>> packets,
+                                                 std::vector<uint64_t> output_timestamps,
+                                                 uint64_t bitstream_fetch_duration_ns,
+                                                 const NvEncoderEncodeFrameTiming& encode_timing)
+{
+    if (packets.empty()) {
+        return;
+    }
+
+    RecordingOutputTimingSample timing_sample;
+    if (bitstream_fetch_duration_ns > 0) {
+        timing_sample.has_bitstream_fetch = true;
+        timing_sample.bitstream_fetch_ns = bitstream_fetch_duration_ns;
+    }
+    merge_nvenc_timing(&timing_sample, encode_timing);
+
+    std::lock_guard<std::mutex> lock(split_output_mutex_);
+    const uint64_t output_accounting_start_ns = steady_clock_now_ns();
+    const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
+        packets.size(),
+        output_timestamps,
+        std::nullopt,
+        "SplitHarvest");
+    const std::vector<uint64_t> completed_gops =
+        note_emitted_packets_and_collect_completed_gops(packet_sample_indices);
+    total_packets_ += packets.size();
+    const int64_t fallback_sample_index = last_recording_frame_id_ > 0
+        ? static_cast<int64_t>(last_recording_frame_id_ - 1)
+        : 0;
+    const uint64_t completion_gop_index = !packet_sample_indices.empty()
+        ? packet_sample_indices.back() / std::max<uint32_t>(1u, recording_gop_length_)
+        : static_cast<uint64_t>(std::max<int64_t>(0, fallback_sample_index)) /
+            std::max<uint32_t>(1u, recording_gop_length_);
+    const uint64_t output_accounting_end_ns = steady_clock_now_ns();
+    if (output_accounting_end_ns >= output_accounting_start_ns) {
+        timing_sample.encoder_output_accounting_ns +=
+            output_accounting_end_ns - output_accounting_start_ns;
+    }
+
+    buffer_encoded_packets(
+        packets,
+        packet_sample_indices,
+        fallback_sample_index,
+        completion_gop_index,
+        false,
+        std::nullopt,
+        has_recording_output_timing(timing_sample)
+            ? std::optional<RecordingOutputTimingSample>(timing_sample)
+            : std::nullopt);
+    for (uint64_t completed_gop_index : completed_gops) {
+        buffer_encoded_packets(
+            {},
+            {},
+            fallback_sample_index,
+            completed_gop_index,
+            true,
+            std::nullopt);
+    }
+    if (recording_strategy_config_.split_gop_enabled() &&
+        recording_strategy_config_.split_gop.writer_queue.fail_on_overflow &&
+        writer_queue_overflowed_) {
+        throw std::runtime_error("FFmpeg writer queue overflowed while split_gop recording is enabled");
+    }
+    if (recording_strategy_config_.split_gop_enabled() && pending_gop_overflowed_) {
+        throw std::runtime_error("split_gop pending GOP buffer overflowed");
+    }
+}
+
+void EncoderHwWorker::split_harvest_loop()
+{
+    try {
+        ck(cudaSetDevice(encode_gpu_id_));
+        while (true) {
+            {
+                std::unique_lock<std::mutex> lock(split_harvest_mutex_);
+                split_harvest_cv_.wait(lock, [this]() {
+                    return split_harvest_stop_ || split_harvest_wake_;
+                });
+                if (split_harvest_stop_) {
+                    break;
+                }
+                split_harvest_wake_ = false;
+            }
+
+            while (true) {
+                std::vector<std::vector<uint8_t>> packets;
+                std::vector<uint64_t> output_timestamps;
+                uint64_t bitstream_fetch_duration_ns = 0;
+                NvEncoderEncodeFrameTiming encode_timing;
+                encoder_.pEnc->HarvestEncodedPackets(
+                    packets,
+                    true,
+                    nullptr,
+                    &output_timestamps,
+                    &bitstream_fetch_duration_ns,
+                    &encode_timing);
+                if (packets.empty()) {
+                    break;
+                }
+                publish_harvested_packets(
+                    std::move(packets),
+                    std::move(output_timestamps),
+                    bitstream_fetch_duration_ns,
+                    encode_timing);
+            }
+        }
+    } catch (const std::exception& e) {
+        set_split_harvest_error(e.what());
+        std::cerr << "[" << threadName << "] split harvest exception: "
+                  << e.what() << std::endl;
+    }
+}
+
 nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
 {
     const SharedRecordingOutputStats shared_output_stats =
@@ -1818,6 +2035,7 @@ nlohmann::json EncoderHwWorker::build_encoder_snapshot_json() const
     nlohmann::json info;
     info["backend"] = encoder_snapshot_.backend;
     info["path"] = encoder_snapshot_.path;
+    info["split_harvest_enabled"] = split_harvest_enabled_;
     info["codec"] = encoder_snapshot_.codec;
     info["preset"] = encoder_snapshot_.preset;
     info["tuning"] = encoder_snapshot_.tuning;
@@ -2087,6 +2305,7 @@ void EncoderHwWorker::flush_and_close()
     }
     try {
         if (encoder_.pEnc) {
+            stop_split_harvest_thread();
             std::vector<uint32_t> retired_slots;
             std::vector<uint64_t> output_timestamps;
             uint64_t bitstream_fetch_duration_ns = 0;
@@ -2269,6 +2488,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
         }
         is_recording_ = true;
+        start_split_harvest_thread();
     }
 
     // If recording is globally disabled, skip processing but recycle resources.
@@ -2347,6 +2567,12 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             return oss.str();
         }());
         std::vector<uint64_t> output_timestamps;
+        if (split_harvest_enabled_) {
+            std::string harvest_error;
+            if (split_harvest_failed(&harvest_error)) {
+                throw std::runtime_error("NVENC split harvest failed: " + harvest_error);
+            }
+        }
         if (entry->preprocess_complete_event) {
             NVTX_SYNC_DYNAMIC(std::string("Encoder preprocess event stream wait enqueue"));
             const uint64_t preprocess_wait_start_ns = steady_clock_now_ns();
@@ -2429,6 +2655,14 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             {
                 NVTX_ENCODE_DYNAMIC(std::string("NVENC get next input frame"));
                 const uint64_t get_next_input_start_ns = steady_clock_now_ns();
+                if (split_harvest_enabled_) {
+                    while (!encoder_.pEnc->WaitForNextInputFrameAvailable(100)) {
+                        std::string harvest_error;
+                        if (split_harvest_failed(&harvest_error)) {
+                            throw std::runtime_error("NVENC split harvest failed: " + harvest_error);
+                        }
+                    }
+                }
                 encoderInputFrame = encoder_.pEnc->GetNextInputFrame();
                 const uint64_t get_next_input_end_ns = steady_clock_now_ns();
                 if (get_next_input_end_ns >= get_next_input_start_ns) {
@@ -2469,13 +2703,20 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
             {
                 const uint64_t encode_frame_start_ns = steady_clock_now_ns();
-                encoder_.pEnc->EncodeFrame(
-                    encoder_.vPacket,
-                    pic_params_ptr,
-                    nullptr,
-                    &output_timestamps,
-                    &bitstream_fetch_duration_ns,
-                    &encode_timing);
+                if (split_harvest_enabled_) {
+                    encoder_.vPacket.clear();
+                    encoder_.pEnc->SubmitFrameOnly(
+                        pic_params_ptr,
+                        &encode_timing);
+                } else {
+                    encoder_.pEnc->EncodeFrame(
+                        encoder_.vPacket,
+                        pic_params_ptr,
+                        nullptr,
+                        &output_timestamps,
+                        &bitstream_fetch_duration_ns,
+                        &encode_timing);
+                }
                 const uint64_t encode_frame_end_ns = steady_clock_now_ns();
                 if (encode_frame_end_ns >= encode_frame_start_ns) {
                     timing_sample.nvenc_encode_frame_total_ns +=
@@ -2489,61 +2730,100 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
         }
         merge_nvenc_timing(&timing_sample, encode_timing);
 
-        const uint64_t output_accounting_start_ns = steady_clock_now_ns();
-        note_submitted_frame(entry->gop_index, entry->is_last_frame_in_gop);
-        size_t packets_generated = encoder_.vPacket.size();
-        const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
-            packets_generated,
-            output_timestamps,
-            zero_based_recording_frame,
-            "EncodeFrame");
-        const std::vector<uint64_t> completed_gops =
-            note_emitted_packets_and_collect_completed_gops(packet_sample_indices);
-        total_packets_ += packets_generated;
-
         const std::optional<RecordingMetadataRow> metadata_row = RecordingMetadataRow{
             entry->recording_frame_id,
             entry->timestamp,
             entry->timestamp_sys};
-        const uint64_t output_accounting_end_ns = steady_clock_now_ns();
-        if (output_accounting_end_ns >= output_accounting_start_ns) {
-            timing_sample.encoder_output_accounting_ns +=
-                output_accounting_end_ns - output_accounting_start_ns;
-        }
-        buffer_encoded_packets(
-            encoder_.vPacket,
-            packet_sample_indices,
-            static_cast<int64_t>(zero_based_recording_frame),
-            entry->gop_index,
-            false,
-            metadata_row,
-            has_recording_output_timing(timing_sample)
-                ? std::optional<RecordingOutputTimingSample>(timing_sample)
-                : std::nullopt);
-        for (uint64_t completed_gop_index : completed_gops) {
+
+        size_t packets_generated = 0;
+        if (split_harvest_enabled_) {
+            std::lock_guard<std::mutex> lock(split_output_mutex_);
+            const uint64_t output_accounting_start_ns = steady_clock_now_ns();
+            note_submitted_frame(entry->gop_index, entry->is_last_frame_in_gop);
+            resolve_output_sample_indices(
+                0,
+                {},
+                zero_based_recording_frame,
+                "SplitSubmit");
+            const uint64_t output_accounting_end_ns = steady_clock_now_ns();
+            if (output_accounting_end_ns >= output_accounting_start_ns) {
+                timing_sample.encoder_output_accounting_ns +=
+                    output_accounting_end_ns - output_accounting_start_ns;
+            }
             buffer_encoded_packets(
                 {},
                 {},
                 static_cast<int64_t>(zero_based_recording_frame),
-                completed_gop_index,
-                true,
-                std::nullopt);
-        }
-        if (recording_strategy_config_.split_gop_enabled() &&
-            recording_strategy_config_.split_gop.writer_queue.fail_on_overflow &&
-            writer_queue_overflowed_) {
-            throw std::runtime_error("FFmpeg writer queue overflowed while split_gop recording is enabled");
-        }
-        if (recording_strategy_config_.split_gop_enabled() && pending_gop_overflowed_) {
-            throw std::runtime_error("split_gop pending GOP buffer overflowed");
-        }
+                entry->gop_index,
+                false,
+                metadata_row,
+                has_recording_output_timing(timing_sample)
+                    ? std::optional<RecordingOutputTimingSample>(timing_sample)
+                    : std::nullopt);
+            if (recording_strategy_config_.split_gop_enabled() &&
+                recording_strategy_config_.split_gop.writer_queue.fail_on_overflow &&
+                writer_queue_overflowed_) {
+                throw std::runtime_error("FFmpeg writer queue overflowed while split_gop recording is enabled");
+            }
+            if (recording_strategy_config_.split_gop_enabled() && pending_gop_overflowed_) {
+                throw std::runtime_error("split_gop pending GOP buffer overflowed");
+            }
+            last_recording_frame_id_ = std::max<uint64_t>(
+                last_recording_frame_id_,
+                zero_based_recording_frame + 1);
+            notify_split_harvest_thread();
+        } else {
+            const uint64_t output_accounting_start_ns = steady_clock_now_ns();
+            note_submitted_frame(entry->gop_index, entry->is_last_frame_in_gop);
+            packets_generated = encoder_.vPacket.size();
+            const std::vector<uint64_t> packet_sample_indices = resolve_output_sample_indices(
+                packets_generated,
+                output_timestamps,
+                zero_based_recording_frame,
+                "EncodeFrame");
+            const std::vector<uint64_t> completed_gops =
+                note_emitted_packets_and_collect_completed_gops(packet_sample_indices);
+            total_packets_ += packets_generated;
+            const uint64_t output_accounting_end_ns = steady_clock_now_ns();
+            if (output_accounting_end_ns >= output_accounting_start_ns) {
+                timing_sample.encoder_output_accounting_ns +=
+                    output_accounting_end_ns - output_accounting_start_ns;
+            }
+            buffer_encoded_packets(
+                encoder_.vPacket,
+                packet_sample_indices,
+                static_cast<int64_t>(zero_based_recording_frame),
+                entry->gop_index,
+                false,
+                metadata_row,
+                has_recording_output_timing(timing_sample)
+                    ? std::optional<RecordingOutputTimingSample>(timing_sample)
+                    : std::nullopt);
+            for (uint64_t completed_gop_index : completed_gops) {
+                buffer_encoded_packets(
+                    {},
+                    {},
+                    static_cast<int64_t>(zero_based_recording_frame),
+                    completed_gop_index,
+                    true,
+                    std::nullopt);
+            }
+            if (recording_strategy_config_.split_gop_enabled() &&
+                recording_strategy_config_.split_gop.writer_queue.fail_on_overflow &&
+                writer_queue_overflowed_) {
+                throw std::runtime_error("FFmpeg writer queue overflowed while split_gop recording is enabled");
+            }
+            if (recording_strategy_config_.split_gop_enabled() && pending_gop_overflowed_) {
+                throw std::runtime_error("split_gop pending GOP buffer overflowed");
+            }
 
-        if (!shared_output_) {
-            write_metadata_hw(writer_.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
+            if (!shared_output_) {
+                write_metadata_hw(writer_.metadata, entry->recording_frame_id, entry->timestamp, entry->timestamp_sys);
+            }
+            last_recording_frame_id_ = std::max<uint64_t>(
+                last_recording_frame_id_,
+                zero_based_recording_frame + 1);
         }
-        last_recording_frame_id_ = std::max<uint64_t>(
-            last_recording_frame_id_,
-            zero_based_recording_frame + 1);
 
         if (packets_generated > 2) {
             std::cout << "[PERF INFO] " << threadName

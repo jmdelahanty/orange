@@ -27,6 +27,10 @@ from the full-frame recording encode/output path:
   around `11.5 ms p95` in the full encode run.
 - When those full-frame HW encoder threads disappear, YOLO launch latency and
   `capture_to_detect_done` p95 collapse.
+- The in-process split-harvest experiment moved `nvEncLockBitstream` off the
+  encoder submit path and reduced submit p95 from about `11.85 ms` to about
+  `0.31 ms`, but YOLO `cudaLaunchKernel_v7000` and `pthread_rwlock_rdlock`
+  p95 remained about `8.3-8.4 ms`.
 
 The short version:
 
@@ -178,13 +182,10 @@ Option A: split NVENC submit and harvest in-process.
   calls `nvEncEncodePicture`, enqueues an output token, and returns quickly.
 - Harvest thread consumes output tokens in submission order and calls
   `nvEncLockBitstream`, copies packets, unlocks/unmaps, and retires resources.
-- Expected result: helper encoder submit p95 and encoder slow-frame counts
-  improve.
-- Expected risk: YOLO p95 may improve little, because the depth-8 experiment
-  already hid most average `nvEncLockBitstream` wait without reducing YOLO
-  launch p95.
-- Value: high as an architectural discriminator. If YOLO remains blocked in
-  libcuda after this, the case for process isolation becomes much stronger.
+- Status: implemented behind `ORANGE_NVENC_SPLIT_HARVEST=1`.
+- Result: encoder submit p95 improved as expected, but YOLO p95 did not move.
+- Value: high as an architectural discriminator. It shows the remaining YOLO
+  stall is not just a bad submit/harvest call-site structure.
 
 Option B: nonblocking/polling NVENC harvest in-process.
 
@@ -966,60 +967,91 @@ Interpretation:
   problem is likely broader same-process CUDA/NVENC driver contention rather
   than only the blocking location of `nvEncLockBitstream`.
 
+### Split-harvest experiment result
+
+Baseline run:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_04_24_23_32_32`
+- `/tmp/orange_yolo_detach_nsys_20260424_233157.sqlite`
+
+Split-harvest run:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_04_24_23_39_55`
+- `/tmp/orange_yolo_detach_nsys_20260424_233912.sqlite`
+- `ORANGE_NVENC_SPLIT_HARVEST=1`
+- `recording_snapshot.json` confirmed `path = hw_split_harvest` and
+  `split_harvest_enabled = true`.
+
+Mechanical result:
+
+- `NVENC EncodeFrame p95` on the original submit+harvest path was about
+  `11.85 ms`.
+- `NVENC SubmitFrameOnly p95` on the split path was about `0.31 ms`.
+- Full-frame recording remained healthy at about `100 fps`.
+- There were no camera drops, no preprocess drops, no encoder failures, and no
+  helper fallback.
+
+Negative result:
+
+- `nvEncLockBitstream p95` stayed about `11.67 -> 11.69 ms`, now on the harvest
+  thread.
+- YOLO `cudaLaunchKernel_v7000 p95` stayed about `8.29 -> 8.29 ms`.
+- YOLO `pthread_rwlock_rdlock p95` stayed about `8.44 -> 8.45 ms`.
+- `Cam2010095 cpu_preprocess_ms p95` stayed about `7.53 -> 7.60 ms`.
+- `Cam2010096 cpu_preprocess_ms p95` stayed about `8.63 -> 8.64 ms`.
+- The actual `mono_to_yolo_optimized` GPU kernel stayed about `0.073 ms p95`.
+
+Interpretation:
+
+- Split harvest fixed the encoder worker submit-path design.
+- It did not fix the cross-subsystem contention visible to YOLO.
+- The remaining issue is likely same-process CUDA/NVENC runtime or driver-lock
+  contention, because moving the blocking harvest to another in-process thread
+  did not reduce YOLO's libcuda `pthread_rwlock_rdlock` tail.
+- Further in-process submit/harvest tweaks are now lower signal than a process
+  isolation experiment.
+
 ## Recommended Next Plan
 
-1. Implement the in-process split-submit/harvest experiment as a bounded
-discriminator.
+1. Prioritize process isolation for full-frame encode/output.
 
 Reason:
 
-- normal-depth helper-route substage instrumentation shows helper-route
-  `nvEncLockBitstream` is the measured p95 stall,
-- depth `8` shows extra buffering can hide much of the mean lock wait but does
-  not fix YOLO p95,
-- therefore split harvest is useful mainly to answer whether moving the lock
-  off the submit path is enough, not because it is expected to be the final
-  architecture.
+- split harvest reduced encoder submit p95 from about `11.85 ms` to about
+  `0.31 ms`,
+- the expensive `nvEncLockBitstream` work still exists in-process,
+- YOLO `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, and
+  `cpu_preprocess_ms` p95 did not improve,
+- therefore the remaining detect p95 tail is probably not caused by the
+  encoder worker's submit call-site structure.
 
-Target architecture:
-
-```text
-Encoder submit worker:
-  wait preprocess-ready
-  map input
-  call nvEncEncodePicture
-  enqueue output token
-  return quickly
-
-Encoder harvest worker:
-  consume output tokens in submission order
-  call nvEncLockBitstream
-  copy packet
-  unlock bitstream
-  unmap/retire input slot
-  push packet to SharedRecordingOutput / FFmpegWriter
-```
-
-Guard it behind an experimental env flag, for example:
+Smallest useful process-boundary experiment:
 
 ```text
-ORANGE_NVENC_SPLIT_HARVEST=1
+Process A:
+  acquisition + YOLO/TensorRT latency-critical path
+
+Process B:
+  full-frame split-GOP encode/harvest/output path
 ```
 
-Keep the first version narrow:
+Compare:
 
-- current low-latency/no-B-frame path only,
-- strict submission-order output harvest,
-- bounded in-flight token queue,
-- full-frame `EncoderHwWorker` only,
-- preserve split-GOP full-frame MP4 output and existing crop artifacts.
+- YOLO p95 with no full-frame encode,
+- YOLO p95 with same-process encode,
+- YOLO p95 with separate-process encode,
+- YOLO p95 with separate-process encode on another GPU where possible.
 
-Expected outcome:
+Interpretation:
 
-- helper encoder submit p95 and encoder slow-frame count improve,
-- helper `nvEncLockBitstream` wait moves to the harvest thread,
-- YOLO p95 may improve little or not at all if the dominant issue is
-  same-process CUDA/NVENC driver contention.
+- separate process helps: process-level CUDA/NVENC runtime lock coupling is a
+  major factor,
+- separate process does not help: contention is mostly below the process
+  boundary, such as kernel driver, GPU/NVENC hardware, PCIe/NUMA fabric, or CPU
+  scheduling,
+- separate GPU helps: shared GPU or local GPU fabric pressure matters,
+- separate GPU does not help: global driver/runtime/scheduling remains the
+  likely cause.
 
 Success criteria:
 
@@ -1028,7 +1060,6 @@ Success criteria:
 - zero camera drops,
 - zero preprocess drops,
 - zero helper fallback,
-- encoder submit path p95 drops materially,
 - YOLO `cudaLaunchKernel_v7000`, `pthread_rwlock_rdlock`, and
   `cpu_preprocess_ms` p95 drop materially.
 
@@ -1036,18 +1067,17 @@ Stop criteria:
 
 - artifact correctness regresses,
 - throughput drops or queues grow without bound,
-- YOLO p95 remains around the current `8 ms` driver-lock tail after encoder
-  submit p95 improves.
+- YOLO p95 remains around the current `8 ms` driver-lock tail after the full
+  encode/output process boundary is introduced.
 
-2. If split harvest improves encoder stats but not YOLO, prioritize process
-isolation.
+2. Keep split harvest as an experimental architecture checkpoint, not a proven
+latency fix.
 
-Process isolation becomes the stronger architecture when:
+Use it when we need to:
 
-- `nvEncLockBitstream` remains expensive somewhere in the recording process,
-- moving the lock to another in-process thread does not reduce YOLO
-  `cudaLaunchKernel` / `pthread_rwlock_rdlock` p95,
-- and full-frame split-GOP recording must remain active.
+- keep encoder submit from blocking on bitstream harvest,
+- isolate encoder-worker accounting from harvest latency,
+- compare in-process versus out-of-process harvest behavior.
 
 3. Investigate YOLO launch exposure reduction in parallel or next.
 
@@ -1117,6 +1147,13 @@ Preprocess-only diagnostic:
 ```bash
 cd /home/jeremy/orange-gop-split-a16
 ORANGE_GUI_RECORDING_SINK_MODE=preprocess_only ORANGE_CROP_PREVIEW_DISABLE=1 ORANGE_DISPLAY_PREVIEW_MAX_FPS=1 ./run_yolo_detach_nsys.sh
+```
+
+Split-harvest diagnostic:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+ORANGE_CROP_PREVIEW_DISABLE=1 ORANGE_DISPLAY_PREVIEW_MAX_FPS=1 ORANGE_NVENC_SPLIT_HARVEST=1 ./run_yolo_detach_nsys.sh
 ```
 
 Important caveat:

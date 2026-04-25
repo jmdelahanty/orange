@@ -29,6 +29,13 @@ current explanation is in-process CUDA/NVENC driver contention from the
 full-frame recording encode/output path, especially full-frame
 `HW_Encoder_Cam_ nvEncLockBitstream`.
 
+The in-process split-harvest experiment is now complete. It moved full-frame
+bitstream harvest off the encoder submit path and reduced encoder submit p95
+from about `11.85 ms` to about `0.31 ms`, but YOLO `cudaLaunchKernel_v7000`,
+`pthread_rwlock_rdlock`, and `cpu_preprocess_ms` p95 were essentially
+unchanged. That is a useful negative result: the remaining detect tail is not
+just a bad submit/harvest call-site structure.
+
 Implications:
 
 - Crop-side staging and crop preview are no longer the main detect bottleneck.
@@ -37,7 +44,7 @@ Implications:
 - Stream priority/nonblocking regressed fairness and should not be the next
   mainline direction.
 - The next architecture work should isolate full-frame recording encode/output
-  from the YOLO submission path while preserving the split-GOP full-frame MP4
+  across a process boundary while preserving the split-GOP full-frame MP4
   artifact.
 - The fix must not assume one GPU or one NVENC session can carry the full
   `4512x4512 Mono8 @ 100 fps` recording stream. Multi-GPU split-GOP recording
@@ -554,11 +561,14 @@ Next useful architecture tests:
 - fundamental versus not fundamental:
   - Linux NVENC output completion fundamentally requires synchronous
     `nvEncLockBitstream` or a `doNotWait` polling state machine,
-  - it is not fundamental that this harvest happens on the encoder submit
-    path or that YOLO shares one process-level CUDA/NVENC runtime contention
-    domain with bulk recording,
-- non-multiprocess alternatives remain worth understanding:
-  - split NVENC submit from harvest in-process,
+  - split harvest proved it is not fundamental that this harvest happens on
+    the encoder submit path,
+  - split harvest also showed that keeping the harvest in the same process is
+    not enough to reduce YOLO p95,
+  - it is not fundamental that YOLO shares one process-level CUDA/NVENC runtime
+    contention domain with bulk recording,
+- non-multiprocess alternatives are now lower priority but remain worth
+  understanding:
   - poll `nvEncLockBitstream` with `doNotWait`,
   - reduce YOLO's exposed raw CUDA launches with CUDA graph or TensorRT
     integrated preprocessing,
@@ -566,11 +576,9 @@ Next useful architecture tests:
   - test cleaner pure-offload GPU placement,
 - reserve `ORANGE_NSYS_HEAVY=1 ./run_yolo_detach_nsys.sh` for cases where the
   light trace no longer exposes the driver/runtime wait callchain,
-- next bounded experiment: split encode submit from bitstream harvest behind an
-  env flag, expecting encoder submit p95 to improve and treating YOLO p95 as
-  the deciding metric,
-- consider process isolation for full-frame recording if in-process
-  CUDA/NVENC driver contention remains the dominant effect.
+- next bounded experiment: process isolation for full-frame recording
+  encode/harvest/output, with YOLO `cudaLaunchKernel_v7000`,
+  `pthread_rwlock_rdlock`, and `cpu_preprocess_ms` p95 as the deciding metrics.
 
 ### Phase 3: Revisit Pose Placement
 
@@ -612,6 +620,8 @@ Only after Phases 1-3 are measured:
 - [x] Add full-frame encoder/output timing and NVTX around NVENC map, encode,
       bitstream lock/copy/unlock, unmap, shared-output buffering, and FFmpeg
       enqueue/write.
+- [x] Add experimental in-process NVENC split submit/harvest path and measure
+      it as a discriminator.
 - [x] Re-run the two-camera `100 fps` benchmark and compare:
       - `capture_to_detect_done`
       - `worker_start_to_detect_done`
