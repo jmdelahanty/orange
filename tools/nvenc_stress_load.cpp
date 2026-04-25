@@ -45,6 +45,11 @@ struct Options {
     bool monochrome = true;
     bool pace = true;
     std::string pattern = "solid";
+    std::string raw_file_path;
+    uint32_t raw_pitch = 0;
+    uint64_t raw_frame_bytes = 0;
+    uint32_t raw_cache_frames = 16;
+    std::string bitstream_out_path;
     std::string csv_path;
 };
 
@@ -113,8 +118,13 @@ std::string lower_ascii(std::string value)
         << "  --max-bitrate-bps <int>     Max bitrate. Default 150000000.\n"
         << "  --vbv-buffer-size <int>     VBV buffer size. Default 150000000.\n"
         << "  --extra-output-delay <int>  NvEncoder extra output delay. Default 3.\n"
-        << "  --pattern <solid|host-noise>\n"
-        << "                              Input pattern. solid uses device memset; host-noise copies one of several pinned random NV12 frames. Default solid.\n"
+        << "  --pattern <solid|host-noise|raw-file>\n"
+        << "                              Input pattern. solid uses device memset; host-noise copies one of several pinned random NV12 frames; raw-file loops cached NV12 frames. Default solid.\n"
+        << "  --raw-file <path>           Required for --pattern raw-file. Raw NV12 frame dump.\n"
+        << "  --raw-pitch <int>           Source pitch for raw-file frames. Default width.\n"
+        << "  --raw-frame-bytes <int>     Source bytes per raw-file frame. Default pitch * height * 3 / 2.\n"
+        << "  --raw-cache-frames <int>    Max raw frames to cache in pinned host memory. Default 16.\n"
+        << "  --bitstream-out <path>      Optional raw elementary stream output.\n"
         << "  --csv <path>                Optional per-frame timing CSV.\n"
         << "  --monochrome                Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome             Disable monochrome encoding.\n"
@@ -202,6 +212,16 @@ Options parse_options(int argc, char** argv)
             options.extra_output_delay = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--pattern") {
             options.pattern = lower_ascii(consume(arg.c_str()));
+        } else if (arg == "--raw-file") {
+            options.raw_file_path = consume(arg.c_str());
+        } else if (arg == "--raw-pitch") {
+            options.raw_pitch = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--raw-frame-bytes") {
+            options.raw_frame_bytes = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--raw-cache-frames") {
+            options.raw_cache_frames = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--bitstream-out") {
+            options.bitstream_out_path = consume(arg.c_str());
         } else if (arg == "--csv") {
             options.csv_path = consume(arg.c_str());
         } else if (arg == "--monochrome") {
@@ -235,8 +255,35 @@ Options parse_options(int argc, char** argv)
     if (options.extra_output_delay > 64) {
         throw std::runtime_error("--extra-output-delay must be <= 64");
     }
-    if (options.pattern != "solid" && options.pattern != "host-noise") {
-        throw std::runtime_error("--pattern must be solid or host-noise");
+    if (options.pattern != "solid" &&
+        options.pattern != "host-noise" &&
+        options.pattern != "raw-file") {
+        throw std::runtime_error("--pattern must be solid, host-noise, or raw-file");
+    }
+    if (options.raw_pitch == 0) {
+        options.raw_pitch = options.width;
+    }
+    if (options.raw_frame_bytes == 0) {
+        options.raw_frame_bytes =
+            static_cast<uint64_t>(options.raw_pitch) *
+            static_cast<uint64_t>(options.height) * 3ULL / 2ULL;
+    }
+    if (options.pattern == "raw-file") {
+        if (options.raw_file_path.empty()) {
+            throw std::runtime_error("--pattern raw-file requires --raw-file");
+        }
+        if (options.raw_pitch < options.width) {
+            throw std::runtime_error("--raw-pitch must be >= --width");
+        }
+        const uint64_t minimum_frame_bytes =
+            static_cast<uint64_t>(options.raw_pitch) *
+            static_cast<uint64_t>(options.height) * 3ULL / 2ULL;
+        if (options.raw_frame_bytes < minimum_frame_bytes) {
+            throw std::runtime_error("--raw-frame-bytes is smaller than pitch * height * 3 / 2");
+        }
+        if (options.raw_cache_frames == 0) {
+            throw std::runtime_error("--raw-cache-frames must be positive");
+        }
     }
     return options;
 }
@@ -441,6 +488,7 @@ std::vector<PinnedHostFrame> make_host_noise_frames(uint32_t width,
 
 void copy_host_frame_to_input(CUcontext cu_context,
                               const uint8_t* host_frame,
+                              uint32_t host_pitch,
                               const NvEncInputFrame& frame,
                               uint32_t width,
                               uint32_t height,
@@ -449,7 +497,7 @@ void copy_host_frame_to_input(CUcontext cu_context,
     NvEncoderCuda::CopyToDeviceFrame(
         cu_context,
         const_cast<uint8_t*>(host_frame),
-        width,
+        host_pitch,
         reinterpret_cast<CUdeviceptr>(frame.inputPtr),
         frame.pitch,
         static_cast<int>(width),
@@ -460,6 +508,45 @@ void copy_host_frame_to_input(CUcontext cu_context,
         frame.numChromaPlanes,
         false,
         reinterpret_cast<CUstream>(stream));
+}
+
+std::vector<PinnedHostFrame> load_raw_file_frames(const std::string& path,
+                                                  uint64_t frame_bytes,
+                                                  uint32_t max_frames)
+{
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+        throw std::runtime_error("Failed to open raw input file: " + path);
+    }
+    if (frame_bytes == 0 ||
+        frame_bytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        throw std::runtime_error("Invalid raw frame byte count");
+    }
+
+    std::vector<PinnedHostFrame> frames;
+    frames.reserve(max_frames);
+    const size_t bytes = static_cast<size_t>(frame_bytes);
+    for (uint32_t frame_idx = 0; frame_idx < max_frames; ++frame_idx) {
+        PinnedHostFrame frame;
+        check_cuda(cudaHostAlloc(reinterpret_cast<void**>(&frame.ptr), bytes, cudaHostAllocDefault),
+                   "cudaHostAlloc(raw-file frame)");
+        frame.bytes = bytes;
+
+        input.read(reinterpret_cast<char*>(frame.ptr), static_cast<std::streamsize>(bytes));
+        const std::streamsize read_count = input.gcount();
+        if (read_count == 0 && input.eof()) {
+            break;
+        }
+        if (read_count != static_cast<std::streamsize>(bytes)) {
+            throw std::runtime_error("Raw input ended with a partial frame: " + path);
+        }
+        frames.push_back(std::move(frame));
+    }
+
+    if (frames.empty()) {
+        throw std::runtime_error("Raw input contained no complete frames: " + path);
+    }
+    return frames;
 }
 
 void write_csv_header(std::ofstream& csv)
@@ -566,6 +653,9 @@ void print_summary(const Options& options,
     if (!options.csv_path.empty()) {
         std::cout << "  csv=" << options.csv_path << "\n";
     }
+    if (!options.bitstream_out_path.empty()) {
+        std::cout << "  bitstream_out=" << options.bitstream_out_path << "\n";
+    }
 }
 
 }  // namespace
@@ -636,10 +726,32 @@ int main(int argc, char** argv)
                       << std::endl;
         }
 
+        std::vector<PinnedHostFrame> raw_file_frames;
+        if (options.pattern == "raw-file") {
+            raw_file_frames = load_raw_file_frames(
+                options.raw_file_path,
+                options.raw_frame_bytes,
+                options.raw_cache_frames);
+            std::cout << "NVENC raw-file frames prepared"
+                      << " path=" << options.raw_file_path
+                      << " count=" << raw_file_frames.size()
+                      << " pitch=" << options.raw_pitch
+                      << " bytes_each=" << raw_file_frames.front().bytes
+                      << std::endl;
+        }
+
         std::vector<FrameSample> samples;
         samples.reserve(options.duration_seconds > 0
             ? static_cast<size_t>(options.duration_seconds) * std::max<uint32_t>(1, options.fps)
             : 4096);
+
+        std::ofstream bitstream_out;
+        if (!options.bitstream_out_path.empty()) {
+            bitstream_out.open(options.bitstream_out_path, std::ios::binary | std::ios::trunc);
+            if (!bitstream_out) {
+                throw std::runtime_error("Failed to open bitstream output: " + options.bitstream_out_path);
+            }
+        }
 
         std::vector<std::vector<uint8_t>> packets;
         const auto run_start = std::chrono::steady_clock::now();
@@ -670,6 +782,18 @@ int main(int argc, char** argv)
                 copy_host_frame_to_input(
                     cu_context,
                     host_frame.ptr,
+                    options.width,
+                    *input_frame,
+                    options.width,
+                    options.height,
+                    stream);
+            } else if (options.pattern == "raw-file") {
+                const PinnedHostFrame& raw_frame =
+                    raw_file_frames[frame_index % raw_file_frames.size()];
+                copy_host_frame_to_input(
+                    cu_context,
+                    raw_frame.ptr,
+                    options.raw_pitch,
                     *input_frame,
                     options.width,
                     options.height,
@@ -712,6 +836,15 @@ int main(int argc, char** argv)
             sample.returned_packets = static_cast<uint32_t>(packets.size());
             for (const auto& packet : packets) {
                 sample.returned_bytes += packet.size();
+                if (bitstream_out && !packet.empty()) {
+                    bitstream_out.write(
+                        reinterpret_cast<const char*>(packet.data()),
+                        static_cast<std::streamsize>(packet.size()));
+                }
+            }
+            if (bitstream_out && !bitstream_out) {
+                throw std::runtime_error("Failed while writing bitstream output: " +
+                                         options.bitstream_out_path);
             }
             total_packets += sample.returned_packets;
             total_bytes += sample.returned_bytes;
@@ -750,6 +883,18 @@ int main(int argc, char** argv)
         total_packets += packets.size();
         for (const auto& packet : packets) {
             total_bytes += packet.size();
+            if (bitstream_out && !packet.empty()) {
+                bitstream_out.write(
+                    reinterpret_cast<const char*>(packet.data()),
+                    static_cast<std::streamsize>(packet.size()));
+            }
+        }
+        if (bitstream_out) {
+            bitstream_out.flush();
+            if (!bitstream_out) {
+                throw std::runtime_error("Failed while flushing bitstream output: " +
+                                         options.bitstream_out_path);
+            }
         }
         encoder.DestroyEncoder();
         check_cuda(cudaStreamDestroy(stream), "cudaStreamDestroy");

@@ -136,8 +136,17 @@ crop/pose/track latency solved.
 
 - Automated decoded-frame entropy/black-frame sanity checking is now part of
   headless experiment validation via `require_valid_video_content`.
-- Start the process-isolated full-frame encode/output experiment. The key
-  discriminator is whether YOLO `cpu_pre_sync_ms` / CUDA launch p95 drops while
-  valid two-camera PTP split-GOP recording remains active.
+- Run the real-frame external NVENC discriminator using
+  `nvenc_stress_load --pattern raw-file` against a
+  `pre_encoder_reference_capture` dump. The key discriminator is whether YOLO
+  `cpu_pre_sync_ms` / CUDA launch p95 stays near the preprocess-only fast path
+  while Process B encodes real dish-frame content outside the analytics
+  process.
+- The first same-GPU real-frame external run on 2026-04-25 stayed near the
+  preprocess-only fast path for YOLO CPU submission
+  (`cpu_preprocess_ms p95 = 0.0149 ms`, `cpu_pre_sync_ms p95 = 0.0776 ms`)
+  while Process B wrote about `150.4 Mbps`; next implementation work is the
+  live external-recorder detach prototype with CUDA IPC or an exportable detach
+  ring.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

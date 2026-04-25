@@ -257,6 +257,40 @@ Interpretation:
   recorder. The current synthetic process does not yet reproduce the long
   Linux NVENC harvest waits seen in the GUI path.
 
+Real-frame external load status:
+
+- `tools/nvenc_stress_load.cpp` now supports `--pattern raw-file` so Process B
+  can loop cached NV12 frames captured from `pre_encoder_reference_capture`.
+- This is still not the final live detach path. It does not pass camera-owned
+  GPU memory across a process boundary. It does, however, replace synthetic
+  solid/noise input with real pre-encoder dish frames and can optionally write
+  an elementary bitstream via `--bitstream-out`.
+- Use this as the next low-risk discriminator before implementing CUDA IPC:
+  if real-frame external load still keeps YOLO near the preprocess-only fast
+  path, process isolation remains promising; if it regresses YOLO toward the
+  in-process GUI tail, real content/output pressure is enough to contend below
+  the process boundary.
+- First same-GPU real-frame external run on 2026-04-25 used the existing
+  `2010096` pre-encoder NV12 dump
+  `2026_04_09_preenc_smoke_2010096_a6000_retry/.../Cam2010096_preenc_ref.bin`
+  with `4512x4512`, pitch `4608`, 16 cached frames, `60 fps`, and elementary
+  bitstream output.
+- Result:
+  - Process A remained healthy at about `100 fps`, no camera drops, and no
+    frame-ID gaps.
+  - YOLO `cpu_preprocess_ms p95 = 0.0149 ms` and
+    `cpu_pre_sync_ms p95 = 0.0776 ms`, essentially unchanged from the
+    preprocess-only baseline (`0.0165 ms` and `0.0798 ms`).
+  - `acquisition_to_detect_done_ms p95` rose from `3.4894 ms` to `4.4122 ms`.
+    That is a small shared-GPU/fabric cost, not the `6-8 ms` same-process
+    CUDA/NVENC launch stall.
+  - External NVENC wrote about `150.4 Mbps`; `nvEncLockBitstream p95` stayed
+    only `0.0029 ms`, with `encode_total_ms p95 = 0.1886 ms`.
+- Interpretation: real-frame external NVENC on the same GPU still does not
+  reproduce the in-process YOLO host-side stall. This strengthens the
+  process-boundary hypothesis, with the caveat that this is cached raw-file
+  input and not yet live CUDA IPC / split-GOP recorder handoff.
+
 Candidate command shape:
 
 ```bash
@@ -267,6 +301,25 @@ Candidate command shape:
   --nvenc-duration 45 \
   --nvenc-pattern host-noise
 ```
+
+Real-frame command shape:
+
+```bash
+./scripts/run_process_isolation_discriminator.sh \
+  --gpu-id 5 \
+  --nvenc-gpu-id 5 \
+  --nvenc-fps 60 \
+  --nvenc-duration 45 \
+  --nvenc-pattern raw-file \
+  --nvenc-raw-file /path/to/Cam2010096_preenc_ref.bin \
+  --nvenc-raw-pitch 4608 \
+  --nvenc-raw-frame-bytes 31186944 \
+  --nvenc-raw-cache-frames 60 \
+  --nvenc-bitstream-out /tmp/orange_external_real_frame.hevc
+```
+
+Use the `pitch` and `frame_size` values from the matching
+`Cam<serial>_preenc_ref.json`; do not assume pitch equals width.
 
 Required outputs:
 
@@ -562,6 +615,8 @@ Phase 0:
 - [x] Validate two-camera GUI PTP/AQ-off real split-GOP baseline.
 - [x] Add decoded-frame entropy / black-frame sanity check to benchmark
       validation.
+- [x] Run same-GPU external real-frame NVENC load from cached
+      `pre_encoder_reference_capture` frames.
 
 Phase 1:
 

@@ -8,7 +8,7 @@ Usage:
 
 Runs the first process-isolation discriminator:
   Process A: headless real-YOLO analytics with preprocess_only recording.
-  Process B: separate synthetic NVENC stress process.
+  Process B: separate NVENC stress process, using synthetic or raw-file input.
 
 Options:
   --spec <path>              Process A experiment spec.
@@ -26,8 +26,16 @@ Options:
   --nvenc-tuning <ll|ull|hq|lossless>
                               Process B tuning. Default ll.
   --nvenc-gop <int>          Process B GOP length. Default 25.
-  --nvenc-pattern <solid|host-noise>
+  --nvenc-pattern <solid|host-noise|raw-file>
                               Process B input pattern. Default host-noise.
+  --nvenc-raw-file <path>    Raw NV12 input dump for --nvenc-pattern raw-file.
+  --nvenc-raw-pitch <int>    Raw NV12 input pitch. Default: nvenc width.
+  --nvenc-raw-frame-bytes <int>
+                              Bytes per raw input frame. Default: pitch * height * 3 / 2.
+  --nvenc-raw-cache-frames <int>
+                              Cached raw input frames in pinned host memory. Default 16.
+  --nvenc-bitstream-out <path>
+                              Optional raw encoded elementary stream output.
   --output-dir <path>        Directory for temp spec and stress logs. Default /tmp.
   --stress-warmup <sec>      Seconds to let Process B run before Process A. Default 2.
   --help
@@ -51,6 +59,11 @@ NVENC_PRESET="p1"
 NVENC_TUNING="ll"
 NVENC_GOP=25
 NVENC_PATTERN="host-noise"
+NVENC_RAW_FILE=""
+NVENC_RAW_PITCH=""
+NVENC_RAW_FRAME_BYTES=""
+NVENC_RAW_CACHE_FRAMES=16
+NVENC_BITSTREAM_OUT=""
 OUTPUT_DIR="/tmp"
 STRESS_WARMUP=2
 
@@ -144,6 +157,36 @@ while [[ $# -gt 0 ]]; do
       NVENC_PATTERN="$1"
       shift
       ;;
+    --nvenc-raw-file)
+      shift
+      [[ $# -gt 0 ]] || { echo "--nvenc-raw-file requires a value." >&2; exit 2; }
+      NVENC_RAW_FILE="$1"
+      shift
+      ;;
+    --nvenc-raw-pitch)
+      shift
+      [[ $# -gt 0 ]] || { echo "--nvenc-raw-pitch requires a value." >&2; exit 2; }
+      NVENC_RAW_PITCH="$1"
+      shift
+      ;;
+    --nvenc-raw-frame-bytes)
+      shift
+      [[ $# -gt 0 ]] || { echo "--nvenc-raw-frame-bytes requires a value." >&2; exit 2; }
+      NVENC_RAW_FRAME_BYTES="$1"
+      shift
+      ;;
+    --nvenc-raw-cache-frames)
+      shift
+      [[ $# -gt 0 ]] || { echo "--nvenc-raw-cache-frames requires a value." >&2; exit 2; }
+      NVENC_RAW_CACHE_FRAMES="$1"
+      shift
+      ;;
+    --nvenc-bitstream-out)
+      shift
+      [[ $# -gt 0 ]] || { echo "--nvenc-bitstream-out requires a value." >&2; exit 2; }
+      NVENC_BITSTREAM_OUT="$1"
+      shift
+      ;;
     --output-dir)
       shift
       [[ $# -gt 0 ]] || { echo "--output-dir requires a value." >&2; exit 2; }
@@ -164,12 +207,22 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in NVENC_GPU_ID NVENC_FPS NVENC_DURATION NVENC_WIDTH NVENC_HEIGHT NVENC_GOP STRESS_WARMUP; do
+for value_name in NVENC_GPU_ID NVENC_FPS NVENC_DURATION NVENC_WIDTH NVENC_HEIGHT NVENC_GOP NVENC_RAW_CACHE_FRAMES STRESS_WARMUP; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
+if [[ -n "$NVENC_RAW_PITCH" ]]; then
+  [[ "$NVENC_RAW_PITCH" =~ ^[0-9]+$ ]] || { echo "--nvenc-raw-pitch must be a non-negative integer." >&2; exit 2; }
+fi
+if [[ -n "$NVENC_RAW_FRAME_BYTES" ]]; then
+  [[ "$NVENC_RAW_FRAME_BYTES" =~ ^[0-9]+$ ]] || { echo "--nvenc-raw-frame-bytes must be a non-negative integer." >&2; exit 2; }
+fi
 if [[ -n "$GPU_ID" ]]; then
   [[ "$GPU_ID" =~ ^[0-9]+$ ]] || { echo "--gpu-id must be a non-negative integer." >&2; exit 2; }
+fi
+if [[ "$NVENC_PATTERN" == "raw-file" ]]; then
+  [[ -n "$NVENC_RAW_FILE" ]] || { echo "--nvenc-pattern raw-file requires --nvenc-raw-file." >&2; exit 2; }
+  NVENC_RAW_FILE="$(realpath -e "$NVENC_RAW_FILE")"
 fi
 
 SPEC="$(realpath -e "$SPEC")"
@@ -183,7 +236,7 @@ TEMP_SPEC="$OUTPUT_DIR/orange_process_isolation_${STAMP}.json"
 STRESS_CSV="$OUTPUT_DIR/orange_nvenc_stress_${STAMP}.csv"
 STRESS_LOG="$OUTPUT_DIR/orange_nvenc_stress_${STAMP}.log"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$GPU_ID" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$GPU_ID" "$NVENC_PATTERN" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -192,6 +245,7 @@ source = Path(sys.argv[1])
 dest = Path(sys.argv[2])
 stamp = sys.argv[3]
 gpu_id = sys.argv[4]
+nvenc_pattern = sys.argv[5]
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -201,7 +255,7 @@ spec["experiment_id"] = f"{base_id}_external_nvenc_{stamp}"
 spec["notes"] = (
     spec.get("notes", "") +
     " Process-isolation discriminator: Process A is headless real YOLO; "
-    "Process B is separate synthetic NVENC stress load."
+    f"Process B is separate NVENC stress load with pattern={nvenc_pattern}."
 ).strip()
 if gpu_id:
     spec.setdefault("selection", {})["gpu_ids"] = [int(gpu_id)]
@@ -240,21 +294,39 @@ echo "[process-isolation] temp_spec=$TEMP_SPEC"
 echo "[process-isolation] analytics_root=$ANALYTICS_ROOT"
 echo "[process-isolation] nvenc_csv=$STRESS_CSV"
 echo "[process-isolation] nvenc_log=$STRESS_LOG"
+if [[ -n "$NVENC_BITSTREAM_OUT" ]]; then
+  echo "[process-isolation] nvenc_bitstream_out=$NVENC_BITSTREAM_OUT"
+fi
 echo "[process-isolation] starting external nvenc stress on gpu=$NVENC_GPU_ID fps=$NVENC_FPS duration=$NVENC_DURATION pattern=$NVENC_PATTERN"
 
-"$NVENC_TOOL" \
-  --gpu-id "$NVENC_GPU_ID" \
-  --width "$NVENC_WIDTH" \
-  --height "$NVENC_HEIGHT" \
-  --fps "$NVENC_FPS" \
-  --duration "$NVENC_DURATION" \
-  --codec "$NVENC_CODEC" \
-  --preset "$NVENC_PRESET" \
-  --tuning "$NVENC_TUNING" \
-  --gop "$NVENC_GOP" \
-  --pattern "$NVENC_PATTERN" \
-  --csv "$STRESS_CSV" \
-  >"$STRESS_LOG" 2>&1 &
+NVENC_ARGS=(
+  --gpu-id "$NVENC_GPU_ID"
+  --width "$NVENC_WIDTH"
+  --height "$NVENC_HEIGHT"
+  --fps "$NVENC_FPS"
+  --duration "$NVENC_DURATION"
+  --codec "$NVENC_CODEC"
+  --preset "$NVENC_PRESET"
+  --tuning "$NVENC_TUNING"
+  --gop "$NVENC_GOP"
+  --pattern "$NVENC_PATTERN"
+  --csv "$STRESS_CSV"
+)
+if [[ "$NVENC_PATTERN" == "raw-file" ]]; then
+  NVENC_ARGS+=(--raw-file "$NVENC_RAW_FILE")
+  if [[ -n "$NVENC_RAW_PITCH" ]]; then
+    NVENC_ARGS+=(--raw-pitch "$NVENC_RAW_PITCH")
+  fi
+  if [[ -n "$NVENC_RAW_FRAME_BYTES" ]]; then
+    NVENC_ARGS+=(--raw-frame-bytes "$NVENC_RAW_FRAME_BYTES")
+  fi
+  NVENC_ARGS+=(--raw-cache-frames "$NVENC_RAW_CACHE_FRAMES")
+fi
+if [[ -n "$NVENC_BITSTREAM_OUT" ]]; then
+  NVENC_ARGS+=(--bitstream-out "$NVENC_BITSTREAM_OUT")
+fi
+
+"$NVENC_TOOL" "${NVENC_ARGS[@]}" >"$STRESS_LOG" 2>&1 &
 STRESS_PID=$!
 
 sleep "$STRESS_WARMUP"
@@ -280,3 +352,6 @@ echo "  analytics_root=$ANALYTICS_ROOT"
 echo "  temp_spec=$TEMP_SPEC"
 echo "  nvenc_csv=$STRESS_CSV"
 echo "  nvenc_log=$STRESS_LOG"
+if [[ -n "$NVENC_BITSTREAM_OUT" ]]; then
+  echo "  nvenc_bitstream_out=$NVENC_BITSTREAM_OUT"
+fi
