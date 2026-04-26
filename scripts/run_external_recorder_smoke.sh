@@ -24,6 +24,9 @@ Options:
   --encode-max-fps <int>     External encode cap only. Use 0 for uncapped.
                              Default: same as --encode-fps.
   --queue-depth <int>        External recorder-owned frame slots. Default 8.
+  --prewarm-slots <int>      Prewarm encode detach slots per shard. Default 4.
+  --prewarm-bytes <int|auto> Pre-listen prewarm byte size. Default auto from spec config.
+  --no-prewarm-peer-copy     Do not warm the first source-to-shard peer copy.
   --socket <path>            Unix socket path. Default /tmp/orange_external_recorder_<serial>.sock.
                              Non-default paths require matching client env outside this script.
   --output-dir <path>        External recorder artifact root. Default /tmp.
@@ -49,6 +52,9 @@ WARMUP=2
 ENCODE_FPS=60
 ENCODE_MAX_FPS=""
 QUEUE_DEPTH=8
+PREWARM_SLOTS=4
+PREWARM_BYTES=auto
+PREWARM_PEER_COPY=1
 SOCKET_PATH=""
 OUTPUT_DIR="/tmp"
 BITSTREAM_OUT=""
@@ -133,6 +139,22 @@ while [[ $# -gt 0 ]]; do
       QUEUE_DEPTH="$1"
       shift
       ;;
+    --prewarm-slots)
+      shift
+      [[ $# -gt 0 ]] || { echo "--prewarm-slots requires a value." >&2; exit 2; }
+      PREWARM_SLOTS="$1"
+      shift
+      ;;
+    --prewarm-bytes)
+      shift
+      [[ $# -gt 0 ]] || { echo "--prewarm-bytes requires a value." >&2; exit 2; }
+      PREWARM_BYTES="$1"
+      shift
+      ;;
+    --no-prewarm-peer-copy)
+      PREWARM_PEER_COPY=0
+      shift
+      ;;
     --socket)
       shift
       [[ $# -gt 0 ]] || { echo "--socket requires a value." >&2; exit 2; }
@@ -167,10 +189,13 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH; do
+for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH PREWARM_SLOTS; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
+if [[ "$PREWARM_BYTES" != "auto" ]]; then
+  [[ "$PREWARM_BYTES" =~ ^[0-9]+$ ]] || { echo "PREWARM_BYTES must be auto or a non-negative integer." >&2; exit 2; }
+fi
 if [[ -n "$RECORDER_GPU_ID" ]]; then
   [[ "$RECORDER_GPU_ID" =~ ^[0-9]+$ ]] || { echo "RECORDER_GPU_ID must be a non-negative integer." >&2; exit 2; }
 else
@@ -258,6 +283,28 @@ PY
 )
 EXPERIMENT_ID="${SPEC_INFO[0]}"
 ANALYTICS_ROOT="${SPEC_INFO[1]}/$EXPERIMENT_ID"
+if [[ "$PREWARM_BYTES" == "auto" ]]; then
+  PREWARM_BYTES="$(python3 - "$TEMP_SPEC" "$CAMERA_SERIAL" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+spec = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+camera_serial = sys.argv[2]
+config_folder = Path(spec.get("fixed", {}).get("config_folder", ""))
+path = config_folder / f"{camera_serial}.json"
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    width = int(data.get("width", 0))
+    height = int(data.get("height", 0))
+    pixel_format = str(data.get("pixel_format", "Mono8"))
+    bytes_per_pixel = 1 if pixel_format == "Mono8" else 0
+    print(width * height * bytes_per_pixel)
+except Exception:
+    print(0)
+PY
+)"
+fi
 
 cleanup() {
   if [[ -n "${RECORDER_PID:-}" ]] && kill -0 "$RECORDER_PID" >/dev/null 2>&1; then
@@ -277,6 +324,7 @@ echo "[external-recorder] analytics_root=$ANALYTICS_ROOT"
 echo "[external-recorder] socket=$SOCKET_PATH"
 echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
+echo "[external-recorder] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
 
 ROUTING_POLICY="single_shard"
 if [[ -n "$SHARD_GPU_IDS" ]]; then
@@ -290,6 +338,7 @@ RECORDER_ARGS=(
   --encode
   --encode-max-fps "$ENCODE_MAX_FPS"
   --encode-queue-depth "$QUEUE_DEPTH"
+  --prewarm-slots "$PREWARM_SLOTS"
   --fps "$ENCODE_FPS"
   --codec hevc
   --preset p1
@@ -308,6 +357,12 @@ RECORDER_ARGS=(
   --shard-id 0
   --routing-policy "$ROUTING_POLICY"
 )
+if [[ "$PREWARM_BYTES" =~ ^[0-9]+$ && "$PREWARM_BYTES" -gt 0 ]]; then
+  RECORDER_ARGS+=(--prewarm-bytes "$PREWARM_BYTES")
+fi
+if [[ "$PREWARM_PEER_COPY" -eq 1 ]]; then
+  RECORDER_ARGS+=(--prewarm-peer-copy)
+fi
 if [[ -n "$SHARD_GPU_IDS" ]]; then
   RECORDER_ARGS+=(--shard-gpu-ids "$SHARD_GPU_IDS")
 fi
@@ -379,12 +434,14 @@ print(f"  frames_received={summary.get('frames_received')} acks_sent={summary.ge
 print(f"  session_id={summary.get('session_id')} assigned_gpu_id={summary.get('assigned_gpu_id')} assigned_shard_id={summary.get('assigned_shard_id')} routing_policy={summary.get('routing_policy')}")
 print(f"  encode_enqueued={summary.get('encode_enqueued')} encode_skipped={summary.get('encode_skipped')} encode_dropped={summary.get('encode_dropped')} frames_encoded={summary.get('frames_encoded')}")
 print(f"  detach_copy_p95_ms={summary.get('detach_timing', {}).get('copy_p95_ms')} encode_total_p95_ms={enc.get('encode_total_p95_ms')} lock_bitstream_p95_ms={enc.get('lock_bitstream_p95_ms')}")
+print(f"  prewarm_slots={enc.get('prewarm_slots')} prewarm_ms={enc.get('prewarm_ms')} prewarm_peer_copy={enc.get('prewarm_peer_copy')}")
 print(f"  mp4_bytes={summary.get('output_file_sizes', {}).get('mp4_bytes')} worker_failed={summary.get('worker_failed')}")
 for shard in summary.get("external_encode_shards", []):
     print(
         "  shard "
         f"id={shard.get('assigned_shard_id')} gpu={shard.get('assigned_gpu_id')} "
-        f"frames_encoded={shard.get('frames_encoded')} mp4={shard.get('mp4')}"
+        f"frames_encoded={shard.get('frames_encoded')} "
+        f"prewarm_ms={shard.get('prewarm_ms')} mp4={shard.get('mp4')}"
     )
 PY
 fi

@@ -549,19 +549,56 @@ Recorder first-use interpretation:
 - This looks like lazy CUDA/IPC/peer-copy path setup for secondary recorder
   shards, not a steady-state throughput limit.
 
+Pre-listen recorder prewarm:
+
+- Implemented on 2026-04-25 in `external_recorder_ipc_probe`.
+- New recorder flags:
+  `--prewarm-slots`, `--prewarm-bytes`, and `--prewarm-peer-copy`.
+- The smoke runners default to `--prewarm-slots 4` and derive
+  `--prewarm-bytes` from the camera config for Mono8 frames.
+- When `--prewarm-bytes` is available, recorder-owned CUDA detach slots are
+  allocated before the Unix socket is created. The runner therefore waits for
+  this work before launching the camera benchmark.
+- The first real IPC handle can still be used for a 1-byte source-to-shard
+  peer-copy warmup via `--prewarm-peer-copy`.
+- Important implementation detail: prewarm must allocate the slots that will be
+  popped first from the free-slot stack. Allocating low-index slots while the
+  worker pops from the back leaves the first real frames on the lazy allocation
+  path.
+
+Prewarm diagnostic result:
+
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260425_231526`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260425_231526`.
+- Command shape:
+  `scripts/run_external_recorder_two_camera_ptp_smoke.sh --duration 6 --warmup 1 --skip-video-sanity`.
+- Both cameras received/ACKed/encoded `401` frames, with `0` skips,
+  `0` encode drops, and no worker failures.
+- Pre-listen prewarm moved the large secondary-shard allocation/copy setup out
+  of the measured detach path:
+  `2010095 detach_copy_steady_p95 = 0.164589 ms`,
+  `detach_copy_steady_max = 0.910026 ms`;
+  `2010096 detach_copy_steady_p95 = 0.163637 ms`,
+  `detach_copy_steady_max = 0.261190 ms`.
+- YOLO service time did not materially change:
+  `2010095 yolo_total_steady_p95 = 4.616950 ms`;
+  `2010096 yolo_total_steady_p95 = 4.600458 ms`.
+- Broad detect latency remains mostly worker-dispatch plus YOLO service:
+  `2010095 detect_steady_p95 = 6.430631 ms`;
+  `2010096 detect_steady_p95 = 6.520981 ms`.
+- Remaining all-frame max tails are now mostly YOLO/runtime startup:
+  `capture_to_detect_done_ms max` was about `54 ms` on both cameras, while
+  recorder detach-copy steady-state max stayed below `1 ms`.
+
 Next implementation step:
 
-- Add startup-vs-steady-state summary reporting to the runner. The default
-  should keep current all-frame numbers, then separately report metrics after
-  the first `50` frames.
-- Prewarm recorder shard GPUs before accepting camera frames: create CUDA
-  contexts, enable peer access when applicable, allocate scratch buffers, and
-  perform at least one source-to-shard copy for every configured route.
 - Prewarm YOLO after graph capture but before the measured PTP gate, or add a
   warmup/drain phase where YOLO consumes initial frames but benchmark summaries
   mark them as startup.
 - Run a longer two-camera PTP external-recorder validation after prewarm to
-  determine whether any late-run tails remain.
+  determine whether any late-run YOLO dispatch tails remain.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,
   and finalization.
 - Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.

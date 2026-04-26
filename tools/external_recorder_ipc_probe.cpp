@@ -47,6 +47,9 @@ struct Options {
     bool encode = false;
     uint32_t encode_max_fps = 0;
     uint32_t encode_queue_depth = 8;
+    uint32_t encode_prewarm_slots = 0;
+    uint64_t encode_prewarm_bytes = 0;
+    bool encode_prewarm_peer_copy = false;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -139,6 +142,9 @@ void signal_handler(int)
         << "  --encode              Encode detached frames in a worker thread after ACK.\n"
         << "  --encode-max-fps <int> Encode at most this FPS. 0 means every frame. Default 0.\n"
         << "  --encode-queue-depth <int> Recorder-owned detach slots. Default 8.\n"
+        << "  --prewarm-slots <int> Preallocate this many encode detach slots per shard. Default 0.\n"
+        << "  --prewarm-bytes <int> Frame byte size for pre-listen detach slot allocation. Default 0.\n"
+        << "  --prewarm-peer-copy   After first IPC import, copy 1 byte into each shard to warm peer paths.\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
@@ -269,6 +275,12 @@ Options parse_options(int argc, char** argv)
             options.encode_max_fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--encode-queue-depth") {
             options.encode_queue_depth = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--prewarm-slots") {
+            options.encode_prewarm_slots = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--prewarm-bytes") {
+            options.encode_prewarm_bytes = parse_u64(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--prewarm-peer-copy") {
+            options.encode_prewarm_peer_copy = true;
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -328,6 +340,9 @@ Options parse_options(int argc, char** argv)
     }
     if (options.encode_queue_depth == 0) {
         throw std::runtime_error("--encode-queue-depth must be positive");
+    }
+    if (options.encode_prewarm_slots > options.encode_queue_depth) {
+        throw std::runtime_error("--prewarm-slots must be less than or equal to --encode-queue-depth");
     }
     if (options.codec != "hevc" && options.codec != "h264") {
         throw std::runtime_error("--codec must be hevc or h264");
@@ -900,6 +915,9 @@ struct EncodeSummary {
     double mp4_push_max_ms = 0.0;
     double mp4_write_mean_ms = 0.0;
     double mp4_write_max_ms = 0.0;
+    uint64_t prewarm_slots = 0;
+    double prewarm_ms = 0.0;
+    bool prewarm_peer_copy = false;
     std::string encode_csv_path;
     std::string bitstream_out_path;
     std::string mp4_path;
@@ -974,6 +992,9 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
             std::max(out.mp4_write_mean_ms, summary.mp4_write_mean_ms);
         out.mp4_write_max_ms =
             std::max(out.mp4_write_max_ms, summary.mp4_write_max_ms);
+        out.prewarm_slots += summary.prewarm_slots;
+        out.prewarm_ms += summary.prewarm_ms;
+        out.prewarm_peer_copy = out.prewarm_peer_copy || summary.prewarm_peer_copy;
     }
     if (summaries.size() == 1) {
         out.encode_csv_path = summaries.front().encode_csv_path;
@@ -1432,6 +1453,9 @@ public:
         out.mp4_push_max_ms = writer_latency_.push_packet_total.max_ms();
         out.mp4_write_mean_ms = writer_latency_.packet_write.mean_ms();
         out.mp4_write_max_ms = writer_latency_.packet_write.max_ms();
+        out.prewarm_slots = prewarmed_slots_;
+        out.prewarm_ms = prewarm_ms_;
+        out.prewarm_peer_copy = prewarm_peer_copy_;
         out.encode_csv_path = options_.encode_csv_path;
         out.bitstream_out_path = options_.bitstream_out_path;
         out.mp4_path = options_.mp4_out_path;
@@ -1439,25 +1463,90 @@ public:
         return out;
     }
 
+    void prewarm_detach_slots(uint64_t bytes, const void* peer_source_ptr)
+    {
+        if (options_.encode_prewarm_slots == 0) {
+            return;
+        }
+        if (prewarmed_) {
+            prewarm_peer_source(peer_source_ptr);
+            return;
+        }
+        const auto started = std::chrono::steady_clock::now();
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external prewarm shard)");
+        const uint32_t requested_slots =
+            std::min(options_.encode_prewarm_slots, options_.encode_queue_depth);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            ensure_slot_pool_locked();
+            for (uint32_t i = 0; i < requested_slots; ++i) {
+                const size_t free_index = free_slots_.size() - 1 - i;
+                const size_t slot_index = free_slots_[free_index];
+                ensure_slot_allocated_locked(slot_index, bytes);
+                if (i == 0) {
+                    peer_warm_slot_index_ = slot_index;
+                }
+            }
+        }
+        prewarmed_slots_ = requested_slots;
+        prewarm_ms_ = ns_to_ms(elapsed_ns(started));
+        prewarmed_ = true;
+        prewarm_peer_source(peer_source_ptr);
+        std::cout << "external_recorder_ipc_probe prewarmed"
+                  << " gpu_id=" << options_.gpu_id
+                  << " shard_id=" << options_.shard_id
+                  << " slots=" << prewarmed_slots_
+                  << " bytes=" << bytes
+                  << " peer_copy=" << (prewarm_peer_copy_ ? "true" : "false")
+                  << " prewarm_ms=" << prewarm_ms_
+                  << std::endl;
+    }
+
 private:
     static constexpr size_t kInvalidSlot = std::numeric_limits<size_t>::max();
 
-    size_t acquire_free_slot(uint64_t bytes)
+    void prewarm_peer_source(const void* peer_source_ptr)
     {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (slots_.empty()) {
-            slots_.resize(options_.encode_queue_depth);
-            free_slots_.clear();
-            free_slots_.reserve(slots_.size());
-            for (size_t i = 0; i < slots_.size(); ++i) {
-                free_slots_.push_back(i);
-            }
+        if (!options_.encode_prewarm_peer_copy ||
+            !peer_source_ptr ||
+            prewarm_peer_copy_ ||
+            peer_warm_slot_index_ == kInvalidSlot) {
+            return;
         }
-        if (free_slots_.empty()) {
-            return kInvalidSlot;
+        void* peer_warm_slot = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            peer_warm_slot = slots_[peer_warm_slot_index_].ptr;
         }
-        const size_t slot_index = free_slots_.back();
-        free_slots_.pop_back();
+        if (!peer_warm_slot) {
+            return;
+        }
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external prewarm peer)");
+        check_cuda(
+            cudaMemcpy(
+                peer_warm_slot,
+                peer_source_ptr,
+                1,
+                cudaMemcpyDeviceToDevice),
+            "cudaMemcpy(external prewarm peer)");
+        prewarm_peer_copy_ = true;
+    }
+
+    void ensure_slot_pool_locked()
+    {
+        if (!slots_.empty()) {
+            return;
+        }
+        slots_.resize(options_.encode_queue_depth);
+        free_slots_.clear();
+        free_slots_.reserve(slots_.size());
+        for (size_t i = 0; i < slots_.size(); ++i) {
+            free_slots_.push_back(i);
+        }
+    }
+
+    void ensure_slot_allocated_locked(size_t slot_index, uint64_t bytes)
+    {
         DeviceSlot& slot = slots_[slot_index];
         if (!slot.allocated || slot.bytes < bytes) {
             if (slot.ptr) {
@@ -1468,6 +1557,18 @@ private:
             slot.bytes = bytes;
             slot.allocated = true;
         }
+    }
+
+    size_t acquire_free_slot(uint64_t bytes)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ensure_slot_pool_locked();
+        if (free_slots_.empty()) {
+            return kInvalidSlot;
+        }
+        const size_t slot_index = free_slots_.back();
+        free_slots_.pop_back();
+        ensure_slot_allocated_locked(slot_index, bytes);
         return slot_index;
     }
 
@@ -1860,6 +1961,11 @@ private:
     std::vector<double> encode_picture_samples_;
     std::vector<double> lock_bitstream_samples_;
     std::vector<double> bitstream_fetch_samples_;
+    bool prewarmed_ = false;
+    uint64_t prewarmed_slots_ = 0;
+    double prewarm_ms_ = 0.0;
+    bool prewarm_peer_copy_ = false;
+    size_t peer_warm_slot_index_ = kInvalidSlot;
     std::atomic<uint64_t> frames_encoded_{0};
     std::atomic<uint64_t> frames_dropped_{0};
     std::atomic<bool> failed_{false};
@@ -1949,6 +2055,10 @@ void write_summary_json(const Options& options,
     out << "  \"fps\": " << options.fps << ",\n";
     out << "  \"encode_max_fps\": " << options.encode_max_fps << ",\n";
     out << "  \"encode_queue_depth\": " << options.encode_queue_depth << ",\n";
+    out << "  \"encode_prewarm_slots\": " << options.encode_prewarm_slots << ",\n";
+    out << "  \"encode_prewarm_bytes\": " << options.encode_prewarm_bytes << ",\n";
+    out << "  \"encode_prewarm_peer_copy\": "
+        << (options.encode_prewarm_peer_copy ? "true" : "false") << ",\n";
     out << "  \"frames_received\": " << frames_received << ",\n";
     out << "  \"acks_sent\": " << acks_sent << ",\n";
     out << "  \"detach_copied\": " << detach_copied << ",\n";
@@ -1978,6 +2088,9 @@ void write_summary_json(const Options& options,
     out << "    \"mp4_push_max_ms\": " << enc.mp4_push_max_ms << ",\n";
     out << "    \"mp4_write_mean_ms\": " << enc.mp4_write_mean_ms << ",\n";
     out << "    \"mp4_write_max_ms\": " << enc.mp4_write_max_ms << ",\n";
+    out << "    \"prewarm_slots\": " << enc.prewarm_slots << ",\n";
+    out << "    \"prewarm_ms\": " << enc.prewarm_ms << ",\n";
+    out << "    \"prewarm_peer_copy\": " << (enc.prewarm_peer_copy ? "true" : "false") << ",\n";
     out << "    \"mp4_queue_overflowed\": " << (enc.mp4_queue_overflowed ? "true" : "false") << ",\n";
     out << "    \"mp4_queue_overflow_events\": " << enc.mp4_queue_overflow_events << ",\n";
     out << "    \"mp4_peak_queued_packets\": " << enc.mp4_peak_queued_packets << ",\n";
@@ -1999,6 +2112,10 @@ void write_summary_json(const Options& options,
         out << "      \"encode_total_p95_ms\": " << shard.encode_total_p95_ms << ",\n";
         out << "      \"encode_picture_p95_ms\": " << shard.encode_picture_p95_ms << ",\n";
         out << "      \"lock_bitstream_p95_ms\": " << shard.lock_bitstream_p95_ms << ",\n";
+        out << "      \"prewarm_slots\": " << shard.prewarm_slots << ",\n";
+        out << "      \"prewarm_ms\": " << shard.prewarm_ms << ",\n";
+        out << "      \"prewarm_peer_copy\": "
+            << (shard.prewarm_peer_copy ? "true" : "false") << ",\n";
         out << "      \"worker_failed\": " << (shard.failed ? "true" : "false") << ",\n";
         out << "      \"encode_csv\": \"" << json_escape(shard.encode_csv_path) << "\",\n";
         out << "      \"raw_bitstream\": \"" << json_escape(shard.bitstream_out_path) << "\",\n";
@@ -2065,6 +2182,35 @@ int main(int argc, char** argv)
         check_cuda(cudaSetDevice(options.gpu_id), "cudaSetDevice");
         check_cuda(cudaFree(nullptr), "cudaFree(0)");
 
+        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
+        std::unique_ptr<MergedGopOutput> merged_output;
+        bool encode_workers_prewarmed = false;
+        bool encode_workers_peer_prewarmed = false;
+        if (options.encode) {
+            const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
+            if (shard_gpu_ids.size() > 1 && !options.mp4_out_path.empty()) {
+                merged_output = std::make_unique<MergedGopOutput>(options);
+            }
+            encode_workers.reserve(shard_gpu_ids.size());
+            for (size_t shard_index = 0; shard_index < shard_gpu_ids.size(); ++shard_index) {
+                Options shard_options = make_shard_options(
+                    options,
+                    shard_index,
+                    shard_gpu_ids.size(),
+                    shard_gpu_ids[shard_index]);
+                auto worker = std::make_unique<ExternalEncodeWorker>(
+                    std::move(shard_options),
+                    merged_output.get());
+                worker->start();
+                if (options.encode_prewarm_bytes > 0 &&
+                    options.encode_prewarm_slots > 0) {
+                    worker->prewarm_detach_slots(options.encode_prewarm_bytes, nullptr);
+                    encode_workers_prewarmed = true;
+                }
+                encode_workers.push_back(std::move(worker));
+            }
+        }
+
         listen_fd = create_listen_socket(options.socket_path);
         std::cout << "external_recorder_ipc_probe listening"
                   << " socket=" << options.socket_path
@@ -2111,27 +2257,6 @@ int main(int argc, char** argv)
         std::vector<double> detach_total_samples;
         std::vector<double> detach_open_samples;
         std::vector<double> detach_copy_samples;
-        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
-        std::unique_ptr<MergedGopOutput> merged_output;
-        if (options.encode) {
-            const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
-            if (shard_gpu_ids.size() > 1 && !options.mp4_out_path.empty()) {
-                merged_output = std::make_unique<MergedGopOutput>(options);
-            }
-            encode_workers.reserve(shard_gpu_ids.size());
-            for (size_t shard_index = 0; shard_index < shard_gpu_ids.size(); ++shard_index) {
-                Options shard_options = make_shard_options(
-                    options,
-                    shard_index,
-                    shard_gpu_ids.size(),
-                    shard_gpu_ids[shard_index]);
-                auto worker = std::make_unique<ExternalEncodeWorker>(
-                    std::move(shard_options),
-                    merged_output.get());
-                worker->start();
-                encode_workers.push_back(std::move(worker));
-            }
-        }
 
         while (!g_stop_requested.load(std::memory_order_acquire) &&
                (options.max_frames == 0 || frame_count < options.max_frames)) {
@@ -2204,6 +2329,21 @@ int main(int argc, char** argv)
                     handle_it = imported_handles.emplace(
                         desc.handle_hex,
                         ImportedHandle{imported_ptr}).first;
+                }
+
+                if (!encode_workers.empty() &&
+                    options.encode_prewarm_slots > 0 &&
+                    (!encode_workers_prewarmed ||
+                     (options.encode_prewarm_peer_copy && !encode_workers_peer_prewarmed))) {
+                    const void* peer_source_ptr =
+                        options.encode_prewarm_peer_copy ? handle_it->second.ptr : nullptr;
+                    for (auto& worker : encode_workers) {
+                        if (worker) {
+                            worker->prewarm_detach_slots(desc.bytes, peer_source_ptr);
+                        }
+                    }
+                    encode_workers_prewarmed = true;
+                    encode_workers_peer_prewarmed = peer_source_ptr != nullptr;
                 }
 
                 const auto copy_start = std::chrono::steady_clock::now();

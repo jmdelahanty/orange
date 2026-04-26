@@ -284,8 +284,17 @@ multi-GPU split-GOP throughput.
   max = 6.343 ms`.
 - There is also a recorder first-use signal: frame `26`, the first frame routed
   to secondary shard GPUs `6`/`8`, showed `copy_ms` around `180 ms` on both
-  cameras. Queue depth `32` absorbed it with no drops. Next work should prewarm
-  YOLO and recorder shard GPUs, and make the runner report startup vs
-  steady-state summaries separately.
+  cameras. Queue depth `32` absorbed it with no drops.
+- Recorder pre-listen prewarm now exists in `external_recorder_ipc_probe`:
+  use `--prewarm-slots`, `--prewarm-bytes`, and `--prewarm-peer-copy`. The
+  smoke runners default to `--prewarm-slots 4`; the two-camera PTP runner
+  derives `--prewarm-bytes` from the local Mono8 camera config. Latest
+  diagnostic run:
+  `/tmp/orange_external_recorder_ptp_20260425_231526`. It encoded/ACKed
+  `401/401` frames per camera with no drops and moved recorder detach-copy
+  steady-state max below `1 ms` (`2010095 = 0.910 ms`, `2010096 = 0.261 ms`).
+  YOLO service stayed about `4.6 ms p95`; broad detect steady p95 stayed about
+  `6.4-6.5 ms`, so the next latency work is YOLO warmup/worker dispatch, not
+  recorder detach.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
