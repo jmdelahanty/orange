@@ -25,6 +25,7 @@ Options:
                              Non-default paths require matching client env outside this script.
   --output-dir <path>        External recorder artifact root. Default /tmp.
   --bitstream-out <path>     Optional raw elementary stream output.
+  --skip-video-sanity        Do not decode/check external MP4 content.
   --keep-temp-spec           Keep generated temp spec in output dir.
   --help
 EOF
@@ -46,6 +47,7 @@ QUEUE_DEPTH=8
 SOCKET_PATH=""
 OUTPUT_DIR="/tmp"
 BITSTREAM_OUT=""
+SKIP_VIDEO_SANITY=0
 KEEP_TEMP_SPEC=0
 
 while [[ $# -gt 0 ]]; do
@@ -132,6 +134,10 @@ while [[ $# -gt 0 ]]; do
       BITSTREAM_OUT="$1"
       shift
       ;;
+    --skip-video-sanity)
+      SKIP_VIDEO_SANITY=1
+      shift
+      ;;
     --keep-temp-spec)
       KEEP_TEMP_SPEC=1
       shift
@@ -171,6 +177,7 @@ TEMP_SPEC="$RUN_DIR/external_recorder_smoke_spec.json"
 DETACH_CSV="$RUN_DIR/external_detach.csv"
 ENCODE_CSV="$RUN_DIR/external_encode.csv"
 SUMMARY_JSON="$RUN_DIR/external_recorder_summary.json"
+VIDEO_SANITY_JSON="$RUN_DIR/external_video_sanity.json"
 MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
 KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.csv"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
@@ -311,6 +318,7 @@ echo "  recorder_log=$RECORDER_LOG"
 echo "  detach_csv=$DETACH_CSV"
 echo "  encode_csv=$ENCODE_CSV"
 echo "  summary_json=$SUMMARY_JSON"
+echo "  video_sanity_json=$VIDEO_SANITY_JSON"
 echo "  mp4_out=$MP4_OUT"
 echo "  keyframe_out=$KEYFRAME_OUT"
 if [[ -n "$BITSTREAM_OUT" ]]; then
@@ -330,5 +338,185 @@ print(f"  frames_received={summary.get('frames_received')} acks_sent={summary.ge
 print(f"  encode_enqueued={summary.get('encode_enqueued')} encode_skipped={summary.get('encode_skipped')} encode_dropped={summary.get('encode_dropped')} frames_encoded={summary.get('frames_encoded')}")
 print(f"  detach_copy_p95_ms={summary.get('detach_timing', {}).get('copy_p95_ms')} encode_total_p95_ms={enc.get('encode_total_p95_ms')} lock_bitstream_p95_ms={enc.get('lock_bitstream_p95_ms')}")
 print(f"  mp4_bytes={summary.get('output_file_sizes', {}).get('mp4_bytes')} worker_failed={summary.get('worker_failed')}")
+PY
+fi
+
+if [[ "$SKIP_VIDEO_SANITY" -eq 0 ]]; then
+  python3 - "$MP4_OUT" "$VIDEO_SANITY_JSON" <<'PY'
+import json
+import math
+import subprocess
+import sys
+from pathlib import Path
+
+mp4_path = Path(sys.argv[1])
+summary_path = Path(sys.argv[2])
+
+def fail(status, detail):
+    result = {
+        "schema_version": 1,
+        "video_path": str(mp4_path),
+        "content_checked": True,
+        "content_valid": False,
+        "status": status,
+        "detail": detail,
+        "sampled_frames": [],
+    }
+    summary_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(f"[external-recorder] video_sanity status={status} detail={detail}")
+    raise SystemExit(1)
+
+if not mp4_path.exists() or mp4_path.stat().st_size == 0:
+    fail("missing_video", "MP4 output is missing or empty")
+
+probe_cmd = [
+    "ffprobe",
+    "-v",
+    "error",
+    "-select_streams",
+    "v:0",
+    "-show_entries",
+    "stream=width,height,nb_frames,avg_frame_rate,duration",
+    "-show_entries",
+    "format=size,duration",
+    "-of",
+    "json",
+    str(mp4_path),
+]
+try:
+    probe = subprocess.run(
+        probe_cmd,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+    fail("ffprobe_failed", str(exc))
+
+metadata = json.loads(probe.stdout)
+streams = metadata.get("streams") or []
+if not streams:
+    fail("no_video_stream", "ffprobe found no video stream")
+
+stream = streams[0]
+width = int(stream.get("width") or 0)
+height = int(stream.get("height") or 0)
+if width <= 0 or height <= 0:
+    fail("invalid_dimensions", f"width={width} height={height}")
+
+nb_frames_value = stream.get("nb_frames")
+try:
+    frame_count = int(nb_frames_value)
+except (TypeError, ValueError):
+    frame_count = 0
+
+if frame_count > 0:
+    sample_indices = sorted({
+        0,
+        max(0, frame_count // 4),
+        max(0, frame_count // 2),
+        max(0, (3 * frame_count) // 4),
+        max(0, frame_count - 1),
+    })
+else:
+    sample_indices = [0]
+
+select_expr = "+".join(f"eq(n\\,{index})" for index in sample_indices)
+decode_cmd = [
+    "ffmpeg",
+    "-v",
+    "error",
+    "-i",
+    str(mp4_path),
+    "-vf",
+    f"select='{select_expr}'",
+    "-vsync",
+    "0",
+    "-pix_fmt",
+    "gray",
+    "-f",
+    "rawvideo",
+    "-",
+]
+try:
+    decoded = subprocess.run(
+        decode_cmd,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+    fail("decode_failed", str(exc))
+
+frame_bytes = width * height
+decoded_frames = len(decoded) // frame_bytes if frame_bytes > 0 else 0
+if decoded_frames == 0:
+    fail("decode_empty", "ffmpeg returned no decoded sample frames")
+
+measurements = []
+for i in range(decoded_frames):
+    frame = decoded[i * frame_bytes:(i + 1) * frame_bytes]
+    hist = [0] * 256
+    for value in frame:
+        hist[value] += 1
+    pixel_count = sum(hist)
+    total = sum(value * count for value, count in enumerate(hist))
+    total_sq = sum(value * value * count for value, count in enumerate(hist))
+    mean = total / pixel_count
+    variance = max(0.0, total_sq / pixel_count - mean * mean)
+    min_value = next(value for value, count in enumerate(hist) if count)
+    max_value = 255 - next(value for value, count in enumerate(reversed(hist)) if count)
+    measurements.append({
+        "requested_frame_index": sample_indices[min(i, len(sample_indices) - 1)],
+        "mean": mean,
+        "stddev": math.sqrt(variance),
+        "min": min_value,
+        "max": max_value,
+        "black_fraction_lt8": sum(hist[:8]) / pixel_count,
+        "white_fraction_gt247": sum(hist[248:]) / pixel_count,
+        "decoded_bytes": pixel_count,
+    })
+
+max_black_fraction = max(item["black_fraction_lt8"] for item in measurements)
+max_stddev = max(item["stddev"] for item in measurements)
+mean_luma = sum(item["mean"] for item in measurements) / len(measurements)
+content_valid = max_black_fraction < 0.98 and max_stddev >= 5.0
+if max_black_fraction >= 0.98:
+    status = "black_frame"
+elif max_stddev < 5.0:
+    status = "flat_frame"
+else:
+    status = "pass"
+
+result = {
+    "schema_version": 1,
+    "video_path": str(mp4_path),
+    "content_checked": True,
+    "content_valid": content_valid,
+    "status": status,
+    "width": width,
+    "height": height,
+    "nb_frames": frame_count,
+    "container": metadata.get("format", {}),
+    "sampled_frame_count": len(measurements),
+    "mean_luma": mean_luma,
+    "max_stddev": max_stddev,
+    "max_black_fraction_lt8": max_black_fraction,
+    "thresholds": {
+        "max_black_fraction_lt8": 0.98,
+        "min_max_stddev": 5.0,
+    },
+    "sampled_frames": measurements,
+}
+summary_path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+print(
+    "[external-recorder] video_sanity "
+    f"status={status} frames={frame_count} samples={len(measurements)} "
+    f"mean_luma={mean_luma:.3f} max_stddev={max_stddev:.3f} "
+    f"max_black_fraction_lt8={max_black_fraction:.6f}"
+)
+if not content_valid:
+    raise SystemExit(1)
 PY
 fi

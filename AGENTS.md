@@ -164,11 +164,18 @@ Latest short smoke:
 - `nvEncLockBitstream p95 = 0.003807 ms`.
 - MP4 output was valid enough for `ffprobe`: `duration = 4.017 s`,
   `size = 76,638,875 bytes`.
+- The runner now writes `external_video_sanity.json` and fails if the external
+  MP4 is missing, empty, undecodable, black, or flat. The latest decoded sample
+  check had mean luma about `220`, luma stddev about `79.5`, and
+  `black_fraction_lt8 = 0.0`, so it was not the previous black-frame failure
+  mode.
 
 ## Remaining Work
 
 - Automated decoded-frame entropy/black-frame sanity checking is now part of
-  headless experiment validation via `require_valid_video_content`.
+  headless experiment validation via `require_valid_video_content`, and the
+  external recorder smoke has its own MP4 sanity gate because the external MP4
+  is not the in-process video artifact checked by `orange_client`.
 - Run the real-frame external NVENC discriminator using
   `nvenc_stress_load --pattern raw-file` against a
   `pre_encoder_reference_capture` dump. The key discriminator is whether YOLO

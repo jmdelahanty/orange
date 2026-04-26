@@ -79,6 +79,8 @@ Implemented:
   - `--summary-json`
 - A single-camera smoke runner:
   - `scripts/run_external_recorder_smoke.sh`
+  - writes `external_video_sanity.json`
+  - fails on missing/empty MP4, decode failure, black frames, or flat frames
 - A checked-in smoke spec:
   - `experiment_specs/2010096_headless_real_yolo_external_ipc_encode_smoke.json`
 - Headless artifact counters:
@@ -119,10 +121,15 @@ Result from `2026_04_25_212327`:
 - MP4 output:
   `/tmp/orange_external_recorder_2010096_20260425_212327/Cam2010096_external.mp4`
 - `ffprobe` saw `duration = 4.017 s` and `size = 76,638,875 bytes`.
+- A decoded grayscale sample check confirmed the MP4 was not black:
+  mean luma about `220`, luma stddev about `79.5`, and
+  `black_fraction_lt8 = 0.0` across sampled frames.
 
 Interpretation:
 
 - The MP4/mux path works mechanically.
+- The current runner now gates on decoded-frame content sanity, not only MP4
+  container validity.
 - The external-process path still keeps the YOLO CPU launch path fast during a
   same-GPU live-camera smoke.
 - This is not yet a production throughput test because it is one camera and
