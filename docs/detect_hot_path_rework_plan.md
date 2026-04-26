@@ -62,6 +62,76 @@ Implications:
   `4512x4512 Mono8 @ 100 fps` recording stream. Multi-GPU split-GOP recording
   is a production constraint, not an optional optimization.
 
+## Current Status Update - 2026-04-26
+
+External split-GOP recording plus PTP register-read decimation changed the
+detect-side bottleneck shape.
+
+Current best run:
+
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260426_002618`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260426_002618`.
+- Command used the external recorder path and
+  `--ptp-register-read-decimate 100`.
+- Both cameras received/ACKed/encoded `2803` frames with `0` drops,
+  `0` frame-id gaps, no get-frame errors, no recorder failure, and no pending
+  GOP drain backlog.
+- Steady `acquisition_to_detect_done_ms p95` was:
+  `4.580 ms` for `2010095` and `4.585 ms` for `2010096`.
+- Steady YOLO `total_ms p95` was:
+  `4.548 ms` for `2010095` and `4.539 ms` for `2010096`.
+- Steady `acquisition_to_ptp_done_ms p95` was effectively zero:
+  `0.000180 ms` and `0.000150 ms`.
+- The remaining steady host submission budget before sync is small:
+  - `cpu_preprocess_ms p95` about `0.025 ms`,
+  - `cpu_infer_call_ms p95` about `0.06-0.07 ms`,
+  - `cpu_input_ready_event_record_ms p95` about `0.002 ms`,
+  - `cpu_event_record_ms p95` about `0.001 ms`.
+
+Implications:
+
+- The old `~8 ms` YOLO host CUDA launch tail was not present in the current
+  external-recorder + decimated-PTP path.
+- TensorRT inference is already CUDA-graph launched by default in
+  [yolov8_det.cpp](/home/jeremy/orange-gop-split-a16/src/yolov8_det.cpp:240).
+- The remaining p95 is mostly GPU-side YOLO service time and normal scheduling
+  variation, not raw host launch overhead.
+- A larger YOLO graph island may still be useful, but it is now a lower-signal
+  optimization than validating the same decimated-PTP behavior in the GUI
+  session path.
+
+YOLO graph-island assessment:
+
+- Current graph coverage:
+  TensorRT `enqueueV3(...)` and output D2H copies are captured once and launched
+  with `cudaGraphLaunch(...)` in steady state.
+- Current non-graph YOLO submissions per frame:
+  source-event query/wait, optimized preprocess kernel launch, input-ready event
+  record, infer-graph launch, completion-event record.
+- A `preprocess -> input_ready_event -> TensorRT -> output_copy` graph island
+  is technically possible but not trivial:
+  - source frame device pointers change every frame, so the preprocess kernel
+    node would need `cudaGraphExecKernelNodeSetParams(...)` or an indirection
+    node,
+  - the input-ready event also changes per frame, so the event-record node
+    would need `cudaGraphExecEventRecordNodeSetEvent(...)`,
+  - preserving early source detach requires the input-ready event to remain
+    between preprocess and inference, not after the whole graph,
+  - color-camera debayer/debug-dump branches need fallback handling.
+- Expected benefit after the latest run is modest: at most tens of
+  microseconds of host submission p95 unless GUI/full-recording contention
+  reintroduces raw CUDA launch tails.
+- Do not implement a monolithic graph blindly while away from hardware. The
+  right bounded experiment is:
+  1. validate GUI/session with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`,
+  2. if GUI still shows raw YOLO launch/event-record tails, add an experimental
+     `ORANGE_YOLO_PREPROCESS_INFER_GRAPH=1` path,
+  3. compare `cpu_preprocess_ms`, `cpu_infer_call_ms`, `cpu_pre_sync_ms`,
+     `acquisition_to_detect_done_ms`, and source-detach timing against the
+     current graph-infer-only path.
+
 ## Problem Statement
 
 The current crop/pose ownership work improved the post-detect path, but the
@@ -609,10 +679,12 @@ Decision rule:
 
 ### Phase 4: Longer-Term GPU-Resident ROI / Graph Work
 
-Only after Phases 1-3 are measured:
+Only after GUI/session validation of external recording plus decimated PTP:
 
 - consider GPU-resident detect result selection,
 - consider `detect_only` and `detect_plus_pose` graph islands,
+- consider an experimental YOLO `preprocess -> input_ready_event -> infer`
+  graph island only if GUI/session traces still show raw host CUDA launch tails,
 - avoid forcing the current CPU postprocess design into a partial graph path
   prematurely.
 
