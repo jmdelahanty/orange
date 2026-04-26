@@ -170,5 +170,9 @@ crop/pose/track latency solved.
   into a real external recorder backend with mux/output metadata and then
   external split-GOP/multi-GPU routing. Keep encode GPU placement/routing as a
   first-class design variable.
+- The staged implementation roadmap is documented in
+  `docs/external_recorder_implementation_plan.md`. The next highest-signal
+  slice is valid MP4 output plus a single-command runner for the single-camera
+  same-GPU `60 fps` external recorder test.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

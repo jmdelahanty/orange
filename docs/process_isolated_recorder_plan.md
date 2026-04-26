@@ -6,6 +6,10 @@ Scope: design and implement a testable process boundary between
 latency-critical analytics and full-frame recording so CUDA/NVENC encode and
 bitstream harvest cannot block YOLO through same-process runtime locks.
 
+See also:
+
+- `docs/external_recorder_implementation_plan.md`
+
 ## Bottom Line
 
 The next high-signal architecture experiment is process isolation for
