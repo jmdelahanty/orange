@@ -1,4 +1,5 @@
 #include "NvEncoder/NvEncoderCuda.h"
+#include "FFmpegWriter.h"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -23,6 +25,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -54,7 +57,10 @@ struct Options {
     uint32_t extra_output_delay = 3;
     bool monochrome = true;
     std::string bitstream_out_path;
+    std::string mp4_out_path;
+    std::string mp4_keyframe_path;
     std::string encode_csv_path;
+    std::string summary_json_path;
 };
 
 struct FrameDescriptor {
@@ -121,7 +127,10 @@ void signal_handler(int)
         << "  --vbv-buffer-size <int> VBV buffer size. Default 150000000.\n"
         << "  --extra-output-delay <int> NvEncoder extra output delay. Default 3.\n"
         << "  --bitstream-out <path> Optional raw elementary stream output.\n"
+        << "  --mp4-out <path>       Optional MP4 output. Implies --encode.\n"
+        << "  --mp4-keyframe <path>  Optional keyframe sidecar path for --mp4-out.\n"
         << "  --encode-csv <path>   Optional external encode timing CSV.\n"
+        << "  --summary-json <path>  Optional run summary JSON.\n"
         << "  --monochrome          Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome       Disable monochrome encoding.\n"
         << "  --help\n";
@@ -226,8 +235,15 @@ Options parse_options(int argc, char** argv)
         } else if (arg == "--bitstream-out") {
             options.bitstream_out_path = consume(arg.c_str());
             options.encode = true;
+        } else if (arg == "--mp4-out") {
+            options.mp4_out_path = consume(arg.c_str());
+            options.encode = true;
+        } else if (arg == "--mp4-keyframe" || arg == "--mp4-keyframe-path") {
+            options.mp4_keyframe_path = consume(arg.c_str());
         } else if (arg == "--encode-csv") {
             options.encode_csv_path = consume(arg.c_str());
+        } else if (arg == "--summary-json") {
+            options.summary_json_path = consume(arg.c_str());
         } else if (arg == "--monochrome") {
             options.monochrome = true;
         } else if (arg == "--no-monochrome") {
@@ -301,6 +317,89 @@ bool hex_to_ipc_handle(const std::string& hex, cudaIpcMemHandle_t* handle)
 double ns_to_ms(uint64_t ns)
 {
     return static_cast<double>(ns) / 1000000.0;
+}
+
+void ensure_parent_directory(const std::string& path)
+{
+    if (path.empty()) {
+        return;
+    }
+    const std::filesystem::path fs_path(path);
+    const std::filesystem::path parent = fs_path.parent_path();
+    if (!parent.empty()) {
+        std::filesystem::create_directories(parent);
+    }
+}
+
+std::string derive_keyframe_path(const std::string& mp4_path)
+{
+    std::filesystem::path path(mp4_path);
+    const std::string stem = path.stem().string();
+    path.replace_filename(stem + "_keyframes.csv");
+    return path.string();
+}
+
+std::string json_escape(const std::string& value)
+{
+    std::ostringstream out;
+    for (unsigned char c : value) {
+        switch (c) {
+        case '"':
+            out << "\\\"";
+            break;
+        case '\\':
+            out << "\\\\";
+            break;
+        case '\b':
+            out << "\\b";
+            break;
+        case '\f':
+            out << "\\f";
+            break;
+        case '\n':
+            out << "\\n";
+            break;
+        case '\r':
+            out << "\\r";
+            break;
+        case '\t':
+            out << "\\t";
+            break;
+        default:
+            if (c < 0x20) {
+                out << "\\u"
+                    << std::hex << std::setw(4) << std::setfill('0')
+                    << static_cast<unsigned int>(c)
+                    << std::dec << std::setfill(' ');
+            } else {
+                out << static_cast<char>(c);
+            }
+            break;
+        }
+    }
+    return out.str();
+}
+
+uintmax_t file_size_or_zero(const std::string& path)
+{
+    if (path.empty()) {
+        return 0;
+    }
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    return ec ? 0 : size;
+}
+
+double percentile_ms(std::vector<double> values, double percentile)
+{
+    if (values.empty()) {
+        return 0.0;
+    }
+    std::sort(values.begin(), values.end());
+    const double clamped = std::max(0.0, std::min(100.0, percentile));
+    const size_t index = static_cast<size_t>(
+        (clamped / 100.0) * static_cast<double>(values.size() - 1));
+    return values[index];
 }
 
 uint64_t elapsed_ns(std::chrono::steady_clock::time_point start)
@@ -576,6 +675,36 @@ struct EncodeSample {
     uint64_t returned_bytes = 0;
 };
 
+struct EncodeSummary {
+    uint64_t frames_encoded = 0;
+    uint64_t frames_dropped = 0;
+    uint64_t returned_packets = 0;
+    uint64_t returned_bytes = 0;
+    uint64_t raw_packets = 0;
+    uint64_t raw_bytes = 0;
+    uint64_t mp4_packets = 0;
+    uint64_t mp4_bytes = 0;
+    uint64_t flush_packets = 0;
+    uint64_t flush_bytes = 0;
+    bool failed = false;
+    bool mp4_queue_overflowed = false;
+    uint64_t mp4_queue_overflow_events = 0;
+    size_t mp4_peak_queued_packets = 0;
+    size_t mp4_peak_queued_bytes = 0;
+    double enqueue_age_p95_ms = 0.0;
+    double prepare_p95_ms = 0.0;
+    double encode_total_p95_ms = 0.0;
+    double encode_picture_p95_ms = 0.0;
+    double lock_bitstream_p95_ms = 0.0;
+    double bitstream_fetch_p95_ms = 0.0;
+    double mp4_push_mean_ms = 0.0;
+    double mp4_push_max_ms = 0.0;
+    double mp4_write_mean_ms = 0.0;
+    double mp4_write_max_ms = 0.0;
+    std::string mp4_path;
+    std::string mp4_keyframe_path;
+};
+
 void write_encode_csv_header(std::ofstream& csv)
 {
     csv << "encode_index,source_frame_index,camera_serial,recording_frame_id,"
@@ -723,6 +852,40 @@ public:
 
     uint64_t frames_encoded() const { return frames_encoded_.load(std::memory_order_relaxed); }
     uint64_t frames_dropped() const { return frames_dropped_.load(std::memory_order_relaxed); }
+    bool failed() const { return failed_.load(std::memory_order_acquire); }
+
+    EncodeSummary summary() const
+    {
+        EncodeSummary out;
+        out.frames_encoded = frames_encoded();
+        out.frames_dropped = frames_dropped();
+        out.returned_packets = returned_packets_;
+        out.returned_bytes = returned_bytes_;
+        out.raw_packets = raw_packets_;
+        out.raw_bytes = raw_bytes_;
+        out.mp4_packets = mp4_packets_;
+        out.mp4_bytes = mp4_bytes_;
+        out.flush_packets = flush_packets_;
+        out.flush_bytes = flush_bytes_;
+        out.failed = failed();
+        out.mp4_queue_overflowed = mp4_queue_overflowed_;
+        out.mp4_queue_overflow_events = mp4_queue_overflow_events_;
+        out.mp4_peak_queued_packets = mp4_peak_queued_packets_;
+        out.mp4_peak_queued_bytes = mp4_peak_queued_bytes_;
+        out.enqueue_age_p95_ms = percentile_ms(enqueue_age_samples_, 95.0);
+        out.prepare_p95_ms = percentile_ms(prepare_samples_, 95.0);
+        out.encode_total_p95_ms = percentile_ms(encode_total_samples_, 95.0);
+        out.encode_picture_p95_ms = percentile_ms(encode_picture_samples_, 95.0);
+        out.lock_bitstream_p95_ms = percentile_ms(lock_bitstream_samples_, 95.0);
+        out.bitstream_fetch_p95_ms = percentile_ms(bitstream_fetch_samples_, 95.0);
+        out.mp4_push_mean_ms = writer_latency_.push_packet_total.mean_ms();
+        out.mp4_push_max_ms = writer_latency_.push_packet_total.max_ms();
+        out.mp4_write_mean_ms = writer_latency_.packet_write.mean_ms();
+        out.mp4_write_max_ms = writer_latency_.packet_write.max_ms();
+        out.mp4_path = options_.mp4_out_path;
+        out.mp4_keyframe_path = resolved_mp4_keyframe_path_;
+        return out;
+    }
 
 private:
     static constexpr size_t kInvalidSlot = std::numeric_limits<size_t>::max();
@@ -823,13 +986,41 @@ private:
             reinterpret_cast<NV_ENC_CUSTREAM_PTR>(&stream_));
 
         if (!options_.bitstream_out_path.empty()) {
+            ensure_parent_directory(options_.bitstream_out_path);
             bitstream_out_.open(options_.bitstream_out_path, std::ios::binary | std::ios::trunc);
             if (!bitstream_out_) {
                 throw std::runtime_error("Failed to open bitstream output: " +
                                          options_.bitstream_out_path);
             }
         }
+        if (!options_.mp4_out_path.empty()) {
+            ensure_parent_directory(options_.mp4_out_path);
+            resolved_mp4_keyframe_path_ = options_.mp4_keyframe_path.empty()
+                ? derive_keyframe_path(options_.mp4_out_path)
+                : options_.mp4_keyframe_path;
+            ensure_parent_directory(resolved_mp4_keyframe_path_);
+            const AVCodecID codec_id =
+                options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
+            const std::vector<std::pair<std::string, std::string>> metadata_tags = {
+                {"producer", "external_recorder_ipc_probe"},
+                {"camera_serial", desc.camera_serial},
+                {"codec", options_.codec},
+                {"preset", options_.preset},
+                {"tuning", options_.tuning},
+                {"external_recorder", "true"}
+            };
+            mp4_writer_ = std::make_unique<FFmpegWriter>(
+                codec_id,
+                desc.width,
+                desc.height,
+                static_cast<int>(std::max<uint32_t>(1, options_.fps)),
+                options_.mp4_out_path.c_str(),
+                resolved_mp4_keyframe_path_.c_str(),
+                metadata_tags);
+            mp4_writer_->create_thread();
+        }
         if (!options_.encode_csv_path.empty()) {
+            ensure_parent_directory(options_.encode_csv_path);
             encode_csv_.open(options_.encode_csv_path, std::ios::out | std::ios::trunc);
             if (!encode_csv_) {
                 throw std::runtime_error("Failed to open encode CSV: " +
@@ -887,6 +1078,59 @@ private:
         }
     }
 
+    void push_packet_to_outputs(const std::vector<uint8_t>& packet, bool flush_packet)
+    {
+        if (packet.empty()) {
+            return;
+        }
+        if (bitstream_out_) {
+            bitstream_out_.write(
+                reinterpret_cast<const char*>(packet.data()),
+                static_cast<std::streamsize>(packet.size()));
+            raw_packets_++;
+            raw_bytes_ += packet.size();
+        }
+        if (mp4_writer_) {
+            mp4_writer_->push_packet(
+                const_cast<uint8_t*>(packet.data()),
+                static_cast<int>(packet.size()),
+                mp4_pts_counter_++);
+            mp4_packets_++;
+            mp4_bytes_ += packet.size();
+        }
+        if (flush_packet) {
+            flush_packets_++;
+            flush_bytes_ += packet.size();
+        }
+    }
+
+    void record_encode_sample(const EncodeSample& sample)
+    {
+        returned_packets_ += sample.returned_packets;
+        returned_bytes_ += sample.returned_bytes;
+        enqueue_age_samples_.push_back(sample.enqueue_age_ms);
+        prepare_samples_.push_back(sample.prepare_ms);
+        encode_total_samples_.push_back(sample.encode_total_ms);
+        encode_picture_samples_.push_back(sample.encode_picture_ms);
+        lock_bitstream_samples_.push_back(sample.lock_bitstream_ms);
+        bitstream_fetch_samples_.push_back(sample.bitstream_fetch_ms);
+    }
+
+    void finish_mp4_writer()
+    {
+        if (!mp4_writer_) {
+            return;
+        }
+        mp4_writer_->quit_thread();
+        mp4_writer_->join_thread();
+        writer_latency_ = mp4_writer_->latency_stats();
+        mp4_queue_overflowed_ = mp4_writer_->has_queue_overflowed();
+        mp4_queue_overflow_events_ = mp4_writer_->queue_overflow_events();
+        mp4_peak_queued_packets_ = mp4_writer_->peak_queued_packets();
+        mp4_peak_queued_bytes_ = mp4_writer_->peak_queued_bytes();
+        mp4_writer_.reset();
+    }
+
     void encode_one(const EncodeWorkItem& item)
     {
         initialize_encoder(item.desc);
@@ -936,11 +1180,7 @@ private:
         sample.returned_packets = static_cast<uint32_t>(packets.size());
         for (const auto& packet : packets) {
             sample.returned_bytes += packet.size();
-            if (bitstream_out_ && !packet.empty()) {
-                bitstream_out_.write(
-                    reinterpret_cast<const char*>(packet.data()),
-                    static_cast<std::streamsize>(packet.size()));
-            }
+            push_packet_to_outputs(packet, false);
         }
         if (bitstream_out_ && !bitstream_out_) {
             throw std::runtime_error("Failed while writing bitstream output");
@@ -951,6 +1191,7 @@ private:
                 encode_csv_.flush();
             }
         }
+        record_encode_sample(sample);
         frames_encoded_.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -964,11 +1205,7 @@ private:
         uint64_t fetch_ns = 0;
         encoder_->EndEncode(packets, nullptr, nullptr, &fetch_ns, &timing);
         for (const auto& packet : packets) {
-            if (bitstream_out_ && !packet.empty()) {
-                bitstream_out_.write(
-                    reinterpret_cast<const char*>(packet.data()),
-                    static_cast<std::streamsize>(packet.size()));
-            }
+            push_packet_to_outputs(packet, true);
         }
         if (bitstream_out_) {
             bitstream_out_.flush();
@@ -976,6 +1213,7 @@ private:
         if (encode_csv_) {
             encode_csv_.flush();
         }
+        finish_mp4_writer();
     }
 
     void run()
@@ -1024,12 +1262,127 @@ private:
     CUcontext cu_context_ = nullptr;
     cudaStream_t stream_ = nullptr;
     std::unique_ptr<NvEncoderCuda> encoder_;
+    std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
     std::ofstream encode_csv_;
+    int64_t mp4_pts_counter_ = 0;
+    uint64_t returned_packets_ = 0;
+    uint64_t returned_bytes_ = 0;
+    uint64_t raw_packets_ = 0;
+    uint64_t raw_bytes_ = 0;
+    uint64_t mp4_packets_ = 0;
+    uint64_t mp4_bytes_ = 0;
+    uint64_t flush_packets_ = 0;
+    uint64_t flush_bytes_ = 0;
+    bool mp4_queue_overflowed_ = false;
+    uint64_t mp4_queue_overflow_events_ = 0;
+    size_t mp4_peak_queued_packets_ = 0;
+    size_t mp4_peak_queued_bytes_ = 0;
+    FFmpegWriterLatencyStats writer_latency_;
+    std::string resolved_mp4_keyframe_path_;
+    std::vector<double> enqueue_age_samples_;
+    std::vector<double> prepare_samples_;
+    std::vector<double> encode_total_samples_;
+    std::vector<double> encode_picture_samples_;
+    std::vector<double> lock_bitstream_samples_;
+    std::vector<double> bitstream_fetch_samples_;
     std::atomic<uint64_t> frames_encoded_{0};
     std::atomic<uint64_t> frames_dropped_{0};
     std::atomic<bool> failed_{false};
 };
+
+void write_summary_json(const Options& options,
+                        uint64_t frames_received,
+                        uint64_t acks_sent,
+                        uint64_t detach_copied,
+                        uint64_t opened_handles,
+                        uint64_t encode_enqueued,
+                        uint64_t encode_skipped,
+                        uint64_t encode_dropped,
+                        const std::vector<double>& detach_total_samples,
+                        const std::vector<double>& detach_open_samples,
+                        const std::vector<double>& detach_copy_samples,
+                        const EncodeSummary* encode_summary)
+{
+    if (options.summary_json_path.empty()) {
+        return;
+    }
+    ensure_parent_directory(options.summary_json_path);
+    std::ofstream out(options.summary_json_path, std::ios::out | std::ios::trunc);
+    if (!out) {
+        throw std::runtime_error("Failed to open summary JSON: " + options.summary_json_path);
+    }
+
+    const EncodeSummary empty_encode_summary;
+    const EncodeSummary& enc = encode_summary ? *encode_summary : empty_encode_summary;
+    out << std::fixed << std::setprecision(6);
+    out << "{\n";
+    out << "  \"schema_version\": 1,\n";
+    out << "  \"tool\": \"external_recorder_ipc_probe\",\n";
+    out << "  \"socket_path\": \"" << json_escape(options.socket_path) << "\",\n";
+    out << "  \"gpu_id\": " << options.gpu_id << ",\n";
+    out << "  \"encode\": " << (options.encode ? "true" : "false") << ",\n";
+    out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
+    out << "  \"preset\": \"" << json_escape(options.preset) << "\",\n";
+    out << "  \"tuning\": \"" << json_escape(options.tuning) << "\",\n";
+    out << "  \"fps\": " << options.fps << ",\n";
+    out << "  \"encode_max_fps\": " << options.encode_max_fps << ",\n";
+    out << "  \"encode_queue_depth\": " << options.encode_queue_depth << ",\n";
+    out << "  \"frames_received\": " << frames_received << ",\n";
+    out << "  \"acks_sent\": " << acks_sent << ",\n";
+    out << "  \"detach_copied\": " << detach_copied << ",\n";
+    out << "  \"opened_handles\": " << opened_handles << ",\n";
+    out << "  \"encode_enqueued\": " << encode_enqueued << ",\n";
+    out << "  \"encode_skipped\": " << encode_skipped << ",\n";
+    out << "  \"encode_dropped\": " << encode_dropped << ",\n";
+    out << "  \"frames_encoded\": " << enc.frames_encoded << ",\n";
+    out << "  \"worker_failed\": " << (enc.failed ? "true" : "false") << ",\n";
+    out << "  \"external_encode\": {\n";
+    out << "    \"frames_dropped\": " << enc.frames_dropped << ",\n";
+    out << "    \"returned_packets\": " << enc.returned_packets << ",\n";
+    out << "    \"returned_bytes\": " << enc.returned_bytes << ",\n";
+    out << "    \"raw_packets\": " << enc.raw_packets << ",\n";
+    out << "    \"raw_bytes\": " << enc.raw_bytes << ",\n";
+    out << "    \"mp4_packets\": " << enc.mp4_packets << ",\n";
+    out << "    \"mp4_bytes\": " << enc.mp4_bytes << ",\n";
+    out << "    \"flush_packets\": " << enc.flush_packets << ",\n";
+    out << "    \"flush_bytes\": " << enc.flush_bytes << ",\n";
+    out << "    \"enqueue_age_p95_ms\": " << enc.enqueue_age_p95_ms << ",\n";
+    out << "    \"prepare_p95_ms\": " << enc.prepare_p95_ms << ",\n";
+    out << "    \"encode_total_p95_ms\": " << enc.encode_total_p95_ms << ",\n";
+    out << "    \"encode_picture_p95_ms\": " << enc.encode_picture_p95_ms << ",\n";
+    out << "    \"lock_bitstream_p95_ms\": " << enc.lock_bitstream_p95_ms << ",\n";
+    out << "    \"bitstream_fetch_p95_ms\": " << enc.bitstream_fetch_p95_ms << ",\n";
+    out << "    \"mp4_push_mean_ms\": " << enc.mp4_push_mean_ms << ",\n";
+    out << "    \"mp4_push_max_ms\": " << enc.mp4_push_max_ms << ",\n";
+    out << "    \"mp4_write_mean_ms\": " << enc.mp4_write_mean_ms << ",\n";
+    out << "    \"mp4_write_max_ms\": " << enc.mp4_write_max_ms << ",\n";
+    out << "    \"mp4_queue_overflowed\": " << (enc.mp4_queue_overflowed ? "true" : "false") << ",\n";
+    out << "    \"mp4_queue_overflow_events\": " << enc.mp4_queue_overflow_events << ",\n";
+    out << "    \"mp4_peak_queued_packets\": " << enc.mp4_peak_queued_packets << ",\n";
+    out << "    \"mp4_peak_queued_bytes\": " << enc.mp4_peak_queued_bytes << "\n";
+    out << "  },\n";
+    out << "  \"detach_timing\": {\n";
+    out << "    \"total_p95_ms\": " << percentile_ms(detach_total_samples, 95.0) << ",\n";
+    out << "    \"open_handle_p95_ms\": " << percentile_ms(detach_open_samples, 95.0) << ",\n";
+    out << "    \"copy_p95_ms\": " << percentile_ms(detach_copy_samples, 95.0) << "\n";
+    out << "  },\n";
+    out << "  \"outputs\": {\n";
+    out << "    \"detach_csv\": \"" << json_escape(options.csv_path) << "\",\n";
+    out << "    \"encode_csv\": \"" << json_escape(options.encode_csv_path) << "\",\n";
+    out << "    \"raw_bitstream\": \"" << json_escape(options.bitstream_out_path) << "\",\n";
+    out << "    \"mp4\": \"" << json_escape(enc.mp4_path) << "\",\n";
+    out << "    \"mp4_keyframe\": \"" << json_escape(enc.mp4_keyframe_path) << "\"\n";
+    out << "  },\n";
+    out << "  \"output_file_sizes\": {\n";
+    out << "    \"detach_csv_bytes\": " << file_size_or_zero(options.csv_path) << ",\n";
+    out << "    \"encode_csv_bytes\": " << file_size_or_zero(options.encode_csv_path) << ",\n";
+    out << "    \"raw_bitstream_bytes\": " << file_size_or_zero(options.bitstream_out_path) << ",\n";
+    out << "    \"mp4_bytes\": " << file_size_or_zero(enc.mp4_path) << ",\n";
+    out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(enc.mp4_keyframe_path) << "\n";
+    out << "  }\n";
+    out << "}\n";
+}
 
 }  // namespace
 
@@ -1058,6 +1411,7 @@ int main(int argc, char** argv)
 
         std::ofstream csv;
         if (!options.csv_path.empty()) {
+            ensure_parent_directory(options.csv_path);
             csv.open(options.csv_path);
             if (!csv) {
                 throw std::runtime_error("Failed to open CSV: " + options.csv_path);
@@ -1069,6 +1423,15 @@ int main(int argc, char** argv)
         void* owned_device_buffer = nullptr;
         uint64_t owned_device_buffer_bytes = 0;
         uint64_t frame_count = 0;
+        uint64_t ack_count = 0;
+        uint64_t detach_copied_count = 0;
+        uint64_t opened_handles_count = 0;
+        uint64_t encode_enqueued_count = 0;
+        uint64_t encode_skipped_count = 0;
+        uint64_t encode_dropped_count = 0;
+        std::vector<double> detach_total_samples;
+        std::vector<double> detach_open_samples;
+        std::vector<double> detach_copy_samples;
         std::unique_ptr<ExternalEncodeWorker> encode_worker;
         if (options.encode) {
             encode_worker = std::make_unique<ExternalEncodeWorker>(options);
@@ -1158,6 +1521,25 @@ int main(int argc, char** argv)
             if (!write_all(client_fd, "ACK " + std::to_string(desc.recording_frame_id) + "\n")) {
                 break;
             }
+            ++ack_count;
+            if (sample.detach_copied) {
+                ++detach_copied_count;
+            }
+            if (sample.opened_handle) {
+                ++opened_handles_count;
+            }
+            if (sample.encode_enqueued) {
+                ++encode_enqueued_count;
+            }
+            if (sample.encode_skipped) {
+                ++encode_skipped_count;
+            }
+            if (sample.encode_dropped) {
+                ++encode_dropped_count;
+            }
+            detach_total_samples.push_back(sample.total_ms);
+            detach_open_samples.push_back(sample.open_handle_ms);
+            detach_copy_samples.push_back(sample.copy_ms);
             if (csv) {
                 write_csv_row(csv, sample);
                 if ((frame_count % 60) == 0) {
@@ -1173,6 +1555,21 @@ int main(int argc, char** argv)
         if (csv) {
             csv.flush();
         }
+        const EncodeSummary encode_summary =
+            encode_worker ? encode_worker->summary() : EncodeSummary{};
+        write_summary_json(
+            options,
+            frame_count,
+            ack_count,
+            detach_copied_count,
+            opened_handles_count,
+            encode_enqueued_count,
+            encode_skipped_count,
+            encode_dropped_count,
+            detach_total_samples,
+            detach_open_samples,
+            detach_copy_samples,
+            encode_worker ? &encode_summary : nullptr);
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {
@@ -1192,10 +1589,11 @@ int main(int argc, char** argv)
         std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
         if (encode_worker) {
             std::cout << " encoded=" << encode_worker->frames_encoded()
-                      << " encode_dropped=" << encode_worker->frames_dropped();
+                      << " encode_dropped=" << encode_worker->frames_dropped()
+                      << " worker_failed=" << (encode_worker->failed() ? "true" : "false");
         }
         std::cout << std::endl;
-        return 0;
+        return encode_worker && encode_worker->failed() ? 1 : 0;
     } catch (const std::exception& ex) {
         if (client_fd >= 0) {
             close(client_fd);

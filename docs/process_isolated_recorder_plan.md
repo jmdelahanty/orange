@@ -384,10 +384,15 @@ External-process NVENC first slice:
 
 Current limitations of this slice:
 
-- The output is a raw elementary stream, not an MP4 with production metadata.
-- The first smoke encodes a capped subset (`60 fps`) while acquisition remains
+- The probe now writes MP4, keyframe sidecar, per-frame CSVs, and a summary
+  JSON, but it is still a diagnostic recorder rather than a production backend.
+- The smoke encodes a capped subset (`60 fps`) while acquisition remains
   `100 fps`; it is a same-GPU contention discriminator, not production
   full-frame coverage.
+- The repeatable runner is
+  `scripts/run_external_recorder_smoke.sh`; it uses the default per-camera
+  socket path so the existing `sudo -n /usr/local/bin/orange-local-benchmark`
+  wrapper can run without extra env passthrough.
 - The external process still does only single-session encode. Production
   `4512x4512 @ 100 fps` still requires external split-GOP / multi-GPU routing.
 

@@ -1,0 +1,47 @@
+{
+  "experiment_id": "2010096_headless_real_yolo_external_ipc_encode_smoke",
+  "notes": "Single-camera headless real-YOLO smoke using recording_sink_mode=external_ipc. The analytics process exports frame IPC descriptors and ACKs after the external process detaches each selected frame; the external recorder process performs NVENC encode at a capped 60 FPS.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 6,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "free_run",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_recabled_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "fail_on_init_error": true
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25],
+    "aq": ["off"],
+    "temporal_aq": ["off"],
+    "lookahead": ["off"]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

@@ -74,6 +74,13 @@ Implemented:
   - `--encode-max-fps`
   - `--encode-csv`
   - `--bitstream-out`
+  - `--mp4-out`
+  - `--mp4-keyframe`
+  - `--summary-json`
+- A single-camera smoke runner:
+  - `scripts/run_external_recorder_smoke.sh`
+- A checked-in smoke spec:
+  - `experiment_specs/2010096_headless_real_yolo_external_ipc_encode_smoke.json`
 - Headless artifact counters:
   - `external_ipc_frames_acked_final`
   - `external_ipc_failures_final`
@@ -83,10 +90,43 @@ Limitations:
 
 - `external_recorder_ipc_probe` is still a diagnostic tool, not a recorder
   backend.
-- Output is a raw elementary stream, not MP4.
-- The first encode smoke encoded a capped subset at `60 fps`.
+- The probe can now write MP4, but output naming/session metadata are still
+  diagnostic rather than production recorder policy.
+- The encode smoke encodes a capped subset at `60 fps`.
 - No recorder-side session metadata or robust shutdown protocol exists yet.
 - No split-GOP/multi-GPU routing exists outside the analytics process yet.
+
+## Current MP4 Smoke Result
+
+Command:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 60 --output-dir /tmp
+```
+
+Result from `2026_04_25_212327`:
+
+- Analytics root:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_encode_smoke_2010096_20260425_212327`
+- Recorder artifacts:
+  `/tmp/orange_external_recorder_2010096_20260425_212327`
+- External recorder received and ACKed `401` frames.
+- It encoded `241` frames, skipped `160` by the `60 fps` cap, and dropped `0`.
+- Detach copy `p95 = 0.033864 ms`.
+- External encode total `p95 = 1.685832 ms`.
+- `nvEncLockBitstream p95 = 0.003807 ms`.
+- MP4 output:
+  `/tmp/orange_external_recorder_2010096_20260425_212327/Cam2010096_external.mp4`
+- `ffprobe` saw `duration = 4.017 s` and `size = 76,638,875 bytes`.
+
+Interpretation:
+
+- The MP4/mux path works mechanically.
+- The external-process path still keeps the YOLO CPU launch path fast during a
+  same-GPU live-camera smoke.
+- This is not yet a production throughput test because it is one camera and
+  external encode is capped at `60 fps`.
 
 ## Stage 1: Production-Like Single-Camera External Recorder
 

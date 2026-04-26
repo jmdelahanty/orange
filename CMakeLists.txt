@@ -314,6 +314,7 @@ set(NVENC_STRESS_LOAD_SOURCES
 
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
+    "${SRC_DIR}/FFmpegWriter.cpp"
     ${NVENCODER_SOURCES}
 )
 
@@ -485,6 +486,11 @@ target_link_libraries(external_recorder_ipc_probe PRIVATE
     ${CUDA_CUDART_LIBRARY}
     ${CUDA_DRIVER_LIBRARY}
     ${NVIDIA_ENCODE_LIBRARY}
+    ${AVFORMAT_LIBRARY}
+    ${SWSCALE_LIBRARY}
+    ${SWRESAMPLE_LIBRARY}
+    ${AVUTIL_LIBRARY}
+    ${AVCODEC_LIBRARY}
     m
     pthread
 )

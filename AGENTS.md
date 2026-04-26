@@ -132,6 +132,39 @@ Do not block process-isolation or encoder-contention experiments on having fish
 available. Do require fish or another valid detectable subject before declaring
 crop/pose/track latency solved.
 
+## External Recorder Smoke
+
+The current one-camera external-recorder smoke is:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 60 --output-dir /tmp
+```
+
+Default shape:
+
+- Camera `2010096`.
+- Analytics/YOLO GPU `5`.
+- External recorder GPU `5`.
+- `recording_sink_mode = "external_ipc"`.
+- External HEVC encode capped at `60 fps`.
+- Socket path uses the production default:
+  `/tmp/orange_external_recorder_2010096.sock`.
+
+Latest short smoke:
+
+- Analytics root:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_encode_smoke_2010096_20260425_212327`
+- Recorder root:
+  `/tmp/orange_external_recorder_2010096_20260425_212327`
+- Recorder received/ACKed `401` frames.
+- Encoded `241`, skipped `160`, dropped `0`.
+- Detach copy `p95 = 0.033864 ms`.
+- External encode total `p95 = 1.685832 ms`.
+- `nvEncLockBitstream p95 = 0.003807 ms`.
+- MP4 output was valid enough for `ffprobe`: `duration = 4.017 s`,
+  `size = 76,638,875 bytes`.
+
 ## Remaining Work
 
 - Automated decoded-frame entropy/black-frame sanity checking is now part of
@@ -165,14 +198,15 @@ crop/pose/track latency solved.
   (`cpu_preprocess_ms p95 = 0.0149 ms`, `cpu_pre_sync_ms p95 = 0.0914 ms`);
   `capture_to_detect_done_ms p95` rose to `4.5895 ms` from same-GPU completion
   pressure, not CPU launch/preprocess contention.
-- The encode slice writes a raw elementary stream and encodes a capped subset;
-  it is not production recording yet. Next implementation work is to turn this
-  into a real external recorder backend with mux/output metadata and then
-  external split-GOP/multi-GPU routing. Keep encode GPU placement/routing as a
-  first-class design variable.
+- The external IPC probe now writes MP4, keyframe sidecar, per-frame CSVs, and a
+  summary JSON for the one-camera capped external encode smoke. It is still not
+  production recording yet. Next implementation work is to make the recorder
+  protocol/session metadata robust, add video-content validation to the smoke
+  summary, then move toward external split-GOP/multi-GPU routing. Keep encode
+  GPU placement/routing as a first-class design variable.
 - The staged implementation roadmap is documented in
   `docs/external_recorder_implementation_plan.md`. The next highest-signal
-  slice is valid MP4 output plus a single-command runner for the single-camera
-  same-GPU `60 fps` external recorder test.
+  slice is hardening the single-camera MP4 smoke into a production-like
+  external recorder contract, not more same-process NVENC tuning.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
