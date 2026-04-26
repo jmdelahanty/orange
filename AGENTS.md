@@ -248,5 +248,10 @@ multi-GPU split-GOP throughput.
   `docs/external_split_gop_recorder_design.md`. Use that as the starting point
   for the next implementation slice: session metadata, shard assignment,
   GOP routing artifacts, and then a one-camera two-shard diagnostic.
+- The first metadata-only external recorder shard slice now exists:
+  descriptors/artifacts carry session id, stream id, GOP index, frame index
+  within GOP, assigned GPU, assigned shard, and `routing_policy`. The current
+  implementation is still `single_shard`; it does not route across two encoder
+  lanes yet.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

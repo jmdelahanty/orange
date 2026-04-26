@@ -127,11 +127,17 @@ class RecordingIngress::ExternalIpcHandoffWorker : public CThreadWorker<WORKER_E
 public:
     ExternalIpcHandoffWorker(SafeQueue<WORKER_ENTRY*>* recycle_queue,
                              std::string camera_serial,
-                             int source_gpu_id)
+                             int source_gpu_id,
+                             int route_hint_gpu_id,
+                             uint32_t recording_gop_length)
         : CThreadWorker<WORKER_ENTRY>(("ExternalIpcRecorder_Cam_" + camera_serial).c_str()),
           recycle_queue_(recycle_queue),
           camera_serial_(std::move(camera_serial)),
           source_gpu_id_(source_gpu_id),
+          route_hint_gpu_id_(route_hint_gpu_id),
+          recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
+          session_id_(resolve_session_id()),
+          stream_id_(camera_serial_),
           socket_path_(resolve_socket_path()),
           ack_timeout_ms_(resolve_ack_timeout_ms()) {}
 
@@ -195,6 +201,19 @@ private:
             return 1000;
         }
         return static_cast<int>(parsed);
+    }
+
+    std::string resolve_session_id() const
+    {
+        const std::string per_camera_env =
+            "ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" + camera_serial_;
+        if (const char* value = std::getenv(per_camera_env.c_str()); value && *value) {
+            return value;
+        }
+        if (const char* value = std::getenv("ORANGE_EXTERNAL_RECORDER_SESSION_ID"); value && *value) {
+            return value;
+        }
+        return "external_ipc_" + camera_serial_;
     }
 
     std::string resolve_socket_path() const
@@ -346,6 +365,13 @@ private:
         }
 
         std::ostringstream msg;
+        const uint64_t zero_based_frame =
+            entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
+        const uint64_t gop_index =
+            zero_based_frame / static_cast<uint64_t>(recording_gop_length_);
+        const uint32_t frame_index_within_gop = static_cast<uint32_t>(
+            zero_based_frame % static_cast<uint64_t>(recording_gop_length_));
+
         msg << "FRAME "
             << camera_serial_ << " "
             << entry->recording_frame_id << " "
@@ -357,7 +383,15 @@ private:
             << entry->source_buffer_bytes << " "
             << entry->timestamp << " "
             << entry->timestamp_sys << " "
-            << handle_hex << "\n";
+            << handle_hex << " "
+            << session_id_ << " "
+            << stream_id_ << " "
+            << gop_index << " "
+            << frame_index_within_gop << " "
+            << route_hint_gpu_id_ << " "
+            << 0 << " "
+            << "single_shard"
+            << "\n";
 
         if (!send_all(msg.str())) {
             log_limited("send frame descriptor failed: " + std::string(std::strerror(errno)));
@@ -397,6 +431,10 @@ private:
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
     std::string camera_serial_;
     int source_gpu_id_ = -1;
+    int route_hint_gpu_id_ = -1;
+    uint32_t recording_gop_length_ = 1;
+    std::string session_id_;
+    std::string stream_id_;
     std::string socket_path_;
     int ack_timeout_ms_ = 1000;
     int socket_fd_ = -1;
@@ -447,7 +485,9 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
             std::make_unique<ExternalIpcHandoffWorker>(
                 recycle_queue_,
                 serial,
-                source_gpu_id_);
+                source_gpu_id_,
+                primary_encode_gpu_id_,
+                recording_gop_length_);
     }
 
     if (recording_sink_mode_ != "real") {

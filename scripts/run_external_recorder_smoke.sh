@@ -176,6 +176,7 @@ fi
 TEMP_SPEC="$RUN_DIR/external_recorder_smoke_spec.json"
 DETACH_CSV="$RUN_DIR/external_detach.csv"
 ENCODE_CSV="$RUN_DIR/external_encode.csv"
+GOP_ROUTING_CSV="$RUN_DIR/external_gop_routing.csv"
 SUMMARY_JSON="$RUN_DIR/external_recorder_summary.json"
 VIDEO_SANITY_JSON="$RUN_DIR/external_video_sanity.json"
 MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
@@ -269,7 +270,12 @@ RECORDER_ARGS=(
   --mp4-out "$MP4_OUT"
   --mp4-keyframe "$KEYFRAME_OUT"
   --encode-csv "$ENCODE_CSV"
+  --gop-routing-csv "$GOP_ROUTING_CSV"
   --summary-json "$SUMMARY_JSON"
+  --session-id "$EXPERIMENT_ID"
+  --stream-id "$CAMERA_SERIAL"
+  --shard-id 0
+  --routing-policy single_shard
 )
 if [[ -n "$BITSTREAM_OUT" ]]; then
   RECORDER_ARGS+=(--bitstream-out "$BITSTREAM_OUT")
@@ -317,6 +323,7 @@ echo "  analytics_root=$ANALYTICS_ROOT"
 echo "  recorder_log=$RECORDER_LOG"
 echo "  detach_csv=$DETACH_CSV"
 echo "  encode_csv=$ENCODE_CSV"
+echo "  gop_routing_csv=$GOP_ROUTING_CSV"
 echo "  summary_json=$SUMMARY_JSON"
 echo "  video_sanity_json=$VIDEO_SANITY_JSON"
 echo "  mp4_out=$MP4_OUT"
@@ -335,6 +342,7 @@ summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 enc = summary.get("external_encode", {})
 print("[external-recorder] summary:")
 print(f"  frames_received={summary.get('frames_received')} acks_sent={summary.get('acks_sent')} detach_copied={summary.get('detach_copied')}")
+print(f"  session_id={summary.get('session_id')} assigned_gpu_id={summary.get('assigned_gpu_id')} assigned_shard_id={summary.get('assigned_shard_id')} routing_policy={summary.get('routing_policy')}")
 print(f"  encode_enqueued={summary.get('encode_enqueued')} encode_skipped={summary.get('encode_skipped')} encode_dropped={summary.get('encode_dropped')} frames_encoded={summary.get('frames_encoded')}")
 print(f"  detach_copy_p95_ms={summary.get('detach_timing', {}).get('copy_p95_ms')} encode_total_p95_ms={enc.get('encode_total_p95_ms')} lock_bitstream_p95_ms={enc.get('lock_bitstream_p95_ms')}")
 print(f"  mp4_bytes={summary.get('output_file_sizes', {}).get('mp4_bytes')} worker_failed={summary.get('worker_failed')}")

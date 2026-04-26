@@ -20,6 +20,18 @@ int default_preprocess_surface_pitch(const RecordingOutputConfig& output_config,
     }
     return camera_params ? static_cast<int>(camera_params->width) : 0;
 }
+
+uint32_t recording_gop_length_or_fallback(const ResolvedRecordingConfig& config,
+                                          const CameraParams* camera_params)
+{
+    if (config.encode.gop_length > 0) {
+        return static_cast<uint32_t>(config.encode.gop_length);
+    }
+    if (camera_params && camera_params->frame_rate > 0) {
+        return static_cast<uint32_t>(camera_params->frame_rate);
+    }
+    return 1;
+}
 }
 
 ModernRecordingPipeline::ModernRecordingPipeline(
@@ -113,7 +125,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             nullptr,
             camera_params_->gpu_id,
             recording_gpu_id_,
-            std::max<uint32_t>(1u, static_cast<uint32_t>(camera_params_->frame_rate)),
+            recording_gop_length_or_fallback(resolved_recording_config_, camera_params_),
             resolved_recording_config_,
             &recycle_queue,
             normalized_sink_mode,

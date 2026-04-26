@@ -314,6 +314,27 @@ Acceptance gates:
   `11-12 ms p95` two-camera PTP baseline once split-GOP is tested under
   production load.
 
+### Metadata-Only Single-Shard Slice
+
+Implemented on 2026-04-26:
+
+- Analytics external IPC descriptors now include session id, stream id,
+  `gop_index`, `frame_index_within_gop`, a route-hint GPU id, shard id `0`, and
+  routing policy `single_shard`.
+- `external_recorder_ipc_probe` accepts the extended descriptor while remaining
+  compatible with the previous shorter `FRAME` line.
+- The recorder stamps the actual assignment from its own CLI:
+  `--gpu-id`, `--shard-id`, and `--routing-policy`.
+- Detach CSV and encode CSV now carry session/GOP/shard metadata.
+- The smoke runner writes `external_gop_routing.csv`.
+- No data-path behavior changed yet: this is still one external recorder
+  process, one encoder lane, and `single_shard` routing.
+
+Next implementation step:
+
+- Add a two-shard diagnostic mode that creates two encoder lanes and routes
+  complete GOPs by `gop_index % shard_count`.
+
 ## Open Questions
 
 - Whether same-supervisor multi-shard is enough, or one process per shard is

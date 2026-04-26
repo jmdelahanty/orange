@@ -61,19 +61,31 @@ struct Options {
     std::string mp4_keyframe_path;
     std::string encode_csv_path;
     std::string summary_json_path;
+    std::string gop_routing_csv_path;
+    std::string session_id;
+    std::string stream_id;
+    int shard_id = 0;
+    std::string routing_policy = "single_shard";
 };
 
 struct FrameDescriptor {
     std::string camera_serial;
+    std::string session_id;
+    std::string stream_id;
     uint64_t recording_frame_id = 0;
     uint64_t local_frame_id = 0;
+    uint64_t gop_index = 0;
+    uint32_t frame_index_within_gop = 0;
     int source_gpu_id = -1;
+    int assigned_gpu_id = -1;
+    int assigned_shard_id = 0;
     int width = 0;
     int height = 0;
     int pixel_format = 0;
     uint64_t bytes = 0;
     uint64_t timestamp = 0;
     uint64_t timestamp_sys = 0;
+    std::string routing_policy = "single_shard";
     std::string handle_hex;
 };
 
@@ -84,8 +96,16 @@ struct ImportedHandle {
 struct Sample {
     uint64_t frame_index = 0;
     std::string camera_serial;
+    std::string session_id;
+    std::string stream_id;
     uint64_t recording_frame_id = 0;
     uint64_t local_frame_id = 0;
+    uint64_t gop_index = 0;
+    uint32_t frame_index_within_gop = 0;
+    int source_gpu_id = -1;
+    int assigned_gpu_id = -1;
+    int assigned_shard_id = 0;
+    std::string routing_policy = "single_shard";
     uint64_t bytes = 0;
     double total_ms = 0.0;
     double open_handle_ms = 0.0;
@@ -131,6 +151,11 @@ void signal_handler(int)
         << "  --mp4-keyframe <path>  Optional keyframe sidecar path for --mp4-out.\n"
         << "  --encode-csv <path>   Optional external encode timing CSV.\n"
         << "  --summary-json <path>  Optional run summary JSON.\n"
+        << "  --gop-routing-csv <path> Optional per-frame route/shard CSV.\n"
+        << "  --session-id <id>     Session id for artifacts. Defaults to first descriptor.\n"
+        << "  --stream-id <id>      Stream id for artifacts. Defaults to camera serial.\n"
+        << "  --shard-id <int>      Recorder shard id for this process/lane. Default 0.\n"
+        << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
         << "  --monochrome          Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome       Disable monochrome encoding.\n"
         << "  --help\n";
@@ -244,6 +269,16 @@ Options parse_options(int argc, char** argv)
             options.encode_csv_path = consume(arg.c_str());
         } else if (arg == "--summary-json") {
             options.summary_json_path = consume(arg.c_str());
+        } else if (arg == "--gop-routing-csv") {
+            options.gop_routing_csv_path = consume(arg.c_str());
+        } else if (arg == "--session-id") {
+            options.session_id = consume(arg.c_str());
+        } else if (arg == "--stream-id") {
+            options.stream_id = consume(arg.c_str());
+        } else if (arg == "--shard-id") {
+            options.shard_id = parse_i32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--routing-policy") {
+            options.routing_policy = lower_ascii(consume(arg.c_str()));
         } else if (arg == "--monochrome") {
             options.monochrome = true;
         } else if (arg == "--no-monochrome") {
@@ -264,6 +299,9 @@ Options parse_options(int argc, char** argv)
     }
     if (options.codec != "hevc" && options.codec != "h264") {
         throw std::runtime_error("--codec must be hevc or h264");
+    }
+    if (options.routing_policy.empty()) {
+        throw std::runtime_error("--routing-policy must not be empty");
     }
     return options;
 }
@@ -623,12 +661,66 @@ bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
        >> desc->timestamp
        >> desc->timestamp_sys
        >> desc->handle_hex;
-    return static_cast<bool>(in) && !desc->handle_hex.empty() && desc->bytes > 0;
+    if (!in || desc->handle_hex.empty() || desc->bytes == 0) {
+        return false;
+    }
+
+    std::string session_id;
+    std::string stream_id;
+    uint64_t gop_index = 0;
+    uint32_t frame_index_within_gop = 0;
+    int assigned_gpu_id = -1;
+    int assigned_shard_id = 0;
+    std::string routing_policy;
+    if (in >> session_id >> stream_id >> gop_index >> frame_index_within_gop >>
+        assigned_gpu_id >> assigned_shard_id >> routing_policy) {
+        desc->session_id = std::move(session_id);
+        desc->stream_id = std::move(stream_id);
+        desc->gop_index = gop_index;
+        desc->frame_index_within_gop = frame_index_within_gop;
+        desc->assigned_gpu_id = assigned_gpu_id;
+        desc->assigned_shard_id = assigned_shard_id;
+        desc->routing_policy = std::move(routing_policy);
+    }
+    if (desc->stream_id.empty()) {
+        desc->stream_id = desc->camera_serial;
+    }
+    const uint64_t zero_based_frame =
+        desc->recording_frame_id > 0 ? desc->recording_frame_id - 1 : 0;
+    if (desc->gop_index == 0 && desc->frame_index_within_gop == 0 &&
+        desc->recording_frame_id > 1) {
+        // Older senders did not provide GOP metadata; preserve a usable best
+        // effort frame index so route artifacts remain inspectable.
+        desc->frame_index_within_gop = static_cast<uint32_t>(zero_based_frame);
+    }
+    return true;
+}
+
+void apply_recorder_assignment(const Options& options, FrameDescriptor* desc)
+{
+    if (!desc) {
+        return;
+    }
+    if (!options.session_id.empty()) {
+        desc->session_id = options.session_id;
+    } else if (desc->session_id.empty()) {
+        desc->session_id = "external_recorder_session";
+    }
+    if (!options.stream_id.empty()) {
+        desc->stream_id = options.stream_id;
+    } else if (desc->stream_id.empty()) {
+        desc->stream_id = desc->camera_serial;
+    }
+    desc->assigned_gpu_id = options.gpu_id;
+    desc->assigned_shard_id = options.shard_id;
+    desc->routing_policy = options.routing_policy;
 }
 
 void write_csv_header(std::ofstream& csv)
 {
-    csv << "frame_index,camera_serial,recording_frame_id,local_frame_id,bytes,"
+    csv << "frame_index,camera_serial,session_id,stream_id,recording_frame_id,"
+           "local_frame_id,gop_index,frame_index_within_gop,source_gpu_id,"
+           "assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
            "total_ms,open_handle_ms,copy_ms,opened_handle,detach_copied,"
            "encode_enqueued,encode_skipped,encode_dropped,encode_queue_depth\n";
 }
@@ -637,8 +729,16 @@ void write_csv_row(std::ofstream& csv, const Sample& sample)
 {
     csv << sample.frame_index << ","
         << sample.camera_serial << ","
+        << sample.session_id << ","
+        << sample.stream_id << ","
         << sample.recording_frame_id << ","
         << sample.local_frame_id << ","
+        << sample.gop_index << ","
+        << sample.frame_index_within_gop << ","
+        << sample.source_gpu_id << ","
+        << sample.assigned_gpu_id << ","
+        << sample.assigned_shard_id << ","
+        << sample.routing_policy << ","
         << sample.bytes << ","
         << std::fixed << std::setprecision(6)
         << sample.total_ms << ","
@@ -652,12 +752,49 @@ void write_csv_row(std::ofstream& csv, const Sample& sample)
         << sample.encode_queue_depth << "\n";
 }
 
+void write_gop_routing_csv_header(std::ofstream& csv)
+{
+    csv << "frame_index,camera_serial,session_id,stream_id,recording_frame_id,"
+           "local_frame_id,gop_index,frame_index_within_gop,source_gpu_id,"
+           "assigned_gpu_id,assigned_shard_id,routing_policy,detach_copied,"
+           "encode_enqueued,encode_skipped,encode_dropped,encode_queue_depth\n";
+}
+
+void write_gop_routing_csv_row(std::ofstream& csv, const Sample& sample)
+{
+    csv << sample.frame_index << ","
+        << sample.camera_serial << ","
+        << sample.session_id << ","
+        << sample.stream_id << ","
+        << sample.recording_frame_id << ","
+        << sample.local_frame_id << ","
+        << sample.gop_index << ","
+        << sample.frame_index_within_gop << ","
+        << sample.source_gpu_id << ","
+        << sample.assigned_gpu_id << ","
+        << sample.assigned_shard_id << ","
+        << sample.routing_policy << ","
+        << (sample.detach_copied ? "true" : "false") << ","
+        << (sample.encode_enqueued ? "true" : "false") << ","
+        << (sample.encode_skipped ? "true" : "false") << ","
+        << (sample.encode_dropped ? "true" : "false") << ","
+        << sample.encode_queue_depth << "\n";
+}
+
 struct EncodeSample {
     uint64_t encode_index = 0;
     uint64_t source_frame_index = 0;
     std::string camera_serial;
+    std::string session_id;
+    std::string stream_id;
     uint64_t recording_frame_id = 0;
     uint64_t local_frame_id = 0;
+    uint64_t gop_index = 0;
+    uint32_t frame_index_within_gop = 0;
+    int source_gpu_id = -1;
+    int assigned_gpu_id = -1;
+    int assigned_shard_id = 0;
+    std::string routing_policy = "single_shard";
     uint64_t bytes = 0;
     double enqueue_age_ms = 0.0;
     double prepare_ms = 0.0;
@@ -707,8 +844,10 @@ struct EncodeSummary {
 
 void write_encode_csv_header(std::ofstream& csv)
 {
-    csv << "encode_index,source_frame_index,camera_serial,recording_frame_id,"
-           "local_frame_id,bytes,enqueue_age_ms,prepare_ms,encode_total_ms,"
+    csv << "encode_index,source_frame_index,camera_serial,session_id,stream_id,"
+           "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
+           "source_gpu_id,assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
+           "enqueue_age_ms,prepare_ms,encode_total_ms,"
            "encode_picture_ms,completion_wait_ms,lock_bitstream_ms,"
            "bitstream_copy_ms,unlock_bitstream_ms,unmap_input_resource_ms,"
            "bitstream_fetch_ms,output_packets,output_bytes,returned_packets,"
@@ -720,8 +859,16 @@ void write_encode_csv_row(std::ofstream& csv, const EncodeSample& sample)
     csv << sample.encode_index << ","
         << sample.source_frame_index << ","
         << sample.camera_serial << ","
+        << sample.session_id << ","
+        << sample.stream_id << ","
         << sample.recording_frame_id << ","
         << sample.local_frame_id << ","
+        << sample.gop_index << ","
+        << sample.frame_index_within_gop << ","
+        << sample.source_gpu_id << ","
+        << sample.assigned_gpu_id << ","
+        << sample.assigned_shard_id << ","
+        << sample.routing_policy << ","
         << sample.bytes << ","
         << std::fixed << std::setprecision(6)
         << sample.enqueue_age_ms << ","
@@ -1138,8 +1285,16 @@ private:
         sample.encode_index = frames_encoded_.load(std::memory_order_relaxed);
         sample.source_frame_index = item.source_frame_index;
         sample.camera_serial = item.desc.camera_serial;
+        sample.session_id = item.desc.session_id;
+        sample.stream_id = item.desc.stream_id;
         sample.recording_frame_id = item.desc.recording_frame_id;
         sample.local_frame_id = item.desc.local_frame_id;
+        sample.gop_index = item.desc.gop_index;
+        sample.frame_index_within_gop = item.desc.frame_index_within_gop;
+        sample.source_gpu_id = item.desc.source_gpu_id;
+        sample.assigned_gpu_id = item.desc.assigned_gpu_id;
+        sample.assigned_shard_id = item.desc.assigned_shard_id;
+        sample.routing_policy = item.desc.routing_policy;
         sample.bytes = item.desc.bytes;
         sample.enqueue_age_ms = elapsed_ms(item.enqueued_at);
 
@@ -1292,6 +1447,8 @@ private:
 };
 
 void write_summary_json(const Options& options,
+                        const std::string& session_id,
+                        const std::string& stream_id,
                         uint64_t frames_received,
                         uint64_t acks_sent,
                         uint64_t detach_copied,
@@ -1319,8 +1476,13 @@ void write_summary_json(const Options& options,
     out << "{\n";
     out << "  \"schema_version\": 1,\n";
     out << "  \"tool\": \"external_recorder_ipc_probe\",\n";
+    out << "  \"session_id\": \"" << json_escape(session_id) << "\",\n";
+    out << "  \"stream_id\": \"" << json_escape(stream_id) << "\",\n";
     out << "  \"socket_path\": \"" << json_escape(options.socket_path) << "\",\n";
     out << "  \"gpu_id\": " << options.gpu_id << ",\n";
+    out << "  \"assigned_gpu_id\": " << options.gpu_id << ",\n";
+    out << "  \"assigned_shard_id\": " << options.shard_id << ",\n";
+    out << "  \"routing_policy\": \"" << json_escape(options.routing_policy) << "\",\n";
     out << "  \"encode\": " << (options.encode ? "true" : "false") << ",\n";
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
     out << "  \"preset\": \"" << json_escape(options.preset) << "\",\n";
@@ -1370,6 +1532,7 @@ void write_summary_json(const Options& options,
     out << "  \"outputs\": {\n";
     out << "    \"detach_csv\": \"" << json_escape(options.csv_path) << "\",\n";
     out << "    \"encode_csv\": \"" << json_escape(options.encode_csv_path) << "\",\n";
+    out << "    \"gop_routing_csv\": \"" << json_escape(options.gop_routing_csv_path) << "\",\n";
     out << "    \"raw_bitstream\": \"" << json_escape(options.bitstream_out_path) << "\",\n";
     out << "    \"mp4\": \"" << json_escape(enc.mp4_path) << "\",\n";
     out << "    \"mp4_keyframe\": \"" << json_escape(enc.mp4_keyframe_path) << "\"\n";
@@ -1377,6 +1540,7 @@ void write_summary_json(const Options& options,
     out << "  \"output_file_sizes\": {\n";
     out << "    \"detach_csv_bytes\": " << file_size_or_zero(options.csv_path) << ",\n";
     out << "    \"encode_csv_bytes\": " << file_size_or_zero(options.encode_csv_path) << ",\n";
+    out << "    \"gop_routing_csv_bytes\": " << file_size_or_zero(options.gop_routing_csv_path) << ",\n";
     out << "    \"raw_bitstream_bytes\": " << file_size_or_zero(options.bitstream_out_path) << ",\n";
     out << "    \"mp4_bytes\": " << file_size_or_zero(enc.mp4_path) << ",\n";
     out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(enc.mp4_keyframe_path) << "\n";
@@ -1418,6 +1582,16 @@ int main(int argc, char** argv)
             }
             write_csv_header(csv);
         }
+        std::ofstream gop_routing_csv;
+        if (!options.gop_routing_csv_path.empty()) {
+            ensure_parent_directory(options.gop_routing_csv_path);
+            gop_routing_csv.open(options.gop_routing_csv_path);
+            if (!gop_routing_csv) {
+                throw std::runtime_error("Failed to open GOP routing CSV: " +
+                                         options.gop_routing_csv_path);
+            }
+            write_gop_routing_csv_header(gop_routing_csv);
+        }
 
         std::unordered_map<std::string, ImportedHandle> imported_handles;
         void* owned_device_buffer = nullptr;
@@ -1429,6 +1603,8 @@ int main(int argc, char** argv)
         uint64_t encode_enqueued_count = 0;
         uint64_t encode_skipped_count = 0;
         uint64_t encode_dropped_count = 0;
+        std::string observed_session_id = options.session_id;
+        std::string observed_stream_id = options.stream_id;
         std::vector<double> detach_total_samples;
         std::vector<double> detach_open_samples;
         std::vector<double> detach_copy_samples;
@@ -1450,12 +1626,27 @@ int main(int argc, char** argv)
                 std::cerr << "Malformed frame descriptor: " << line << std::endl;
                 break;
             }
+            apply_recorder_assignment(options, &desc);
+            if (observed_session_id.empty()) {
+                observed_session_id = desc.session_id;
+            }
+            if (observed_stream_id.empty()) {
+                observed_stream_id = desc.stream_id;
+            }
 
             Sample sample;
             sample.frame_index = frame_count;
             sample.camera_serial = desc.camera_serial;
+            sample.session_id = desc.session_id;
+            sample.stream_id = desc.stream_id;
             sample.recording_frame_id = desc.recording_frame_id;
             sample.local_frame_id = desc.local_frame_id;
+            sample.gop_index = desc.gop_index;
+            sample.frame_index_within_gop = desc.frame_index_within_gop;
+            sample.source_gpu_id = desc.source_gpu_id;
+            sample.assigned_gpu_id = desc.assigned_gpu_id;
+            sample.assigned_shard_id = desc.assigned_shard_id;
+            sample.routing_policy = desc.routing_policy;
             sample.bytes = desc.bytes;
 
             const auto total_start = std::chrono::steady_clock::now();
@@ -1518,7 +1709,10 @@ int main(int argc, char** argv)
             }
             sample.total_ms = elapsed_ms(total_start);
 
-            if (!write_all(client_fd, "ACK " + std::to_string(desc.recording_frame_id) + "\n")) {
+            if (!write_all(client_fd,
+                           "ACK " + std::to_string(desc.recording_frame_id) + " " +
+                               std::to_string(desc.assigned_gpu_id) + " " +
+                               std::to_string(desc.assigned_shard_id) + "\n")) {
                 break;
             }
             ++ack_count;
@@ -1546,6 +1740,12 @@ int main(int argc, char** argv)
                     csv.flush();
                 }
             }
+            if (gop_routing_csv) {
+                write_gop_routing_csv_row(gop_routing_csv, sample);
+                if ((frame_count % 60) == 0) {
+                    gop_routing_csv.flush();
+                }
+            }
             ++frame_count;
         }
 
@@ -1555,10 +1755,15 @@ int main(int argc, char** argv)
         if (csv) {
             csv.flush();
         }
+        if (gop_routing_csv) {
+            gop_routing_csv.flush();
+        }
         const EncodeSummary encode_summary =
             encode_worker ? encode_worker->summary() : EncodeSummary{};
         write_summary_json(
             options,
+            observed_session_id,
+            observed_stream_id,
             frame_count,
             ack_count,
             detach_copied_count,
