@@ -17,6 +17,7 @@ Options:
   --camera-serial <serial>   Camera serial. Default 2010096.
   --analytics-gpu-id <int>   GPU id selected for camera/YOLO. Default 5.
   --recorder-gpu-id <int>    GPU id used by external recorder. Default: analytics GPU.
+  --shard-gpu-ids <csv>      Diagnostic multi-shard recorder GPUs, e.g. 5,6.
   --duration <sec>           Headless run duration. Default 6.
   --warmup <sec>             Headless warmup. Default 2.
   --encode-fps <int>         External encode cap and nominal MP4 FPS. Default 60.
@@ -40,6 +41,7 @@ RECORDER_TOOL="$REPO_ROOT/targets/release/external_recorder_ipc_probe"
 CAMERA_SERIAL=2010096
 ANALYTICS_GPU_ID=5
 RECORDER_GPU_ID=""
+SHARD_GPU_IDS=""
 DURATION=6
 WARMUP=2
 ENCODE_FPS=60
@@ -90,6 +92,12 @@ while [[ $# -gt 0 ]]; do
       shift
       [[ $# -gt 0 ]] || { echo "--recorder-gpu-id requires a value." >&2; exit 2; }
       RECORDER_GPU_ID="$1"
+      shift
+      ;;
+    --shard-gpu-ids)
+      shift
+      [[ $# -gt 0 ]] || { echo "--shard-gpu-ids requires a value." >&2; exit 2; }
+      SHARD_GPU_IDS="$1"
       shift
       ;;
     --duration)
@@ -158,6 +166,12 @@ if [[ -n "$RECORDER_GPU_ID" ]]; then
   [[ "$RECORDER_GPU_ID" =~ ^[0-9]+$ ]] || { echo "RECORDER_GPU_ID must be a non-negative integer." >&2; exit 2; }
 else
   RECORDER_GPU_ID="$ANALYTICS_GPU_ID"
+fi
+if [[ -n "$SHARD_GPU_IDS" ]]; then
+  [[ "$SHARD_GPU_IDS" =~ ^[0-9]+(,[0-9]+)+$ ]] || {
+    echo "SHARD_GPU_IDS must be a comma-separated list of at least two GPU ids." >&2
+    exit 2
+  }
 fi
 
 SPEC="$(realpath -e "$SPEC")"
@@ -252,6 +266,12 @@ echo "[external-recorder] socket=$SOCKET_PATH"
 echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
 
+ROUTING_POLICY="single_shard"
+if [[ -n "$SHARD_GPU_IDS" ]]; then
+  ROUTING_POLICY="gop_modulo"
+  SKIP_VIDEO_SANITY=1
+fi
+
 RECORDER_ARGS=(
   --socket "$SOCKET_PATH"
   --gpu-id "$RECORDER_GPU_ID"
@@ -275,8 +295,11 @@ RECORDER_ARGS=(
   --session-id "$EXPERIMENT_ID"
   --stream-id "$CAMERA_SERIAL"
   --shard-id 0
-  --routing-policy single_shard
+  --routing-policy "$ROUTING_POLICY"
 )
+if [[ -n "$SHARD_GPU_IDS" ]]; then
+  RECORDER_ARGS+=(--shard-gpu-ids "$SHARD_GPU_IDS")
+fi
 if [[ -n "$BITSTREAM_OUT" ]]; then
   RECORDER_ARGS+=(--bitstream-out "$BITSTREAM_OUT")
 fi
@@ -297,7 +320,7 @@ for _ in {1..100}; do
 done
 [[ -S "$SOCKET_PATH" ]] || { echo "external recorder socket was not created: $SOCKET_PATH" >&2; exit 1; }
 
-echo "[external-recorder] starting headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID encode_fps=$ENCODE_FPS"
+echo "[external-recorder] starting headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS"
 if [[ "$SOCKET_PATH" != "/tmp/orange_external_recorder_${CAMERA_SERIAL}.sock" ]]; then
   echo "Custom socket paths require passing ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_${CAMERA_SERIAL} to the benchmark process." >&2
   echo "Use the default socket path for the sudo -n smoke runner." >&2
@@ -346,6 +369,12 @@ print(f"  session_id={summary.get('session_id')} assigned_gpu_id={summary.get('a
 print(f"  encode_enqueued={summary.get('encode_enqueued')} encode_skipped={summary.get('encode_skipped')} encode_dropped={summary.get('encode_dropped')} frames_encoded={summary.get('frames_encoded')}")
 print(f"  detach_copy_p95_ms={summary.get('detach_timing', {}).get('copy_p95_ms')} encode_total_p95_ms={enc.get('encode_total_p95_ms')} lock_bitstream_p95_ms={enc.get('lock_bitstream_p95_ms')}")
 print(f"  mp4_bytes={summary.get('output_file_sizes', {}).get('mp4_bytes')} worker_failed={summary.get('worker_failed')}")
+for shard in summary.get("external_encode_shards", []):
+    print(
+        "  shard "
+        f"id={shard.get('assigned_shard_id')} gpu={shard.get('assigned_gpu_id')} "
+        f"frames_encoded={shard.get('frames_encoded')} mp4={shard.get('mp4')}"
+    )
 PY
 fi
 
@@ -527,4 +556,6 @@ print(
 if not content_valid:
     raise SystemExit(1)
 PY
+elif [[ -n "$SHARD_GPU_IDS" ]]; then
+  echo "[external-recorder] video_sanity skipped for multi-shard diagnostic; inspect per-shard MP4 paths in summary_json."
 fi

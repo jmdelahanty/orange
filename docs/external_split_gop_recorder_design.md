@@ -335,6 +335,51 @@ Next implementation step:
 - Add a two-shard diagnostic mode that creates two encoder lanes and routes
   complete GOPs by `gop_index % shard_count`.
 
+### Two-Shard Diagnostic Slice
+
+Implemented on 2026-04-26:
+
+- `external_recorder_ipc_probe` accepts `--shard-gpu-ids`, for example
+  `--shard-gpu-ids 5,6`.
+- The probe creates one external encode worker per listed GPU.
+- Frames are routed by complete GOP:
+  `assigned_shard_id = gop_index % shard_count`.
+- Each shard owns its CUDA/NVENC path and writes separate diagnostic artifacts:
+  per-shard encode CSV and per-shard MP4.
+- `external_gop_routing.csv` records the selected shard/GPU for every frame.
+- The smoke runner accepts `--shard-gpu-ids`; multi-shard mode skips the old
+  single-MP4 sanity gate because the diagnostic intentionally produces
+  per-shard MP4s instead of a merged per-camera MP4.
+
+Validation smoke:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_smoke.sh \
+  --duration 3 \
+  --warmup 1 \
+  --encode-fps 60 \
+  --output-dir /tmp \
+  --shard-gpu-ids 5,6
+```
+
+Result from `/tmp/orange_external_recorder_2010096_20260425_221647`:
+
+- `401` descriptors received and ACKed.
+- `262` frames encoded, `139` skipped by the `60 fps` cap, `0` encode drops.
+- Shard `0` on GPU `5`: `135` frames encoded.
+- Shard `1` on GPU `6`: `127` frames encoded.
+- GOP routing alternated correctly: GOP `0 -> shard 0`, GOP `1 -> shard 1`,
+  GOP `2 -> shard 0`, GOP `3 -> shard 1`.
+- Both per-shard MP4s were present and `ffprobe`-readable at `4512x4512`.
+- This is still not production output because GOPs are not merged back into one
+  per-camera file.
+
+Next implementation step:
+
+- Add the GOP order coordinator / mux merge layer that consumes shard outputs
+  and writes one valid per-camera recording.
+
 ## Open Questions
 
 - Whether same-supervisor multi-shard is enough, or one process per shard is

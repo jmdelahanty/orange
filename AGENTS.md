@@ -250,8 +250,13 @@ multi-GPU split-GOP throughput.
   GOP routing artifacts, and then a one-camera two-shard diagnostic.
 - The first metadata-only external recorder shard slice now exists:
   descriptors/artifacts carry session id, stream id, GOP index, frame index
-  within GOP, assigned GPU, assigned shard, and `routing_policy`. The current
-  implementation is still `single_shard`; it does not route across two encoder
-  lanes yet.
+  within GOP, assigned GPU, assigned shard, and `routing_policy`.
+  `single_shard` remains the default recorder mode.
+- The first two-shard external recorder diagnostic also exists behind
+  `external_recorder_ipc_probe --shard-gpu-ids 5,6` and the smoke runner option
+  `scripts/run_external_recorder_smoke.sh --shard-gpu-ids 5,6`. It routes GOPs
+  by `gop_index % shard_count` and writes per-shard MP4s/encode CSVs plus
+  `external_gop_routing.csv`. It does not merge shard outputs into one
+  per-camera MP4 yet.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

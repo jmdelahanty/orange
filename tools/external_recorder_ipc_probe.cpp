@@ -65,6 +65,7 @@ struct Options {
     std::string session_id;
     std::string stream_id;
     int shard_id = 0;
+    std::vector<int> shard_gpu_ids;
     std::string routing_policy = "single_shard";
 };
 
@@ -155,6 +156,7 @@ void signal_handler(int)
         << "  --session-id <id>     Session id for artifacts. Defaults to first descriptor.\n"
         << "  --stream-id <id>      Stream id for artifacts. Defaults to camera serial.\n"
         << "  --shard-id <int>      Recorder shard id for this process/lane. Default 0.\n"
+        << "  --shard-gpu-ids <csv> Diagnostic multi-shard GPU ids, e.g. 5,6.\n"
         << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
         << "  --monochrome          Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome       Disable monochrome encoding.\n"
@@ -181,6 +183,33 @@ int parse_i32(const std::string& value, const char* name)
         throw std::runtime_error(std::string("Invalid ") + name + ": " + value);
     }
     return static_cast<int>(parsed);
+}
+
+std::vector<int> parse_i32_list(const std::string& value, const char* name)
+{
+    std::vector<int> out;
+    std::stringstream stream(value);
+    std::string item;
+    while (std::getline(stream, item, ',')) {
+        item.erase(
+            item.begin(),
+            std::find_if(item.begin(), item.end(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }));
+        item.erase(
+            std::find_if(item.rbegin(), item.rend(), [](unsigned char ch) {
+                return !std::isspace(ch);
+            }).base(),
+            item.end());
+        if (item.empty()) {
+            throw std::runtime_error(std::string("Invalid empty item in ") + name);
+        }
+        out.push_back(parse_i32(item, name));
+    }
+    if (out.empty()) {
+        throw std::runtime_error(std::string("Invalid empty ") + name);
+    }
+    return out;
 }
 
 uint32_t parse_u32(const std::string& value, const char* name)
@@ -277,6 +306,8 @@ Options parse_options(int argc, char** argv)
             options.stream_id = consume(arg.c_str());
         } else if (arg == "--shard-id") {
             options.shard_id = parse_i32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--shard-gpu-ids") {
+            options.shard_gpu_ids = parse_i32_list(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--routing-policy") {
             options.routing_policy = lower_ascii(consume(arg.c_str()));
         } else if (arg == "--monochrome") {
@@ -302,6 +333,12 @@ Options parse_options(int argc, char** argv)
     }
     if (options.routing_policy.empty()) {
         throw std::runtime_error("--routing-policy must not be empty");
+    }
+    if (!options.shard_gpu_ids.empty() && options.shard_gpu_ids.size() < 2) {
+        throw std::runtime_error("--shard-gpu-ids requires at least two GPU ids");
+    }
+    if (!options.shard_gpu_ids.empty() && options.routing_policy == "single_shard") {
+        options.routing_policy = "gop_modulo";
     }
     return options;
 }
@@ -375,6 +412,22 @@ std::string derive_keyframe_path(const std::string& mp4_path)
     const std::string stem = path.stem().string();
     path.replace_filename(stem + "_keyframes.csv");
     return path.string();
+}
+
+std::string add_suffix_to_path_stem(const std::string& path, const std::string& suffix)
+{
+    if (path.empty()) {
+        return {};
+    }
+    std::filesystem::path fs_path(path);
+    const std::string stem = fs_path.stem().string();
+    fs_path.replace_filename(stem + suffix + fs_path.extension().string());
+    return fs_path.string();
+}
+
+std::string shard_suffix(size_t shard_index, int gpu_id)
+{
+    return "_shard" + std::to_string(shard_index) + "_gpu" + std::to_string(gpu_id);
 }
 
 std::string json_escape(const std::string& value)
@@ -696,7 +749,7 @@ bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
     return true;
 }
 
-void apply_recorder_assignment(const Options& options, FrameDescriptor* desc)
+void apply_descriptor_defaults(const Options& options, FrameDescriptor* desc)
 {
     if (!desc) {
         return;
@@ -711,8 +764,6 @@ void apply_recorder_assignment(const Options& options, FrameDescriptor* desc)
     } else if (desc->stream_id.empty()) {
         desc->stream_id = desc->camera_serial;
     }
-    desc->assigned_gpu_id = options.gpu_id;
-    desc->assigned_shard_id = options.shard_id;
     desc->routing_policy = options.routing_policy;
 }
 
@@ -813,6 +864,9 @@ struct EncodeSample {
 };
 
 struct EncodeSummary {
+    int assigned_gpu_id = -1;
+    int assigned_shard_id = 0;
+    std::string routing_policy = "single_shard";
     uint64_t frames_encoded = 0;
     uint64_t frames_dropped = 0;
     uint64_t returned_packets = 0;
@@ -838,9 +892,68 @@ struct EncodeSummary {
     double mp4_push_max_ms = 0.0;
     double mp4_write_mean_ms = 0.0;
     double mp4_write_max_ms = 0.0;
+    std::string encode_csv_path;
+    std::string bitstream_out_path;
     std::string mp4_path;
     std::string mp4_keyframe_path;
 };
+
+EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summaries)
+{
+    EncodeSummary out;
+    if (summaries.empty()) {
+        return out;
+    }
+    out.assigned_gpu_id = summaries.size() == 1 ? summaries.front().assigned_gpu_id : -1;
+    out.assigned_shard_id = summaries.size() == 1 ? summaries.front().assigned_shard_id : -1;
+    out.routing_policy = summaries.front().routing_policy;
+    for (const EncodeSummary& summary : summaries) {
+        out.frames_encoded += summary.frames_encoded;
+        out.frames_dropped += summary.frames_dropped;
+        out.returned_packets += summary.returned_packets;
+        out.returned_bytes += summary.returned_bytes;
+        out.raw_packets += summary.raw_packets;
+        out.raw_bytes += summary.raw_bytes;
+        out.mp4_packets += summary.mp4_packets;
+        out.mp4_bytes += summary.mp4_bytes;
+        out.flush_packets += summary.flush_packets;
+        out.flush_bytes += summary.flush_bytes;
+        out.failed = out.failed || summary.failed;
+        out.mp4_queue_overflowed = out.mp4_queue_overflowed || summary.mp4_queue_overflowed;
+        out.mp4_queue_overflow_events += summary.mp4_queue_overflow_events;
+        out.mp4_peak_queued_packets =
+            std::max(out.mp4_peak_queued_packets, summary.mp4_peak_queued_packets);
+        out.mp4_peak_queued_bytes =
+            std::max(out.mp4_peak_queued_bytes, summary.mp4_peak_queued_bytes);
+        out.enqueue_age_p95_ms =
+            std::max(out.enqueue_age_p95_ms, summary.enqueue_age_p95_ms);
+        out.prepare_p95_ms =
+            std::max(out.prepare_p95_ms, summary.prepare_p95_ms);
+        out.encode_total_p95_ms =
+            std::max(out.encode_total_p95_ms, summary.encode_total_p95_ms);
+        out.encode_picture_p95_ms =
+            std::max(out.encode_picture_p95_ms, summary.encode_picture_p95_ms);
+        out.lock_bitstream_p95_ms =
+            std::max(out.lock_bitstream_p95_ms, summary.lock_bitstream_p95_ms);
+        out.bitstream_fetch_p95_ms =
+            std::max(out.bitstream_fetch_p95_ms, summary.bitstream_fetch_p95_ms);
+        out.mp4_push_mean_ms =
+            std::max(out.mp4_push_mean_ms, summary.mp4_push_mean_ms);
+        out.mp4_push_max_ms =
+            std::max(out.mp4_push_max_ms, summary.mp4_push_max_ms);
+        out.mp4_write_mean_ms =
+            std::max(out.mp4_write_mean_ms, summary.mp4_write_mean_ms);
+        out.mp4_write_max_ms =
+            std::max(out.mp4_write_max_ms, summary.mp4_write_max_ms);
+    }
+    if (summaries.size() == 1) {
+        out.encode_csv_path = summaries.front().encode_csv_path;
+        out.bitstream_out_path = summaries.front().bitstream_out_path;
+        out.mp4_path = summaries.front().mp4_path;
+        out.mp4_keyframe_path = summaries.front().mp4_keyframe_path;
+    }
+    return out;
+}
 
 void write_encode_csv_header(std::ofstream& csv)
 {
@@ -961,6 +1074,7 @@ public:
                             uint64_t source_frame_index,
                             Sample* sample)
     {
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external detach shard)");
         const size_t slot_index = acquire_free_slot(desc.bytes);
         if (slot_index == kInvalidSlot) {
             if (sample) {
@@ -1000,10 +1114,15 @@ public:
     uint64_t frames_encoded() const { return frames_encoded_.load(std::memory_order_relaxed); }
     uint64_t frames_dropped() const { return frames_dropped_.load(std::memory_order_relaxed); }
     bool failed() const { return failed_.load(std::memory_order_acquire); }
+    int gpu_id() const { return options_.gpu_id; }
+    int shard_id() const { return options_.shard_id; }
 
     EncodeSummary summary() const
     {
         EncodeSummary out;
+        out.assigned_gpu_id = options_.gpu_id;
+        out.assigned_shard_id = options_.shard_id;
+        out.routing_policy = options_.routing_policy;
         out.frames_encoded = frames_encoded();
         out.frames_dropped = frames_dropped();
         out.returned_packets = returned_packets_;
@@ -1029,6 +1148,8 @@ public:
         out.mp4_push_max_ms = writer_latency_.push_packet_total.max_ms();
         out.mp4_write_mean_ms = writer_latency_.packet_write.mean_ms();
         out.mp4_write_max_ms = writer_latency_.packet_write.max_ms();
+        out.encode_csv_path = options_.encode_csv_path;
+        out.bitstream_out_path = options_.bitstream_out_path;
         out.mp4_path = options_.mp4_out_path;
         out.mp4_keyframe_path = resolved_mp4_keyframe_path_;
         return out;
@@ -1080,6 +1201,9 @@ private:
 
     void release_slots()
     {
+        if (!slots_.empty()) {
+            cudaSetDevice(options_.gpu_id);
+        }
         for (auto& slot : slots_) {
             if (slot.ptr) {
                 cudaFree(slot.ptr);
@@ -1446,6 +1570,34 @@ private:
     std::atomic<bool> failed_{false};
 };
 
+std::vector<int> effective_shard_gpu_ids(const Options& options)
+{
+    if (!options.shard_gpu_ids.empty()) {
+        return options.shard_gpu_ids;
+    }
+    return {options.gpu_id};
+}
+
+Options make_shard_options(const Options& base,
+                           size_t shard_index,
+                           size_t shard_count,
+                           int gpu_id)
+{
+    Options out = base;
+    out.gpu_id = gpu_id;
+    out.shard_id = static_cast<int>(shard_index);
+    if (shard_count > 1) {
+        out.routing_policy = "gop_modulo";
+        const std::string suffix = shard_suffix(shard_index, gpu_id);
+        out.encode_csv_path = add_suffix_to_path_stem(base.encode_csv_path, suffix);
+        out.bitstream_out_path = add_suffix_to_path_stem(base.bitstream_out_path, suffix);
+        out.mp4_out_path = add_suffix_to_path_stem(base.mp4_out_path, suffix);
+        out.mp4_keyframe_path = add_suffix_to_path_stem(base.mp4_keyframe_path, suffix);
+    }
+    out.shard_gpu_ids.clear();
+    return out;
+}
+
 void write_summary_json(const Options& options,
                         const std::string& session_id,
                         const std::string& stream_id,
@@ -1459,7 +1611,8 @@ void write_summary_json(const Options& options,
                         const std::vector<double>& detach_total_samples,
                         const std::vector<double>& detach_open_samples,
                         const std::vector<double>& detach_copy_samples,
-                        const EncodeSummary* encode_summary)
+                        const EncodeSummary* encode_summary,
+                        const std::vector<EncodeSummary>& shard_summaries)
 {
     if (options.summary_json_path.empty()) {
         return;
@@ -1480,9 +1633,10 @@ void write_summary_json(const Options& options,
     out << "  \"stream_id\": \"" << json_escape(stream_id) << "\",\n";
     out << "  \"socket_path\": \"" << json_escape(options.socket_path) << "\",\n";
     out << "  \"gpu_id\": " << options.gpu_id << ",\n";
-    out << "  \"assigned_gpu_id\": " << options.gpu_id << ",\n";
-    out << "  \"assigned_shard_id\": " << options.shard_id << ",\n";
+    out << "  \"assigned_gpu_id\": " << enc.assigned_gpu_id << ",\n";
+    out << "  \"assigned_shard_id\": " << enc.assigned_shard_id << ",\n";
     out << "  \"routing_policy\": \"" << json_escape(options.routing_policy) << "\",\n";
+    out << "  \"shard_count\": " << shard_summaries.size() << ",\n";
     out << "  \"encode\": " << (options.encode ? "true" : "false") << ",\n";
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
     out << "  \"preset\": \"" << json_escape(options.preset) << "\",\n";
@@ -1524,6 +1678,30 @@ void write_summary_json(const Options& options,
     out << "    \"mp4_peak_queued_packets\": " << enc.mp4_peak_queued_packets << ",\n";
     out << "    \"mp4_peak_queued_bytes\": " << enc.mp4_peak_queued_bytes << "\n";
     out << "  },\n";
+    out << "  \"external_encode_shards\": [\n";
+    for (size_t i = 0; i < shard_summaries.size(); ++i) {
+        const EncodeSummary& shard = shard_summaries[i];
+        out << "    {\n";
+        out << "      \"assigned_gpu_id\": " << shard.assigned_gpu_id << ",\n";
+        out << "      \"assigned_shard_id\": " << shard.assigned_shard_id << ",\n";
+        out << "      \"routing_policy\": \"" << json_escape(shard.routing_policy) << "\",\n";
+        out << "      \"frames_encoded\": " << shard.frames_encoded << ",\n";
+        out << "      \"frames_dropped\": " << shard.frames_dropped << ",\n";
+        out << "      \"returned_packets\": " << shard.returned_packets << ",\n";
+        out << "      \"returned_bytes\": " << shard.returned_bytes << ",\n";
+        out << "      \"mp4_packets\": " << shard.mp4_packets << ",\n";
+        out << "      \"mp4_bytes\": " << shard.mp4_bytes << ",\n";
+        out << "      \"encode_total_p95_ms\": " << shard.encode_total_p95_ms << ",\n";
+        out << "      \"encode_picture_p95_ms\": " << shard.encode_picture_p95_ms << ",\n";
+        out << "      \"lock_bitstream_p95_ms\": " << shard.lock_bitstream_p95_ms << ",\n";
+        out << "      \"worker_failed\": " << (shard.failed ? "true" : "false") << ",\n";
+        out << "      \"encode_csv\": \"" << json_escape(shard.encode_csv_path) << "\",\n";
+        out << "      \"raw_bitstream\": \"" << json_escape(shard.bitstream_out_path) << "\",\n";
+        out << "      \"mp4\": \"" << json_escape(shard.mp4_path) << "\",\n";
+        out << "      \"mp4_keyframe\": \"" << json_escape(shard.mp4_keyframe_path) << "\"\n";
+        out << "    }" << (i + 1 < shard_summaries.size() ? "," : "") << "\n";
+    }
+    out << "  ],\n";
     out << "  \"detach_timing\": {\n";
     out << "    \"total_p95_ms\": " << percentile_ms(detach_total_samples, 95.0) << ",\n";
     out << "    \"open_handle_p95_ms\": " << percentile_ms(detach_open_samples, 95.0) << ",\n";
@@ -1608,10 +1786,20 @@ int main(int argc, char** argv)
         std::vector<double> detach_total_samples;
         std::vector<double> detach_open_samples;
         std::vector<double> detach_copy_samples;
-        std::unique_ptr<ExternalEncodeWorker> encode_worker;
+        std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
         if (options.encode) {
-            encode_worker = std::make_unique<ExternalEncodeWorker>(options);
-            encode_worker->start();
+            const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
+            encode_workers.reserve(shard_gpu_ids.size());
+            for (size_t shard_index = 0; shard_index < shard_gpu_ids.size(); ++shard_index) {
+                Options shard_options = make_shard_options(
+                    options,
+                    shard_index,
+                    shard_gpu_ids.size(),
+                    shard_gpu_ids[shard_index]);
+                auto worker = std::make_unique<ExternalEncodeWorker>(std::move(shard_options));
+                worker->start();
+                encode_workers.push_back(std::move(worker));
+            }
         }
 
         while (!g_stop_requested.load(std::memory_order_acquire) &&
@@ -1626,7 +1814,19 @@ int main(int argc, char** argv)
                 std::cerr << "Malformed frame descriptor: " << line << std::endl;
                 break;
             }
-            apply_recorder_assignment(options, &desc);
+            apply_descriptor_defaults(options, &desc);
+            ExternalEncodeWorker* target_encode_worker = nullptr;
+            if (!encode_workers.empty()) {
+                const size_t target_shard =
+                    static_cast<size_t>(desc.gop_index % encode_workers.size());
+                target_encode_worker = encode_workers[target_shard].get();
+                desc.assigned_gpu_id = target_encode_worker->gpu_id();
+                desc.assigned_shard_id = target_encode_worker->shard_id();
+                desc.routing_policy = options.routing_policy;
+            } else {
+                desc.assigned_gpu_id = options.gpu_id;
+                desc.assigned_shard_id = options.shard_id;
+            }
             if (observed_session_id.empty()) {
                 observed_session_id = desc.session_id;
             }
@@ -1651,7 +1851,7 @@ int main(int argc, char** argv)
 
             const auto total_start = std::chrono::steady_clock::now();
             const bool should_detach_copy =
-                !encode_worker || encode_worker->should_encode(total_start);
+                !target_encode_worker || target_encode_worker->should_encode(total_start);
 
             if (should_detach_copy) {
                 auto handle_it = imported_handles.find(desc.handle_hex);
@@ -1676,8 +1876,8 @@ int main(int argc, char** argv)
                 }
 
                 const auto copy_start = std::chrono::steady_clock::now();
-                if (encode_worker) {
-                    encode_worker->detach_and_enqueue(
+                if (target_encode_worker) {
+                    target_encode_worker->detach_and_enqueue(
                         desc,
                         handle_it->second.ptr,
                         frame_count,
@@ -1749,8 +1949,10 @@ int main(int argc, char** argv)
             ++frame_count;
         }
 
-        if (encode_worker) {
-            encode_worker->stop();
+        for (auto& worker : encode_workers) {
+            if (worker) {
+                worker->stop();
+            }
         }
         if (csv) {
             csv.flush();
@@ -1758,8 +1960,14 @@ int main(int argc, char** argv)
         if (gop_routing_csv) {
             gop_routing_csv.flush();
         }
-        const EncodeSummary encode_summary =
-            encode_worker ? encode_worker->summary() : EncodeSummary{};
+        std::vector<EncodeSummary> shard_summaries;
+        shard_summaries.reserve(encode_workers.size());
+        for (const auto& worker : encode_workers) {
+            if (worker) {
+                shard_summaries.push_back(worker->summary());
+            }
+        }
+        const EncodeSummary encode_summary = aggregate_encode_summaries(shard_summaries);
         write_summary_json(
             options,
             observed_session_id,
@@ -1774,7 +1982,8 @@ int main(int argc, char** argv)
             detach_total_samples,
             detach_open_samples,
             detach_copy_samples,
-            encode_worker ? &encode_summary : nullptr);
+            encode_workers.empty() ? nullptr : &encode_summary,
+            shard_summaries);
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {
@@ -1792,13 +2001,24 @@ int main(int argc, char** argv)
             unlink(options.socket_path.c_str());
         }
         std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
-        if (encode_worker) {
-            std::cout << " encoded=" << encode_worker->frames_encoded()
-                      << " encode_dropped=" << encode_worker->frames_dropped()
-                      << " worker_failed=" << (encode_worker->failed() ? "true" : "false");
+        bool any_worker_failed = false;
+        if (!encode_workers.empty()) {
+            uint64_t total_encoded = 0;
+            uint64_t total_dropped = 0;
+            for (const auto& worker : encode_workers) {
+                if (!worker) {
+                    continue;
+                }
+                total_encoded += worker->frames_encoded();
+                total_dropped += worker->frames_dropped();
+                any_worker_failed = any_worker_failed || worker->failed();
+            }
+            std::cout << " encoded=" << total_encoded
+                      << " encode_dropped=" << total_dropped
+                      << " worker_failed=" << (any_worker_failed ? "true" : "false");
         }
         std::cout << std::endl;
-        return encode_worker && encode_worker->failed() ? 1 : 0;
+        return any_worker_failed ? 1 : 0;
     } catch (const std::exception& ex) {
         if (client_fd >= 0) {
             close(client_fd);
