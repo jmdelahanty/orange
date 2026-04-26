@@ -21,6 +21,8 @@ Options:
   --duration <sec>           Headless run duration. Default 6.
   --warmup <sec>             Headless warmup. Default 2.
   --encode-fps <int>         External encode cap and nominal MP4 FPS. Default 60.
+  --encode-max-fps <int>     External encode cap only. Use 0 for uncapped.
+                             Default: same as --encode-fps.
   --queue-depth <int>        External recorder-owned frame slots. Default 8.
   --socket <path>            Unix socket path. Default /tmp/orange_external_recorder_<serial>.sock.
                              Non-default paths require matching client env outside this script.
@@ -45,6 +47,7 @@ SHARD_GPU_IDS=""
 DURATION=6
 WARMUP=2
 ENCODE_FPS=60
+ENCODE_MAX_FPS=""
 QUEUE_DEPTH=8
 SOCKET_PATH=""
 OUTPUT_DIR="/tmp"
@@ -118,6 +121,12 @@ while [[ $# -gt 0 ]]; do
       ENCODE_FPS="$1"
       shift
       ;;
+    --encode-max-fps)
+      shift
+      [[ $# -gt 0 ]] || { echo "--encode-max-fps requires a value." >&2; exit 2; }
+      ENCODE_MAX_FPS="$1"
+      shift
+      ;;
     --queue-depth)
       shift
       [[ $# -gt 0 ]] || { echo "--queue-depth requires a value." >&2; exit 2; }
@@ -183,6 +192,9 @@ OUTPUT_DIR="$(realpath -m "$OUTPUT_DIR")"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="$OUTPUT_DIR/orange_external_recorder_${CAMERA_SERIAL}_${STAMP}"
 mkdir -p "$RUN_DIR"
+if [[ -z "$ENCODE_MAX_FPS" ]]; then
+  ENCODE_MAX_FPS="$ENCODE_FPS"
+fi
 if [[ -z "$SOCKET_PATH" ]]; then
   SOCKET_PATH="/tmp/orange_external_recorder_${CAMERA_SERIAL}.sock"
 fi
@@ -276,7 +288,7 @@ RECORDER_ARGS=(
   --gpu-id "$RECORDER_GPU_ID"
   --csv "$DETACH_CSV"
   --encode
-  --encode-max-fps "$ENCODE_FPS"
+  --encode-max-fps "$ENCODE_MAX_FPS"
   --encode-queue-depth "$QUEUE_DEPTH"
   --fps "$ENCODE_FPS"
   --codec hevc
@@ -319,7 +331,7 @@ for _ in {1..100}; do
 done
 [[ -S "$SOCKET_PATH" ]] || { echo "external recorder socket was not created: $SOCKET_PATH" >&2; exit 1; }
 
-echo "[external-recorder] starting headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS"
+echo "[external-recorder] starting headless external_ipc run camera=$CAMERA_SERIAL analytics_gpu=$ANALYTICS_GPU_ID recorder_gpu=$RECORDER_GPU_ID shard_gpu_ids=${SHARD_GPU_IDS:-none} encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS"
 if [[ "$SOCKET_PATH" != "/tmp/orange_external_recorder_${CAMERA_SERIAL}.sock" ]]; then
   echo "Custom socket paths require passing ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_${CAMERA_SERIAL} to the benchmark process." >&2
   echo "Use the default socket path for the sudo -n smoke runner." >&2

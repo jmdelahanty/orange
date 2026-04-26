@@ -420,11 +420,52 @@ Result from `/tmp/orange_external_recorder_2010096_20260425_222953`:
 - Shard `1` on GPU `6`: `124` frames encoded.
 - GOP routing still alternated correctly by modulo.
 
+Full-rate validation smoke:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_smoke.sh \
+  --duration 3 \
+  --warmup 1 \
+  --encode-fps 100 \
+  --encode-max-fps 0 \
+  --queue-depth 32 \
+  --output-dir /tmp \
+  --shard-gpu-ids 5,6
+```
+
+Result from `/tmp/orange_external_recorder_2010096_20260425_223406`:
+
+- `401` descriptors received and ACKed.
+- `401` frames encoded, `0` skipped, `0` encode drops.
+- Merged output wrote `401` packets, released `17` GOPs, and ended with
+  `0` pending GOPs / `0` pending bytes.
+- Merged MP4 size was `77519555` bytes.
+- Video sanity passed on the merged base MP4:
+  `frames=401`, `mean_luma=220.444`, `max_black_fraction_lt8=0.000000`.
+- Shard `0` on GPU `5`: `201` frames encoded.
+- Shard `1` on GPU `6`: `200` frames encoded.
+- YOLO stayed on the fast external-recorder path at p95:
+  `capture_to_detect_done_ms = 4.758445`,
+  `cpu_preprocess_ms = 0.015669`, and
+  `cpu_pre_sync_ms = 0.098204`.
+
+Operational finding:
+
+- Queue depth `8` was too small for full-rate GOP modulo routing: a prior
+  `100 fps` run with `--queue-depth 8` encoded `388` frames and dropped `3`.
+- Queue depth `32` absorbed the burst. The reason is that whole-GOP routing
+  gives each shard about half-rate average load, but the active shard receives
+  a full GOP burst at the source frame rate. The queue must cover at least one
+  GOP plus scheduling jitter.
+- `--encode-max-fps 0` disables the diagnostic frame-rate cap while keeping
+  `--encode-fps 100` as the nominal MP4 frame rate.
+
 Next implementation step:
 
-- Run an uncapped one-camera `100 fps` split-GOP smoke using the same routing
-  and merge path.
-- If that is healthy, move to two-camera PTP with external recorder routing.
+- Move to two-camera PTP with external recorder routing.
+- Keep queue depth at least `gop_length + margin`; start with `32` for
+  `gop=25`.
 
 ## Open Questions
 

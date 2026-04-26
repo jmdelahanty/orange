@@ -259,5 +259,10 @@ multi-GPU split-GOP throughput.
   `external_gop_routing.csv`. Multi-shard mode now also writes a merged base
   `Cam<serial>_external.mp4` through a GOP-order coordinator; per-shard MP4s
   remain diagnostic outputs.
+- For full-rate one-camera split-GOP headless smoke, use queue depth at least
+  one GOP burst. Validated command shape:
+  `scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 100 --encode-max-fps 0 --queue-depth 32 --output-dir /tmp --shard-gpu-ids 5,6`.
+  The `--encode-max-fps 0` override disables the diagnostic frame-rate cap
+  while keeping the merged MP4 nominal FPS at `100`.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
