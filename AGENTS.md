@@ -338,5 +338,12 @@ multi-GPU split-GOP throughput.
   `4.612/4.580 ms` for `2010095/2010096`. Use embedded frame timestamps for
   per-frame cadence/skew in decimated mode; use `N=1` for direct latch
   diagnostics.
+- Longer `N=100` validation
+  `/tmp/orange_external_recorder_ptp_20260426_002618` stayed healthy for
+  `2803/2803` frames per camera with `0` drops, `33` PTP register reads per
+  camera, steady `acquisition_to_detect_done_ms p95 = 4.580/4.585 ms`, and
+  cadence-probe cross-camera embedded timestamp skew within `-28 ns` to
+  `+22 ns`. Next check is a GUI/session run with
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

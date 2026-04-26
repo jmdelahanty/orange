@@ -752,10 +752,38 @@ First decimated PTP smoke:
   skew; use full polling (`N=1`) when validating current-camera-clock latch
   behavior directly.
 
+Longer decimated PTP validation:
+
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260426_002618`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260426_002618`.
+- Command used `--duration 30 --warmup 1 --skip-video-sanity
+  --ptp-register-read-decimate 100`.
+- Both cameras received/ACKed/encoded `2803` frames, with `0` skips,
+  `0` drops, no camera frame-id gaps, no get-frame errors, no recorder
+  failures, no MP4 queue overflow, and `pending_gops = 0`.
+- PTP polling was sampled as intended: `ptp_register_reads = 33` per camera
+  over `2803` frames, with the last register read at frame `2800`.
+- Steady `acquisition_to_ptp_done_ms p95` remained effectively zero:
+  `0.000180 ms` on `2010095` and `0.000150 ms` on `2010096`.
+- Steady `acquisition_to_yolo_enqueue_ms p95` was `0.032 ms` on `2010095`
+  and `0.031 ms` on `2010096`.
+- Steady `acquisition_to_detect_done_ms p95` was `4.580 ms` on `2010095`
+  and `4.585 ms` on `2010096`; steady YOLO `total_ms p95` was
+  `4.548 ms` and `4.539 ms`.
+- Cadence probe frame IDs were continuous from `80` to `160`, with frame
+  timestamp deltas around `10.000 ms`. Cross-camera embedded timestamp skew
+  over the probe window stayed between `-28 ns` and `+22 ns`
+  (`p95 = 20 ns`).
+- Merged split-GOP outputs wrote `2803` packets per camera with keyframes at
+  GOP boundaries `0,25,50,...,2800`.
+
 Next implementation step:
 
-- Run a longer two-camera PTP external-recorder validation to determine whether
-  late-run YOLO dispatch tails remain.
+- Run a GUI/session validation with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
+  to confirm the same hot-path win holds outside the headless external-recorder
+  harness.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,
   and finalization.
 - Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.
