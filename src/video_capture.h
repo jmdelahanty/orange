@@ -33,6 +33,7 @@ typedef struct {
     uint64_t camera_frame_id;
     uint64_t recording_frame_id;
     uint64_t ipc_frame_id;
+    uint64_t source_buffer_bytes = 0;
     std::string recording_folder;
     uint64_t timestamp_sys;
     int image_gpu_id = -1;
@@ -249,6 +250,7 @@ struct CameraResources {
             worker_entry_pool[i].camera_frame_id = 0;
             worker_entry_pool[i].recording_frame_id = 0;
             worker_entry_pool[i].ipc_frame_id = 0;
+            worker_entry_pool[i].source_buffer_bytes = 0;
             worker_entry_pool[i].recording_folder.clear();
         }
         

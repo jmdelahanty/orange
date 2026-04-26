@@ -1,9 +1,20 @@
 #include "recording_ingress.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cctype>
+#include <cerrno>
+#include <cstdlib>
+#include <cstring>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
 #include <stdexcept>
+#include <string>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
 #include <utility>
 
 #include "encoder_preprocess_worker.h"
@@ -59,7 +70,8 @@ std::string normalize_recording_sink_mode(const std::string& value)
     if (normalized == "real" ||
         normalized == "preprocess_only" ||
         normalized == "immediate_recycle" ||
-        normalized == "threaded_handoff_only") {
+        normalized == "threaded_handoff_only" ||
+        normalized == "external_ipc") {
         return normalized;
     }
     return {};
@@ -111,13 +123,302 @@ private:
     std::atomic<int> in_flight_{0};
 };
 
+class RecordingIngress::ExternalIpcHandoffWorker : public CThreadWorker<WORKER_ENTRY> {
+public:
+    ExternalIpcHandoffWorker(SafeQueue<WORKER_ENTRY*>* recycle_queue,
+                             std::string camera_serial,
+                             int source_gpu_id)
+        : CThreadWorker<WORKER_ENTRY>(("ExternalIpcRecorder_Cam_" + camera_serial).c_str()),
+          recycle_queue_(recycle_queue),
+          camera_serial_(std::move(camera_serial)),
+          source_gpu_id_(source_gpu_id),
+          socket_path_(resolve_socket_path()),
+          ack_timeout_ms_(resolve_ack_timeout_ms()) {}
+
+    ~ExternalIpcHandoffWorker() override
+    {
+        close_socket();
+    }
+
+    double fps() const { return current_fps_.load(std::memory_order_relaxed); }
+    bool IsDrained() const {
+        return in_flight_.load(std::memory_order_relaxed) == 0 &&
+               GetCountQueueIn() == 0;
+    }
+    uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
+    uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
+    uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
+
+protected:
+    bool WorkerFunction(WORKER_ENTRY* entry) override
+    {
+        if (!entry) {
+            return false;
+        }
+        in_flight_.fetch_add(1, std::memory_order_relaxed);
+        const bool ok = detach_frame(entry);
+        if (ok) {
+            frames_acked_.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            failures_.fetch_add(1, std::memory_order_relaxed);
+        }
+        release_recording_entry_to_recycle(recycle_queue_, entry);
+        update_fps();
+        in_flight_.fetch_sub(1, std::memory_order_relaxed);
+        return false;
+    }
+
+private:
+    static std::string handle_to_hex(const cudaIpcMemHandle_t& handle)
+    {
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&handle);
+        std::ostringstream out;
+        out << std::hex << std::setfill('0');
+        for (size_t i = 0; i < sizeof(cudaIpcMemHandle_t); ++i) {
+            out << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+        }
+        return out.str();
+    }
+
+    static int resolve_ack_timeout_ms()
+    {
+        const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_ACK_TIMEOUT_MS");
+        if (!env || !*env) {
+            return 1000;
+        }
+        char* end = nullptr;
+        const long parsed = std::strtol(env, &end, 10);
+        if (end == env || *end != '\0' || parsed < 1 || parsed > 60000) {
+            std::cerr << "[ExternalIpcRecorder] Ignoring invalid "
+                      << "ORANGE_EXTERNAL_RECORDER_ACK_TIMEOUT_MS='" << env
+                      << "', using 1000" << std::endl;
+            return 1000;
+        }
+        return static_cast<int>(parsed);
+    }
+
+    std::string resolve_socket_path() const
+    {
+        const std::string per_camera_env =
+            "ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_" + camera_serial_;
+        if (const char* path = std::getenv(per_camera_env.c_str()); path && *path) {
+            return path;
+        }
+        if (const char* path = std::getenv("ORANGE_EXTERNAL_RECORDER_SOCKET"); path && *path) {
+            return path;
+        }
+        return "/tmp/orange_external_recorder_" + camera_serial_ + ".sock";
+    }
+
+    void close_socket()
+    {
+        if (socket_fd_ >= 0) {
+            close(socket_fd_);
+            socket_fd_ = -1;
+        }
+    }
+
+    bool ensure_connected()
+    {
+        if (socket_fd_ >= 0) {
+            return true;
+        }
+
+        socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (socket_fd_ < 0) {
+            log_limited("socket() failed: " + std::string(std::strerror(errno)));
+            return false;
+        }
+
+        timeval timeout{};
+        timeout.tv_sec = ack_timeout_ms_ / 1000;
+        timeout.tv_usec = (ack_timeout_ms_ % 1000) * 1000;
+        setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(socket_fd_, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        if (socket_path_.size() >= sizeof(addr.sun_path)) {
+            log_limited("Socket path too long: " + socket_path_);
+            close_socket();
+            return false;
+        }
+        std::strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+        if (connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            log_limited("connect(" + socket_path_ + ") failed: " +
+                        std::string(std::strerror(errno)));
+            close_socket();
+            return false;
+        }
+        std::cout << "[ExternalIpcRecorder] Connected camera " << camera_serial_
+                  << " to " << socket_path_ << std::endl;
+        return true;
+    }
+
+    bool send_all(const std::string& data)
+    {
+        const char* cursor = data.data();
+        size_t remaining = data.size();
+        while (remaining > 0) {
+            const ssize_t written = send(socket_fd_, cursor, remaining, MSG_NOSIGNAL);
+            if (written <= 0) {
+                return false;
+            }
+            cursor += written;
+            remaining -= static_cast<size_t>(written);
+        }
+        return true;
+    }
+
+    bool read_ack(uint64_t recording_frame_id)
+    {
+        std::string line;
+        char ch = '\0';
+        while (line.size() < 256) {
+            const ssize_t n = recv(socket_fd_, &ch, 1, 0);
+            if (n == 0) {
+                return false;
+            }
+            if (n < 0) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                }
+                return false;
+            }
+            if (ch == '\n') {
+                break;
+            }
+            line.push_back(ch);
+        }
+        std::istringstream in(line);
+        std::string ack;
+        uint64_t ack_frame_id = 0;
+        in >> ack >> ack_frame_id;
+        return ack == "ACK" && ack_frame_id == recording_frame_id;
+    }
+
+    bool detach_frame(WORKER_ENTRY* entry)
+    {
+        if (source_gpu_id_ >= 0) {
+            cudaSetDevice(source_gpu_id_);
+        }
+
+        cudaEvent_t* ready_event = entry->delayed_consumer_event();
+        if (ready_event) {
+            const cudaError_t wait_status = cudaEventSynchronize(*ready_event);
+            if (wait_status != cudaSuccess) {
+                log_limited(std::string("cudaEventSynchronize failed: ") +
+                            cudaGetErrorString(wait_status));
+                return false;
+            }
+        }
+
+        unsigned char* source_ptr = entry->delayed_consumer_image();
+        if (!source_ptr || entry->source_buffer_bytes == 0) {
+            log_limited("Frame has no exportable source buffer");
+            return false;
+        }
+        if (!entry->owns_memory && !entry->has_analytics_owned_source()) {
+            log_limited("Frame source is not owned cudaMalloc memory; enable owned/ring source");
+            return false;
+        }
+
+        std::string handle_hex;
+        auto handle_it = handle_cache_.find(source_ptr);
+        if (handle_it == handle_cache_.end()) {
+            cudaIpcMemHandle_t handle{};
+            const cudaError_t handle_status = cudaIpcGetMemHandle(
+                &handle,
+                static_cast<void*>(source_ptr));
+            if (handle_status != cudaSuccess) {
+                log_limited(std::string("cudaIpcGetMemHandle failed: ") +
+                            cudaGetErrorString(handle_status));
+                return false;
+            }
+            handle_hex = handle_to_hex(handle);
+            handle_cache_.emplace(source_ptr, handle_hex);
+        } else {
+            handle_hex = handle_it->second;
+        }
+
+        if (!ensure_connected()) {
+            return false;
+        }
+
+        std::ostringstream msg;
+        msg << "FRAME "
+            << camera_serial_ << " "
+            << entry->recording_frame_id << " "
+            << entry->frame_id << " "
+            << source_gpu_id_ << " "
+            << entry->width << " "
+            << entry->height << " "
+            << entry->pixelFormat << " "
+            << entry->source_buffer_bytes << " "
+            << entry->timestamp << " "
+            << entry->timestamp_sys << " "
+            << handle_hex << "\n";
+
+        if (!send_all(msg.str())) {
+            log_limited("send frame descriptor failed: " + std::string(std::strerror(errno)));
+            close_socket();
+            return false;
+        }
+        if (!read_ack(entry->recording_frame_id)) {
+            log_limited("detach ack failed for frame " +
+                        std::to_string(entry->recording_frame_id));
+            close_socket();
+            return false;
+        }
+        return true;
+    }
+
+    void update_fps()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        frame_counter_++;
+        const std::chrono::duration<double> elapsed = now - last_fps_update_time_;
+        if (elapsed.count() >= 1.0) {
+            current_fps_.store(frame_counter_ / elapsed.count(), std::memory_order_relaxed);
+            frame_counter_ = 0;
+            last_fps_update_time_ = now;
+        }
+    }
+
+    void log_limited(const std::string& message)
+    {
+        const uint64_t count = failures_logged_.fetch_add(1, std::memory_order_relaxed);
+        if (count < 10 || (count % 100) == 0) {
+            std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " " << message << std::endl;
+        }
+    }
+
+    SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
+    std::string camera_serial_;
+    int source_gpu_id_ = -1;
+    std::string socket_path_;
+    int ack_timeout_ms_ = 1000;
+    int socket_fd_ = -1;
+    std::unordered_map<unsigned char*, std::string> handle_cache_;
+    std::chrono::steady_clock::time_point last_fps_update_time_ = std::chrono::steady_clock::now();
+    std::atomic<int> frame_counter_{0};
+    std::atomic<double> current_fps_{0.0};
+    std::atomic<int> in_flight_{0};
+    std::atomic<uint64_t> frames_acked_{0};
+    std::atomic<uint64_t> failures_{0};
+    std::atomic<uint64_t> ack_timeouts_{0};
+    std::atomic<uint64_t> failures_logged_{0};
+};
+
 RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_worker,
                                    int source_gpu_id,
                                    int primary_encode_gpu_id,
                                    uint32_t recording_gop_length,
                                    const ResolvedRecordingConfig& resolved_recording_config,
                                    SafeQueue<WORKER_ENTRY*>* recycle_queue,
-                                   const std::string& recording_sink_mode)
+                                   const std::string& recording_sink_mode,
+                                   const std::string& camera_serial)
     : primary_preprocess_worker_(primary_preprocess_worker),
       source_gpu_id_(source_gpu_id),
       primary_encode_gpu_id_(primary_encode_gpu_id),
@@ -136,6 +437,17 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
                 "threaded_handoff_only recording sink mode requires a recycle queue");
         }
         threaded_handoff_worker_ = std::make_unique<ThreadedHandoffWorker>(recycle_queue_);
+    } else if (recording_sink_mode_ == "external_ipc") {
+        if (!recycle_queue_) {
+            throw std::runtime_error(
+                "external_ipc recording sink mode requires a recycle queue");
+        }
+        const std::string serial = camera_serial.empty() ? "unknown" : camera_serial;
+        external_ipc_handoff_worker_ =
+            std::make_unique<ExternalIpcHandoffWorker>(
+                recycle_queue_,
+                serial,
+                source_gpu_id_);
     }
 
     if (recording_sink_mode_ != "real") {
@@ -286,6 +598,22 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
         return;
     }
 
+    if (recording_sink_mode_ == "external_ipc") {
+        if (!external_ipc_handoff_worker_) {
+            throw std::runtime_error("external_ipc sink mode has no handoff worker");
+        }
+        submitted_frames_.fetch_add(1, std::memory_order_relaxed);
+        primary_routed_frames_.fetch_add(1, std::memory_order_relaxed);
+        last_target_gpu_id_.store(primary_encode_gpu_id_, std::memory_order_relaxed);
+        increment_last_route_mode_primary();
+        if (entry) {
+            entry->recording_target_gpu_id = primary_encode_gpu_id_;
+            entry->recording_route_helper = false;
+        }
+        external_ipc_handoff_worker_->PutObjectToQueueIn(entry);
+        return;
+    }
+
     if (!primary_preprocess_worker_) {
         throw std::runtime_error("RecordingIngress has no primary preprocess worker");
     }
@@ -397,6 +725,18 @@ RecordingIngressStats RecordingIngress::GetStats() const
         stats.preprocess_fps = stats.preprocess_fps_primary;
         stats.preprocess_queue_depth =
             threaded_handoff_worker_ ? threaded_handoff_worker_->GetCountQueueInSize() : -1;
+    } else if (recording_sink_mode_ == "external_ipc") {
+        stats.preprocess_fps_primary =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->fps() : 0.0;
+        stats.preprocess_fps = stats.preprocess_fps_primary;
+        stats.preprocess_queue_depth =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->GetCountQueueInSize() : -1;
+        stats.external_ipc_frames_acked =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->frames_acked() : 0;
+        stats.external_ipc_failures =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->failures() : 0;
+        stats.external_ipc_ack_timeouts =
+            external_ipc_handoff_worker_ ? external_ipc_handoff_worker_->ack_timeouts() : 0;
     } else if (recording_sink_mode_ == "real") {
         accumulate_worker(primary_preprocess_worker_, true);
         for (const auto& [gpu_id, worker] : helper_preprocess_workers_) {
@@ -426,6 +766,9 @@ bool RecordingIngress::IsDrained() const
     if (recording_sink_mode_ == "threaded_handoff_only") {
         return !threaded_handoff_worker_ || threaded_handoff_worker_->IsDrained();
     }
+    if (recording_sink_mode_ == "external_ipc") {
+        return !external_ipc_handoff_worker_ || external_ipc_handoff_worker_->IsDrained();
+    }
     if (primary_preprocess_worker_ && !primary_preprocess_worker_->IsDrained()) {
         return false;
     }
@@ -444,6 +787,10 @@ void RecordingIngress::start()
         threaded_handoff_worker_->SetMaxQueueSize(240);
         threaded_handoff_worker_->StartThread();
     }
+    if (external_ipc_handoff_worker_) {
+        external_ipc_handoff_worker_->SetMaxQueueSize(240);
+        external_ipc_handoff_worker_->StartThread();
+    }
 }
 
 void RecordingIngress::request_stop()
@@ -451,12 +798,16 @@ void RecordingIngress::request_stop()
     if (threaded_handoff_worker_) {
         threaded_handoff_worker_->StopThread();
     }
+    if (external_ipc_handoff_worker_) {
+        external_ipc_handoff_worker_->StopThread();
+    }
 }
 
 void RecordingIngress::shutdown()
 {
     request_stop();
     threaded_handoff_worker_.reset();
+    external_ipc_handoff_worker_.reset();
 }
 
 void RecordingIngress::release_entry(WORKER_ENTRY* entry)

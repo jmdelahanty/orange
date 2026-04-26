@@ -125,7 +125,7 @@ Current emitted top-level fields:
 
 `session` object:
 - `recording_sink_mode: string` (`real`, `immediate_recycle`,
-  `preprocess_only`, or `threaded_handoff_only`)
+  `preprocess_only`, `threaded_handoff_only`, or `external_ipc`)
 - `full_frame_video_enabled: boolean`
 
 `cameras` object:
@@ -441,6 +441,9 @@ Current per-camera row fields include:
 - `video_first_frame_luma_stddev: number`
 - `video_first_frame_black_fraction: number`
 - `video_first_frame_decoded_bytes: integer`
+- `external_ipc_frames_acked_final: integer`
+- `external_ipc_failures_final: integer`
+- `external_ipc_ack_timeouts_final: integer`
 
 Field semantics:
 - `importance_map_mode` is the requested headless importance-map mode for the
@@ -466,6 +469,10 @@ Field semantics:
   rejects effectively black or near-zero-variance content.
 - `video_content_status` is `pass`, `decode_failed`, `black_frame`,
   `low_luma_stddev`, or `not_checked`.
+- `external_ipc_*_final` fields are post-warmup deltas from
+  `Cam<serial>_pipeline_perf.csv` when `recording_sink_mode = "external_ipc"`.
+  The mode is metrics-only, but nonzero failures/timeouts or fewer ACKed frames
+  than submitted frames fail the experiment row.
 
 Important:
 - `video_duration_s` includes warmup time in current headless experiment runs,

@@ -16,12 +16,15 @@ does not fully prove, the process-boundary hypothesis because the synthetic
 encoder did not reproduce the long in-process Linux NVENC harvest waits seen in
 the real GUI path.
 
-The next implementation step should therefore be:
+The live detach prototype has now passed its first one-camera smoke. The next
+implementation step should therefore be:
 
 ```text
-1. add decoded-frame entropy / black-frame sanity checks to validation,
-2. prototype a real-frame external recorder detach path,
-3. compare YOLO timing against the validated two-camera PTP baseline.
+1. attach real NVENC encode/harvest to the external process' recorder-owned
+   buffer,
+2. start at a sustainable one-camera same-GPU rate,
+3. compare YOLO timing against the validated two-camera PTP baseline once the
+   external encoder path is mechanically correct.
 ```
 
 The key architecture question remains:
@@ -299,6 +302,35 @@ Real-frame external load status:
   free. Encode GPU placement and split-GOP routing remain first-class design
   choices. This result is still from cached raw-file input, not yet live CUDA
   IPC / split-GOP recorder handoff.
+
+Live CUDA IPC detach status:
+
+- Implemented experimental `recording_sink_mode = "external_ipc"` and
+  `tools/external_recorder_ipc_probe.cpp`.
+- The analytics process exports an owned CUDA source buffer handle over a Unix
+  domain socket. The external probe imports the handle, copies the frame into a
+  recorder-owned device buffer, sends `ACK <recording_frame_id>`, and only then
+  the analytics process recycles the source lease.
+- Socket path defaults to
+  `/tmp/orange_external_recorder_<camera_serial>.sock`, with optional
+  `ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_<serial>` or
+  `ORANGE_EXTERNAL_RECORDER_SOCKET` overrides.
+- First one-camera smoke on `2010096` / A16 GPU `5` used real headless YOLO and
+  `recording_sink_mode = "external_ipc"`.
+- Result:
+  - probe ACKed `601` frames;
+  - acquisition sustained about `99.85 fps`;
+  - camera drops, frame-id gaps, get-frame errors, preprocess drops, and encode
+    failures were all zero;
+  - post-warmup YOLO `acquisition_to_worker_start_ms p95 = 0.0552 ms`;
+  - post-warmup YOLO `cpu_preprocess_ms p95 = 0.0119 ms`;
+  - post-warmup YOLO `acquisition_to_detect_done_ms p95 = 3.6366 ms`;
+  - external D2D detach copy `copy_ms p95 = 0.039 ms` after frame 50.
+- Interpretation: the source lease / ACK boundary is mechanically viable at
+  one-camera `100 fps` and does not reintroduce the same-process YOLO CPU
+  launch/preprocess tail. This prototype does not encode yet; the next slice is
+  to run NVENC from the external process' recorder-owned buffer before ACKing
+  encode completion independently of the analytics lease.
 
 Candidate command shape:
 

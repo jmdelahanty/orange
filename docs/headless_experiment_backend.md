@@ -113,7 +113,7 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.sync_mode = "free_run" | "ptp_gate"`
 - `fixed.stream_only = true | false`
 - `fixed.acquisition_buffer_mode = "auto" | "force_ring_copy"`
-- `fixed.recording_sink_mode = "real" | "preprocess_only" | "immediate_recycle" | "threaded_handoff_only"`
+- `fixed.recording_sink_mode = "real" | "preprocess_only" | "immediate_recycle" | "threaded_handoff_only" | "external_ipc"`
 - `fixed.helper_noop_source_read = true | false`
 - `fixed.helper_copy_bytes = -1 | 0 | <positive byte count>`
 - `fixed.helper_copy_delay_ns = 0 | <positive nanoseconds>`
@@ -178,7 +178,29 @@ Validated smoke:
   sudo -n /usr/local/bin/orange-local-benchmark \
     --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
     /tmp/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry.json
-  ```
+```
+
+`fixed.recording_sink_mode = "external_ipc"` is the first process-isolated
+recorder detach prototype:
+
+- acquisition/YOLO stay in the headless analytics process,
+- the recording path exports an owned CUDA source buffer over a Unix socket,
+- an external recorder probe imports the CUDA IPC memory handle and copies the
+  frame into recorder-owned device memory,
+- the analytics process keeps the source lease until the probe sends a detach
+  ACK,
+- no full-frame NVENC encode is performed by this prototype yet.
+
+The external IPC path writes these pipeline CSV columns and corresponding
+`runs.json` / `runs.csv` fields:
+
+- `external_ipc_frames_acked`
+- `external_ipc_failures`
+- `external_ipc_ack_timeouts`
+
+For `external_ipc` experiment specs, nonzero failures/timeouts or fewer ACKed
+frames than submitted frames fail the run even though the mode is otherwise
+metrics-only.
 
 - Artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25/frame_ipc_summary.json`

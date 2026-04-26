@@ -33,6 +33,9 @@ struct RecordingIngressStats {
     uint64_t detect_priority_wait_max_ns = 0;
     uint64_t encode_failures = 0;
     uint64_t encode_slow_frames = 0;
+    uint64_t external_ipc_frames_acked = 0;
+    uint64_t external_ipc_failures = 0;
+    uint64_t external_ipc_ack_timeouts = 0;
     uint64_t submitted_frames = 0;
     uint64_t primary_routed_frames = 0;
     uint64_t helper_requested_frames = 0;
@@ -53,7 +56,8 @@ public:
                      uint32_t recording_gop_length,
                      const ResolvedRecordingConfig& resolved_recording_config,
                      SafeQueue<WORKER_ENTRY*>* recycle_queue = nullptr,
-                     const std::string& recording_sink_mode = "real");
+                     const std::string& recording_sink_mode = "real",
+                     const std::string& camera_serial = "");
     ~RecordingIngress();
 
     void SubmitFrame(WORKER_ENTRY* entry);
@@ -68,6 +72,7 @@ public:
 
 private:
     class ThreadedHandoffWorker;
+    class ExternalIpcHandoffWorker;
 
     void release_entry(WORKER_ENTRY* entry);
     int select_target_gpu_id(uint64_t recording_frame_id, bool* helper_requested) const;
@@ -83,6 +88,7 @@ private:
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
     std::string recording_sink_mode_ = "real";
     std::unique_ptr<ThreadedHandoffWorker> threaded_handoff_worker_;
+    std::unique_ptr<ExternalIpcHandoffWorker> external_ipc_handoff_worker_;
     std::vector<int> route_gpu_ids_;
     std::unordered_map<int, EncoderPreprocessWorker*> helper_preprocess_workers_;
     std::atomic<uint64_t> submitted_frames_{0};

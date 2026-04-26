@@ -151,8 +151,14 @@ crop/pose/track latency solved.
   timing (`infer_ms` / `sync_ms`), not CPU launch/preprocess timing, so process
   isolation should be treated as solving same-process runtime-lock contention,
   not as eliminating same-GPU hardware/fabric contention.
-- Next implementation work is the live external-recorder detach prototype with
-  CUDA IPC or an exportable detach ring. Keep encode GPU placement/routing as a
-  first-class design variable.
+- The first live external-recorder detach prototype now exists behind
+  `recording_sink_mode=external_ipc`. A one-camera `2010096` smoke ACKed `601`
+  CUDA IPC frames at about `99.85 fps`, with no camera drops/frame-id gaps and
+  YOLO `cpu_preprocess_ms p95 = 0.0119 ms`.
+- The prototype only imports and copies frames into recorder-owned device
+  memory; it does not encode yet. Next implementation work is to attach NVENC
+  encode/harvest in the external process, starting with sustainable one-camera
+  same-GPU load. Keep encode GPU placement/routing as a first-class design
+  variable.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

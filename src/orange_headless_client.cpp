@@ -483,6 +483,9 @@ struct ExperimentCsvWindowStats {
     uint64_t pre_drops_delta = 0;
     uint64_t enc_fail_delta = 0;
     uint64_t enc_slow_delta = 0;
+    uint64_t external_ipc_frames_acked_delta = 0;
+    uint64_t external_ipc_failures_delta = 0;
+    uint64_t external_ipc_ack_timeouts_delta = 0;
     uint64_t submitted_frames_delta = 0;
     uint64_t primary_routed_frames_delta = 0;
     uint64_t helper_requested_frames_delta = 0;
@@ -4715,6 +4718,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     const int pre_drops_index = required_index("pre_drops");
     const int enc_fail_index = required_index("enc_fail");
     const int enc_slow_index = required_index("enc_slow");
+    const int external_ipc_frames_acked_index = required_index("external_ipc_frames_acked");
+    const int external_ipc_failures_index = required_index("external_ipc_failures");
+    const int external_ipc_ack_timeouts_index = required_index("external_ipc_ack_timeouts");
     const int submitted_frames_index = required_index("submitted_frames");
     const int primary_routed_frames_index = required_index("primary_routed_frames");
     const int helper_requested_frames_index = required_index("helper_requested_frames");
@@ -4767,6 +4773,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     uint64_t baseline_pre_drops = 0;
     uint64_t baseline_enc_fail = 0;
     uint64_t baseline_enc_slow = 0;
+    uint64_t baseline_external_ipc_frames_acked = 0;
+    uint64_t baseline_external_ipc_failures = 0;
+    uint64_t baseline_external_ipc_ack_timeouts = 0;
     uint64_t baseline_submitted_frames = 0;
     uint64_t baseline_primary_routed_frames = 0;
     uint64_t baseline_helper_requested_frames = 0;
@@ -4779,6 +4788,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
     uint64_t last_pre_drops = 0;
     uint64_t last_enc_fail = 0;
     uint64_t last_enc_slow = 0;
+    uint64_t last_external_ipc_frames_acked = 0;
+    uint64_t last_external_ipc_failures = 0;
+    uint64_t last_external_ipc_ack_timeouts = 0;
     uint64_t last_submitted_frames = 0;
     uint64_t last_primary_routed_frames = 0;
     uint64_t last_helper_requested_frames = 0;
@@ -4811,6 +4823,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         uint64_t pre_drops = 0;
         uint64_t enc_fail = 0;
         uint64_t enc_slow = 0;
+        uint64_t external_ipc_frames_acked = 0;
+        uint64_t external_ipc_failures = 0;
+        uint64_t external_ipc_ack_timeouts = 0;
         uint64_t submitted_frames = 0;
         uint64_t primary_routed_frames = 0;
         uint64_t helper_requested_frames = 0;
@@ -4868,6 +4883,15 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         if (enc_slow_index >= 0) {
             parse_u64_cell(cells, enc_slow_index, &enc_slow);
         }
+        if (external_ipc_frames_acked_index >= 0) {
+            parse_u64_cell(cells, external_ipc_frames_acked_index, &external_ipc_frames_acked);
+        }
+        if (external_ipc_failures_index >= 0) {
+            parse_u64_cell(cells, external_ipc_failures_index, &external_ipc_failures);
+        }
+        if (external_ipc_ack_timeouts_index >= 0) {
+            parse_u64_cell(cells, external_ipc_ack_timeouts_index, &external_ipc_ack_timeouts);
+        }
         if (submitted_frames_index >= 0) {
             parse_u64_cell(cells, submitted_frames_index, &submitted_frames);
         }
@@ -4900,6 +4924,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         last_pre_drops = pre_drops;
         last_enc_fail = enc_fail;
         last_enc_slow = enc_slow;
+        last_external_ipc_frames_acked = external_ipc_frames_acked;
+        last_external_ipc_failures = external_ipc_failures;
+        last_external_ipc_ack_timeouts = external_ipc_ack_timeouts;
         last_submitted_frames = submitted_frames;
         last_primary_routed_frames = primary_routed_frames;
         last_helper_requested_frames = helper_requested_frames;
@@ -4914,6 +4941,9 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
             baseline_pre_drops = pre_drops;
             baseline_enc_fail = enc_fail;
             baseline_enc_slow = enc_slow;
+            baseline_external_ipc_frames_acked = external_ipc_frames_acked;
+            baseline_external_ipc_failures = external_ipc_failures;
+            baseline_external_ipc_ack_timeouts = external_ipc_ack_timeouts;
             baseline_submitted_frames = submitted_frames;
             baseline_primary_routed_frames = primary_routed_frames;
             baseline_helper_requested_frames = helper_requested_frames;
@@ -4987,6 +5017,18 @@ ExperimentCsvWindowStats compute_csv_window_stats(const std::filesystem::path& c
         (last_enc_fail >= baseline_enc_fail) ? (last_enc_fail - baseline_enc_fail) : last_enc_fail;
     stats.enc_slow_delta =
         (last_enc_slow >= baseline_enc_slow) ? (last_enc_slow - baseline_enc_slow) : last_enc_slow;
+    stats.external_ipc_frames_acked_delta =
+        (last_external_ipc_frames_acked >= baseline_external_ipc_frames_acked)
+            ? (last_external_ipc_frames_acked - baseline_external_ipc_frames_acked)
+            : last_external_ipc_frames_acked;
+    stats.external_ipc_failures_delta =
+        (last_external_ipc_failures >= baseline_external_ipc_failures)
+            ? (last_external_ipc_failures - baseline_external_ipc_failures)
+            : last_external_ipc_failures;
+    stats.external_ipc_ack_timeouts_delta =
+        (last_external_ipc_ack_timeouts >= baseline_external_ipc_ack_timeouts)
+            ? (last_external_ipc_ack_timeouts - baseline_external_ipc_ack_timeouts)
+            : last_external_ipc_ack_timeouts;
     stats.submitted_frames_delta =
         (last_submitted_frames >= baseline_submitted_frames)
             ? (last_submitted_frames - baseline_submitted_frames)
@@ -5229,7 +5271,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         if (error_out) {
             *error_out =
                 "Local experiment runner only supports "
-                "fixed.recording_sink_mode=real|preprocess_only|immediate_recycle|threaded_handoff_only";
+                "fixed.recording_sink_mode=real|preprocess_only|immediate_recycle|threaded_handoff_only|external_ipc";
         }
         return false;
     }
@@ -6033,6 +6075,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["pre_drops_final"] = 0;
     row["enc_fail_final"] = 0;
     row["enc_slow_final"] = 0;
+    row["external_ipc_frames_acked_final"] = 0ULL;
+    row["external_ipc_failures_final"] = 0ULL;
+    row["external_ipc_ack_timeouts_final"] = 0ULL;
     row["submitted_frames_final"] = 0ULL;
     row["primary_routed_frames_final"] = 0ULL;
     row["helper_requested_frames_final"] = 0ULL;
@@ -6192,6 +6237,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["pre_drops_final"] = csv_stats.pre_drops_delta;
     row["enc_fail_final"] = csv_stats.enc_fail_delta;
     row["enc_slow_final"] = csv_stats.enc_slow_delta;
+    row["external_ipc_frames_acked_final"] = csv_stats.external_ipc_frames_acked_delta;
+    row["external_ipc_failures_final"] = csv_stats.external_ipc_failures_delta;
+    row["external_ipc_ack_timeouts_final"] = csv_stats.external_ipc_ack_timeouts_delta;
     row["submitted_frames_final"] = csv_stats.submitted_frames_delta;
     row["primary_routed_frames_final"] = csv_stats.primary_routed_frames_delta;
     row["helper_requested_frames_final"] = csv_stats.helper_requested_frames_delta;
@@ -6266,21 +6314,39 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     if (metrics_only_run) {
         const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
         const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
+        const uint64_t external_ipc_frames_acked =
+            row["external_ipc_frames_acked_final"].get<uint64_t>();
+        const uint64_t external_ipc_failures =
+            row["external_ipc_failures_final"].get<uint64_t>();
+        const uint64_t external_ipc_ack_timeouts =
+            row["external_ipc_ack_timeouts_final"].get<uint64_t>();
+        const uint64_t submitted_frames = row["submitted_frames_final"].get<uint64_t>();
         const int64_t camera_drops = row["dropped_frames_camera"].get<int64_t>();
         const double acq_fps_mean = row["acq_fps_mean"].get<double>();
         const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
         const bool fps_ok = (target_fps <= 0.0) || (acq_fps_mean + tolerance >= target_fps);
+        const bool external_ipc_ok = run.options.recording_sink_mode != "external_ipc" ||
+            (external_ipc_failures == 0 &&
+             external_ipc_ack_timeouts == 0 &&
+             (submitted_frames == 0 || external_ipc_frames_acked >= submitted_frames));
 
         if ((spec.require_zero_camera_drops && camera_drops > 0) ||
             (spec.require_zero_acq_starve && acq_starve > 0) ||
-            (spec.require_zero_pre_drops && pre_drops > 0)) {
+            (spec.require_zero_pre_drops && pre_drops > 0) ||
+            !external_ipc_ok) {
             row["pass_fail"] = "fail";
             if (spec.require_zero_camera_drops && camera_drops > 0) {
                 row["reason"] = "nonzero camera dropped frames";
             } else if (spec.require_zero_acq_starve && acq_starve > 0) {
                 row["reason"] = "nonzero acquisition starvation";
-            } else {
+            } else if (spec.require_zero_pre_drops && pre_drops > 0) {
                 row["reason"] = "nonzero preprocess drops";
+            } else if (external_ipc_failures > 0) {
+                row["reason"] = "nonzero external ipc failures";
+            } else if (external_ipc_ack_timeouts > 0) {
+                row["reason"] = "nonzero external ipc ack timeouts";
+            } else {
+                row["reason"] = "external ipc acked fewer frames than submitted";
             }
         } else if (!fps_ok) {
             row["pass_fail"] = "marginal";
@@ -6483,7 +6549,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -6580,6 +6646,9 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("pre_drops_final", 0ULL) << ","
                 << row.value("enc_fail_final", 0ULL) << ","
                 << row.value("enc_slow_final", 0ULL) << ","
+                << row.value("external_ipc_frames_acked_final", 0ULL) << ","
+                << row.value("external_ipc_failures_final", 0ULL) << ","
+                << row.value("external_ipc_ack_timeouts_final", 0ULL) << ","
                 << row.value("submitted_frames_final", 0ULL) << ","
                 << row.value("primary_routed_frames_final", 0ULL) << ","
                 << row.value("helper_requested_frames_final", 0ULL) << ","

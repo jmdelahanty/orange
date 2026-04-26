@@ -180,6 +180,9 @@ struct PipelinePerfSample {
     uint64_t detect_priority_wait_max_ns = 0;
     uint64_t encode_failures = 0;
     uint64_t encode_slow_frames = 0;
+    uint64_t external_ipc_frames_acked = 0;
+    uint64_t external_ipc_failures = 0;
+    uint64_t external_ipc_ack_timeouts = 0;
     uint64_t submitted_frames = 0;
     uint64_t primary_routed_frames = 0;
     uint64_t helper_requested_frames = 0;
@@ -623,6 +626,9 @@ public:
               << sample.detect_priority_wait_max_ns << ","
               << sample.encode_failures << ","
               << sample.encode_slow_frames << ","
+              << sample.external_ipc_frames_acked << ","
+              << sample.external_ipc_failures << ","
+              << sample.external_ipc_ack_timeouts << ","
               << sample.submitted_frames << ","
               << sample.primary_routed_frames << ","
               << sample.helper_requested_frames << ","
@@ -695,6 +701,7 @@ private:
                  "detect_priority_gated_frames,detect_priority_waited_frames,detect_priority_wait_timeouts,"
                  "detect_priority_wait_total_ns,detect_priority_wait_max_ns,"
                  "enc_fail,enc_slow,"
+                 "external_ipc_frames_acked,external_ipc_failures,external_ipc_ack_timeouts,"
                  "submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
                  "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
@@ -803,6 +810,9 @@ private:
             totals["detect_priority_wait_max_ns"] = last_sample_.detect_priority_wait_max_ns;
             totals["encode_failures"] = last_sample_.encode_failures;
             totals["encode_slow_frames"] = last_sample_.encode_slow_frames;
+            totals["external_ipc_frames_acked"] = last_sample_.external_ipc_frames_acked;
+            totals["external_ipc_failures"] = last_sample_.external_ipc_failures;
+            totals["external_ipc_ack_timeouts"] = last_sample_.external_ipc_ack_timeouts;
             totals["submitted_frames"] = last_sample_.submitted_frames;
             totals["primary_routed_frames"] = last_sample_.primary_routed_frames;
             totals["helper_requested_frames"] = last_sample_.helper_requested_frames;
@@ -1156,6 +1166,9 @@ void acquire_frames(
         sample.detect_priority_wait_max_ns = recording_stats.detect_priority_wait_max_ns;
         sample.encode_failures = recording_stats.encode_failures;
         sample.encode_slow_frames = recording_stats.encode_slow_frames;
+        sample.external_ipc_frames_acked = recording_stats.external_ipc_frames_acked;
+        sample.external_ipc_failures = recording_stats.external_ipc_failures;
+        sample.external_ipc_ack_timeouts = recording_stats.external_ipc_ack_timeouts;
         sample.submitted_frames = recording_stats.submitted_frames;
         sample.primary_routed_frames = recording_stats.primary_routed_frames;
         sample.helper_requested_frames = recording_stats.helper_requested_frames;
@@ -1647,6 +1660,7 @@ void acquire_frames(
             current_entry->frame_id = camera_state.frame_count;
             current_entry->camera_frame_id = received_frame->frame_id;
             current_entry->recording_folder = live_recording_folder;
+            current_entry->source_buffer_bytes = received_frame->bufferSize;
             current_entry->acquisition_receive_host_ns = receive_host_ns;
             current_entry->yolo_detect_done_host_ns = 0;
             current_entry->recording_submit_host_ns = 0;
