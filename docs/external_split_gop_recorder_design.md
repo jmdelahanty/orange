@@ -347,9 +347,9 @@ Implemented on 2026-04-26:
 - Each shard owns its CUDA/NVENC path and writes separate diagnostic artifacts:
   per-shard encode CSV and per-shard MP4.
 - `external_gop_routing.csv` records the selected shard/GPU for every frame.
-- The smoke runner accepts `--shard-gpu-ids`; multi-shard mode skips the old
-  single-MP4 sanity gate because the diagnostic intentionally produces
-  per-shard MP4s instead of a merged per-camera MP4.
+- The smoke runner accepts `--shard-gpu-ids`.
+- This slice intentionally kept output split by shard; merged per-camera output
+  was added in the following slice.
 
 Validation smoke:
 
@@ -372,13 +372,59 @@ Result from `/tmp/orange_external_recorder_2010096_20260425_221647`:
 - GOP routing alternated correctly: GOP `0 -> shard 0`, GOP `1 -> shard 1`,
   GOP `2 -> shard 0`, GOP `3 -> shard 1`.
 - Both per-shard MP4s were present and `ffprobe`-readable at `4512x4512`.
-- This is still not production output because GOPs are not merged back into one
-  per-camera file.
+
+### Merged GOP Output Slice
+
+Implemented on 2026-04-26:
+
+- Multi-shard `external_recorder_ipc_probe` now creates a merged GOP output
+  coordinator when `--shard-gpu-ids` and `--mp4-out` are both present.
+- Per-shard encoder workers still own their CUDA/NVENC lanes and diagnostic
+  MP4s, but returned packets are also submitted to the coordinator.
+- The coordinator buffers encoded packets by GOP, releases GOPs in recording
+  order, and writes the base per-camera MP4 path
+  `Cam<serial>_external.mp4`.
+- GOP completion is inferred both from the final frame in a GOP and from
+  routing progress into the next GOP. This is required for capped diagnostics
+  where the frame-rate limiter may skip the terminal frame of a GOP.
+- The summary JSON now includes a `merged_output` section with packet counts,
+  pending GOP/byte counts, writer queue stats, MP4 path, and failure state.
+- `outputs.mp4` and `output_file_sizes.mp4_bytes` now refer to the merged base
+  MP4 when merged output is enabled.
+- Per-shard MP4s remain in `external_encode_shards` for diagnosis.
+- The smoke runner no longer skips video sanity for multi-shard mode; it checks
+  the merged base MP4.
+
+Validation smoke:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_smoke.sh \
+  --duration 3 \
+  --warmup 1 \
+  --encode-fps 60 \
+  --output-dir /tmp \
+  --shard-gpu-ids 5,6
+```
+
+Result from `/tmp/orange_external_recorder_2010096_20260425_222953`:
+
+- `401` descriptors received and ACKed.
+- `259` frames encoded, `142` skipped by the `60 fps` cap, `0` encode drops.
+- Merged output wrote `259` packets, released `17` GOPs, and ended with
+  `0` pending GOPs / `0` pending bytes.
+- Merged MP4 size was `82236594` bytes.
+- Video sanity passed on the merged base MP4:
+  `frames=259`, `mean_luma=174.802`, `max_black_fraction_lt8=0.000827`.
+- Shard `0` on GPU `5`: `135` frames encoded.
+- Shard `1` on GPU `6`: `124` frames encoded.
+- GOP routing still alternated correctly by modulo.
 
 Next implementation step:
 
-- Add the GOP order coordinator / mux merge layer that consumes shard outputs
-  and writes one valid per-camera recording.
+- Run an uncapped one-camera `100 fps` split-GOP smoke using the same routing
+  and merge path.
+- If that is healthy, move to two-camera PTP with external recorder routing.
 
 ## Open Questions
 

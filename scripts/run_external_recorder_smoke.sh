@@ -269,7 +269,6 @@ echo "[external-recorder] summary_json=$SUMMARY_JSON"
 ROUTING_POLICY="single_shard"
 if [[ -n "$SHARD_GPU_IDS" ]]; then
   ROUTING_POLICY="gop_modulo"
-  SKIP_VIDEO_SANITY=1
 fi
 
 RECORDER_ARGS=(
@@ -556,6 +555,4 @@ print(
 if not content_valid:
     raise SystemExit(1)
 PY
-elif [[ -n "$SHARD_GPU_IDS" ]]; then
-  echo "[external-recorder] video_sanity skipped for multi-shard diagnostic; inspect per-shard MP4 paths in summary_json."
 fi

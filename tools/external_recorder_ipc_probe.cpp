@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -500,6 +501,13 @@ uint64_t elapsed_ns(std::chrono::steady_clock::time_point start)
             std::chrono::steady_clock::now() - start).count());
 }
 
+uint64_t steady_clock_now_ns()
+{
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
 GUID resolve_codec_guid(const std::string& codec)
 {
     return codec == "h264" ? NV_ENC_CODEC_H264_GUID : NV_ENC_CODEC_HEVC_GUID;
@@ -898,6 +906,27 @@ struct EncodeSummary {
     std::string mp4_keyframe_path;
 };
 
+struct MergedOutputSummary {
+    bool enabled = false;
+    bool failed = false;
+    uint64_t packets_written = 0;
+    uint64_t bytes_written = 0;
+    uint64_t gops_released = 0;
+    uint64_t pending_gops = 0;
+    uint64_t pending_bytes = 0;
+    bool mp4_queue_overflowed = false;
+    uint64_t mp4_queue_overflow_events = 0;
+    size_t mp4_peak_queued_packets = 0;
+    size_t mp4_peak_queued_bytes = 0;
+    double mp4_push_mean_ms = 0.0;
+    double mp4_push_max_ms = 0.0;
+    double mp4_write_mean_ms = 0.0;
+    double mp4_write_max_ms = 0.0;
+    std::string mp4_path;
+    std::string mp4_keyframe_path;
+    std::string error_message;
+};
+
 EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summaries)
 {
     EncodeSummary out;
@@ -1006,6 +1035,257 @@ struct DeviceSlot {
     bool allocated = false;
 };
 
+class MergedGopOutput {
+public:
+    explicit MergedGopOutput(Options options)
+        : options_(std::move(options)),
+          gop_length_(std::max<uint32_t>(1, options_.gop)),
+          mp4_path_(options_.mp4_out_path),
+          mp4_keyframe_path_(
+              options_.mp4_keyframe_path.empty()
+                  ? derive_keyframe_path(options_.mp4_out_path)
+                  : options_.mp4_keyframe_path) {}
+
+    void note_submitted(const FrameDescriptor& desc)
+    {
+        if (mp4_path_.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        ensure_writer_locked(desc);
+        mark_older_gops_complete_locked(desc.gop_index);
+        PendingGop& gop = pending_gops_[desc.gop_index];
+        gop.gop_index = desc.gop_index;
+        gop.submitted_count++;
+        if (desc.frame_index_within_gop + 1 >= gop_length_) {
+            gop.submitted_complete = true;
+        }
+        refresh_complete_locked(gop);
+        flush_ready_locked(false);
+    }
+
+    void submit_packets(const std::vector<std::vector<uint8_t>>& packets,
+                        const std::vector<uint64_t>& output_timestamps,
+                        const FrameDescriptor& fallback_desc)
+    {
+        if (mp4_path_.empty() || packets.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        ensure_writer_locked(fallback_desc);
+        for (size_t i = 0; i < packets.size(); ++i) {
+            const uint64_t output_timestamp =
+                i < output_timestamps.size() ? output_timestamps[i] : fallback_desc.recording_frame_id;
+            const uint64_t zero_based_frame =
+                output_timestamp > 0 ? output_timestamp - 1 :
+                (fallback_desc.recording_frame_id > 0 ? fallback_desc.recording_frame_id - 1 : 0);
+            const uint64_t gop_index = zero_based_frame / static_cast<uint64_t>(gop_length_);
+            PendingGop& gop = pending_gops_[gop_index];
+            gop.gop_index = gop_index;
+            BufferedPacket packet;
+            packet.bytes = packets[i];
+            packet.zero_based_frame = zero_based_frame;
+            gop.total_bytes += packet.bytes.size();
+            pending_bytes_ += packet.bytes.size();
+            gop.packets.push_back(std::move(packet));
+            gop.emitted_count++;
+            refresh_complete_locked(gop);
+        }
+        flush_ready_locked(false);
+    }
+
+    void finish()
+    {
+        if (mp4_path_.empty()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        flush_ready_locked(true);
+        finish_writer_locked();
+    }
+
+    MergedOutputSummary summary() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        MergedOutputSummary out;
+        out.enabled = !mp4_path_.empty();
+        out.failed = failed_;
+        out.packets_written = packets_written_;
+        out.bytes_written = bytes_written_;
+        out.gops_released = gops_released_;
+        out.pending_gops = pending_gops_.size();
+        out.pending_bytes = pending_bytes_;
+        out.mp4_queue_overflowed = mp4_queue_overflowed_;
+        out.mp4_queue_overflow_events = mp4_queue_overflow_events_;
+        out.mp4_peak_queued_packets = mp4_peak_queued_packets_;
+        out.mp4_peak_queued_bytes = mp4_peak_queued_bytes_;
+        out.mp4_push_mean_ms = writer_latency_.push_packet_total.mean_ms();
+        out.mp4_push_max_ms = writer_latency_.push_packet_total.max_ms();
+        out.mp4_write_mean_ms = writer_latency_.packet_write.mean_ms();
+        out.mp4_write_max_ms = writer_latency_.packet_write.max_ms();
+        out.mp4_path = mp4_path_;
+        out.mp4_keyframe_path = mp4_keyframe_path_;
+        out.error_message = error_message_;
+        return out;
+    }
+
+private:
+    struct BufferedPacket {
+        std::vector<uint8_t> bytes;
+        uint64_t zero_based_frame = 0;
+    };
+
+    struct PendingGop {
+        uint64_t gop_index = 0;
+        uint64_t submitted_count = 0;
+        uint64_t emitted_count = 0;
+        uint64_t total_bytes = 0;
+        bool submitted_complete = false;
+        bool complete = false;
+        std::vector<BufferedPacket> packets;
+    };
+
+    void ensure_writer_locked(const FrameDescriptor& desc)
+    {
+        if (writer_ || mp4_path_.empty()) {
+            return;
+        }
+        ensure_parent_directory(mp4_path_);
+        ensure_parent_directory(mp4_keyframe_path_);
+        const AVCodecID codec_id =
+            options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
+        const std::vector<std::pair<std::string, std::string>> metadata_tags = {
+            {"producer", "external_recorder_ipc_probe"},
+            {"camera_serial", desc.camera_serial},
+            {"codec", options_.codec},
+            {"preset", options_.preset},
+            {"tuning", options_.tuning},
+            {"external_recorder", "true"},
+            {"merged_gop_output", "true"},
+            {"routing_policy", options_.routing_policy}
+        };
+        writer_ = std::make_unique<FFmpegWriter>(
+            codec_id,
+            desc.width,
+            desc.height,
+            static_cast<int>(std::max<uint32_t>(1, options_.fps)),
+            mp4_path_.c_str(),
+            mp4_keyframe_path_.c_str(),
+            metadata_tags);
+        writer_->create_thread();
+    }
+
+    void refresh_complete_locked(PendingGop& gop)
+    {
+        if (gop.submitted_complete &&
+            gop.submitted_count > 0 &&
+            gop.emitted_count >= gop.submitted_count) {
+            gop.complete = true;
+        }
+    }
+
+    void mark_older_gops_complete_locked(uint64_t current_gop_index)
+    {
+        for (auto& [gop_index, gop] : pending_gops_) {
+            if (gop_index >= current_gop_index) {
+                break;
+            }
+            gop.submitted_complete = true;
+            refresh_complete_locked(gop);
+        }
+    }
+
+    void flush_ready_locked(bool flush_all)
+    {
+        while (true) {
+            auto it = pending_gops_.find(next_gop_to_release_);
+            if (it == pending_gops_.end()) {
+                if (flush_all && !pending_gops_.empty()) {
+                    it = pending_gops_.begin();
+                    next_gop_to_release_ = it->first;
+                } else {
+                    break;
+                }
+            }
+            if (!flush_all && !it->second.complete) {
+                break;
+            }
+            PendingGop gop = std::move(it->second);
+            pending_gops_.erase(it);
+            pending_bytes_ -= gop.total_bytes;
+            release_gop_locked(gop);
+            next_gop_to_release_++;
+        }
+    }
+
+    void release_gop_locked(PendingGop& gop)
+    {
+        if (!writer_) {
+            return;
+        }
+        std::stable_sort(
+            gop.packets.begin(),
+            gop.packets.end(),
+            [](const BufferedPacket& lhs, const BufferedPacket& rhs) {
+                return lhs.zero_based_frame < rhs.zero_based_frame;
+            });
+        const uint64_t release_started_ns = steady_clock_now_ns();
+        for (size_t i = 0; i < gop.packets.size(); ++i) {
+            const BufferedPacket& packet = gop.packets[i];
+            writer_->push_packet(
+                const_cast<uint8_t*>(packet.bytes.data()),
+                static_cast<int>(packet.bytes.size()),
+                static_cast<int64_t>(merged_pts_counter_++),
+                gop.gop_index,
+                i + 1 == gop.packets.size(),
+                release_started_ns);
+            packets_written_++;
+            bytes_written_ += packet.bytes.size();
+        }
+        gops_released_++;
+    }
+
+    void finish_writer_locked()
+    {
+        if (!writer_) {
+            return;
+        }
+        writer_->quit_thread();
+        writer_->join_thread();
+        writer_latency_ = writer_->latency_stats();
+        mp4_queue_overflowed_ = writer_->has_queue_overflowed();
+        mp4_queue_overflow_events_ = writer_->queue_overflow_events();
+        mp4_peak_queued_packets_ = writer_->peak_queued_packets();
+        mp4_peak_queued_bytes_ = writer_->peak_queued_bytes();
+        failed_ = failed_ || mp4_queue_overflowed_;
+        if (mp4_queue_overflowed_ && error_message_.empty()) {
+            error_message_ = "merged MP4 writer queue overflowed";
+        }
+        writer_.reset();
+    }
+
+    Options options_;
+    uint32_t gop_length_ = 1;
+    std::string mp4_path_;
+    std::string mp4_keyframe_path_;
+    mutable std::mutex mutex_;
+    std::map<uint64_t, PendingGop> pending_gops_;
+    std::unique_ptr<FFmpegWriter> writer_;
+    uint64_t next_gop_to_release_ = 0;
+    uint64_t merged_pts_counter_ = 0;
+    uint64_t packets_written_ = 0;
+    uint64_t bytes_written_ = 0;
+    uint64_t gops_released_ = 0;
+    uint64_t pending_bytes_ = 0;
+    bool failed_ = false;
+    bool mp4_queue_overflowed_ = false;
+    uint64_t mp4_queue_overflow_events_ = 0;
+    size_t mp4_peak_queued_packets_ = 0;
+    size_t mp4_peak_queued_bytes_ = 0;
+    FFmpegWriterLatencyStats writer_latency_;
+    std::string error_message_;
+};
+
 struct EncodeWorkItem {
     uint64_t source_frame_index = 0;
     FrameDescriptor desc;
@@ -1015,8 +1295,9 @@ struct EncodeWorkItem {
 
 class ExternalEncodeWorker {
 public:
-    explicit ExternalEncodeWorker(Options options)
-        : options_(std::move(options)) {}
+    explicit ExternalEncodeWorker(Options options, MergedGopOutput* merged_output = nullptr)
+        : options_(std::move(options)),
+          merged_output_(merged_output) {}
 
     ~ExternalEncodeWorker()
     {
@@ -1105,6 +1386,9 @@ public:
             if (sample) {
                 sample->encode_enqueued = true;
                 sample->encode_queue_depth = queue_.size();
+            }
+            if (merged_output_) {
+                merged_output_->note_submitted(desc);
             }
         }
         cv_.notify_one();
@@ -1405,6 +1689,8 @@ private:
     void encode_one(const EncodeWorkItem& item)
     {
         initialize_encoder(item.desc);
+        last_desc_ = item.desc;
+        has_last_desc_ = true;
         EncodeSample sample;
         sample.encode_index = frames_encoded_.load(std::memory_order_relaxed);
         sample.source_frame_index = item.source_frame_index;
@@ -1436,6 +1722,7 @@ private:
         pic_params.inputDuration = 1;
 
         std::vector<std::vector<uint8_t>> packets;
+        std::vector<uint64_t> output_timestamps;
         NvEncoderEncodeFrameTiming timing;
         uint64_t fetch_ns = 0;
         const auto encode_start = std::chrono::steady_clock::now();
@@ -1443,7 +1730,7 @@ private:
             packets,
             &pic_params,
             nullptr,
-            nullptr,
+            &output_timestamps,
             &fetch_ns,
             &timing);
         sample.encode_total_ms = ns_to_ms(elapsed_ns(encode_start));
@@ -1457,6 +1744,9 @@ private:
         sample.output_packets = timing.output_packets;
         sample.output_bytes = timing.output_bytes;
         sample.returned_packets = static_cast<uint32_t>(packets.size());
+        if (merged_output_) {
+            merged_output_->submit_packets(packets, output_timestamps, item.desc);
+        }
         for (const auto& packet : packets) {
             sample.returned_bytes += packet.size();
             push_packet_to_outputs(packet, false);
@@ -1480,9 +1770,13 @@ private:
             return;
         }
         std::vector<std::vector<uint8_t>> packets;
+        std::vector<uint64_t> output_timestamps;
         NvEncoderEncodeFrameTiming timing;
         uint64_t fetch_ns = 0;
-        encoder_->EndEncode(packets, nullptr, nullptr, &fetch_ns, &timing);
+        encoder_->EndEncode(packets, nullptr, &output_timestamps, &fetch_ns, &timing);
+        if (merged_output_ && has_last_desc_) {
+            merged_output_->submit_packets(packets, output_timestamps, last_desc_);
+        }
         for (const auto& packet : packets) {
             push_packet_to_outputs(packet, true);
         }
@@ -1528,6 +1822,7 @@ private:
     }
 
     Options options_;
+    MergedGopOutput* merged_output_ = nullptr;
     std::thread worker_;
     bool running_ = false;
     bool stopping_ = false;
@@ -1568,6 +1863,8 @@ private:
     std::atomic<uint64_t> frames_encoded_{0};
     std::atomic<uint64_t> frames_dropped_{0};
     std::atomic<bool> failed_{false};
+    FrameDescriptor last_desc_;
+    bool has_last_desc_ = false;
 };
 
 std::vector<int> effective_shard_gpu_ids(const Options& options)
@@ -1612,7 +1909,8 @@ void write_summary_json(const Options& options,
                         const std::vector<double>& detach_open_samples,
                         const std::vector<double>& detach_copy_samples,
                         const EncodeSummary* encode_summary,
-                        const std::vector<EncodeSummary>& shard_summaries)
+                        const std::vector<EncodeSummary>& shard_summaries,
+                        const MergedOutputSummary* merged_summary)
 {
     if (options.summary_json_path.empty()) {
         return;
@@ -1625,6 +1923,13 @@ void write_summary_json(const Options& options,
 
     const EncodeSummary empty_encode_summary;
     const EncodeSummary& enc = encode_summary ? *encode_summary : empty_encode_summary;
+    const MergedOutputSummary empty_merged_summary;
+    const MergedOutputSummary& merged =
+        merged_summary ? *merged_summary : empty_merged_summary;
+    const std::string output_mp4_path =
+        merged.enabled ? merged.mp4_path : enc.mp4_path;
+    const std::string output_mp4_keyframe_path =
+        merged.enabled ? merged.mp4_keyframe_path : enc.mp4_keyframe_path;
     out << std::fixed << std::setprecision(6);
     out << "{\n";
     out << "  \"schema_version\": 1,\n";
@@ -1652,7 +1957,7 @@ void write_summary_json(const Options& options,
     out << "  \"encode_skipped\": " << encode_skipped << ",\n";
     out << "  \"encode_dropped\": " << encode_dropped << ",\n";
     out << "  \"frames_encoded\": " << enc.frames_encoded << ",\n";
-    out << "  \"worker_failed\": " << (enc.failed ? "true" : "false") << ",\n";
+    out << "  \"worker_failed\": " << ((enc.failed || merged.failed) ? "true" : "false") << ",\n";
     out << "  \"external_encode\": {\n";
     out << "    \"frames_dropped\": " << enc.frames_dropped << ",\n";
     out << "    \"returned_packets\": " << enc.returned_packets << ",\n";
@@ -1702,6 +2007,26 @@ void write_summary_json(const Options& options,
         out << "    }" << (i + 1 < shard_summaries.size() ? "," : "") << "\n";
     }
     out << "  ],\n";
+    out << "  \"merged_output\": {\n";
+    out << "    \"enabled\": " << (merged.enabled ? "true" : "false") << ",\n";
+    out << "    \"failed\": " << (merged.failed ? "true" : "false") << ",\n";
+    out << "    \"packets_written\": " << merged.packets_written << ",\n";
+    out << "    \"bytes_written\": " << merged.bytes_written << ",\n";
+    out << "    \"gops_released\": " << merged.gops_released << ",\n";
+    out << "    \"pending_gops\": " << merged.pending_gops << ",\n";
+    out << "    \"pending_bytes\": " << merged.pending_bytes << ",\n";
+    out << "    \"mp4_queue_overflowed\": " << (merged.mp4_queue_overflowed ? "true" : "false") << ",\n";
+    out << "    \"mp4_queue_overflow_events\": " << merged.mp4_queue_overflow_events << ",\n";
+    out << "    \"mp4_peak_queued_packets\": " << merged.mp4_peak_queued_packets << ",\n";
+    out << "    \"mp4_peak_queued_bytes\": " << merged.mp4_peak_queued_bytes << ",\n";
+    out << "    \"mp4_push_mean_ms\": " << merged.mp4_push_mean_ms << ",\n";
+    out << "    \"mp4_push_max_ms\": " << merged.mp4_push_max_ms << ",\n";
+    out << "    \"mp4_write_mean_ms\": " << merged.mp4_write_mean_ms << ",\n";
+    out << "    \"mp4_write_max_ms\": " << merged.mp4_write_max_ms << ",\n";
+    out << "    \"mp4\": \"" << json_escape(merged.mp4_path) << "\",\n";
+    out << "    \"mp4_keyframe\": \"" << json_escape(merged.mp4_keyframe_path) << "\",\n";
+    out << "    \"error_message\": \"" << json_escape(merged.error_message) << "\"\n";
+    out << "  },\n";
     out << "  \"detach_timing\": {\n";
     out << "    \"total_p95_ms\": " << percentile_ms(detach_total_samples, 95.0) << ",\n";
     out << "    \"open_handle_p95_ms\": " << percentile_ms(detach_open_samples, 95.0) << ",\n";
@@ -1712,16 +2037,16 @@ void write_summary_json(const Options& options,
     out << "    \"encode_csv\": \"" << json_escape(options.encode_csv_path) << "\",\n";
     out << "    \"gop_routing_csv\": \"" << json_escape(options.gop_routing_csv_path) << "\",\n";
     out << "    \"raw_bitstream\": \"" << json_escape(options.bitstream_out_path) << "\",\n";
-    out << "    \"mp4\": \"" << json_escape(enc.mp4_path) << "\",\n";
-    out << "    \"mp4_keyframe\": \"" << json_escape(enc.mp4_keyframe_path) << "\"\n";
+    out << "    \"mp4\": \"" << json_escape(output_mp4_path) << "\",\n";
+    out << "    \"mp4_keyframe\": \"" << json_escape(output_mp4_keyframe_path) << "\"\n";
     out << "  },\n";
     out << "  \"output_file_sizes\": {\n";
     out << "    \"detach_csv_bytes\": " << file_size_or_zero(options.csv_path) << ",\n";
     out << "    \"encode_csv_bytes\": " << file_size_or_zero(options.encode_csv_path) << ",\n";
     out << "    \"gop_routing_csv_bytes\": " << file_size_or_zero(options.gop_routing_csv_path) << ",\n";
     out << "    \"raw_bitstream_bytes\": " << file_size_or_zero(options.bitstream_out_path) << ",\n";
-    out << "    \"mp4_bytes\": " << file_size_or_zero(enc.mp4_path) << ",\n";
-    out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(enc.mp4_keyframe_path) << "\n";
+    out << "    \"mp4_bytes\": " << file_size_or_zero(output_mp4_path) << ",\n";
+    out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(output_mp4_keyframe_path) << "\n";
     out << "  }\n";
     out << "}\n";
 }
@@ -1787,8 +2112,12 @@ int main(int argc, char** argv)
         std::vector<double> detach_open_samples;
         std::vector<double> detach_copy_samples;
         std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
+        std::unique_ptr<MergedGopOutput> merged_output;
         if (options.encode) {
             const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
+            if (shard_gpu_ids.size() > 1 && !options.mp4_out_path.empty()) {
+                merged_output = std::make_unique<MergedGopOutput>(options);
+            }
             encode_workers.reserve(shard_gpu_ids.size());
             for (size_t shard_index = 0; shard_index < shard_gpu_ids.size(); ++shard_index) {
                 Options shard_options = make_shard_options(
@@ -1796,7 +2125,9 @@ int main(int argc, char** argv)
                     shard_index,
                     shard_gpu_ids.size(),
                     shard_gpu_ids[shard_index]);
-                auto worker = std::make_unique<ExternalEncodeWorker>(std::move(shard_options));
+                auto worker = std::make_unique<ExternalEncodeWorker>(
+                    std::move(shard_options),
+                    merged_output.get());
                 worker->start();
                 encode_workers.push_back(std::move(worker));
             }
@@ -1954,6 +2285,9 @@ int main(int argc, char** argv)
                 worker->stop();
             }
         }
+        if (merged_output) {
+            merged_output->finish();
+        }
         if (csv) {
             csv.flush();
         }
@@ -1968,6 +2302,8 @@ int main(int argc, char** argv)
             }
         }
         const EncodeSummary encode_summary = aggregate_encode_summaries(shard_summaries);
+        const MergedOutputSummary merged_summary =
+            merged_output ? merged_output->summary() : MergedOutputSummary{};
         write_summary_json(
             options,
             observed_session_id,
@@ -1983,7 +2319,8 @@ int main(int argc, char** argv)
             detach_open_samples,
             detach_copy_samples,
             encode_workers.empty() ? nullptr : &encode_summary,
-            shard_summaries);
+            shard_summaries,
+            merged_output ? &merged_summary : nullptr);
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {
@@ -2002,6 +2339,9 @@ int main(int argc, char** argv)
         }
         std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
         bool any_worker_failed = false;
+        if (merged_output && merged_summary.failed) {
+            any_worker_failed = true;
+        }
         if (!encode_workers.empty()) {
             uint64_t total_encoded = 0;
             uint64_t total_dropped = 0;

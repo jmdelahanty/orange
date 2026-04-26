@@ -256,7 +256,8 @@ multi-GPU split-GOP throughput.
   `external_recorder_ipc_probe --shard-gpu-ids 5,6` and the smoke runner option
   `scripts/run_external_recorder_smoke.sh --shard-gpu-ids 5,6`. It routes GOPs
   by `gop_index % shard_count` and writes per-shard MP4s/encode CSVs plus
-  `external_gop_routing.csv`. It does not merge shard outputs into one
-  per-camera MP4 yet.
+  `external_gop_routing.csv`. Multi-shard mode now also writes a merged base
+  `Cam<serial>_external.mp4` through a GOP-order coordinator; per-shard MP4s
+  remain diagnostic outputs.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
