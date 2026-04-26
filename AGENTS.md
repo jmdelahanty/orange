@@ -276,5 +276,16 @@ multi-GPU split-GOP throughput.
   merged MP4s passed video sanity, and YOLO p95 stayed below the old in-process
   `11-12 ms` baseline (`2010095 capture_to_detect_done_ms p95 = 6.698`,
   `2010096 = 5.953`).
+- The large max YOLO tails in that run are startup effects, not steady-state:
+  frame `1` on both cameras spent about `49 ms` in `cpu_pre_sync_ms`, then
+  frames `2-6` waited in the YOLO queue behind that first live frame. After
+  frame `50`, steady-state `capture_to_detect_done_ms` was much tighter:
+  `2010095 p95 = 6.651 ms, max = 6.986 ms`; `2010096 p95 = 5.882 ms,
+  max = 6.343 ms`.
+- There is also a recorder first-use signal: frame `26`, the first frame routed
+  to secondary shard GPUs `6`/`8`, showed `copy_ms` around `180 ms` on both
+  cameras. Queue depth `32` absorbed it with no drops. Next work should prewarm
+  YOLO and recorder shard GPUs, and make the runner report startup vs
+  steady-state summaries separately.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

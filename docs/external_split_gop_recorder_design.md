@@ -516,11 +516,52 @@ Result from `/tmp/orange_external_recorder_ptp_20260425_224354`:
   `capture_to_detect_done_ms max` about `54 ms` on both cameras. Treat this as
   a tail to investigate before calling the architecture production-ready.
 
+Startup/steady-state interpretation:
+
+- The largest YOLO tails are concentrated at startup, not shutdown or random
+  steady-state points.
+- Frame `1` on both cameras spent about `49 ms` in `cpu_pre_sync_ms`:
+  `2010095 cpu_pre_sync_ms = 49.704845`,
+  `2010096 cpu_pre_sync_ms = 49.138623`.
+- Frames `2-6` then waited behind that first slow YOLO frame, showing high
+  `acquisition_to_worker_start_ms` while their own preprocess/inference work
+  was normal.
+- After frame `50`, steady-state `capture_to_detect_done_ms` was much tighter:
+  `2010095 p95 = 6.650664`, `max = 6.985833`;
+  `2010096 p95 = 5.882332`, `max = 6.342927`.
+- After frame `50`, steady-state worker-start latency was also bounded:
+  `2010095 acquisition_to_worker_start_ms p95 = 2.108304`,
+  `max = 2.261402`;
+  `2010096 p95 = 1.562080`, `max = 1.936482`.
+
+Recorder first-use interpretation:
+
+- The external recorder has a separate first-use spike when each camera first
+  routes a GOP to its secondary shard GPU.
+- Frame `26` is the first frame of GOP `1` and the first frame assigned to
+  shard `1`.
+- For `2010095`, frame `26` routed from source GPU `5` to shard GPU `6` and
+  measured `copy_ms = 180.136509`.
+- For `2010096`, frame `26` routed from source GPU `7` to shard GPU `8` and
+  measured `copy_ms = 182.922434`.
+- Later frames on those shard GPUs returned to normal enough that queue depth
+  `32` absorbed the spike with `0` encode drops.
+- This looks like lazy CUDA/IPC/peer-copy path setup for secondary recorder
+  shards, not a steady-state throughput limit.
+
 Next implementation step:
 
-- Run a longer two-camera PTP external-recorder validation and decide whether
-  the startup/shutdown outliers are measurement-window artifacts or real
-  scheduling tails.
+- Add startup-vs-steady-state summary reporting to the runner. The default
+  should keep current all-frame numbers, then separately report metrics after
+  the first `50` frames.
+- Prewarm recorder shard GPUs before accepting camera frames: create CUDA
+  contexts, enable peer access when applicable, allocate scratch buffers, and
+  perform at least one source-to-shard copy for every configured route.
+- Prewarm YOLO after graph capture but before the measured PTP gate, or add a
+  warmup/drain phase where YOLO consumes initial frames but benchmark summaries
+  mark them as startup.
+- Run a longer two-camera PTP external-recorder validation after prewarm to
+  determine whether any late-run tails remain.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,
   and finalization.
 - Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.
