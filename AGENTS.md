@@ -244,5 +244,9 @@ multi-GPU split-GOP throughput.
   `docs/external_recorder_implementation_plan.md`. The next highest-signal
   slice is hardening the single-camera MP4 smoke into a production-like
   external recorder contract, not more same-process NVENC tuning.
+- The external split-GOP recorder protocol/routing design is documented in
+  `docs/external_split_gop_recorder_design.md`. Use that as the starting point
+  for the next implementation slice: session metadata, shard assignment,
+  GOP routing artifacts, and then a one-camera two-shard diagnostic.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

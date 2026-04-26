@@ -433,3 +433,9 @@ The highest-signal next coding task is protocol/config hardening followed by
 the first external split-GOP routing slice. Do not spend more time on
 same-process NVENC tuning unless a regression disproves the current
 process-isolation result.
+
+Detailed Stage 5 protocol and routing design:
+
+```text
+docs/external_split_gop_recorder_design.md
+```
