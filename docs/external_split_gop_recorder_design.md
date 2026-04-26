@@ -461,11 +461,69 @@ Operational finding:
 - `--encode-max-fps 0` disables the diagnostic frame-rate cap while keeping
   `--encode-fps 100` as the nominal MP4 frame rate.
 
+### Two-Camera PTP External Recorder Smoke
+
+Implemented on 2026-04-26:
+
+- Added `scripts/run_external_recorder_two_camera_ptp_smoke.sh`.
+- The runner starts one `external_recorder_ipc_probe` process per camera and
+  then launches one headless `ptp_gate` benchmark using
+  `recording_sink_mode = external_ipc`.
+- Default local topology:
+  `2010095 -> analytics GPU 5, recorder shards 5,6`.
+- Default local topology:
+  `2010096 -> analytics GPU 7, recorder shards 7,8`.
+- The runner uses the local `100_cam4_ptp` config folder, uncapped external
+  encode (`--encode-max-fps 0`), nominal MP4 `100 fps`, and queue depth `32`.
+- The runner writes one merged MP4 and per-shard diagnostic MP4s per camera,
+  plus one summary JSON per camera.
+- Video sanity runs on both merged camera MP4s.
+
+Validation smoke:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_two_camera_ptp_smoke.sh \
+  --duration 6 \
+  --warmup 1
+```
+
+Result from `/tmp/orange_external_recorder_ptp_20260425_224354`:
+
+- Benchmark artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260425_224354`.
+- Benchmark summary: `1` completed run, `1` pass, `0` failures.
+- PTP was healthy: both cameras reported `401` frames, `0` dropped frames,
+  `0` frame-id gaps, and sub-microsecond PTP offsets.
+- `2010095`: `401` descriptors received, `401` ACKed, `401` encoded,
+  `0` skipped, `0` encode drops.
+- `2010096`: `401` descriptors received, `401` ACKed, `401` encoded,
+  `0` skipped, `0` encode drops.
+- `2010095` merged MP4 sanity passed:
+  `frames=401`, `mean_luma=220.433`, `max_black_fraction_lt8=0.039601`.
+- `2010096` merged MP4 sanity passed:
+  `frames=401`, `mean_luma=177.659`, `max_black_fraction_lt8=0.134326`.
+- `2010095` shard split: GPU `5` encoded `201` frames, GPU `6` encoded `200`.
+- `2010096` shard split: GPU `7` encoded `201` frames, GPU `8` encoded `200`.
+- YOLO stayed materially better than the old in-process `11-12 ms` PTP
+  baseline:
+  `2010095 capture_to_detect_done_ms p95 = 6.697993`,
+  `2010096 capture_to_detect_done_ms p95 = 5.953366`.
+- YOLO preprocessing stayed short at p95:
+  `2010095 cpu_preprocess_ms p95 = 0.416902`,
+  `2010096 cpu_preprocess_ms p95 = 0.017142`.
+- There were still rare large max outliers around startup/shutdown:
+  `capture_to_detect_done_ms max` about `54 ms` on both cameras. Treat this as
+  a tail to investigate before calling the architecture production-ready.
+
 Next implementation step:
 
-- Move to two-camera PTP with external recorder routing.
-- Keep queue depth at least `gop_length + margin`; start with `32` for
-  `gop=25`.
+- Run a longer two-camera PTP external-recorder validation and decide whether
+  the startup/shutdown outliers are measurement-window artifacts or real
+  scheduling tails.
+- Add GUI/session supervision for external recorder startup, heartbeat, drain,
+  and finalization.
+- Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.
 
 ## Open Questions
 

@@ -1,0 +1,561 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  run_external_recorder_two_camera_ptp_smoke.sh [options]
+
+Runs a two-camera headless real-YOLO PTP external-recorder smoke:
+  Process A: orange_client with recording_sink_mode=external_ipc.
+  Process B/C: one external_recorder_ipc_probe per camera.
+
+Defaults match the local A16 PTP pairing:
+  2010095 -> analytics GPU 5, recorder shards 5,6
+  2010096 -> analytics GPU 7, recorder shards 7,8
+
+Options:
+  --spec <path>                    Base experiment spec.
+  --orange-client <path>           orange_client binary.
+  --recorder-tool <path>           external_recorder_ipc_probe binary.
+  --camera-serials <csv>           Camera serials. Default 2010095,2010096.
+  --analytics-gpu-ids <csv>        Analytics GPU ids. Default 5,7.
+  --shard-gpu-ids-per-camera <;>   Shard groups. Default '5,6;7,8'.
+  --duration <sec>                 Headless run duration. Default 3.
+  --warmup <sec>                   Headless warmup. Default 1.
+  --encode-fps <int>               Nominal MP4 FPS. Default 100.
+  --encode-max-fps <int>           External encode cap. Use 0 for uncapped. Default 0.
+  --queue-depth <int>              External recorder-owned frame slots. Default 32.
+  --config-folder <path>           Camera config folder. Default local/100_cam4_ptp.
+  --output-dir <path>              External recorder artifact root. Default /tmp.
+  --skip-video-sanity              Do not decode/check external MP4 content.
+  --keep-temp-spec                 Keep generated temp spec in output dir.
+  --help
+EOF
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+SPEC="$REPO_ROOT/experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp.json"
+ORANGE_CLIENT="$REPO_ROOT/targets/release/orange_client"
+RECORDER_TOOL="$REPO_ROOT/targets/release/external_recorder_ipc_probe"
+CAMERA_SERIALS="2010095,2010096"
+ANALYTICS_GPU_IDS="5,7"
+SHARD_GPU_IDS_PER_CAMERA="5,6;7,8"
+DURATION=3
+WARMUP=1
+ENCODE_FPS=100
+ENCODE_MAX_FPS=0
+QUEUE_DEPTH=32
+CONFIG_FOLDER="/home/jeremy/orange_data/config/local/100_cam4_ptp"
+OUTPUT_DIR="/tmp"
+SKIP_VIDEO_SANITY=0
+KEEP_TEMP_SPEC=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --spec)
+      shift
+      [[ $# -gt 0 ]] || { echo "--spec requires a value." >&2; exit 2; }
+      SPEC="$1"
+      shift
+      ;;
+    --orange-client)
+      shift
+      [[ $# -gt 0 ]] || { echo "--orange-client requires a value." >&2; exit 2; }
+      ORANGE_CLIENT="$1"
+      shift
+      ;;
+    --recorder-tool)
+      shift
+      [[ $# -gt 0 ]] || { echo "--recorder-tool requires a value." >&2; exit 2; }
+      RECORDER_TOOL="$1"
+      shift
+      ;;
+    --camera-serials)
+      shift
+      [[ $# -gt 0 ]] || { echo "--camera-serials requires a value." >&2; exit 2; }
+      CAMERA_SERIALS="$1"
+      shift
+      ;;
+    --analytics-gpu-ids)
+      shift
+      [[ $# -gt 0 ]] || { echo "--analytics-gpu-ids requires a value." >&2; exit 2; }
+      ANALYTICS_GPU_IDS="$1"
+      shift
+      ;;
+    --shard-gpu-ids-per-camera)
+      shift
+      [[ $# -gt 0 ]] || { echo "--shard-gpu-ids-per-camera requires a value." >&2; exit 2; }
+      SHARD_GPU_IDS_PER_CAMERA="$1"
+      shift
+      ;;
+    --duration)
+      shift
+      [[ $# -gt 0 ]] || { echo "--duration requires a value." >&2; exit 2; }
+      DURATION="$1"
+      shift
+      ;;
+    --warmup)
+      shift
+      [[ $# -gt 0 ]] || { echo "--warmup requires a value." >&2; exit 2; }
+      WARMUP="$1"
+      shift
+      ;;
+    --encode-fps)
+      shift
+      [[ $# -gt 0 ]] || { echo "--encode-fps requires a value." >&2; exit 2; }
+      ENCODE_FPS="$1"
+      shift
+      ;;
+    --encode-max-fps)
+      shift
+      [[ $# -gt 0 ]] || { echo "--encode-max-fps requires a value." >&2; exit 2; }
+      ENCODE_MAX_FPS="$1"
+      shift
+      ;;
+    --queue-depth)
+      shift
+      [[ $# -gt 0 ]] || { echo "--queue-depth requires a value." >&2; exit 2; }
+      QUEUE_DEPTH="$1"
+      shift
+      ;;
+    --config-folder)
+      shift
+      [[ $# -gt 0 ]] || { echo "--config-folder requires a value." >&2; exit 2; }
+      CONFIG_FOLDER="$1"
+      shift
+      ;;
+    --output-dir)
+      shift
+      [[ $# -gt 0 ]] || { echo "--output-dir requires a value." >&2; exit 2; }
+      OUTPUT_DIR="$1"
+      shift
+      ;;
+    --skip-video-sanity)
+      SKIP_VIDEO_SANITY=1
+      shift
+      ;;
+    --keep-temp-spec)
+      KEEP_TEMP_SPEC=1
+      shift
+      ;;
+    *)
+      echo "Unsupported argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+for value_name in DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH; do
+  value="${!value_name}"
+  [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
+done
+
+IFS=',' read -r -a CAMERAS <<<"$CAMERA_SERIALS"
+IFS=',' read -r -a ANALYTICS_GPUS <<<"$ANALYTICS_GPU_IDS"
+IFS=';' read -r -a SHARD_GROUPS <<<"$SHARD_GPU_IDS_PER_CAMERA"
+
+CAMERA_COUNT="${#CAMERAS[@]}"
+if [[ "$CAMERA_COUNT" -lt 1 ]]; then
+  echo "At least one camera is required." >&2
+  exit 2
+fi
+if [[ "${#ANALYTICS_GPUS[@]}" -ne "$CAMERA_COUNT" ]]; then
+  echo "--analytics-gpu-ids must have one entry per camera." >&2
+  exit 2
+fi
+if [[ "${#SHARD_GROUPS[@]}" -ne "$CAMERA_COUNT" ]]; then
+  echo "--shard-gpu-ids-per-camera must have one semicolon-separated group per camera." >&2
+  exit 2
+fi
+for i in "${!CAMERAS[@]}"; do
+  [[ "${CAMERAS[$i]}" =~ ^[0-9]+$ ]] || { echo "Invalid camera serial: ${CAMERAS[$i]}" >&2; exit 2; }
+  [[ "${ANALYTICS_GPUS[$i]}" =~ ^[0-9]+$ ]] || { echo "Invalid analytics GPU id: ${ANALYTICS_GPUS[$i]}" >&2; exit 2; }
+  [[ "${SHARD_GROUPS[$i]}" =~ ^[0-9]+(,[0-9]+)*$ ]] || {
+    echo "Invalid shard GPU group: ${SHARD_GROUPS[$i]}" >&2
+    exit 2
+  }
+done
+
+SPEC="$(realpath -e "$SPEC")"
+ORANGE_CLIENT="$(realpath -e "$ORANGE_CLIENT")"
+RECORDER_TOOL="$(realpath -e "$RECORDER_TOOL")"
+CONFIG_FOLDER="$(realpath -e "$CONFIG_FOLDER")"
+mkdir -p "$OUTPUT_DIR"
+OUTPUT_DIR="$(realpath -m "$OUTPUT_DIR")"
+
+STAMP="$(date +%Y%m%d_%H%M%S)"
+RUN_DIR="$OUTPUT_DIR/orange_external_recorder_ptp_${STAMP}"
+mkdir -p "$RUN_DIR"
+TEMP_SPEC="$RUN_DIR/external_recorder_two_camera_ptp_spec.json"
+
+python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIALS" "$ANALYTICS_GPU_IDS" "$DURATION" "$WARMUP" "$CONFIG_FOLDER" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+source = Path(sys.argv[1])
+dest = Path(sys.argv[2])
+stamp = sys.argv[3]
+camera_serials = [item for item in sys.argv[4].split(",") if item]
+gpu_ids = [int(item) for item in sys.argv[5].split(",") if item]
+duration = int(sys.argv[6])
+warmup = int(sys.argv[7])
+config_folder = sys.argv[8]
+
+with source.open("r", encoding="utf-8") as f:
+    spec = json.load(f)
+
+base_id = spec.get("experiment_id") or "external_recorder_two_camera_ptp"
+spec["experiment_id"] = f"{base_id}_external_ipc_{stamp}"
+spec["notes"] = (
+    spec.get("notes", "") +
+    " Generated by run_external_recorder_two_camera_ptp_smoke.sh."
+).strip()
+spec.setdefault("selection", {})["camera_serials"] = camera_serials
+spec.setdefault("selection", {})["gpu_ids"] = gpu_ids
+fixed = spec.setdefault("fixed", {})
+fixed["duration_s"] = duration
+fixed["warmup_s"] = warmup
+fixed["display"] = False
+fixed["stream_only"] = False
+fixed["sync_mode"] = "ptp_gate"
+fixed["recording_sink_mode"] = "external_ipc"
+fixed["config_folder"] = config_folder
+
+with dest.open("w", encoding="utf-8") as f:
+    json.dump(spec, f, indent=2)
+    f.write("\n")
+PY
+
+mapfile -t SPEC_INFO < <(python3 - "$TEMP_SPEC" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+with Path(sys.argv[1]).open("r", encoding="utf-8") as f:
+    spec = json.load(f)
+print(spec["experiment_id"])
+print(spec.get("fixed", {}).get("output_root", ""))
+PY
+)
+EXPERIMENT_ID="${SPEC_INFO[0]}"
+ANALYTICS_ROOT="${SPEC_INFO[1]}/$EXPERIMENT_ID"
+
+declare -a RECORDER_PIDS=()
+declare -a SOCKETS=()
+declare -a SUMMARY_JSONS=()
+declare -a VIDEO_SANITY_JSONS=()
+declare -a MP4_OUTS=()
+declare -a RECORDER_LOGS=()
+
+cleanup() {
+  for pid in "${RECORDER_PIDS[@]:-}"; do
+    if [[ -n "$pid" ]] && kill -0 "$pid" >/dev/null 2>&1; then
+      echo "[external-recorder-ptp] stopping recorder pid=$pid"
+      kill -TERM "$pid" >/dev/null 2>&1 || true
+      wait "$pid" || true
+    fi
+  done
+  for socket in "${SOCKETS[@]:-}"; do
+    rm -f "$socket"
+  done
+  if [[ "$KEEP_TEMP_SPEC" -eq 0 ]]; then
+    rm -f "$TEMP_SPEC"
+  fi
+}
+trap cleanup EXIT
+
+echo "[external-recorder-ptp] run_dir=$RUN_DIR"
+echo "[external-recorder-ptp] analytics_root=$ANALYTICS_ROOT"
+echo "[external-recorder-ptp] cameras=$CAMERA_SERIALS analytics_gpus=$ANALYTICS_GPU_IDS shard_groups=$SHARD_GPU_IDS_PER_CAMERA"
+echo "[external-recorder-ptp] encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS queue_depth=$QUEUE_DEPTH"
+echo "[external-recorder-ptp] config_folder=$CONFIG_FOLDER"
+
+for i in "${!CAMERAS[@]}"; do
+  serial="${CAMERAS[$i]}"
+  analytics_gpu="${ANALYTICS_GPUS[$i]}"
+  shard_group="${SHARD_GROUPS[$i]}"
+  recorder_gpu="${shard_group%%,*}"
+  socket="/tmp/orange_external_recorder_${serial}.sock"
+  detach_csv="$RUN_DIR/Cam${serial}_external_detach.csv"
+  encode_csv="$RUN_DIR/Cam${serial}_external_encode.csv"
+  gop_routing_csv="$RUN_DIR/Cam${serial}_external_gop_routing.csv"
+  summary_json="$RUN_DIR/Cam${serial}_external_summary.json"
+  video_sanity_json="$RUN_DIR/Cam${serial}_external_video_sanity.json"
+  mp4_out="$RUN_DIR/Cam${serial}_external.mp4"
+  keyframe_out="$RUN_DIR/Cam${serial}_external_keyframes.csv"
+  recorder_log="$RUN_DIR/Cam${serial}_external_recorder.log"
+  routing_policy="single_shard"
+  if [[ "$shard_group" == *,* ]]; then
+    routing_policy="gop_modulo"
+  fi
+
+  rm -f "$socket"
+  SOCKETS+=("$socket")
+  SUMMARY_JSONS+=("$summary_json")
+  VIDEO_SANITY_JSONS+=("$video_sanity_json")
+  MP4_OUTS+=("$mp4_out")
+  RECORDER_LOGS+=("$recorder_log")
+
+  RECORDER_ARGS=(
+    --socket "$socket" \
+    --gpu-id "$recorder_gpu" \
+    --csv "$detach_csv" \
+    --encode \
+    --encode-max-fps "$ENCODE_MAX_FPS" \
+    --encode-queue-depth "$QUEUE_DEPTH" \
+    --fps "$ENCODE_FPS" \
+    --codec hevc \
+    --preset p1 \
+    --tuning ll \
+    --gop 25 \
+    --bitrate-bps 150000000 \
+    --max-bitrate-bps 150000000 \
+    --vbv-buffer-size 150000000 \
+    --mp4-out "$mp4_out" \
+    --mp4-keyframe "$keyframe_out" \
+    --encode-csv "$encode_csv" \
+    --gop-routing-csv "$gop_routing_csv" \
+    --summary-json "$summary_json" \
+    --session-id "$EXPERIMENT_ID" \
+    --stream-id "$serial" \
+    --shard-id 0 \
+    --routing-policy "$routing_policy"
+  )
+  if [[ "$shard_group" == *,* ]]; then
+    RECORDER_ARGS+=(--shard-gpu-ids "$shard_group")
+  fi
+
+  "$RECORDER_TOOL" "${RECORDER_ARGS[@]}" >"$recorder_log" 2>&1 &
+  pid=$!
+  RECORDER_PIDS+=("$pid")
+  echo "[external-recorder-ptp] recorder camera=$serial analytics_gpu=$analytics_gpu recorder_gpu=$recorder_gpu shards=$shard_group pid=$pid socket=$socket"
+done
+
+for i in "${!SOCKETS[@]}"; do
+  socket="${SOCKETS[$i]}"
+  pid="${RECORDER_PIDS[$i]}"
+  log="${RECORDER_LOGS[$i]}"
+  for _ in {1..100}; do
+    if [[ -S "$socket" ]]; then
+      break
+    fi
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      echo "external recorder exited before creating socket: $socket" >&2
+      cat "$log" >&2 || true
+      exit 1
+    fi
+    sleep 0.05
+  done
+  [[ -S "$socket" ]] || { echo "external recorder socket was not created: $socket" >&2; exit 1; }
+done
+
+echo "[external-recorder-ptp] starting headless external_ipc PTP benchmark"
+sudo -n /usr/local/bin/orange-local-benchmark \
+  --orange-client "$ORANGE_CLIENT" \
+  --yolo-perf-log \
+  --yolo-perf-sample 1 \
+  "$TEMP_SPEC"
+
+echo "[external-recorder-ptp] analytics complete"
+for pid in "${RECORDER_PIDS[@]}"; do
+  wait "$pid"
+done
+trap - EXIT
+for socket in "${SOCKETS[@]}"; do
+  rm -f "$socket"
+done
+if [[ "$KEEP_TEMP_SPEC" -eq 0 ]]; then
+  rm -f "$TEMP_SPEC"
+fi
+
+echo "[external-recorder-ptp] outputs:"
+echo "  run_dir=$RUN_DIR"
+echo "  analytics_root=$ANALYTICS_ROOT"
+
+for i in "${!CAMERAS[@]}"; do
+  serial="${CAMERAS[$i]}"
+  summary_json="${SUMMARY_JSONS[$i]}"
+  mp4_out="${MP4_OUTS[$i]}"
+  video_sanity_json="${VIDEO_SANITY_JSONS[$i]}"
+  recorder_log="${RECORDER_LOGS[$i]}"
+  echo "  camera=$serial recorder_log=$recorder_log"
+  echo "  camera=$serial summary_json=$summary_json"
+  echo "  camera=$serial mp4_out=$mp4_out"
+  echo "  camera=$serial video_sanity_json=$video_sanity_json"
+  if [[ -f "$summary_json" ]]; then
+    python3 - "$summary_json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+enc = summary.get("external_encode", {})
+merged = summary.get("merged_output", {})
+print(
+    "[external-recorder-ptp] summary "
+    f"stream={summary.get('stream_id')} "
+    f"received={summary.get('frames_received')} acked={summary.get('acks_sent')} "
+    f"encoded={summary.get('frames_encoded')} skipped={summary.get('encode_skipped')} "
+    f"dropped={summary.get('encode_dropped')} failed={summary.get('worker_failed')} "
+    f"lock_p95_ms={enc.get('lock_bitstream_p95_ms')} "
+    f"merged_packets={merged.get('packets_written')} pending_gops={merged.get('pending_gops')}"
+)
+for shard in summary.get("external_encode_shards", []):
+    print(
+        "[external-recorder-ptp] shard "
+        f"stream={summary.get('stream_id')} "
+        f"id={shard.get('assigned_shard_id')} gpu={shard.get('assigned_gpu_id')} "
+        f"encoded={shard.get('frames_encoded')} dropped={shard.get('frames_dropped')}"
+    )
+PY
+  fi
+done
+
+if [[ "$SKIP_VIDEO_SANITY" -eq 0 ]]; then
+  python3 - "$RUN_DIR" "${MP4_OUTS[@]}" "${VIDEO_SANITY_JSONS[@]}" <<'PY'
+import json
+import math
+import subprocess
+import sys
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+arg_count = len(sys.argv) - 2
+half = arg_count // 2
+mp4_paths = [Path(p) for p in sys.argv[2:2 + half]]
+summary_paths = [Path(p) for p in sys.argv[2 + half:]]
+
+def write_result(path, result):
+    path.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+for mp4_path, summary_path in zip(mp4_paths, summary_paths):
+    result = {
+        "schema_version": 1,
+        "video_path": str(mp4_path),
+        "content_checked": True,
+        "content_valid": False,
+        "status": "unknown",
+        "sampled_frames": [],
+    }
+    if not mp4_path.exists() or mp4_path.stat().st_size == 0:
+        result["status"] = "missing_video"
+        write_result(summary_path, result)
+        raise SystemExit(f"missing MP4 output: {mp4_path}")
+
+    probe = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height,nb_frames,duration",
+            "-show_entries", "format=size,duration", "-of", "json",
+            str(mp4_path),
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    metadata = json.loads(probe.stdout)
+    streams = metadata.get("streams") or []
+    if not streams:
+        result["status"] = "no_video_stream"
+        write_result(summary_path, result)
+        raise SystemExit(f"no video stream: {mp4_path}")
+
+    stream = streams[0]
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    try:
+        frame_count = int(stream.get("nb_frames") or 0)
+    except ValueError:
+        frame_count = 0
+    if width <= 0 or height <= 0:
+        result["status"] = "invalid_dimensions"
+        write_result(summary_path, result)
+        raise SystemExit(f"invalid dimensions: {mp4_path}")
+
+    sample_indices = [0]
+    if frame_count > 1:
+        sample_indices = sorted({0, frame_count // 2, frame_count - 1})
+    select_expr = "+".join(f"eq(n\\,{index})" for index in sample_indices)
+    decoded = subprocess.run(
+        [
+            "ffmpeg", "-v", "error", "-i", str(mp4_path),
+            "-vf", f"select='{select_expr}'", "-vsync", "0",
+            "-pix_fmt", "gray", "-f", "rawvideo", "-",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    ).stdout
+
+    frame_bytes = width * height
+    decoded_frames = len(decoded) // frame_bytes if frame_bytes else 0
+    if decoded_frames == 0:
+        result["status"] = "decode_empty"
+        write_result(summary_path, result)
+        raise SystemExit(f"decode returned no frames: {mp4_path}")
+
+    measurements = []
+    for i in range(decoded_frames):
+        frame = decoded[i * frame_bytes:(i + 1) * frame_bytes]
+        hist = [0] * 256
+        for value in frame:
+            hist[value] += 1
+        pixels = sum(hist)
+        total = sum(value * count for value, count in enumerate(hist))
+        total_sq = sum(value * value * count for value, count in enumerate(hist))
+        mean = total / pixels
+        variance = max(0.0, total_sq / pixels - mean * mean)
+        measurements.append({
+            "requested_frame_index": sample_indices[min(i, len(sample_indices) - 1)],
+            "mean": mean,
+            "stddev": math.sqrt(variance),
+            "black_fraction_lt8": sum(hist[:8]) / pixels,
+            "decoded_bytes": pixels,
+        })
+
+    max_black = max(item["black_fraction_lt8"] for item in measurements)
+    max_stddev = max(item["stddev"] for item in measurements)
+    mean_luma = sum(item["mean"] for item in measurements) / len(measurements)
+    content_valid = max_black < 0.98 and max_stddev >= 5.0
+    result.update({
+        "content_valid": content_valid,
+        "status": "pass" if content_valid else ("black_frame" if max_black >= 0.98 else "flat_frame"),
+        "width": width,
+        "height": height,
+        "nb_frames": frame_count,
+        "container": metadata.get("format", {}),
+        "sampled_frame_count": len(measurements),
+        "mean_luma": mean_luma,
+        "max_stddev": max_stddev,
+        "max_black_fraction_lt8": max_black,
+        "sampled_frames": measurements,
+    })
+    write_result(summary_path, result)
+    print(
+        "[external-recorder-ptp] video_sanity "
+        f"path={mp4_path} status={result['status']} frames={frame_count} "
+        f"mean_luma={mean_luma:.3f} max_stddev={max_stddev:.3f} "
+        f"max_black_fraction_lt8={max_black:.6f}"
+    )
+    if not content_valid:
+        raise SystemExit(f"video sanity failed: {mp4_path}")
+
+aggregate = {
+    "schema_version": 1,
+    "videos_checked": len(mp4_paths),
+    "status": "pass",
+    "mp4_paths": [str(path) for path in mp4_paths],
+}
+write_result(run_dir / "external_video_sanity_summary.json", aggregate)
+PY
+fi

@@ -99,6 +99,20 @@ The PTP version should show both cameras near `100 fps`, zero camera gaps, zero
 encode failures, and roughly similar high bitrates around `150 Mbps` per camera
 for real dish content.
 
+GOP-split two-camera headless real-YOLO plus external process-isolated
+split-GOP recording with PTP:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_two_camera_ptp_smoke.sh \
+  --duration 6 \
+  --warmup 1
+```
+
+This starts one external recorder process per camera, using the local A16
+pairing `2010095 -> 5,6` and `2010096 -> 7,8`, then runs the headless PTP
+benchmark with `recording_sink_mode = external_ipc`.
+
 Temporary retry spec:
 
 ```bash

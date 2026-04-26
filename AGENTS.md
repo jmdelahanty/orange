@@ -264,5 +264,17 @@ multi-GPU split-GOP throughput.
   `scripts/run_external_recorder_smoke.sh --duration 3 --warmup 1 --encode-fps 100 --encode-max-fps 0 --queue-depth 32 --output-dir /tmp --shard-gpu-ids 5,6`.
   The `--encode-max-fps 0` override disables the diagnostic frame-rate cap
   while keeping the merged MP4 nominal FPS at `100`.
+- Two-camera PTP external-recorder smoke now has a runner:
+  `scripts/run_external_recorder_two_camera_ptp_smoke.sh --duration 6 --warmup 1`.
+  Default topology is `2010095 -> analytics GPU 5, shards 5,6` and
+  `2010096 -> analytics GPU 7, shards 7,8`, with `100_cam4_ptp`,
+  `--encode-max-fps 0`, and queue depth `32`.
+- Current clean two-camera PTP external-recorder artifact:
+  `/tmp/orange_external_recorder_ptp_20260425_224354`; analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260425_224354`.
+  Both cameras received/ACKed/encoded `401` frames with `0` skips/drops, both
+  merged MP4s passed video sanity, and YOLO p95 stayed below the old in-process
+  `11-12 ms` baseline (`2010095 capture_to_detect_done_ms p95 = 6.698`,
+  `2010096 = 5.953`).
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
