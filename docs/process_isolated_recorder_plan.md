@@ -382,6 +382,33 @@ External-process NVENC first slice:
   while keeping GPU placement and split-GOP routing as first-class design
   variables.
 
+30-second GPU placement comparison:
+
+- Same-GPU run:
+  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --output-dir /tmp`
+- Paired-GPU run:
+  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --recorder-gpu-id 6 --output-dir /tmp`
+- Both runs used camera `2010096`, analytics/YOLO on A16 GPU `5`, real live
+  frames, external HEVC `p1/ll`, and a `60 fps` external encode cap.
+- Both runs received/ACKed `3203` descriptors, encoded `1922` frames, skipped
+  `1281` by policy, dropped `0`, had `0` IPC failures/timeouts, had `0`
+  camera gaps/get-frame errors, and passed external MP4 sanity.
+- Same GPU `5 -> 5` post-warm p95:
+  `capture_to_detect_done_ms = 4.591`, `total_ms = 4.560`,
+  `infer_ms = 4.104`, `sync_ms = 4.463`,
+  external `encode_total_ms = 0.112`, and
+  `nvEncLockBitstream_ms = 0.0028`.
+- Paired GPU `5 -> 6` post-warm p95:
+  `capture_to_detect_done_ms = 3.245`, `total_ms = 3.222`,
+  `infer_ms = 2.718`, `sync_ms = 3.130`,
+  external `encode_total_ms = 0.126`, and
+  `nvEncLockBitstream_ms = 0.0028`.
+- Interpretation: process isolation kept the YOLO CPU launch path fast in both
+  placements. Moving external NVENC off the analytics GPU reduced the remaining
+  GPU completion pressure. This is a placement signal, not a claim that one
+  helper GPU can encode full production rate; full `4512x4512 @ 100 fps`
+  recording still requires external split-GOP / multi-GPU routing.
+
 Current limitations of this slice:
 
 - The probe now writes MP4, keyframe sidecar, per-frame CSVs, and a summary
@@ -698,7 +725,8 @@ Cross-process:
 - What is the cheapest descriptor transport that still supports robust
   crash/heartbeat semantics?
 - Does same-GPU separate-process NVENC improve YOLO enough to justify the IPC
-  complexity?
+  complexity? Answer from the one-camera capped smoke: yes for host/runtime
+  lock isolation, but same-GPU hardware completion pressure remains.
 - How much additional memory bandwidth does recorder-owned detach copying add
   at `100 fps` split-GOP scale?
 - Should encoder shards be one process per GPU, one process per camera, or one
@@ -715,7 +743,7 @@ Phase 0:
 - [ ] Attach Nsight to the analytics process first.
 - [x] Summarize YOLO timing p95 and recorder NVENC p95 from CSV artifacts.
 - [x] Run same-GPU external NVENC load.
-- [ ] Run separate-GPU external NVENC load only after same-GPU result is known.
+- [x] Run separate-GPU external NVENC load after same-GPU result is known.
 - [x] Validate two-camera headless PTP real-YOLO plus real split-GOP baseline.
 - [x] Validate two-camera GUI PTP/AQ-off real split-GOP baseline.
 - [x] Add decoded-frame entropy / black-frame sanity check to benchmark
@@ -726,11 +754,12 @@ Phase 0:
 Phase 1:
 
 - [ ] Define versioned recorder descriptor protocol.
-- [ ] Prototype CUDA IPC memory/event import for one GPU.
-- [ ] Add detach ack path and source-lease timeout policy.
-- [ ] Encode one camera at sustainable single-session FPS.
-- [ ] Write recorder timing artifact.
-- [ ] Verify analytics p95 against Phase 0.
+- [x] Prototype CUDA IPC memory import for one GPU.
+- [x] Add detach ack path and source-lease timeout policy.
+- [x] Encode one camera at sustainable single-session FPS.
+- [x] Write recorder timing artifact.
+- [x] Verify analytics p95 against Phase 0 for same-GPU and paired-GPU capped
+      single-session runs.
 
 Phase 2:
 

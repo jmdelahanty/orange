@@ -170,6 +170,35 @@ Latest short smoke:
   `black_fraction_lt8 = 0.0`, so it was not the previous black-frame failure
   mode.
 
+Latest 30-second GPU placement comparison:
+
+- Same-GPU command:
+  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --output-dir /tmp`
+- Paired-GPU command:
+  `scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --recorder-gpu-id 6 --output-dir /tmp`
+- Same-GPU artifact:
+  `/tmp/orange_external_recorder_2010096_20260425_213750`
+- Paired-GPU artifact:
+  `/tmp/orange_external_recorder_2010096_20260425_213850`
+- Both runs received/ACKed `3203` descriptors, encoded `1922`, skipped `1281`
+  by the `60 fps` cap, dropped `0`, had `0` IPC failures/timeouts, and passed
+  external MP4 sanity with `black_fraction_lt8 = 0.0`.
+- Same GPU `5 -> 5` post-warm p95:
+  `capture_to_detect_done_ms = 4.591`, `total_ms = 4.560`,
+  `infer_ms = 4.104`, `sync_ms = 4.463`, external
+  `encode_total_ms = 0.112`, `nvEncLockBitstream_ms = 0.0028`.
+- Paired GPU `5 -> 6` post-warm p95:
+  `capture_to_detect_done_ms = 3.245`, `total_ms = 3.222`,
+  `infer_ms = 2.718`, `sync_ms = 3.130`, external
+  `encode_total_ms = 0.126`, `nvEncLockBitstream_ms = 0.0028`.
+
+Interpretation: external process isolation keeps the YOLO CPU launch path fast.
+Moving external NVENC off the analytics GPU also reduces remaining GPU
+completion pressure. This does not remove the production need for split-GOP:
+one A16 encoder still cannot carry a full `4512x4512 @ 100 fps` stream, so the
+future recorder should minimize analytics-GPU encode share while preserving
+multi-GPU split-GOP throughput.
+
 ## Remaining Work
 
 - Automated decoded-frame entropy/black-frame sanity checking is now part of

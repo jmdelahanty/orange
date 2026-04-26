@@ -41,6 +41,24 @@ That means process isolation is solving the right class of problem. It does
 not make shared GPU/NVENC/memory resources free, so GPU placement and split-GOP
 routing remain first-class design choices.
 
+A longer 30-second single-camera placement comparison clarified the remaining
+contention:
+
+- Same-GPU external encode (`analytics GPU 5`, recorder/NVENC GPU `5`) kept the
+  YOLO CPU launch path fast, but `capture_to_detect_done_ms p95` stayed around
+  `4.59 ms`.
+- Paired-GPU external encode (`analytics GPU 5`, recorder/NVENC GPU `6`) kept
+  the same ACK/encode health and reduced `capture_to_detect_done_ms p95` to
+  about `3.24 ms`.
+- The improvement came from GPU completion timing (`infer_ms` / `sync_ms`), not
+  from host queue or CPU preprocessing.
+
+Production implication: external process isolation removes the same-process
+CUDA/NVENC runtime-lock tail, while encode GPU placement controls remaining
+hardware/fabric pressure. Full-rate `4512x4512 @ 100 fps` recording still
+requires external split-GOP/multi-GPU routing; the paired-GPU result does not
+mean one helper GPU can encode the whole stream at production rate.
+
 ## Non-Negotiable Boundary
 
 Detach ACK is the critical contract.
@@ -134,6 +152,55 @@ Interpretation:
   same-GPU live-camera smoke.
 - This is not yet a production throughput test because it is one camera and
   external encode is capped at `60 fps`.
+
+## 30-Second GPU Placement Result
+
+Commands:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --output-dir /tmp
+scripts/run_external_recorder_smoke.sh --duration 30 --warmup 2 --encode-fps 60 --recorder-gpu-id 6 --output-dir /tmp
+```
+
+Artifacts:
+
+- Same GPU `5 -> 5`:
+  `/tmp/orange_external_recorder_2010096_20260425_213750`
+- Paired GPU `5 -> 6`:
+  `/tmp/orange_external_recorder_2010096_20260425_213850`
+
+Both runs:
+
+- Camera `2010096`, analytics/YOLO on A16 GPU `5`.
+- Real live camera frames, external HEVC `p1/ll`, AQ/temporal AQ/lookahead off.
+- External encode capped at `60 fps`.
+- `3203` descriptors received and ACKed.
+- `1922` frames encoded, `1281` skipped by frame-selection policy, `0` encode
+  drops.
+- `0` external IPC failures/timeouts.
+- `0` camera frame-id gaps and `0` get-frame errors.
+- External MP4 sanity passed with `black_fraction_lt8 = 0.0`.
+
+Post-warm p95 comparison:
+
+| Test | Analytics GPU | Recorder/NVENC GPU | `capture_to_detect_done_ms` | `total_ms` | `infer_ms` | `sync_ms` | `encode_total_ms` | `nvEncLockBitstream_ms` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Same GPU | 5 | 5 | `4.591` | `4.560` | `4.104` | `4.463` | `0.112` | `0.0028` |
+| Paired GPU | 5 | 6 | `3.245` | `3.222` | `2.718` | `3.130` | `0.126` | `0.0028` |
+
+Interpretation:
+
+- External process isolation prevented the old same-process `8-10 ms` YOLO
+  host-side stall in both runs.
+- Moving NVENC to GPU `6` materially reduced the remaining YOLO completion
+  pressure on GPU `5`.
+- `nvEncLockBitstream` remained tiny in both runs, so the old issue was not
+  simply "NVENC takes a long time"; it was where NVENC/CUDA driver work lived
+  relative to the analytics process and GPU.
+- For production, route full-frame encode work through an external recorder
+  process and minimize the analytics GPU's encode share, but keep split-GOP
+  routing because one A16 encoder cannot carry the whole `100 fps 20MP` stream.
 
 ## Stage 1: Production-Like Single-Camera External Recorder
 
@@ -353,13 +420,16 @@ Acceptance gate:
 
 ## Near-Term Next Slice
 
-The highest-signal next coding task is Stage 1 plus Stage 2:
+Stage 1 and Stage 2 now exist as a diagnostic slice:
 
 ```text
 external recorder with valid MP4 output
 single-command runner
 single-camera same-GPU 60 fps validation
+single-camera paired-GPU 60 fps placement comparison
 ```
 
-This turns the successful low-level prototype into a repeatable architecture
-test. Only after that should we invest heavily in external split-GOP routing.
+The highest-signal next coding task is protocol/config hardening followed by
+the first external split-GOP routing slice. Do not spend more time on
+same-process NVENC tuning unless a regression disproves the current
+process-isolation result.
