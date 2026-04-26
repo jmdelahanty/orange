@@ -296,5 +296,15 @@ multi-GPU split-GOP throughput.
   YOLO service stayed about `4.6 ms p95`; broad detect steady p95 stayed about
   `6.4-6.5 ms`, so the next latency work is YOLO warmup/worker dispatch, not
   recorder detach.
+- Headless YOLO synthetic prewarm now exists via
+  `fixed.yolo_worker.prewarm_iterations` and `YoloWorker::Warmup()`. The
+  external-recorder smoke runners default to `--yolo-prewarm-iterations 3`.
+  Latest diagnostic run:
+  `/tmp/orange_external_recorder_ptp_20260425_233134`. It encoded/ACKed
+  `401/401` frames per camera with no drops and removed the old first-live-frame
+  `cpu_pre_sync_ms ~49 ms` tail. All-frame `capture_to_detect_done_ms max`
+  dropped to `8.272 ms` for `2010095` and `7.108 ms` for `2010096`; YOLO
+  steady p95 stayed about `4.57-4.59 ms`. Remaining work is steady-state
+  acquisition-to-worker-start / dispatch latency.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

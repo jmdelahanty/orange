@@ -27,6 +27,7 @@ Options:
   --prewarm-slots <int>      Prewarm encode detach slots per shard. Default 4.
   --prewarm-bytes <int|auto> Pre-listen prewarm byte size. Default auto from spec config.
   --no-prewarm-peer-copy     Do not warm the first source-to-shard peer copy.
+  --yolo-prewarm-iterations <int> Synthetic YOLO prewarm iterations. Default 3.
   --socket <path>            Unix socket path. Default /tmp/orange_external_recorder_<serial>.sock.
                              Non-default paths require matching client env outside this script.
   --output-dir <path>        External recorder artifact root. Default /tmp.
@@ -55,6 +56,7 @@ QUEUE_DEPTH=8
 PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
+YOLO_PREWARM_ITERATIONS=3
 SOCKET_PATH=""
 OUTPUT_DIR="/tmp"
 BITSTREAM_OUT=""
@@ -155,6 +157,12 @@ while [[ $# -gt 0 ]]; do
       PREWARM_PEER_COPY=0
       shift
       ;;
+    --yolo-prewarm-iterations)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-prewarm-iterations requires a value." >&2; exit 2; }
+      YOLO_PREWARM_ITERATIONS="$1"
+      shift
+      ;;
     --socket)
       shift
       [[ $# -gt 0 ]] || { echo "--socket requires a value." >&2; exit 2; }
@@ -189,7 +197,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH PREWARM_SLOTS; do
+for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
@@ -234,7 +242,7 @@ MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
 KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.csv"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$DURATION" "$WARMUP" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -246,6 +254,7 @@ camera_serial = sys.argv[4]
 gpu_id = int(sys.argv[5])
 duration = int(sys.argv[6])
 warmup = int(sys.argv[7])
+yolo_prewarm_iterations = int(sys.argv[8])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -264,6 +273,8 @@ fixed["warmup_s"] = warmup
 fixed["display"] = False
 fixed["stream_only"] = False
 fixed["recording_sink_mode"] = "external_ipc"
+if isinstance(fixed.get("yolo_worker"), dict):
+    fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
 
 with dest.open("w", encoding="utf-8") as f:
     json.dump(spec, f, indent=2)
@@ -325,6 +336,7 @@ echo "[external-recorder] socket=$SOCKET_PATH"
 echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
 echo "[external-recorder] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
+echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
 
 ROUTING_POLICY="single_shard"
 if [[ -n "$SHARD_GPU_IDS" ]]; then

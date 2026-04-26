@@ -592,13 +592,49 @@ Prewarm diagnostic result:
   `capture_to_detect_done_ms max` was about `54 ms` on both cameras, while
   recorder detach-copy steady-state max stayed below `1 ms`.
 
+Headless YOLO synthetic prewarm:
+
+- Implemented on 2026-04-25.
+- `HeadlessYoloWorkerConfig` now supports `prewarm_iterations`.
+- `YoloWorker::Warmup()` runs synthetic full-resolution preprocessing,
+  TensorRT/CUDA-graph inference, stream synchronization, and postprocess before
+  the camera acquisition threads start.
+- The external-recorder smoke runners default to
+  `--yolo-prewarm-iterations 3` and inject that into
+  `fixed.yolo_worker.prewarm_iterations` in the generated experiment spec.
+
+YOLO prewarm diagnostic result:
+
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260425_233134`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260425_233134`.
+- Command shape:
+  `scripts/run_external_recorder_two_camera_ptp_smoke.sh --duration 6 --warmup 1 --skip-video-sanity`.
+- Both cameras received/ACKed/encoded `401` frames, with `0` skips,
+  `0` encode drops, and no worker failures.
+- The old first-live-frame YOLO startup tail was removed:
+  prior frame `1` `cpu_pre_sync_ms` was about `49 ms` on both cameras; after
+  synthetic prewarm, frame `1` was `4.005092 ms` for `2010095` and
+  `0.130886 ms` for `2010096`.
+- All-frame `capture_to_detect_done_ms max` dropped from about `54 ms` to
+  single digits:
+  `2010095 max = 8.271955 ms`;
+  `2010096 max = 7.108273 ms`.
+- Steady-state YOLO service stayed in the same target range:
+  `2010095 yolo_total_steady_p95 = 4.587434 ms`;
+  `2010096 yolo_total_steady_p95 = 4.573097 ms`.
+- Broad detect steady-state p95 remains the next latency target:
+  `2010095 detect_steady_p95 = 5.980286 ms`;
+  `2010096 detect_steady_p95 = 6.726206 ms`.
+- The remaining gap is mostly worker dispatch / acquisition-to-worker-start,
+  not recorder detach or first-use YOLO runtime setup.
+
 Next implementation step:
 
-- Prewarm YOLO after graph capture but before the measured PTP gate, or add a
-  warmup/drain phase where YOLO consumes initial frames but benchmark summaries
-  mark them as startup.
-- Run a longer two-camera PTP external-recorder validation after prewarm to
-  determine whether any late-run YOLO dispatch tails remain.
+- Instrument and reduce steady-state acquisition-to-worker-start latency.
+- Run a longer two-camera PTP external-recorder validation to determine whether
+  late-run YOLO dispatch tails remain.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,
   and finalization.
 - Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.

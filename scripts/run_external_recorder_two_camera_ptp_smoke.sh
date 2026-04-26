@@ -29,6 +29,7 @@ Options:
   --prewarm-slots <int>            Prewarm encode detach slots per shard. Default 4.
   --prewarm-bytes <int|auto>       Pre-listen prewarm byte size. Default auto from config.
   --no-prewarm-peer-copy           Do not warm the first source-to-shard peer copy.
+  --yolo-prewarm-iterations <int>  Synthetic YOLO prewarm iterations. Default 3.
   --steady-state-after-frame <n>   Report steady-state metrics after this frame. Default 50.
   --config-folder <path>           Camera config folder. Default local/100_cam4_ptp.
   --output-dir <path>              External recorder artifact root. Default /tmp.
@@ -55,6 +56,7 @@ QUEUE_DEPTH=32
 PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
+YOLO_PREWARM_ITERATIONS=3
 STEADY_STATE_AFTER_FRAME=50
 CONFIG_FOLDER="/home/jeremy/orange_data/config/local/100_cam4_ptp"
 OUTPUT_DIR="/tmp"
@@ -149,6 +151,12 @@ while [[ $# -gt 0 ]]; do
       PREWARM_PEER_COPY=0
       shift
       ;;
+    --yolo-prewarm-iterations)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-prewarm-iterations requires a value." >&2; exit 2; }
+      YOLO_PREWARM_ITERATIONS="$1"
+      shift
+      ;;
     --steady-state-after-frame)
       shift
       [[ $# -gt 0 ]] || { echo "--steady-state-after-frame requires a value." >&2; exit 2; }
@@ -183,7 +191,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH PREWARM_SLOTS STEADY_STATE_AFTER_FRAME; do
+for value_name in DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS STEADY_STATE_AFTER_FRAME; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
@@ -229,7 +237,7 @@ RUN_DIR="$OUTPUT_DIR/orange_external_recorder_ptp_${STAMP}"
 mkdir -p "$RUN_DIR"
 TEMP_SPEC="$RUN_DIR/external_recorder_two_camera_ptp_spec.json"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIALS" "$ANALYTICS_GPU_IDS" "$DURATION" "$WARMUP" "$CONFIG_FOLDER" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIALS" "$ANALYTICS_GPU_IDS" "$DURATION" "$WARMUP" "$CONFIG_FOLDER" "$YOLO_PREWARM_ITERATIONS" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -242,6 +250,7 @@ gpu_ids = [int(item) for item in sys.argv[5].split(",") if item]
 duration = int(sys.argv[6])
 warmup = int(sys.argv[7])
 config_folder = sys.argv[8]
+yolo_prewarm_iterations = int(sys.argv[9])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -262,6 +271,8 @@ fixed["stream_only"] = False
 fixed["sync_mode"] = "ptp_gate"
 fixed["recording_sink_mode"] = "external_ipc"
 fixed["config_folder"] = config_folder
+if isinstance(fixed.get("yolo_worker"), dict):
+    fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
 
 with dest.open("w", encoding="utf-8") as f:
     json.dump(spec, f, indent=2)
@@ -311,6 +322,7 @@ echo "[external-recorder-ptp] analytics_root=$ANALYTICS_ROOT"
 echo "[external-recorder-ptp] cameras=$CAMERA_SERIALS analytics_gpus=$ANALYTICS_GPU_IDS shard_groups=$SHARD_GPU_IDS_PER_CAMERA"
 echo "[external-recorder-ptp] encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS queue_depth=$QUEUE_DEPTH"
 echo "[external-recorder-ptp] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
+echo "[external-recorder-ptp] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
 echo "[external-recorder-ptp] steady_state_after_frame=$STEADY_STATE_AFTER_FRAME"
 echo "[external-recorder-ptp] config_folder=$CONFIG_FOLDER"
 

@@ -903,6 +903,57 @@ void YoloWorker::SetDisplayWorker(COpenGLDisplay* display_worker) {
     m_display_worker = display_worker;
 }
 
+void YoloWorker::Warmup(int iterations)
+{
+    if (iterations <= 0 || !yolov8_instance_ || !associated_camera_params_) {
+        return;
+    }
+    const int gpu_id = associated_camera_params_->gpu_id;
+    const int camera_width = associated_camera_params_->width;
+    const int camera_height = associated_camera_params_->height;
+    const bool is_color = associated_camera_params_->color;
+    const size_t bytes_per_pixel = is_color ? 4u : 1u;
+    const size_t source_bytes =
+        static_cast<size_t>(camera_width) *
+        static_cast<size_t>(camera_height) *
+        bytes_per_pixel;
+    if (source_bytes == 0) {
+        return;
+    }
+
+    ck(cudaSetDevice(gpu_id));
+    unsigned char* d_warmup_source = nullptr;
+    const auto started = std::chrono::steady_clock::now();
+    ck(cudaMalloc(&d_warmup_source, source_bytes));
+    try {
+        ck(cudaMemsetAsync(d_warmup_source, 0, source_bytes, yolov8_instance_->stream));
+        for (int i = 0; i < iterations; ++i) {
+            EnsureNppStream(yolov8_instance_->stream);
+            yolov8_instance_->preprocess_gpu(
+                d_warmup_source,
+                camera_width,
+                camera_height,
+                is_color);
+            yolov8_instance_->infer();
+            ck(cudaStreamSynchronize(yolov8_instance_->stream));
+            std::vector<pose::Object> warmup_detections;
+            yolov8_instance_->postprocess(warmup_detections);
+        }
+    } catch (...) {
+        cudaFree(d_warmup_source);
+        throw;
+    }
+    ck(cudaFree(d_warmup_source));
+    const auto elapsed = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - started).count();
+    std::cout << "[YOLO] Warmed " << threadName
+              << " iterations=" << iterations
+              << " gpu_id=" << gpu_id
+              << " source_bytes=" << source_bytes
+              << " elapsed_ms=" << elapsed
+              << std::endl;
+}
+
 void YoloWorker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
 {
     std::cout << "YoloWorker (" << this->threadName

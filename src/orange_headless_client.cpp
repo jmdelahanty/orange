@@ -92,6 +92,7 @@ struct HeadlessYoloWorkerConfig {
     int decimate = 1;
     bool publish_live_ipc = false;
     int timeout_ms = 500;
+    int prewarm_iterations = 0;
     bool fail_on_init_error = true;
 
     bool enabled() const {
@@ -665,6 +666,7 @@ nlohmann::json build_headless_yolo_worker_config_json(
         {"decimate", config.decimate},
         {"publish_live_ipc", config.publish_live_ipc},
         {"timeout_ms", config.timeout_ms},
+        {"prewarm_iterations", config.prewarm_iterations},
         {"fail_on_init_error", config.fail_on_init_error}
     };
 }
@@ -1821,6 +1823,7 @@ bool headless_yolo_worker_requested(const HeadlessYoloWorkerConfig& config)
            config.decimate != 1 ||
            config.publish_live_ipc ||
            config.timeout_ms != 500 ||
+           config.prewarm_iterations != 0 ||
            !config.fail_on_init_error;
 }
 
@@ -1840,6 +1843,7 @@ bool validate_headless_yolo_worker_config(const HeadlessYoloWorkerConfig& config
             config.decimate != 1 ||
             config.publish_live_ipc ||
             config.timeout_ms != 500 ||
+            config.prewarm_iterations != 0 ||
             !config.fail_on_init_error) {
             if (error_out) {
                 *error_out = prefix + "yolo_worker options require mode=real";
@@ -1863,6 +1867,12 @@ bool validate_headless_yolo_worker_config(const HeadlessYoloWorkerConfig& config
     if (config.timeout_ms <= 0) {
         if (error_out) {
             *error_out = prefix + "yolo_worker.timeout_ms must be > 0";
+        }
+        return false;
+    }
+    if (config.prewarm_iterations < 0) {
+        if (error_out) {
+            *error_out = prefix + "yolo_worker.prewarm_iterations must be >= 0";
         }
         return false;
     }
@@ -2132,6 +2142,8 @@ bool parse_headless_yolo_worker_json(
         config.publish_live_ipc =
             node.value("publish_live_ipc", config.publish_live_ipc);
         config.timeout_ms = node.value("timeout_ms", config.timeout_ms);
+        config.prewarm_iterations =
+            node.value("prewarm_iterations", config.prewarm_iterations);
         config.fail_on_init_error =
             node.value("fail_on_init_error", config.fail_on_init_error);
     } else {
@@ -3576,6 +3588,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                       << " live_detection_ipc="
                       << (yolo_worker_config.publish_live_ipc ? "true" : "false")
                       << " decimate=1/" << yolo_worker_config.decimate
+                      << " prewarm_iterations=" << yolo_worker_config.prewarm_iterations
                       << " engine_path=" << yolo_worker_config.engine_path
                       << std::endl;
             for (int idx : selected_indices) {
@@ -3589,6 +3602,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         camera_control,
                         *camera_resources[idx].recycle_queue);
                     yolo_workers[idx]->SetMaxQueueSize(240);
+                    yolo_workers[idx]->Warmup(yolo_worker_config.prewarm_iterations);
                     yolo_workers[idx]->StartThread();
                 } catch (const std::exception& ex) {
                     if (yolo_worker_config.fail_on_init_error) {

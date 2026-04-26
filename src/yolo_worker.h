@@ -38,6 +38,7 @@ public:
     void SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer);
     void SetDisplayWorker(COpenGLDisplay* display_worker);
     void SetCropProducerWorker(CropProducerWorker* crop_worker);
+    void Warmup(int iterations);
     void DumpNextFrame() { m_dump_next_frame.store(true);}
     std::vector<TrackedObject> getTrackedObjects() const {
         return velocity_tracker_.getTrackedObjects();
