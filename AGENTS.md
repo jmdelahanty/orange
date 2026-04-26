@@ -306,5 +306,20 @@ multi-GPU split-GOP throughput.
   dropped to `8.272 ms` for `2010095` and `7.108 ms` for `2010096`; YOLO
   steady p95 stayed about `4.57-4.59 ms`. Remaining work is steady-state
   acquisition-to-worker-start / dispatch latency.
+- YOLO dispatch/acquisition split instrumentation now exists in
+  `Cam*_yolo_perf.csv`. Latest diagnostic run:
+  `/tmp/orange_external_recorder_ptp_20260425_235542`; analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260425_235542`.
+  The corrected headless smoke path uses the intended hybrid flags by default:
+  `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`,
+  `ORANGE_YOLO_READY_EVENT_FASTPATH=1`, and
+  `ORANGE_YOLO_DETACH_INPUT=1`. The run stayed healthy (`401/401` ACKed and
+  encoded per camera, `0` drops, `gpu_direct=100`, `ring=0`). The YOLO queue is
+  not the remaining bottleneck (`yolo_queue_wait_ms p95` about `0.02 ms`);
+  recording submit is also negligible (`p95 < 0.01 ms`). The dominant
+  pre-enqueue cost is per-frame PTP timestamp checking:
+  `acquisition_to_ptp_done_ms p95 = 1.968 ms` for `2010095` and `2.135 ms`
+  for `2010096`. Next target is experimental decimated/nonblocking PTP
+  timestamp checking while preserving PTP gate sync and summary correctness.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

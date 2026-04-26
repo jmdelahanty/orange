@@ -58,6 +58,9 @@ HELP_TEXT="$("$TARGET" --help)"
 for required in \
   "--yolo-perf-log" \
   "--yolo-perf-sample" \
+  "--analytics-early-owned-frame" \
+  "--yolo-ready-event-fastpath" \
+  "--yolo-detach-input" \
   "/home/jeremy/orange-gop-split-a16/experiment_specs"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then
     echo "Installed wrapper help is missing expected text: $required" >&2

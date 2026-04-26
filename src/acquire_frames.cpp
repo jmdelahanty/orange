@@ -1386,8 +1386,10 @@ void acquire_frames(
                 receive_host_ns > get_frame_call_host_ns
                     ? receive_host_ns - get_frame_call_host_ns
                     : 0;
+            uint64_t ptp_check_done_host_ns = 0;
             if (camera_control->sync_camera) {
                 PTP_timestamp_checking(&ptp_state, ecam, received_frame, &camera_state, camera_params);
+                ptp_check_done_host_ns = steady_clock_now_ns();
             }
 
             struct timespec ts_rt1;
@@ -1427,8 +1429,18 @@ void acquire_frames(
             current_entry->camera_instance = nullptr;
             current_entry->camera_frame_struct = nullptr;
             current_entry->ingress_event_record_host_ns = 0;
+            current_entry->yolo_ptp_done_host_ns = ptp_check_done_host_ns;
+            current_entry->yolo_resource_ready_host_ns = 0;
+            current_entry->yolo_pointer_attrs_done_host_ns = 0;
+            current_entry->yolo_dispatch_ready_host_ns = 0;
+            current_entry->yolo_before_recording_submit_host_ns = 0;
+            current_entry->yolo_after_recording_submit_host_ns = 0;
             current_entry->yolo_enqueue_host_ns = 0;
+            current_entry->yolo_enqueued_host_ns = 0;
+            current_entry->yolo_dequeue_host_ns = 0;
             current_entry->yolo_queue_depth_at_enqueue = -1;
+            current_entry->yolo_queue_depth_after_enqueue = -1;
+            current_entry->yolo_queue_depth_after_dequeue = -1;
             current_entry->yolo_dispatched = false;
             current_entry->yolo_input_detach_requested = false;
             current_entry->yolo_input_ready_host_ns = 0;
@@ -1486,6 +1498,7 @@ void acquire_frames(
                 if (yolo_events_available < yolo_events_low) {
                     yolo_events_low = yolo_events_available;
                 }
+                current_entry->yolo_resource_ready_host_ns = steady_clock_now_ns();
             }
 
             // If recording is active, increment and assign the recording-specific frame ID
@@ -1557,6 +1570,9 @@ void acquire_frames(
                 } else if (attrs.device != camera_params->gpu_id) {
                     gpu_direct_wrong_device++;
                 }
+            }
+            if (will_yolo) {
+                current_entry->yolo_pointer_attrs_done_host_ns = steady_clock_now_ns();
             }
 
             current_entry->event_ptr = current_event;
@@ -1793,6 +1809,9 @@ void acquire_frames(
             // This allows us to efficiently manage resources and avoid unnecessary processing.
             if (dispatch_count > 0) {
                 current_entry->ref_count.store(dispatch_count);
+                if (will_yolo) {
+                    current_entry->yolo_dispatch_ready_host_ns = steady_clock_now_ns();
+                }
 
                 if (use_direct_pointer && !use_ring_copy && !use_analytics_hybrid) {
                     current_entry->camera_buffer_ptr = received_frame->imagePtr;
@@ -1801,9 +1820,9 @@ void acquire_frames(
                 }
 
                 auto enqueue_yolo = [&]() {
+                    current_entry->yolo_enqueue_host_ns = steady_clock_now_ns();
                     current_entry->yolo_queue_depth_at_enqueue =
                         yolo_worker->GetCountQueueInSize();
-                    current_entry->yolo_enqueue_host_ns = steady_clock_now_ns();
                     yolo_worker->PutObjectToQueueIn(current_entry);
                 };
                 const bool dispatch_yolo_before_recording =
@@ -1814,7 +1833,13 @@ void acquire_frames(
                     enqueue_yolo();
                 }
                 if (will_record) {
+                    if (will_yolo) {
+                        current_entry->yolo_before_recording_submit_host_ns = steady_clock_now_ns();
+                    }
                     recording_ingress->SubmitFrame(current_entry);
+                    if (will_yolo) {
+                        current_entry->yolo_after_recording_submit_host_ns = steady_clock_now_ns();
+                    }
                     if (camera_control->sync_camera) {
                         RecordingSubmitHistoryEntry submit_entry;
                         submit_entry.local_frame_id = current_entry->frame_id;

@@ -58,6 +58,8 @@ protected:
 
     // This function is called when the worker is reset.
     virtual void WorkerReset() {}
+    virtual void OnQueueInEnqueued(T*, int) {}
+    virtual void OnQueueInDequeued(T*, int) {}
 
     void GetQueueInSnapshotForInstrumentation(int* size, T** oldest);
 
@@ -171,6 +173,7 @@ void CThreadWorker<T>::PutObjectToQueueIn(T* f)
     if (countQueueInMax < countQueueIn) {
         countQueueInMax = countQueueIn;
     }
+    OnQueueInEnqueued(f, countQueueIn);
     lock.unlock();
     queueInNotEmptyCv.notify_one();
 }
@@ -278,6 +281,7 @@ T* CThreadWorker<T>::WaitForObjectFromQueueIn()
     T* f = queueIn.front();
     queueIn.pop();
     countQueueIn--;
+    OnQueueInDequeued(f, countQueueIn);
     lock.unlock();
     queueInNotFullCv.notify_one();
     return f;

@@ -34,6 +34,11 @@ The wrapper also exposes a narrow allowlist of experiment env passthroughs:
 - `--no-yolo-perf-log` exports `ORANGE_YOLO_PERF_LOG=0`.
 - `--yolo-perf-sample <n>` exports `ORANGE_YOLO_PERF_SAMPLE=<n>` and enables
   YOLO perf logging unless logging was explicitly disabled.
+- `--analytics-early-owned-frame <0|1>` exports
+  `ORANGE_ANALYTICS_EARLY_OWNED_FRAME`.
+- `--yolo-ready-event-fastpath <0|1>` exports
+  `ORANGE_YOLO_READY_EVENT_FASTPATH`.
+- `--yolo-detach-input <0|1>` exports `ORANGE_YOLO_DETACH_INPUT`.
 
 After the run, it chowns the experiment output folder back to the invoking
 user so artifacts are not left root-owned.
@@ -89,6 +94,9 @@ sudo -n /usr/local/bin/orange-local-benchmark \
   --orange-client /home/jeremy/orange-gop-split-a16/targets/release/orange_client \
   --yolo-perf-log \
   --yolo-perf-sample 1 \
+  --analytics-early-owned-frame 1 \
+  --yolo-ready-event-fastpath 1 \
+  --yolo-detach-input 1 \
   /home/jeremy/orange-gop-split-a16/experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp.json
 ```
 

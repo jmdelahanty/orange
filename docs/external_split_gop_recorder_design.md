@@ -630,9 +630,48 @@ YOLO prewarm diagnostic result:
 - The remaining gap is mostly worker dispatch / acquisition-to-worker-start,
   not recorder detach or first-use YOLO runtime setup.
 
+YOLO dispatch/acquisition split diagnostic:
+
+- Implemented on 2026-04-25.
+- `Cam*_yolo_perf.csv` now splits `acquisition_to_worker_start_ms` into:
+  PTP latch/check time, YOLO resource acquisition, pointer/source setup,
+  ingress event to dispatch-ready, recording submit call, enqueue push,
+  queue wait, and dequeue-to-worker-start.
+- The external-recorder smoke runners now pass the intended headless hot-path
+  flags through the narrow sudo wrapper by default:
+  `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`,
+  `ORANGE_YOLO_READY_EVENT_FASTPATH=1`, and
+  `ORANGE_YOLO_DETACH_INPUT=1`.
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260425_235542`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260425_235542`.
+- Both cameras received/ACKed/encoded `401` frames, with `0` skips,
+  `0` drops, and no worker failures. The run used the intended hybrid path:
+  `gpu_direct=100`, `ring=0`.
+- The YOLO worker queue/wakeup path is not the current bottleneck:
+  `2010095 yolo_queue_wait_ms p95 = 0.020739 ms`;
+  `2010096 yolo_queue_wait_ms p95 = 0.019105 ms`.
+- Recording-submit-before-YOLO is also not material:
+  `2010095 recording_submit_call_ms p95 = 0.004208 ms`;
+  `2010096 recording_submit_call_ms p95 = 0.008486 ms`.
+- The dominant pre-enqueue cost is synchronous per-frame PTP timestamp/latch
+  checking in the acquisition thread:
+  `2010095 acquisition_to_ptp_done_ms p95 = 1.968091 ms`;
+  `2010096 acquisition_to_ptp_done_ms p95 = 2.135435 ms`.
+- Everything after PTP check and before YOLO queueing is tens of microseconds:
+  resource-ready, pointer attrs, ingress event, dispatch-ready, and enqueue
+  push are all far below `0.1 ms p95` in this run.
+- Current steady detect p95 is therefore mostly:
+  per-frame PTP latch/check (`~2 ms`) plus YOLO service (`~4.6 ms`).
+
 Next implementation step:
 
-- Instrument and reduce steady-state acquisition-to-worker-start latency.
+- Add an experimental decimated/nonblocking PTP timestamp-checking mode for
+  acquisition. Keep PTP gate synchronization, but do not synchronously query
+  camera PTP registers on every frame unless a validation mode requires it.
+- Validate that frame timestamps, frame-id gap detection, stop behavior, and
+  PTP summary artifacts remain correct when per-frame latch reads are decimated.
 - Run a longer two-camera PTP external-recorder validation to determine whether
   late-run YOLO dispatch tails remain.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,

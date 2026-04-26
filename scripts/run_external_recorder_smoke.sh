@@ -57,6 +57,9 @@ PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
 YOLO_PREWARM_ITERATIONS=3
+ANALYTICS_EARLY_OWNED_FRAME="${ORANGE_ANALYTICS_EARLY_OWNED_FRAME:-1}"
+YOLO_READY_EVENT_FASTPATH="${ORANGE_YOLO_READY_EVENT_FASTPATH:-1}"
+YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
 SOCKET_PATH=""
 OUTPUT_DIR="/tmp"
 BITSTREAM_OUT=""
@@ -337,6 +340,7 @@ echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
 echo "[external-recorder] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
 echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
+echo "[external-recorder] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
 
 ROUTING_POLICY="single_shard"
 if [[ -n "$SHARD_GPU_IDS" ]]; then
@@ -408,6 +412,9 @@ sudo -n /usr/local/bin/orange-local-benchmark \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
   --yolo-perf-sample 1 \
+  --analytics-early-owned-frame "$ANALYTICS_EARLY_OWNED_FRAME" \
+  --yolo-ready-event-fastpath "$YOLO_READY_EVENT_FASTPATH" \
+  --yolo-detach-input "$YOLO_DETACH_INPUT" \
   "$TEMP_SPEC"
 
 echo "[external-recorder] analytics complete"

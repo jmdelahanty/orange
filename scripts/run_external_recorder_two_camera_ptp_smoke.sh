@@ -57,6 +57,9 @@ PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
 YOLO_PREWARM_ITERATIONS=3
+ANALYTICS_EARLY_OWNED_FRAME="${ORANGE_ANALYTICS_EARLY_OWNED_FRAME:-1}"
+YOLO_READY_EVENT_FASTPATH="${ORANGE_YOLO_READY_EVENT_FASTPATH:-1}"
+YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
 STEADY_STATE_AFTER_FRAME=50
 CONFIG_FOLDER="/home/jeremy/orange_data/config/local/100_cam4_ptp"
 OUTPUT_DIR="/tmp"
@@ -323,6 +326,7 @@ echo "[external-recorder-ptp] cameras=$CAMERA_SERIALS analytics_gpus=$ANALYTICS_
 echo "[external-recorder-ptp] encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS queue_depth=$QUEUE_DEPTH"
 echo "[external-recorder-ptp] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
 echo "[external-recorder-ptp] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
+echo "[external-recorder-ptp] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
 echo "[external-recorder-ptp] steady_state_after_frame=$STEADY_STATE_AFTER_FRAME"
 echo "[external-recorder-ptp] config_folder=$CONFIG_FOLDER"
 
@@ -437,6 +441,9 @@ sudo -n /usr/local/bin/orange-local-benchmark \
   --orange-client "$ORANGE_CLIENT" \
   --yolo-perf-log \
   --yolo-perf-sample 1 \
+  --analytics-early-owned-frame "$ANALYTICS_EARLY_OWNED_FRAME" \
+  --yolo-ready-event-fastpath "$YOLO_READY_EVENT_FASTPATH" \
+  --yolo-detach-input "$YOLO_DETACH_INPUT" \
   "$TEMP_SPEC"
 
 echo "[external-recorder-ptp] analytics complete"

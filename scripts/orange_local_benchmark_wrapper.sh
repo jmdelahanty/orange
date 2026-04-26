@@ -10,6 +10,9 @@ ACQUIRE_WORK_ENTRIES_MAX=""
 ENCODER_ENTRY_POOL_SIZE=""
 YOLO_PERF_LOG=""
 YOLO_PERF_SAMPLE=""
+ANALYTICS_EARLY_OWNED_FRAME=""
+YOLO_READY_EVENT_FASTPATH=""
+YOLO_DETACH_INPUT=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
@@ -28,6 +31,10 @@ Options:
   --yolo-perf-log                    Export ORANGE_YOLO_PERF_LOG=1.
   --no-yolo-perf-log                 Export ORANGE_YOLO_PERF_LOG=0.
   --yolo-perf-sample <n>             Export ORANGE_YOLO_PERF_SAMPLE=<n>; also enables YOLO perf logging unless explicitly disabled.
+  --analytics-early-owned-frame <0|1>
+                                      Export ORANGE_ANALYTICS_EARLY_OWNED_FRAME.
+  --yolo-ready-event-fastpath <0|1>  Export ORANGE_YOLO_READY_EVENT_FASTPATH.
+  --yolo-detach-input <0|1>          Export ORANGE_YOLO_DETACH_INPUT.
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
@@ -124,6 +131,27 @@ while [[ $# -gt 0 ]]; do
       fi
       shift
       ;;
+    --analytics-early-owned-frame)
+      shift
+      [[ $# -gt 0 ]] || { echo "--analytics-early-owned-frame requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[01]$ ]] || { echo "--analytics-early-owned-frame must be 0 or 1." >&2; exit 2; }
+      ANALYTICS_EARLY_OWNED_FRAME="$1"
+      shift
+      ;;
+    --yolo-ready-event-fastpath)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-ready-event-fastpath requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[01]$ ]] || { echo "--yolo-ready-event-fastpath must be 0 or 1." >&2; exit 2; }
+      YOLO_READY_EVENT_FASTPATH="$1"
+      shift
+      ;;
+    --yolo-detach-input)
+      shift
+      [[ $# -gt 0 ]] || { echo "--yolo-detach-input requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[01]$ ]] || { echo "--yolo-detach-input must be 0 or 1." >&2; exit 2; }
+      YOLO_DETACH_INPUT="$1"
+      shift
+      ;;
     *)
       break
       ;;
@@ -156,6 +184,18 @@ export_optional_runtime_env() {
   if [[ -n "$YOLO_PERF_SAMPLE" ]]; then
     echo "[sudo-wrapper] yolo_perf_sample=$YOLO_PERF_SAMPLE"
     export ORANGE_YOLO_PERF_SAMPLE="$YOLO_PERF_SAMPLE"
+  fi
+  if [[ -n "$ANALYTICS_EARLY_OWNED_FRAME" ]]; then
+    echo "[sudo-wrapper] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME"
+    export ORANGE_ANALYTICS_EARLY_OWNED_FRAME="$ANALYTICS_EARLY_OWNED_FRAME"
+  fi
+  if [[ -n "$YOLO_READY_EVENT_FASTPATH" ]]; then
+    echo "[sudo-wrapper] yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH"
+    export ORANGE_YOLO_READY_EVENT_FASTPATH="$YOLO_READY_EVENT_FASTPATH"
+  fi
+  if [[ -n "$YOLO_DETACH_INPUT" ]]; then
+    echo "[sudo-wrapper] yolo_detach_input=$YOLO_DETACH_INPUT"
+    export ORANGE_YOLO_DETACH_INPUT="$YOLO_DETACH_INPUT"
   fi
 }
 

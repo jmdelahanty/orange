@@ -63,6 +63,8 @@ public:
 private:
     bool WorkerFunction(WORKER_ENTRY* f) override;
     void WorkerReset() override;
+    void OnQueueInEnqueued(WORKER_ENTRY* entry, int queue_depth_after_enqueue) override;
+    void OnQueueInDequeued(WORKER_ENTRY* entry, int queue_depth_after_dequeue) override;
 
     std::atomic<bool> m_dump_next_frame;
 

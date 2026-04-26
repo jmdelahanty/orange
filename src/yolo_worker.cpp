@@ -501,10 +501,24 @@ struct YoloPerfRecord {
     uint64_t timestamp_sys = 0;
     int queue_depth = 0;
     int queue_depth_at_enqueue = -1;
+    int queue_depth_after_enqueue = -1;
+    int queue_depth_after_dequeue = -1;
     int queue_depth_at_worker_start = -1;
     double fps = 0.0;
     int ok = 0;
     double acquisition_to_worker_start_ms = -1.0;
+    double acquisition_to_ptp_done_ms = -1.0;
+    double ptp_done_to_yolo_resource_ready_ms = -1.0;
+    double yolo_resource_ready_to_pointer_attrs_done_ms = -1.0;
+    double pointer_attrs_done_to_ingress_event_record_ms = -1.0;
+    double ingress_event_record_to_yolo_dispatch_ready_ms = -1.0;
+    double yolo_dispatch_ready_to_yolo_enqueue_ms = -1.0;
+    double recording_submit_call_ms = -1.0;
+    double recording_submit_to_yolo_enqueue_ms = -1.0;
+    double acquisition_to_yolo_enqueue_ms = -1.0;
+    double yolo_enqueue_push_ms = -1.0;
+    double yolo_enqueue_to_dequeue_ms = -1.0;
+    double yolo_dequeue_to_worker_start_ms = -1.0;
     double yolo_queue_wait_ms = -1.0;
     double oldest_frame_age_at_worker_start_ms = -1.0;
     double oldest_queued_frame_age_at_worker_start_ms = -1.0;
@@ -639,8 +653,9 @@ private:
                       << " failed to open " << file_path_ << std::endl;
             return;
         }
-        file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_at_worker_start,fps,ok,"
-                 "acquisition_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,"
+        file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,"
+                 "acquisition_to_worker_start_ms,acquisition_to_ptp_done_ms,ptp_done_to_yolo_resource_ready_ms,yolo_resource_ready_to_pointer_attrs_done_ms,pointer_attrs_done_to_ingress_event_record_ms,ingress_event_record_to_yolo_dispatch_ready_ms,yolo_dispatch_ready_to_yolo_enqueue_ms,recording_submit_call_ms,recording_submit_to_yolo_enqueue_ms,"
+                 "acquisition_to_yolo_enqueue_ms,yolo_enqueue_push_ms,yolo_enqueue_to_dequeue_ms,yolo_dequeue_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,"
                  "ingress_event_record_to_worker_start_ms,acquisition_to_yolo_input_ready_ms,worker_start_to_yolo_input_ready_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,"
                  "service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,"
                  "ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,"
@@ -668,10 +683,24 @@ private:
               << record.timestamp_sys << ","
               << record.queue_depth << ","
               << record.queue_depth_at_enqueue << ","
+              << record.queue_depth_after_enqueue << ","
+              << record.queue_depth_after_dequeue << ","
               << record.queue_depth_at_worker_start << ","
               << record.fps << ","
               << record.ok << ","
               << record.acquisition_to_worker_start_ms << ","
+              << record.acquisition_to_ptp_done_ms << ","
+              << record.ptp_done_to_yolo_resource_ready_ms << ","
+              << record.yolo_resource_ready_to_pointer_attrs_done_ms << ","
+              << record.pointer_attrs_done_to_ingress_event_record_ms << ","
+              << record.ingress_event_record_to_yolo_dispatch_ready_ms << ","
+              << record.yolo_dispatch_ready_to_yolo_enqueue_ms << ","
+              << record.recording_submit_call_ms << ","
+              << record.recording_submit_to_yolo_enqueue_ms << ","
+              << record.acquisition_to_yolo_enqueue_ms << ","
+              << record.yolo_enqueue_push_ms << ","
+              << record.yolo_enqueue_to_dequeue_ms << ","
+              << record.yolo_dequeue_to_worker_start_ms << ","
               << record.yolo_queue_wait_ms << ","
               << record.oldest_frame_age_at_worker_start_ms << ","
               << record.oldest_queued_frame_age_at_worker_start_ms << ","
@@ -903,6 +932,24 @@ void YoloWorker::SetDisplayWorker(COpenGLDisplay* display_worker) {
     m_display_worker = display_worker;
 }
 
+void YoloWorker::OnQueueInEnqueued(WORKER_ENTRY* entry, int queue_depth_after_enqueue)
+{
+    if (!entry) {
+        return;
+    }
+    entry->yolo_enqueued_host_ns = steady_time_now_ns();
+    entry->yolo_queue_depth_after_enqueue = queue_depth_after_enqueue;
+}
+
+void YoloWorker::OnQueueInDequeued(WORKER_ENTRY* entry, int queue_depth_after_dequeue)
+{
+    if (!entry) {
+        return;
+    }
+    entry->yolo_dequeue_host_ns = steady_time_now_ns();
+    entry->yolo_queue_depth_after_dequeue = queue_depth_after_dequeue;
+}
+
 void YoloWorker::Warmup(int iterations)
 {
     if (iterations <= 0 || !yolov8_instance_ || !associated_camera_params_) {
@@ -1047,6 +1094,18 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         double ms_cpu_post_sync = -1.0;
         double ms_total = -1.0;
         double ms_acquisition_to_worker_start = -1.0;
+        double ms_acquisition_to_ptp_done = -1.0;
+        double ms_ptp_done_to_yolo_resource_ready = -1.0;
+        double ms_yolo_resource_ready_to_pointer_attrs_done = -1.0;
+        double ms_pointer_attrs_done_to_ingress_event_record = -1.0;
+        double ms_ingress_event_record_to_yolo_dispatch_ready = -1.0;
+        double ms_yolo_dispatch_ready_to_yolo_enqueue = -1.0;
+        double ms_recording_submit_call = -1.0;
+        double ms_recording_submit_to_yolo_enqueue = -1.0;
+        double ms_acquisition_to_yolo_enqueue = -1.0;
+        double ms_yolo_enqueue_push = -1.0;
+        double ms_yolo_enqueue_to_dequeue = -1.0;
+        double ms_yolo_dequeue_to_worker_start = -1.0;
         double ms_yolo_queue_wait = -1.0;
         double ms_oldest_frame_age_at_worker_start = -1.0;
         double ms_oldest_queued_frame_age_at_worker_start = -1.0;
@@ -1079,6 +1138,68 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             worker_start_host_ns >= entry->yolo_enqueue_host_ns) {
             ms_yolo_queue_wait = static_cast<double>(
                 worker_start_host_ns - entry->yolo_enqueue_host_ns) / 1000000.0;
+        }
+        if (entry->acquisition_receive_host_ns > 0 &&
+            entry->yolo_enqueue_host_ns >= entry->acquisition_receive_host_ns) {
+            ms_acquisition_to_yolo_enqueue = static_cast<double>(
+                entry->yolo_enqueue_host_ns - entry->acquisition_receive_host_ns) / 1000000.0;
+        }
+        if (entry->acquisition_receive_host_ns > 0 &&
+            entry->yolo_ptp_done_host_ns >= entry->acquisition_receive_host_ns) {
+            ms_acquisition_to_ptp_done = static_cast<double>(
+                entry->yolo_ptp_done_host_ns - entry->acquisition_receive_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_ptp_done_host_ns > 0 &&
+            entry->yolo_resource_ready_host_ns >= entry->yolo_ptp_done_host_ns) {
+            ms_ptp_done_to_yolo_resource_ready = static_cast<double>(
+                entry->yolo_resource_ready_host_ns - entry->yolo_ptp_done_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_resource_ready_host_ns > 0 &&
+            entry->yolo_pointer_attrs_done_host_ns >= entry->yolo_resource_ready_host_ns) {
+            ms_yolo_resource_ready_to_pointer_attrs_done = static_cast<double>(
+                entry->yolo_pointer_attrs_done_host_ns - entry->yolo_resource_ready_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_pointer_attrs_done_host_ns > 0 &&
+            entry->ingress_event_record_host_ns >= entry->yolo_pointer_attrs_done_host_ns) {
+            ms_pointer_attrs_done_to_ingress_event_record = static_cast<double>(
+                entry->ingress_event_record_host_ns - entry->yolo_pointer_attrs_done_host_ns) / 1000000.0;
+        }
+        if (entry->ingress_event_record_host_ns > 0 &&
+            entry->yolo_dispatch_ready_host_ns >= entry->ingress_event_record_host_ns) {
+            ms_ingress_event_record_to_yolo_dispatch_ready = static_cast<double>(
+                entry->yolo_dispatch_ready_host_ns - entry->ingress_event_record_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_dispatch_ready_host_ns > 0 &&
+            entry->yolo_enqueue_host_ns >= entry->yolo_dispatch_ready_host_ns) {
+            ms_yolo_dispatch_ready_to_yolo_enqueue = static_cast<double>(
+                entry->yolo_enqueue_host_ns - entry->yolo_dispatch_ready_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_before_recording_submit_host_ns > 0 &&
+            entry->yolo_after_recording_submit_host_ns >= entry->yolo_before_recording_submit_host_ns) {
+            ms_recording_submit_call = static_cast<double>(
+                entry->yolo_after_recording_submit_host_ns -
+                entry->yolo_before_recording_submit_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_after_recording_submit_host_ns > 0 &&
+            entry->yolo_enqueue_host_ns >= entry->yolo_after_recording_submit_host_ns) {
+            ms_recording_submit_to_yolo_enqueue = static_cast<double>(
+                entry->yolo_enqueue_host_ns -
+                entry->yolo_after_recording_submit_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_enqueue_host_ns > 0 &&
+            entry->yolo_enqueued_host_ns >= entry->yolo_enqueue_host_ns) {
+            ms_yolo_enqueue_push = static_cast<double>(
+                entry->yolo_enqueued_host_ns - entry->yolo_enqueue_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_enqueued_host_ns > 0 &&
+            entry->yolo_dequeue_host_ns >= entry->yolo_enqueued_host_ns) {
+            ms_yolo_enqueue_to_dequeue = static_cast<double>(
+                entry->yolo_dequeue_host_ns - entry->yolo_enqueued_host_ns) / 1000000.0;
+        }
+        if (entry->yolo_dequeue_host_ns > 0 &&
+            worker_start_host_ns >= entry->yolo_dequeue_host_ns) {
+            ms_yolo_dequeue_to_worker_start = static_cast<double>(
+                worker_start_host_ns - entry->yolo_dequeue_host_ns) / 1000000.0;
         }
         if (oldest_queued_entry &&
             oldest_queued_entry->acquisition_receive_host_ns > 0 &&
@@ -1622,10 +1743,30 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.timestamp_sys = entry->timestamp_sys;
                 record.queue_depth = GetCountQueueInSize();
                 record.queue_depth_at_enqueue = entry->yolo_queue_depth_at_enqueue;
+                record.queue_depth_after_enqueue = entry->yolo_queue_depth_after_enqueue;
+                record.queue_depth_after_dequeue = entry->yolo_queue_depth_after_dequeue;
                 record.queue_depth_at_worker_start = queue_depth_at_worker_start;
                 record.fps = current_fps_.load(std::memory_order_relaxed);
                 record.ok = finished_in_time ? 1 : 0;
                 record.acquisition_to_worker_start_ms = ms_acquisition_to_worker_start;
+                record.acquisition_to_ptp_done_ms = ms_acquisition_to_ptp_done;
+                record.ptp_done_to_yolo_resource_ready_ms =
+                    ms_ptp_done_to_yolo_resource_ready;
+                record.yolo_resource_ready_to_pointer_attrs_done_ms =
+                    ms_yolo_resource_ready_to_pointer_attrs_done;
+                record.pointer_attrs_done_to_ingress_event_record_ms =
+                    ms_pointer_attrs_done_to_ingress_event_record;
+                record.ingress_event_record_to_yolo_dispatch_ready_ms =
+                    ms_ingress_event_record_to_yolo_dispatch_ready;
+                record.yolo_dispatch_ready_to_yolo_enqueue_ms =
+                    ms_yolo_dispatch_ready_to_yolo_enqueue;
+                record.recording_submit_call_ms = ms_recording_submit_call;
+                record.recording_submit_to_yolo_enqueue_ms =
+                    ms_recording_submit_to_yolo_enqueue;
+                record.acquisition_to_yolo_enqueue_ms = ms_acquisition_to_yolo_enqueue;
+                record.yolo_enqueue_push_ms = ms_yolo_enqueue_push;
+                record.yolo_enqueue_to_dequeue_ms = ms_yolo_enqueue_to_dequeue;
+                record.yolo_dequeue_to_worker_start_ms = ms_yolo_dequeue_to_worker_start;
                 record.yolo_queue_wait_ms = ms_yolo_queue_wait;
                 record.oldest_frame_age_at_worker_start_ms =
                     ms_oldest_frame_age_at_worker_start;
