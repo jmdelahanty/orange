@@ -140,6 +140,7 @@ struct ExperimentSpec {
     std::string ptp_gate_acquisition_mode;
     std::string acquisition_buffer_mode = "auto";
     int ptp_gate_stagger_ns = 0;
+    int ptp_register_read_decimate = 1;
     std::string recording_sink_mode = "real";
     bool helper_noop_source_read = false;
     int64_t helper_copy_bytes = -1;
@@ -5149,6 +5150,8 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     spec->ptp_gate_acquisition_mode = fixed.value("ptp_gate_acquisition_mode", "");
     spec->acquisition_buffer_mode = fixed.value("acquisition_buffer_mode", "auto");
     spec->ptp_gate_stagger_ns = fixed.value("ptp_gate_stagger_ns", 0);
+    spec->ptp_register_read_decimate =
+        fixed.value("ptp_register_read_decimate", 1);
     spec->recording_sink_mode = fixed.value("recording_sink_mode", "real");
     spec->helper_noop_source_read = fixed.value("helper_noop_source_read", false);
     spec->helper_copy_bytes = fixed.value("helper_copy_bytes", static_cast<int64_t>(-1));
@@ -5244,6 +5247,12 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->ptp_gate_stagger_ns < 0) {
         if (error_out) {
             *error_out = "Experiment spec fixed.ptp_gate_stagger_ns must be >= 0";
+        }
+        return false;
+    }
+    if (spec->ptp_register_read_decimate < 1) {
+        if (error_out) {
+            *error_out = "Experiment spec fixed.ptp_register_read_decimate must be >= 1";
         }
         return false;
     }
@@ -5574,6 +5583,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"stream_only", spec.stream_only},
                                                                 {"acquisition_buffer_mode",
                                                                  spec.acquisition_buffer_mode},
+                                                                {"ptp_register_read_decimate",
+                                                                 spec.ptp_register_read_decimate},
                                                                 {"recording_sink_mode", spec.recording_sink_mode},
                                                                 {"helper_noop_source_read",
                                                                  spec.helper_noop_source_read},
@@ -6741,6 +6752,16 @@ int run_local_experiment(const HeadlessCliOptions& options)
                1);
         std::cout << "[EXPERIMENT] helper peer-copy delay enabled via spec"
                   << " delay_ns=" << spec.helper_copy_delay_ns << std::endl;
+    }
+    if (spec.ptp_register_read_decimate > 1) {
+        const std::string ptp_decimate =
+            std::to_string(spec.ptp_register_read_decimate);
+        setenv("ORANGE_PTP_REGISTER_READ_DECIMATE",
+               ptp_decimate.c_str(),
+               1);
+        std::cout << "[EXPERIMENT] PTP register reads decimated via spec"
+                  << " decimate=" << spec.ptp_register_read_decimate
+                  << std::endl;
     }
 
     const std::vector<ExperimentRunPlan> runs = build_experiment_run_plans(spec);

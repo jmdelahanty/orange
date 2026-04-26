@@ -319,7 +319,24 @@ multi-GPU split-GOP throughput.
   recording submit is also negligible (`p95 < 0.01 ms`). The dominant
   pre-enqueue cost is per-frame PTP timestamp checking:
   `acquisition_to_ptp_done_ms p95 = 1.968 ms` for `2010095` and `2.135 ms`
-  for `2010096`. Next target is experimental decimated/nonblocking PTP
-  timestamp checking while preserving PTP gate sync and summary correctness.
+  for `2010096`.
+- PTP clarification: the hot-path cost is the diagnostic
+  `EVT_CameraGetUInt32Param("GevTimestampValueHigh/Low")` current-camera-clock
+  read after `EVT_CameraGetFrame`, not the PTP gate itself. The frame's embedded
+  `received_frame->timestamp` remains the per-frame timing truth. TwoStep PTP
+  is the clock-sync mode seen in logs; it does not require polling
+  `GevTimestampValue*` every frame. Do not disable PTP; decimate or move these
+  control-plane reads off the YOLO hot path and keep full polling as a
+  diagnostic mode.
+- Experimental PTP register-read decimation is implemented via
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=<N>` and experiment-spec
+  `fixed.ptp_register_read_decimate`. Default `N=1` keeps old full polling.
+  `N=100` smoke run `/tmp/orange_external_recorder_ptp_20260426_001408`
+  stayed healthy (`401/401` ACKed/encoded per camera, `0` drops), sampled
+  `ptp_register_reads=9` per camera, and reduced steady
+  `acquisition_to_detect_done_ms p95` from `6.244/6.678 ms` to
+  `4.612/4.580 ms` for `2010095/2010096`. Use embedded frame timestamps for
+  per-frame cadence/skew in decimated mode; use `N=1` for direct latch
+  diagnostics.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

@@ -68,6 +68,38 @@ bool env_flag_enabled(const char* name, bool default_value)
            normalized != "no";
 }
 
+int env_positive_int(const char* name, int default_value, int max_value)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < 1 || parsed > max_value) {
+        std::cerr << "[ACQ] Ignoring invalid " << name << "='" << value
+                  << "', using " << default_value << std::endl;
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
+
+int ptp_register_read_decimate()
+{
+    static const int decimate = []() {
+        const int value = env_positive_int(
+            "ORANGE_PTP_REGISTER_READ_DECIMATE",
+            1,
+            1000000);
+        if (value > 1) {
+            std::cout << "[PTP] GevTimestampValue register reads decimated 1/"
+                      << value << " frames" << std::endl;
+        }
+        return value;
+    }();
+    return decimate;
+}
+
 struct RunningInt64Stats {
     int64_t min = std::numeric_limits<int64_t>::max();
     int64_t max = std::numeric_limits<int64_t>::min();
@@ -244,6 +276,9 @@ struct AcquisitionCadenceProbeSample {
     uint64_t receive_delta_ns = 0;
     uint64_t get_frame_wait_ns = 0;
     bool ptp_active = false;
+    bool ptp_register_read = false;
+    int ptp_register_read_decimate = 1;
+    uint64_t ptp_register_read_age_frames = 0;
     uint64_t latched_ptp_time_ns = 0;
     int64_t latch_minus_frame_ns = 0;
     uint64_t latch_delta_ns = 0;
@@ -315,6 +350,9 @@ public:
               << sample.receive_delta_ns << ","
               << sample.get_frame_wait_ns << ","
               << (sample.ptp_active ? 1 : 0) << ","
+              << (sample.ptp_register_read ? 1 : 0) << ","
+              << sample.ptp_register_read_decimate << ","
+              << sample.ptp_register_read_age_frames << ","
               << sample.latched_ptp_time_ns << ","
               << sample.latch_minus_frame_ns << ","
               << sample.latch_delta_ns << ","
@@ -403,7 +441,7 @@ private:
         file_ << "timestamp_utc,local_frame_id,recording_frame_id,camera_frame_id,"
                  "camera_timestamp_ns,camera_timestamp_delta_ns,"
                  "receive_host_ns,receive_delta_ns,get_frame_wait_ns,"
-                 "ptp_active,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
+                 "ptp_active,ptp_register_read,ptp_register_read_decimate,ptp_register_read_age_frames,latched_ptp_time_ns,latch_minus_frame_ns,latch_delta_ns,"
                  "record_active,dispatch_count,will_display,"
                  "display_preview_max_fps,display_preview_eligible,"
                  "display_preview_selected,display_preview_skipped,"
@@ -902,32 +940,54 @@ static inline void PTP_timestamp_checking(PTPState *ptp_state,
                                           CameraState *camera_state,
                                           CameraParams *camera_params){
     NVTX_RANGE("PTP_Timestamp_Check");
-    EVT_CameraExecuteCommand(&ecam->camera, "GevTimestampControlLatch");
-    EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
-    EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueLow", &ptp_state->ptp_time_low);
-    ptp_state->ptp_time = (((unsigned long long)(ptp_state->ptp_time_high)) << 32) | ((unsigned long long)(ptp_state->ptp_time_low));
+    const uint64_t frame_index = static_cast<uint64_t>(camera_state->frame_count) + 1;
+    const int register_read_decimate = ptp_register_read_decimate();
+    const bool read_ptp_register =
+        register_read_decimate <= 1 ||
+        frame_index <= 5 ||
+        (frame_index % static_cast<uint64_t>(register_read_decimate)) == 0;
+
     ptp_state->frame_ts = received_frame ? received_frame->timestamp : 0;
     if (camera_state->frame_count != 0) {
-        ptp_state->ptp_time_delta = ptp_state->ptp_time - ptp_state->ptp_time_prev;
-        ptp_state->ptp_time_delta_sum += ptp_state->ptp_time_delta;
         ptp_state->frame_ts_delta = ptp_state->frame_ts - ptp_state->frame_ts_prev;
         ptp_state->frame_ts_delta_sum += ptp_state->frame_ts_delta;
     }
-    ptp_state->ptp_time_prev = ptp_state->ptp_time;
     ptp_state->frame_ts_prev = ptp_state->frame_ts;
 
-    const uint64_t next_frame_index = static_cast<uint64_t>(camera_state->frame_count) + 1;
-    if (next_frame_index <= 5) {
+    ptp_state->ptp_register_read_this_frame = read_ptp_register;
+    if (read_ptp_register) {
+        EVT_CameraExecuteCommand(&ecam->camera, "GevTimestampControlLatch");
+        EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueHigh", &ptp_state->ptp_time_high);
+        EVT_CameraGetUInt32Param(&ecam->camera, "GevTimestampValueLow", &ptp_state->ptp_time_low);
+        const unsigned long long latched_ptp_time =
+            (((unsigned long long)(ptp_state->ptp_time_high)) << 32) |
+            ((unsigned long long)(ptp_state->ptp_time_low));
+        if (ptp_state->ptp_register_read_count != 0 &&
+            latched_ptp_time >= ptp_state->ptp_time_prev) {
+            ptp_state->ptp_time_delta = latched_ptp_time - ptp_state->ptp_time_prev;
+            ptp_state->ptp_time_delta_sum += ptp_state->ptp_time_delta;
+            ptp_state->ptp_time_delta_samples++;
+        } else {
+            ptp_state->ptp_time_delta = 0;
+        }
+        ptp_state->ptp_time = latched_ptp_time;
+        ptp_state->ptp_time_prev = ptp_state->ptp_time;
+        ptp_state->ptp_register_read_count++;
+        ptp_state->last_ptp_register_read_frame = frame_index;
+    }
+
+    if (frame_index <= 5) {
         const int64_t latch_minus_frame_ns =
             static_cast<int64_t>(ptp_state->ptp_time) - static_cast<int64_t>(ptp_state->frame_ts);
         std::cout << "[PTP_FIRST_FRAMES]"
                   << " cam=" << (camera_params ? camera_params->camera_serial : std::string("<unknown>"))
-                  << " frame=" << next_frame_index
+                  << " frame=" << frame_index
                   << " frame_ts_ns=" << ptp_state->frame_ts
                   << " latched_ptp_ns=" << ptp_state->ptp_time
                   << " latch_minus_frame_ns=" << latch_minus_frame_ns
                   << " frame_delta_ns=" << ptp_state->frame_ts_delta
                   << " latch_delta_ns=" << ptp_state->ptp_time_delta
+                  << " ptp_register_read=" << (read_ptp_register ? 1 : 0)
                   << std::endl;
     }
 }
@@ -1112,15 +1172,22 @@ void acquire_frames(
         summary["get_frame_errors_by_code"] = get_frame_errors_by_code_json;
         summary["last_frame_timestamp_ns"] = ptp_state.frame_ts;
         summary["last_latched_ptp_time_ns"] = ptp_state.ptp_time;
+        summary["ptp_register_read_decimate"] = ptp_register_read_decimate();
+        summary["ptp_register_reads"] = ptp_state.ptp_register_read_count;
+        summary["last_ptp_register_read_frame"] = ptp_state.last_ptp_register_read_frame;
         summary["ptp_offset_ns"] = ptp_offset_stats.to_json();
         summary["latch_minus_frame_ns"] = latch_minus_frame_stats.to_json();
         summary["frame_delta_ns"] = frame_delta_stats.to_json();
         summary["latch_delta_ns"] = latch_delta_stats.to_json();
         const uint64_t delta_samples = (camera_state.frame_count > 1) ? (camera_state.frame_count - 1) : 0;
         summary["delta_samples"] = delta_samples;
+        summary["latch_delta_samples"] = ptp_state.ptp_time_delta_samples;
         if (delta_samples > 0) {
             summary["avg_frame_delta_ns_running"] = ptp_state.frame_ts_delta_sum / delta_samples;
-            summary["avg_latch_delta_ns_running"] = ptp_state.ptp_time_delta_sum / delta_samples;
+        }
+        if (ptp_state.ptp_time_delta_samples > 0) {
+            summary["avg_latch_delta_ns_running"] =
+                ptp_state.ptp_time_delta_sum / ptp_state.ptp_time_delta_samples;
         }
         return summary;
     };
@@ -1872,6 +1939,15 @@ void acquire_frames(
                     cadence_sample.receive_delta_ns = receive_delta_ns;
                     cadence_sample.get_frame_wait_ns = get_frame_wait_ns;
                     cadence_sample.ptp_active = camera_control->sync_camera;
+                    cadence_sample.ptp_register_read =
+                        camera_control->sync_camera &&
+                        ptp_state.ptp_register_read_this_frame;
+                    cadence_sample.ptp_register_read_decimate = ptp_register_read_decimate();
+                    cadence_sample.ptp_register_read_age_frames =
+                        (camera_control->sync_camera &&
+                         current_entry->frame_id >= ptp_state.last_ptp_register_read_frame)
+                            ? current_entry->frame_id - ptp_state.last_ptp_register_read_frame
+                            : 0;
                     cadence_sample.latched_ptp_time_ns =
                         camera_control->sync_camera ? ptp_state.ptp_time : 0;
                     cadence_sample.latch_minus_frame_ns =
@@ -1972,15 +2048,26 @@ void acquire_frames(
                     const uint64_t avg_frame_delta_ns =
                         (delta_samples > 0) ? (ptp_state.frame_ts_delta_sum / delta_samples) : 0;
                     const uint64_t avg_latch_delta_ns =
-                        (delta_samples > 0) ? (ptp_state.ptp_time_delta_sum / delta_samples) : 0;
+                        (ptp_state.ptp_time_delta_samples > 0)
+                            ? (ptp_state.ptp_time_delta_sum / ptp_state.ptp_time_delta_samples)
+                            : 0;
+                    const uint64_t ptp_register_read_age_frames =
+                        camera_state.frame_count >= ptp_state.last_ptp_register_read_frame
+                            ? camera_state.frame_count - ptp_state.last_ptp_register_read_frame
+                            : 0;
                     int32_t current_ptp_offset = 0;
                     EVT_ERROR ptp_offset_ret = EVT_CameraGetInt32Param(&ecam->camera, "PtpOffset", &current_ptp_offset);
                     if (ptp_offset_ret == EVT_SUCCESS) {
                         ptp_offset_stats.add(current_ptp_offset);
                     }
-                    latch_minus_frame_stats.add(latch_minus_frame_ns);
+                    if (ptp_state.ptp_register_read_this_frame) {
+                        latch_minus_frame_stats.add(latch_minus_frame_ns);
+                    }
                     frame_delta_stats.add(static_cast<int64_t>(ptp_state.frame_ts_delta));
-                    latch_delta_stats.add(static_cast<int64_t>(ptp_state.ptp_time_delta));
+                    if (ptp_state.ptp_register_read_this_frame &&
+                        ptp_state.ptp_time_delta_samples > 0) {
+                        latch_delta_stats.add(static_cast<int64_t>(ptp_state.ptp_time_delta));
+                    }
                     if (!ptp_summary_recording_folder.empty()) {
                         update_ptp_sync_summary_camera(
                             ptp_summary_recording_folder,
@@ -1996,6 +2083,8 @@ void acquire_frames(
                                   << " latch_delta_ns=" << ptp_state.ptp_time_delta
                                   << " avg_frame_delta_ns=" << avg_frame_delta_ns
                                   << " avg_latch_delta_ns=" << avg_latch_delta_ns
+                                  << " ptp_register_read=" << (ptp_state.ptp_register_read_this_frame ? 1 : 0)
+                                  << " ptp_register_read_age_frames=" << ptp_register_read_age_frames
                                   << std::endl;
                     } else {
                         std::cout << "[PTP_LIVE] Cam " << camera_params->camera_serial
@@ -2006,6 +2095,8 @@ void acquire_frames(
                                   << " latch_delta_ns=" << ptp_state.ptp_time_delta
                                   << " avg_frame_delta_ns=" << avg_frame_delta_ns
                                   << " avg_latch_delta_ns=" << avg_latch_delta_ns
+                                  << " ptp_register_read=" << (ptp_state.ptp_register_read_this_frame ? 1 : 0)
+                                  << " ptp_register_read_age_frames=" << ptp_register_read_age_frames
                                   << std::endl;
                     }
                 }
@@ -2075,12 +2166,20 @@ void acquire_frames(
             if (ptp_params->network_sync &&
                 ptp_params->network_set_stop_ptp &&
                 camera_control->sync_camera &&
-                ptp_state.ptp_time > ptp_params->ptp_stop_time) {
+                ((ptp_register_read_decimate() <= 1
+                      ? ptp_state.ptp_time
+                      : ptp_state.frame_ts) > ptp_params->ptp_stop_time)) {
+                const uint64_t observed_stop_ns =
+                    ptp_register_read_decimate() <= 1
+                        ? ptp_state.ptp_time
+                        : ptp_state.frame_ts;
                 uint64_t ptp_stop_counter = sync_fetch_and_add(&ptp_params->ptp_stop_counter, 1);
                 std::cout << "[PTP_STOP] Cam " << camera_params->camera_serial
                           << " reached stop gate count=" << ptp_stop_counter
                           << " target_ns=" << ptp_params->ptp_stop_time
-                          << " observed_ns=" << ptp_state.ptp_time
+                          << " observed_ns=" << observed_stop_ns
+                          << " observed_source="
+                          << (ptp_register_read_decimate() <= 1 ? "latched_ptp" : "frame_timestamp")
                           << std::endl;
                 while (ptp_params->ptp_stop_counter != camera_params->num_cameras) {
                     usleep(10);

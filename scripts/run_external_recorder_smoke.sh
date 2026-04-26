@@ -28,6 +28,7 @@ Options:
   --prewarm-bytes <int|auto> Pre-listen prewarm byte size. Default auto from spec config.
   --no-prewarm-peer-copy     Do not warm the first source-to-shard peer copy.
   --yolo-prewarm-iterations <int> Synthetic YOLO prewarm iterations. Default 3.
+  --ptp-register-read-decimate <n> Read GevTimestampValue every n frames. Default 1.
   --socket <path>            Unix socket path. Default /tmp/orange_external_recorder_<serial>.sock.
                              Non-default paths require matching client env outside this script.
   --output-dir <path>        External recorder artifact root. Default /tmp.
@@ -57,6 +58,7 @@ PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
 YOLO_PREWARM_ITERATIONS=3
+PTP_REGISTER_READ_DECIMATE=1
 ANALYTICS_EARLY_OWNED_FRAME="${ORANGE_ANALYTICS_EARLY_OWNED_FRAME:-1}"
 YOLO_READY_EVENT_FASTPATH="${ORANGE_YOLO_READY_EVENT_FASTPATH:-1}"
 YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
@@ -166,6 +168,12 @@ while [[ $# -gt 0 ]]; do
       YOLO_PREWARM_ITERATIONS="$1"
       shift
       ;;
+    --ptp-register-read-decimate)
+      shift
+      [[ $# -gt 0 ]] || { echo "--ptp-register-read-decimate requires a value." >&2; exit 2; }
+      PTP_REGISTER_READ_DECIMATE="$1"
+      shift
+      ;;
     --socket)
       shift
       [[ $# -gt 0 ]] || { echo "--socket requires a value." >&2; exit 2; }
@@ -200,10 +208,14 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS; do
+for value_name in ANALYTICS_GPU_ID DURATION WARMUP ENCODE_FPS QUEUE_DEPTH PREWARM_SLOTS YOLO_PREWARM_ITERATIONS PTP_REGISTER_READ_DECIMATE; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
+if [[ "$PTP_REGISTER_READ_DECIMATE" -lt 1 ]]; then
+  echo "PTP_REGISTER_READ_DECIMATE must be >= 1." >&2
+  exit 2
+fi
 if [[ "$PREWARM_BYTES" != "auto" ]]; then
   [[ "$PREWARM_BYTES" =~ ^[0-9]+$ ]] || { echo "PREWARM_BYTES must be auto or a non-negative integer." >&2; exit 2; }
 fi
@@ -245,7 +257,7 @@ MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
 KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.csv"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -258,6 +270,7 @@ gpu_id = int(sys.argv[5])
 duration = int(sys.argv[6])
 warmup = int(sys.argv[7])
 yolo_prewarm_iterations = int(sys.argv[8])
+ptp_register_read_decimate = int(sys.argv[9])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -276,6 +289,7 @@ fixed["warmup_s"] = warmup
 fixed["display"] = False
 fixed["stream_only"] = False
 fixed["recording_sink_mode"] = "external_ipc"
+fixed["ptp_register_read_decimate"] = ptp_register_read_decimate
 if isinstance(fixed.get("yolo_worker"), dict):
     fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
 
@@ -340,6 +354,7 @@ echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
 echo "[external-recorder] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
 echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
+echo "[external-recorder] ptp_register_read_decimate=$PTP_REGISTER_READ_DECIMATE"
 echo "[external-recorder] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
 
 ROUTING_POLICY="single_shard"

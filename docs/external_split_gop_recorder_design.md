@@ -665,13 +665,95 @@ YOLO dispatch/acquisition split diagnostic:
 - Current steady detect p95 is therefore mostly:
   per-frame PTP latch/check (`~2 ms`) plus YOLO service (`~4.6 ms`).
 
+PTP influence clarification:
+
+- The expensive hot-path operation is not image acquisition and not the PTP
+  gate itself. It is a control-plane camera clock read performed after
+  `EVT_CameraGetFrame(...)` returns.
+- The current code reads:
+  `GevTimestampValueHigh` and `GevTimestampValueLow` via
+  `EVT_CameraGetUInt32Param(...)`, combines those 32-bit values into a
+  64-bit camera/PTP clock value, then compares it with
+  `received_frame->timestamp`.
+- `received_frame->timestamp` is the frame's embedded camera/PTP timestamp and
+  should remain the per-frame timing truth for cadence, frame-to-frame deltas,
+  and cross-camera timestamp comparison.
+- The `GevTimestampValue*` read answers a different diagnostic question:
+  "What is the camera's current PTP clock now that the acquisition thread has
+  reached this point?" The derived `latch_minus_frame_ns` value includes host
+  scheduling and SDK/control-plane latency.
+- This read does not keep the camera synchronized. Synchronization comes from
+  the camera's PTP discipline, the programmed PTP acquisition gate, and the
+  frame timestamps emitted by the camera.
+- OneStep versus TwoStep PTP affects how the PTP clock is synchronized on the
+  network. It does not remove the cost of an application-side
+  `GevTimestampValue*` register/control read. In current logs the cameras are
+  using `TwoStep`; that is a clock-sync mode, not a requirement to poll the
+  camera clock on every frame.
+- With one acquisition thread per camera, these reads are not strictly serial
+  across cameras. However, every camera thread still pays its own blocking
+  control-plane read before YOLO enqueue, and more cameras can add SDK, NIC,
+  and host scheduling pressure.
+- The safe optimization is therefore not "disable PTP". It is:
+  keep PTP gate sync, keep per-frame embedded timestamps, but decimate or move
+  the current-camera-clock reads off the detect hot path.
+- A decimated mode should still validate:
+  frame timestamp cadence near `10 ms` at `100 fps`, cross-camera timestamp
+  skew, camera frame-id gaps, and stop/drain behavior. If the stop condition
+  currently depends on the latest polled camera clock, it should use frame
+  timestamps or another non-hot-path monitor when per-frame polling is
+  disabled.
+- Full per-frame `GevTimestampValue*` polling should remain available behind a
+  diagnostic/validation mode for PTP bring-up and camera-health debugging.
+
+PTP register-read decimation:
+
+- Implemented on 2026-04-26 behind
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=<N>` and experiment-spec
+  `fixed.ptp_register_read_decimate`.
+- Default `N=1` preserves the previous full per-frame
+  `GevTimestampValueHigh/Low` diagnostic polling behavior.
+- `N>1` keeps PTP gate synchronization and per-frame embedded camera
+  timestamps, but only polls the current camera/PTP clock for the first five
+  frames and then every `N` frames.
+- Stop/drain behavior uses the embedded frame timestamp when register polling
+  is decimated, avoiding stale latched-clock stop decisions.
+- Acquisition cadence probes now include:
+  `ptp_register_read`, `ptp_register_read_decimate`, and
+  `ptp_register_read_age_frames`, so sparse latch reads are visible in the
+  artifact.
+
+First decimated PTP smoke:
+
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260426_001408`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_20260426_001408`.
+- Command used `--ptp-register-read-decimate 100`.
+- Both cameras received/ACKed/encoded `401` frames, with `0` skips,
+  `0` drops, no camera frame-id gaps, no get-frame errors, and no recorder
+  failures.
+- PTP polling was sampled as intended: `ptp_register_reads = 9` per camera
+  over `401` frames, with acquisition cadence probe `ptp_register_read_age`
+  ranging from `0` to `94` frames.
+- Compared with the previous per-frame PTP polling run
+  (`20260425_235542`), steady `acquisition_to_ptp_done_ms p95` moved from
+  `1.974 ms` to `0.000171 ms` on `2010095`, and from `2.138 ms` to
+  `0.000126 ms` on `2010096`.
+- Steady `acquisition_to_yolo_enqueue_ms p95` moved from `2.008 ms` to
+  `0.046 ms` on `2010095`, and from `2.199 ms` to `0.044 ms` on `2010096`.
+- Steady `acquisition_to_detect_done_ms p95` moved from `6.244 ms` to
+  `4.612 ms` on `2010095`, and from `6.678 ms` to `4.580 ms` on `2010096`.
+- YOLO service itself stayed roughly the same, with steady `total_ms p95`
+  around `4.56 ms` and `4.53 ms`, confirming the win came from removing the
+  synchronous camera-control register read from most frames.
+- Caveat: decimated latch summaries represent sparse current-clock samples,
+  not every frame. Use embedded frame timestamps for per-frame cadence and
+  skew; use full polling (`N=1`) when validating current-camera-clock latch
+  behavior directly.
+
 Next implementation step:
 
-- Add an experimental decimated/nonblocking PTP timestamp-checking mode for
-  acquisition. Keep PTP gate synchronization, but do not synchronously query
-  camera PTP registers on every frame unless a validation mode requires it.
-- Validate that frame timestamps, frame-id gap detection, stop behavior, and
-  PTP summary artifacts remain correct when per-frame latch reads are decimated.
 - Run a longer two-camera PTP external-recorder validation to determine whether
   late-run YOLO dispatch tails remain.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,

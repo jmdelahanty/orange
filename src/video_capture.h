@@ -408,9 +408,13 @@ struct PTPState
     unsigned int ptp_time_plus_delta_to_start_low;
     unsigned int ptp_time_plus_delta_to_start_high;
     unsigned long long ptp_time_delta_sum = 0;
+    unsigned long long ptp_time_delta_samples = 0;
     unsigned long long ptp_time_delta;
     unsigned long long ptp_time;
     unsigned long long ptp_time_prev;
+    unsigned long long ptp_register_read_count = 0;
+    unsigned long long last_ptp_register_read_frame = 0;
+    bool ptp_register_read_this_frame = false;
     unsigned long long ptp_time_countdown;
     unsigned long long frame_ts;
     unsigned long long frame_ts_prev;
