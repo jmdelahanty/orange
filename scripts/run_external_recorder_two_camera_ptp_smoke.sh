@@ -26,6 +26,7 @@ Options:
   --encode-fps <int>               Nominal MP4 FPS. Default 100.
   --encode-max-fps <int>           External encode cap. Use 0 for uncapped. Default 0.
   --queue-depth <int>              External recorder-owned frame slots. Default 32.
+  --steady-state-after-frame <n>   Report steady-state metrics after this frame. Default 50.
   --config-folder <path>           Camera config folder. Default local/100_cam4_ptp.
   --output-dir <path>              External recorder artifact root. Default /tmp.
   --skip-video-sanity              Do not decode/check external MP4 content.
@@ -48,6 +49,7 @@ WARMUP=1
 ENCODE_FPS=100
 ENCODE_MAX_FPS=0
 QUEUE_DEPTH=32
+STEADY_STATE_AFTER_FRAME=50
 CONFIG_FOLDER="/home/jeremy/orange_data/config/local/100_cam4_ptp"
 OUTPUT_DIR="/tmp"
 SKIP_VIDEO_SANITY=0
@@ -125,6 +127,12 @@ while [[ $# -gt 0 ]]; do
       QUEUE_DEPTH="$1"
       shift
       ;;
+    --steady-state-after-frame)
+      shift
+      [[ $# -gt 0 ]] || { echo "--steady-state-after-frame requires a value." >&2; exit 2; }
+      STEADY_STATE_AFTER_FRAME="$1"
+      shift
+      ;;
     --config-folder)
       shift
       [[ $# -gt 0 ]] || { echo "--config-folder requires a value." >&2; exit 2; }
@@ -153,7 +161,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for value_name in DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH; do
+for value_name in DURATION WARMUP ENCODE_FPS ENCODE_MAX_FPS QUEUE_DEPTH STEADY_STATE_AFTER_FRAME; do
   value="${!value_name}"
   [[ "$value" =~ ^[0-9]+$ ]] || { echo "$value_name must be a non-negative integer." >&2; exit 2; }
 done
@@ -277,6 +285,7 @@ echo "[external-recorder-ptp] run_dir=$RUN_DIR"
 echo "[external-recorder-ptp] analytics_root=$ANALYTICS_ROOT"
 echo "[external-recorder-ptp] cameras=$CAMERA_SERIALS analytics_gpus=$ANALYTICS_GPU_IDS shard_groups=$SHARD_GPU_IDS_PER_CAMERA"
 echo "[external-recorder-ptp] encode_fps=$ENCODE_FPS encode_max_fps=$ENCODE_MAX_FPS queue_depth=$QUEUE_DEPTH"
+echo "[external-recorder-ptp] steady_state_after_frame=$STEADY_STATE_AFTER_FRAME"
 echo "[external-recorder-ptp] config_folder=$CONFIG_FOLDER"
 
 for i in "${!CAMERAS[@]}"; do
@@ -559,3 +568,127 @@ aggregate = {
 write_result(run_dir / "external_video_sanity_summary.json", aggregate)
 PY
 fi
+
+python3 - "$RUN_DIR" "$ANALYTICS_ROOT" "$CAMERA_SERIALS" "$STEADY_STATE_AFTER_FRAME" <<'PY'
+import csv
+import json
+import sys
+from pathlib import Path
+
+run_dir = Path(sys.argv[1])
+analytics_root = Path(sys.argv[2])
+cameras = [item for item in sys.argv[3].split(",") if item]
+steady_after = int(sys.argv[4])
+
+yolo_fields = [
+    "acquisition_to_detect_done_ms",
+    "acquisition_to_worker_start_ms",
+    "cpu_preprocess_ms",
+    "cpu_pre_sync_ms",
+    "total_ms",
+]
+detach_fields = [
+    "total_ms",
+    "open_handle_ms",
+    "copy_ms",
+]
+
+def percentile(sorted_values, pct):
+    if not sorted_values:
+        return None
+    index = int((pct / 100.0) * (len(sorted_values) - 1))
+    return sorted_values[index]
+
+def summarize_rows(rows, field_names):
+    out = {"rows": len(rows), "fields": {}}
+    for field in field_names:
+        values = []
+        max_row = None
+        max_value = None
+        for row in rows:
+            value = row.get(field)
+            if value in ("", None):
+                continue
+            try:
+                parsed = float(value)
+            except ValueError:
+                continue
+            values.append(parsed)
+            if max_value is None or parsed > max_value:
+                max_value = parsed
+                max_row = row
+        values.sort()
+        out["fields"][field] = {
+            "count": len(values),
+            "p50": percentile(values, 50.0),
+            "p95": percentile(values, 95.0),
+            "p99": percentile(values, 99.0),
+            "max": values[-1] if values else None,
+            "max_frame_id": max_row.get("frame_id") if max_row else max_row,
+            "max_recording_frame_id": max_row.get("recording_frame_id") if max_row else max_row,
+        }
+    return out
+
+def load_csv(path):
+    if not path.exists():
+        return []
+    with path.open(newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+analytics_run_dirs = sorted(
+    [path for path in analytics_root.glob("run_*") if path.is_dir()])
+analytics_run_dir = analytics_run_dirs[0] if analytics_run_dirs else None
+
+summary = {
+    "schema_version": 1,
+    "run_dir": str(run_dir),
+    "analytics_root": str(analytics_root),
+    "analytics_run_dir": str(analytics_run_dir) if analytics_run_dir else "",
+    "steady_state_after_frame": steady_after,
+    "cameras": {},
+}
+
+for serial in cameras:
+    camera_out = {}
+    yolo_rows = []
+    if analytics_run_dir:
+        yolo_rows = load_csv(analytics_run_dir / f"Cam{serial}_yolo_perf.csv")
+    detach_rows = load_csv(run_dir / f"Cam{serial}_external_detach.csv")
+
+    def frame_id(row):
+        try:
+            return int(row.get("frame_id") or row.get("recording_frame_id") or 0)
+        except ValueError:
+            return 0
+
+    def recording_frame_id(row):
+        try:
+            return int(row.get("recording_frame_id") or 0)
+        except ValueError:
+            return 0
+
+    steady_yolo = [row for row in yolo_rows if frame_id(row) > steady_after]
+    steady_detach = [row for row in detach_rows if recording_frame_id(row) > steady_after]
+    camera_out["yolo_all"] = summarize_rows(yolo_rows, yolo_fields)
+    camera_out["yolo_steady_state"] = summarize_rows(steady_yolo, yolo_fields)
+    camera_out["external_detach_all"] = summarize_rows(detach_rows, detach_fields)
+    camera_out["external_detach_steady_state"] = summarize_rows(steady_detach, detach_fields)
+    summary["cameras"][serial] = camera_out
+
+summary_path = run_dir / "external_latency_summary.json"
+summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+print(f"[external-recorder-ptp] latency_summary={summary_path}")
+for serial, camera in summary["cameras"].items():
+    yolo_all = camera["yolo_all"]["fields"].get("acquisition_to_detect_done_ms", {})
+    yolo_steady = camera["yolo_steady_state"]["fields"].get("acquisition_to_detect_done_ms", {})
+    yolo_total_steady = camera["yolo_steady_state"]["fields"].get("total_ms", {})
+    detach_steady = camera["external_detach_steady_state"]["fields"].get("copy_ms", {})
+    print(
+        "[external-recorder-ptp] latency "
+        f"camera={serial} "
+        f"detect_all_p95={yolo_all.get('p95')} detect_all_max={yolo_all.get('max')} "
+        f"detect_steady_p95={yolo_steady.get('p95')} detect_steady_max={yolo_steady.get('max')} "
+        f"yolo_total_steady_p95={yolo_total_steady.get('p95')} "
+        f"detach_copy_steady_p95={detach_steady.get('p95')} detach_copy_steady_max={detach_steady.get('max')}"
+    )
+PY
