@@ -155,10 +155,20 @@ crop/pose/track latency solved.
   `recording_sink_mode=external_ipc`. A one-camera `2010096` smoke ACKed `601`
   CUDA IPC frames at about `99.85 fps`, with no camera drops/frame-id gaps and
   YOLO `cpu_preprocess_ms p95 = 0.0119 ms`.
-- The prototype only imports and copies frames into recorder-owned device
-  memory; it does not encode yet. Next implementation work is to attach NVENC
-  encode/harvest in the external process, starting with sustainable one-camera
-  same-GPU load. Keep encode GPU placement/routing as a first-class design
-  variable.
+- The external IPC probe now also has a first NVENC encode slice behind
+  `--encode`. It ACKs after detach copy, then encodes from recorder-owned
+  device slots on a dedicated external-process encoder thread.
+- First same-GPU encode smoke on `2010096` capped external HEVC encode at
+  `60 fps`: `601` frames received, `501` post-warmup ACKs for `500` submitted
+  frames, `0` IPC failures/timeouts, `360` externally encoded frames, and
+  `0` encode queue drops. YOLO stayed on the fast CPU path
+  (`cpu_preprocess_ms p95 = 0.0149 ms`, `cpu_pre_sync_ms p95 = 0.0914 ms`);
+  `capture_to_detect_done_ms p95` rose to `4.5895 ms` from same-GPU completion
+  pressure, not CPU launch/preprocess contention.
+- The encode slice writes a raw elementary stream and encodes a capped subset;
+  it is not production recording yet. Next implementation work is to turn this
+  into a real external recorder backend with mux/output metadata and then
+  external split-GOP/multi-GPU routing. Keep encode GPU placement/routing as a
+  first-class design variable.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

@@ -314,6 +314,7 @@ set(NVENC_STRESS_LOAD_SOURCES
 
 set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     "tools/external_recorder_ipc_probe.cpp"
+    ${NVENCODER_SOURCES}
 )
 
 add_executable(orange ${ORANGE_SOURCES})
@@ -482,6 +483,8 @@ target_link_libraries(nvenc_stress_load PRIVATE
 
 target_link_libraries(external_recorder_ipc_probe PRIVATE
     ${CUDA_CUDART_LIBRARY}
+    ${CUDA_DRIVER_LIBRARY}
+    ${NVIDIA_ENCODE_LIBRARY}
     m
     pthread
 )

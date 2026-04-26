@@ -332,6 +332,61 @@ Live CUDA IPC detach status:
   to run NVENC from the external process' recorder-owned buffer before ACKing
   encode completion independently of the analytics lease.
 
+External-process NVENC first slice:
+
+- `tools/external_recorder_ipc_probe.cpp` now has an optional external encode
+  mode:
+  - `--encode` enables a dedicated encoder thread;
+  - `--encode-max-fps <fps>` caps encode cadence while still ACKing all
+    descriptors;
+  - `--bitstream-out <path>` writes a raw HEVC/H.264 elementary stream;
+  - `--encode-csv <path>` writes per-encoded-frame timing.
+- The listener thread keeps the detach boundary:
+  - for selected encode frames, it copies the imported CUDA IPC source into a
+    recorder-owned slot, sends the ACK, then queues that slot to the encoder
+    thread;
+  - skipped frames are ACKed without a detach copy because the external
+    recorder has intentionally decided not to record them;
+  - `nvEncEncodePicture`, `nvEncLockBitstream`, and bitstream writing happen
+    after ACK on the external process' encoder thread.
+- First same-GPU encode smoke on `2010096` / A16 GPU `5` used real headless
+  YOLO, `recording_sink_mode = "external_ipc"`, and external HEVC encode capped
+  at `60 fps`.
+- Result:
+  - analytics process received `601` frames at about `99.85 fps`;
+  - post-warmup `runs.csv` reported `submitted_frames_final = 500`,
+    `external_ipc_frames_acked_final = 501`, `external_ipc_failures_final = 0`,
+    and `external_ipc_ack_timeouts_final = 0`;
+  - external process encoded `360` frames, skipped `241` by the `60 fps` cap,
+    and dropped `0` for queue pressure;
+  - external detach `copy_ms p95 = 0.0346 ms` after frame 50;
+  - external encode `encode_total_ms p95 = 0.1404 ms`,
+    `lock_bitstream_ms p95 = 0.0073 ms`, and
+    `bitstream_fetch_ms p95 = 0.0515 ms` after the first 20 encoded frames;
+  - raw HEVC output size was about `113.9 MB` for the short smoke.
+- YOLO result:
+  - `acquisition_to_worker_start_ms p95 = 0.0488 ms`;
+  - `yolo_queue_wait_ms p95 = 0.0173 ms`;
+  - `cpu_preprocess_ms p95 = 0.0149 ms`;
+  - `cpu_pre_sync_ms p95 = 0.0914 ms`;
+  - `acquisition_to_detect_done_ms p95 = 4.5895 ms`;
+  - `total_ms p95 = 4.5613 ms`.
+- Interpretation: external-process NVENC did not bring back the bad
+  same-process `8-10 ms` CPU launch/preprocess tail. The extra latency versus
+  detach-only is same-GPU completion pressure (`infer_ms` / `sync_ms`), not CPU
+  API orchestration. This supports continuing toward a real external recorder,
+  while keeping GPU placement and split-GOP routing as first-class design
+  variables.
+
+Current limitations of this slice:
+
+- The output is a raw elementary stream, not an MP4 with production metadata.
+- The first smoke encodes a capped subset (`60 fps`) while acquisition remains
+  `100 fps`; it is a same-GPU contention discriminator, not production
+  full-frame coverage.
+- The external process still does only single-session encode. Production
+  `4512x4512 @ 100 fps` still requires external split-GOP / multi-GPU routing.
+
 Candidate command shape:
 
 ```bash
