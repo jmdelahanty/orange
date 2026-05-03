@@ -132,6 +132,41 @@ YOLO graph-island assessment:
      `acquisition_to_detect_done_ms`, and source-detach timing against the
      current graph-infer-only path.
 
+A16-specific TensorRT engine rebuild:
+
+- See
+  [a16_tensorrt_detect_engine_rebuild.md](/home/jeremy/orange-gop-split-a16/docs/a16_tensorrt_detect_engine_rebuild.md)
+  for the full command, artifacts, and metrics.
+- Rebuilding the current single-fish ONNX directly on A16 GPU `5` produced a
+  candidate engine:
+  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16.engine`.
+- Standalone TensorRT on A16 GPU `5` improved GPU compute p95 from
+  `2.908 ms` with the existing default engine to `2.317 ms` with the
+  A16-built candidate.
+- A short two-camera PTP external-recorder smoke with the candidate produced
+  steady `acquisition_to_detect_done_ms p95` of `4.029 ms` on `2010095` and
+  `4.025 ms` on `2010096`, with no drops, frame gaps, or get-frame errors.
+- A higher-effort A16 build using `--builderOptimizationLevel=5` and
+  `--avgTiming=32` improved standalone GPU compute p95 further to
+  `2.243 ms`. Its short two-camera smoke produced steady
+  `acquisition_to_detect_done_ms p95` of `3.878 ms` on `2010095` and
+  `3.888 ms` on `2010096`, again with no drops, frame gaps, or get-frame
+  errors.
+- A `30 s` two-camera PTP external-recorder validation with the high-effort
+  engine produced steady `acquisition_to_detect_done_ms p95` of `3.950 ms` on
+  `2010095` and `3.944 ms` on `2010096` over `2803` frames per camera. Both
+  cameras had `0` drops, `0` frame-id gaps, no get-frame errors, no recorder
+  failures, and `pending_gops = 0`.
+- This is a model/runtime tactic-selection win, not an application hot-path
+  architecture change. It is now one of the highest-signal remaining detect
+  optimizations, but it still needs GUI/session validation before becoming the
+  default engine.
+- The next model-runtime candidate after the GUI gate is INT8. Do not treat it
+  as a simple flag flip: the builder needs representative Orange calibration
+  data or an explicit Q/DQ ONNX export, plus accuracy validation against the
+  current FP16 A16 engine. See
+  [detect_int8_quantization_plan.md](/home/jeremy/orange-gop-split-a16/docs/detect_int8_quantization_plan.md).
+
 ## Problem Statement
 
 The current crop/pose ownership work improved the post-detect path, but the

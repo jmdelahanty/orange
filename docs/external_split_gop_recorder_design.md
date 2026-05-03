@@ -784,6 +784,12 @@ Next implementation step:
 - Run a GUI/session validation with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
   to confirm the same hot-path win holds outside the headless external-recorder
   harness.
+- The longer two-camera PTP external-recorder validation with the high-effort
+  A16-built TensorRT detect engine is complete. Run
+  `/tmp/orange_external_recorder_ptp_20260426_021831` received/ACKed/encoded
+  `2803` frames per camera with no drops, frame-id gaps, get-frame errors,
+  recorder failures, or pending GOP backlog. Steady detect p95 was `3.950 ms`
+  on `2010095` and `3.944 ms` on `2010096`.
 - Add GUI/session supervision for external recorder startup, heartbeat, drain,
   and finalization.
 - Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.

@@ -108,6 +108,47 @@ full-frame split-GOP recording. It does not validate positive-detection crop
 ROI behavior, pose second-stage latency, or tracking behavior; those remain
 later validation requirements once detect p95 is under control.
 
+The newest model/runtime result is that rebuilding the existing ONNX detect
+model directly on an A16 GPU is a real optimization path:
+
+- The source ONNX was copied to
+  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb.onnx`.
+- The A16 candidate engine was built on CUDA device `5`:
+  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16.engine`.
+- The engine preserves Orange's expected interface:
+  `images` input at `1x3x640x640`, `EfficientNMS_TRT`, and top-1 outputs
+  `num_dets`, `bboxes`, `scores`, and `labels`.
+- Standalone TensorRT on A16 GPU `5` improved GPU compute p95 from
+  `2.908 ms` with the existing default engine to `2.317 ms` with the
+  A16-built candidate.
+- A short two-camera PTP external-recorder smoke with the A16 candidate reached
+  steady detect p95 of `4.029 ms` on `2010095` and `4.025 ms` on `2010096`,
+  with `101/101` frames per camera and no drops, frame gaps, or get-frame
+  errors.
+- A higher-effort A16 build using `--builderOptimizationLevel=5` and
+  `--avgTiming=32` reached standalone GPU compute p95 of `2.243 ms` and short
+  two-camera steady detect p95 of `3.878 ms` on `2010095` and `3.888 ms` on
+  `2010096`.
+- A `30 s` two-camera PTP external-recorder validation with that high-effort
+  engine reached steady detect p95 of `3.950 ms` on `2010095` and `3.944 ms`
+  on `2010096`, with `2803/2803` frames received/ACKed/encoded per camera,
+  `0` drops, `0` frame-id gaps, no get-frame errors, no recorder failures, and
+  no pending GOP drain backlog.
+- This does not replace process isolation or PTP decimation; it attacks the
+  remaining model-execution portion after the host-side orchestration tail has
+  already been reduced.
+- INT8 is the next model-runtime candidate after GUI/session validation of the
+  high-effort FP16 A16 engine. It should be handled as a calibration/export and
+  accuracy-validation task, not as a simple TensorRT flag flip. The builder
+  needs representative Orange tensors or an explicit Q/DQ ONNX export, and the
+  result must be compared against the current FP16 A16 engine for false
+  negatives, box drift, confidence shifts, and app-level p95. See
+  [detect_int8_quantization_plan.md](/home/jeremy/orange-gop-split-a16/docs/detect_int8_quantization_plan.md).
+
+See
+[a16_tensorrt_detect_engine_rebuild.md](/home/jeremy/orange-gop-split-a16/docs/a16_tensorrt_detect_engine_rebuild.md)
+for details and next validation steps.
+
 Non-negotiable recording constraint:
 
 - At the current `4512x4512 Mono8 @ 100 fps` full-frame resolution, one GPU /
