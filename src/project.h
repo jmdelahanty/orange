@@ -28,6 +28,9 @@ struct AppStorageConfig {
     int schema_version = 0;
     std::string default_detect_engine;
     std::string default_recording_root;
+    std::string gui_recording_sink_mode = "real";
+    std::string gui_external_recorder_contract_path;
+    nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
     bool write_local_pointer = true;
     std::string canonical_pointer_root;
     bool write_run_pointer = true;

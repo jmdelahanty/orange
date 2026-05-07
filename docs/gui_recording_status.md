@@ -457,9 +457,28 @@ Current GUI implication:
 - GUI has now been validated with decimated PTP register reads and the A16
   engine candidate; that removes PTP polling from the hot path but does not
   recover the headless external-recorder latency profile.
-- GUI does not yet supervise external recorder startup, heartbeat, drain, or
+- GUI/session now recognizes `recording.sink_mode = "external_ipc"` from app
+  config or `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`. On record start it
+  writes the intended `external_recorder_contract.json`,
+  `external_recorder_supervisor_plan.json`, and `recording_session.json` into
+  the proposed recording folder, then refuses to start recording with:
+  `external recorder GUI supervision is not implemented yet; use headless
+  supervised spec or in-process recording`.
+- GUI still does not supervise external recorder startup, heartbeat, drain, or
   finalization. External recording remains a headless diagnostic/backend path
-  until that session integration lands.
+  until that process lifecycle integration lands.
+
+Validated GUI external-recorder fail-fast artifact:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_05_07_17_54_23`
+- `recording_snapshot.json` reports `recording_sink_mode = "external_ipc"` and
+  `full_frame_video_enabled = false`.
+- `recording_session.json` reports `status = "failed"`,
+  `recording_backend.status = "not_implemented"`, and the expected clear
+  reason.
+- The folder contains `external_recorder_contract.json` and
+  `external_recorder_supervisor_plan.json`.
+- No real full-frame `Cam*.mp4` files were written.
 
 Current decision:
 

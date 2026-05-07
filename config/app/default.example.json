@@ -4,6 +4,10 @@
   "models": {
     "default_detect_engine": ""
   },
+  "recording": {
+    "sink_mode": "real",
+    "external_recorder_contract_path": ""
+  },
   "storage": {
     "default_recording_root": "/home/jeremy/orange_data/exp/unsorted",
     "latest_recording": {

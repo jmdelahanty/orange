@@ -260,6 +260,20 @@ actually ran. When `require_video_sanity = true`, `orange_client` first runs
 `scripts/verify_external_recorder_session.py`. Any failure marks the headless
 run failed with the verifier or decode-sanity reason in `runs.json`.
 
+GUI/session status:
+
+- The GUI can recognize `recording.sink_mode = "external_ipc"` from app config
+  or `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`.
+- On record start, the GUI materializes the same contract shape into the
+  proposed recording folder as `external_recorder_contract.json` and also writes
+  `external_recorder_supervisor_plan.json`.
+- The GUI then fails fast before setting `record_video = true` with:
+  `external recorder GUI supervision is not implemented yet; use headless
+  supervised spec or in-process recording`.
+- This is intentionally metadata-only until the GUI/session layer owns recorder
+  process startup, heartbeat, drain, finalization, and user-visible failure
+  reporting.
+
 CLI lifecycle smoke without cameras:
 
 ```bash

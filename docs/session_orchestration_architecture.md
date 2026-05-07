@@ -220,11 +220,17 @@ Complete the current GUI/session extraction:
 Start lifting shared lifecycle helpers out of GUI-specific assumptions:
 
 - artifact preparation
+- external recorder contract materialization
+- external recorder supervisor plan generation
 - session status/result objects
 - stop/drain/finalize semantics
 
 At this point `recording_session.*` becomes the first draft of the shared
-session core.
+session core. The GUI external-recorder fail-fast path is intentionally a small
+step in this direction: it already uses the same
+`orange.external_recorder.contract` and supervisor-plan contract as headless,
+but it still refuses to run until process supervision is owned by the session
+layer rather than by an entrypoint.
 
 ### Phase 3
 

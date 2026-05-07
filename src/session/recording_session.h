@@ -1,8 +1,10 @@
 #pragma once
 
 #include "modern_recording_pipeline.h"
+#include "project.h"
 #include "recording_config_state.h"
 #include "video_capture.h"
+#include "json.hpp"
 
 #include <memory>
 #include <string>
@@ -13,12 +15,18 @@ namespace orange::session {
 struct RecordingSessionState {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::string recording_sink_mode = "real";
+    std::string external_recorder_config_status;
+    std::string external_recorder_contract_source;
+    nlohmann::json external_recorder_contract_config = nlohmann::json::object();
 };
 
 struct RecordingRunStartResult {
     bool ok = false;
     std::string recording_folder;
     std::string recording_sink_mode = "real";
+    std::string error_message;
+    std::string external_recorder_contract_path;
+    std::string external_recorder_supervisor_plan_path;
 };
 
 void create_recording_pipelines_for_stream(RecordingSessionState* state,
@@ -27,13 +35,16 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            int num_cameras,
                                            const EncoderConfig& encoder_config,
                                            CameraResources* camera_resources,
-                                           CameraControl* camera_control);
+                                           CameraControl* camera_control,
+                                           const AppStorageConfig* app_storage_config = nullptr);
 RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
                                             CameraParams* cameras_params,
+                                            const CameraEachSelect* cameras_select,
                                             int num_cameras,
                                             const std::string& base_folder,
                                             PTPParams* ptp_params,
-                                            const std::string& recording_sink_mode = "real");
+                                            const std::string& recording_sink_mode = "real",
+                                            const nlohmann::json* external_recorder_contract_config = nullptr);
 void request_stop_recording_run(CameraControl* camera_control);
 void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control);
 std::string current_recording_folder(CameraControl* camera_control);

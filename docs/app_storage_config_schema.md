@@ -81,6 +81,10 @@ Missing-file behavior should remain non-fatal:
   "models": {
     "default_detect_engine": ""
   },
+  "recording": {
+    "sink_mode": "real",
+    "external_recorder_contract_path": ""
+  },
   "storage": {
     "default_recording_root": "/home/jeremy/orange_data/exp/unsorted",
     "latest_recording": {
@@ -141,6 +145,65 @@ This should generally point at a persistent user-data tree such as:
 - `~/orange_data/exp/unsorted`
 
 It is a base folder, not a single run folder.
+
+### `recording.sink_mode`
+
+Type:
+
+- string
+
+Current supported values:
+
+- `real`
+- `preprocess_only`
+- `immediate_recycle`
+- `threaded_handoff_only`
+- `external_ipc`
+
+Meaning:
+
+- app-level default for the GUI recording sink used when recording pipelines are
+  created
+
+Recommended default:
+
+- `real`
+
+`ORANGE_GUI_RECORDING_SINK_MODE` still overrides this field for diagnostics.
+
+`external_ipc` is recognized by the GUI/session path, but intentionally fails
+fast today. On record start, Orange writes the intended external recorder
+contract and supervisor plan into the proposed recording folder, then refuses
+to start recording with:
+
+```text
+external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording
+```
+
+This keeps the GUI contract aligned with the headless supervised recorder path
+without pretending the GUI can supervise, drain, and finalize external recorder
+processes yet.
+
+### `recording.external_recorder_contract_path`
+
+Type:
+
+- string
+
+Meaning:
+
+- optional path to a JSON object matching
+  `orange.external_recorder.contract`
+
+Recommended default:
+
+- empty string
+
+If omitted, the GUI synthesizes an intended contract from the open recording
+cameras, camera GPU ids, split-GOP shard ids, and the current recording folder.
+The config may also provide an inline object as
+`recording.external_recorder_contract`. String fields in the contract may use
+`{recording_folder}` and `{recording_id}` placeholders.
 
 ### `storage.latest_recording.write_local_pointer`
 

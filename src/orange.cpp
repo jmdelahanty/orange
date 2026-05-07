@@ -2426,6 +2426,11 @@ int main(int argc, char **args) {
     std::vector<std::string> tokenized_path = string_split(cwd, delimiter);
     std::string orange_root_dir_str = "/home/" + tokenized_path[2] + "/orange_data";
     prepare_application_folders(orange_root_dir_str);
+    AppStorageConfig app_storage_config;
+    std::string app_storage_config_error;
+    if (!load_app_storage_config(orange_root_dir_str, &app_storage_config, &app_storage_config_error)) {
+        std::cerr << "App storage config warning: " << app_storage_config_error << std::endl;
+    }
     std::string app_storage_warning;
     std::string input_folder = resolve_default_recording_root(orange_root_dir_str, &app_storage_warning);
     if (!app_storage_warning.empty()) {
@@ -3510,7 +3515,8 @@ int main(int argc, char **args) {
                                 num_cameras,
                                 *encoder_config,
                                 camera_resources.data(),
-                                camera_control);
+                                camera_control,
+                                &app_storage_config);
 
                             // START ALL WORKER THREADS
                             for (int i = 0; i < num_cameras; i++) {
@@ -3757,10 +3763,12 @@ int main(int argc, char **args) {
                                     orange::session::begin_recording_run(
                                         camera_control,
                                         cameras_params,
+                                        cameras_select,
                                         num_cameras,
                                         encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name,
                                         ptp_params,
-                                        recording_session.recording_sink_mode);
+                                        recording_session.recording_sink_mode,
+                                        &recording_session.external_recorder_contract_config);
                                 allow_transition = start_result.ok;
                                 resolved_recording_folder = start_result.recording_folder;
                                 resolved_recording_sink_mode = start_result.recording_sink_mode;
@@ -3800,6 +3808,15 @@ int main(int argc, char **args) {
                                             poseWorkers[i]->RotateRecordingFolder(
                                                 resolved_recording_folder);
                                         }
+                                    }
+                                } else if (!start_result.error_message.empty()) {
+                                    recording_preflight_errors = {start_result.error_message};
+                                    std::cerr << "[GUI][recording] "
+                                              << start_result.error_message << std::endl;
+                                    if (!start_result.external_recorder_contract_path.empty()) {
+                                        std::cerr << "[GUI][recording] external recorder contract: "
+                                                  << start_result.external_recorder_contract_path
+                                                  << std::endl;
                                     }
                                 }
                             }

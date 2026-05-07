@@ -249,6 +249,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
+    "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"

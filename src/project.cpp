@@ -167,6 +167,9 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.schema_version = kAppConfigSchemaVersion;
     config.default_detect_engine.clear();
     config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir_str);
+    config.gui_recording_sink_mode = "real";
+    config.gui_external_recorder_contract_path.clear();
+    config.gui_external_recorder_contract = nlohmann::json::object();
     config.write_local_pointer = true;
     config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
     config.write_run_pointer = true;
@@ -243,6 +246,59 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
             }
             config.default_detect_engine =
                 trim_ascii_copy(models["default_detect_engine"].get<std::string>());
+        }
+    }
+
+    if (root.contains("recording")) {
+        if (!root["recording"].is_object()) {
+            if (error_out) {
+                *error_out = "recording must be an object in " + config_path.string();
+            }
+            return false;
+        }
+
+        const nlohmann::json& recording = root["recording"];
+        if (recording.contains("sink_mode")) {
+            if (!recording["sink_mode"].is_string()) {
+                if (error_out) {
+                    *error_out = "recording.sink_mode must be a string in " +
+                                 config_path.string();
+                }
+                return false;
+            }
+            const std::string sink_mode =
+                trim_ascii_copy(recording["sink_mode"].get<std::string>());
+            if (!sink_mode.empty()) {
+                config.gui_recording_sink_mode = sink_mode;
+            }
+        }
+        if (recording.contains("external_recorder_contract")) {
+            const nlohmann::json& contract = recording["external_recorder_contract"];
+            if (contract.is_string()) {
+                config.gui_external_recorder_contract_path =
+                    trim_ascii_copy(contract.get<std::string>());
+            } else if (contract.is_object()) {
+                config.gui_external_recorder_contract = contract;
+            } else {
+                if (error_out) {
+                    *error_out =
+                        "recording.external_recorder_contract must be an object or string path in " +
+                        config_path.string();
+                }
+                return false;
+            }
+        }
+        if (recording.contains("external_recorder_contract_path")) {
+            if (!recording["external_recorder_contract_path"].is_string()) {
+                if (error_out) {
+                    *error_out =
+                        "recording.external_recorder_contract_path must be a string in " +
+                        config_path.string();
+                }
+                return false;
+            }
+            config.gui_external_recorder_contract_path =
+                trim_ascii_copy(recording["external_recorder_contract_path"].get<std::string>());
         }
     }
 
