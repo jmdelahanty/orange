@@ -114,6 +114,30 @@ The GUI now has:
 
 The same validation is also reused in headless mode.
 
+### Stop-Recording Drain While Streaming
+
+The GUI record stop path now explicitly requests a recording drain instead of
+waiting for the later `Stop streaming` teardown to wake the recording workers.
+
+Current behavior:
+
+- pressing the record pause/stop button sets recording to off and enters a
+  draining state
+- the active recording pipelines are woken with drain sentinels while camera
+  streaming remains live
+- full-frame encoders finalize queued frames once their preprocess/helper
+  queues are drained
+- crop/pose drain wakeups are chained from the crop producer path when those
+  workers are present
+- the record button blocks a new recording start while `recording_draining` is
+  still true
+- `Stop streaming` uses the same drain request before worker teardown, so the
+  shutdown path remains compatible with older operator behavior
+
+Headless shutdown now follows the same ordering: request recording drain, wait
+for active recorders to reach zero, then stop acquisition. This prevents a
+recording drain from depending on acquisition-stop side effects.
+
 ### App Storage / Latest Recording Pointers
 
 The branch now supports:
@@ -296,6 +320,81 @@ Additional GUI checks completed:
   - `source_to_helper_copy_samples_total = 175`
   - `latency.source_to_helper_copy.samples = 175`
 
+Post-drain-fix GUI drain validation:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_05_06_20_32_36`
+
+Operator result:
+
+- pressing the record pause/stop button drained/finalized the current recording
+  without requiring a later `Stop streaming` click
+- no GUI hang was observed
+
+Artifact summary:
+
+- sync summary reported `mode = ptp_local`
+- both cameras recorded `463` valid `4512 x 4512` frames, duration `4.630 s`
+- full-frame video bitrates were about `154.2 Mbps` for `2010095` and
+  `152.8 Mbps` for `2010096`
+- both cameras reported `0` frame-ID gaps, `0` GetFrame errors, `0` preprocess
+  drops, and `0` encode failures
+- both cameras reported `enc_slow = 5`
+- YOLO detect p95 was `12.193 ms` for `2010095` and `12.020 ms` for `2010096`
+- this was a drain/lifecycle validation run; it used PTP register-read
+  decimation `1`, so it should not be counted as validation of the newer
+  decimated hot-path setting
+
+GUI validation with launcher defaults:
+
+- `/home/jeremy/orange_data/exp/unsorted/2026_05_06_20_39_47`
+
+This run used `./scripts/run_gui_aq_off_validation.sh`, so the GUI inherited
+the current launcher defaults:
+
+- `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
+- `ORANGE_YOLO_DETACH_INPUT=1`
+- `ORANGE_DEFAULT_DETECT_ENGINE` set to the high-effort A16 TensorRT detect
+  engine candidate
+
+Artifact summary:
+
+- both cameras recorded valid `4512 x 4512` videos at about `151.6 Mbps`
+- `2010095`: `615` frames, `0` gaps, `0` GetFrame errors, `0` preprocess
+  drops, `0` encode failures, `enc_slow = 29`
+- `2010096`: `614` frames, `0` gaps, `0` GetFrame errors, `0` preprocess
+  drops, `0` encode failures, `enc_slow = 37`
+- PTP register reads dropped to `14` per camera with
+  `ptp_register_read_decimate = 100`
+- `acquisition_to_ptp_done_ms p95` was `0.000 ms` for both cameras, confirming
+  that the per-frame PTP register polling was removed from the hot path
+- YOLO detect p95 still remained high: `11.149 ms` for `2010095` and
+  `10.486 ms` for `2010096`
+- the remaining p95 tail moved to YOLO preprocess/submission/completion timing:
+  `cpu_pre_sync_ms p95 = 8.621 ms / 8.261 ms`, with YOLO queue wait still low
+  at about `0.12 ms p95`
+
+Interpretation:
+
+- the GUI launcher now validates the decimated PTP register-read path
+- the old PTP register polling cost is no longer visible in
+  `acquisition_to_ptp_done_ms`
+- decimation improves the old `12 ms` GUI run only modestly because the GUI is
+  still using in-process full-frame split-GOP recording
+- this does not match the much faster headless external-recorder profile; the
+  remaining GUI tail is still consistent with same-process/same-runtime
+  recording contention rather than PTP polling or YOLO queue backlog
+
+Drain-specific headless validation:
+
+- `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_expected_fail_a16_gpu5_drain_smoke2`
+
+That smoke intentionally still fails the pose-noop expectation because no pose
+event log is produced in the current headless crop/pose wiring. The recording
+drain behavior itself was healthy: recording was toggled off before acquisition
+stop, full-frame HW encoders finalized while the stream was still alive, and no
+active-recorder drain timeout or `SharedRecordingOutput received packets before
+open` warning was observed.
+
 GUI dual-camera split-GOP was also exercised with:
 
 - `2010095`
@@ -330,6 +429,47 @@ So the current GUI conclusion is:
 - multi-camera split-GOP works structurally
 - this historical GUI artifact failed via split-GOP backlog overflow
 - the newer clean `2 x 100 fps` validation is headless-only so far
+
+### External Recorder / Detect-Latency Status
+
+Update (2026-05-04): the current best two-camera detect-latency results are
+from the headless external-recorder path, not from the GUI path.
+
+Relevant completed headless work:
+
+- `recording_sink_mode = external_ipc` keeps full-frame encode/harvest outside
+  the analytics process.
+- `external_recorder_ipc_probe --shard-gpu-ids` now routes whole GOPs across
+  recorder shards and writes a merged GOP-ordered MP4 per camera.
+- `scripts/run_external_recorder_two_camera_ptp_smoke.sh` validates the local
+  two-camera `100_cam4_ptp` topology with external split-GOP recording.
+- `fixed.ptp_register_read_decimate = 100` keeps PTP gate sync and embedded
+  frame timestamps while removing the per-frame camera-clock register read from
+  the YOLO hot path.
+- The high-effort A16 TensorRT detect engine candidate brought the latest
+  long headless external-recorder steady detect p95 to about `3.95 ms` on both
+  cameras.
+
+Current GUI implication:
+
+- GUI PTP/AQ-off in-process recording remains a validated production-like
+  baseline.
+- GUI has now been validated with decimated PTP register reads and the A16
+  engine candidate; that removes PTP polling from the hot path but does not
+  recover the headless external-recorder latency profile.
+- GUI does not yet supervise external recorder startup, heartbeat, drain, or
+  finalization. External recording remains a headless diagnostic/backend path
+  until that session integration lands.
+
+Current decision:
+
+- the GUI is acceptable at its current capability level for now
+- validated GUI recording can start, stop, drain, and finalize without requiring
+  `Stop streaming` to complete the recording drain
+- the remaining GUI detect-latency gap is documented and understood as
+  in-process recording contention, not as a PTP register-polling issue
+- GUI external-recorder integration is deferred rather than treated as the next
+  mandatory step
 
 ## Known Caveats
 
@@ -625,22 +765,28 @@ owns top-level GUI orchestration around:
 
 ## Recommended Next Steps
 
-1. Validate the new editable advanced split-GOP controls in the GUI.
-   Goal:
-   confirm the new per-camera editing surface behaves correctly with the
-   existing preflight guardrails.
-
-2. Tighten experiment pass/fail policy for multi-camera overload cases.
+1. Tighten experiment pass/fail policy for multi-camera overload cases.
    Goal:
    make runs like the `2 x 100 fps` dual-camera failure show up as failures in
    `runs.csv`, not misleading passes.
 
-3. Harden the local PTP-gated startup path.
+2. Harden the local PTP-gated startup path.
    Goal:
-   make headless synchronized benchmarks directly comparable to GUI PTP runs by
-   fixing the remaining performance/stability gap after gate start.
+   keep startup-only stale diagnostics and barrier/reset behavior from
+   obscuring otherwise healthy PTP runs.
 
-4. Add an app-level GUI surface for storage defaults and latest-recording
+3. Add GUI/session supervision for the external recorder when GUI latency work
+   becomes the priority again.
+   Goal:
+   start, monitor, drain, finalize, and fail visibly for external recorder
+   processes instead of relying on the headless diagnostic harness.
+
+4. Validate the new editable advanced split-GOP controls in the GUI.
+   Goal:
+   confirm the per-camera editing surface behaves correctly with the existing
+   preflight guardrails.
+
+5. Add an app-level GUI surface for storage defaults and latest-recording
    pointer settings.
    Goal:
    make the new app config discoverable without requiring direct JSON edits.

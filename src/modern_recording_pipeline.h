@@ -28,6 +28,7 @@ public:
 
     void start();
     void request_stop();
+    void request_recording_drain();
     void shutdown();
 
     RecordingIngress* recording_ingress() const { return recording_ingress_.get(); }

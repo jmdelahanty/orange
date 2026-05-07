@@ -31,6 +31,9 @@ When recording is active, automatically start a new segment every N minutes (def
 - Recording is a global toggle (`record_video`) with drain state (`recording_draining`) and active recorder counting.
 - Each recorder opens one output set and finalizes when recording turns off.
 - No periodic segment rollover exists today.
+- The planned session/clip artifact contract is now documented in
+  `docs/recording_session_manifest_contract.md`. Until rollover lands,
+  `clip_seconds > 0` is rejected during headless experiment-spec validation.
 
 Refs:
 - `src/orange.cpp:1127`

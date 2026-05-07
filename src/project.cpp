@@ -2,6 +2,7 @@
 #include "project.h"
 #include "camera_config_schema.h"
 #include "fsuid_guard.h"
+#include "spatial_calibration_snapshot.h"
 #include <unistd.h>      // For gethostname in client_send_bringup_message
 #include <pwd.h>
 #include <sys/stat.h>    // For mkdir
@@ -325,6 +326,14 @@ std::string resolve_default_detect_engine(const std::string& orange_root_dir_str
 {
     if (warning_out) {
         warning_out->clear();
+    }
+
+    const char* env_engine = std::getenv("ORANGE_DEFAULT_DETECT_ENGINE");
+    if (env_engine && env_engine[0] != '\0') {
+        const std::string override_engine = trim_ascii_copy(env_engine);
+        if (!override_engine.empty()) {
+            return override_engine;
+        }
     }
 
     AppStorageConfig config;
@@ -3163,6 +3172,115 @@ bool update_recording_snapshot_crop_output(const std::string& recording_folder,
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
     if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
+    }
+
+    return true;
+}
+
+bool update_recording_snapshot_spatial_calibration(const std::string& recording_folder,
+                                                   const std::string& camera_serial,
+                                                   const nlohmann::json& spatial_calibration) {
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return false;
+    }
+
+    orange::spatial::CameraSpatialCalibration calibration;
+    std::string validation_error;
+    if (!orange::spatial::parse_camera_spatial_calibration_json(
+            spatial_calibration,
+            &calibration,
+            &validation_error)) {
+        std::cerr << "Failed to validate spatial calibration snapshot metadata for camera "
+                  << camera_serial << ": " << validation_error << std::endl;
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+
+    if (!orange::spatial::apply_camera_spatial_calibration_to_snapshot_json(
+            &snapshot,
+            camera_serial,
+            calibration,
+            &validation_error)) {
+        std::cerr << "Failed to apply spatial calibration snapshot metadata for camera "
+                  << camera_serial << ": " << validation_error << std::endl;
+        return false;
+    }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    if (!write_json_atomic(snapshot_path, snapshot, std::filesystem::perms::unknown, false, "recording snapshot")) {
+        return false;
+    }
+
+    return true;
+}
+
+bool update_recording_snapshot_spatial_calibration_from_artifact(const std::string& recording_folder,
+                                                                 const std::string& camera_serial,
+                                                                 const std::string& artifact_dir,
+                                                                 std::string* error_out) {
+    if (error_out) {
+        error_out->clear();
+    }
+    if (recording_folder.empty() || camera_serial.empty() || artifact_dir.empty()) {
+        if (error_out) {
+            *error_out = "recording folder, camera serial, and artifact directory are required";
+        }
+        return false;
+    }
+
+    orange::spatial::CameraSpatialCalibration calibration;
+    if (!orange::spatial::load_camera_spatial_calibration_from_artifact_dir(
+            artifact_dir,
+            &calibration,
+            error_out)) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        if (error_out && error_out->empty()) {
+            *error_out = "failed to read recording snapshot";
+        }
+        return false;
+    }
+
+    if (!orange::spatial::apply_camera_spatial_calibration_to_snapshot_json(
+            &snapshot,
+            camera_serial,
+            calibration,
+            error_out)) {
+        return false;
+    }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::string write_error;
+    if (!write_json_atomic(
+            snapshot_path,
+            snapshot,
+            std::filesystem::perms::unknown,
+            false,
+            "recording snapshot",
+            &write_error)) {
+        if (error_out && error_out->empty()) {
+            *error_out = write_error.empty() ? "failed to write recording snapshot" : write_error;
+        }
         return false;
     }
 

@@ -8,6 +8,11 @@ sidecars, IPC payloads, and known caveats), see:
 
 - `docs/output_artifacts_contract.md`
 
+For current and future `recording_session.json` structure, including the
+single-video layout and planned rolling-clip layout, see:
+
+- `docs/recording_session_manifest_contract.md`
+
 For field-level spatial-calibration schema details, see:
 
 - `docs/spatial_layout_schema.md`
@@ -136,11 +141,12 @@ recordings.
 recording starts. It is intended to capture durable run provenance, not every
 internal synchronization flag transition.
 
-`calibrations` is a planned optional dictionary keyed by camera serial number
-(as a string). It is intended to carry resolved per-recording spatial
-calibration outputs such as `dish_mask`, canonical `arena_layout` references,
-registration metadata, and resolved camera-pixel zone overlays. This block is
-not emitted today.
+`calibrations` is an optional dictionary keyed by camera serial number (as a
+string). It carries resolved per-recording spatial calibration outputs such as
+`dish_mask`, canonical `arena_layout` references, registration metadata, and
+resolved camera-pixel zone overlays. GUI recordings now emit this block when a
+per-camera saved spatial artifact directory is supplied with
+`ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>`.
 
 Current emitted `sync` shape:
 
@@ -281,13 +287,29 @@ Notes:
 - `barriers` and `signals` are a best-effort capture of current synchronization
   state at recording start; they are not a complete event log.
 
-## Planned Spatial Calibration Extension
+## Spatial Calibration Extension
 
-This section documents the intended `recording_snapshot.json` surface for
-per-recording spatial calibration outputs consumed by Citrus and other
-downstream tools. This section is planned design only and is not currently
-emitted. The immediate Orange/Citrus slice should emit the single-circle subset
-described below first.
+This section documents the `recording_snapshot.json` surface for per-recording
+spatial calibration outputs consumed by Citrus and other downstream tools. The
+first implemented slice loads Orange spatial layout artifacts saved under
+`calibrations/artifacts/<artifact_id>/` and writes the single-circle-compatible
+`dish_mask` plus `arena_layout` runtime subset described below.
+
+GUI recording hook:
+
+```bash
+ORANGE_SPATIAL_CALIBRATION_ARTIFACT_2010095=/home/jeremy/orange_data/calibrations/artifacts/<artifact_id>
+ORANGE_SPATIAL_CALIBRATION_ARTIFACT_2010096=/home/jeremy/orange_data/calibrations/artifacts/<artifact_id>
+./scripts/run_gui_aq_off_validation.sh
+```
+
+The artifact directory must contain `measurement.json`,
+`arena_layout_runtime.json`, and `dish_mask_runtime.json` as written by the
+Spatial Layout Registration UI. `measurement.json` supplies the canonical
+`arena_layout` calibration ref. The current saved artifact does not yet include
+a standalone canonical `dish_mask` artifact file, so Orange records a stable
+runtime-derived `dish_mask` ref whose artifact id is
+`<arena_artifact_id>.dish_mask_runtime`.
 
 Recommended top-level placement:
 
@@ -607,6 +629,71 @@ Notes:
 - `video_content_*` fields summarize the first decoded full-frame video frame.
   They are intended to catch invalid black/blank output that can otherwise pass
   throughput counters.
+
+## Headless Recording Session Manifest
+
+Headless experiment specs that use `fixed.recording_control` write:
+
+```text
+<recording_folder>/recording_session.json
+```
+
+Current schema:
+
+```json
+{
+  "schema_id": "orange.headless.recording_session",
+  "schema_version": 1,
+  "mode": "single_clip",
+  "status": "completed",
+  "recording_folder": "/abs/path/to/run",
+  "cameras": ["2010096"],
+  "stream": {
+    "requested_duration_seconds": 20,
+    "actual_elapsed_s": 20.1
+  },
+  "recording_control": {
+    "record_for_seconds": 6,
+    "clip_seconds": 0
+  },
+  "recording": {
+    "started": true,
+    "stop_reason": "record_for_seconds_elapsed",
+    "drain_completed": true,
+    "actual_recording_duration_s": 6.0,
+    "drain_duration_s": 0.1
+  },
+  "clips": [
+    {
+      "clip_index": 0,
+      "clip_id": "clip_0000",
+      "requested_duration_s": 6,
+      "actual_duration_s": 6.0,
+      "timed_stop_hit": true,
+      "drain_completed": true,
+      "artifacts": {
+        "videos": {
+          "2010096": "Cam2010096.mp4"
+        }
+      }
+    }
+  ]
+}
+```
+
+Notes:
+
+- This is a first single-clip manifest, not the future rolling-clip session
+  manifest. The broader session/clip contract is documented in
+  `docs/recording_session_manifest_contract.md`.
+- `clip_seconds = 0` means no rollover and keeps the current flat folder
+  layout. Values above zero are rejected in the current implementation.
+- The manifest records the control-plane timing of the requested stop/drain.
+  Consumers should use each `Cam<serial>.mp4` container duration when they need
+  exact encoded media duration.
+- Use `scripts/verify_timed_recording.py <experiment_root>` to check the
+  current single-clip timed-recording contract against `recording_session.json`,
+  `runs.json`, and `ffprobe`.
 
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value
 captures resolved runtime encoder parameters for one or more outputs for that

@@ -19,6 +19,13 @@ Add a benchmark-only `pre_encoder_reference_capture` feature to the modern
 recording path so Orange can save short clips of the exact frame representation
 seen by the encoder before compression.
 
+Status update (2026-05-04): the implementation slice has landed. The code now
+has a bounded headless/spec control path, `PreEncoderReferenceWriter`, an
+`EncoderHwWorker` tap before encode submission, raw dump/index/metadata
+artifacts, recording snapshot/analyzer fields, and disabled-by-default behavior.
+This plan remains useful for contract intent and validation gates; see
+`docs/pre_encoder_reference_capture_todo.md` for the current validation status.
+
 This should support later offline codec bake-offs such as:
 
 - current default encode settings

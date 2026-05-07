@@ -57,6 +57,8 @@ Default configured base path in runtime:
 | Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
 | YOLO perf CSV | `<recording_folder>/Cam<serial>_yolo_perf.csv` | Optional | `ORANGE_YOLO_PERF_LOG != 0` |
 | YOLO event JSONL | `<recording_folder>/Cam<serial>_yolo_events.jsonl` | Optional | GUI YOLO worker receives frames during recording |
+| Pose perf CSV | `<recording_folder>/Cam<serial>_pose_perf.csv` | Optional | GUI pose worker active |
+| Pose event JSONL | `<recording_folder>/Cam<serial>_pose_events.jsonl` | Optional | GUI pose worker receives crop frames during recording |
 | YOLO debug PNG | `./debug_pre_yolo_<serial>_<frame_id>.png` | Optional | `Dump Input` action |
 
 Diagnostic note:
@@ -444,6 +446,14 @@ Current per-camera row fields include:
 - `external_ipc_frames_acked_final: integer`
 - `external_ipc_failures_final: integer`
 - `external_ipc_ack_timeouts_final: integer`
+- `external_recorder_contract_mode: string`
+- `external_recorder_contract_artifact_root: string`
+- `external_recorder_summary_json_path: string`
+- `external_recorder_video_sanity_json_path: string`
+- `external_recorder_mp4_path: string`
+- `external_recorder_gop_routing_csv_path: string`
+- `external_recorder_routing_policy: string`
+- `external_recorder_expected_shard_count: integer`
 
 Field semantics:
 - `importance_map_mode` is the requested headless importance-map mode for the
@@ -473,6 +483,10 @@ Field semantics:
   `Cam<serial>_pipeline_perf.csv` when `recording_sink_mode = "external_ipc"`.
   The mode is metrics-only, but nonzero failures/timeouts or fewer ACKed frames
   than submitted frames fail the experiment row.
+- `external_recorder_*` fields are expected external artifact paths and routing
+  settings copied from `fixed.external_recorder_contract`. They are validated
+  after recorder finalization by `scripts/verify_external_recorder_session.py`.
+  See `docs/external_recorder_contract.md`.
 
 Important:
 - `video_duration_s` includes warmup time in current headless experiment runs,
@@ -615,6 +629,31 @@ Current behavior:
   rather than post-recording stream tail frames.
 
 See [yolo_event_log_jsonl_contract.md](./yolo_event_log_jsonl_contract.md).
+
+### Pose Event JSONL (`Cam<serial>_pose_events.jsonl`)
+
+Path:
+- `<recording_folder>/Cam<serial>_pose_events.jsonl`
+
+Gate:
+- GUI Pose is enabled for that camera.
+- Crop+Encode and YOLO are enabled because the current pose worker consumes
+  `CropFrame` payloads produced from YOLO-selected ROIs.
+- The crop frame carries `recording_frame_id > 0`.
+
+Current emitted row type:
+- `pose_result`
+
+Current behavior:
+- One JSON object per accepted pose crop.
+- Rows include frame identity, source-frame dimensions, crop geometry, selected
+  detection geometry, pose backend/model metadata, per-stage latency fields, and
+  an explicit `poses` array.
+- Until a TensorRT pose backend lands, `pose.backend = "noop"`,
+  `pose.status = "no_result"`, and `poses = []`. This is intentional: the
+  artifact contract can be validated without pretending to have keypoints.
+- The file is audit-only today. Pose results are not published to Citrus IPC or
+  drawn as GUI overlays yet.
 
 Validation note, `2026-04-22` GUI YOLO smoke:
 

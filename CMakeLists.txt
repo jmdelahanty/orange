@@ -238,6 +238,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
+    "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_layout_ui.cpp"
     "${SRC_DIR}/usaf_resolution_calibration.cpp"
@@ -245,6 +246,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/crop_and_encode_worker.cpp"
     "${SRC_DIR}/crop_producer.cpp"
     "${SRC_DIR}/crop_producer_worker.cpp"
+    "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
@@ -269,6 +271,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/acquire_frames.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
+    "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
@@ -277,14 +280,18 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/gpu_video_encoder.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/spatial_calibration_snapshot.cpp"
+    "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/yolov8_det.cpp"
     "${SRC_DIR}/yolo_worker.cpp"
     "${SRC_DIR}/yolo_event_log.cpp"
     "${SRC_DIR}/yolo_event_log_validation.cpp"
+    "${SRC_DIR}/pose_event_log_validation.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/crop_and_encode_worker.cpp"
     "${SRC_DIR}/crop_producer.cpp"
     "${SRC_DIR}/crop_producer_worker.cpp"
+    "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
     ${NVENCODER_SOURCES}
     ${ORANGE_CUDA_SOURCES}
@@ -305,6 +312,8 @@ set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "${SRC_DIR}/aperture_characterization.cpp"
     "${SRC_DIR}/camera.cpp"
     "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/spatial_calibration_snapshot.cpp"
+    "${SRC_DIR}/spatial_layout_schema.cpp"
 )
 
 set(NVENC_STRESS_LOAD_SOURCES
@@ -318,6 +327,11 @@ set(EXTERNAL_RECORDER_IPC_PROBE_SOURCES
     ${NVENCODER_SOURCES}
 )
 
+set(EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES
+    "tools/external_recorder_supervisor_plan.cpp"
+    "${SRC_DIR}/external_recorder_supervisor.cpp"
+)
+
 add_executable(orange ${ORANGE_SOURCES})
 add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
@@ -325,6 +339,7 @@ add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
 add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
 add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_IPC_PROBE_SOURCES})
+add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
 
 if(BUILD_TESTING)
     add_executable(recording_validation_tests
@@ -349,6 +364,47 @@ if(BUILD_TESTING)
     target_include_directories(camera_config_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(camera_config_validation_tests PRIVATE cxx_std_17)
     add_test(NAME camera_config_validation_tests COMMAND camera_config_validation_tests)
+
+    add_executable(spatial_calibration_snapshot_tests
+        "tools/spatial_calibration_snapshot_tests.cpp"
+        "${SRC_DIR}/spatial_calibration_snapshot.cpp"
+        "${SRC_DIR}/spatial_layout_schema.cpp"
+    )
+    target_include_directories(spatial_calibration_snapshot_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(spatial_calibration_snapshot_tests PRIVATE cxx_std_17)
+    add_test(NAME spatial_calibration_snapshot_tests COMMAND spatial_calibration_snapshot_tests)
+
+    add_executable(pose_event_log_tests
+        "tools/pose_event_log_tests.cpp"
+        "${SRC_DIR}/pose_event_log.cpp"
+    )
+    target_include_directories(pose_event_log_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(pose_event_log_tests PRIVATE cxx_std_17)
+    add_test(NAME pose_event_log_tests COMMAND pose_event_log_tests)
+
+    add_executable(pose_event_log_validation_tests
+        "tools/pose_event_log_validation_tests.cpp"
+        "${SRC_DIR}/pose_event_log_validation.cpp"
+        "${SRC_DIR}/yolo_event_log_validation.cpp"
+    )
+    target_include_directories(pose_event_log_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(pose_event_log_validation_tests PRIVATE cxx_std_17)
+    add_test(NAME pose_event_log_validation_tests COMMAND pose_event_log_validation_tests)
+
+    add_executable(external_recorder_supervisor_tests
+        "tools/external_recorder_supervisor_tests.cpp"
+        "${SRC_DIR}/external_recorder_supervisor.cpp"
+    )
+    target_include_directories(external_recorder_supervisor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(external_recorder_supervisor_tests PRIVATE cxx_std_17)
+    add_test(NAME external_recorder_supervisor_tests COMMAND external_recorder_supervisor_tests)
+
+    add_executable(external_recorder_supervisor_socket_stub
+        "tools/external_recorder_supervisor_socket_stub.cpp"
+    )
+    target_include_directories(external_recorder_supervisor_socket_stub PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(external_recorder_supervisor_socket_stub PRIVATE cxx_std_17)
+    add_dependencies(external_recorder_supervisor_tests external_recorder_supervisor_socket_stub)
 endif()
 
 function(orange_configure_target target_name)
@@ -378,6 +434,7 @@ orange_configure_target(evt_lens_probe)
 orange_configure_target(evt_aperture_characterize)
 orange_configure_target(nvenc_stress_load)
 orange_configure_target(external_recorder_ipc_probe)
+orange_configure_target(external_recorder_supervisor_plan)
 
 target_link_libraries(orange PRIVATE
     ${ENET_LIBRARY}

@@ -152,7 +152,7 @@ Implementation checklist before pose:
 - [ ] Revalidate GUI `100 fps` YOLO + full-frame record + crop record before
       adding pose.
 
-Current noop pose slice (2026-04-23):
+Current noop pose slice (updated 2026-05-04):
 
 - `PoseWorker` is now a real bounded worker-stage with its own CUDA stream.
 - `CropProducer` can offer a `CropFrame` lease to that worker without creating
@@ -161,9 +161,14 @@ Current noop pose slice (2026-04-23):
   encode and releases it independently from the noop pose worker.
 - Shutdown ordering keeps the noop pose worker alive until crop production is
   fully drained so queued crop leases can return safely.
+- `PoseWorker` now emits `Cam<serial>_pose_events.jsonl` rows for accepted
+  recording crop frames. The rows capture frame identity, crop/detection
+  geometry, backend/model metadata, and pose-stage latency.
 - This validates the ownership model for future pose TensorRT work, but it does
-  not yet implement model loading, tensor conversion, IPC output, or GUI pose
-  overlays.
+  not yet implement model loading, tensor conversion, keypoint output, IPC
+  output, or GUI pose overlays. Current event rows intentionally record
+  `pose.backend = "noop"`, `pose.status = "no_result"`, and an empty `poses`
+  array.
 
 Current latency interpretation (2026-04-23):
 
@@ -177,6 +182,20 @@ Current latency interpretation (2026-04-23):
   detach / crop-producer host-side handoff.
 - Therefore the next architectural optimization target is not "make noop pose
   faster"; it is to shorten and isolate the `detect -> crop_ready` path.
+
+Headless schema slice (updated 2026-05-06):
+
+- Headless experiment specs now parse `fixed.pose_worker`.
+- Supported schema modes are `off`, `noop`, and reserved `real`.
+- `noop` validates `Cam<serial>_pose_events.jsonl` as a no-result pose artifact
+  with `pose.backend = "noop"`, `pose.mode = "noop"`, and empty `poses`.
+- `real` requires `engine_path` in the spec but TensorRT keypoint inference is
+  still not implemented.
+- The headless schema currently requires `fixed.yolo_worker.mode = "real"` and
+  `roi_source = "yolo_top_detection"`.
+- The headless runtime still does not wire crop production into pose. Until
+  that slice lands, enabling `fixed.pose_worker.mode = "noop"` is expected to
+  fail validation because the pose JSONL artifact is missing.
 
 ## Data Structures
 ### New: CropFrame / PoseEntry (pool item)

@@ -211,6 +211,53 @@ Current read:
   suppressing or reclassifying startup-only stale dumps, adding deadline-based
   barriers, and validating longer soak runs.
 
+## Audit Update (2026-05-04)
+
+The latest headless external-recorder work clarified a separate PTP hot-path
+cost: the expensive operation was not the PTP gate itself, but the diagnostic
+per-frame `GevTimestampValueHigh/Low` camera-clock register read after
+`EVT_CameraGetFrame(...)`.
+
+Implemented since the April 21 update:
+
+- `ORANGE_PTP_REGISTER_READ_DECIMATE=<N>`.
+- Experiment-spec `fixed.ptp_register_read_decimate`.
+- Default `N=1` preserves the old full per-frame diagnostic polling.
+- `N>1` keeps PTP gate synchronization and embedded per-frame camera
+  timestamps, while sampling the current-camera-clock register read on the
+  first few frames and then every `N` frames.
+- Stop/drain logic uses embedded frame timestamps when register polling is
+  decimated, avoiding stale latched-clock decisions.
+- Acquisition cadence probes record whether a row came from a register read
+  and how old the sampled register value is.
+
+Validated headless result:
+
+- Run:
+  `/tmp/orange_external_recorder_ptp_20260426_002618`.
+- Two-camera PTP external split-GOP recording, `30 s`, decimate `100`.
+- Both cameras received/ACKed/encoded `2803` frames with no drops, frame-id
+  gaps, GetFrame errors, recorder failures, or pending GOP backlog.
+- PTP register reads dropped to `33` per camera over `2803` frames.
+- Steady `acquisition_to_ptp_done_ms p95` was effectively zero.
+- Steady `acquisition_to_detect_done_ms p95` was about `4.58 ms` on both
+  cameras before the A16 engine rebuild, and about `3.95 ms` with the
+  high-effort A16 detect engine candidate in the later validation.
+- Cross-camera embedded timestamp skew over the cadence probe stayed within
+  tens of nanoseconds.
+
+Current read:
+
+- Full per-frame `GevTimestampValue*` polling should remain available as a PTP
+  diagnostic mode.
+- Decimated register polling is the right default candidate for production-like
+  hot-path runs on this host.
+- The next PTP validation is GUI/session with
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`.
+- The original hardening items below are still relevant: deadline-based
+  barriers, thread-safe shared state, robust reset after partial failure, and
+  GUI/headless lifecycle symmetry are not solved by register-read decimation.
+
 ## Hardening Plan
 
 ## Phase 1: Make Shared State Thread-Safe

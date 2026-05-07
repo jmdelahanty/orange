@@ -105,16 +105,40 @@ Implemented:
   - `external_ipc_frames_acked_final`
   - `external_ipc_failures_final`
   - `external_ipc_ack_timeouts_final`
+- Diagnostic session/routing metadata in descriptors and recorder artifacts:
+  - session id
+  - stream id
+  - GOP index
+  - frame index within GOP
+  - assigned shard/GPU
+  - routing policy
+- Diagnostic external split-GOP routing in `external_recorder_ipc_probe`:
+  - `--shard-gpu-ids`
+  - one encode worker per shard GPU
+  - whole-GOP modulo routing
+  - per-shard encode CSV/MP4 artifacts
+  - merged GOP-ordered base MP4 output
+  - `external_gop_routing.csv`
+- Full-rate one-camera and two-camera PTP smoke runners:
+  - `scripts/run_external_recorder_smoke.sh`
+  - `scripts/run_external_recorder_two_camera_ptp_smoke.sh`
+- Recorder pre-listen prewarm, headless YOLO synthetic prewarm, and
+  `fixed.ptp_register_read_decimate` support in the smoke harnesses.
 
 Limitations:
 
 - `external_recorder_ipc_probe` is still a diagnostic tool, not a recorder
   backend.
-- The probe can now write MP4, but output naming/session metadata are still
-  diagnostic rather than production recorder policy.
-- The encode smoke encodes a capped subset at `60 fps`.
-- No recorder-side session metadata or robust shutdown protocol exists yet.
-- No split-GOP/multi-GPU routing exists outside the analytics process yet.
+- Output naming, session metadata, routing policy, and failure semantics are
+  still diagnostic rather than production recorder policy.
+- The descriptor has useful routing/session fields, but there is not yet a
+  versioned production protocol with explicit `STOP` / `DRAIN` / `FINALIZE`,
+  heartbeat, or health messages.
+- External split-GOP/multi-GPU routing exists in the diagnostic probe, but GUI
+  session supervision does not yet start, monitor, drain, or finalize external
+  recorder processes.
+- No production GUI backend selection has been added yet; in-process recording
+  remains the GUI fallback/default path.
 
 ## Current MP4 Smoke Result
 
@@ -420,19 +444,81 @@ Acceptance gate:
 
 ## Near-Term Next Slice
 
-Stage 1 and Stage 2 now exist as a diagnostic slice:
+Stage 1, Stage 2, and the first Stage 5 split-GOP diagnostics now exist as a
+diagnostic slice:
 
 ```text
 external recorder with valid MP4 output
 single-command runner
 single-camera same-GPU 60 fps validation
 single-camera paired-GPU 60 fps placement comparison
+one-camera full-rate two-shard split-GOP validation
+two-camera PTP full-rate external split-GOP validation
 ```
 
-The highest-signal next coding task is protocol/config hardening followed by
-the first external split-GOP routing slice. Do not spend more time on
-same-process NVENC tuning unless a regression disproves the current
-process-isolation result.
+The highest-signal next work is no longer the first split-GOP routing slice; it
+is GUI/session validation and production hardening:
+
+1. Validate the GUI/session path with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
+   and the high-effort A16 detect engine candidate.
+2. Add GUI/session supervision for external recorder startup, heartbeat, drain,
+   and finalization.
+3. Turn the diagnostic descriptor/routing contract into a versioned production
+   recorder protocol.
+
+Current contract-hardening status:
+
+- `fixed.external_recorder_contract.mode = "diagnostic_ipc_v1"` now records
+  the expected external recorder artifact paths in experiment specs.
+- `external_recorder_supervisor_plan` now performs a metadata-only dry run of
+  the contract, expands each stream into an `external_recorder_ipc_probe` argv,
+  and validates sink mode, selected stream coverage, artifact paths, and shard
+  routing before any camera/GUI work is required.
+- `fixed.external_recorder_contract.supervise_processes = true` is the first
+  opt-in headless lifecycle slice. `orange_client` starts recorder processes,
+  waits for sockets, exports per-camera socket/session env vars, waits for
+  recorder shutdown after analytics exits, and writes supervisor
+  session/plan/runtime plus verifier-handoff artifacts.
+- Contract-only plan specs exist for one-camera and two-camera PTP checks:
+  `experiment_specs/2010096_external_recorder_supervisor_plan_smoke.json` and
+  `experiment_specs/2010095_2010096_external_recorder_supervisor_plan_ptp.json`.
+- A real supervised one-camera smoke spec exists at
+  `experiment_specs/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke.json`.
+- A real supervised two-camera PTP smoke spec exists at
+  `experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised.json`.
+- `external_recorder_ipc_probe` summaries now carry
+  `schema_id = "orange.external_recorder.summary"`.
+- `scripts/verify_external_recorder_session.py` validates analytics IPC
+  counters, recorder summaries, shard routing, merged MP4 finalization, GOP
+  routing CSVs, and video sanity.
+- In supervised headless mode, `orange_client` now writes provisional
+  manifests, runs per-stream external MP4 video sanity, runs the session
+  verifier, and records the result in `external_recorder_finalization.json`.
+- The smoke runners generate `external_recorder_session.json`, inject the same
+  contract into the temporary experiment spec, and run the verifier
+  automatically.
+
+Supervised hardware smoke result:
+
+- One-camera supervised artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_supervised_2010096`. The run passed with
+  `800` frames received/ACKed, `480` encoded at the diagnostic `60 fps` cap,
+  `0` encode drops, and `video_sanity=pass`.
+- Two-camera PTP supervised artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised`;
+  recorder artifact: `/tmp/orange_external_recorder_supervised_ptp`. The run
+  passed with `400/400` frames received/ACKed/encoded for each camera,
+  `0` encode drops, merged MP4 output enabled, and `video_sanity=pass` for both
+  cameras.
+- Two-camera steady-state post-frame-50 `acquisition_to_detect_done_ms p95` was
+  `4.594 ms` for `2010095` and `4.645 ms` for `2010096`; YOLO queue wait p95
+  was `0.018 ms` and `0.014 ms`, respectively.
+
+Next production slice: carry this supervised lifecycle into the GUI/session
+path: config selection, process supervision, health/heartbeat, drain/finalize,
+and user-visible failure reporting.
 
 Detailed Stage 5 protocol and routing design:
 

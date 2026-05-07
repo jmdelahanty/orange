@@ -119,6 +119,10 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.helper_copy_delay_ns = 0 | <positive nanoseconds>`
 - `fixed.frame_ipc.enabled = true | false`
 - `fixed.frame_ipc.mode = "producer_only" | "verify_drain"`
+- `fixed.pose_worker.mode = "off" | "noop" | "real"`
+- `fixed.recording_control.record_for_seconds = 0 | <positive seconds>`
+- `fixed.recording_control.clip_seconds = 0`
+- `fixed.external_recorder_contract.mode = "off" | "diagnostic_ipc_v1"`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
 for that run:
@@ -137,6 +141,55 @@ for that run:
 
 That gives us a documented “stream-only experiment spec” mode instead of having
 to drop down to the ad hoc direct CLI.
+
+`fixed.recording_control` is an experimental single-clip recording-duration
+control for headless runs. It lets the stream/run continue after the recorder
+has been stopped and drained:
+
+```json
+"fixed": {
+  "duration_s": 20,
+  "recording_control": {
+    "record_for_seconds": 6,
+    "clip_seconds": 0
+  }
+}
+```
+
+Current behavior:
+
+- recording starts at the normal headless recording start time
+- after `record_for_seconds`, the runner requests the same explicit recording
+  drain used by the GUI stop-recording path
+- acquisition continues until the overall `duration_s + warmup_s` run deadline
+- the recording folder gets `recording_session.json` with the requested
+  duration, actual start/stop/drain timing, and a single `clip_0000` entry
+- pass/fail for this mode checks the video exists, video duration is close to
+  `record_for_seconds`, acquisition stayed healthy, and error/drop counters
+  remain within policy
+- `scripts/verify_timed_recording.py <experiment_root>` verifies the current
+  single-clip contract from `recording_session.json`, `runs.json`, and
+  `ffprobe`
+
+`clip_seconds > 0` is deliberately rejected for now. Rolling/seamless
+multi-clip recording is the next slice, not part of this first
+duration-control smoke. The planned session and clip manifest contract is
+documented in `docs/recording_session_manifest_contract.md`.
+
+Validated smoke:
+
+- spec:
+  `experiment_specs/2010096_headless_timed_recording_control_smoke_a16_gpu5.json`
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_timed_recording_control_smoke_a16_gpu5`
+- stream requested `20 s`, recording requested `6 s`
+- `recording_session.json` reported `status = completed`,
+  `stop_reason = record_for_seconds_elapsed`, `drain_completed = true`, and
+  `actual_recording_duration_s = 6.005`
+- `ffprobe` reported `Cam2010096.mp4 duration = 6.000 s`
+- `summary.json` reported `pass_runs = 1`, `fail_runs = 0`
+- camera result reported `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, and `0` encode failures
 
 `fixed.frame_ipc` is an explicit testability knob for the same shared-memory
 frame IPC path used by the GUI:
@@ -189,7 +242,8 @@ recorder detach prototype:
   frame into recorder-owned device memory,
 - the analytics process keeps the source lease until the probe sends a detach
   ACK,
-- no full-frame NVENC encode is performed by this prototype yet.
+- the diagnostic recorder can then encode detached frames and write MP4/CSV
+  artifacts outside the analytics process.
 
 The external IPC path writes these pipeline CSV columns and corresponding
 `runs.json` / `runs.csv` fields:
@@ -201,6 +255,75 @@ The external IPC path writes these pipeline CSV columns and corresponding
 For `external_ipc` experiment specs, nonzero failures/timeouts or fewer ACKed
 frames than submitted frames fail the run even though the mode is otherwise
 metrics-only.
+
+`fixed.external_recorder_contract` is the spec-level contract for the external
+recorder artifacts produced outside the analytics process. Orange validates the
+contract shape and records the expected per-camera summary/video/routing paths
+in `runs.json` / `runs.csv`; `scripts/verify_external_recorder_session.py`
+validates those artifacts after the recorder process finalizes. The schema is
+documented in `docs/external_recorder_contract.md`.
+
+For control-plane checks that should not touch cameras, TensorRT, sockets, or
+NVENC, use the dry-run supervisor-plan CLI:
+
+```bash
+./targets/release/external_recorder_supervisor_plan \
+  --spec experiment_specs/2010095_2010096_external_recorder_supervisor_plan_ptp.json \
+  --check
+```
+
+That tool expands `fixed.external_recorder_contract` into per-stream recorder
+argv arrays and fails fast on invalid sink mode, missing selected streams,
+invalid shard routing, or missing artifact paths.
+
+For the opt-in supervised path, set
+`fixed.external_recorder_contract.supervise_processes = true`. In that mode
+`orange_client` starts one recorder process per contract stream, waits for each
+Unix socket before starting camera acquisition, exports per-camera socket and
+session env vars for the handoff worker, waits for recorder finalization after
+analytics shutdown, and writes supervisor session/plan/runtime JSON under the
+external recorder artifact root. It also writes
+`external_recorder_verifier_handoff.json`, which records the verifier command to
+run after `runs.json` and any required video-sanity artifact exist.
+
+In the supervised path, the headless client now runs that finalization itself.
+It writes a provisional `runs.json`, runs `scripts/external_video_sanity.py` for
+each required stream MP4, then runs
+`scripts/verify_external_recorder_session.py`. The results are recorded in
+`external_recorder_finalization.json`; any failed decode sanity or verifier
+check fails the run with the concrete reason in `runs.json`.
+
+The first supervised smoke spec is:
+
+```text
+experiment_specs/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke.json
+```
+
+The two-camera PTP supervised smoke spec is:
+
+```text
+experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised.json
+```
+
+Validated supervised smokes:
+
+- One-camera artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke`
+  with external recorder root
+  `/tmp/orange_external_recorder_supervised_2010096`. The run passed
+  `external_video_sanity.py` and `verify_external_recorder_session.py`;
+  recorder summary reported `800` received/ACKed frames, `480` encoded frames
+  at the diagnostic `60 fps` cap, and `0` encode drops.
+- Two-camera PTP artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised`
+  with external recorder root `/tmp/orange_external_recorder_supervised_ptp`.
+  The run passed per-camera video sanity and session verification; each camera
+  received/ACKed/encoded `400` external frames with `0` drops, two shards, and
+  `gop_modulo` routing.
+- In the two-camera PTP run, steady-state post-frame-50
+  `acquisition_to_detect_done_ms p95` was `4.594 ms` for `2010095` and
+  `4.645 ms` for `2010096`; YOLO queue wait p95 stayed at or below
+  `0.018 ms`.
 
 - Artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25/frame_ipc_summary.json`
@@ -228,6 +351,56 @@ Headless YOLO audit-log test mode:
 - See [headless_synthetic_yolo_event_log_plan.md](./headless_synthetic_yolo_event_log_plan.md).
 - See [headless_real_yolo_worker_plan.md](./headless_real_yolo_worker_plan.md)
   for the future opt-in TensorRT YOLO worker path.
+
+Headless pose worker schema:
+
+- `fixed.pose_worker.mode = "off"` is the default and does not request any
+  pose artifacts.
+- `fixed.pose_worker.mode = "noop"` is the first schema/validation mode. It
+  expects `Cam<serial>_pose_events.jsonl` rows with
+  `pose.backend = "noop"`, `pose.mode = "noop"`, `pose.status = "no_result"`,
+  `pose.instance_count = 0`, and an empty `poses` array.
+- `fixed.pose_worker.mode = "real"` reserves the future TensorRT keypoint
+  path. In this mode, `engine_path` is required by the schema, but the runtime
+  inference path is not implemented yet.
+- Headless pose currently requires `fixed.yolo_worker.mode = "real"` because
+  `roi_source = "yolo_top_detection"` is the only supported ROI source.
+- `stream_only = true` is rejected when pose is enabled because pose validation
+  is recording-artifact based.
+- This slice is intentionally validation-first: if `mode = "noop"` is enabled
+  but the headless runtime does not produce `Cam<serial>_pose_events.jsonl`,
+  `runs.json` / `runs.csv` mark the camera row as failed with
+  `pose event log validation failed`.
+
+Example:
+
+```json
+"fixed": {
+  "yolo_worker": {
+    "mode": "real",
+    "engine_path": "/home/jeremy/orange_data/detect/model.engine",
+    "decimate": 1,
+    "publish_live_ipc": false,
+    "timeout_ms": 500,
+    "fail_on_init_error": true
+  },
+  "pose_worker": {
+    "mode": "noop",
+    "skeleton_id": "fish_v1",
+    "input_width": 256,
+    "input_height": 256,
+    "input_layout": "nchw",
+    "input_dtype": "fp16",
+    "normalization": "model_default",
+    "roi_source": "yolo_top_detection",
+    "queue_depth": 32,
+    "timeout_ms": 500,
+    "prewarm_iterations": 0,
+    "fail_on_init_error": true,
+    "write_events_jsonl": true
+  }
+}
+```
 
 `fixed.recording_sink_mode` is a separate experimental diagnostic knob for
 recording-enabled runs:

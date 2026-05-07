@@ -251,22 +251,29 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 RUN_DIR="$OUTPUT_DIR/orange_external_recorder_ptp_${STAMP}"
 mkdir -p "$RUN_DIR"
 TEMP_SPEC="$RUN_DIR/external_recorder_two_camera_ptp_spec.json"
+SESSION_CONTRACT_JSON="$RUN_DIR/external_recorder_session.json"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIALS" "$ANALYTICS_GPU_IDS" "$DURATION" "$WARMUP" "$CONFIG_FOLDER" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIALS" "$ANALYTICS_GPU_IDS" "$SHARD_GPU_IDS_PER_CAMERA" "$DURATION" "$WARMUP" "$CONFIG_FOLDER" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 source = Path(sys.argv[1])
 dest = Path(sys.argv[2])
-stamp = sys.argv[3]
-camera_serials = [item for item in sys.argv[4].split(",") if item]
-gpu_ids = [int(item) for item in sys.argv[5].split(",") if item]
-duration = int(sys.argv[6])
-warmup = int(sys.argv[7])
-config_folder = sys.argv[8]
-yolo_prewarm_iterations = int(sys.argv[9])
-ptp_register_read_decimate = int(sys.argv[10])
+contract_dest = Path(sys.argv[3])
+stamp = sys.argv[4]
+camera_serials = [item for item in sys.argv[5].split(",") if item]
+gpu_ids = [int(item) for item in sys.argv[6].split(",") if item]
+shard_groups = [item for item in sys.argv[7].split(";") if item]
+duration = int(sys.argv[8])
+warmup = int(sys.argv[9])
+config_folder = sys.argv[10]
+yolo_prewarm_iterations = int(sys.argv[11])
+ptp_register_read_decimate = int(sys.argv[12])
+run_dir = Path(sys.argv[13])
+encode_fps = int(sys.argv[14])
+encode_max_fps = int(sys.argv[15])
+skip_video_sanity = int(sys.argv[16])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -290,9 +297,43 @@ fixed["config_folder"] = config_folder
 fixed["ptp_register_read_decimate"] = ptp_register_read_decimate
 if isinstance(fixed.get("yolo_worker"), dict):
     fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
+streams = {}
+for serial, analytics_gpu_id, shard_group in zip(camera_serials, gpu_ids, shard_groups):
+    shard_gpu_ids = [int(item) for item in shard_group.split(",") if item]
+    routing_policy = "gop_modulo" if len(shard_gpu_ids) > 1 else "single_shard"
+    streams[serial] = {
+        "stream_id": serial,
+        "camera_serial": serial,
+        "analytics_gpu_id": analytics_gpu_id,
+        "recorder_gpu_id": shard_gpu_ids[0],
+        "expected_shard_gpu_ids": shard_gpu_ids,
+        "routing_policy": routing_policy,
+        "summary_json": str(run_dir / f"Cam{serial}_external_summary.json"),
+        "video_sanity_json": str(run_dir / f"Cam{serial}_external_video_sanity.json"),
+        "mp4": str(run_dir / f"Cam{serial}_external.mp4"),
+        "gop_routing_csv": str(run_dir / f"Cam{serial}_external_gop_routing.csv"),
+        "encode_fps": encode_fps,
+        "encode_max_fps": encode_max_fps,
+    }
+contract = {
+    "schema_id": "orange.external_recorder.contract",
+    "schema_version": 1,
+    "mode": "diagnostic_ipc_v1",
+    "artifact_root": str(run_dir),
+    "session_id": spec["experiment_id"],
+    "require_summary": True,
+    "require_video_sanity": skip_video_sanity == 0,
+    "require_merged_mp4": True,
+    "require_gop_routing": True,
+    "streams": streams,
+}
+fixed["external_recorder_contract"] = contract
 
 with dest.open("w", encoding="utf-8") as f:
     json.dump(spec, f, indent=2)
+    f.write("\n")
+with contract_dest.open("w", encoding="utf-8") as f:
+    json.dump(contract, f, indent=2)
     f.write("\n")
 PY
 
@@ -781,3 +822,7 @@ for serial, camera in summary["cameras"].items():
         f"detach_copy_steady_p95={detach_steady.get('p95')} detach_copy_steady_max={detach_steady.get('max')}"
     )
 PY
+
+"$REPO_ROOT/scripts/verify_external_recorder_session.py" \
+  "$RUN_DIR" \
+  --analytics-root "$ANALYTICS_ROOT"

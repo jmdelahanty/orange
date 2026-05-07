@@ -7,6 +7,7 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
+#include <thread>
 
 namespace {
 
@@ -74,6 +75,7 @@ void CropProducerWorker::SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker
 
 void CropProducerWorker::SetPoseWorker(PoseWorker* pose_worker)
 {
+    pose_worker_ = pose_worker;
     pose_enabled_ = (pose_worker != nullptr);
     if (crop_producer_) {
         crop_producer_->SetPoseWorker(pose_worker);
@@ -146,6 +148,20 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
     }
 
     if (!entry) {
+        if (camera_control_ && camera_control_->recording_draining) {
+            if (crop_producer_ && !crop_producer_->DrainReady()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                PutObjectToQueueIn(nullptr);
+                return false;
+            }
+            if (crop_worker_) {
+                crop_worker_->PutObjectToQueueIn(nullptr);
+            }
+            if (pose_worker_) {
+                pose_worker_->PutObjectToQueueIn(nullptr);
+            }
+            CloseRecording();
+        }
         return false;
     }
 

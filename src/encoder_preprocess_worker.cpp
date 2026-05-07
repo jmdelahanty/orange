@@ -786,6 +786,12 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     if (!entry) {
+        if (camera_control_ &&
+            camera_control_->recording_draining &&
+            pending_source_release_count_.load(std::memory_order_relaxed) > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            PutObjectToQueueIn(nullptr);
+        }
         return false;
     }
 

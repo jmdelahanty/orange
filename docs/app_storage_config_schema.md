@@ -239,6 +239,8 @@ The effective recording base folder should resolve in this order:
 Current implementation status:
 
 - `models.default_detect_engine` is used to preselect the GUI detect engine
+- `ORANGE_DEFAULT_DETECT_ENGINE` can override that preselection for one runtime
+  process; this is useful for validation before changing persistent app config
 - if no detect engine is configured or selected, starting a YOLO-enabled stream
   is blocked by GUI preflight
 - `storage.default_recording_root` is used for the GUI default recording root

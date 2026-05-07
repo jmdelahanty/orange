@@ -2,32 +2,36 @@
 
 ## Purpose
 
-This checklist turns the current split-GOP validation plan into an execution
-order for the next code slice: using the shared recording validator as a real
-preflight gate instead of only a read-only GUI summary.
+This checklist records the implementation state for the split-GOP recording
+preflight gate. It was originally written as the execution order for turning
+the shared recording validator into a real preflight gate instead of only a
+read-only GUI summary.
 
 The intent is to prevent Orange from starting a recording session whose GPU
 topology or resource claims are already known to be invalid.
 
 ## Current State
 
-Today on `exp/gop-split-a16`:
+Updated 2026-05-04 on `exp/gop-split-a16`:
 
 - split-GOP validation rules are documented in
   [advanced_recording_validation_plan.md](/home/jeremy/orange-gop-split-a16/docs/advanced_recording_validation_plan.md)
 - the GUI shows a read-only validation summary in
   [src/gui/recording_panel.cpp](/home/jeremy/orange-gop-split-a16/src/gui/recording_panel.cpp)
-- the validation logic itself now lives in the shared helper module:
+- the validation logic and preflight helper now live in the shared helper
+  module:
   - [src/recording_validation.h](/home/jeremy/orange-gop-split-a16/src/recording_validation.h)
   - [src/recording_validation.cpp](/home/jeremy/orange-gop-split-a16/src/recording_validation.cpp)
-- unit tests already cover the core policy rules in
+- unit tests cover the core policy rules and preflight flattening in
   [tools/recording_validation_tests.cpp](/home/jeremy/orange-gop-split-a16/tools/recording_validation_tests.cpp)
+- GUI stream start and record start both run the shared preflight before
+  proceeding.
+- Headless local/spec startup reuses the same shared preflight before
+  recording begins.
+- GUI preflight errors are stored and shown near the recording controls.
 
-What is still missing is the actual session guard:
-
-- GUI can show that a configuration is invalid, but still attempts to start
-  streaming / recording unless the operator notices
-- headless does not yet fail early on the same preflight rules
+This checklist is retained as an implementation audit. The core preflight gate
+has landed; remaining items are validation coverage or future UX polish.
 
 ## Design Decision
 
@@ -55,17 +59,17 @@ Introduce one shared helper that returns:
 
 ### Checklist
 
-- [ ] Add a preflight result struct, for example:
+- [x] Add a preflight result struct, for example:
   - `RecordingPreflightResult`
   - fields:
     - `bool ok`
     - `std::vector<CameraRecordingValidationSummary> summaries`
     - `std::vector<std::string> errors`
     - optional `std::vector<std::string> warnings`
-- [ ] Add a helper that builds validation inputs from the current session state
-- [ ] Add a helper that runs `validate_recording_configuration(...)` and
+- [x] Add a helper that builds validation inputs from the current session state
+- [x] Add a helper that runs `validate_recording_configuration(...)` and
       flattens errors into user-facing messages
-- [ ] Keep this helper outside the GUI layer so GUI and headless can both use it
+- [x] Keep this helper outside the GUI layer so GUI and headless can both use it
 
 ### Recommended Placement
 
@@ -85,13 +89,13 @@ Use the real current session state rather than inventing a second config model.
 
 ### Checklist
 
-- [ ] Build one validation input per camera from:
+- [x] Build one validation input per camera from:
   - `cameras_params[i].gpu_id`
   - `cameras_params[i].recording.strategy`
   - `cameras_params[i].recording.constraints`
   - `cameras_select[i].record`
-- [ ] Do **not** turn `gpu_id` into a list
-- [ ] Continue treating the claimed GPU set as:
+- [x] Do **not** turn `gpu_id` into a list
+- [x] Continue treating the claimed GPU set as:
   - `{source_gpu_id} U {split_gop.encoder_gpu_ids}`
 
 ## GUI Gate: Start Streaming
@@ -109,16 +113,16 @@ split-GOP session.
 
 ### Checklist
 
-- [ ] Run the shared recording preflight immediately before flipping
+- [x] Run the shared recording preflight immediately before flipping
       `camera_control->subscribe` to `true`
-- [ ] Only gate when the session actually includes record-enabled split-GOP
+- [x] Only gate when the session actually includes record-enabled split-GOP
       cameras
-- [ ] If preflight fails:
-  - [ ] keep `camera_control->subscribe` unchanged
-  - [ ] do not allocate recording pipelines
-  - [ ] capture the preflight errors into GUI-visible state
-- [ ] If preflight succeeds:
-  - [ ] continue with the existing stream-start path unchanged
+- [x] If preflight fails:
+  - [x] keep `camera_control->subscribe` unchanged
+  - [x] do not allocate recording pipelines
+  - [x] capture the preflight errors into GUI-visible state
+- [x] If preflight succeeds:
+  - [x] continue with the existing stream-start path unchanged
 
 ## GUI Gate: Start Recording
 
@@ -135,14 +139,14 @@ This is a backup guard and keeps the rule close to the record action as well.
 
 ### Checklist
 
-- [ ] Before the `"next_record_state = true"` path proceeds, rerun the shared
+- [x] Before the `"next_record_state = true"` path proceeds, rerun the shared
       preflight
-- [ ] If preflight fails:
-  - [ ] do not set `record_video = true`
-  - [ ] do not create recording metadata for that run
-  - [ ] show/store the error messages
-- [ ] If preflight succeeds:
-  - [ ] leave the current record-start behavior unchanged
+- [x] If preflight fails:
+  - [x] do not set `record_video = true`
+  - [x] do not create recording metadata for that run
+  - [x] show/store the error messages
+- [x] If preflight succeeds:
+  - [x] leave the current record-start behavior unchanged
 
 ## GUI Error Surface
 
@@ -153,15 +157,15 @@ session.
 
 ### Checklist
 
-- [ ] Add lightweight GUI state for the most recent preflight result
-- [ ] Show a compact red summary near the recording controls when the last
+- [x] Add lightweight GUI state for the most recent preflight result
+- [x] Show a compact red summary near the recording controls when the last
       preflight failed
-- [ ] Support multiple error lines, for example:
+- [x] Support multiple error lines, for example:
   - topology mismatch
   - missing peer access
   - overlapping GPU claims
-- [ ] Keep the read-only advanced validation summary in place
-- [ ] Do **not** silently auto-correct invalid GPU choices
+- [x] Keep the read-only advanced validation summary in place
+- [x] Do **not** silently auto-correct invalid GPU choices
 
 ### Nice-To-Have Later
 
@@ -181,10 +185,10 @@ Use the same preflight rules in headless so GUI and automated runs do not drift.
 
 ### Checklist
 
-- [ ] Reuse the same shared preflight helper before headless recording begins
-- [ ] Fail early with a clear log message if preflight fails
-- [ ] Include the specific validation errors in stderr/stdout
-- [ ] Do not partially start a run that already violates split-GOP topology or
+- [x] Reuse the same shared preflight helper before headless recording begins
+- [x] Fail early with a clear log message if preflight fails
+- [x] Include the specific validation errors in stderr/stdout
+- [x] Do not partially start a run that already violates split-GOP topology or
       GPU-claim rules
 
 ## Tests
@@ -202,29 +206,29 @@ The unit tests already cover the core validator rules:
 
 ### Next Test Checklist
 
-- [ ] Add unit tests for the preflight result flattening helper
+- [x] Add unit tests for the preflight result flattening helper
 - [ ] Add unit tests that verify:
-  - no split-GOP record-enabled cameras -> preflight is effectively a no-op
-  - mixed session with one valid split-GOP camera and one single-session camera
+  - [x] no split-GOP record-enabled cameras -> preflight is effectively a no-op
+  - [ ] mixed session with one valid split-GOP camera and one single-session camera
     still passes
 - [ ] If the preflight helper gains warning support, add warning-path tests too
 
 ### Manual Validation Checklist
 
-- [ ] Valid `2010096 GPU5+GPU6` GUI session still starts streaming and recording
-- [ ] Invalid non-`PIX` helper pair is blocked before stream start
+- [x] Valid `2010096 GPU5+GPU6` GUI session still starts streaming and recording
+- [x] Invalid non-`PIX` helper pair is blocked before stream start
 - [ ] Two record-enabled split-GOP cameras with overlapping claimed GPUs are
       blocked
-- [ ] Single-session recording remains unaffected
+- [x] Single-session recording remains unaffected
 
 ## Suggested Implementation Order
 
-1. Add `RecordingPreflightResult` and the shared preflight helper.
-2. Gate `Start streaming`.
-3. Gate record start.
-4. Add compact GUI error display.
-5. Reuse the same helper in headless.
-6. Add the extra preflight-specific unit tests.
+1. [x] Add `RecordingPreflightResult` and the shared preflight helper.
+2. [x] Gate `Start streaming`.
+3. [x] Gate record start.
+4. [x] Add compact GUI error display.
+5. [x] Reuse the same helper in headless.
+6. [ ] Add the remaining preflight-specific unit/manual tests noted above.
 
 ## Non-Goals
 
@@ -237,7 +241,7 @@ This checklist does not propose:
 
 ## Recommendation
 
-Implement the stream-start guard first and keep it strict.
+The stream-start guard is implemented and should stay strict.
 
 That gives the highest value with the least behavioral ambiguity:
 

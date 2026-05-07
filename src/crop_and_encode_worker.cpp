@@ -708,6 +708,11 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
 
     std::unique_ptr<CropEncodeJob> job(raw_job);
     if (!job) {
+        if (camera_control_ && !camera_control_->record_video && is_recording_) {
+            if (!camera_control_->recording_draining || drain_ready()) {
+                finalize_recording();
+            }
+        }
         return false;
     }
 

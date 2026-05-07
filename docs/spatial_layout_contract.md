@@ -648,14 +648,28 @@ Citrus owns:
 
 ## V1 Implementation Guidance
 
-Recommended first implementation slice:
+Current implemented slice:
 
-1. Add canonical `arena_layout` artifact support with `circle` and `rectangle`
-   zones only.
-2. Keep `dish_mask` as a separate per-camera artifact.
-3. Add a per-recording `registration` block in `recording_snapshot.json`.
-4. Emit resolved camera-pixel overlays for all visible zones.
-5. Let Citrus consume those overlays directly.
+1. Orange can save canonical `arena_layout` artifact directories containing
+   `circle` and `rectangle` zones plus resolved runtime sidecars.
+2. Saved artifact directories contain `measurement.json`,
+   `arena_layout_runtime.json`, and `dish_mask_runtime.json`.
+3. Recording startup can load those saved files through
+   `ORANGE_SPATIAL_CALIBRATION_ARTIFACT_<serial>` and upsert
+   `recording_snapshot.json["calibrations"][serial]`.
+4. The emitted snapshot carries `arena_layout.registration`, resolved
+   camera-pixel zone overlays, and the resolved `dish_mask.runtime`.
+5. Until a standalone canonical `dish_mask` artifact file exists, the emitted
+   `dish_mask.calibration_ref` is a runtime-derived ref tied to the saved arena
+   artifact id.
+
+Remaining recommended slice:
+
+1. Add standalone canonical `dish_mask` artifact packages when the dish mask is
+   no longer just the saved runtime sidecar.
+2. Add a first-class UI/session assignment surface instead of relying on the
+   per-camera environment variables.
+3. Let Citrus consume the emitted `calibrations[serial]` overlays directly.
 
 Recommended first fitting strategy:
 

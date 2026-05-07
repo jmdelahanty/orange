@@ -35,6 +35,7 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
                                             PTPParams* ptp_params,
                                             const std::string& recording_sink_mode = "real");
 void request_stop_recording_run(CameraControl* camera_control);
+void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control);
 std::string current_recording_folder(CameraControl* camera_control);
 void start_recording_pipeline_for_camera(RecordingSessionState* state, int camera_index);
 void request_stop_recording_pipeline_for_camera(RecordingSessionState* state, int camera_index);

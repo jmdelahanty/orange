@@ -1475,7 +1475,9 @@ cd /home/jeremy/orange-gop-split-a16
 
 This script defaults to the local config folder
 `/home/jeremy/orange_data/config/local/100_cam4_ptp`, validates schema-4
-`aq = off`, `temporal_aq = off`, and PTP fields, then launches the GUI. Use:
+`aq = off`, `temporal_aq = off`, and PTP fields, sets
+`ORANGE_PTP_REGISTER_READ_DECIMATE=100`, and preselects the high-effort A16
+detect engine with `ORANGE_DEFAULT_DETECT_ENGINE` for this run. Use:
 
 ```bash
 ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh

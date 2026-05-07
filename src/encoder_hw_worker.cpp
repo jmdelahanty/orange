@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
@@ -2482,6 +2483,9 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             if (!draining || drain_ready()) {
                 std::cout << "[" << this->threadName << "] HW Recording stopped. Finalizing video file..." << std::endl;
                 finalize_recording();
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                PutObjectToQueueIn(nullptr);
             }
         }
         return false;

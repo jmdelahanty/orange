@@ -1,0 +1,76 @@
+{
+  "experiment_id": "2010096_external_recorder_supervisor_plan_smoke",
+  "notes": "Contract-only external recorder supervisor dry-run spec. Use external_recorder_supervisor_plan --spec to validate the recorder command plan without launching cameras, TensorRT, or NVENC.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 3,
+    "warmup_s": 1,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "free_run",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_recabled_a16",
+    "output_root": "/tmp",
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "artifact_root": "/tmp/orange_external_recorder_supervisor_plan_2010096",
+      "session_id": "2010096_external_recorder_supervisor_plan_smoke",
+      "require_summary": true,
+      "require_video_sanity": true,
+      "require_merged_mp4": false,
+      "require_gop_routing": true,
+      "streams": {
+        "2010096": {
+          "stream_id": "2010096",
+          "camera_serial": "2010096",
+          "analytics_gpu_id": 5,
+          "recorder_gpu_id": 5,
+          "expected_shard_gpu_ids": [5],
+          "routing_policy": "single_shard",
+          "summary_json": "/tmp/orange_external_recorder_supervisor_plan_2010096/external_recorder_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_supervisor_plan_2010096/external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_supervisor_plan_2010096/Cam2010096_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_supervisor_plan_2010096/external_gop_routing.csv",
+          "encode_fps": 60,
+          "encode_max_fps": 60,
+          "encode_queue_depth": 8,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25],
+    "aq": ["off"],
+    "temporal_aq": ["off"],
+    "lookahead": ["off"]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

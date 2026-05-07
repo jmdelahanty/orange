@@ -734,6 +734,12 @@ Cross-process:
 
 ## Implementation Checklist
 
+Status update (2026-05-04): Phase 0 and Phase 1 diagnostics succeeded. The
+diagnostic external recorder now has metadata, MP4 output, multi-shard
+split-GOP routing, GOP-ordered merged output, prewarm, and two-camera PTP smoke
+coverage. The remaining work is to convert that diagnostic harness into a
+production/session-managed recorder and GUI backend.
+
 Phase 0:
 
 - [x] Add or reuse a headless analytics mode with full-frame recording disabled
@@ -753,7 +759,10 @@ Phase 0:
 
 Phase 1:
 
-- [ ] Define versioned recorder descriptor protocol.
+- [ ] Define versioned production recorder descriptor protocol.
+      Diagnostic descriptors already carry session/routing metadata, but the
+      protocol still lacks explicit versioning, health, heartbeat,
+      stop/drain/finalize, and production failure semantics.
 - [x] Prototype CUDA IPC memory import for one GPU.
 - [x] Add detach ack path and source-lease timeout policy.
 - [x] Encode one camera at sustainable single-session FPS.
@@ -763,11 +772,15 @@ Phase 1:
 
 Phase 2:
 
-- [ ] Move split-GOP routing into recorder supervisor.
-- [ ] Add encoder shard lifecycle and per-shard timing.
-- [ ] Preserve existing strict GOP/order/output policy.
-- [ ] Reproduce production `100 fps` two-camera recording.
-- [ ] Compare YOLO p95 to no-full-frame, same-process, and Phase 1 results.
+- [x] Add diagnostic split-GOP routing to the external recorder probe.
+- [x] Add diagnostic encoder shard lifecycle and per-shard timing.
+- [x] Preserve GOP/order output in the diagnostic merged MP4 coordinator.
+- [x] Reproduce full-rate `100 fps` two-camera PTP recording in the headless
+      external-recorder diagnostic harness.
+- [x] Compare YOLO p95 to no-full-frame, same-process, and Phase 1 results.
+- [ ] Move diagnostic routing into production/session recorder supervision.
+- [ ] Add production failure handling around shard startup, heartbeat, drain,
+      finalization, and artifact publication.
 
 Phase 3:
 

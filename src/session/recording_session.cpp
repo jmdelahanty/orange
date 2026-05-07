@@ -206,6 +206,19 @@ void request_stop_recording_run(CameraControl* camera_control)
     }
 }
 
+void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control)
+{
+    request_stop_recording_run(camera_control);
+    if (!state) {
+        return;
+    }
+    for (auto& pipeline : state->recording_pipelines) {
+        if (pipeline) {
+            pipeline->request_recording_drain();
+        }
+    }
+}
+
 std::string current_recording_folder(CameraControl* camera_control)
 {
     if (!camera_control) {

@@ -256,21 +256,33 @@ VIDEO_SANITY_JSON="$RUN_DIR/external_video_sanity.json"
 MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
 KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.csv"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
+SESSION_CONTRACT_JSON="$RUN_DIR/external_recorder_session.json"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 source = Path(sys.argv[1])
 dest = Path(sys.argv[2])
-stamp = sys.argv[3]
-camera_serial = sys.argv[4]
-gpu_id = int(sys.argv[5])
-duration = int(sys.argv[6])
-warmup = int(sys.argv[7])
-yolo_prewarm_iterations = int(sys.argv[8])
-ptp_register_read_decimate = int(sys.argv[9])
+contract_dest = Path(sys.argv[3])
+stamp = sys.argv[4]
+camera_serial = sys.argv[5]
+gpu_id = int(sys.argv[6])
+recorder_gpu_id = int(sys.argv[7])
+shard_gpu_ids = sys.argv[8]
+duration = int(sys.argv[9])
+warmup = int(sys.argv[10])
+yolo_prewarm_iterations = int(sys.argv[11])
+ptp_register_read_decimate = int(sys.argv[12])
+run_dir = Path(sys.argv[13])
+summary_json = Path(sys.argv[14])
+video_sanity_json = Path(sys.argv[15])
+mp4_out = Path(sys.argv[16])
+gop_routing_csv = Path(sys.argv[17])
+encode_fps = int(sys.argv[18])
+encode_max_fps = int(sys.argv[19])
+skip_video_sanity = int(sys.argv[20])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -292,9 +304,46 @@ fixed["recording_sink_mode"] = "external_ipc"
 fixed["ptp_register_read_decimate"] = ptp_register_read_decimate
 if isinstance(fixed.get("yolo_worker"), dict):
     fixed["yolo_worker"]["prewarm_iterations"] = yolo_prewarm_iterations
+expected_shard_gpu_ids = (
+    [int(item) for item in shard_gpu_ids.split(",") if item]
+    if shard_gpu_ids
+    else [recorder_gpu_id]
+)
+routing_policy = "gop_modulo" if len(expected_shard_gpu_ids) > 1 else "single_shard"
+contract = {
+    "schema_id": "orange.external_recorder.contract",
+    "schema_version": 1,
+    "mode": "diagnostic_ipc_v1",
+    "artifact_root": str(run_dir),
+    "session_id": spec["experiment_id"],
+    "require_summary": True,
+    "require_video_sanity": skip_video_sanity == 0,
+    "require_merged_mp4": len(expected_shard_gpu_ids) > 1,
+    "require_gop_routing": True,
+    "streams": {
+        camera_serial: {
+            "stream_id": camera_serial,
+            "camera_serial": camera_serial,
+            "analytics_gpu_id": gpu_id,
+            "recorder_gpu_id": recorder_gpu_id,
+            "expected_shard_gpu_ids": expected_shard_gpu_ids,
+            "routing_policy": routing_policy,
+            "summary_json": str(summary_json),
+            "video_sanity_json": str(video_sanity_json),
+            "mp4": str(mp4_out),
+            "gop_routing_csv": str(gop_routing_csv),
+            "encode_fps": encode_fps,
+            "encode_max_fps": encode_max_fps,
+        }
+    },
+}
+fixed["external_recorder_contract"] = contract
 
 with dest.open("w", encoding="utf-8") as f:
     json.dump(spec, f, indent=2)
+    f.write("\n")
+with contract_dest.open("w", encoding="utf-8") as f:
+    json.dump(contract, f, indent=2)
     f.write("\n")
 PY
 
@@ -659,3 +708,7 @@ if not content_valid:
     raise SystemExit(1)
 PY
 fi
+
+"$REPO_ROOT/scripts/verify_external_recorder_session.py" \
+  "$RUN_DIR" \
+  --analytics-root "$ANALYTICS_ROOT"

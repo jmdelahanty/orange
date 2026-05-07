@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -81,8 +82,25 @@ LatencySummary summarize_latency(const std::vector<double>& samples)
 PoseWorker::PoseWorker(const char* name, CameraParams* camera_params, CropProducer* crop_producer)
     : CThreadWorker<CropFrame>(name),
       camera_params_(camera_params),
-      crop_producer_(crop_producer)
+      crop_producer_(crop_producer),
+      pose_event_logger_(
+          camera_params ? camera_params->camera_serial : std::string(),
+          camera_params ? camera_params->camera_id : 0,
+          name ? name : "PoseWorker")
 {
+    if (const char* engine_path = std::getenv("ORANGE_POSE_ENGINE_PATH")) {
+        pose_engine_path_ = engine_path;
+        if (!pose_engine_path_.empty()) {
+            pose_model_id_ = build_model_id_from_path(pose_engine_path_);
+        }
+    }
+    if (const char* skeleton_path = std::getenv("ORANGE_POSE_SKELETON_PATH")) {
+        pose_skeleton_path_ = skeleton_path;
+    }
+    if (const char* skeleton_id = std::getenv("ORANGE_POSE_SKELETON_ID")) {
+        pose_skeleton_id_ = skeleton_id;
+    }
+
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
 }
@@ -123,6 +141,7 @@ void PoseWorker::RotateRecordingFolder(const std::string& recording_folder)
 
     if (!current_recording_folder_.empty()) {
         write_recording_summary_locked();
+        pose_event_logger_.Close();
         reset_run_counters();
     }
 
@@ -174,6 +193,7 @@ void PoseWorker::CloseRecording()
     }
 
     write_recording_summary_locked();
+    pose_event_logger_.Close();
     current_recording_folder_.clear();
     pose_perf_file_.clear();
     reset_run_counters();
@@ -215,6 +235,7 @@ bool PoseWorker::TryEnqueueCrop(CropFrame* crop_frame)
 bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
 {
     if (!crop_frame) {
+        CloseRecording();
         return false;
     }
 
@@ -273,10 +294,77 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
         }
     }
 
+    if (record_active) {
+        pose_event_logger_.Enqueue(build_pose_event_record(
+            crop_frame->frame,
+            pose_start_host_ns,
+            pose_done_host_ns));
+    }
+
     if (crop_producer_) {
         crop_producer_->RecycleAfterConsumerStream(crop_frame, stream_);
     }
     return false;
+}
+
+pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
+    const CropFrameSnapshot& frame,
+    uint64_t pose_start_host_ns,
+    uint64_t pose_done_host_ns) const
+{
+    pose_event_log::PoseResultRecord record;
+    record.recording_folder = frame.recording_folder;
+    record.status = "no_result";
+    record.backend = pose_backend_;
+    record.mode = pose_mode_;
+    record.model_id = pose_model_id_;
+    record.engine_path = pose_engine_path_;
+    record.skeleton_id = pose_skeleton_id_;
+    record.skeleton_path = pose_skeleton_path_;
+    record.gpu_id = camera_params_ ? camera_params_->gpu_id : -1;
+
+    record.local_frame_id = frame.local_frame_id;
+    record.camera_frame_id = frame.camera_frame_id;
+    record.recording_frame_id = frame.recording_frame_id;
+    record.record_active = frame.recording_frame_id > 0 && !frame.recording_folder.empty();
+    record.camera_timestamp = frame.timestamp;
+    record.timestamp_sys_ns = frame.timestamp_sys;
+    record.source_width = frame.source_width;
+    record.source_height = frame.source_height;
+    record.blank_frame = frame.blank_frame;
+    record.has_detection = frame.has_detection;
+    record.detection_confidence = frame.detection_confidence;
+    record.detection_x_px = frame.detection_x;
+    record.detection_y_px = frame.detection_y;
+    record.detection_width_px = frame.detection_w;
+    record.detection_height_px = frame.detection_h;
+    record.crop_x_px = frame.crop_x;
+    record.crop_y_px = frame.crop_y;
+    record.crop_width_px = frame.crop_w;
+    record.crop_height_px = frame.crop_h;
+
+    record.timing.capture_to_detect_done_ms = elapsed_ms(
+        frame.acquisition_receive_host_ns,
+        frame.yolo_detect_done_host_ns);
+    record.timing.detect_to_crop_worker_start_ms = elapsed_ms(
+        frame.yolo_detect_done_host_ns,
+        frame.crop_producer_worker_start_host_ns);
+    record.timing.crop_worker_start_to_crop_ready_ms = elapsed_ms(
+        frame.crop_producer_worker_start_host_ns,
+        frame.crop_ready_host_ns);
+    record.timing.detect_to_crop_ready_ms = elapsed_ms(
+        frame.yolo_detect_done_host_ns,
+        frame.crop_ready_host_ns);
+    record.timing.crop_ready_to_pose_start_ms = elapsed_ms(
+        frame.crop_ready_host_ns,
+        pose_start_host_ns);
+    record.timing.pose_start_to_pose_done_ms = elapsed_ms(
+        pose_start_host_ns,
+        pose_done_host_ns);
+    record.timing.capture_to_pose_done_ms = elapsed_ms(
+        frame.acquisition_receive_host_ns,
+        pose_done_host_ns);
+    return record;
 }
 
 void PoseWorker::reset_run_counters()

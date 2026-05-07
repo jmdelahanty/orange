@@ -5,42 +5,73 @@ Scope: make `CropAndEncodeWorker` practically usable again in `orange-jeremy` wi
 
 ## Current State Snapshot
 
+Updated 2026-05-04:
+
+- Crop+Encode is now operator-reachable from the GUI camera table. The table
+  exposes per-camera Crop and Pose checkboxes plus an `All` crop toggle, and
+  disables those toggles while streaming.
+- GUI stream/start preflight now blocks invalid crop selections:
+  - Crop+Encode requires full-frame Record for that camera.
+  - Crop+Encode requires YOLO.
+  - Pose currently requires Crop+Encode.
+  - Crop size must fit inside the configured source frame.
+- `CropProducerWorker` and `CropProducer` now exist as a crop producer stage.
+  `YoloWorker` hands source frames to the producer; `CropAndEncodeWorker`
+  consumes the resulting `CropFrame` payload as a sidecar.
+- `CropProducer` owns a bounded GPU crop buffer/event pool, source-release
+  event handling, crop leases, and initial pose-offer/drop counters.
+- `PoseWorker` exists as a bounded noop `CropFrame` consumer. It validates the
+  crop lease/event path, writes aggregate pose timing, and now emits
+  `Cam<serial>_pose_events.jsonl` audit rows with explicit `no_result` pose
+  payloads. It does not yet load TensorRT, emit keypoints, publish IPC, or draw
+  overlays.
+- Headless still disables `crop_and_encode`; GUI remains the validated entry
+  point for crop recording.
+
+Historical context:
+
 - Crop/encode worker code path is still wired into stream startup/shutdown:
   - creation/link/start: `src/orange.cpp:894`, `src/orange.cpp:906`, `src/orange.cpp:929`
   - stop/final flush: `src/orange.cpp:1063`, `src/orange.cpp:1012`
-- YOLO dispatch into crop worker still exists, gated by active recording:
+- YOLO dispatch into the crop producer / crop worker path still exists, gated
+  by active recording:
   - `src/yolo_worker.cpp:810`
 - The runtime flag exists in camera selection state:
   - `src/video_capture.h:205`
-- Camera control table does not expose a crop/encode toggle column, so the flag is not user-reachable in the current UI:
-  - table/header/rows: `src/orange.cpp:377`, `src/orange.cpp:422`, `src/orange.cpp:464`
 - Existing TODOs cover related risks but not full reactivation:
   - `docs/threading_review_todo.md`
   - `docs/recording_segment_rollover_todo.md`
 
 ## Gap Summary
 
-`CropAndEncodeWorker` is present but effectively dormant from normal operator flow because there is no clear control path to enable `crop_and_encode` per camera.
+The old operator-reachability gap is closed for GUI crop recording. The current
+gaps are:
+
+- real Pose TensorRT/model output is not implemented,
+- pose/crop outputs are still recording-oriented and not a non-recording live
+  pose mode,
+- pose JSONL exists, but currently records backend-ready noop rows rather than
+  keypoints,
+- GUI crop preview is not yet an independent droppable/rate-limited
+  `CropFrame` consumer,
+- crop/pose aggregate counters still need to be promoted into runtime/pipeline
+  status,
+- longer crop-enabled stress validation is still needed.
 
 ## Audit Update (2026-03-16)
 
-- Re-checked current runtime wiring:
-  - worker creation/start/flush still exists,
-  - worker creation is already gated by `crop_and_encode=true`,
-  - crop file creation is therefore already gated once that flag is set.
-- The practical blocker is still operator reachability:
-  - the camera control table has no crop toggle,
-  - the flag is not persisted or surfaced clearly.
-- Crop dispatch is still gated by `camera_control_->record_video`, so this path is not yet usable for non-recording crop/pose consumers.
-- No explicit crop observability, dynamic runtime toggle behavior, or lifecycle hardening has been added since this TODO was written.
+Superseded by the 2026-05-04 snapshot above. The main March gap was operator
+reachability; the GUI now exposes Crop/Pose controls and preflight gating. The
+remaining March-era concern that still applies is that crop/pose dispatch is
+recording-oriented, so non-recording live pose is still future work.
 
 ## Implementation Plan Update (2026-04-22)
 
 Recent GUI validation showed that one-camera `100 fps` full-frame recording with
 YOLO can run cleanly with aligned video, metadata, YOLO event JSONL, and YOLO
 perf CSV outputs. That makes lossless crop recording a practical next target,
-but `CropAndEncodeWorker` should still be treated as dormant code until it is
-hardened.
+and the GUI crop recording path has since been reactivated behind explicit
+operator controls and preflight gates.
 
 Architecture decision:
 
@@ -83,10 +114,10 @@ Headless decision:
 Rationale for GUI-first:
 
 - The current headless runner intentionally disables `crop_and_encode`.
-- Headless does not yet run the real GUI YOLO worker path that feeds
-  `CropAndEncodeWorker`.
-- Adding headless crop immediately would couple two unsettled changes:
-  reactivating crop encode and introducing real headless YOLO/crop orchestration.
+- Headless real YOLO now exists, but headless crop orchestration is still not
+  part of the validated runner shape.
+- Adding headless crop immediately would couple crop validation to a separate
+  headless crop/session integration path.
 - A GUI-first slice gives a narrower failure surface and still exercises the
   real camera, real YOLO engine, real source-frame lifetime, and real NVENC path.
 
@@ -142,9 +173,8 @@ Notes:
 - `write_metadata_for_every_frame=true` is important. If the crop video contains
   blank frames when YOLO finds no fish, the metadata should still have one row
   per encoded crop frame with `has_detection=false`.
-- The artifact contract should distinguish the detection box from the actual
-  crop rectangle. The current writer labels detection bbox fields as `crop_*`,
-  which is misleading.
+- The artifact contract distinguishes the detection box from the actual crop
+  rectangle. That separation is now reflected in crop metadata rows.
 
 ### Phase A: Split Crop Production From Encoding
 
@@ -159,9 +189,15 @@ Notes:
       synchronization.
 - [ ] Allow independent bounded consumers:
       preview, lossless crop encoder, and future pose TensorRT worker.
+      Current status: crop encode and noop pose use `CropFrame` leases; GUI
+      preview still needs to become an independent droppable/rate-limited
+      consumer, and real Pose TensorRT remains future work.
 - [ ] Make consumer overload best-effort: drop crop/pose work when queues or
       pools are full rather than blocking acquisition, full-frame recording, or
       YOLO indefinitely.
+      Current status: crop pool/queue pressure and noop pose queue pressure are
+      best-effort/drop-counted; the remaining open part is production polish and
+      runtime status surfacing.
 
 Implementation note (2026-04-23):
 
@@ -374,30 +410,31 @@ Architecture note (2026-04-23):
 
 ### Phase B: Safety Patch Before Enabling
 
-- [ ] Make `flush_and_close()` idempotent and safe when no writer was opened.
-- [ ] Guard every `writer_.video->push_packet(...)` call.
-- [ ] Add explicit crop producer/encode stream completion before releasing any
-      source `WORKER_ENTRY` reference.
-- [ ] Reject crop mode when frame dimensions are smaller than the configured
+- [x] Make `flush_and_close()` idempotent and safe when no writer was opened.
+- [x] Guard every `writer_.video->push_packet(...)` call.
+- [x] Add explicit crop-producer source-dependent completion before releasing
+      any source `WORKER_ENTRY` reference. Crop encode now consumes the detached
+      `CropFrame` payload instead of extending source-frame lifetime.
+- [x] Reject crop mode when frame dimensions are smaller than the configured
       crop size.
-- [ ] Require YOLO for crop mode, or block stream start with clear GUI error
+- [x] Require YOLO for crop mode, or block stream start with clear GUI error
       text when `crop_and_encode=true` and `yolo=false`.
 - [ ] Keep the current Mono8-only crop encode path explicit in logs/snapshots.
       Do not silently imply color/Bayer support.
 
 ### Phase C: Metadata and Artifact Contract
 
-- [ ] Update `Cam<serial>_crop_meta.csv` to one row per crop video frame.
-- [ ] Include `recording_frame_id`, `local_frame_id`, `camera_frame_id`,
+- [x] Update `Cam<serial>_crop_meta.csv` to one row per crop video frame.
+- [x] Include `recording_frame_id`, `local_frame_id`, `camera_frame_id`,
       `timestamp`, `timestamp_sys`, and `has_detection`.
-- [ ] Include actual crop rectangle fields:
+- [x] Include actual crop rectangle fields:
       `crop_x`, `crop_y`, `crop_w`, `crop_h`.
-- [ ] Include source detection fields separately:
+- [x] Include source detection fields separately:
       `detection_x`, `detection_y`, `detection_w`, `detection_h`,
       `detection_confidence`.
-- [ ] Include `blank_frame` or `no_detection_policy` so consumers can interpret
+- [x] Include `blank_frame` or `no_detection_policy` so consumers can interpret
       no-detection frames without guessing.
-- [ ] Update `recording_snapshot.json` with crop output metadata under a
+- [x] Update `recording_snapshot.json` with crop output metadata under a
       multi-output encoder shape, or a documented transitional crop section.
 - [ ] Reserve pose-on-crop metadata fields for the later pose worker:
       pose engine id/path, crop tensor geometry, input layout, keypoint schema,
@@ -405,26 +442,26 @@ Architecture note (2026-04-23):
 
 ### Phase D: Observability
 
-- [ ] Add crop counters:
+- [x] Add crop counters:
       frames enqueued, frames encoded, blank frames encoded, frames dropped,
       queue depth high-water mark, encode failures.
-- [ ] Add crop timing:
+- [x] Add crop timing:
       YOLO-to-crop enqueue delay, crop wait, crop copy/prepare, NVENC encode,
       writer push time, total crop worker time.
-- [ ] Add pose-ready crop counters even before pose is implemented:
+- [x] Add pose-ready crop counters even before pose is implemented:
       crop frames produced, crop pool unavailable, consumer drops by consumer.
-- [ ] Emit a `Cam<serial>_crop_perf.csv` during recording.
+- [x] Emit a `Cam<serial>_crop_perf.csv` during recording.
 - [ ] Surface crop active/error state in the GUI near the recording/YOLO state.
 
 ### Phase E: GUI Enablement and Validation
 
-- [ ] Add a visible per-camera `Crop` or `Crop+Encode` control.
-- [ ] Start with a conservative operator policy:
+- [x] Add a visible per-camera `Crop` or `Crop+Encode` control.
+- [x] Start with a conservative operator policy:
       crop can be enabled before stream start, not toggled dynamically during
       active streaming.
-- [ ] Run one-camera GUI smoke:
+- [x] Run one-camera GUI smoke:
       stream + YOLO + full-frame record + crop record.
-- [ ] Validate:
+- [x] Validate:
       main video frame count, main metadata rows, YOLO JSONL rows, crop video
       frame count, crop metadata rows, no frame-id gaps, no acquisition
       starvation, no unexpected `active_recorders` drain timeout.
@@ -433,15 +470,15 @@ Architecture note (2026-04-23):
 
 ### Phase F: Pose TensorRT Integration After Crop Producer Is Stable
 
-- [ ] Implement `PoseWorker` as a consumer of `CropFrame`, not as a consumer of
-      encoded crop video.
+- [x] Implement noop `PoseWorker` as a consumer of `CropFrame`, not as a
+      consumer of encoded crop video.
 - [ ] Add model-specific crop tensor conversion after high-resolution crop
       production and before TensorRT enqueue.
-- [ ] Return pose crop buffers to the pool after the pose worker records or
-      observes completion.
+- [x] Return pose crop buffers to the pool after the noop pose worker records
+      or observes completion.
 - [ ] Publish pose results with both crop-local coordinates and transformed
       full-frame coordinates.
-- [ ] Keep pose best-effort initially: if pose is slower than crop production,
+- [x] Keep noop pose best-effort initially: if pose is slower than crop production,
       drop pose inputs and count drops instead of blocking full-frame recording.
 - [ ] Decide whether pose outputs are live latest-state IPC, Orange-owned JSONL
       audit events, or both.
@@ -596,19 +633,17 @@ the source frame lease can be held until preview/encode/sync work finishes. That
 is the wrong long-term ownership model for pose, because pose would add another
 consumer to the same serialized path.
 
-Current first split slice:
+Historical first split slice:
 
-- `CropAndEncodeWorker` copies frame identity, timestamps, crop geometry, and
-  detection geometry into a local snapshot before any source-frame release.
-- It owns a small CUDA source-release event pool and drains pending releases
-  with `cudaEventQuery`, synchronizing only during teardown or rare event-pool
-  exhaustion.
-- Detection frames release the source `WORKER_ENTRY` after source-dependent
-  crop/encode input work is queued and the source-safe CUDA event is recorded.
-- No-detection crop frames release the source immediately because blank preview
-  and blank crop video encoding do not need the source image.
-- Preview and crop video encoding still run inside the same worker, so this is
-  not yet the full `CropFrame` producer/consumer architecture.
+- The first transitional slice made `CropAndEncodeWorker` snapshot frame and
+  detection metadata before source-frame release and introduced source-safe CUDA
+  event release.
+- The current code has moved beyond that transitional shape:
+  `CropProducerWorker` / `CropProducer` own the crop pool, readiness events,
+  leases, and source-release path, while `CropAndEncodeWorker` is a downstream
+  crop-video/preview consumer.
+- GUI preview still runs inside the crop encode worker and should become an
+  independent droppable/rate-limited consumer later.
 
 Target ownership model:
 
@@ -670,10 +705,11 @@ Next artifact validation checklist:
 
 ## Immediate Implementation Checklist: Crop Producer Split
 
-Current implementation note (2026-04-23):
+Current implementation note (updated 2026-05-04):
 
-- The first crop-producer split is implemented inside
-  `CropAndEncodeWorker`, not as a standalone `CropProducer` class yet.
+- The crop-producer split is now implemented with `CropProducerWorker` and
+  `CropProducer`. `CropAndEncodeWorker` is a downstream consumer for preview
+  and crop-video encode.
 - Detected frames now copy the source ROI once into a bounded crop-owned Mono8
   GPU buffer on a dedicated producer CUDA stream, record a `crop_ready_event`,
   then release the source `WORKER_ENTRY` from a CUDA source-safe event after
@@ -693,8 +729,9 @@ Current implementation note (2026-04-23):
   `ORANGE_CROP_STAGE_SOURCE=1`, which copies the full source frame into
   ordinary device memory before crop extraction. That isolates GPUDirect-source
   access costs from the ROI crop path.
-- Remaining architectural work is to make preview, crop recording, and pose
-  independent `CropFrame` consumers with explicit leases/ref-counting.
+- Remaining architectural work is to make GUI crop preview an independent
+  droppable/rate-limited `CropFrame` consumer and to replace the noop pose
+  worker with real TensorRT/model output/IPC behavior.
 
 Validation update (2026-04-23):
 
@@ -825,9 +862,10 @@ Step 1: Define crop payload and pool.
       `crop_ready_event`, and `recycle_event`.
 - [x] Add a bounded `CropFrame` pool with device buffers and CUDA events,
       sized conservatively at first (`8` entries).
-- [ ] Add complete counters for pool unavailable, frames produced, and crop
-      production failures. Current code tracks pool misses; produced/failure
-      counters still need explicit telemetry.
+- [x] Add complete counters for pool unavailable, frames produced, and crop
+      production/drop behavior. Current code reports producer, pool miss,
+      recycle, lease, pose offer/accept/drop, and queue/drop counters, though
+      runtime status still needs a compact aggregate surface.
 
 Step 2: Extract crop production from crop encode.
 
@@ -866,11 +904,11 @@ Step 4: Convert crop preview into a consumer.
 
 Step 5: Add lease/ref-count semantics for crop payloads.
 
-- [ ] Track which consumers accepted each `CropFrame`.
-- [ ] Return a crop buffer to the pool only after all accepted consumers have
+- [x] Track which consumers accepted each `CropFrame`.
+- [x] Return a crop buffer to the pool only after all accepted consumers have
       released it.
-- [ ] Treat consumer queue-full states as non-acceptance, not as blocking waits.
-- [ ] Add debug counters for producer drops and per-consumer drops.
+- [x] Treat consumer queue-full states as non-acceptance, not as blocking waits.
+- [x] Add debug counters for producer drops and per-consumer drops.
 
 Step 6: Validate before adding pose.
 
@@ -880,13 +918,13 @@ Step 6: Validate before adding pose.
 - [ ] Use the crop-producer substep columns to determine whether remaining
       tails are CPU enqueue stalls, crop-copy GPU execution, or source-release
       event recording.
-- [ ] Compare one run with default crop-copy timing against one run with
+- [x] Compare one run with default crop-copy timing against one run with
       `ORANGE_CROP_COPY_TIMING=0`; if the producer tails disappear when timing
       is disabled, the measurement path is perturbing the crop producer.
-- [ ] Compare one run with default `cudaMemcpy2DAsync` crop copy against one
+- [x] Compare one run with default `cudaMemcpy2DAsync` crop copy against one
       run with `ORANGE_CROP_COPY_KERNEL=1`; if `crop_roi_copy_enqueue_cpu_ms`
       drops materially, the memcpy submission path is the bottleneck.
-- [ ] Compare one run with direct GPUDirect source access against one run with
+- [x] Compare one run with direct GPUDirect source access against one run with
       `ORANGE_CROP_STAGE_SOURCE=1`; if `crop_roi_copy_enqueue_cpu_ms` drops but
       `source_stage_enqueue_cpu_ms` rises, the issue is the GPUDirect-backed
       source path rather than the crop extraction API.
@@ -897,24 +935,24 @@ Step 6: Validate before adding pose.
 
 Step 7: Add pose only after the producer split is stable.
 
-- [ ] Implement pose as a `CropFrame` consumer, not as part of crop-video
+- [x] Implement noop pose as a `CropFrame` consumer, not as part of crop-video
       encoding.
-- [ ] Keep pose best-effort initially, with drop counters and no full-frame
+- [x] Keep noop pose best-effort initially, with drop counters and no full-frame
       backpressure.
-- [ ] Preserve both crop-local and full-frame coordinate mappings in pose
-      outputs.
+- [ ] Replace noop pose with real TensorRT inference, keypoint output, and
+      crop-local/full-frame coordinate mappings.
 
 ## Phase 1: Re-expose Enablement Path
 
-- [ ] Add a per-camera `Crop+Encode` checkbox in the camera control table.
-- [ ] Add an optional `All` toggle for batch enable/disable.
-- [ ] Gate crop worker creation on explicit user enablement:
+- [x] Add a per-camera `Crop+Encode` checkbox in the camera control table.
+- [x] Add an optional `All` toggle for batch enable/disable.
+- [x] Gate crop worker creation on explicit user enablement:
   - only construct/start `CropAndEncodeWorker` for cameras with `crop_and_encode=true`,
   - do not spawn idle crop workers for cameras where crop recording is off.
-- [ ] Gate crop artifact writing on explicit user enablement:
+- [x] Gate crop artifact writing on explicit user enablement:
   - only create `Cam<serial>_crop.*` outputs when crop mode is enabled,
   - disabling crop mode must prevent new crop files from being created.
-- [ ] Enforce or auto-manage dependency on YOLO:
+- [x] Enforce or auto-manage dependency on YOLO:
   - if crop+encode requires detections, either auto-enable YOLO or block with a clear warning.
 - [ ] Decide and implement how this setting is persisted across runs (if desired):
   - runtime-only,
@@ -922,10 +960,10 @@ Step 7: Add pose only after the producer split is stable.
 
 ## Phase 2: Lifecycle and Shutdown Hardening
 
-- [ ] Make `flush_and_close()` idempotent and safe when writer/encoder were never fully initialized.
+- [x] Make `flush_and_close()` idempotent and safe when writer/encoder were never fully initialized.
   - guard `writer_.video` before `push_packet`.
   - refs: `src/crop_and_encode_worker.cpp:129`, `src/crop_and_encode_worker.cpp:134`
-- [ ] Keep producer/consumer shutdown ordering safe for YOLO -> crop queue handoff.
+- [x] Keep producer/consumer shutdown ordering safe for YOLO -> crop queue handoff.
   - refs: `src/orange.cpp:1063`, `src/yolo_worker.cpp:810`, `docs/threading_review_todo.md`
 - [ ] Add explicit queue-close/stop-token semantics (or equivalent) to avoid enqueue-after-stop spin waits.
 - [ ] Define runtime toggle behavior while streaming:
@@ -934,7 +972,7 @@ Step 7: Add pose only after the producer split is stable.
 
 ## Phase 3: Crop Geometry and Data Safety
 
-- [ ] Handle small frame sizes safely (`width < 256` or `height < 256`):
+- [x] Handle small frame sizes safely (`width < 256` or `height < 256`):
   - reject crop mode with clear error, or
   - dynamically choose a smaller crop size.
   - refs: `src/crop_and_encode_worker.cpp:273`, `src/crop_and_encode_worker.cpp:277`
@@ -1067,7 +1105,11 @@ Step 7: Add pose only after the producer split is stable.
 
 ## Definition of Done
 
-- [ ] Operator can intentionally enable crop+encode from the UI (or documented config path).
-- [ ] Crop recordings are created reliably without lifecycle races/crashes during start/stop.
-- [ ] Behavior is explicit when YOLO is disabled or frame size is below crop requirements.
-- [ ] Basic integration + stress tests pass and are documented.
+- [x] Operator can intentionally enable crop+encode from the UI.
+- [x] Crop recordings are created reliably in short GUI start/stop smoke runs
+      without the earlier lifecycle crash.
+- [x] Behavior is explicit when YOLO is disabled or frame size is below crop
+      requirements.
+- [ ] Longer crop-enabled stress tests pass and are documented.
+- [ ] Real Pose TensorRT output and IPC/overlay behavior are implemented and
+      validated.

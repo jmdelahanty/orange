@@ -2038,6 +2038,7 @@ void write_summary_json(const Options& options,
         merged.enabled ? merged.mp4_keyframe_path : enc.mp4_keyframe_path;
     out << std::fixed << std::setprecision(6);
     out << "{\n";
+    out << "  \"schema_id\": \"orange.external_recorder.summary\",\n";
     out << "  \"schema_version\": 1,\n";
     out << "  \"tool\": \"external_recorder_ipc_probe\",\n";
     out << "  \"session_id\": \"" << json_escape(session_id) << "\",\n";

@@ -109,6 +109,13 @@ bool update_recording_snapshot_model(const std::string& recording_folder,
 bool update_recording_snapshot_crop_output(const std::string& recording_folder,
                                            const std::string& camera_serial,
                                            const nlohmann::json& crop_output_info);
+bool update_recording_snapshot_spatial_calibration(const std::string& recording_folder,
+                                                   const std::string& camera_serial,
+                                                   const nlohmann::json& spatial_calibration);
+bool update_recording_snapshot_spatial_calibration_from_artifact(const std::string& recording_folder,
+                                                                 const std::string& camera_serial,
+                                                                 const std::string& artifact_dir,
+                                                                 std::string* error_out = nullptr);
 std::string build_model_id_from_path(const std::string& model_path);
 nlohmann::json build_gpu_copy_path_static_topology_info(int source_gpu_id, int target_gpu_id);
 std::string lookup_nvidia_smi_topology_class(int source_gpu_id,

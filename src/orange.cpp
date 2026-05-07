@@ -45,6 +45,7 @@
 #include <opencv2/opencv.hpp>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <array>
@@ -2198,8 +2199,21 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
     nlohmann::json files = nlohmann::json::object();
     if (enabled && !camera_serial.empty()) {
         files = {
-            {"perf", "Cam" + camera_serial + "_pose_perf.csv"}
+            {"perf", "Cam" + camera_serial + "_pose_perf.csv"},
+            {"events", "Cam" + camera_serial + "_pose_events.jsonl"}
         };
+    }
+    std::string pose_engine_path;
+    if (const char* env_pose_engine_path = std::getenv("ORANGE_POSE_ENGINE_PATH")) {
+        pose_engine_path = env_pose_engine_path;
+    }
+    std::string pose_skeleton_id = "unknown";
+    if (const char* env_pose_skeleton_id = std::getenv("ORANGE_POSE_SKELETON_ID")) {
+        pose_skeleton_id = env_pose_skeleton_id;
+    }
+    std::string pose_skeleton_path;
+    if (const char* env_pose_skeleton_path = std::getenv("ORANGE_POSE_SKELETON_PATH")) {
+        pose_skeleton_path = env_pose_skeleton_path;
     }
 
     return {
@@ -2214,6 +2228,10 @@ nlohmann::json build_gui_pose_model_snapshot(const CameraParams& camera_params,
             {"worker", "PoseWorker"},
             {"backend", enabled ? "noop" : "none"},
             {"mode", enabled ? "noop" : "disabled"},
+            {"engine_path", enabled ? pose_engine_path : ""},
+            {"model_id", enabled && !pose_engine_path.empty() ? build_model_id_from_path(pose_engine_path) : "none"},
+            {"skeleton_id", enabled ? pose_skeleton_id : "none"},
+            {"skeleton_path", enabled ? pose_skeleton_path : ""},
             {"gpu_id", camera_params.gpu_id},
             {"queue_size", enabled ? 32 : 0},
             {"files", files}
@@ -2243,6 +2261,68 @@ void update_gui_pose_model_snapshots(const std::string& recording_folder,
             std::cerr << "Failed to update recording snapshot pose model metadata for camera "
                       << camera_key << std::endl;
         }
+    }
+}
+
+std::string spatial_calibration_artifact_env_name(const std::string& camera_serial)
+{
+    return "ORANGE_SPATIAL_CALIBRATION_ARTIFACT_" + camera_serial;
+}
+
+std::string resolve_gui_spatial_calibration_artifact_path(const std::string& camera_serial)
+{
+    if (camera_serial.empty()) {
+        return {};
+    }
+    const std::string env_name = spatial_calibration_artifact_env_name(camera_serial);
+    const char* value = std::getenv(env_name.c_str());
+    if (!value || value[0] == '\0') {
+        return {};
+    }
+    return value;
+}
+
+void update_gui_spatial_calibration_snapshots(const std::string& recording_folder,
+                                              const CameraParams* cameras_params,
+                                              const CameraEachSelect* cameras_select,
+                                              const int num_cameras)
+{
+    if (recording_folder.empty() || !cameras_params || !cameras_select || num_cameras <= 0) {
+        return;
+    }
+
+    for (int i = 0; i < num_cameras; ++i) {
+        if (!gui_camera_has_acquisition_work(cameras_select[i])) {
+            continue;
+        }
+
+        std::string camera_key = cameras_params[i].camera_serial;
+        if (camera_key.empty()) {
+            camera_key = std::to_string(cameras_params[i].camera_id);
+        }
+
+        const std::string artifact_path = resolve_gui_spatial_calibration_artifact_path(camera_key);
+        if (artifact_path.empty()) {
+            continue;
+        }
+
+        std::string error;
+        if (!update_recording_snapshot_spatial_calibration_from_artifact(
+                recording_folder,
+                camera_key,
+                artifact_path,
+                &error)) {
+            std::cerr << "Failed to update recording snapshot spatial calibration for camera "
+                      << camera_key << " from " << artifact_path;
+            if (!error.empty()) {
+                std::cerr << ": " << error;
+            }
+            std::cerr << std::endl;
+            continue;
+        }
+
+        std::cout << "Recording snapshot spatial calibration for camera "
+                  << camera_key << " loaded from " << artifact_path << std::endl;
     }
 }
 
@@ -3505,7 +3585,7 @@ int main(int argc, char **args) {
                         // STOP STREAMING
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
                         if (camera_control->record_video) {
-                            orange::session::request_stop_recording_run(camera_control);
+                            orange::session::request_drain_recording_run(&recording_session, camera_control);
                             std::cout << "Recording toggled OFF by stream shutdown. Encoders will drain queued frames." << std::endl;
                         }
 
@@ -3702,6 +3782,11 @@ int main(int argc, char **args) {
                                         cameras_params,
                                         cameras_select,
                                         num_cameras);
+                                    update_gui_spatial_calibration_snapshots(
+                                        resolved_recording_folder,
+                                        cameras_params,
+                                        cameras_select,
+                                        num_cameras);
                                     for (int i = 0; i < num_cameras; ++i) {
                                         if (cropProducerWorkers[i]) {
                                             cropProducerWorkers[i]->RotateRecordingFolder(
@@ -3734,7 +3819,12 @@ int main(int argc, char **args) {
                                 }
                             } else {
                                 // STOP RECORDING
-                                orange::session::request_stop_recording_run(camera_control);
+                                orange::session::request_drain_recording_run(&recording_session, camera_control);
+                                for (int i = 0; i < num_cameras; ++i) {
+                                    if (cropProducerWorkers && cropProducerWorkers[i]) {
+                                        cropProducerWorkers[i]->PutObjectToQueueIn(nullptr);
+                                    }
+                                }
                                 try_stop_timer();
                                 std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
                             }

@@ -61,6 +61,7 @@ private:
     int crop_height_ = kDefaultCropSize;
     std::unique_ptr<CropProducer> crop_producer_;
     CropAndEncodeWorker* crop_worker_ = nullptr;
+    PoseWorker* pose_worker_ = nullptr;
     bool pose_enabled_ = false;
     uint64_t jobs_offered_ = 0;
     uint64_t jobs_enqueued_ = 0;

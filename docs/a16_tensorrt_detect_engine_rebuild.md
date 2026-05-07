@@ -396,8 +396,11 @@ scripts/run_external_recorder_two_camera_ptp_smoke.sh \
 
 ## Recommended Next Steps
 
-1. Run a GUI/session validation with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
-   and the A16 candidate selected.
+1. Run a GUI/session validation through
+   `./scripts/run_gui_aq_off_validation.sh`. The launcher sets
+   `ORANGE_PTP_REGISTER_READ_DECIMATE=100` and uses
+   `ORANGE_DEFAULT_DETECT_ENGINE` to select the high-effort A16 candidate for
+   that run without changing the persistent app config.
 2. If it passes, update the default app model config to the high-effort
    A16-built engine.
 3. Keep the old engine available for rollback until a positive-detection

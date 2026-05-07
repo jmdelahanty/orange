@@ -37,11 +37,13 @@
 #include "frame_ipc_manager.h"
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
+#include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
 #include "yolov8_det.h"
 #include "yolo_worker.h"
 #include "yolo_event_log.h"
 #include "yolo_event_log_validation.h"
+#include "pose_event_log_validation.h"
 #include <signal.h>
 
 #define evt_buffer_size 100
@@ -100,6 +102,56 @@ struct HeadlessYoloWorkerConfig {
     }
 };
 
+struct HeadlessPoseWorkerConfig {
+    std::string mode = "off";
+    std::string engine_path;
+    std::string skeleton_id = "unknown";
+    std::string skeleton_path;
+    int input_width = 256;
+    int input_height = 256;
+    std::string input_layout = "nchw";
+    std::string input_dtype = "fp16";
+    std::string normalization = "model_default";
+    std::string roi_source = "yolo_top_detection";
+    int queue_depth = 32;
+    int timeout_ms = 500;
+    int prewarm_iterations = 0;
+    bool fail_on_init_error = true;
+    bool write_events_jsonl = true;
+
+    bool enabled() const {
+        return mode == "noop" || mode == "real";
+    }
+};
+
+struct HeadlessRecordingControlConfig {
+    int record_for_seconds = 0;
+    int clip_seconds = 0;
+
+    bool enabled() const {
+        return record_for_seconds > 0 || clip_seconds > 0;
+    }
+};
+
+struct HeadlessExternalRecorderContractConfig {
+    std::string mode = "off";
+    std::string schema_id = "orange.external_recorder.contract";
+    int schema_version = 1;
+    std::string artifact_root;
+    std::string session_id;
+    std::string recorder_tool_path;
+    bool supervise_processes = false;
+    bool require_summary = true;
+    bool require_video_sanity = true;
+    bool require_merged_mp4 = true;
+    bool require_gop_routing = true;
+    nlohmann::json streams = nlohmann::json::object();
+
+    bool enabled() const {
+        return mode != "off";
+    }
+};
+
 struct HeadlessCliOptions {
     HeadlessMode mode = HeadlessMode::Remote;
     bool show_help = false;
@@ -123,6 +175,9 @@ struct HeadlessCliOptions {
     HeadlessFrameIpcConfig frame_ipc;
     yolo_event_log::SyntheticYoloEventConfig yolo_event_log;
     HeadlessYoloWorkerConfig yolo_worker;
+    HeadlessPoseWorkerConfig pose_worker;
+    HeadlessRecordingControlConfig recording_control;
+    HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -161,6 +216,9 @@ struct ExperimentSpec {
     HeadlessFrameIpcConfig frame_ipc;
     yolo_event_log::SyntheticYoloEventConfig yolo_event_log;
     HeadlessYoloWorkerConfig yolo_worker;
+    HeadlessPoseWorkerConfig pose_worker;
+    HeadlessRecordingControlConfig recording_control;
+    HeadlessExternalRecorderContractConfig external_recorder_contract;
     bool has_recording_override = false;
     nlohmann::json recording_override = nlohmann::json::object();
     std::unordered_map<std::string, nlohmann::json> recording_overrides_by_camera;
@@ -669,6 +727,56 @@ nlohmann::json build_headless_yolo_worker_config_json(
         {"timeout_ms", config.timeout_ms},
         {"prewarm_iterations", config.prewarm_iterations},
         {"fail_on_init_error", config.fail_on_init_error}
+    };
+}
+
+nlohmann::json build_headless_pose_worker_config_json(
+    const HeadlessPoseWorkerConfig& config)
+{
+    return {
+        {"mode", config.mode},
+        {"engine_path", config.engine_path},
+        {"skeleton_id", config.skeleton_id},
+        {"skeleton_path", config.skeleton_path},
+        {"input_width", config.input_width},
+        {"input_height", config.input_height},
+        {"input_layout", config.input_layout},
+        {"input_dtype", config.input_dtype},
+        {"normalization", config.normalization},
+        {"roi_source", config.roi_source},
+        {"queue_depth", config.queue_depth},
+        {"timeout_ms", config.timeout_ms},
+        {"prewarm_iterations", config.prewarm_iterations},
+        {"fail_on_init_error", config.fail_on_init_error},
+        {"write_events_jsonl", config.write_events_jsonl}
+    };
+}
+
+nlohmann::json build_headless_recording_control_config_json(
+    const HeadlessRecordingControlConfig& config)
+{
+    return {
+        {"record_for_seconds", config.record_for_seconds},
+        {"clip_seconds", config.clip_seconds}
+    };
+}
+
+nlohmann::json build_headless_external_recorder_contract_config_json(
+    const HeadlessExternalRecorderContractConfig& config)
+{
+    return {
+        {"schema_id", config.schema_id},
+        {"schema_version", config.schema_version},
+        {"mode", config.mode},
+        {"artifact_root", config.artifact_root},
+        {"session_id", config.session_id},
+        {"recorder_tool_path", config.recorder_tool_path},
+        {"supervise_processes", config.supervise_processes},
+        {"require_summary", config.require_summary},
+        {"require_video_sanity", config.require_video_sanity},
+        {"require_merged_mp4", config.require_merged_mp4},
+        {"require_gop_routing", config.require_gop_routing},
+        {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
 }
 
@@ -1828,6 +1936,26 @@ bool headless_yolo_worker_requested(const HeadlessYoloWorkerConfig& config)
            !config.fail_on_init_error;
 }
 
+bool headless_pose_worker_requested(const HeadlessPoseWorkerConfig& config)
+{
+    return config.enabled() ||
+           config.mode != "off" ||
+           !config.engine_path.empty() ||
+           config.skeleton_id != "unknown" ||
+           !config.skeleton_path.empty() ||
+           config.input_width != 256 ||
+           config.input_height != 256 ||
+           config.input_layout != "nchw" ||
+           config.input_dtype != "fp16" ||
+           config.normalization != "model_default" ||
+           config.roi_source != "yolo_top_detection" ||
+           config.queue_depth != 32 ||
+           config.timeout_ms != 500 ||
+           config.prewarm_iterations != 0 ||
+           !config.fail_on_init_error ||
+           !config.write_events_jsonl;
+}
+
 bool validate_headless_yolo_worker_config(const HeadlessYoloWorkerConfig& config,
                                           std::string* error_out,
                                           const std::string& context)
@@ -1876,6 +2004,247 @@ bool validate_headless_yolo_worker_config(const HeadlessYoloWorkerConfig& config
             *error_out = prefix + "yolo_worker.prewarm_iterations must be >= 0";
         }
         return false;
+    }
+    return true;
+}
+
+bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config,
+                                          std::string* error_out,
+                                          const std::string& context)
+{
+    const std::string prefix = context.empty() ? "" : context + ": ";
+    if (config.mode != "off" && config.mode != "noop" && config.mode != "real") {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.mode must be off|noop|real";
+        }
+        return false;
+    }
+    if (config.mode == "off") {
+        if (!config.engine_path.empty() ||
+            config.skeleton_id != "unknown" ||
+            !config.skeleton_path.empty() ||
+            config.input_width != 256 ||
+            config.input_height != 256 ||
+            config.input_layout != "nchw" ||
+            config.input_dtype != "fp16" ||
+            config.normalization != "model_default" ||
+            config.roi_source != "yolo_top_detection" ||
+            config.queue_depth != 32 ||
+            config.timeout_ms != 500 ||
+            config.prewarm_iterations != 0 ||
+            !config.fail_on_init_error ||
+            !config.write_events_jsonl) {
+            if (error_out) {
+                *error_out = prefix + "pose_worker options require mode=noop|real";
+            }
+            return false;
+        }
+        return true;
+    }
+    if (config.mode == "real" && config.engine_path.empty()) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.engine_path is required when mode=real";
+        }
+        return false;
+    }
+    if (config.mode == "noop" && !config.engine_path.empty()) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.engine_path requires mode=real";
+        }
+        return false;
+    }
+    if (config.input_width <= 0 || config.input_height <= 0) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker input_width/input_height must be > 0";
+        }
+        return false;
+    }
+    if (config.input_layout != "nchw" && config.input_layout != "nhwc") {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.input_layout must be nchw|nhwc";
+        }
+        return false;
+    }
+    if (config.input_dtype != "fp16" &&
+        config.input_dtype != "fp32" &&
+        config.input_dtype != "uint8") {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.input_dtype must be fp16|fp32|uint8";
+        }
+        return false;
+    }
+    if (config.roi_source != "yolo_top_detection") {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.roi_source must be yolo_top_detection";
+        }
+        return false;
+    }
+    if (config.queue_depth <= 0) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.queue_depth must be > 0";
+        }
+        return false;
+    }
+    if (config.timeout_ms <= 0) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.timeout_ms must be > 0";
+        }
+        return false;
+    }
+    if (config.prewarm_iterations < 0) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.prewarm_iterations must be >= 0";
+        }
+        return false;
+    }
+    if (!config.write_events_jsonl) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.write_events_jsonl must be true for headless validation";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool validate_headless_recording_control_config(
+    const HeadlessRecordingControlConfig& config,
+    std::string* error_out,
+    const std::string& context)
+{
+    const std::string prefix = context.empty() ? "" : context + ": ";
+    if (config.record_for_seconds < 0) {
+        if (error_out) {
+            *error_out = prefix + "recording_control.record_for_seconds must be >= 0";
+        }
+        return false;
+    }
+    if (config.clip_seconds < 0) {
+        if (error_out) {
+            *error_out = prefix + "recording_control.clip_seconds must be >= 0";
+        }
+        return false;
+    }
+    if (config.clip_seconds > 0) {
+        if (error_out) {
+            *error_out =
+                prefix +
+                "recording_control.clip_seconds > 0 requests rolling clips, but rollover is not "
+                "implemented yet. Use clip_seconds=0 for the current single-video layout.";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool validate_headless_external_recorder_contract_config(
+    const HeadlessExternalRecorderContractConfig& config,
+    std::string* error_out,
+    const std::string& context)
+{
+    const std::string prefix = context.empty() ? "" : context + ": ";
+    if (config.mode != "off" && config.mode != "diagnostic_ipc_v1") {
+        if (error_out) {
+            *error_out = prefix + "external_recorder_contract.mode must be off|diagnostic_ipc_v1";
+        }
+        return false;
+    }
+    if (config.schema_id != "orange.external_recorder.contract") {
+        if (error_out) {
+            *error_out =
+                prefix + "external_recorder_contract.schema_id must be orange.external_recorder.contract";
+        }
+        return false;
+    }
+    if (config.schema_version != 1) {
+        if (error_out) {
+            *error_out = prefix + "external_recorder_contract.schema_version must be 1";
+        }
+        return false;
+    }
+    if (!config.streams.is_object()) {
+        if (error_out) {
+            *error_out = prefix + "external_recorder_contract.streams must be an object";
+        }
+        return false;
+    }
+    if (!config.enabled()) {
+        if (config.supervise_processes) {
+            if (error_out) {
+                *error_out =
+                    prefix + "external_recorder_contract.supervise_processes requires enabled mode";
+            }
+            return false;
+        }
+        return true;
+    }
+    if (config.artifact_root.empty()) {
+        if (error_out) {
+            *error_out = prefix + "external_recorder_contract.artifact_root is required";
+        }
+        return false;
+    }
+    if (config.streams.empty()) {
+        if (error_out) {
+            *error_out = prefix + "external_recorder_contract.streams must not be empty";
+        }
+        return false;
+    }
+    for (auto it = config.streams.begin(); it != config.streams.end(); ++it) {
+        if (!it.value().is_object()) {
+            if (error_out) {
+                *error_out = prefix + "external_recorder_contract.streams entries must be objects";
+            }
+            return false;
+        }
+        const nlohmann::json& stream = it.value();
+        const std::string stream_id = stream.value("stream_id", it.key());
+        if (stream_id.empty()) {
+            if (error_out) {
+                *error_out = prefix + "external_recorder_contract stream_id must not be empty";
+            }
+            return false;
+        }
+        if (config.require_summary && stream.value("summary_json", "").empty()) {
+            if (error_out) {
+                *error_out = prefix + "external_recorder_contract summary_json is required";
+            }
+            return false;
+        }
+        if (config.require_video_sanity && stream.value("video_sanity_json", "").empty()) {
+            if (error_out) {
+                *error_out = prefix + "external_recorder_contract video_sanity_json is required";
+            }
+            return false;
+        }
+        if (stream.value("mp4", "").empty()) {
+            if (error_out) {
+                *error_out = prefix + "external_recorder_contract mp4 is required";
+            }
+            return false;
+        }
+        if (config.require_gop_routing && stream.value("gop_routing_csv", "").empty()) {
+            if (error_out) {
+                *error_out = prefix + "external_recorder_contract gop_routing_csv is required";
+            }
+            return false;
+        }
+        const std::string routing_policy =
+            normalize_headless_token(stream.value("routing_policy", "single_shard"));
+        if (routing_policy != "single_shard" && routing_policy != "gop_modulo") {
+            if (error_out) {
+                *error_out =
+                    prefix + "external_recorder_contract.routing_policy must be single_shard|gop_modulo";
+            }
+            return false;
+        }
+        if (stream.contains("expected_shard_gpu_ids") &&
+            !stream["expected_shard_gpu_ids"].is_array()) {
+            if (error_out) {
+                *error_out =
+                    prefix + "external_recorder_contract.expected_shard_gpu_ids must be an array";
+            }
+            return false;
+        }
     }
     return true;
 }
@@ -2155,6 +2524,154 @@ bool parse_headless_yolo_worker_json(
     }
 
     if (!validate_headless_yolo_worker_config(config, error_out, context)) {
+        return false;
+    }
+
+    *config_out = config;
+    return true;
+}
+
+bool parse_headless_pose_worker_json(
+    const nlohmann::json& node,
+    HeadlessPoseWorkerConfig* config_out,
+    std::string* error_out,
+    const std::string& context)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out = context + ": internal error: null pose_worker destination";
+        }
+        return false;
+    }
+
+    HeadlessPoseWorkerConfig config;
+    if (node.is_boolean()) {
+        config.mode = node.get<bool>() ? "noop" : "off";
+    } else if (node.is_object()) {
+        config.mode = normalize_headless_token(node.value("mode", "off"));
+        if (config.mode == "true" || config.mode == "on") {
+            config.mode = "noop";
+        } else if (config.mode == "false" || config.mode == "disabled" ||
+                   config.mode == "none") {
+            config.mode = "off";
+        }
+        config.engine_path = node.value("engine_path", "");
+        config.skeleton_id = node.value("skeleton_id", config.skeleton_id);
+        config.skeleton_path = node.value("skeleton_path", "");
+        config.input_width = node.value("input_width", config.input_width);
+        config.input_height = node.value("input_height", config.input_height);
+        config.input_layout =
+            normalize_headless_token(node.value("input_layout", config.input_layout));
+        config.input_dtype =
+            normalize_headless_token(node.value("input_dtype", config.input_dtype));
+        config.normalization = node.value("normalization", config.normalization);
+        config.roi_source =
+            normalize_headless_token(node.value("roi_source", config.roi_source));
+        config.queue_depth = node.value("queue_depth", config.queue_depth);
+        config.timeout_ms = node.value("timeout_ms", config.timeout_ms);
+        config.prewarm_iterations =
+            node.value("prewarm_iterations", config.prewarm_iterations);
+        config.fail_on_init_error =
+            node.value("fail_on_init_error", config.fail_on_init_error);
+        config.write_events_jsonl =
+            node.value("write_events_jsonl", config.write_events_jsonl);
+    } else {
+        if (error_out) {
+            *error_out = context + ": pose_worker must be a boolean or JSON object";
+        }
+        return false;
+    }
+
+    if (!validate_headless_pose_worker_config(config, error_out, context)) {
+        return false;
+    }
+
+    *config_out = config;
+    return true;
+}
+
+bool parse_headless_recording_control_json(
+    const nlohmann::json& node,
+    HeadlessRecordingControlConfig* config_out,
+    std::string* error_out,
+    const std::string& context)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out = context + ": internal error: null recording_control destination";
+        }
+        return false;
+    }
+    if (!node.is_object()) {
+        if (error_out) {
+            *error_out = context + ": recording_control must be a JSON object";
+        }
+        return false;
+    }
+
+    HeadlessRecordingControlConfig config;
+    config.record_for_seconds =
+        node.value("record_for_seconds", config.record_for_seconds);
+    config.clip_seconds = node.value("clip_seconds", config.clip_seconds);
+
+    if (!validate_headless_recording_control_config(config, error_out, context)) {
+        return false;
+    }
+
+    *config_out = config;
+    return true;
+}
+
+bool parse_headless_external_recorder_contract_json(
+    const nlohmann::json& node,
+    HeadlessExternalRecorderContractConfig* config_out,
+    std::string* error_out,
+    const std::string& context)
+{
+    if (!config_out) {
+        if (error_out) {
+            *error_out =
+                context + ": internal error: null external_recorder_contract destination";
+        }
+        return false;
+    }
+
+    HeadlessExternalRecorderContractConfig config;
+    if (node.is_boolean()) {
+        config.mode = node.get<bool>() ? "diagnostic_ipc_v1" : "off";
+    } else if (node.is_object()) {
+        config.schema_id = node.value("schema_id", config.schema_id);
+        config.schema_version = node.value("schema_version", config.schema_version);
+        config.mode = normalize_headless_token(node.value("mode", config.mode));
+        if (config.mode == "true" || config.mode == "on") {
+            config.mode = "diagnostic_ipc_v1";
+        } else if (config.mode == "false" || config.mode == "disabled" ||
+                   config.mode == "none") {
+            config.mode = "off";
+        }
+        config.artifact_root = node.value("artifact_root", config.artifact_root);
+        config.session_id = node.value("session_id", config.session_id);
+        config.recorder_tool_path =
+            node.value("recorder_tool_path", config.recorder_tool_path);
+        config.supervise_processes =
+            node.value("supervise_processes", config.supervise_processes);
+        config.require_summary = node.value("require_summary", config.require_summary);
+        config.require_video_sanity =
+            node.value("require_video_sanity", config.require_video_sanity);
+        config.require_merged_mp4 =
+            node.value("require_merged_mp4", config.require_merged_mp4);
+        config.require_gop_routing =
+            node.value("require_gop_routing", config.require_gop_routing);
+        config.streams = node.value("streams", nlohmann::json::object());
+    } else {
+        if (error_out) {
+            *error_out =
+                context + ": external_recorder_contract must be a boolean or JSON object";
+        }
+        return false;
+    }
+
+    if (!validate_headless_external_recorder_contract_config(config, error_out, context)) {
         return false;
     }
 
@@ -2935,6 +3452,11 @@ void reset_ptp_params(PTPParams* ptp_params)
 
 void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
                                   CameraControl* camera_control);
+void request_recording_drain(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+                             CameraControl* camera_control);
+bool wait_for_recording_drain(CameraControl* camera_control,
+                              std::chrono::steady_clock::duration timeout,
+                              const char* timeout_label);
 
 void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            std::vector<CameraResources>& camera_resources,
@@ -2951,6 +3473,14 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            bool reset_ptp_state)
 {
     if (camera_control) {
+        if (camera_control->record_video ||
+            camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
+            request_recording_drain(recording_pipelines, camera_control);
+            (void)wait_for_recording_drain(
+                camera_control,
+                std::chrono::seconds(10),
+                "Headless live recording drain");
+        }
         camera_control->subscribe = false;
     }
 
@@ -3069,21 +3599,12 @@ bool prepare_headless_recording_artifacts(const std::string& record_folder,
 void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
                                   CameraControl* camera_control)
 {
-    camera_control->record_video = false;
-    camera_control->recording_draining = true;
-    camera_control->stop_record = true;
+    request_recording_drain(recording_pipelines, camera_control);
 
-    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (camera_control->active_recorders.load(std::memory_order_relaxed) > 0 &&
-           std::chrono::steady_clock::now() < drain_deadline) {
-        usleep(1000);
-    }
-
-    if (camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
-        std::cerr << "Headless recording drain timed out with "
-                  << camera_control->active_recorders.load(std::memory_order_relaxed)
-                  << " active recorder(s)." << std::endl;
-    }
+    (void)wait_for_recording_drain(
+        camera_control,
+        std::chrono::seconds(10),
+        "Headless recording drain");
 
     for (auto& pipeline : recording_pipelines) {
         if (!pipeline) {
@@ -3104,6 +3625,45 @@ void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPip
     camera_control->stop_record = false;
     std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
     camera_control->recording_folder.clear();
+}
+
+void request_recording_drain(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
+                             CameraControl* camera_control)
+{
+    if (!camera_control) {
+        return;
+    }
+    camera_control->record_video = false;
+    camera_control->recording_draining = true;
+    camera_control->stop_record = true;
+
+    for (auto& pipeline : recording_pipelines) {
+        if (pipeline) {
+            pipeline->request_recording_drain();
+        }
+    }
+}
+
+bool wait_for_recording_drain(CameraControl* camera_control,
+                              std::chrono::steady_clock::duration timeout,
+                              const char* timeout_label)
+{
+    if (!camera_control) {
+        return true;
+    }
+    const auto drain_deadline = std::chrono::steady_clock::now() + timeout;
+    while (camera_control->active_recorders.load(std::memory_order_relaxed) > 0 &&
+           std::chrono::steady_clock::now() < drain_deadline) {
+        usleep(1000);
+    }
+    const bool drained =
+        camera_control->active_recorders.load(std::memory_order_relaxed) == 0;
+    if (!drained && timeout_label) {
+        std::cerr << timeout_label << " timed out with "
+                  << camera_control->active_recorders.load(std::memory_order_relaxed)
+                  << " active recorder(s)." << std::endl;
+    }
+    return drained;
 }
 
 void stop_headless_frame_ipc_managers(std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers)
@@ -3895,6 +4455,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             headless_frame_ipc_requested(options.frame_ipc) ||
             headless_yolo_worker_requested(options.yolo_worker) ||
+            headless_pose_worker_requested(options.pose_worker) ||
             !headless_encoder_settings_is_default(options.encoder_settings) ||
             !options.encoder_settings.select_all_cameras ||
             !options.encoder_settings.camera_serials.empty()) {
@@ -3922,6 +4483,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             pre_encoder_reference_capture_requested(options.pre_encoder_reference_capture) ||
             headless_frame_ipc_requested(options.frame_ipc) ||
             headless_yolo_worker_requested(options.yolo_worker) ||
+            headless_pose_worker_requested(options.pose_worker) ||
             !headless_encoder_settings_is_default(options.encoder_settings)) {
             if (error_out) {
                 *error_out =
@@ -3930,7 +4492,7 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
                     "--rate-control, --quality, --gop, --preenc-ref-max-frames, "
                     "--preenc-ref-max-seconds, --duration, --stream-start-delay, --nvenc-direct-input, "
                     "--ptp-gate-acquisition-mode, --acquisition-buffer-mode, --recording-sink-mode, "
-                    "--record-delay, --frame-ipc, --yolo-engine, and --gpu-id "
+                    "--record-delay, --frame-ipc, --yolo-engine, pose worker config, and --gpu-id "
                     "must be omitted. Use the spec file instead.";
             }
             return false;
@@ -3950,6 +4512,12 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
             "Local headless CLI")) {
         return false;
     }
+    if (!validate_headless_pose_worker_config(
+            options.pose_worker,
+            error_out,
+            "Local headless CLI")) {
+        return false;
+    }
 
     if (options.yolo_worker.enabled() && options.stream_only) {
         if (error_out) {
@@ -3962,6 +4530,13 @@ bool validate_headless_cli_options(const HeadlessCliOptions& options, std::strin
         if (error_out) {
             *error_out =
                 "real headless YOLO writes its own event log; do not combine --yolo-engine with synthetic yolo_event_log.";
+        }
+        return false;
+    }
+    if (options.pose_worker.enabled()) {
+        if (error_out) {
+            *error_out =
+                "headless pose_worker is currently experiment-spec only; no local CLI pose flags are exposed yet.";
         }
         return false;
     }
@@ -4391,6 +4966,253 @@ std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
     }
     std::sort(gpu_ids.begin(), gpu_ids.end());
     return gpu_ids;
+}
+
+std::string resolve_external_recorder_tool_path(
+    const HeadlessExternalRecorderContractConfig& config)
+{
+    if (!config.recorder_tool_path.empty()) {
+        return config.recorder_tool_path;
+    }
+    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_TOOL"); env && *env) {
+        return env;
+    }
+
+    std::array<char, 4096> exe_path{};
+    const ssize_t size = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (size > 0) {
+        exe_path[static_cast<std::size_t>(size)] = '\0';
+        const std::filesystem::path sibling =
+            std::filesystem::path(exe_path.data()).parent_path() /
+            "external_recorder_ipc_probe";
+        if (std::filesystem::exists(sibling)) {
+            return sibling.string();
+        }
+    }
+    return "external_recorder_ipc_probe";
+}
+
+bool build_external_recorder_supervisor_plan(
+    const HeadlessExternalRecorderContractConfig& config,
+    orange::external_recorder::SupervisorPlan* plan_out,
+    std::string* error_out)
+{
+    orange::external_recorder::SupervisorPlanOptions plan_options;
+    plan_options.recorder_tool_path = resolve_external_recorder_tool_path(config);
+    plan_options.default_session_id = config.session_id;
+    return orange::external_recorder::BuildSupervisorPlanFromContract(
+        build_headless_external_recorder_contract_config_json(config),
+        plan_options,
+        plan_out,
+        error_out);
+}
+
+std::filesystem::path resolve_headless_repo_relative_path(const std::string& relative_path,
+                                                          const char* env_name)
+{
+    if (env_name && *env_name) {
+        if (const char* env = std::getenv(env_name); env && *env) {
+            return std::filesystem::path(env);
+        }
+    }
+
+    std::error_code ec;
+    const std::filesystem::path cwd_candidate =
+        std::filesystem::current_path(ec) / relative_path;
+    if (!ec && std::filesystem::exists(cwd_candidate)) {
+        return cwd_candidate;
+    }
+
+    std::array<char, 4096> exe_path{};
+    const ssize_t size = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
+    if (size > 0) {
+        exe_path[static_cast<std::size_t>(size)] = '\0';
+        const std::filesystem::path repo_candidate =
+            std::filesystem::path(exe_path.data()).parent_path().parent_path().parent_path() /
+            relative_path;
+        if (std::filesystem::exists(repo_candidate)) {
+            return repo_candidate;
+        }
+    }
+    return std::filesystem::path(relative_path);
+}
+
+bool run_headless_shell_command(const std::string& command,
+                                const std::string& label,
+                                std::string* output_out,
+                                std::string* error_out)
+{
+    std::string output;
+    const bool ok = read_command_stdout(command + " 2>&1", &output);
+    if (output_out) {
+        *output_out = output;
+    }
+    if (!output.empty()) {
+        std::cout << output;
+        if (output.back() != '\n') {
+            std::cout << std::endl;
+        }
+    }
+    if (!ok) {
+        if (error_out) {
+            *error_out = label + " failed";
+            if (!output.empty()) {
+                *error_out += ": " + output;
+            }
+        }
+        return false;
+    }
+    return true;
+}
+
+bool run_supervised_external_recorder_video_sanity(
+    const HeadlessExternalRecorderContractConfig& config,
+    nlohmann::json* finalization,
+    std::string* error_out)
+{
+    if (!config.enabled() || !config.supervise_processes || !config.require_video_sanity) {
+        return true;
+    }
+    if (!config.streams.is_object()) {
+        return true;
+    }
+
+    const std::filesystem::path script =
+        resolve_headless_repo_relative_path(
+            "scripts/external_video_sanity.py",
+            "ORANGE_EXTERNAL_RECORDER_VIDEO_SANITY_SCRIPT");
+    nlohmann::json results = nlohmann::json::object();
+    for (auto it = config.streams.begin(); it != config.streams.end(); ++it) {
+        if (!it.value().is_object()) {
+            continue;
+        }
+        const std::string stream_id = it.value().value("stream_id", it.key());
+        const std::string mp4_path = it.value().value("mp4", std::string());
+        const std::string video_sanity_path =
+            it.value().value("video_sanity_json", std::string());
+        if (mp4_path.empty() || video_sanity_path.empty()) {
+            if (error_out) {
+                *error_out = "external recorder video sanity missing mp4 or video_sanity_json for stream " +
+                             stream_id;
+            }
+            return false;
+        }
+
+        const std::string command =
+            "python3 " + shell_single_quote(script.string()) + " " +
+            shell_single_quote(mp4_path) + " " +
+            shell_single_quote(video_sanity_path);
+        std::string output;
+        const bool ok = run_headless_shell_command(
+            command,
+            "external recorder video sanity for stream " + stream_id,
+            &output,
+            error_out);
+        results[stream_id] = {
+            {"mp4", mp4_path},
+            {"video_sanity_json", video_sanity_path},
+            {"command", command},
+            {"output", output},
+            {"pass", ok},
+        };
+        if (!ok) {
+            if (finalization) {
+                (*finalization)["video_sanity"] = results;
+            }
+            return false;
+        }
+    }
+    if (finalization) {
+        (*finalization)["video_sanity"] = results;
+    }
+    return true;
+}
+
+bool run_supervised_external_recorder_verifier(
+    const HeadlessExternalRecorderContractConfig& config,
+    const std::filesystem::path& experiment_root,
+    nlohmann::json* finalization,
+    std::string* error_out)
+{
+    if (!config.enabled() || !config.supervise_processes) {
+        return true;
+    }
+
+    const std::filesystem::path script =
+        resolve_headless_repo_relative_path(
+            "scripts/verify_external_recorder_session.py",
+            "ORANGE_EXTERNAL_RECORDER_VERIFY_SCRIPT");
+    const std::string command =
+        "python3 " + shell_single_quote(script.string()) + " " +
+        shell_single_quote(config.artifact_root) + " --analytics-root " +
+        shell_single_quote(experiment_root.string());
+
+    std::string output;
+    const bool ok = run_headless_shell_command(
+        command,
+        "external recorder session verifier",
+        &output,
+        error_out);
+    if (finalization) {
+        (*finalization)["verifier"] = {
+            {"command", command},
+            {"output", output},
+            {"pass", ok},
+        };
+    }
+    return ok;
+}
+
+bool finalize_supervised_external_recorder_run(
+    const ExperimentRunPlan& run,
+    const std::filesystem::path& experiment_root,
+    std::string* error_out)
+{
+    const HeadlessExternalRecorderContractConfig& config =
+        run.options.external_recorder_contract;
+    if (!config.enabled() || !config.supervise_processes) {
+        return true;
+    }
+
+    nlohmann::json finalization = {
+        {"schema_id", "orange.external_recorder.finalization"},
+        {"schema_version", 1},
+        {"experiment_root", experiment_root.string()},
+        {"artifact_root", config.artifact_root},
+        {"run_id", run.run_id},
+        {"status", "running"},
+        {"started_at_utc", get_current_utc_timestamp()},
+    };
+
+    bool ok = run_supervised_external_recorder_video_sanity(
+        config,
+        &finalization,
+        error_out);
+    if (ok) {
+        ok = run_supervised_external_recorder_verifier(
+            config,
+            experiment_root,
+            &finalization,
+            error_out);
+    }
+    finalization["finished_at_utc"] = get_current_utc_timestamp();
+    finalization["status"] = ok ? "pass" : "fail";
+    if (!ok && error_out && !error_out->empty()) {
+        finalization["error"] = *error_out;
+    }
+
+    std::string write_error;
+    if (!write_json_file(
+            std::filesystem::path(config.artifact_root) /
+                "external_recorder_finalization.json",
+            finalization,
+            &write_error)) {
+        if (error_out) {
+            *error_out = write_error;
+        }
+        return false;
+    }
+    return ok;
 }
 
 nlohmann::json build_headless_gpu_dmon_snapshot_json(const HeadlessGpuDmonMonitor& monitor)
@@ -5196,6 +6018,33 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
             return false;
         }
     }
+    if (fixed.contains("pose_worker")) {
+        if (!parse_headless_pose_worker_json(
+                fixed["pose_worker"],
+                &spec->pose_worker,
+                error_out,
+                "Experiment spec fixed.pose_worker")) {
+            return false;
+        }
+    }
+    if (fixed.contains("recording_control")) {
+        if (!parse_headless_recording_control_json(
+                fixed["recording_control"],
+                &spec->recording_control,
+                error_out,
+                "Experiment spec fixed.recording_control")) {
+            return false;
+        }
+    }
+    if (fixed.contains("external_recorder_contract")) {
+        if (!parse_headless_external_recorder_contract_json(
+                fixed["external_recorder_contract"],
+                &spec->external_recorder_contract,
+                error_out,
+                "Experiment spec fixed.external_recorder_contract")) {
+            return false;
+        }
+    }
     if (!parse_experiment_recording_overrides(fixed, spec, error_out)) {
         return false;
     }
@@ -5231,10 +6080,40 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         return false;
     }
+    if (spec->stream_only && spec->pose_worker.enabled()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.pose_worker requires recording artifacts; stream_only must be false.";
+        }
+        return false;
+    }
+    if (spec->stream_only && spec->recording_control.enabled()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.recording_control requires recording; stream_only must be false.";
+        }
+        return false;
+    }
+    if (spec->recording_control.record_for_seconds > 0 &&
+        spec->recording_control.record_for_seconds >= spec->duration_s + spec->warmup_s) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.recording_control.record_for_seconds must be shorter than "
+                "fixed.duration_s + fixed.warmup_s for this experimental slice";
+        }
+        return false;
+    }
     if (spec->yolo_event_log.enabled() && spec->yolo_worker.enabled()) {
         if (error_out) {
             *error_out =
                 "Experiment spec cannot combine fixed.yolo_event_log synthetic mode with fixed.yolo_worker real mode.";
+        }
+        return false;
+    }
+    if (spec->pose_worker.enabled() && !spec->yolo_worker.enabled()) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.pose_worker currently requires fixed.yolo_worker mode=real as its ROI source.";
         }
         return false;
     }
@@ -5297,6 +6176,28 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
                 "fixed.recording_sink_mode=real|preprocess_only|immediate_recycle|threaded_handoff_only|external_ipc";
         }
         return false;
+    }
+    if (spec->external_recorder_contract.enabled() &&
+        spec->recording_sink_mode != "external_ipc") {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.external_recorder_contract requires "
+                "fixed.recording_sink_mode=external_ipc.";
+        }
+        return false;
+    }
+    if (spec->external_recorder_contract.enabled() &&
+        !spec->selection.select_all_cameras) {
+        for (const std::string& serial : spec->selection.camera_serials) {
+            if (!spec->external_recorder_contract.streams.contains(serial)) {
+                if (error_out) {
+                    *error_out =
+                        "Experiment spec fixed.external_recorder_contract.streams missing camera " +
+                        serial;
+                }
+                return false;
+            }
+        }
     }
     if (spec->stream_only && spec->recording_sink_mode != "real") {
         if (error_out) {
@@ -5518,6 +6419,11 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                             run.options.frame_ipc = spec.frame_ipc;
                                                             run.options.yolo_event_log = spec.yolo_event_log;
                                                             run.options.yolo_worker = spec.yolo_worker;
+                                                            run.options.pose_worker = spec.pose_worker;
+                                                            run.options.recording_control =
+                                                                spec.recording_control;
+                                                            run.options.external_recorder_contract =
+                                                                spec.external_recorder_contract;
                                                             run.options.has_recording_override =
                                                                 spec.has_recording_override;
                                                             run.options.recording_override =
@@ -5606,6 +6512,15 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                 {"yolo_worker",
                                                                  build_headless_yolo_worker_config_json(
                                                                      run.options.yolo_worker)},
+                                                                {"pose_worker",
+                                                                 build_headless_pose_worker_config_json(
+                                                                     run.options.pose_worker)},
+                                                                {"recording_control",
+                                                                 build_headless_recording_control_config_json(
+                                                                     run.options.recording_control)},
+                                                                {"external_recorder_contract",
+                                                                 build_headless_external_recorder_contract_config_json(
+                                                                     run.options.external_recorder_contract)},
                                                             };
                                                             if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
@@ -5854,6 +6769,145 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     HeadlessGpuDmonMonitor gpu_dmon_monitor;
     const bool enable_recording = !options.stream_only;
     const std::string active_record_folder = options.record_folder;
+    const bool supervise_external_recorder =
+        enable_recording &&
+        options.recording_sink_mode == "external_ipc" &&
+        options.external_recorder_contract.enabled() &&
+        options.external_recorder_contract.supervise_processes;
+    orange::external_recorder::SupervisorRuntimeState external_recorder_runtime;
+    orange::external_recorder::SupervisorProcessOptions external_recorder_process_options;
+    bool external_recorder_started = false;
+    const std::filesystem::path external_recorder_artifact_root =
+        options.external_recorder_contract.artifact_root.empty()
+            ? std::filesystem::path()
+            : std::filesystem::path(options.external_recorder_contract.artifact_root);
+    auto write_external_recorder_runtime_summary = [&]() {
+        if (external_recorder_artifact_root.empty()) {
+            return;
+        }
+        std::string write_error;
+        if (!write_json_file(
+                external_recorder_artifact_root / "external_recorder_supervisor_runtime.json",
+                orange::external_recorder::SupervisorRuntimeStateToJson(
+                    external_recorder_runtime),
+                &write_error)) {
+            std::cerr << write_error << std::endl;
+        }
+    };
+    auto write_external_recorder_verifier_handoff = [&]() {
+        if (external_recorder_artifact_root.empty()) {
+            return;
+        }
+        const char* verifier_env = std::getenv("ORANGE_EXTERNAL_RECORDER_VERIFY_SCRIPT");
+        const std::string verifier_path =
+            (verifier_env && *verifier_env)
+                ? verifier_env
+                : "scripts/verify_external_recorder_session.py";
+        const std::filesystem::path analytics_root =
+            std::filesystem::path(active_record_folder).parent_path();
+        const nlohmann::json handoff = {
+            {"schema_id", "orange.external_recorder.verifier_handoff"},
+            {"schema_version", 1},
+            {"status", "pending_runs_json_and_video_sanity"},
+            {"artifact_root", external_recorder_artifact_root.string()},
+            {"analytics_root", analytics_root.string()},
+            {"requires_video_sanity",
+             options.external_recorder_contract.require_video_sanity},
+            {"command",
+             nlohmann::json::array({
+                 verifier_path,
+                 external_recorder_artifact_root.string(),
+                 "--analytics-root",
+                 analytics_root.string()
+             })}
+        };
+        std::string write_error;
+        if (!write_json_file(
+                external_recorder_artifact_root /
+                    "external_recorder_verifier_handoff.json",
+                handoff,
+                &write_error)) {
+            std::cerr << write_error << std::endl;
+        }
+    };
+    auto stop_supervised_external_recorder = [&]() {
+        if (!external_recorder_started) {
+            return true;
+        }
+        std::string stop_error;
+        const bool stopped = orange::external_recorder::StopSupervisorProcesses(
+            &external_recorder_runtime,
+            external_recorder_process_options,
+            &stop_error);
+        external_recorder_started = false;
+        write_external_recorder_runtime_summary();
+        write_external_recorder_verifier_handoff();
+        if (!stopped) {
+            std::cerr << "External recorder supervisor shutdown failed: "
+                      << stop_error << std::endl;
+        }
+        return stopped;
+    };
+    std::vector<std::unique_ptr<ScopedEnvVarOverride>> external_recorder_env;
+    if (supervise_external_recorder) {
+        orange::external_recorder::SupervisorPlan supervisor_plan;
+        std::string supervisor_error;
+        if (!build_external_recorder_supervisor_plan(
+                options.external_recorder_contract,
+                &supervisor_plan,
+                &supervisor_error)) {
+            std::cerr << supervisor_error << std::endl;
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+        const nlohmann::json contract_json =
+            build_headless_external_recorder_contract_config_json(
+                options.external_recorder_contract);
+        if (!write_json_file(
+                external_recorder_artifact_root / "external_recorder_session.json",
+                contract_json,
+                &supervisor_error) ||
+            !write_json_file(
+                external_recorder_artifact_root / "external_recorder_supervisor_plan.json",
+                orange::external_recorder::SupervisorPlanToJson(supervisor_plan),
+                &supervisor_error)) {
+            std::cerr << supervisor_error << std::endl;
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+        external_recorder_env.push_back(
+            std::make_unique<ScopedEnvVarOverride>(
+                "ORANGE_EXTERNAL_RECORDER_SESSION_ID",
+                supervisor_plan.session_id.c_str()));
+        for (const orange::external_recorder::RecorderStreamPlan& stream :
+             supervisor_plan.streams) {
+            external_recorder_env.push_back(
+                std::make_unique<ScopedEnvVarOverride>(
+                    ("ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" +
+                     stream.camera_serial).c_str(),
+                    supervisor_plan.session_id.c_str()));
+            external_recorder_env.push_back(
+                std::make_unique<ScopedEnvVarOverride>(
+                    ("ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_" +
+                     stream.camera_serial).c_str(),
+                    stream.socket_path.c_str()));
+        }
+        if (!orange::external_recorder::StartSupervisorProcesses(
+                supervisor_plan,
+                external_recorder_process_options,
+                &external_recorder_runtime,
+                &supervisor_error)) {
+            std::cerr << supervisor_error << std::endl;
+            write_external_recorder_runtime_summary();
+            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
+            return 1;
+        }
+        external_recorder_started = true;
+        std::cout << "External recorder supervisor started."
+                  << " streams=" << supervisor_plan.streams.size()
+                  << " artifact_root=" << supervisor_plan.artifact_root
+                  << std::endl;
+    }
     const std::string yolo_decimate_value =
         options.yolo_worker.enabled() ? std::to_string(options.yolo_worker.decimate) : "";
     std::unique_ptr<ScopedEnvVarOverride> yolo_decimate_override;
@@ -5894,6 +6948,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.yolo_worker);
 
     if (!started) {
+        stop_supervised_external_recorder();
         stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
         close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
@@ -5911,9 +6966,23 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
               << " cameras=" << format_selected_camera_serials(options.encoder_settings)
               << std::endl;
 
+    const std::string session_started_at_utc = get_current_utc_timestamp();
     const auto run_start_time = std::chrono::steady_clock::now();
     const auto record_arm_time = run_start_time + std::chrono::seconds(options.record_start_delay_seconds);
     bool recording_armed = !enable_recording || camera_control.record_video;
+    std::chrono::steady_clock::time_point recording_start_time{};
+    std::chrono::steady_clock::time_point recording_stop_request_time{};
+    std::chrono::steady_clock::time_point recording_drain_done_time{};
+    std::string recording_started_at_utc;
+    std::string recording_stop_requested_at_utc;
+    std::string recording_drained_at_utc;
+    std::string recording_stop_reason;
+    bool recording_auto_stop_requested = false;
+    bool recording_drain_completed = false;
+    if (enable_recording && recording_armed) {
+        recording_start_time = run_start_time;
+        recording_started_at_utc = get_current_utc_timestamp();
+    }
     if (enable_recording && !recording_armed && options.record_start_delay_seconds > 0) {
         std::cout << "Local headless stream warmup started."
                   << " record_arm_delay_s=" << options.record_start_delay_seconds
@@ -5933,7 +7002,38 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             camera_control.stop_record = false;
             camera_control.record_video = true;
             recording_armed = true;
+            recording_start_time = std::chrono::steady_clock::now();
+            recording_started_at_utc = get_current_utc_timestamp();
             std::cout << "Local headless recording armed after warmup."
+                      << " folder=" << options.record_folder
+                      << std::endl;
+        }
+        if (enable_recording &&
+            recording_armed &&
+            !recording_auto_stop_requested &&
+            options.recording_control.record_for_seconds > 0 &&
+            recording_start_time.time_since_epoch().count() > 0 &&
+            std::chrono::steady_clock::now() >=
+                recording_start_time + std::chrono::seconds(
+                    options.recording_control.record_for_seconds)) {
+            recording_stop_request_time = std::chrono::steady_clock::now();
+            recording_stop_requested_at_utc = get_current_utc_timestamp();
+            recording_stop_reason = "record_for_seconds_elapsed";
+            std::cout << "Local headless timed recording stop requested."
+                      << " record_for_seconds="
+                      << options.recording_control.record_for_seconds
+                      << " folder=" << options.record_folder
+                      << std::endl;
+            request_recording_drain(recording_pipelines, &camera_control);
+            recording_drain_completed = wait_for_recording_drain(
+                &camera_control,
+                std::chrono::seconds(10),
+                "Headless timed recording drain");
+            recording_drain_done_time = std::chrono::steady_clock::now();
+            recording_drained_at_utc = get_current_utc_timestamp();
+            recording_auto_stop_requested = true;
+            std::cout << "Local headless timed recording drain "
+                      << (recording_drain_completed ? "completed." : "timed out.")
                       << " folder=" << options.record_folder
                       << std::endl;
         }
@@ -5962,6 +7062,134 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         &ptp_params,
         false);
 
+    const bool external_recorder_stop_ok = stop_supervised_external_recorder();
+
+    if (enable_recording && options.recording_control.enabled()) {
+        const auto session_finished_time = std::chrono::steady_clock::now();
+        const std::string session_finished_at_utc = get_current_utc_timestamp();
+        if (recording_start_time.time_since_epoch().count() > 0 &&
+            recording_stop_request_time.time_since_epoch().count() == 0) {
+            recording_stop_request_time = session_finished_time;
+            recording_stop_requested_at_utc = session_finished_at_utc;
+            recording_stop_reason = quit_server ? "interrupted" : "run_shutdown";
+        }
+        if (recording_drain_done_time.time_since_epoch().count() == 0) {
+            recording_drain_done_time = session_finished_time;
+            recording_drained_at_utc = session_finished_at_utc;
+            recording_drain_completed =
+                camera_control.active_recorders.load(std::memory_order_relaxed) == 0;
+        }
+
+        auto elapsed_since_run_start = [&](std::chrono::steady_clock::time_point time) {
+            if (time.time_since_epoch().count() == 0) {
+                return 0.0;
+            }
+            return std::chrono::duration<double>(time - run_start_time).count();
+        };
+        auto elapsed_between = [](std::chrono::steady_clock::time_point start,
+                                  std::chrono::steady_clock::time_point finish) {
+            if (start.time_since_epoch().count() == 0 ||
+                finish.time_since_epoch().count() == 0 ||
+                finish < start) {
+                return 0.0;
+            }
+            return std::chrono::duration<double>(finish - start).count();
+        };
+
+        nlohmann::json cameras = nlohmann::json::array();
+        nlohmann::json video_artifacts = nlohmann::json::object();
+        nlohmann::json metadata_artifacts = nlohmann::json::object();
+        nlohmann::json keyframe_artifacts = nlohmann::json::object();
+        for (int idx : selected_inventory_indices) {
+            const std::string camera_serial = cameras_params[idx].camera_serial;
+            cameras.push_back(camera_serial);
+            video_artifacts[camera_serial] = "Cam" + camera_serial + ".mp4";
+            metadata_artifacts[camera_serial] = "Cam" + camera_serial + "_meta.csv";
+            keyframe_artifacts[camera_serial] = "Cam" + camera_serial + "_keyframe.json";
+        }
+
+        const double actual_recording_duration_s =
+            elapsed_between(recording_start_time, recording_stop_request_time);
+        const double drain_duration_s =
+            elapsed_between(recording_stop_request_time, recording_drain_done_time);
+        const bool recording_started =
+            recording_start_time.time_since_epoch().count() > 0;
+        const bool timed_stop_hit =
+            recording_stop_reason == "record_for_seconds_elapsed";
+
+        nlohmann::json manifest = {
+            {"schema_id", "orange.headless.recording_session"},
+            {"schema_version", 1},
+            {"created_at_utc", session_started_at_utc},
+            {"updated_at_utc", session_finished_at_utc},
+            {"recording_folder", active_record_folder},
+            {"mode", "single_clip"},
+            {"status", (recording_started && recording_drain_completed) ? "completed" : "incomplete"},
+            {"cameras", cameras},
+            {"stream",
+             {
+                 {"requested_duration_seconds", options.duration_seconds},
+                 {"stream_start_delay_seconds", options.stream_start_delay_seconds},
+                 {"started_at_utc", session_started_at_utc},
+                 {"finished_at_utc", session_finished_at_utc},
+                 {"actual_elapsed_s",
+                  std::chrono::duration<double>(session_finished_time - run_start_time).count()},
+                 {"interrupted", quit_server}
+             }},
+            {"recording_control",
+             build_headless_recording_control_config_json(options.recording_control)},
+            {"recording",
+             {
+                 {"started", recording_started},
+                 {"started_at_utc", recording_started_at_utc},
+                 {"started_at_elapsed_s", elapsed_since_run_start(recording_start_time)},
+                 {"stop_requested", recording_stop_request_time.time_since_epoch().count() > 0},
+                 {"stop_requested_at_utc", recording_stop_requested_at_utc},
+                 {"stop_requested_at_elapsed_s",
+                  elapsed_since_run_start(recording_stop_request_time)},
+                 {"stop_reason", recording_stop_reason},
+                 {"drain_completed", recording_drain_completed},
+                 {"drained_at_utc", recording_drained_at_utc},
+                 {"drained_at_elapsed_s", elapsed_since_run_start(recording_drain_done_time)},
+                 {"actual_recording_duration_s", actual_recording_duration_s},
+                 {"drain_duration_s", drain_duration_s}
+             }},
+            {"clips",
+             nlohmann::json::array(
+                 {{
+                     {"clip_index", 0},
+                     {"clip_id", "clip_0000"},
+                     {"recording_folder", active_record_folder},
+                     {"started_at_utc", recording_started_at_utc},
+                     {"stop_requested_at_utc", recording_stop_requested_at_utc},
+                     {"finalized_at_utc", recording_drained_at_utc},
+                     {"stop_reason", recording_stop_reason},
+                     {"requested_duration_s", options.recording_control.record_for_seconds},
+                     {"actual_duration_s", actual_recording_duration_s},
+                     {"timed_stop_hit", timed_stop_hit},
+                     {"drain_completed", recording_drain_completed},
+                     {"artifacts",
+                      {
+                          {"videos", video_artifacts},
+                          {"metadata", metadata_artifacts},
+                          {"keyframes", keyframe_artifacts}
+                      }}
+                 }})}
+        };
+
+        std::string manifest_error;
+        if (!write_json_file(
+                std::filesystem::path(active_record_folder) / "recording_session.json",
+                manifest,
+                &manifest_error)) {
+            std::cerr << manifest_error << std::endl;
+            stop_headless_frame_ipc_managers(frame_ipc_managers);
+            stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+            clear_headless_frame_ipc_managers(frame_ipc_managers);
+            return 1;
+        }
+    }
+
     stop_headless_frame_ipc_managers(frame_ipc_managers);
     stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
     std::string frame_ipc_summary_error;
@@ -5978,6 +7206,10 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         return 1;
     }
     clear_headless_frame_ipc_managers(frame_ipc_managers);
+
+    if (!external_recorder_stop_ok) {
+        return 1;
+    }
 
     if (thread_failure_state.has_failure()) {
         std::cerr << thread_failure_state.get_first_error() << std::endl;
@@ -6026,11 +7258,58 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["nvenc_direct_input"] = run.options.nvenc_direct_input;
     row["duration_s"] = run.duration_s;
     row["warmup_s"] = run.warmup_s;
+    row["recording_control_record_for_seconds"] =
+        run.options.recording_control.record_for_seconds;
+    row["recording_control_clip_seconds"] =
+        run.options.recording_control.clip_seconds;
+    row["recording_session_manifest_path"] =
+        (std::filesystem::path(run.recording_folder) / "recording_session.json").string();
+    row["recording_control_video_duration_error_s"] = 0.0;
     row["stream_only"] = run.options.stream_only;
     row["acquisition_buffer_mode"] = run.options.acquisition_buffer_mode_override.empty()
         ? "auto"
         : run.options.acquisition_buffer_mode_override;
     row["recording_sink_mode"] = run.options.recording_sink_mode;
+    const nlohmann::json external_recorder_stream =
+        run.options.external_recorder_contract.streams.is_object()
+            ? run.options.external_recorder_contract.streams.value(
+                  camera_serial,
+                  nlohmann::json::object())
+            : nlohmann::json::object();
+    const bool external_recorder_stream_configured =
+        run.options.external_recorder_contract.enabled() &&
+        external_recorder_stream.is_object() &&
+        !external_recorder_stream.empty();
+    row["external_recorder_contract_mode"] =
+        run.options.external_recorder_contract.mode;
+    row["external_recorder_contract_artifact_root"] =
+        run.options.external_recorder_contract.artifact_root;
+    row["external_recorder_summary_json_path"] =
+        external_recorder_stream_configured
+            ? external_recorder_stream.value("summary_json", "")
+            : "";
+    row["external_recorder_video_sanity_json_path"] =
+        external_recorder_stream_configured
+            ? external_recorder_stream.value("video_sanity_json", "")
+            : "";
+    row["external_recorder_mp4_path"] =
+        external_recorder_stream_configured
+            ? external_recorder_stream.value("mp4", "")
+            : "";
+    row["external_recorder_gop_routing_csv_path"] =
+        external_recorder_stream_configured
+            ? external_recorder_stream.value("gop_routing_csv", "")
+            : "";
+    row["external_recorder_routing_policy"] =
+        external_recorder_stream_configured
+            ? external_recorder_stream.value("routing_policy", "")
+            : "";
+    row["external_recorder_expected_shard_count"] =
+        external_recorder_stream_configured &&
+                external_recorder_stream.contains("expected_shard_gpu_ids") &&
+                external_recorder_stream["expected_shard_gpu_ids"].is_array()
+            ? static_cast<int>(external_recorder_stream["expected_shard_gpu_ids"].size())
+            : 0;
     row["frame_ipc_mode"] = headless_frame_ipc_mode_to_string(run.options.frame_ipc.mode);
     row["frame_ipc_status"] = run.options.frame_ipc.enabled() ? "not_reported" : "disabled";
     row["frame_ipc_frames_sent"] = 0ULL;
@@ -6063,6 +7342,37 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
     row["yolo_event_log_sequence_errors"] = 0ULL;
     row["yolo_event_log_cadence_errors"] = 0ULL;
     row["yolo_event_log_metadata_join_misses"] = 0ULL;
+    row["pose"] = run.options.pose_worker.enabled();
+    row["pose_worker_mode"] = run.options.pose_worker.mode;
+    row["pose_worker_status"] =
+        run.options.pose_worker.enabled() ? "configured" : "disabled";
+    row["pose_worker_engine_path"] = run.options.pose_worker.engine_path;
+    row["pose_worker_skeleton_id"] = run.options.pose_worker.skeleton_id;
+    row["pose_worker_skeleton_path"] = run.options.pose_worker.skeleton_path;
+    row["pose_worker_input_width"] = run.options.pose_worker.input_width;
+    row["pose_worker_input_height"] = run.options.pose_worker.input_height;
+    row["pose_worker_input_layout"] = run.options.pose_worker.input_layout;
+    row["pose_worker_input_dtype"] = run.options.pose_worker.input_dtype;
+    row["pose_worker_normalization"] = run.options.pose_worker.normalization;
+    row["pose_worker_roi_source"] = run.options.pose_worker.roi_source;
+    row["pose_worker_queue_depth"] = run.options.pose_worker.queue_depth;
+    row["pose_worker_timeout_ms"] = run.options.pose_worker.timeout_ms;
+    row["pose_worker_prewarm_iterations"] = run.options.pose_worker.prewarm_iterations;
+    row["pose_worker_fail_on_init_error"] = run.options.pose_worker.fail_on_init_error;
+    row["pose_worker_write_events_jsonl"] = run.options.pose_worker.write_events_jsonl;
+    row["pose_event_log_status"] =
+        run.options.pose_worker.enabled() ? "not_reported" : "disabled";
+    row["pose_event_log_present"] = false;
+    row["pose_event_log_path"] = "";
+    row["pose_event_log_rows"] = 0ULL;
+    row["pose_event_log_no_result_rows"] = 0ULL;
+    row["pose_event_log_result_rows"] = 0ULL;
+    row["pose_event_log_failed_rows"] = 0ULL;
+    row["pose_event_log_parse_errors"] = 0ULL;
+    row["pose_event_log_schema_errors"] = 0ULL;
+    row["pose_event_log_sequence_errors"] = 0ULL;
+    row["pose_event_log_noop_errors"] = 0ULL;
+    row["pose_event_log_metadata_join_misses"] = 0ULL;
     row["recording_folder"] = run.recording_folder;
     row["video_present"] = false;
     row["video_path"] = "";
@@ -6168,6 +7478,28 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         row["yolo_event_log_cadence_errors"] = yolo_event_stats.cadence_errors;
         row["yolo_event_log_metadata_join_misses"] =
             yolo_event_stats.metadata_join_misses;
+    }
+    pose_event_log::PoseEventLogValidationConfig pose_validation_config;
+    pose_validation_config.mode = run.options.pose_worker.mode;
+    const pose_event_log::PoseEventLogValidationStats pose_event_stats =
+        pose_event_log::summarize_pose_event_log(
+            run.recording_folder,
+            camera_serial,
+            pose_validation_config);
+    if (run.options.pose_worker.enabled()) {
+        row["pose_event_log_status"] = pose_event_stats.status;
+        row["pose_event_log_present"] = pose_event_stats.present;
+        row["pose_event_log_path"] = pose_event_stats.path;
+        row["pose_event_log_rows"] = pose_event_stats.rows;
+        row["pose_event_log_no_result_rows"] = pose_event_stats.no_result_rows;
+        row["pose_event_log_result_rows"] = pose_event_stats.result_rows;
+        row["pose_event_log_failed_rows"] = pose_event_stats.failed_rows;
+        row["pose_event_log_parse_errors"] = pose_event_stats.parse_errors;
+        row["pose_event_log_schema_errors"] = pose_event_stats.schema_errors;
+        row["pose_event_log_sequence_errors"] = pose_event_stats.sequence_errors;
+        row["pose_event_log_noop_errors"] = pose_event_stats.noop_errors;
+        row["pose_event_log_metadata_join_misses"] =
+            pose_event_stats.metadata_join_misses;
     }
     if (run.options.frame_ipc.enabled()) {
         nlohmann::json frame_ipc_summary;
@@ -6335,6 +7667,14 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
             target_fps = runtime_info.value("frame_rate", 0.0);
         }
     }
+    const int timed_record_for_seconds =
+        run.options.recording_control.record_for_seconds;
+    const bool timed_recording =
+        timed_record_for_seconds > 0 && !run.options.stream_only;
+    if (timed_recording) {
+        row["recording_control_video_duration_error_s"] =
+            video_stats.duration_s - static_cast<double>(timed_record_for_seconds);
+    }
 
     if (metrics_only_run) {
         const uint64_t acq_starve = row["acq_starve_final"].get<uint64_t>();
@@ -6449,8 +7789,10 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         const uint64_t pre_drops = row["pre_drops_final"].get<uint64_t>();
         const uint64_t enc_fail = row["enc_fail_final"].get<uint64_t>();
         const int64_t camera_drops = row["dropped_frames_camera"].get<int64_t>();
+        const double acq_fps_mean = row["acq_fps_mean"].get<double>();
         const double enc_fps_mean = row["enc_fps_mean"].get<double>();
         const double tolerance = target_fps * (spec.target_fps_tolerance_pct / 100.0);
+        const bool acq_fps_ok = (target_fps <= 0.0) || (acq_fps_mean + tolerance >= target_fps);
         const bool fps_ok = (target_fps <= 0.0) || (enc_fps_mean + tolerance >= target_fps);
         const bool importance_map_requested = row["importance_map_mode"].get<std::string>() != "off";
         const bool importance_map_active =
@@ -6465,6 +7807,15 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         const bool video_content_policy_failed =
             spec.require_valid_video_content &&
             (!row["video_present"].get<bool>() || !row["video_content_valid"].get<bool>());
+        const double video_duration_tolerance_s =
+            timed_recording
+                ? std::max(1.0, static_cast<double>(timed_record_for_seconds) * 0.25)
+                : 0.0;
+        const bool video_duration_policy_failed =
+            timed_recording &&
+            (video_stats.duration_s <= 0.0 ||
+             std::abs(video_stats.duration_s - static_cast<double>(timed_record_for_seconds)) >
+                 video_duration_tolerance_s);
         const bool counter_policy_failed =
             (spec.require_zero_camera_drops && camera_drops > 0) ||
             (spec.require_zero_acq_starve && acq_starve > 0) ||
@@ -6494,6 +7845,9 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 row["reason"] = std::string("invalid video content: ") +
                     row["video_content_status"].get<std::string>();
             }
+        } else if (video_duration_policy_failed) {
+            row["pass_fail"] = "fail";
+            row["reason"] = "timed recording video duration outside tolerance";
         } else if (preenc_enabled) {
             if (preenc_status == "error") {
                 row["pass_fail"] = "fail";
@@ -6509,22 +7863,32 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
                 row["reason"] = "pre-encoder reference capture incomplete";
             } else if (counter_policy_failed) {
                 set_counter_policy_failure();
-            } else if (!fps_ok) {
+            } else if (timed_recording && !acq_fps_ok) {
+                row["pass_fail"] = "marginal";
+                row["reason"] = "acquisition fps below target tolerance";
+            } else if (!timed_recording && !fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "encode fps below target tolerance";
             } else {
                 row["pass_fail"] = "pass";
-                row["reason"] = "meets current policy";
+                row["reason"] = timed_recording
+                    ? "meets current timed-recording policy"
+                    : "meets current policy";
             }
         } else {
             if (counter_policy_failed) {
                 set_counter_policy_failure();
-            } else if (!fps_ok) {
+            } else if (timed_recording && !acq_fps_ok) {
+                row["pass_fail"] = "marginal";
+                row["reason"] = "acquisition fps below target tolerance";
+            } else if (!timed_recording && !fps_ok) {
                 row["pass_fail"] = "marginal";
                 row["reason"] = "encode fps below target tolerance";
             } else {
                 row["pass_fail"] = "pass";
-                row["reason"] = "meets current policy";
+                row["reason"] = timed_recording
+                    ? "meets current timed-recording policy"
+                    : "meets current policy";
             }
         }
     } else {
@@ -6546,6 +7910,14 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         if (yolo_event_status != "pass") {
             row["pass_fail"] = "fail";
             row["reason"] = "YOLO event log validation failed";
+        }
+    }
+    if (run.options.pose_worker.enabled()) {
+        const std::string pose_event_status =
+            row.value("pose_event_log_status", "not_reported");
+        if (pose_event_status != "pass") {
+            row["pass_fail"] = "fail";
+            row["reason"] = "pose event log validation failed";
         }
     }
 
@@ -6574,7 +7946,7 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
         }
         return false;
     }
-    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
+    csv << "experiment_id,run_id,camera_serial,gpu_id,gpu_name,gpu_pci_bus_id,codec,preset,tuning,rate_control_mode,importance_map_mode,importance_map_roi_size_px,quality_value,gop_length,aq_override,temporal_aq_override,lookahead_override,lookahead_depth_override,target_bitrate_bps_override,max_bitrate_bps_override,vbv_buffer_size_override,importance_map_enabled,importance_map_active_mode,importance_map_block_size,importance_map_grid_width,importance_map_grid_height,stream_only,acquisition_buffer_mode,recording_sink_mode,external_recorder_contract_mode,external_recorder_contract_artifact_root,external_recorder_summary_json_path,external_recorder_video_sanity_json_path,external_recorder_mp4_path,external_recorder_gop_routing_csv_path,external_recorder_routing_policy,external_recorder_expected_shard_count,frame_ipc_mode,frame_ipc_status,frame_ipc_frames_sent,frame_ipc_reader_popped,frame_ipc_reader_gaps,frame_ipc_push_failures,nvenc_direct_input,duration_s,warmup_s,recording_control_record_for_seconds,recording_control_clip_seconds,recording_session_manifest_path,recording_control_video_duration_error_s,display,yolo,yolo_worker_mode,yolo_worker_status,yolo_worker_engine_path,yolo_worker_decimate,yolo_worker_publish_live_ipc,yolo_event_log_mode,yolo_event_log_status,yolo_event_log_present,yolo_event_log_rows,yolo_event_log_detection_rows,yolo_event_log_zero_rows,yolo_event_log_timeout_rows,yolo_event_log_failed_rows,yolo_event_log_parse_errors,yolo_event_log_schema_errors,yolo_event_log_sequence_errors,yolo_event_log_cadence_errors,yolo_event_log_metadata_join_misses,yolo_event_log_path,pose,pose_worker_mode,pose_worker_status,pose_worker_engine_path,pose_worker_skeleton_id,pose_worker_skeleton_path,pose_worker_input_width,pose_worker_input_height,pose_worker_input_layout,pose_worker_input_dtype,pose_worker_normalization,pose_worker_roi_source,pose_worker_queue_depth,pose_worker_timeout_ms,pose_worker_prewarm_iterations,pose_worker_fail_on_init_error,pose_worker_write_events_jsonl,pose_event_log_mode,pose_event_log_status,pose_event_log_present,pose_event_log_rows,pose_event_log_no_result_rows,pose_event_log_result_rows,pose_event_log_failed_rows,pose_event_log_parse_errors,pose_event_log_schema_errors,pose_event_log_sequence_errors,pose_event_log_noop_errors,pose_event_log_metadata_join_misses,pose_event_log_path,recording_folder,video_present,video_path,video_file_size_bytes,video_duration_s,video_achieved_bitrate_bps,video_content_checked,video_content_valid,video_content_status,video_first_frame_luma_mean,video_first_frame_luma_stddev,video_first_frame_black_fraction,video_first_frame_decoded_bytes,status,pass_fail,reason,acq_fps_mean,acq_fps_p95,enc_fps_mean,enc_fps_p95,enc_fps_primary_mean,enc_fps_primary_p95,enc_fps_helpers_mean,enc_fps_helpers_p95,acq_free_entries_min,acq_free_events_min,yolo_events_min,pre_buffers_min,pre_events_min,acq_starve_final,pre_waits_final,pre_drops_final,enc_fail_final,enc_slow_final,external_ipc_frames_acked_final,external_ipc_failures_final,external_ipc_ack_timeouts_final,submitted_frames_final,primary_routed_frames_final,helper_requested_frames_final,helper_fallback_frames_final,helper_dispatched_frames_final,routing_last_target_gpu_id,routing_last_route_mode,dropped_frames_camera,camera_frame_id_gaps,get_frame_errors_final,get_frame_error_code_last,pre_encoder_reference_capture_enabled,pre_encoder_reference_capture_max_frames,pre_encoder_reference_capture_max_seconds,pre_encoder_reference_capture_status,pre_encoder_reference_frames_captured,pre_encoder_reference_bytes_written,pre_encoder_reference_raw_dump_present,pre_encoder_reference_index_present,pre_encoder_reference_metadata_present,pre_encoder_reference_raw_dump_path,pre_encoder_reference_index_path,pre_encoder_reference_metadata_path\n";
     for (const auto& run_entry : runs_json.value("runs", nlohmann::json::array())) {
         const nlohmann::json cameras = run_entry.value("camera_results", nlohmann::json::array());
         for (const auto& row : cameras) {
@@ -6607,6 +7979,14 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << (row.value("stream_only", false) ? "true" : "false") << ","
                 << row.value("acquisition_buffer_mode", "auto") << ","
                 << row.value("recording_sink_mode", "real") << ","
+                << row.value("external_recorder_contract_mode", "off") << ","
+                << "\"" << row.value("external_recorder_contract_artifact_root", "") << "\","
+                << "\"" << row.value("external_recorder_summary_json_path", "") << "\","
+                << "\"" << row.value("external_recorder_video_sanity_json_path", "") << "\","
+                << "\"" << row.value("external_recorder_mp4_path", "") << "\","
+                << "\"" << row.value("external_recorder_gop_routing_csv_path", "") << "\","
+                << row.value("external_recorder_routing_policy", "") << ","
+                << row.value("external_recorder_expected_shard_count", 0) << ","
                 << row.value("frame_ipc_mode", "off") << ","
                 << row.value("frame_ipc_status", "disabled") << ","
                 << row.value("frame_ipc_frames_sent", 0ULL) << ","
@@ -6616,6 +7996,10 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << (row.value("nvenc_direct_input", false) ? "true" : "false") << ","
                 << row.value("duration_s", 0) << ","
                 << row.value("warmup_s", 0) << ","
+                << row.value("recording_control_record_for_seconds", 0) << ","
+                << row.value("recording_control_clip_seconds", 0) << ","
+                << "\"" << row.value("recording_session_manifest_path", "") << "\","
+                << row.value("recording_control_video_duration_error_s", 0.0) << ","
                 << (row.value("display", false) ? "true" : "false") << ","
                 << (row.value("yolo", false) ? "true" : "false") << ","
                 << row.value("yolo_worker_mode", "off") << ","
@@ -6637,6 +8021,36 @@ bool write_experiment_manifests(const ExperimentSpec& spec,
                 << row.value("yolo_event_log_cadence_errors", 0ULL) << ","
                 << row.value("yolo_event_log_metadata_join_misses", 0ULL) << ","
                 << "\"" << row.value("yolo_event_log_path", "") << "\","
+                << (row.value("pose", false) ? "true" : "false") << ","
+                << row.value("pose_worker_mode", "off") << ","
+                << row.value("pose_worker_status", "disabled") << ","
+                << "\"" << row.value("pose_worker_engine_path", "") << "\","
+                << row.value("pose_worker_skeleton_id", "unknown") << ","
+                << "\"" << row.value("pose_worker_skeleton_path", "") << "\","
+                << row.value("pose_worker_input_width", 256) << ","
+                << row.value("pose_worker_input_height", 256) << ","
+                << row.value("pose_worker_input_layout", "nchw") << ","
+                << row.value("pose_worker_input_dtype", "fp16") << ","
+                << row.value("pose_worker_normalization", "model_default") << ","
+                << row.value("pose_worker_roi_source", "yolo_top_detection") << ","
+                << row.value("pose_worker_queue_depth", 32) << ","
+                << row.value("pose_worker_timeout_ms", 500) << ","
+                << row.value("pose_worker_prewarm_iterations", 0) << ","
+                << (row.value("pose_worker_fail_on_init_error", true) ? "true" : "false") << ","
+                << (row.value("pose_worker_write_events_jsonl", true) ? "true" : "false") << ","
+                << row.value("pose_worker_mode", "off") << ","
+                << row.value("pose_event_log_status", "disabled") << ","
+                << (row.value("pose_event_log_present", false) ? "true" : "false") << ","
+                << row.value("pose_event_log_rows", 0ULL) << ","
+                << row.value("pose_event_log_no_result_rows", 0ULL) << ","
+                << row.value("pose_event_log_result_rows", 0ULL) << ","
+                << row.value("pose_event_log_failed_rows", 0ULL) << ","
+                << row.value("pose_event_log_parse_errors", 0ULL) << ","
+                << row.value("pose_event_log_schema_errors", 0ULL) << ","
+                << row.value("pose_event_log_sequence_errors", 0ULL) << ","
+                << row.value("pose_event_log_noop_errors", 0ULL) << ","
+                << row.value("pose_event_log_metadata_join_misses", 0ULL) << ","
+                << "\"" << row.value("pose_event_log_path", "") << "\","
                 << "\"" << row.value("recording_folder", "") << "\","
                 << (row.value("video_present", false) ? "true" : "false") << ","
                 << "\"" << row.value("video_path", "") << "\","
@@ -6916,37 +8330,71 @@ int run_local_experiment(const HeadlessCliOptions& options)
             run_entry["pass_fail"] = "fail";
         }
         runs_json["runs"].push_back(run_entry);
-        if (run_failed) {
-            ++run_failures;
-        }
 
-        int pass_count = 0;
-        int marginal_count = 0;
-        int fail_count = 0;
-        for (const auto& completed_run : runs_json["runs"]) {
-            const std::string pass_fail = completed_run.value("pass_fail", "");
-            if (pass_fail == "pass") {
-                ++pass_count;
-            } else if (pass_fail == "marginal") {
-                ++marginal_count;
-            } else if (pass_fail == "fail") {
-                ++fail_count;
+        auto build_summary_json = [&]() {
+            int pass_count = 0;
+            int marginal_count = 0;
+            int fail_count = 0;
+            for (const auto& completed_run : runs_json["runs"]) {
+                const std::string pass_fail = completed_run.value("pass_fail", "");
+                if (pass_fail == "pass") {
+                    ++pass_count;
+                } else if (pass_fail == "marginal") {
+                    ++marginal_count;
+                } else if (pass_fail == "fail") {
+                    ++fail_count;
+                }
             }
-        }
-        const nlohmann::json summary_json = {
-            {"experiment_id", spec.experiment_id},
-            {"notes", spec.notes},
-            {"updated_at_utc", get_current_utc_timestamp()},
-            {"total_runs", runs.size()},
-            {"completed_runs", runs_json["runs"].size()},
-            {"pass_runs", pass_count},
-            {"marginal_runs", marginal_count},
-            {"fail_runs", fail_count},
-            {"interrupted", quit_server},
+            return nlohmann::json{
+                {"experiment_id", spec.experiment_id},
+                {"notes", spec.notes},
+                {"updated_at_utc", get_current_utc_timestamp()},
+                {"total_runs", runs.size()},
+                {"completed_runs", runs_json["runs"].size()},
+                {"pass_runs", pass_count},
+                {"marginal_runs", marginal_count},
+                {"fail_runs", fail_count},
+                {"interrupted", quit_server},
+            };
         };
+
+        nlohmann::json summary_json = build_summary_json();
         if (!write_experiment_manifests(spec, experiment_root, runs_json, summary_json, &error)) {
             std::cerr << error << std::endl;
             return 1;
+        }
+
+        if (!run_failed &&
+            run.options.external_recorder_contract.enabled() &&
+            run.options.external_recorder_contract.supervise_processes) {
+            std::string finalization_error;
+            if (!finalize_supervised_external_recorder_run(
+                    run,
+                    experiment_root,
+                    &finalization_error)) {
+                run_failed = true;
+                run_entry["status"] = "failed";
+                run_entry["pass_fail"] = "fail";
+                run_entry["reason"] =
+                    finalization_error.empty()
+                        ? "external recorder supervised finalization failed"
+                        : finalization_error;
+                runs_json["runs"][runs_json["runs"].size() - 1] = run_entry;
+                summary_json = build_summary_json();
+                if (!write_experiment_manifests(
+                        spec,
+                        experiment_root,
+                        runs_json,
+                        summary_json,
+                        &error)) {
+                    std::cerr << error << std::endl;
+                    return 1;
+                }
+            }
+        }
+
+        if (run_failed) {
+            ++run_failures;
         }
     }
 

@@ -2,6 +2,11 @@
 
 Date: February 23, 2026
 
+Current planning note: `docs/autofocus_runtime_design_plan.md` is the active
+runtime design plan as of May 4, 2026. This file remains a checklist/background
+scratchpad for fish-specific autofocus behavior, ROI ideas, and original
+throughput assumptions.
+
 ## Goal
 
 Add reliable autofocus for fish so focus can track real scene changes without constant manual adjustment.
