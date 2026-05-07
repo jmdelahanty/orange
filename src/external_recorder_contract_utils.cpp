@@ -353,4 +353,39 @@ FailFastArtifactResult WriteExternalRecorderFailFastArtifacts(
     return result;
 }
 
+SupervisedSessionArtifactResult WriteExternalRecorderSupervisedSessionArtifacts(
+    const SupervisedSessionArtifactOptions& options)
+{
+    SupervisedSessionArtifactResult result;
+    if (options.artifact_root.empty()) {
+        result.error_message = "external recorder artifact_root is required";
+        return result;
+    }
+    if (!options.supervisor_plan) {
+        result.error_message = "external recorder supervisor plan is required";
+        return result;
+    }
+
+    const std::filesystem::path artifact_root(options.artifact_root);
+    const std::filesystem::path session_path =
+        artifact_root / "external_recorder_session.json";
+    const std::filesystem::path plan_path =
+        artifact_root / "external_recorder_supervisor_plan.json";
+
+    std::string error;
+    if (!write_json_file(session_path, options.contract, &error)) {
+        result.error_message = error;
+        return result;
+    }
+    result.external_recorder_session_path = session_path.string();
+
+    if (!write_json_file(plan_path, SupervisorPlanToJson(*options.supervisor_plan), &error)) {
+        result.error_message = error;
+        return result;
+    }
+    result.external_recorder_supervisor_plan_path = plan_path.string();
+    result.ok = true;
+    return result;
+}
+
 }  // namespace orange::external_recorder

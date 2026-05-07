@@ -479,6 +479,10 @@ Current contract-hardening status:
   metadata-only fail-fast `recording_session.json` shape. The GUI external
   recorder path uses this helper, and it is linked into `orange_client` for the
   next headless/session consolidation slice.
+- The supervised headless path now also uses that helper for the provisional
+  `external_recorder_session.json` and `external_recorder_supervisor_plan.json`
+  writes, and its parser uses the same wrapper-object extraction rule as the
+  GUI contract loader.
 - `fixed.external_recorder_contract.supervise_processes = true` is the first
   opt-in headless lifecycle slice. `orange_client` starts recorder processes,
   waits for sockets, exports per-camera socket/session env vars, waits for

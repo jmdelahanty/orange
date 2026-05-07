@@ -9,6 +9,8 @@ struct CameraParams;
 
 namespace orange::external_recorder {
 
+struct SupervisorPlan;
+
 inline constexpr const char* kGuiExternalRecorderNotImplementedReason =
     "external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording";
 
@@ -37,6 +39,19 @@ struct FailFastArtifactResult {
     std::string recording_session_path;
 };
 
+struct SupervisedSessionArtifactOptions {
+    std::string artifact_root;
+    nlohmann::json contract = nlohmann::json::object();
+    const SupervisorPlan* supervisor_plan = nullptr;
+};
+
+struct SupervisedSessionArtifactResult {
+    bool ok = false;
+    std::string error_message;
+    std::string external_recorder_session_path;
+    std::string external_recorder_supervisor_plan_path;
+};
+
 nlohmann::json ExtractExternalRecorderContractObject(const nlohmann::json& payload);
 
 bool ReadExternalRecorderContractConfigFile(const std::string& path,
@@ -48,5 +63,8 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
 
 FailFastArtifactResult WriteExternalRecorderFailFastArtifacts(
     const FailFastArtifactOptions& options);
+
+SupervisedSessionArtifactResult WriteExternalRecorderSupervisedSessionArtifacts(
+    const SupervisedSessionArtifactOptions& options);
 
 }  // namespace orange::external_recorder

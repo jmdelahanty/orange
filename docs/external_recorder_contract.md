@@ -249,6 +249,13 @@ shutdown/drain path is available as an opt-in headless slice through
 - `external_recorder_verifier_handoff.json`
 - `external_recorder_finalization.json`
 
+The provisional `external_recorder_session.json` and
+`external_recorder_supervisor_plan.json` artifacts are written through
+`src/external_recorder_contract_utils.*`, the same helper used by the GUI
+metadata-only fail-fast path. The headless parser also uses the shared contract
+extraction rule, so a wrapper object with `external_recorder_contract` resolves
+the same way in both paths.
+
 The runtime summary records PIDs, socket readiness, log paths, exit status, and
 whether termination was requested.
 The verifier handoff records the artifact root, the expected analytics root,

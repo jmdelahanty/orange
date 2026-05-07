@@ -37,6 +37,7 @@
 #include "frame_ipc_manager.h"
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
+#include "external_recorder_contract_utils.h"
 #include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
 #include "yolov8_det.h"
@@ -2640,29 +2641,35 @@ bool parse_headless_external_recorder_contract_json(
     if (node.is_boolean()) {
         config.mode = node.get<bool>() ? "diagnostic_ipc_v1" : "off";
     } else if (node.is_object()) {
-        config.schema_id = node.value("schema_id", config.schema_id);
-        config.schema_version = node.value("schema_version", config.schema_version);
-        config.mode = normalize_headless_token(node.value("mode", config.mode));
+        const nlohmann::json contract_node =
+            orange::external_recorder::ExtractExternalRecorderContractObject(node);
+        config.schema_id = contract_node.value("schema_id", config.schema_id);
+        config.schema_version =
+            contract_node.value("schema_version", config.schema_version);
+        config.mode = normalize_headless_token(
+            contract_node.value("mode", config.mode));
         if (config.mode == "true" || config.mode == "on") {
             config.mode = "diagnostic_ipc_v1";
         } else if (config.mode == "false" || config.mode == "disabled" ||
                    config.mode == "none") {
             config.mode = "off";
         }
-        config.artifact_root = node.value("artifact_root", config.artifact_root);
-        config.session_id = node.value("session_id", config.session_id);
+        config.artifact_root =
+            contract_node.value("artifact_root", config.artifact_root);
+        config.session_id = contract_node.value("session_id", config.session_id);
         config.recorder_tool_path =
-            node.value("recorder_tool_path", config.recorder_tool_path);
+            contract_node.value("recorder_tool_path", config.recorder_tool_path);
         config.supervise_processes =
-            node.value("supervise_processes", config.supervise_processes);
-        config.require_summary = node.value("require_summary", config.require_summary);
+            contract_node.value("supervise_processes", config.supervise_processes);
+        config.require_summary =
+            contract_node.value("require_summary", config.require_summary);
         config.require_video_sanity =
-            node.value("require_video_sanity", config.require_video_sanity);
+            contract_node.value("require_video_sanity", config.require_video_sanity);
         config.require_merged_mp4 =
-            node.value("require_merged_mp4", config.require_merged_mp4);
+            contract_node.value("require_merged_mp4", config.require_merged_mp4);
         config.require_gop_routing =
-            node.value("require_gop_routing", config.require_gop_routing);
-        config.streams = node.value("streams", nlohmann::json::object());
+            contract_node.value("require_gop_routing", config.require_gop_routing);
+        config.streams = contract_node.value("streams", nlohmann::json::object());
     } else {
         if (error_out) {
             *error_out =
@@ -6860,18 +6867,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
             return 1;
         }
-        const nlohmann::json contract_json =
+        orange::external_recorder::SupervisedSessionArtifactOptions artifact_options;
+        artifact_options.artifact_root = external_recorder_artifact_root.string();
+        artifact_options.contract =
             build_headless_external_recorder_contract_config_json(
                 options.external_recorder_contract);
-        if (!write_json_file(
-                external_recorder_artifact_root / "external_recorder_session.json",
-                contract_json,
-                &supervisor_error) ||
-            !write_json_file(
-                external_recorder_artifact_root / "external_recorder_supervisor_plan.json",
-                orange::external_recorder::SupervisorPlanToJson(supervisor_plan),
-                &supervisor_error)) {
-            std::cerr << supervisor_error << std::endl;
+        artifact_options.supervisor_plan = &supervisor_plan;
+        const orange::external_recorder::SupervisedSessionArtifactResult artifact_result =
+            orange::external_recorder::WriteExternalRecorderSupervisedSessionArtifacts(
+                artifact_options);
+        if (!artifact_result.ok) {
+            std::cerr << artifact_result.error_message << std::endl;
             close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
             return 1;
         }

@@ -42,6 +42,18 @@ CameraParams make_camera(const std::string& serial,
 
 void materializes_contract_and_supervisor_plan()
 {
+    const nlohmann::json wrapped = {
+        {"external_recorder_contract", {
+            {"schema_id", "orange.external_recorder.contract"},
+            {"schema_version", 1},
+            {"mode", "diagnostic_ipc_v1"}
+        }}
+    };
+    const nlohmann::json extracted =
+        orange::external_recorder::ExtractExternalRecorderContractObject(wrapped);
+    require(extracted.value("schema_id", "") == "orange.external_recorder.contract",
+            "wrapped contract extraction failed");
+
     CameraParams cameras[2] = {
         make_camera("2010095", 5, {5, 6}),
         make_camera("2010096", 7, {7, 8}),
@@ -153,6 +165,73 @@ void writes_failfast_artifacts()
     std::filesystem::remove_all(root);
 }
 
+void writes_supervised_session_artifacts()
+{
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() /
+        ("orange_contract_utils_supervised_test_" + std::to_string(getpid()));
+    std::filesystem::remove_all(root);
+
+    nlohmann::json contract = {
+        {"schema_id", "orange.external_recorder.contract"},
+        {"schema_version", 1},
+        {"mode", "diagnostic_ipc_v1"},
+        {"artifact_root", root.string()},
+        {"session_id", "session_003"},
+        {"streams", {
+            {"2010095", {
+                {"stream_id", "2010095"},
+                {"camera_serial", "2010095"},
+                {"analytics_gpu_id", 5},
+                {"recorder_gpu_id", 5},
+                {"expected_shard_gpu_ids", nlohmann::json::array({5, 6})},
+                {"routing_policy", "gop_modulo"},
+                {"summary_json", (root / "Cam2010095_external_summary.json").string()},
+                {"video_sanity_json", (root / "Cam2010095_external_video_sanity.json").string()},
+                {"mp4", (root / "Cam2010095_external.mp4").string()},
+                {"gop_routing_csv", (root / "Cam2010095_external_gop_routing.csv").string()}
+            }}
+        }}
+    };
+
+    orange::external_recorder::SupervisorPlanOptions plan_options;
+    orange::external_recorder::SupervisorPlan plan;
+    std::string error;
+    require(orange::external_recorder::BuildSupervisorPlanFromContract(
+                contract,
+                plan_options,
+                &plan,
+                &error),
+            "supervised plan failed: " + error);
+
+    orange::external_recorder::SupervisedSessionArtifactOptions options;
+    options.artifact_root = root.string();
+    options.contract = contract;
+    options.supervisor_plan = &plan;
+
+    const orange::external_recorder::SupervisedSessionArtifactResult result =
+        orange::external_recorder::WriteExternalRecorderSupervisedSessionArtifacts(options);
+    require(result.ok, "supervised artifact write failed: " + result.error_message);
+    require(std::filesystem::exists(result.external_recorder_session_path),
+            "missing supervised session artifact");
+    require(std::filesystem::exists(result.external_recorder_supervisor_plan_path),
+            "missing supervised plan artifact");
+
+    std::ifstream session_input(result.external_recorder_session_path);
+    nlohmann::json session;
+    session_input >> session;
+    require(session.value("schema_id", "") == "orange.external_recorder.contract",
+            "supervised session schema mismatch");
+
+    std::ifstream plan_input(result.external_recorder_supervisor_plan_path);
+    nlohmann::json plan_json;
+    plan_input >> plan_json;
+    require(plan_json.value("schema_id", "") == "orange.external_recorder.supervisor_plan",
+            "supervised plan schema mismatch");
+
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main()
@@ -162,6 +241,8 @@ int main()
         std::cout << "[PASS] materializes_contract_and_supervisor_plan\n";
         writes_failfast_artifacts();
         std::cout << "[PASS] writes_failfast_artifacts\n";
+        writes_supervised_session_artifacts();
+        std::cout << "[PASS] writes_supervised_session_artifacts\n";
     } catch (const std::exception& ex) {
         std::cerr << "[FAIL] " << ex.what() << "\n";
         return 1;
