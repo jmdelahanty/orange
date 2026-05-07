@@ -474,6 +474,11 @@ Current contract-hardening status:
   the contract, expands each stream into an `external_recorder_ipc_probe` argv,
   and validates sink mode, selected stream coverage, artifact paths, and shard
   routing before any camera/GUI work is required.
+- `src/external_recorder_contract_utils.*` now owns shared contract extraction,
+  per-camera materialization, supervisor-plan artifact generation, and the
+  metadata-only fail-fast `recording_session.json` shape. The GUI external
+  recorder path uses this helper, and it is linked into `orange_client` for the
+  next headless/session consolidation slice.
 - `fixed.external_recorder_contract.supervise_processes = true` is the first
   opt-in headless lifecycle slice. `orange_client` starts recorder processes,
   waits for sockets, exports per-camera socket/session env vars, waits for

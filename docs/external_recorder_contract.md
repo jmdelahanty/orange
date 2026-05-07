@@ -264,9 +264,14 @@ GUI/session status:
 
 - The GUI can recognize `recording.sink_mode = "external_ipc"` from app config
   or `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`.
-- On record start, the GUI materializes the same contract shape into the
-  proposed recording folder as `external_recorder_contract.json` and also writes
+- On record start, the GUI uses `src/external_recorder_contract_utils.*` to
+  materialize the same contract shape into the proposed recording folder as
+  `external_recorder_contract.json` and also writes
   `external_recorder_supervisor_plan.json`.
+- That shared helper expands `{recording_folder}` / `{recording_id}` path
+  templates, fills selected-camera stream defaults from camera config and
+  split-GOP shard assignments, and writes the metadata-only
+  `recording_session.json` fail-fast manifest.
 - The GUI then fails fast before setting `record_video = true` with:
   `external recorder GUI supervision is not implemented yet; use headless
   supervised spec or in-process recording`.

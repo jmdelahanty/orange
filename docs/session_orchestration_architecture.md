@@ -27,6 +27,7 @@ Today the branch already shares the most important runtime pieces:
 - `ModernRecordingPipeline`
 - split-GOP validation / preflight
 - shared recording artifacts and snapshot format
+- external recorder contract materialization and fail-fast artifacts
 
 But GUI and headless still have separate orchestration above that runtime:
 
@@ -231,6 +232,14 @@ step in this direction: it already uses the same
 `orange.external_recorder.contract` and supervisor-plan contract as headless,
 but it still refuses to run until process supervision is owned by the session
 layer rather than by an entrypoint.
+
+The first concrete helper extracted for this is
+`src/external_recorder_contract_utils.*`. It owns contract extraction,
+per-camera materialization, supervisor-plan artifact writing, and the
+metadata-only fail-fast `recording_session.json` shape used by the GUI
+external-recorder path. The helper is linked into both `orange` and
+`orange_client` so later headless/session consolidation can reuse the same
+materialization rules instead of copying GUI-local JSON construction.
 
 ### Phase 3
 

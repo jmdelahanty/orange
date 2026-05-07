@@ -249,6 +249,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/pose_event_log.cpp"
     "${SRC_DIR}/pose_worker.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
+    "${SRC_DIR}/external_recorder_contract_utils.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
@@ -272,6 +273,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/acquire_frames.cpp"
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
+    "${SRC_DIR}/external_recorder_contract_utils.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -399,6 +401,15 @@ if(BUILD_TESTING)
     target_include_directories(external_recorder_supervisor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(external_recorder_supervisor_tests PRIVATE cxx_std_17)
     add_test(NAME external_recorder_supervisor_tests COMMAND external_recorder_supervisor_tests)
+
+    add_executable(external_recorder_contract_utils_tests
+        "tools/external_recorder_contract_utils_tests.cpp"
+        "${SRC_DIR}/external_recorder_contract_utils.cpp"
+        "${SRC_DIR}/external_recorder_supervisor.cpp"
+    )
+    target_include_directories(external_recorder_contract_utils_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(external_recorder_contract_utils_tests PRIVATE cxx_std_17)
+    add_test(NAME external_recorder_contract_utils_tests COMMAND external_recorder_contract_utils_tests)
 
     add_executable(external_recorder_supervisor_socket_stub
         "tools/external_recorder_supervisor_socket_stub.cpp"

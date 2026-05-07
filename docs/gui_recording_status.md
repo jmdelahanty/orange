@@ -459,7 +459,8 @@ Current GUI implication:
   recover the headless external-recorder latency profile.
 - GUI/session now recognizes `recording.sink_mode = "external_ipc"` from app
   config or `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`. On record start it
-  writes the intended `external_recorder_contract.json`,
+  uses the shared `src/external_recorder_contract_utils.*` helper to write the
+  intended `external_recorder_contract.json`,
   `external_recorder_supervisor_plan.json`, and `recording_session.json` into
   the proposed recording folder, then refuses to start recording with:
   `external recorder GUI supervision is not implemented yet; use headless

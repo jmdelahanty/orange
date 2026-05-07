@@ -1,6 +1,6 @@
 #include "session/recording_session.h"
 
-#include "external_recorder_supervisor.h"
+#include "external_recorder_contract_utils.h"
 #include "project.h"
 #include "recording_ingress.h"
 #include "recording_output_utils.h"
@@ -9,15 +9,11 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <fstream>
 #include <iostream>
 
 namespace orange::session {
 
 namespace {
-
-constexpr const char* kGuiExternalRecorderNotImplementedReason =
-    "external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording";
 
 bool is_valid_pipeline_index(const RecordingSessionState& state, const int camera_index)
 {
@@ -50,88 +46,6 @@ std::string trim_ascii_copy(std::string value)
     return value;
 }
 
-bool write_json_file(const std::filesystem::path& path,
-                     const nlohmann::json& payload,
-                     std::string* error_out)
-{
-    std::error_code ec;
-    std::filesystem::create_directories(path.parent_path(), ec);
-    if (ec) {
-        if (error_out) {
-            *error_out = "failed to create directory for " + path.string() + ": " + ec.message();
-        }
-        return false;
-    }
-
-    std::ofstream output(path);
-    if (!output.is_open()) {
-        if (error_out) {
-            *error_out = "failed to open " + path.string() + " for writing";
-        }
-        return false;
-    }
-    output << payload.dump(2) << "\n";
-    if (!output.good()) {
-        if (error_out) {
-            *error_out = "failed to write " + path.string();
-        }
-        return false;
-    }
-    return true;
-}
-
-bool read_json_file(const std::filesystem::path& path,
-                    nlohmann::json* payload_out,
-                    std::string* error_out)
-{
-    if (!payload_out) {
-        if (error_out) {
-            *error_out = "internal error: null JSON destination";
-        }
-        return false;
-    }
-    std::ifstream input(path);
-    if (!input.is_open()) {
-        if (error_out) {
-            *error_out = "failed to open " + path.string();
-        }
-        return false;
-    }
-    try {
-        input >> *payload_out;
-    } catch (const std::exception& ex) {
-        if (error_out) {
-            *error_out = "failed to parse " + path.string() + ": " + ex.what();
-        }
-        return false;
-    }
-    return true;
-}
-
-std::string replace_all(std::string value,
-                        const std::string& needle,
-                        const std::string& replacement)
-{
-    if (needle.empty()) {
-        return value;
-    }
-    size_t pos = 0;
-    while ((pos = value.find(needle, pos)) != std::string::npos) {
-        value.replace(pos, needle.size(), replacement);
-        pos += replacement.size();
-    }
-    return value;
-}
-
-std::string expand_gui_external_recorder_path_template(std::string value,
-                                                       const std::string& recording_folder,
-                                                       const std::string& recording_id)
-{
-    value = replace_all(std::move(value), "{recording_folder}", recording_folder);
-    value = replace_all(std::move(value), "{recording_id}", recording_id);
-    return value;
-}
-
 std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_config)
 {
     std::string requested;
@@ -158,16 +72,6 @@ std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_
     return normalized;
 }
 
-nlohmann::json extract_external_recorder_contract_object(const nlohmann::json& payload)
-{
-    if (payload.is_object() &&
-        payload.contains("external_recorder_contract") &&
-        payload["external_recorder_contract"].is_object()) {
-        return payload["external_recorder_contract"];
-    }
-    return payload.is_object() ? payload : nlohmann::json::object();
-}
-
 nlohmann::json resolve_gui_external_recorder_contract_config(
     const AppStorageConfig* app_storage_config,
     std::string* source_out,
@@ -184,7 +88,8 @@ nlohmann::json resolve_gui_external_recorder_contract_config(
     if (app_storage_config &&
         app_storage_config->gui_external_recorder_contract.is_object() &&
         !app_storage_config->gui_external_recorder_contract.empty()) {
-        contract = app_storage_config->gui_external_recorder_contract;
+        contract = orange::external_recorder::ExtractExternalRecorderContractObject(
+            app_storage_config->gui_external_recorder_contract);
         if (source_out) {
             *source_out = "app_config_inline";
         }
@@ -201,10 +106,11 @@ nlohmann::json resolve_gui_external_recorder_contract_config(
 
     contract_path = trim_ascii_copy(contract_path);
     if (!contract_path.empty()) {
-        nlohmann::json loaded;
         std::string error;
-        if (read_json_file(contract_path, &loaded, &error)) {
-            contract = extract_external_recorder_contract_object(loaded);
+        if (orange::external_recorder::ReadExternalRecorderContractConfigFile(
+                contract_path,
+                &contract,
+                &error)) {
             if (source_out) {
                 *source_out = contract_path;
             }
@@ -214,233 +120,6 @@ nlohmann::json resolve_gui_external_recorder_contract_config(
         }
     }
     return contract.is_object() ? contract : nlohmann::json::object();
-}
-
-void set_json_default(nlohmann::json* object, const char* key, nlohmann::json value)
-{
-    if (!object || !object->is_object() || object->contains(key)) {
-        return;
-    }
-    (*object)[key] = std::move(value);
-}
-
-std::vector<int> default_gui_external_recorder_shards(const CameraParams& camera_params)
-{
-    std::vector<int> shards;
-    if (camera_params.recording.strategy.split_gop_enabled()) {
-        for (int gpu_id : camera_params.recording.strategy.split_gop.encoder_gpu_ids) {
-            if (gpu_id >= 0 && std::find(shards.begin(), shards.end(), gpu_id) == shards.end()) {
-                shards.push_back(gpu_id);
-            }
-        }
-    }
-    if (shards.empty() && camera_params.gpu_id >= 0) {
-        shards.push_back(camera_params.gpu_id);
-    }
-    return shards;
-}
-
-std::vector<int> json_gpu_id_array_or_default(const nlohmann::json& object,
-                                              const char* key,
-                                              std::vector<int> fallback)
-{
-    if (!object.is_object() || !object.contains(key) || !object[key].is_array()) {
-        return fallback;
-    }
-    std::vector<int> gpu_ids;
-    for (const auto& value : object[key]) {
-        if (!value.is_number_integer()) {
-            continue;
-        }
-        const int gpu_id = value.get<int>();
-        if (gpu_id >= 0 && std::find(gpu_ids.begin(), gpu_ids.end(), gpu_id) == gpu_ids.end()) {
-            gpu_ids.push_back(gpu_id);
-        }
-    }
-    return gpu_ids.empty() ? fallback : gpu_ids;
-}
-
-uint64_t gui_frame_bytes(const CameraParams& camera_params)
-{
-    return static_cast<uint64_t>(camera_params.width) *
-           static_cast<uint64_t>(camera_params.height);
-}
-
-nlohmann::json materialize_gui_external_recorder_contract(
-    const nlohmann::json* contract_config,
-    const std::string& recording_folder,
-    const std::string& recording_id,
-    const CameraParams* cameras_params,
-    const CameraEachSelect* cameras_select,
-    const int num_cameras)
-{
-    nlohmann::json contract =
-        (contract_config && contract_config->is_object()) ? *contract_config : nlohmann::json::object();
-    contract["schema_id"] = "orange.external_recorder.contract";
-    contract["schema_version"] = 1;
-    contract["mode"] = "diagnostic_ipc_v1";
-    contract["supervise_processes"] = true;
-    set_json_default(&contract, "session_id", recording_id);
-    set_json_default(
-        &contract,
-        "artifact_root",
-        (std::filesystem::path(recording_folder) / "external_recorder").string());
-    set_json_default(&contract, "require_summary", true);
-    set_json_default(&contract, "require_video_sanity", true);
-    set_json_default(&contract, "require_merged_mp4", true);
-    set_json_default(&contract, "require_gop_routing", true);
-
-    contract["artifact_root"] = expand_gui_external_recorder_path_template(
-        contract.value("artifact_root", std::string()),
-        recording_folder,
-        recording_id);
-    const std::string artifact_root = contract.value("artifact_root", std::string());
-
-    nlohmann::json streams =
-        contract.contains("streams") && contract["streams"].is_object()
-            ? contract["streams"]
-            : nlohmann::json::object();
-
-    for (int i = 0; i < num_cameras; ++i) {
-        if (cameras_select && !cameras_select[i].record) {
-            continue;
-        }
-        const CameraParams& camera = cameras_params[i];
-        const std::string serial = camera.camera_serial;
-        if (serial.empty()) {
-            continue;
-        }
-
-        nlohmann::json stream =
-            streams.contains(serial) && streams[serial].is_object()
-                ? streams[serial]
-                : nlohmann::json::object();
-
-        const std::vector<int> shard_gpu_ids = json_gpu_id_array_or_default(
-            stream,
-            "expected_shard_gpu_ids",
-            default_gui_external_recorder_shards(camera));
-        const int recorder_gpu_id =
-            !shard_gpu_ids.empty() ? shard_gpu_ids.front() : camera.gpu_id;
-        const bool multi_shard = shard_gpu_ids.size() > 1;
-        const std::string prefix =
-            (std::filesystem::path(artifact_root) / ("Cam" + serial + "_external")).string();
-
-        set_json_default(&stream, "stream_id", serial);
-        set_json_default(&stream, "camera_serial", serial);
-        set_json_default(&stream, "analytics_gpu_id", camera.gpu_id);
-        set_json_default(&stream, "recorder_gpu_id", recorder_gpu_id);
-        set_json_default(&stream, "expected_shard_gpu_ids", shard_gpu_ids);
-        set_json_default(&stream, "routing_policy", multi_shard ? "gop_modulo" : "single_shard");
-        set_json_default(&stream, "summary_json", prefix + "_summary.json");
-        set_json_default(&stream, "video_sanity_json", prefix + "_video_sanity.json");
-        set_json_default(&stream, "mp4", prefix + ".mp4");
-        set_json_default(&stream, "gop_routing_csv", prefix + "_gop_routing.csv");
-        set_json_default(&stream, "socket_path", "/tmp/orange_external_recorder_" + serial + ".sock");
-        const int camera_frame_rate = static_cast<int>(camera.frame_rate);
-        set_json_default(&stream, "encode_fps", std::max(1, camera_frame_rate));
-        set_json_default(&stream, "encode_max_fps", 0);
-        set_json_default(&stream, "encode_queue_depth", 32);
-        set_json_default(&stream, "prewarm_slots", 4);
-        set_json_default(&stream, "prewarm_bytes", gui_frame_bytes(camera));
-        set_json_default(&stream, "prewarm_peer_copy", true);
-        set_json_default(&stream, "codec", camera.recording.encode.codec);
-        set_json_default(&stream, "preset", camera.recording.encode.preset);
-        set_json_default(&stream, "tuning", camera.recording.encode.tuning);
-        set_json_default(&stream, "gop", camera.recording.encode.gop_length > 0
-                                     ? camera.recording.encode.gop_length
-                                     : std::max(1, camera_frame_rate));
-        set_json_default(&stream, "bitrate_bps", 150000000);
-        set_json_default(&stream, "max_bitrate_bps", 150000000);
-        set_json_default(&stream, "vbv_buffer_size", 150000000);
-
-        for (const char* key : {
-                 "summary_json",
-                 "video_sanity_json",
-                 "mp4",
-                 "gop_routing_csv",
-                 "socket_path"}) {
-            if (stream.contains(key) && stream[key].is_string()) {
-                stream[key] = expand_gui_external_recorder_path_template(
-                    stream[key].get<std::string>(),
-                    recording_folder,
-                    recording_id);
-            }
-        }
-        streams[serial] = std::move(stream);
-    }
-
-    contract["streams"] = std::move(streams);
-    return contract;
-}
-
-bool write_gui_external_recorder_failfast_artifacts(
-    const std::string& recording_folder,
-    const std::string& recording_id,
-    const nlohmann::json& contract,
-    RecordingRunStartResult* result)
-{
-    if (!result) {
-        return false;
-    }
-
-    const std::filesystem::path folder(recording_folder);
-    const std::filesystem::path contract_path =
-        folder / "external_recorder_contract.json";
-    const std::filesystem::path plan_path =
-        folder / "external_recorder_supervisor_plan.json";
-    const std::filesystem::path session_path =
-        folder / "recording_session.json";
-
-    std::string error;
-    if (!write_json_file(contract_path, contract, &error)) {
-        result->error_message =
-            std::string(kGuiExternalRecorderNotImplementedReason) +
-            "; additionally failed to write external recorder contract: " + error;
-        return false;
-    }
-    result->external_recorder_contract_path = contract_path.string();
-
-    orange::external_recorder::SupervisorPlanOptions plan_options;
-    plan_options.default_session_id = recording_id;
-    orange::external_recorder::SupervisorPlan plan;
-    if (orange::external_recorder::BuildSupervisorPlanFromContract(
-            contract,
-            plan_options,
-            &plan,
-            &error)) {
-        if (write_json_file(
-                plan_path,
-                orange::external_recorder::SupervisorPlanToJson(plan),
-                &error)) {
-            result->external_recorder_supervisor_plan_path = plan_path.string();
-        }
-    }
-    if (result->external_recorder_supervisor_plan_path.empty() && !error.empty()) {
-        std::cerr << "[recording_session] GUI external recorder plan validation failed: "
-                  << error << std::endl;
-    }
-
-    nlohmann::json session_manifest = {
-        {"schema_id", "orange.recording_session"},
-        {"schema_version", 1},
-        {"producer", "orange_gui"},
-        {"recording_id", recording_id},
-        {"recording_folder", recording_folder},
-        {"status", "failed"},
-        {"reason", kGuiExternalRecorderNotImplementedReason},
-        {"recording_backend", {
-            {"mode", "external_ipc"},
-            {"status", "not_implemented"},
-            {"external_recorder_contract_path", result->external_recorder_contract_path},
-            {"external_recorder_supervisor_plan_path", result->external_recorder_supervisor_plan_path}
-        }}
-    };
-    if (!write_json_file(session_path, session_manifest, &error)) {
-        std::cerr << "[recording_session] Failed to write GUI recording session manifest: "
-                  << error << std::endl;
-    }
-    return true;
 }
 
 }  // namespace
@@ -585,24 +264,37 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
         ptp_params);
 
     if (external_recorder_requested) {
-        const nlohmann::json contract = materialize_gui_external_recorder_contract(
-            external_recorder_contract_config,
-            recording_folder,
-            recording_id,
-            cameras_params,
-            cameras_select,
-            num_cameras);
-        write_gui_external_recorder_failfast_artifacts(
-            recording_folder,
-            recording_id,
-            contract,
-            &result);
+        orange::external_recorder::CameraContractMaterializationInput contract_input;
+        contract_input.contract_config = external_recorder_contract_config;
+        contract_input.recording_folder = recording_folder;
+        contract_input.recording_id = recording_id;
+        contract_input.cameras_params = cameras_params;
+        contract_input.cameras_select = cameras_select;
+        contract_input.num_cameras = num_cameras;
+        const nlohmann::json contract =
+            orange::external_recorder::MaterializeExternalRecorderContractForCameras(
+                contract_input);
+
+        orange::external_recorder::FailFastArtifactOptions artifact_options;
+        artifact_options.recording_folder = recording_folder;
+        artifact_options.recording_id = recording_id;
+        artifact_options.producer = "orange_gui";
+        artifact_options.reason =
+            orange::external_recorder::kGuiExternalRecorderNotImplementedReason;
+        artifact_options.contract = contract;
+        const orange::external_recorder::FailFastArtifactResult artifact_result =
+            orange::external_recorder::WriteExternalRecorderFailFastArtifacts(
+                artifact_options);
         result.ok = false;
         result.recording_folder = recording_folder;
         result.recording_sink_mode = normalized_sink_mode;
-        if (result.error_message.empty()) {
-            result.error_message = kGuiExternalRecorderNotImplementedReason;
-        }
+        result.error_message = artifact_result.error_message.empty()
+            ? orange::external_recorder::kGuiExternalRecorderNotImplementedReason
+            : artifact_result.error_message;
+        result.external_recorder_contract_path =
+            artifact_result.external_recorder_contract_path;
+        result.external_recorder_supervisor_plan_path =
+            artifact_result.external_recorder_supervisor_plan_path;
         {
             std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
             if (camera_control->recording_folder == recording_folder) {
