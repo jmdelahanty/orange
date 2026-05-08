@@ -1277,7 +1277,13 @@ Design consequence:
 
 ## Recommended Next Plan
 
-1. Validate schema-4 AQ-off recording configs in the real two-camera GUI path.
+Status update: this schema-4 GUI PTP/AQ-off validation has since completed.
+The current next GUI/session work is external-recorder supervision and
+finalization, with `ORANGE_PTP_REGISTER_READ_DECIMATE=100` kept as the
+production-like PTP hot-path setting.
+
+1. Historical completed step: validate schema-4 AQ-off recording configs in
+   the real two-camera GUI path.
 
 Reason:
 
@@ -1518,8 +1524,9 @@ Additional remaining validation:
   valid detectable subject.
 - Until then, no-fish runs are valid for the current encoder/YOLO submission
   contention work but should not be used to conclude crop/pose performance.
-- Add an automated decoded-frame entropy/black-frame sanity check so invalid
-  two-camera content cannot pass as a meaningful recording-load comparison.
-- Proceed to process-isolated full-frame encode/output experiments because GUI
-  PTP and headless PTP now agree that the remaining detect tail is not queue
-  backlog or a GUI-only effect.
+- Automated decoded-frame entropy/black-frame sanity checks now exist for
+  headless video validation and external-recorder MP4 sanity.
+- Process-isolated full-frame encode/output experiments have progressed into
+  the supervised headless external-recorder path. The remaining production work
+  is GUI/session recorder supervision and finalization, not proving the
+  process-isolation idea from scratch.

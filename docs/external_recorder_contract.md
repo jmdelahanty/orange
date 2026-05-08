@@ -267,6 +267,17 @@ processes, and publishes runtime plus verifier-handoff artifacts. GUI does not
 call this lifecycle helper yet, but this is the intended shared entry point for
 future GUI supervision.
 
+Latest validated supervised headless contract:
+
+- One-camera smoke:
+  `/tmp/orange_external_recorder_supervised_2010096_20260507_215347`.
+- Two-camera PTP/split-GOP smoke:
+  `/tmp/orange_external_recorder_supervised_ptp_20260507_222657`.
+- The two-camera run wrote all lifecycle artifacts, launched one recorder
+  process per stream, used `gop_modulo` routing across GPUs `5,6` and `7,8`,
+  encoded/ACKed `400/400` frames per camera, and passed finalization plus MP4
+  video sanity for both streams.
+
 The runtime summary records PIDs, socket readiness, log paths, exit status, and
 whether termination was requested.
 The verifier handoff records the artifact root, the expected analytics root,

@@ -241,11 +241,12 @@ external-recorder path. The helper is linked into both `orange` and
 `orange_client` so later headless/session consolidation can reuse the same
 materialization rules instead of copying GUI-local JSON construction.
 
-The next helper is `src/external_recorder_lifecycle.*`, which moves supervised
-recorder process start/stop, socket/session environment handoff, runtime
-artifact writing, and verifier-handoff writing behind a shared call boundary.
-Headless uses it first. GUI can adopt it later when external-recorder process
-supervision becomes a GUI/session responsibility.
+The second extracted helper is `src/external_recorder_lifecycle.*`, which moves
+supervised recorder process start/stop, socket/session environment handoff,
+runtime artifact writing, and verifier-handoff writing behind a shared call
+boundary. Headless now uses it and the 2026-05-07 two-camera supervised PTP
+validation passed through that path. GUI can adopt it later when
+external-recorder process supervision becomes a GUI/session responsibility.
 
 ### Phase 3
 

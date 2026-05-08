@@ -50,6 +50,22 @@ Stop:
 ./scripts/ptp_stack.sh stop
 ```
 
+Headless `ptp_gate` experiment runs may auto-start this host stack when they
+detect that `ptp4l` / `phc2sys` are not ready. When a run repairs the host PTP
+stack this way, it leaves the stack running on exit so follow-up PTP validation
+does not silently lose clock sync. After the final PTP run, stop it explicitly:
+
+```bash
+./scripts/ptp_stack.sh stop
+```
+
+You can confirm it is stopped when:
+
+```bash
+pgrep -af "ptp4l|phc2sys"   # no output
+ls -l /var/run/ptp4l         # no such file
+```
+
 If Orange is running with sufficient privileges (for example via `sudo`), the
 main UI now also exposes a `Host PTP Stack` section with:
 

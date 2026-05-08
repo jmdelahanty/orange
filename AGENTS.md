@@ -235,19 +235,20 @@ multi-GPU split-GOP throughput.
   `capture_to_detect_done_ms p95` rose to `4.5895 ms` from same-GPU completion
   pressure, not CPU launch/preprocess contention.
 - The external IPC probe now writes MP4, keyframe sidecar, per-frame CSVs, and a
-  summary JSON for the one-camera capped external encode smoke. It is still not
-  production recording yet. Next implementation work is to make the recorder
-  protocol/session metadata robust, add video-content validation to the smoke
-  summary, then move toward external split-GOP/multi-GPU routing. Keep encode
-  GPU placement/routing as a first-class design variable.
+  summary JSON for the one-camera capped external encode smoke. The diagnostic
+  probe is still not the production recorder backend, but the protocol/session
+  metadata, video-content validation, split-GOP routing artifacts, and
+  supervised headless lifecycle slices now exist. Keep encode GPU
+  placement/routing as a first-class design variable.
 - The staged implementation roadmap is documented in
   `docs/external_recorder_implementation_plan.md`. The next highest-signal
-  slice is hardening the single-camera MP4 smoke into a production-like
-  external recorder contract, not more same-process NVENC tuning.
+  slice is GUI/session external-recorder supervision and finalization, not more
+  same-process NVENC tuning or more headless-only lifecycle work.
 - The external split-GOP recorder protocol/routing design is documented in
-  `docs/external_split_gop_recorder_design.md`. Use that as the starting point
-  for the next implementation slice: session metadata, shard assignment,
-  GOP routing artifacts, and then a one-camera two-shard diagnostic.
+  `docs/external_split_gop_recorder_design.md`. The session metadata, shard
+  assignment, GOP routing artifacts, one-camera two-shard diagnostic, and
+  two-camera PTP supervised headless validation are now complete diagnostic
+  slices.
 - The first metadata-only external recorder shard slice now exists:
   descriptors/artifacts carry session id, stream id, GOP index, frame index
   within GOP, assigned GPU, assigned shard, and `routing_policy`.
@@ -343,7 +344,24 @@ multi-GPU split-GOP throughput.
   `2803/2803` frames per camera with `0` drops, `33` PTP register reads per
   camera, steady `acquisition_to_detect_done_ms p95 = 4.580/4.585 ms`, and
   cadence-probe cross-camera embedded timestamp skew within `-28 ns` to
-  `+22 ns`. Next check is a GUI/session run with
+  `+22 ns`.
+- The clean two-camera supervised headless PTP external-recorder validation on
+  2026-05-07 used a stamped spec and artifact root
+  `/tmp/orange_external_recorder_supervised_ptp_20260507_222657`; analytics
+  artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised_20260507_222657`.
+  `orange_client` supervised both recorder processes directly. Both cameras
+  received/ACKed/encoded `400/400` frames, had `0` drops, `0` frame-id gaps,
+  `0` GetFrame errors, and both merged MP4s passed video sanity. Post-frame-50
+  `acquisition_to_detect_done_ms p95 = 4.488/4.598 ms` for
+  `2010095/2010096`; YOLO queue wait p95 stayed `0.018/0.020 ms`.
+- In that run the host PTP stack was initially not ready, so headless startup
+  repaired it via `scripts/ptp_stack.sh` and left `ptp4l`/`phc2sys` running on
+  exit. The stack was later stopped manually and verified stopped: no
+  `ptp4l|phc2sys` processes and no `/var/run/ptp4l` socket. For future PTP
+  runs, remember that auto-started host PTP should be explicitly stopped with
+  `scripts/ptp_stack.sh stop` when validation is done.
+- Next check is GUI/session external-recorder supervision plus
   `ORANGE_PTP_REGISTER_READ_DECIMATE=100`.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

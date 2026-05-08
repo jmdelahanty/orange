@@ -330,9 +330,10 @@ Implemented on 2026-04-26:
 - No data-path behavior changed yet: this is still one external recorder
   process, one encoder lane, and `single_shard` routing.
 
-Next implementation step:
+Status:
 
-- Add a two-shard diagnostic mode that creates two encoder lanes and routes
+- The next planned slice from this point has been implemented: the recorder now
+  has a two-shard diagnostic mode that creates two encoder lanes and routes
   complete GOPs by `gop_index % shard_count`.
 
 ### Two-Shard Diagnostic Slice
@@ -781,17 +782,23 @@ Longer decimated PTP validation:
 
 Next implementation step:
 
-- Run a GUI/session validation with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
-  to confirm the same hot-path win holds outside the headless external-recorder
-  harness.
+- Headless supervised lifecycle validation is complete. Latest clean
+  production-shaped run:
+  `/tmp/orange_external_recorder_supervised_ptp_20260507_222657`, with analytics
+  artifact
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised_20260507_222657`.
+  Both cameras received/ACKed/encoded `400/400` frames, wrote merged MP4s, had
+  no drops/frame gaps/GetFrame errors, and passed video sanity.
+- Add GUI/session supervision for external recorder startup, heartbeat, drain,
+  and finalization, then run a GUI/session validation with
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100` to confirm the same hot-path win
+  holds outside the headless external-recorder harness.
 - The longer two-camera PTP external-recorder validation with the high-effort
   A16-built TensorRT detect engine is complete. Run
   `/tmp/orange_external_recorder_ptp_20260426_021831` received/ACKed/encoded
   `2803` frames per camera with no drops, frame-id gaps, get-frame errors,
   recorder failures, or pending GOP backlog. Steady detect p95 was `3.950 ms`
   on `2010095` and `3.944 ms` on `2010096`.
-- Add GUI/session supervision for external recorder startup, heartbeat, drain,
-  and finalization.
 - Keep queue depth at least `gop_length + margin`; use `32` for `gop=25`.
 
 ## Open Questions

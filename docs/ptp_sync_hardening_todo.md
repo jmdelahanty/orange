@@ -252,8 +252,19 @@ Current read:
   diagnostic mode.
 - Decimated register polling is the right default candidate for production-like
   hot-path runs on this host.
+- Headless supervised external-recorder validation with decimated polling is
+  now complete. The 2026-05-07 two-camera supervised PTP run used
+  `fixed.ptp_register_read_decimate = 100`, sampled `9` PTP register reads per
+  camera over `401` acquired frames, encoded/ACKed `400/400` frames per camera,
+  had no camera gaps/GetFrame errors, and kept cadence-probe embedded timestamp
+  skew within `-18 ns` to `+22 ns`.
 - The next PTP validation is GUI/session with
-  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`.
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, after the GUI/session layer can
+  supervise external recorder startup/drain/finalization.
+- Operational note: headless `ptp_gate` runs may auto-start `scripts/ptp_stack.sh`
+  if the host PTP stack is not ready. If Orange starts it, the stack is left
+  running after the run and should be stopped explicitly with
+  `scripts/ptp_stack.sh stop` when no more PTP validation is planned.
 - The original hardening items below are still relevant: deadline-based
   barriers, thread-safe shared state, robust reset after partial failure, and
   GUI/headless lifecycle symmetry are not solved by register-read decimation.

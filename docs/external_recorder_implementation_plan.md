@@ -454,15 +454,16 @@ single-camera same-GPU 60 fps validation
 single-camera paired-GPU 60 fps placement comparison
 one-camera full-rate two-shard split-GOP validation
 two-camera PTP full-rate external split-GOP validation
+headless supervised recorder lifecycle validation
 ```
 
-The highest-signal next work is no longer the first split-GOP routing slice; it
-is GUI/session validation and production hardening:
+The highest-signal next work is no longer headless split-GOP routing or
+headless process lifecycle validation; it is GUI/session production hardening:
 
-1. Validate the GUI/session path with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
-   and the high-effort A16 detect engine candidate.
-2. Add GUI/session supervision for external recorder startup, heartbeat, drain,
+1. Add GUI/session supervision for external recorder startup, heartbeat, drain,
    and finalization.
+2. Validate the GUI/session path with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
+   and the high-effort A16 detect engine candidate.
 3. Turn the diagnostic descriptor/routing contract into a versioned production
    recorder protocol.
 
@@ -535,20 +536,27 @@ Current contract-hardening status:
 Supervised hardware smoke result:
 
 - One-camera supervised artifact:
-  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke`;
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke_20260507_215347`;
   recorder artifact:
-  `/tmp/orange_external_recorder_supervised_2010096`. The run passed with
-  `800` frames received/ACKed, `480` encoded at the diagnostic `60 fps` cap,
-  `0` encode drops, and `video_sanity=pass`.
+  `/tmp/orange_external_recorder_supervised_2010096_20260507_215347`. The run
+  passed with `800` frames received/ACKed, `480` encoded at the diagnostic
+  `60 fps` cap, `0` encode drops, and `video_sanity=pass`.
 - Two-camera PTP supervised artifact:
-  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised`;
-  recorder artifact: `/tmp/orange_external_recorder_supervised_ptp`. The run
-  passed with `400/400` frames received/ACKed/encoded for each camera,
-  `0` encode drops, merged MP4 output enabled, and `video_sanity=pass` for both
-  cameras.
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised_20260507_222657`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_supervised_ptp_20260507_222657`. The run
+  passed with `400/400` frames received/ACKed/encoded for each camera, `0`
+  encode drops, `0` camera frame-id gaps, `0` GetFrame errors, merged MP4
+  output enabled, and `video_sanity=pass` for both cameras.
 - Two-camera steady-state post-frame-50 `acquisition_to_detect_done_ms p95` was
-  `4.594 ms` for `2010095` and `4.645 ms` for `2010096`; YOLO queue wait p95
-  was `0.018 ms` and `0.014 ms`, respectively.
+  `4.488 ms` for `2010095` and `4.598 ms` for `2010096`; YOLO queue wait p95
+  was `0.018 ms` and `0.020 ms`, respectively.
+- The two-camera PTP run used `fixed.ptp_register_read_decimate = 100`, sampled
+  `9` PTP register reads per camera, and the cadence probe showed embedded
+  timestamp skew from `-18 ns` to `+22 ns`.
+- Operational note: this run found the host PTP stack stopped, auto-started
+  `ptp4l`/`phc2sys`, and left them running on exit. Stop with
+  `scripts/ptp_stack.sh stop` when no more PTP validation is needed.
 
 Next production slice: carry this supervised lifecycle into the GUI/session
 path: config selection, process supervision, health/heartbeat, drain/finalize,

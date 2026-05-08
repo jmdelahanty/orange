@@ -90,6 +90,26 @@ Current best run:
   - `cpu_input_ready_event_record_ms p95` about `0.002 ms`,
   - `cpu_event_record_ms p95` about `0.001 ms`.
 
+Headless supervised lifecycle validation:
+
+- Run:
+  `/tmp/orange_external_recorder_supervised_ptp_20260507_222657`.
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_supervised_20260507_222657`.
+- This used the supervised contract/lifecycle path instead of a shell-side
+  recorder launch: `orange_client` started both recorder processes, exported
+  per-camera sockets/session ids, stopped the recorders, ran video sanity and
+  the verifier, and wrote `external_recorder_finalization.json`.
+- Both cameras received/ACKed/encoded `400/400` frames, with `0` encode drops,
+  `0` frame-id gaps, `0` GetFrame errors, and video sanity passing on both
+  merged MP4s.
+- Post-frame-50 `acquisition_to_detect_done_ms p95` was `4.488 ms` on
+  `2010095` and `4.598 ms` on `2010096`; YOLO queue wait p95 stayed
+  `0.018-0.020 ms`.
+- This confirms the shared supervised lifecycle path preserves the external
+  recorder latency shape. It does not replace the remaining GUI/session
+  supervision validation.
+
 Implications:
 
 - The old `~8 ms` YOLO host CUDA launch tail was not present in the current
@@ -99,8 +119,8 @@ Implications:
 - The remaining p95 is mostly GPU-side YOLO service time and normal scheduling
   variation, not raw host launch overhead.
 - A larger YOLO graph island may still be useful, but it is now a lower-signal
-  optimization than validating the same decimated-PTP behavior in the GUI
-  session path.
+  optimization than adding and validating GUI/session external-recorder
+  supervision with decimated PTP.
 
 YOLO graph-island assessment:
 
@@ -125,7 +145,8 @@ YOLO graph-island assessment:
   reintroduces raw CUDA launch tails.
 - Do not implement a monolithic graph blindly while away from hardware. The
   right bounded experiment is:
-  1. validate GUI/session with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`,
+  1. add GUI/session external-recorder supervision and validate it with
+     `ORANGE_PTP_REGISTER_READ_DECIMATE=100`,
   2. if GUI still shows raw YOLO launch/event-record tails, add an experimental
      `ORANGE_YOLO_PREPROCESS_INFER_GRAPH=1` path,
   3. compare `cpu_preprocess_ms`, `cpu_infer_call_ms`, `cpu_pre_sync_ms`,
