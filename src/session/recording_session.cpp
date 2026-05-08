@@ -1,6 +1,7 @@
 #include "session/recording_session.h"
 
 #include "external_recorder_contract_utils.h"
+#include "fsuid_guard.h"
 #include "project.h"
 #include "recording_ingress.h"
 #include "recording_output_utils.h"
@@ -9,6 +10,7 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 
 namespace orange::session {
@@ -122,7 +124,174 @@ nlohmann::json resolve_gui_external_recorder_contract_config(
     return contract.is_object() ? contract : nlohmann::json::object();
 }
 
+bool write_json_file(const std::filesystem::path& path,
+                     const nlohmann::json& payload,
+                     std::string* error_out)
+{
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+
+    std::error_code create_error;
+    std::filesystem::create_directories(path.parent_path(), create_error);
+    if (create_error && !std::filesystem::exists(path.parent_path())) {
+        if (error_out) {
+            *error_out = "Failed to create parent directory for " +
+                         path.string() + ": " + create_error.message();
+        }
+        return false;
+    }
+
+    std::ofstream output(path);
+    if (!output) {
+        if (error_out) {
+            *error_out = "Failed to open " + path.string() + " for writing";
+        }
+        return false;
+    }
+    output << payload.dump(2) << "\n";
+    if (!output.good()) {
+        if (error_out) {
+            *error_out = "Failed to write " + path.string();
+        }
+        return false;
+    }
+    return true;
+}
+
 }  // namespace
+
+nlohmann::json build_recording_control_json(const RecordingControlConfig& config)
+{
+    return {
+        {"record_for_seconds", config.record_for_seconds},
+        {"clip_seconds", config.clip_seconds}
+    };
+}
+
+bool validate_recording_control_config(const RecordingControlConfig& config,
+                                       std::string* error_out,
+                                       const std::string& context)
+{
+    const std::string prefix = context.empty() ? "" : context + ": ";
+    if (config.record_for_seconds < 0) {
+        if (error_out) {
+            *error_out = prefix + "recording_control.record_for_seconds must be >= 0";
+        }
+        return false;
+    }
+    if (config.clip_seconds < 0) {
+        if (error_out) {
+            *error_out = prefix + "recording_control.clip_seconds must be >= 0";
+        }
+        return false;
+    }
+    if (config.clip_seconds > 0) {
+        if (error_out) {
+            *error_out = prefix + kRollingClipsNotImplementedReason;
+        }
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json build_single_clip_recording_session_manifest(
+    const SingleClipRecordingSessionManifestOptions& options)
+{
+    nlohmann::json cameras = nlohmann::json::array();
+    nlohmann::json video_artifacts = nlohmann::json::object();
+    nlohmann::json metadata_artifacts = nlohmann::json::object();
+    nlohmann::json keyframe_artifacts = nlohmann::json::object();
+    nlohmann::json camera_artifacts = nlohmann::json::object();
+
+    for (const RecordingSessionCameraArtifact& camera : options.cameras) {
+        if (camera.camera_serial.empty()) {
+            continue;
+        }
+        cameras.push_back(camera.camera_serial);
+        video_artifacts[camera.camera_serial] = camera.video_path;
+        metadata_artifacts[camera.camera_serial] = camera.metadata_path;
+        keyframe_artifacts[camera.camera_serial] = camera.keyframe_path;
+        camera_artifacts[camera.camera_serial] = {
+            {"video", camera.video_path},
+            {"metadata", camera.metadata_path},
+            {"keyframes", camera.keyframe_path}
+        };
+    }
+
+    return {
+        {"schema_id", "orange.recording_session"},
+        {"schema_version", 1},
+        {"producer", options.producer},
+        {"session_id", options.session_id},
+        {"created_at_utc", options.created_at_utc},
+        {"updated_at_utc", options.updated_at_utc},
+        {"recording_folder", options.recording_folder},
+        {"mode", "single_clip"},
+        {"status", options.status},
+        {"cameras", cameras},
+        {"camera_artifacts", camera_artifacts},
+        {"stream",
+         {
+             {"requested_duration_seconds", options.requested_stream_duration_seconds},
+             {"stream_start_delay_seconds", options.stream_start_delay_seconds},
+             {"started_at_utc", options.stream_started_at_utc},
+             {"finished_at_utc", options.stream_finished_at_utc},
+             {"actual_elapsed_s", options.stream_actual_elapsed_s},
+             {"interrupted", options.stream_interrupted}
+         }},
+        {"recording_control", build_recording_control_json(options.recording_control)},
+        {"recording",
+         {
+             {"started", options.recording_started},
+             {"started_at_utc", options.recording_started_at_utc},
+             {"started_at_elapsed_s", options.recording_started_at_elapsed_s},
+             {"stop_requested", options.recording_stop_requested},
+             {"stop_requested_at_utc", options.recording_stop_requested_at_utc},
+             {"stop_requested_at_elapsed_s", options.recording_stop_requested_at_elapsed_s},
+             {"stop_reason", options.recording_stop_reason},
+             {"drain_completed", options.recording_drain_completed},
+             {"drained_at_utc", options.recording_drained_at_utc},
+             {"drained_at_elapsed_s", options.recording_drained_at_elapsed_s},
+             {"actual_recording_duration_s", options.actual_recording_duration_s},
+             {"drain_duration_s", options.drain_duration_s}
+         }},
+        {"clips",
+         nlohmann::json::array(
+             {{
+                 {"clip_index", 0},
+                 {"clip_id", "clip_0000"},
+                 {"recording_folder", options.recording_folder},
+                 {"directory", "."},
+                 {"started_at_utc", options.recording_started_at_utc},
+                 {"stop_requested_at_utc", options.recording_stop_requested_at_utc},
+                 {"finalized_at_utc", options.recording_drained_at_utc},
+                 {"stop_reason", options.recording_stop_reason},
+                 {"requested_duration_s", options.recording_control.record_for_seconds},
+                 {"actual_duration_s", options.actual_recording_duration_s},
+                 {"timed_stop_hit", options.timed_stop_hit},
+                 {"drain_completed", options.recording_drain_completed},
+                 {"artifacts",
+                  {
+                      {"videos", video_artifacts},
+                      {"metadata", metadata_artifacts},
+                      {"keyframes", keyframe_artifacts}
+                  }}
+             }})}
+    };
+}
+
+bool write_recording_session_manifest(const std::string& path,
+                                      const nlohmann::json& manifest,
+                                      std::string* error_out)
+{
+    if (path.empty()) {
+        if (error_out) {
+            *error_out = "recording session manifest path is empty";
+        }
+        return false;
+    }
+    return write_json_file(std::filesystem::path(path), manifest, error_out);
+}
 
 void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraParams* cameras_params,

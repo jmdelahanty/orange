@@ -163,18 +163,22 @@ Current behavior:
   drain used by the GUI stop-recording path
 - acquisition continues until the overall `duration_s + warmup_s` run deadline
 - the recording folder gets `recording_session.json` with the requested
-  duration, actual start/stop/drain timing, and a single `clip_0000` entry
+  duration, actual start/stop/drain timing, per-camera artifact paths, and a
+  single `clip_0000` entry
 - pass/fail for this mode checks the video exists, video duration is close to
   `record_for_seconds`, acquisition stayed healthy, and error/drop counters
   remain within policy
 - `scripts/verify_timed_recording.py <experiment_root>` verifies the current
-  single-clip contract from `recording_session.json`, `runs.json`, and
-  `ffprobe`
+  single-clip contract from `recording_session.json`, per-camera clip
+  artifacts, `runs.json`, and `ffprobe`
 
 `clip_seconds > 0` is deliberately rejected for now. Rolling/seamless
 multi-clip recording is the next slice, not part of this first
 duration-control smoke. The planned session and clip manifest contract is
-documented in `docs/recording_session_manifest_contract.md`.
+documented in `docs/recording_session_manifest_contract.md`. The current
+manifest builder and rolling-clip validation live in
+`src/session/recording_session.*` so later GUI/session and external-recorder
+paths can share the same contract.
 
 Validated smoke:
 

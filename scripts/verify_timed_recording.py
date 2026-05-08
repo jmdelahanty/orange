@@ -35,7 +35,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Verify a headless fixed.recording_control run: recording_session.json, "
-            "runs.json health/pass fields when available, and ffprobe media duration."
+            "session/clip artifact coherence, runs.json health/pass fields when "
+            "available, and ffprobe media duration."
         )
     )
     parser.add_argument(
@@ -43,7 +44,10 @@ def parse_args() -> argparse.Namespace:
         help="Experiment root containing runs.json, or a run folder containing recording_session.json.",
     )
     parser.add_argument("--run-id", help="Run id to verify when the experiment has multiple runs.")
-    parser.add_argument("--camera", help="Camera serial to verify. Defaults to the first manifest camera.")
+    parser.add_argument(
+        "--camera",
+        help="Camera serial to verify. Defaults to every camera in the manifest.",
+    )
     parser.add_argument(
         "--duration-tolerance-s",
         type=float,
@@ -183,17 +187,31 @@ def camera_results(entry: dict[str, Any] | None) -> list[dict[str, Any]]:
     return result
 
 
-def select_camera(manifest: dict[str, Any], requested_camera: str | None) -> str:
+def manifest_camera_serials(manifest: dict[str, Any]) -> list[str]:
     cameras = manifest.get("cameras")
-    require(isinstance(cameras, list) and bool(cameras), "recording_session.json has no cameras")
-    camera_serials = [str(camera) for camera in cameras]
+    if isinstance(cameras, list):
+        camera_serials = [str(camera) for camera in cameras if str(camera)]
+    elif isinstance(cameras, dict):
+        camera_serials = [str(camera) for camera in cameras.keys() if str(camera)]
+    else:
+        raise VerificationError("recording_session.json has no cameras")
+    require(bool(camera_serials), "recording_session.json has no cameras")
+    require(
+        len(camera_serials) == len(set(camera_serials)),
+        f"recording_session.json has duplicate cameras: {camera_serials}",
+    )
+    return camera_serials
+
+
+def select_cameras(manifest: dict[str, Any], requested_camera: str | None) -> list[str]:
+    camera_serials = manifest_camera_serials(manifest)
     if requested_camera:
         require(
             requested_camera in camera_serials,
             f"camera {requested_camera} not listed in recording_session.json cameras={camera_serials}",
         )
-        return requested_camera
-    return camera_serials[0]
+        return [requested_camera]
+    return camera_serials
 
 
 def select_camera_row(entry: dict[str, Any] | None, camera: str) -> dict[str, Any] | None:
@@ -252,14 +270,66 @@ def ffprobe_duration(path: Path, ffprobe: str) -> float:
     return as_float(duration, f"ffprobe duration for {path}")
 
 
-def manifest_video_path(run_folder: Path, clip: dict[str, Any], camera: str) -> Path:
+def clip_artifact_value(clip: dict[str, Any], group: str, camera: str) -> str | None:
     artifacts = clip.get("artifacts")
-    videos = artifacts.get("videos") if isinstance(artifacts, dict) else None
-    video_value = videos.get(camera) if isinstance(videos, dict) else None
-    video_path = Path(str(video_value)) if video_value else Path(f"Cam{camera}.mp4")
-    if not video_path.is_absolute():
-        video_path = run_folder / video_path
-    return video_path
+    artifact_group = artifacts.get(group) if isinstance(artifacts, dict) else None
+    value = artifact_group.get(camera) if isinstance(artifact_group, dict) else None
+    return str(value) if value else None
+
+
+def manifest_artifact_path(run_folder: Path, clip: dict[str, Any], group: str, camera: str) -> Path:
+    fallback_suffix = {
+        "videos": ".mp4",
+        "metadata": "_meta.csv",
+        "keyframes": "_keyframe.json",
+    }
+    value = clip_artifact_value(clip, group, camera)
+    artifact_path = Path(value) if value else Path(f"Cam{camera}{fallback_suffix[group]}")
+    if not artifact_path.is_absolute():
+        artifact_path = run_folder / artifact_path
+    return artifact_path
+
+
+def verify_clip_artifact_coherence(run_folder: Path, manifest: dict[str, Any], clip: dict[str, Any], cameras: list[str]) -> None:
+    manifest_folder = manifest.get("recording_folder")
+    if isinstance(manifest_folder, str) and manifest_folder:
+        require(
+            path_key(Path(manifest_folder)) == path_key(run_folder),
+            "recording_session.json recording_folder does not match selected run folder",
+        )
+    clip_folder = clip.get("recording_folder")
+    if isinstance(clip_folder, str) and clip_folder:
+        require(
+            path_key(Path(clip_folder)) == path_key(run_folder),
+            "clip recording_folder does not match selected run folder",
+        )
+
+    artifacts = clip.get("artifacts")
+    require(isinstance(artifacts, dict), "clip missing artifacts object")
+    for group in ("videos", "metadata", "keyframes"):
+        artifact_group = artifacts.get(group)
+        require(isinstance(artifact_group, dict), f"clip artifacts missing {group} object")
+        for camera in cameras:
+            require(
+                camera in artifact_group,
+                f"clip artifacts.{group} missing camera {camera}",
+            )
+
+    camera_artifacts = manifest.get("camera_artifacts")
+    if isinstance(camera_artifacts, dict):
+        for camera in cameras:
+            row = camera_artifacts.get(camera)
+            require(isinstance(row, dict), f"camera_artifacts missing camera {camera}")
+            expected = {
+                "video": clip_artifact_value(clip, "videos", camera),
+                "metadata": clip_artifact_value(clip, "metadata", camera),
+                "keyframes": clip_artifact_value(clip, "keyframes", camera),
+            }
+            for key, value in expected.items():
+                require(
+                    row.get(key) == value,
+                    f"camera_artifacts.{camera}.{key} does not match clip artifacts",
+                )
 
 
 def verify_run_row(
@@ -358,7 +428,10 @@ def verify(args: argparse.Namespace) -> None:
     clip = clips[0]
     require(isinstance(clip, dict), "clip entry is not an object")
     require(clip.get("clip_index") == 0, f"unexpected clip_index: {clip.get('clip_index')!r}")
-    require(clip.get("clip_id") == "clip_0000", f"unexpected clip_id: {clip.get('clip_id')!r}")
+    require(
+        clip.get("clip_id") in {"clip_0000", "clip_000000"},
+        f"unexpected clip_id: {clip.get('clip_id')!r}",
+    )
     require(bool(clip.get("timed_stop_hit")), "clip.timed_stop_hit is false")
     require(bool(clip.get("drain_completed")), "clip.drain_completed is false")
     require(clip.get("stop_reason") == "record_for_seconds_elapsed", f"unexpected clip stop_reason: {clip.get('stop_reason')!r}")
@@ -368,40 +441,50 @@ def verify(args: argparse.Namespace) -> None:
         "clip.requested_duration_s does not match recording_control.record_for_seconds",
     )
 
-    camera = select_camera(manifest, args.camera)
-    video_path = manifest_video_path(run_folder, clip, camera)
-    require(video_path.exists(), f"video artifact missing: {video_path}")
-    ffprobe_duration_s = ffprobe_duration(video_path, args.ffprobe)
-    require(
-        abs(ffprobe_duration_s - record_for_seconds) <= args.duration_tolerance_s,
-        (
-            "encoded video duration outside tolerance "
-            f"({ffprobe_duration_s:.3f}s vs requested {record_for_seconds:.3f}s)"
-        ),
-    )
+    cameras = select_cameras(manifest, args.camera)
+    verify_clip_artifact_coherence(run_folder, manifest, clip, cameras)
 
-    row = select_camera_row(run_entry, camera)
-    if run_entry is not None:
-        require(row is not None, f"runs.json has no camera_result for camera {camera}")
-        verify_run_row(
-            row,
-            camera,
-            record_for_seconds,
-            clip_seconds,
-            manifest_path,
-            ffprobe_duration_s,
-            args.duration_tolerance_s,
+    ffprobe_durations: dict[str, float] = {}
+    for camera in cameras:
+        video_path = manifest_artifact_path(run_folder, clip, "videos", camera)
+        metadata_path = manifest_artifact_path(run_folder, clip, "metadata", camera)
+        keyframe_path = manifest_artifact_path(run_folder, clip, "keyframes", camera)
+        require(video_path.exists(), f"video artifact missing for camera {camera}: {video_path}")
+        require(metadata_path.exists(), f"metadata artifact missing for camera {camera}: {metadata_path}")
+        require(keyframe_path.exists(), f"keyframe artifact missing for camera {camera}: {keyframe_path}")
+        ffprobe_duration_s = ffprobe_duration(video_path, args.ffprobe)
+        require(
+            abs(ffprobe_duration_s - record_for_seconds) <= args.duration_tolerance_s,
+            (
+                f"encoded video duration outside tolerance for camera {camera} "
+                f"({ffprobe_duration_s:.3f}s vs requested {record_for_seconds:.3f}s)"
+            ),
         )
+        ffprobe_durations[camera] = ffprobe_duration_s
+
+        row = select_camera_row(run_entry, camera)
+        if run_entry is not None:
+            require(row is not None, f"runs.json has no camera_result for camera {camera}")
+            verify_run_row(
+                row,
+                camera,
+                record_for_seconds,
+                clip_seconds,
+                manifest_path,
+                ffprobe_duration_s,
+                args.duration_tolerance_s,
+            )
 
     run_id = run_entry.get("run_id") if run_entry else run_folder.name
     experiment_text = f"\n  experiment: {experiment_root}" if experiment_root else ""
     print("Timed recording verification passed")
     print(f"  run: {run_id}")
     print(f"  folder: {run_folder}{experiment_text}")
-    print(f"  camera: {camera}")
+    print(f"  cameras: {', '.join(cameras)}")
     print(f"  requested: {record_for_seconds:.3f}s")
     print(f"  manifest actual: {actual_recording_duration:.3f}s")
-    print(f"  ffprobe video: {ffprobe_duration_s:.3f}s")
+    for camera, duration in ffprobe_durations.items():
+        print(f"  Cam{camera} ffprobe video: {duration:.3f}s")
 
 
 def main() -> int:

@@ -642,12 +642,20 @@ Current schema:
 
 ```json
 {
-  "schema_id": "orange.headless.recording_session",
+  "schema_id": "orange.recording_session",
   "schema_version": 1,
+  "producer": "orange_headless",
   "mode": "single_clip",
   "status": "completed",
   "recording_folder": "/abs/path/to/run",
   "cameras": ["2010096"],
+  "camera_artifacts": {
+    "2010096": {
+      "video": "Cam2010096.mp4",
+      "metadata": "Cam2010096_meta.csv",
+      "keyframes": "Cam2010096_keyframe.json"
+    }
+  },
   "stream": {
     "requested_duration_seconds": 20,
     "actual_elapsed_s": 20.1
@@ -674,6 +682,12 @@ Current schema:
       "artifacts": {
         "videos": {
           "2010096": "Cam2010096.mp4"
+        },
+        "metadata": {
+          "2010096": "Cam2010096_meta.csv"
+        },
+        "keyframes": {
+          "2010096": "Cam2010096_keyframe.json"
         }
       }
     }
@@ -686,6 +700,10 @@ Notes:
 - This is a first single-clip manifest, not the future rolling-clip session
   manifest. The broader session/clip contract is documented in
   `docs/recording_session_manifest_contract.md`.
+- The single-clip manifest is built by the shared
+  `src/session/recording_session.*` helper so headless, GUI/session, and future
+  external-recorder paths can converge on one `orange.recording_session`
+  contract.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout. Values above zero are rejected in the current implementation.
 - The manifest records the control-plane timing of the requested stop/drain.

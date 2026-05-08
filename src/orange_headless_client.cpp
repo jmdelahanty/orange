@@ -37,6 +37,7 @@
 #include "frame_ipc_manager.h"
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
+#include "session/recording_session.h"
 #include "external_recorder_contract_utils.h"
 #include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
@@ -757,10 +758,11 @@ nlohmann::json build_headless_pose_worker_config_json(
 nlohmann::json build_headless_recording_control_config_json(
     const HeadlessRecordingControlConfig& config)
 {
-    return {
-        {"record_for_seconds", config.record_for_seconds},
-        {"clip_seconds", config.clip_seconds}
-    };
+    return orange::session::build_recording_control_json(
+        orange::session::RecordingControlConfig{
+            config.record_for_seconds,
+            config.clip_seconds
+        });
 }
 
 nlohmann::json build_headless_external_recorder_contract_config_json(
@@ -2113,29 +2115,13 @@ bool validate_headless_recording_control_config(
     std::string* error_out,
     const std::string& context)
 {
-    const std::string prefix = context.empty() ? "" : context + ": ";
-    if (config.record_for_seconds < 0) {
-        if (error_out) {
-            *error_out = prefix + "recording_control.record_for_seconds must be >= 0";
-        }
-        return false;
-    }
-    if (config.clip_seconds < 0) {
-        if (error_out) {
-            *error_out = prefix + "recording_control.clip_seconds must be >= 0";
-        }
-        return false;
-    }
-    if (config.clip_seconds > 0) {
-        if (error_out) {
-            *error_out =
-                prefix +
-                "recording_control.clip_seconds > 0 requests rolling clips, but rollover is not "
-                "implemented yet. Use clip_seconds=0 for the current single-video layout.";
-        }
-        return false;
-    }
-    return true;
+    return orange::session::validate_recording_control_config(
+        orange::session::RecordingControlConfig{
+            config.record_for_seconds,
+            config.clip_seconds
+        },
+        error_out,
+        context);
 }
 
 bool validate_headless_external_recorder_contract_config(
@@ -6994,16 +6980,15 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             return std::chrono::duration<double>(finish - start).count();
         };
 
-        nlohmann::json cameras = nlohmann::json::array();
-        nlohmann::json video_artifacts = nlohmann::json::object();
-        nlohmann::json metadata_artifacts = nlohmann::json::object();
-        nlohmann::json keyframe_artifacts = nlohmann::json::object();
+        std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
         for (int idx : selected_inventory_indices) {
             const std::string camera_serial = cameras_params[idx].camera_serial;
-            cameras.push_back(camera_serial);
-            video_artifacts[camera_serial] = "Cam" + camera_serial + ".mp4";
-            metadata_artifacts[camera_serial] = "Cam" + camera_serial + "_meta.csv";
-            keyframe_artifacts[camera_serial] = "Cam" + camera_serial + "_keyframe.json";
+            camera_artifacts.push_back({
+                camera_serial,
+                "Cam" + camera_serial + ".mp4",
+                "Cam" + camera_serial + "_meta.csv",
+                "Cam" + camera_serial + "_keyframe.json"
+            });
         }
 
         const double actual_recording_duration_s =
@@ -7015,69 +7000,50 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         const bool timed_stop_hit =
             recording_stop_reason == "record_for_seconds_elapsed";
 
-        nlohmann::json manifest = {
-            {"schema_id", "orange.headless.recording_session"},
-            {"schema_version", 1},
-            {"created_at_utc", session_started_at_utc},
-            {"updated_at_utc", session_finished_at_utc},
-            {"recording_folder", active_record_folder},
-            {"mode", "single_clip"},
-            {"status", (recording_started && recording_drain_completed) ? "completed" : "incomplete"},
-            {"cameras", cameras},
-            {"stream",
-             {
-                 {"requested_duration_seconds", options.duration_seconds},
-                 {"stream_start_delay_seconds", options.stream_start_delay_seconds},
-                 {"started_at_utc", session_started_at_utc},
-                 {"finished_at_utc", session_finished_at_utc},
-                 {"actual_elapsed_s",
-                  std::chrono::duration<double>(session_finished_time - run_start_time).count()},
-                 {"interrupted", quit_server}
-             }},
-            {"recording_control",
-             build_headless_recording_control_config_json(options.recording_control)},
-            {"recording",
-             {
-                 {"started", recording_started},
-                 {"started_at_utc", recording_started_at_utc},
-                 {"started_at_elapsed_s", elapsed_since_run_start(recording_start_time)},
-                 {"stop_requested", recording_stop_request_time.time_since_epoch().count() > 0},
-                 {"stop_requested_at_utc", recording_stop_requested_at_utc},
-                 {"stop_requested_at_elapsed_s",
-                  elapsed_since_run_start(recording_stop_request_time)},
-                 {"stop_reason", recording_stop_reason},
-                 {"drain_completed", recording_drain_completed},
-                 {"drained_at_utc", recording_drained_at_utc},
-                 {"drained_at_elapsed_s", elapsed_since_run_start(recording_drain_done_time)},
-                 {"actual_recording_duration_s", actual_recording_duration_s},
-                 {"drain_duration_s", drain_duration_s}
-             }},
-            {"clips",
-             nlohmann::json::array(
-                 {{
-                     {"clip_index", 0},
-                     {"clip_id", "clip_0000"},
-                     {"recording_folder", active_record_folder},
-                     {"started_at_utc", recording_started_at_utc},
-                     {"stop_requested_at_utc", recording_stop_requested_at_utc},
-                     {"finalized_at_utc", recording_drained_at_utc},
-                     {"stop_reason", recording_stop_reason},
-                     {"requested_duration_s", options.recording_control.record_for_seconds},
-                     {"actual_duration_s", actual_recording_duration_s},
-                     {"timed_stop_hit", timed_stop_hit},
-                     {"drain_completed", recording_drain_completed},
-                     {"artifacts",
-                      {
-                          {"videos", video_artifacts},
-                          {"metadata", metadata_artifacts},
-                          {"keyframes", keyframe_artifacts}
-                      }}
-                 }})}
+        orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
+        manifest_options.producer = "orange_headless";
+        manifest_options.session_id = std::filesystem::path(active_record_folder).filename().string();
+        manifest_options.created_at_utc = session_started_at_utc;
+        manifest_options.updated_at_utc = session_finished_at_utc;
+        manifest_options.recording_folder = active_record_folder;
+        manifest_options.status =
+            (recording_started && recording_drain_completed) ? "completed" : "incomplete";
+        manifest_options.requested_stream_duration_seconds = options.duration_seconds;
+        manifest_options.stream_start_delay_seconds = options.stream_start_delay_seconds;
+        manifest_options.stream_started_at_utc = session_started_at_utc;
+        manifest_options.stream_finished_at_utc = session_finished_at_utc;
+        manifest_options.stream_actual_elapsed_s =
+            std::chrono::duration<double>(session_finished_time - run_start_time).count();
+        manifest_options.stream_interrupted = quit_server;
+        manifest_options.recording_control = {
+            options.recording_control.record_for_seconds,
+            options.recording_control.clip_seconds
         };
+        manifest_options.recording_started = recording_started;
+        manifest_options.recording_started_at_utc = recording_started_at_utc;
+        manifest_options.recording_started_at_elapsed_s =
+            elapsed_since_run_start(recording_start_time);
+        manifest_options.recording_stop_requested =
+            recording_stop_request_time.time_since_epoch().count() > 0;
+        manifest_options.recording_stop_requested_at_utc = recording_stop_requested_at_utc;
+        manifest_options.recording_stop_requested_at_elapsed_s =
+            elapsed_since_run_start(recording_stop_request_time);
+        manifest_options.recording_stop_reason = recording_stop_reason;
+        manifest_options.recording_drain_completed = recording_drain_completed;
+        manifest_options.recording_drained_at_utc = recording_drained_at_utc;
+        manifest_options.recording_drained_at_elapsed_s =
+            elapsed_since_run_start(recording_drain_done_time);
+        manifest_options.actual_recording_duration_s = actual_recording_duration_s;
+        manifest_options.drain_duration_s = drain_duration_s;
+        manifest_options.timed_stop_hit = timed_stop_hit;
+        manifest_options.cameras = std::move(camera_artifacts);
+
+        const nlohmann::json manifest =
+            orange::session::build_single_clip_recording_session_manifest(manifest_options);
 
         std::string manifest_error;
-        if (!write_json_file(
-                std::filesystem::path(active_record_folder) / "recording_session.json",
+        if (!orange::session::write_recording_session_manifest(
+                (std::filesystem::path(active_record_folder) / "recording_session.json").string(),
                 manifest,
                 &manifest_error)) {
             std::cerr << manifest_error << std::endl;

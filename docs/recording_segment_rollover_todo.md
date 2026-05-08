@@ -34,6 +34,10 @@ When recording is active, automatically start a new segment every N minutes (def
 - The planned session/clip artifact contract is now documented in
   `docs/recording_session_manifest_contract.md`. Until rollover lands,
   `clip_seconds > 0` is rejected during headless experiment-spec validation.
+- The current single-clip manifest builder and `clip_seconds > 0` validation
+  live in the shared `src/session/recording_session.*` module so future GUI,
+  headless, and external-recorder implementations do not fork the session
+  contract.
 
 Refs:
 - `src/orange.cpp:1127`

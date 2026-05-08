@@ -4,6 +4,10 @@
 
 This document defines the recording-session artifact contract Orange should use
 for both the current single-video layout and the future rolling-clip layout.
+The shared C++ helper for the current single-clip manifest lives in
+`src/session/recording_session.*`; headless recording uses that helper so the
+GUI/session path and future external-recorder supervision can converge on the
+same contract instead of carrying separate manifest shapes.
 
 The immediate implementation rule is conservative:
 
@@ -263,8 +267,12 @@ This is low-rate health/status telemetry across the whole recording session:
 - Single-video headless `recording_control.record_for_seconds` is implemented.
 - Current single-video layout remains flat for compatibility.
 - Current headless timed recording writes `recording_session.json` with
-  `mode = "single_clip"`.
+  `schema_id = "orange.recording_session"`, `producer = "orange_headless"`,
+  and `mode = "single_clip"`.
 - `clip_seconds > 0` is rejected during experiment-spec validation with a clear
   "rolling clips are not implemented yet" error.
+- `scripts/verify_timed_recording.py` validates the single-clip manifest,
+  session/clip artifact coherence, per-camera video/metadata/keyframe presence,
+  runs.json health fields when available, and encoded video duration.
 - Rolling writer rollover, per-clip directories, session frame CSVs, and
   session status CSVs are future work.

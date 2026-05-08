@@ -277,6 +277,8 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_contract_utils.cpp"
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
+    "${SRC_DIR}/session/recording_session.cpp"
+    "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
     "${SRC_DIR}/encoder_hw_worker.cpp"
