@@ -122,6 +122,9 @@ Validation environment:
   ORANGE_YOLO_DETACH_INPUT=${YOLO_DETACH_INPUT}
   ORANGE_DEFAULT_DETECT_ENGINE=${DETECT_ENGINE}
   ORANGE_GUI_RECORDING_SINK_MODE=${ORANGE_GUI_RECORDING_SINK_MODE:-real}
+
+After recording, validate the artifact with:
+  scripts/validate_gui_ptp_recording.py <recording_folder>
 EOF
 
 if [[ "${ORANGE_GUI_VALIDATE_ONLY:-0}" == "1" ]]; then
