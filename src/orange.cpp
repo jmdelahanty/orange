@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
 #include <fstream>
 #include <array>
 #include <limits>
@@ -94,6 +95,198 @@ struct LiveFovPreviewState {
     std::string status_message = "Idle";
     std::string error_message;
 };
+
+struct GuiSessionTimingState {
+    bool stream_running = false;
+    bool recording_running = false;
+    bool recording_finalizing = false;
+    std::chrono::steady_clock::time_point stream_started_at{};
+    std::chrono::steady_clock::time_point recording_started_at{};
+    std::chrono::steady_clock::time_point finalizing_started_at{};
+    std::chrono::seconds last_recording_elapsed{0};
+};
+
+struct GuiSessionTimingSnapshot {
+    bool stream_running = false;
+    bool recording_running = false;
+    bool recording_finalizing = false;
+    bool has_recording_elapsed = false;
+    std::string stream_elapsed = "00:00:00";
+    std::string recording_elapsed = "00:00:00";
+    std::string finalizing_elapsed = "00:00:00";
+};
+
+bool has_gui_timepoint(const std::chrono::steady_clock::time_point& timepoint)
+{
+    return timepoint.time_since_epoch() != std::chrono::steady_clock::duration::zero();
+}
+
+std::chrono::seconds gui_elapsed_since(
+    const std::chrono::steady_clock::time_point& started_at,
+    const std::chrono::steady_clock::time_point& now)
+{
+    if (!has_gui_timepoint(started_at) || now < started_at) {
+        return std::chrono::seconds{0};
+    }
+    return std::chrono::duration_cast<std::chrono::seconds>(now - started_at);
+}
+
+void gui_mark_stream_started(GuiSessionTimingState* timing)
+{
+    if (!timing) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    timing->stream_running = true;
+    timing->stream_started_at = now;
+    timing->recording_running = false;
+    timing->recording_finalizing = false;
+    timing->recording_started_at = {};
+    timing->finalizing_started_at = {};
+    timing->last_recording_elapsed = std::chrono::seconds{0};
+}
+
+void gui_mark_stream_stopped(GuiSessionTimingState* timing)
+{
+    if (!timing) {
+        return;
+    }
+    *timing = GuiSessionTimingState{};
+}
+
+void gui_mark_recording_started(GuiSessionTimingState* timing)
+{
+    if (!timing) {
+        return;
+    }
+    timing->recording_running = true;
+    timing->recording_finalizing = false;
+    timing->recording_started_at = std::chrono::steady_clock::now();
+    timing->finalizing_started_at = {};
+    timing->last_recording_elapsed = std::chrono::seconds{0};
+}
+
+void gui_mark_recording_finalizing(GuiSessionTimingState* timing)
+{
+    if (!timing) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (timing->recording_running) {
+        timing->last_recording_elapsed =
+            gui_elapsed_since(timing->recording_started_at, now);
+    }
+    timing->recording_running = false;
+    if (!timing->recording_finalizing) {
+        timing->finalizing_started_at = now;
+    }
+    timing->recording_finalizing = true;
+}
+
+void gui_mark_recording_finished(GuiSessionTimingState* timing)
+{
+    if (!timing) {
+        return;
+    }
+    timing->recording_running = false;
+    timing->recording_finalizing = false;
+    timing->recording_started_at = {};
+    timing->finalizing_started_at = {};
+}
+
+GuiSessionTimingSnapshot gui_session_timing_snapshot(
+    GuiSessionTimingState* timing,
+    const CameraControl* camera_control)
+{
+    GuiSessionTimingSnapshot snapshot;
+    if (!timing) {
+        return snapshot;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const bool stream_active = camera_control && camera_control->subscribe;
+    const bool recording_active = camera_control && camera_control->record_video;
+    const bool recording_draining = camera_control && camera_control->recording_draining;
+
+    if (stream_active && !timing->stream_running) {
+        timing->stream_running = true;
+        timing->stream_started_at = now;
+    } else if (!stream_active && timing->stream_running) {
+        gui_mark_stream_stopped(timing);
+    }
+
+    if (recording_active && !timing->recording_running) {
+        gui_mark_recording_started(timing);
+    } else if (!recording_active && recording_draining && !timing->recording_finalizing) {
+        gui_mark_recording_finalizing(timing);
+    } else if (!recording_active && !recording_draining &&
+               (timing->recording_running || timing->recording_finalizing)) {
+        gui_mark_recording_finished(timing);
+    }
+
+    snapshot.stream_running = timing->stream_running;
+    snapshot.recording_running = timing->recording_running;
+    snapshot.recording_finalizing = timing->recording_finalizing;
+    snapshot.has_recording_elapsed =
+        timing->recording_running ||
+        timing->recording_finalizing ||
+        timing->last_recording_elapsed.count() > 0;
+
+    if (timing->stream_running) {
+        snapshot.stream_elapsed =
+            format_elapsed_time(gui_elapsed_since(timing->stream_started_at, now));
+    }
+    if (timing->recording_running) {
+        snapshot.recording_elapsed =
+            format_elapsed_time(gui_elapsed_since(timing->recording_started_at, now));
+    } else if (snapshot.has_recording_elapsed) {
+        snapshot.recording_elapsed = format_elapsed_time(timing->last_recording_elapsed);
+    }
+    if (timing->recording_finalizing) {
+        snapshot.finalizing_elapsed =
+            format_elapsed_time(gui_elapsed_since(timing->finalizing_started_at, now));
+    }
+    return snapshot;
+}
+
+void render_gui_session_timing_status(
+    const GuiSessionTimingSnapshot& timing,
+    double streaming_fps_value,
+    YoloWorker* yolo_worker)
+{
+    if (timing.stream_running) {
+        ImGui::Text("Stream: %s", timing.stream_elapsed.c_str());
+    } else {
+        ImGui::TextDisabled("Stream idle");
+    }
+
+    ImGui::SameLine();
+    if (timing.recording_running) {
+        ImGui::TextColored(
+            ImVec4{0.0f, 1.0f, 0.0f, 1.0f},
+            "Recording: %s",
+            timing.recording_elapsed.c_str());
+    } else if (timing.recording_finalizing) {
+        ImGui::TextColored(
+            ImVec4{1.0f, 1.0f, 0.0f, 1.0f},
+            "Finalizing: %s",
+            timing.finalizing_elapsed.c_str());
+        ImGui::TextDisabled("Recorded: %s", timing.recording_elapsed.c_str());
+    } else if (timing.has_recording_elapsed) {
+        ImGui::TextDisabled("Last recording: %s", timing.recording_elapsed.c_str());
+    } else {
+        ImGui::TextDisabled("Recording idle");
+    }
+
+    ImGui::Text("Streaming FPS: %.1f", streaming_fps_value);
+    if (yolo_worker) {
+        ImGui::SameLine();
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.55f, 0.0f, 1.0f),
+            "YOLO FPS: %.1f",
+            yolo_worker->get_fps());
+    }
+}
 
 struct ApertureCharacterizationUiState {
     bool show_window = false;
@@ -2469,6 +2662,7 @@ int main(int argc, char **args) {
 
     std::vector<CameraResources> camera_resources;
     orange::session::RecordingSessionState recording_session;
+    GuiSessionTimingState gui_session_timing;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
@@ -3371,6 +3565,7 @@ int main(int argc, char **args) {
                         } else {
                             recording_preflight_errors.clear();
                             camera_control->subscribe = true;
+                            gui_mark_stream_started(&gui_session_timing);
                         // START STREAMING
                             std::cout << "STARTING STREAMING SESSION..." << std::endl;
 
@@ -3592,7 +3787,10 @@ int main(int argc, char **args) {
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
                         if (camera_control->record_video) {
                             orange::session::request_drain_recording_run(&recording_session, camera_control);
+                            gui_mark_recording_finalizing(&gui_session_timing);
                             std::cout << "Recording toggled OFF by stream shutdown. Encoders will drain queued frames." << std::endl;
+                        } else if (camera_control->recording_draining) {
+                            gui_mark_recording_finalizing(&gui_session_timing);
                         }
 
                         // 1. Stop the acquisition threads first.
@@ -3714,6 +3912,8 @@ int main(int argc, char **args) {
                         }
                         camera_resources.clear();
                         std::cout << "Cleaned up all per-camera resources." << std::endl;
+                        gui_mark_recording_finished(&gui_session_timing);
+                        gui_mark_stream_stopped(&gui_session_timing);
                     }
                 }
                 if (calibration_tool_busy) {
@@ -3826,6 +4026,7 @@ int main(int argc, char **args) {
                             if (next_record_state) {
                                 // START RECORDING
                                 try_start_timer();
+                                gui_mark_recording_started(&gui_session_timing);
                                 std::cout << "Recording toggled ON." << std::endl;
                                 if (resolved_recording_sink_mode != "real") {
                                     std::cout << "Full-frame video disabled by GUI recording sink mode: "
@@ -3837,12 +4038,16 @@ int main(int argc, char **args) {
                             } else {
                                 // STOP RECORDING
                                 orange::session::request_drain_recording_run(&recording_session, camera_control);
+                                gui_mark_recording_finalizing(&gui_session_timing);
                                 for (int i = 0; i < num_cameras; ++i) {
                                     if (cropProducerWorkers && cropProducerWorkers[i]) {
                                         cropProducerWorkers[i]->PutObjectToQueueIn(nullptr);
                                     }
                                 }
                                 try_stop_timer();
+                                if (!camera_control->recording_draining) {
+                                    gui_mark_recording_finished(&gui_session_timing);
+                                }
                                 std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
                             }
                         }
@@ -3867,6 +4072,16 @@ int main(int argc, char **args) {
                 ImGui::TextWrapped("Recording path: %s", active_recording_folder.c_str());
             }
 
+            if (camera_control->open) {
+                const GuiSessionTimingSnapshot timing =
+                    gui_session_timing_snapshot(&gui_session_timing, camera_control);
+                ImGui::Separator();
+                render_gui_session_timing_status(
+                    timing,
+                    streaming_fps.load(),
+                    nullptr);
+            }
+
             ImGui::PopStyleColor(1);
         }
         ImGui::End();
@@ -3888,16 +4103,9 @@ int main(int argc, char **args) {
                 }
             }
             // Draw main camera views
+            const GuiSessionTimingSnapshot timing =
+                gui_session_timing_snapshot(&gui_session_timing, camera_control);
             if (camera_control->record_video) {
-                int64_t start_ns = record_start_time_ns.load();
-                std::string g_formatted_elapsed_time;
-                if (start_ns > 0) {
-                    int64_t now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch()).count();
-                
-                    auto elapsed_sec = std::chrono::seconds((now_ns - start_ns) / 1'000'000'000);
-                    g_formatted_elapsed_time = format_elapsed_time(elapsed_sec);
-                }
                 // Resize speed tracking data
                 if (speed_tracking_data.size() != num_cameras) {
                         speed_tracking_data.resize(num_cameras);
@@ -3908,20 +4116,12 @@ int main(int argc, char **args) {
                     if (cameras_select[i].stream_on) {
                         std::string window_name = cameras_params[i].camera_name;
                         ImGui::Begin(window_name.c_str());
-                        
-                        if (start_ns > 0) {
-                            ImGui::TextColored(ImVec4{0.0, 1.0f, 0, 1.0f}, "Elapsed Time: %s", g_formatted_elapsed_time.c_str());
-                        } else {
-                            ImGui::TextColored(ImVec4{1.0, 1.0f, 0, 1.0f}, "Recording starting...");
-                        }
-                        ImGui::SameLine();
-                        ImGui::Text("Streaming FPS: %.1f", streaming_fps.load());    
 
                         YoloWorker* yolo_worker = gui_yolo_worker_at(i);
-                        if (cameras_select[i].yolo && yolo_worker) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_worker->get_fps());
-                        }
+                        render_gui_session_timing_status(
+                            timing,
+                            streaming_fps.load(),
+                            cameras_select[i].yolo ? yolo_worker : nullptr);
             
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
                         avail_size.y *= 0.5f;
@@ -3964,16 +4164,13 @@ int main(int argc, char **args) {
                     if (cameras_select[i].stream_on) {
                         std::string window_name = cameras_params[i].camera_name;
                         ImGui::Begin(window_name.c_str());
-                        ImGui::TextColored(ImVec4{1.0, 0.0f, 0, 1.0f}, "NOT RECORDING, ");
-                        ImGui::SameLine();
-                        ImGui::Text("Streaming FPS: %.1f", streaming_fps.load());    
-                        ImVec2 avail_size = ImGui::GetContentRegionAvail();
 
                         YoloWorker* yolo_worker = gui_yolo_worker_at(i);
-                        if (cameras_select[i].yolo && yolo_worker) {
-                            ImGui::SameLine();
-                            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.0f, 1.0f), "YOLO FPS: %.1f", yolo_worker->get_fps());
-                        }
+                        render_gui_session_timing_status(
+                            timing,
+                            streaming_fps.load(),
+                            cameras_select[i].yolo ? yolo_worker : nullptr);
+                        ImVec2 avail_size = ImGui::GetContentRegionAvail();
     
                         static ImVec2 bmin(0, 0);
                         static ImVec2 uv0(0, 0);
