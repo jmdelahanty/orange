@@ -232,6 +232,82 @@ void writes_supervised_session_artifacts()
     std::filesystem::remove_all(root);
 }
 
+void writes_runtime_handoff_and_finalization_artifacts()
+{
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() /
+        ("orange_contract_utils_lifecycle_test_" + std::to_string(getpid()));
+    std::filesystem::remove_all(root);
+
+    orange::external_recorder::SupervisorRuntimeState runtime;
+    runtime.artifact_root = root.string();
+    runtime.session_id = "session_004";
+    orange::external_recorder::SupervisorRuntimeArtifactOptions runtime_options;
+    runtime_options.artifact_root = root.string();
+    runtime_options.runtime = &runtime;
+    const orange::external_recorder::ArtifactWriteResult runtime_result =
+        orange::external_recorder::WriteExternalRecorderSupervisorRuntimeArtifact(
+            runtime_options);
+    require(runtime_result.ok, "runtime artifact write failed: " + runtime_result.error_message);
+    require(std::filesystem::exists(runtime_result.path), "missing runtime artifact");
+
+    orange::external_recorder::VerifierHandoffArtifactOptions handoff_options;
+    handoff_options.artifact_root = root.string();
+    handoff_options.analytics_root = "/tmp/orange_analytics_root";
+    handoff_options.verifier_path = "/repo/scripts/verify_external_recorder_session.py";
+    handoff_options.require_video_sanity = true;
+    const nlohmann::json handoff =
+        orange::external_recorder::BuildExternalRecorderVerifierHandoff(handoff_options);
+    require(handoff.value("schema_id", "") == "orange.external_recorder.verifier_handoff",
+            "handoff schema mismatch");
+    require(handoff["command"] == nlohmann::json::array({
+                "/repo/scripts/verify_external_recorder_session.py",
+                root.string(),
+                "--analytics-root",
+                "/tmp/orange_analytics_root"}),
+            "handoff command mismatch");
+    const orange::external_recorder::ArtifactWriteResult handoff_result =
+        orange::external_recorder::WriteExternalRecorderVerifierHandoffArtifact(
+            handoff_options);
+    require(handoff_result.ok, "handoff artifact write failed: " + handoff_result.error_message);
+    require(std::filesystem::exists(handoff_result.path), "missing handoff artifact");
+
+    const nlohmann::json video_sanity = {
+        {"2010095", {{"pass", true}}}
+    };
+    const nlohmann::json verifier = {
+        {"pass", true},
+        {"command", "verify"}
+    };
+    orange::external_recorder::FinalizationManifestOptions finalization_options;
+    finalization_options.experiment_root = "/tmp/orange_analytics_root";
+    finalization_options.artifact_root = root.string();
+    finalization_options.run_id = "run_004";
+    finalization_options.status = "pass";
+    finalization_options.started_at_utc = "2026-05-07T00:00:00Z";
+    finalization_options.finished_at_utc = "2026-05-07T00:00:01Z";
+    finalization_options.video_sanity = &video_sanity;
+    finalization_options.verifier = &verifier;
+    const nlohmann::json finalization =
+        orange::external_recorder::BuildExternalRecorderFinalizationManifest(
+            finalization_options);
+    require(finalization.value("schema_id", "") == "orange.external_recorder.finalization",
+            "finalization schema mismatch");
+    require(finalization.value("status", "") == "pass", "finalization status mismatch");
+    require(finalization.contains("video_sanity"), "finalization missing video_sanity");
+    require(finalization.contains("verifier"), "finalization missing verifier");
+    const orange::external_recorder::ArtifactWriteResult finalization_result =
+        orange::external_recorder::WriteExternalRecorderFinalizationArtifact(
+            root.string(),
+            finalization);
+    require(finalization_result.ok,
+            "finalization artifact write failed: " + finalization_result.error_message);
+    require(std::filesystem::exists(finalization_result.path),
+            "missing finalization artifact");
+
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main()
@@ -243,6 +319,8 @@ int main()
         std::cout << "[PASS] writes_failfast_artifacts\n";
         writes_supervised_session_artifacts();
         std::cout << "[PASS] writes_supervised_session_artifacts\n";
+        writes_runtime_handoff_and_finalization_artifacts();
+        std::cout << "[PASS] writes_runtime_handoff_and_finalization_artifacts\n";
     } catch (const std::exception& ex) {
         std::cerr << "[FAIL] " << ex.what() << "\n";
         return 1;

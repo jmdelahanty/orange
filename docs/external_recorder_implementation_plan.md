@@ -483,6 +483,12 @@ Current contract-hardening status:
   `external_recorder_session.json` and `external_recorder_supervisor_plan.json`
   writes, and its parser uses the same wrapper-object extraction rule as the
   GUI contract loader.
+- The same helper now also owns the shared artifact shapes for
+  `external_recorder_supervisor_runtime.json`,
+  `external_recorder_verifier_handoff.json`, and
+  `external_recorder_finalization.json`. Headless still owns process lifecycle
+  and verifier execution, but the durable JSON contracts no longer live as
+  headless-local literals.
 - `fixed.external_recorder_contract.supervise_processes = true` is the first
   opt-in headless lifecycle slice. `orange_client` starts recorder processes,
   waits for sockets, exports per-camera socket/session env vars, waits for

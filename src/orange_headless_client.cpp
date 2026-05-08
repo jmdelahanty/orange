@@ -5181,15 +5181,15 @@ bool finalize_supervised_external_recorder_run(
         return true;
     }
 
-    nlohmann::json finalization = {
-        {"schema_id", "orange.external_recorder.finalization"},
-        {"schema_version", 1},
-        {"experiment_root", experiment_root.string()},
-        {"artifact_root", config.artifact_root},
-        {"run_id", run.run_id},
-        {"status", "running"},
-        {"started_at_utc", get_current_utc_timestamp()},
-    };
+    orange::external_recorder::FinalizationManifestOptions finalization_options;
+    finalization_options.experiment_root = experiment_root.string();
+    finalization_options.artifact_root = config.artifact_root;
+    finalization_options.run_id = run.run_id;
+    finalization_options.status = "running";
+    finalization_options.started_at_utc = get_current_utc_timestamp();
+    nlohmann::json finalization =
+        orange::external_recorder::BuildExternalRecorderFinalizationManifest(
+            finalization_options);
 
     bool ok = run_supervised_external_recorder_video_sanity(
         config,
@@ -5202,20 +5202,29 @@ bool finalize_supervised_external_recorder_run(
             &finalization,
             error_out);
     }
-    finalization["finished_at_utc"] = get_current_utc_timestamp();
-    finalization["status"] = ok ? "pass" : "fail";
-    if (!ok && error_out && !error_out->empty()) {
-        finalization["error"] = *error_out;
-    }
 
-    std::string write_error;
-    if (!write_json_file(
-            std::filesystem::path(config.artifact_root) /
-                "external_recorder_finalization.json",
-            finalization,
-            &write_error)) {
+    finalization_options.status = ok ? "pass" : "fail";
+    finalization_options.finished_at_utc = get_current_utc_timestamp();
+    if (finalization.contains("video_sanity")) {
+        finalization_options.video_sanity = &finalization["video_sanity"];
+    }
+    if (finalization.contains("verifier")) {
+        finalization_options.verifier = &finalization["verifier"];
+    }
+    if (!ok && error_out && !error_out->empty()) {
+        finalization_options.error = *error_out;
+    }
+    finalization =
+        orange::external_recorder::BuildExternalRecorderFinalizationManifest(
+            finalization_options);
+
+    const orange::external_recorder::ArtifactWriteResult write_result =
+        orange::external_recorder::WriteExternalRecorderFinalizationArtifact(
+            config.artifact_root,
+            finalization);
+    if (!write_result.ok) {
         if (error_out) {
-            *error_out = write_error;
+            *error_out = write_result.error_message;
         }
         return false;
     }
@@ -6792,13 +6801,14 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         if (external_recorder_artifact_root.empty()) {
             return;
         }
-        std::string write_error;
-        if (!write_json_file(
-                external_recorder_artifact_root / "external_recorder_supervisor_runtime.json",
-                orange::external_recorder::SupervisorRuntimeStateToJson(
-                    external_recorder_runtime),
-                &write_error)) {
-            std::cerr << write_error << std::endl;
+        orange::external_recorder::SupervisorRuntimeArtifactOptions artifact_options;
+        artifact_options.artifact_root = external_recorder_artifact_root.string();
+        artifact_options.runtime = &external_recorder_runtime;
+        const orange::external_recorder::ArtifactWriteResult result =
+            orange::external_recorder::WriteExternalRecorderSupervisorRuntimeArtifact(
+                artifact_options);
+        if (!result.ok) {
+            std::cerr << result.error_message << std::endl;
         }
     };
     auto write_external_recorder_verifier_handoff = [&]() {
@@ -6812,29 +6822,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 : "scripts/verify_external_recorder_session.py";
         const std::filesystem::path analytics_root =
             std::filesystem::path(active_record_folder).parent_path();
-        const nlohmann::json handoff = {
-            {"schema_id", "orange.external_recorder.verifier_handoff"},
-            {"schema_version", 1},
-            {"status", "pending_runs_json_and_video_sanity"},
-            {"artifact_root", external_recorder_artifact_root.string()},
-            {"analytics_root", analytics_root.string()},
-            {"requires_video_sanity",
-             options.external_recorder_contract.require_video_sanity},
-            {"command",
-             nlohmann::json::array({
-                 verifier_path,
-                 external_recorder_artifact_root.string(),
-                 "--analytics-root",
-                 analytics_root.string()
-             })}
-        };
-        std::string write_error;
-        if (!write_json_file(
-                external_recorder_artifact_root /
-                    "external_recorder_verifier_handoff.json",
-                handoff,
-                &write_error)) {
-            std::cerr << write_error << std::endl;
+        orange::external_recorder::VerifierHandoffArtifactOptions handoff_options;
+        handoff_options.artifact_root = external_recorder_artifact_root.string();
+        handoff_options.analytics_root = analytics_root.string();
+        handoff_options.verifier_path = verifier_path;
+        handoff_options.require_video_sanity =
+            options.external_recorder_contract.require_video_sanity;
+        const orange::external_recorder::ArtifactWriteResult result =
+            orange::external_recorder::WriteExternalRecorderVerifierHandoffArtifact(
+                handoff_options);
+        if (!result.ok) {
+            std::cerr << result.error_message << std::endl;
         }
     };
     auto stop_supervised_external_recorder = [&]() {

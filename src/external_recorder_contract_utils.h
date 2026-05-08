@@ -10,6 +10,7 @@ struct CameraParams;
 namespace orange::external_recorder {
 
 struct SupervisorPlan;
+struct SupervisorRuntimeState;
 
 inline constexpr const char* kGuiExternalRecorderNotImplementedReason =
     "external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording";
@@ -52,6 +53,37 @@ struct SupervisedSessionArtifactResult {
     std::string external_recorder_supervisor_plan_path;
 };
 
+struct ArtifactWriteResult {
+    bool ok = false;
+    std::string error_message;
+    std::string path;
+};
+
+struct SupervisorRuntimeArtifactOptions {
+    std::string artifact_root;
+    const SupervisorRuntimeState* runtime = nullptr;
+};
+
+struct VerifierHandoffArtifactOptions {
+    std::string artifact_root;
+    std::string analytics_root;
+    std::string verifier_path = "scripts/verify_external_recorder_session.py";
+    std::string status = "pending_runs_json_and_video_sanity";
+    bool require_video_sanity = true;
+};
+
+struct FinalizationManifestOptions {
+    std::string experiment_root;
+    std::string artifact_root;
+    std::string run_id;
+    std::string status = "running";
+    std::string started_at_utc;
+    std::string finished_at_utc;
+    std::string error;
+    const nlohmann::json* video_sanity = nullptr;
+    const nlohmann::json* verifier = nullptr;
+};
+
 nlohmann::json ExtractExternalRecorderContractObject(const nlohmann::json& payload);
 
 bool ReadExternalRecorderContractConfigFile(const std::string& path,
@@ -66,5 +98,21 @@ FailFastArtifactResult WriteExternalRecorderFailFastArtifacts(
 
 SupervisedSessionArtifactResult WriteExternalRecorderSupervisedSessionArtifacts(
     const SupervisedSessionArtifactOptions& options);
+
+ArtifactWriteResult WriteExternalRecorderSupervisorRuntimeArtifact(
+    const SupervisorRuntimeArtifactOptions& options);
+
+nlohmann::json BuildExternalRecorderVerifierHandoff(
+    const VerifierHandoffArtifactOptions& options);
+
+ArtifactWriteResult WriteExternalRecorderVerifierHandoffArtifact(
+    const VerifierHandoffArtifactOptions& options);
+
+nlohmann::json BuildExternalRecorderFinalizationManifest(
+    const FinalizationManifestOptions& options);
+
+ArtifactWriteResult WriteExternalRecorderFinalizationArtifact(
+    const std::string& artifact_root,
+    const nlohmann::json& finalization);
 
 }  // namespace orange::external_recorder

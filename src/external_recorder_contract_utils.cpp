@@ -149,6 +149,20 @@ uint64_t frame_bytes(const CameraParams& camera_params)
            static_cast<uint64_t>(camera_params.height);
 }
 
+ArtifactWriteResult write_named_artifact(const std::filesystem::path& path,
+                                         const nlohmann::json& payload)
+{
+    ArtifactWriteResult result;
+    std::string error;
+    if (!write_json_file(path, payload, &error)) {
+        result.error_message = error;
+        return result;
+    }
+    result.ok = true;
+    result.path = path.string();
+    return result;
+}
+
 }  // namespace
 
 nlohmann::json ExtractExternalRecorderContractObject(const nlohmann::json& payload)
@@ -386,6 +400,92 @@ SupervisedSessionArtifactResult WriteExternalRecorderSupervisedSessionArtifacts(
     result.external_recorder_supervisor_plan_path = plan_path.string();
     result.ok = true;
     return result;
+}
+
+ArtifactWriteResult WriteExternalRecorderSupervisorRuntimeArtifact(
+    const SupervisorRuntimeArtifactOptions& options)
+{
+    if (options.artifact_root.empty()) {
+        return {false, "external recorder artifact_root is required", ""};
+    }
+    if (!options.runtime) {
+        return {false, "external recorder supervisor runtime is required", ""};
+    }
+    return write_named_artifact(
+        std::filesystem::path(options.artifact_root) /
+            "external_recorder_supervisor_runtime.json",
+        SupervisorRuntimeStateToJson(*options.runtime));
+}
+
+nlohmann::json BuildExternalRecorderVerifierHandoff(
+    const VerifierHandoffArtifactOptions& options)
+{
+    return {
+        {"schema_id", "orange.external_recorder.verifier_handoff"},
+        {"schema_version", 1},
+        {"status", options.status},
+        {"artifact_root", options.artifact_root},
+        {"analytics_root", options.analytics_root},
+        {"requires_video_sanity", options.require_video_sanity},
+        {"command",
+         nlohmann::json::array({
+             options.verifier_path,
+             options.artifact_root,
+             "--analytics-root",
+             options.analytics_root
+         })}
+    };
+}
+
+ArtifactWriteResult WriteExternalRecorderVerifierHandoffArtifact(
+    const VerifierHandoffArtifactOptions& options)
+{
+    if (options.artifact_root.empty()) {
+        return {false, "external recorder artifact_root is required", ""};
+    }
+    return write_named_artifact(
+        std::filesystem::path(options.artifact_root) /
+            "external_recorder_verifier_handoff.json",
+        BuildExternalRecorderVerifierHandoff(options));
+}
+
+nlohmann::json BuildExternalRecorderFinalizationManifest(
+    const FinalizationManifestOptions& options)
+{
+    nlohmann::json finalization = {
+        {"schema_id", "orange.external_recorder.finalization"},
+        {"schema_version", 1},
+        {"experiment_root", options.experiment_root},
+        {"artifact_root", options.artifact_root},
+        {"run_id", options.run_id},
+        {"status", options.status},
+        {"started_at_utc", options.started_at_utc},
+    };
+    if (!options.finished_at_utc.empty()) {
+        finalization["finished_at_utc"] = options.finished_at_utc;
+    }
+    if (options.video_sanity) {
+        finalization["video_sanity"] = *options.video_sanity;
+    }
+    if (options.verifier) {
+        finalization["verifier"] = *options.verifier;
+    }
+    if (!options.error.empty()) {
+        finalization["error"] = options.error;
+    }
+    return finalization;
+}
+
+ArtifactWriteResult WriteExternalRecorderFinalizationArtifact(
+    const std::string& artifact_root,
+    const nlohmann::json& finalization)
+{
+    if (artifact_root.empty()) {
+        return {false, "external recorder artifact_root is required", ""};
+    }
+    return write_named_artifact(
+        std::filesystem::path(artifact_root) / "external_recorder_finalization.json",
+        finalization);
 }
 
 }  // namespace orange::external_recorder
