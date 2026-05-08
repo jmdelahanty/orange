@@ -259,6 +259,14 @@ GUI metadata-only fail-fast path. The headless parser also uses the shared
 contract extraction rule, so a wrapper object with `external_recorder_contract`
 resolves the same way in both paths.
 
+Headless supervised process startup/shutdown now goes through
+`src/external_recorder_lifecycle.*`. That helper builds the supervisor plan,
+writes the initial session/plan artifacts, starts recorder processes, exports
+the per-camera socket/session environment variables, stops the recorder
+processes, and publishes runtime plus verifier-handoff artifacts. GUI does not
+call this lifecycle helper yet, but this is the intended shared entry point for
+future GUI supervision.
+
 The runtime summary records PIDs, socket readiness, log paths, exit status, and
 whether termination was requested.
 The verifier handoff records the artifact root, the expected analytics root,

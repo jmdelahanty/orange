@@ -51,6 +51,7 @@ public:
     void quit_thread();
     void join_thread();
     void write_one_pkt(AVPacket* pkt); 
+    bool is_open() const { return open_; }
     bool has_queue_overflowed() const { return queue_overflowed_.load(std::memory_order_relaxed); }
     uint64_t queue_overflow_events() const { return queue_overflow_events_.load(std::memory_order_relaxed); }
     size_t queued_packets() const { return queued_packets_.load(std::memory_order_relaxed); }
@@ -70,6 +71,7 @@ private:
 
     AVFormatContext *oc = NULL;
     AVStream *vs = NULL;
+    bool open_ = false;
     int nFps = 0;
     int nPts = 0;
     std::ofstream *metadata;

@@ -489,6 +489,25 @@ Current contract-hardening status:
   `external_recorder_finalization.json`. Headless still owns process lifecycle
   and verifier execution, but the durable JSON contracts no longer live as
   headless-local literals.
+- `src/external_recorder_lifecycle.*` now owns the shared supervised lifecycle
+  wrapper for plan build, initial artifact writes, recorder process
+  start/stop, per-camera socket/session env-var handoff, runtime artifact
+  writing, and verifier-handoff writing. Headless calls this wrapper; GUI
+  supervision remains deferred until the GUI/session layer is ready to expose
+  process failures and drain/finalization state.
+- A single-camera supervised headless smoke on 2026-05-07 validated that path:
+  analytics root
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke_20260507_215347`,
+  recorder root
+  `/tmp/orange_external_recorder_supervised_2010096_20260507_215347`.
+  The recorder exited cleanly, wrote `external_recorder_session.json`,
+  `external_recorder_supervisor_plan.json`,
+  `external_recorder_supervisor_runtime.json`,
+  `external_recorder_verifier_handoff.json`, and
+  `external_recorder_finalization.json`, and passed video sanity on the
+  external MP4. That run also confirmed the need for invoking-user filesystem
+  ownership when supervised artifacts live under `/tmp`; recorder artifact
+  writes and MP4-open failure handling now cover that case.
 - `fixed.external_recorder_contract.supervise_processes = true` is the first
   opt-in headless lifecycle slice. `orange_client` starts recorder processes,
   waits for sockets, exports per-camera socket/session env vars, waits for

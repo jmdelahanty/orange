@@ -38,6 +38,7 @@
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
 #include "external_recorder_contract_utils.h"
+#include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
 #include "yolov8_det.h"
@@ -4975,45 +4976,6 @@ std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
     return gpu_ids;
 }
 
-std::string resolve_external_recorder_tool_path(
-    const HeadlessExternalRecorderContractConfig& config)
-{
-    if (!config.recorder_tool_path.empty()) {
-        return config.recorder_tool_path;
-    }
-    if (const char* env = std::getenv("ORANGE_EXTERNAL_RECORDER_TOOL"); env && *env) {
-        return env;
-    }
-
-    std::array<char, 4096> exe_path{};
-    const ssize_t size = readlink("/proc/self/exe", exe_path.data(), exe_path.size() - 1);
-    if (size > 0) {
-        exe_path[static_cast<std::size_t>(size)] = '\0';
-        const std::filesystem::path sibling =
-            std::filesystem::path(exe_path.data()).parent_path() /
-            "external_recorder_ipc_probe";
-        if (std::filesystem::exists(sibling)) {
-            return sibling.string();
-        }
-    }
-    return "external_recorder_ipc_probe";
-}
-
-bool build_external_recorder_supervisor_plan(
-    const HeadlessExternalRecorderContractConfig& config,
-    orange::external_recorder::SupervisorPlan* plan_out,
-    std::string* error_out)
-{
-    orange::external_recorder::SupervisorPlanOptions plan_options;
-    plan_options.recorder_tool_path = resolve_external_recorder_tool_path(config);
-    plan_options.default_session_id = config.session_id;
-    return orange::external_recorder::BuildSupervisorPlanFromContract(
-        build_headless_external_recorder_contract_config_json(config),
-        plan_options,
-        plan_out,
-        error_out);
-}
-
 std::filesystem::path resolve_headless_repo_relative_path(const std::string& relative_path,
                                                           const char* env_name)
 {
@@ -6790,31 +6752,24 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.recording_sink_mode == "external_ipc" &&
         options.external_recorder_contract.enabled() &&
         options.external_recorder_contract.supervise_processes;
-    orange::external_recorder::SupervisorRuntimeState external_recorder_runtime;
     orange::external_recorder::SupervisorProcessOptions external_recorder_process_options;
-    bool external_recorder_started = false;
-    const std::filesystem::path external_recorder_artifact_root =
-        options.external_recorder_contract.artifact_root.empty()
-            ? std::filesystem::path()
-            : std::filesystem::path(options.external_recorder_contract.artifact_root);
-    auto write_external_recorder_runtime_summary = [&]() {
-        if (external_recorder_artifact_root.empty()) {
-            return;
+    orange::external_recorder::SupervisedRecorderLifecycleState external_recorder_lifecycle;
+    auto stop_supervised_external_recorder = [&]() {
+        std::string stop_error;
+        const bool stopped = orange::external_recorder::StopSupervisedRecorderLifecycle(
+            &external_recorder_lifecycle,
+            &stop_error);
+        if (!external_recorder_lifecycle.last_artifact_error.empty()) {
+            std::cerr << external_recorder_lifecycle.last_artifact_error << std::endl;
+            external_recorder_lifecycle.last_artifact_error.clear();
         }
-        orange::external_recorder::SupervisorRuntimeArtifactOptions artifact_options;
-        artifact_options.artifact_root = external_recorder_artifact_root.string();
-        artifact_options.runtime = &external_recorder_runtime;
-        const orange::external_recorder::ArtifactWriteResult result =
-            orange::external_recorder::WriteExternalRecorderSupervisorRuntimeArtifact(
-                artifact_options);
-        if (!result.ok) {
-            std::cerr << result.error_message << std::endl;
+        if (!stopped) {
+            std::cerr << "External recorder supervisor shutdown failed: "
+                      << stop_error << std::endl;
         }
+        return stopped;
     };
-    auto write_external_recorder_verifier_handoff = [&]() {
-        if (external_recorder_artifact_root.empty()) {
-            return;
-        }
+    if (supervise_external_recorder) {
         const char* verifier_env = std::getenv("ORANGE_EXTERNAL_RECORDER_VERIFY_SCRIPT");
         const std::string verifier_path =
             (verifier_env && *verifier_env)
@@ -6822,94 +6777,33 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 : "scripts/verify_external_recorder_session.py";
         const std::filesystem::path analytics_root =
             std::filesystem::path(active_record_folder).parent_path();
-        orange::external_recorder::VerifierHandoffArtifactOptions handoff_options;
-        handoff_options.artifact_root = external_recorder_artifact_root.string();
-        handoff_options.analytics_root = analytics_root.string();
-        handoff_options.verifier_path = verifier_path;
-        handoff_options.require_video_sanity =
-            options.external_recorder_contract.require_video_sanity;
-        const orange::external_recorder::ArtifactWriteResult result =
-            orange::external_recorder::WriteExternalRecorderVerifierHandoffArtifact(
-                handoff_options);
-        if (!result.ok) {
-            std::cerr << result.error_message << std::endl;
-        }
-    };
-    auto stop_supervised_external_recorder = [&]() {
-        if (!external_recorder_started) {
-            return true;
-        }
-        std::string stop_error;
-        const bool stopped = orange::external_recorder::StopSupervisorProcesses(
-            &external_recorder_runtime,
-            external_recorder_process_options,
-            &stop_error);
-        external_recorder_started = false;
-        write_external_recorder_runtime_summary();
-        write_external_recorder_verifier_handoff();
-        if (!stopped) {
-            std::cerr << "External recorder supervisor shutdown failed: "
-                      << stop_error << std::endl;
-        }
-        return stopped;
-    };
-    std::vector<std::unique_ptr<ScopedEnvVarOverride>> external_recorder_env;
-    if (supervise_external_recorder) {
-        orange::external_recorder::SupervisorPlan supervisor_plan;
-        std::string supervisor_error;
-        if (!build_external_recorder_supervisor_plan(
-                options.external_recorder_contract,
-                &supervisor_plan,
-                &supervisor_error)) {
-            std::cerr << supervisor_error << std::endl;
-            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
-            return 1;
-        }
-        orange::external_recorder::SupervisedSessionArtifactOptions artifact_options;
-        artifact_options.artifact_root = external_recorder_artifact_root.string();
-        artifact_options.contract =
+        orange::external_recorder::SupervisedRecorderLifecycleOptions lifecycle_options;
+        lifecycle_options.contract =
             build_headless_external_recorder_contract_config_json(
                 options.external_recorder_contract);
-        artifact_options.supervisor_plan = &supervisor_plan;
-        const orange::external_recorder::SupervisedSessionArtifactResult artifact_result =
-            orange::external_recorder::WriteExternalRecorderSupervisedSessionArtifacts(
-                artifact_options);
-        if (!artifact_result.ok) {
-            std::cerr << artifact_result.error_message << std::endl;
-            close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
-            return 1;
-        }
-        external_recorder_env.push_back(
-            std::make_unique<ScopedEnvVarOverride>(
-                "ORANGE_EXTERNAL_RECORDER_SESSION_ID",
-                supervisor_plan.session_id.c_str()));
-        for (const orange::external_recorder::RecorderStreamPlan& stream :
-             supervisor_plan.streams) {
-            external_recorder_env.push_back(
-                std::make_unique<ScopedEnvVarOverride>(
-                    ("ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" +
-                     stream.camera_serial).c_str(),
-                    supervisor_plan.session_id.c_str()));
-            external_recorder_env.push_back(
-                std::make_unique<ScopedEnvVarOverride>(
-                    ("ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_" +
-                     stream.camera_serial).c_str(),
-                    stream.socket_path.c_str()));
-        }
-        if (!orange::external_recorder::StartSupervisorProcesses(
-                supervisor_plan,
-                external_recorder_process_options,
-                &external_recorder_runtime,
+        lifecycle_options.recorder_tool_path =
+            options.external_recorder_contract.recorder_tool_path;
+        lifecycle_options.default_session_id =
+            options.external_recorder_contract.session_id;
+        lifecycle_options.analytics_root = analytics_root.string();
+        lifecycle_options.verifier_path = verifier_path;
+        lifecycle_options.process_options = external_recorder_process_options;
+        std::string supervisor_error;
+        if (!orange::external_recorder::StartSupervisedRecorderLifecycle(
+                lifecycle_options,
+                &external_recorder_lifecycle,
                 &supervisor_error)) {
             std::cerr << supervisor_error << std::endl;
-            write_external_recorder_runtime_summary();
+            if (!external_recorder_lifecycle.last_artifact_error.empty()) {
+                std::cerr << external_recorder_lifecycle.last_artifact_error << std::endl;
+                external_recorder_lifecycle.last_artifact_error.clear();
+            }
             close_selected_cameras(selected_inventory_indices, ecams.get(), cameras_params.get());
             return 1;
         }
-        external_recorder_started = true;
         std::cout << "External recorder supervisor started."
-                  << " streams=" << supervisor_plan.streams.size()
-                  << " artifact_root=" << supervisor_plan.artifact_root
+                  << " streams=" << external_recorder_lifecycle.plan.streams.size()
+                  << " artifact_root=" << external_recorder_lifecycle.plan.artifact_root
                   << std::endl;
     }
     const std::string yolo_decimate_value =

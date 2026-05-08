@@ -250,6 +250,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/pose_worker.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
     "${SRC_DIR}/external_recorder_contract_utils.cpp"
+    "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
@@ -274,6 +275,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/recording_ingress.cpp"
     "${SRC_DIR}/external_recorder_contract_utils.cpp"
+    "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -396,6 +398,8 @@ if(BUILD_TESTING)
 
     add_executable(external_recorder_supervisor_tests
         "tools/external_recorder_supervisor_tests.cpp"
+        "${SRC_DIR}/external_recorder_contract_utils.cpp"
+        "${SRC_DIR}/external_recorder_lifecycle.cpp"
         "${SRC_DIR}/external_recorder_supervisor.cpp"
     )
     target_include_directories(external_recorder_supervisor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})

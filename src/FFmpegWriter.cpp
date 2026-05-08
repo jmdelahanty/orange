@@ -107,24 +107,29 @@ FFmpegWriter::FFmpegWriter(
     }
 
     if (avio_open(&oc->pb, szOutFilePath, AVIO_FLAG_WRITE) < 0) {
-        printf("FFMPEG: Could not open %s", szOutFilePath);
+        printf("FFMPEG: Could not open %s\n", szOutFilePath);
         return;
     }
 
     if (avformat_write_header(oc, NULL)) {
-        printf("FFMPEG: avformat_write_header error!");
+        printf("FFMPEG: avformat_write_header error!\n");
         return;
     }
+    open_ = true;
 }
 
 FFmpegWriter::~FFmpegWriter()
 {
     if (oc) {
-        write_keyframe_sidecar();
-        // Send a NULL packet to muxer for flushing any internally buffered frames
-        av_interleaved_write_frame(oc, NULL);
-        av_write_trailer(oc);
-        avio_close(oc->pb);
+        if (open_) {
+            write_keyframe_sidecar();
+            // Send a NULL packet to muxer for flushing any internally buffered frames.
+            av_interleaved_write_frame(oc, NULL);
+            av_write_trailer(oc);
+        }
+        if (oc->pb) {
+            avio_closep(&oc->pb);
+        }
         avformat_free_context(oc);
     }
 }
@@ -136,6 +141,9 @@ void FFmpegWriter::push_packet(uint8_t* pData,
                                bool is_last_packet_in_gop,
                                uint64_t gop_release_started_ns)
 {
+    if (!open_ || !vs) {
+        return;
+    }
     NVTX_ENCODE_DYNAMIC([&]() {
         return "FFmpegWriter push_packet label=" + output_label_ +
                " pts=" + std::to_string(nPts) +
@@ -232,6 +240,9 @@ void FFmpegWriter::push_packet(uint8_t* pData,
 
 void FFmpegWriter::create_thread()
 {
+    if (!open_) {
+        return;
+    }
     m_thread = std::thread(&FFmpegWriter::write_thread, this);
 #ifdef __linux__
     std::string thread_name = output_label_.empty()
@@ -258,6 +269,9 @@ void FFmpegWriter::join_thread()
 
 void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 {
+    if (!open_ || !oc) {
+        return;
+    }
     NVTX_ENCODE_DYNAMIC(std::string("FFmpegWriter av_interleaved_write_frame"));
     int ret = av_interleaved_write_frame(oc, pkt);
     if (ret < 0) {

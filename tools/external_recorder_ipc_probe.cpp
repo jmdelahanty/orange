@@ -1,5 +1,6 @@
 #include "NvEncoder/NvEncoderCuda.h"
 #include "FFmpegWriter.h"
+#include "fsuid_guard.h"
 
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -418,6 +419,8 @@ void ensure_parent_directory(const std::string& path)
     const std::filesystem::path fs_path(path);
     const std::filesystem::path parent = fs_path.parent_path();
     if (!parent.empty()) {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
         std::filesystem::create_directories(parent);
     }
 }
@@ -1193,6 +1196,11 @@ private:
             mp4_path_.c_str(),
             mp4_keyframe_path_.c_str(),
             metadata_tags);
+        if (!writer_->is_open()) {
+            failed_ = true;
+            error_message_ = "failed to open merged MP4 output: " + mp4_path_;
+            throw std::runtime_error(error_message_);
+        }
         writer_->create_thread();
     }
 
@@ -1643,7 +1651,13 @@ private:
 
         if (!options_.bitstream_out_path.empty()) {
             ensure_parent_directory(options_.bitstream_out_path);
-            bitstream_out_.open(options_.bitstream_out_path, std::ios::binary | std::ios::trunc);
+            {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                bitstream_out_.open(
+                    options_.bitstream_out_path,
+                    std::ios::binary | std::ios::trunc);
+            }
             if (!bitstream_out_) {
                 throw std::runtime_error("Failed to open bitstream output: " +
                                          options_.bitstream_out_path);
@@ -1673,11 +1687,19 @@ private:
                 options_.mp4_out_path.c_str(),
                 resolved_mp4_keyframe_path_.c_str(),
                 metadata_tags);
+            if (!mp4_writer_->is_open()) {
+                throw std::runtime_error(
+                    "Failed to open MP4 output: " + options_.mp4_out_path);
+            }
             mp4_writer_->create_thread();
         }
         if (!options_.encode_csv_path.empty()) {
             ensure_parent_directory(options_.encode_csv_path);
-            encode_csv_.open(options_.encode_csv_path, std::ios::out | std::ios::trunc);
+            {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                encode_csv_.open(options_.encode_csv_path, std::ios::out | std::ios::trunc);
+            }
             if (!encode_csv_) {
                 throw std::runtime_error("Failed to open encode CSV: " +
                                          options_.encode_csv_path);
@@ -2022,7 +2044,12 @@ void write_summary_json(const Options& options,
         return;
     }
     ensure_parent_directory(options.summary_json_path);
-    std::ofstream out(options.summary_json_path, std::ios::out | std::ios::trunc);
+    std::ofstream out;
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        out.open(options.summary_json_path, std::ios::out | std::ios::trunc);
+    }
     if (!out) {
         throw std::runtime_error("Failed to open summary JSON: " + options.summary_json_path);
     }
@@ -2226,7 +2253,11 @@ int main(int argc, char** argv)
         std::ofstream csv;
         if (!options.csv_path.empty()) {
             ensure_parent_directory(options.csv_path);
-            csv.open(options.csv_path);
+            {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                csv.open(options.csv_path);
+            }
             if (!csv) {
                 throw std::runtime_error("Failed to open CSV: " + options.csv_path);
             }
@@ -2235,7 +2266,11 @@ int main(int argc, char** argv)
         std::ofstream gop_routing_csv;
         if (!options.gop_routing_csv_path.empty()) {
             ensure_parent_directory(options.gop_routing_csv_path);
-            gop_routing_csv.open(options.gop_routing_csv_path);
+            {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                gop_routing_csv.open(options.gop_routing_csv_path);
+            }
             if (!gop_routing_csv) {
                 throw std::runtime_error("Failed to open GOP routing CSV: " +
                                          options.gop_routing_csv_path);

@@ -1,8 +1,10 @@
+#include "external_recorder_lifecycle.h"
 #include "external_recorder_supervisor.h"
 
 #include "json.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
@@ -16,7 +18,11 @@ namespace {
 using orange::external_recorder::BuildRecorderCommand;
 using orange::external_recorder::BuildSupervisorPlanFromContract;
 using orange::external_recorder::BuildSupervisorPlanFromExperimentSpec;
+using orange::external_recorder::StartSupervisedRecorderLifecycle;
 using orange::external_recorder::StartSupervisorProcesses;
+using orange::external_recorder::StopSupervisedRecorderLifecycle;
+using orange::external_recorder::SupervisedRecorderLifecycleOptions;
+using orange::external_recorder::SupervisedRecorderLifecycleState;
 using orange::external_recorder::SupervisorPlan;
 using orange::external_recorder::SupervisorProcessOptions;
 using orange::external_recorder::SupervisorRuntimeState;
@@ -238,6 +244,95 @@ void test_process_lifecycle_waits_socket_and_stops()
             "runtime summary should preserve socket readiness");
 }
 
+void test_supervised_lifecycle_writes_artifacts_and_env()
+{
+    const std::filesystem::path stub_path =
+        g_binary_dir / "external_recorder_supervisor_socket_stub";
+    require(std::filesystem::exists(stub_path), "socket stub helper is missing");
+
+    const std::string suffix = std::to_string(static_cast<long long>(getpid()));
+    const std::filesystem::path root =
+        std::filesystem::temp_directory_path() /
+        ("orange_external_recorder_lifecycle_test_" + suffix);
+    std::filesystem::remove_all(root);
+
+    nlohmann::json contract = make_contract({5}, "single_shard");
+    contract["artifact_root"] = root.string();
+    contract["session_id"] = "lifecycle_session";
+    contract["streams"]["2010096"]["socket_path"] =
+        "/tmp/orange_external_recorder_lifecycle_" + suffix + ".sock";
+    contract["streams"]["2010096"]["summary_json"] =
+        (root / "Cam2010096_external_summary.json").string();
+    contract["streams"]["2010096"]["video_sanity_json"] =
+        (root / "Cam2010096_external_video_sanity.json").string();
+    contract["streams"]["2010096"]["mp4"] =
+        (root / "Cam2010096_external.mp4").string();
+    contract["streams"]["2010096"]["gop_routing_csv"] =
+        (root / "Cam2010096_external_gop_routing.csv").string();
+
+    SupervisedRecorderLifecycleOptions options;
+    options.contract = contract;
+    options.recorder_tool_path = stub_path.string();
+    options.default_session_id = "lifecycle_session";
+    options.analytics_root = "/tmp/orange_analytics_lifecycle";
+    options.verifier_path = "/repo/scripts/verify_external_recorder_session.py";
+    options.process_options.socket_ready_timeout_ms = 2000;
+    options.process_options.graceful_shutdown_timeout_ms = 20;
+    options.process_options.terminate_timeout_ms = 2000;
+    options.process_options.allow_regular_file_socket_ready_for_tests = true;
+
+    const char* original_session_env = std::getenv("ORANGE_EXTERNAL_RECORDER_SESSION_ID");
+    const std::string original_session_value = original_session_env ? original_session_env : "";
+    const bool had_original_session = original_session_env != nullptr;
+    const char* original_socket_env =
+        std::getenv("ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_2010096");
+    const std::string original_socket_value = original_socket_env ? original_socket_env : "";
+    const bool had_original_socket = original_socket_env != nullptr;
+
+    SupervisedRecorderLifecycleState state;
+    std::string error;
+    require(StartSupervisedRecorderLifecycle(options, &state, &error),
+            "supervised lifecycle should start: " + error);
+    require(state.started, "lifecycle state should be started");
+    require(state.plan.streams.size() == 1, "lifecycle plan should have one stream");
+    require(std::filesystem::exists(root / "external_recorder_session.json"),
+            "lifecycle session artifact should exist");
+    require(std::filesystem::exists(root / "external_recorder_supervisor_plan.json"),
+            "lifecycle plan artifact should exist");
+
+    const char* session_env = std::getenv("ORANGE_EXTERNAL_RECORDER_SESSION_ID");
+    require(session_env && std::string(session_env) == "lifecycle_session",
+            "global recorder session env should be set");
+    const char* socket_env = std::getenv("ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_2010096");
+    require(socket_env &&
+                std::string(socket_env) ==
+                    contract["streams"]["2010096"]["socket_path"].get<std::string>(),
+            "per-camera socket env should be set");
+
+    require(StopSupervisedRecorderLifecycle(&state, &error),
+            "supervised lifecycle should stop: " + error);
+    require(!state.started, "lifecycle state should be stopped");
+    const char* restored_session_env = std::getenv("ORANGE_EXTERNAL_RECORDER_SESSION_ID");
+    require((had_original_session &&
+             restored_session_env &&
+             std::string(restored_session_env) == original_session_value) ||
+                (!had_original_session && restored_session_env == nullptr),
+            "global recorder session env should be restored");
+    const char* restored_socket_env =
+        std::getenv("ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_2010096");
+    require((had_original_socket &&
+             restored_socket_env &&
+             std::string(restored_socket_env) == original_socket_value) ||
+                (!had_original_socket && restored_socket_env == nullptr),
+            "per-camera socket env should be restored");
+    require(std::filesystem::exists(root / "external_recorder_supervisor_runtime.json"),
+            "runtime artifact should exist");
+    require(std::filesystem::exists(root / "external_recorder_verifier_handoff.json"),
+            "handoff artifact should exist");
+
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main(int argc, char** argv)
@@ -258,6 +353,7 @@ int main(int argc, char** argv)
         {"spec_requires_selected_stream", test_spec_requires_selected_stream},
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},
         {"process_lifecycle_waits_socket_and_stops", test_process_lifecycle_waits_socket_and_stops},
+        {"supervised_lifecycle_writes_artifacts_and_env", test_supervised_lifecycle_writes_artifacts_and_env},
     };
 
     bool ok = true;

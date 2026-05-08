@@ -1,6 +1,7 @@
 #include "external_recorder_contract_utils.h"
 
 #include "external_recorder_supervisor.h"
+#include "fsuid_guard.h"
 #include "video_capture.h"
 
 #include <algorithm>
@@ -19,6 +20,8 @@ bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& payload,
                      std::string* error_out)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::error_code ec;
     std::filesystem::create_directories(path.parent_path(), ec);
     if (ec) {

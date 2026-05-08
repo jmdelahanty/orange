@@ -1,5 +1,7 @@
 #include "external_recorder_supervisor.h"
 
+#include "fsuid_guard.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
@@ -891,24 +893,29 @@ bool StartSupervisorProcesses(const SupervisorPlan& plan,
             unlink(process.socket_path.c_str());
         }
 
-        const std::filesystem::path log_parent =
-            std::filesystem::path(process.log_path).parent_path();
-        if (!log_parent.empty()) {
-            std::error_code create_error;
-            std::filesystem::create_directories(log_parent, create_error);
-            if (create_error) {
-                return set_error(error_out,
-                                 "failed to create recorder log directory for stream " +
-                                     stream.stream_id + ": " + create_error.message());
+        int log_fd = -1;
+        int log_open_errno = 0;
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            const std::filesystem::path log_parent =
+                std::filesystem::path(process.log_path).parent_path();
+            if (!log_parent.empty()) {
+                std::error_code create_error;
+                std::filesystem::create_directories(log_parent, create_error);
+                if (create_error) {
+                    return set_error(error_out,
+                                     "failed to create recorder log directory for stream " +
+                                         stream.stream_id + ": " + create_error.message());
+                }
             }
+            log_fd = ::open(process.log_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+            log_open_errno = errno;
         }
-
-        const int log_fd =
-            ::open(process.log_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
         if (log_fd < 0) {
             return set_error(error_out,
                              "failed to open recorder log " + process.log_path +
-                                 ": " + std::strerror(errno));
+                                 ": " + std::strerror(log_open_errno));
         }
 
         const pid_t pid = fork();
