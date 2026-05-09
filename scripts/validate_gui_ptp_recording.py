@@ -17,6 +17,7 @@ import summarize_gui_validation as gui_summary
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 DEFAULT_FFMPEG = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffmpeg")
+DEFAULT_GUI_RECORDING_ROOT = Path("/home/jeremy/orange_data/exp/unsorted")
 
 
 class Reporter:
@@ -60,7 +61,33 @@ def parse_args() -> argparse.Namespace:
             "main video sanity, and YOLO timing health."
         )
     )
-    parser.add_argument("recording_folder", help="GUI recording folder, or parent containing one recording folder.")
+    parser.add_argument(
+        "recording_folder",
+        nargs="?",
+        help="GUI recording folder, or parent containing one recording folder.",
+    )
+    parser.add_argument(
+        "--latest",
+        nargs="?",
+        const=str(DEFAULT_GUI_RECORDING_ROOT),
+        metavar="ROOT",
+        help=(
+            "Validate the newest direct child of ROOT containing recording_snapshot.json. "
+            f"With no ROOT, uses {DEFAULT_GUI_RECORDING_ROOT}."
+        ),
+    )
+    parser.add_argument(
+        "--latest-complete",
+        nargs="?",
+        const=str(DEFAULT_GUI_RECORDING_ROOT),
+        metavar="ROOT",
+        help=(
+            "Validate the newest direct child of ROOT that looks like a real "
+            "recording: recording_snapshot.json plus matching main MP4, "
+            "pipeline perf CSV, and YOLO perf CSV for at least one camera. "
+            f"With no ROOT, uses {DEFAULT_GUI_RECORDING_ROOT}."
+        ),
+    )
     parser.add_argument(
         "--expected-cameras",
         default="",
@@ -136,6 +163,84 @@ def read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
+    videos = {
+        serial
+        for path in recording_folder.glob("Cam*.mp4")
+        if path.stat().st_size > 0
+        for serial in [gui_summary.camera_serial_from_video(path)]
+        if serial is not None
+    }
+    pipeline = {
+        serial
+        for path in recording_folder.glob("Cam*_pipeline_perf.csv")
+        if path.stat().st_size > 0
+        for serial in [gui_summary.camera_serial_from_pipeline_perf(path)]
+        if serial is not None
+    }
+    yolo = {
+        serial
+        for path in recording_folder.glob("Cam*_yolo_perf.csv")
+        if path.stat().st_size > 0
+        for serial in [gui_summary.camera_serial_from_yolo_perf(path)]
+        if serial is not None
+    }
+    return videos & pipeline & yolo
+
+
+def is_complete_recording_candidate(recording_folder: Path) -> bool:
+    return (
+        (recording_folder / "recording_snapshot.json").exists()
+        and bool(camera_serials_with_complete_artifacts(recording_folder))
+    )
+
+
+def resolve_latest_recording_folder(root: Path, *, require_complete: bool = False) -> Path:
+    root = root.expanduser().resolve()
+    if (root / "recording_snapshot.json").exists():
+        if require_complete and not is_complete_recording_candidate(root):
+            raise SystemExit(f"--latest-complete root is not a complete recording folder: {root}")
+        return root
+    if not root.is_dir():
+        option = "--latest-complete" if require_complete else "--latest"
+        raise SystemExit(f"{option} root is not a directory: {root}")
+
+    candidates: list[tuple[float, Path]] = []
+    for snapshot_path in root.glob("*/recording_snapshot.json"):
+        recording_folder = snapshot_path.parent
+        if require_complete and not is_complete_recording_candidate(recording_folder):
+            continue
+        try:
+            mtime = snapshot_path.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, recording_folder))
+    if not candidates:
+        if require_complete:
+            raise SystemExit(
+                "--latest-complete found no direct child with recording_snapshot.json, "
+                f"main MP4, pipeline perf CSV, and YOLO perf CSV under {root}"
+            )
+        raise SystemExit(f"--latest found no recording_snapshot.json under direct children of {root}")
+    candidates.sort(key=lambda item: (item[0], str(item[1])))
+    return candidates[-1][1]
+
+
+def resolve_requested_recording_folder(args: argparse.Namespace) -> Path:
+    latest_modes = [args.latest is not None, args.latest_complete is not None]
+    if sum(latest_modes) > 1:
+        raise SystemExit("pass only one of --latest or --latest-complete")
+    if any(latest_modes) and args.recording_folder:
+        raise SystemExit("pass either recording_folder or a latest-mode option, not both")
+    if args.latest is not None:
+        return resolve_latest_recording_folder(Path(args.latest))
+    if args.latest_complete is not None:
+        return resolve_latest_recording_folder(Path(args.latest_complete), require_complete=True)
+    if not args.recording_folder:
+        raise SystemExit("recording_folder is required unless --latest or --latest-complete is used")
+    return gui_summary.resolve_recording_folder(Path(args.recording_folder))
 
 
 def parse_expected_cameras(value: str) -> list[str]:
@@ -620,7 +725,7 @@ def print_camera_summary(camera_summary: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
-    recording_folder = gui_summary.resolve_recording_folder(Path(args.recording_folder))
+    recording_folder = resolve_requested_recording_folder(args)
     summary = gui_summary.summarize(recording_folder, args.steady_after_frame, args.ffprobe)
     snapshot = read_json(recording_folder / "recording_snapshot.json")
     ptp_sync_summary = read_json(recording_folder / "ptp_sync_summary.json")

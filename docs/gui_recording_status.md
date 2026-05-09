@@ -481,6 +481,28 @@ Validated GUI external-recorder fail-fast artifact:
   `external_recorder_supervisor_plan.json`.
 - No real full-frame `Cam*.mp4` files were written.
 
+Current GUI validation tooling:
+
+- `scripts/run_gui_aq_off_validation.sh` now prints the expected post-run
+  validator commands.
+- `scripts/validate_gui_ptp_recording.py <recording_folder>` validates one
+  explicit GUI recording artifact.
+- `scripts/validate_gui_ptp_recording.py --latest` validates the newest GUI
+  artifact attempt under `/home/jeremy/orange_data/exp/unsorted`, including
+  metadata-only/fail-fast folders. This is useful when the newest attempt might
+  be incomplete and the failure reason matters.
+- `scripts/validate_gui_ptp_recording.py --latest-complete` skips
+  metadata-only folders and selects the newest direct child with
+  `recording_snapshot.json` plus at least one camera that has a main `Cam*.mp4`,
+  `Cam*_pipeline_perf.csv`, and `Cam*_yolo_perf.csv`.
+- The validator defaults match the current GUI PTP target:
+  `sync_mode = ptp_gate`, `ptp.enabled = true`, `ptp.mode = TwoStep`,
+  `ptp_register_read_decimate = 100`, zero camera gaps/GetFrame errors/encode
+  failures, valid decoded full-frame video content, and low YOLO queue wait.
+- The next GUI run should also visually confirm the new status timers:
+  stream elapsed while streaming, active recording elapsed while recording, and
+  finalizing elapsed during drain after the recording button is paused/stopped.
+
 Current decision:
 
 - the GUI is acceptable at its current capability level for now

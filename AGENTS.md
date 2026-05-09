@@ -72,12 +72,39 @@ cd /home/jeremy/orange-gop-split-a16
 ```
 
 The launcher defaults to `100_cam4_ptp`, validates schema-4 `aq = off`,
-`temporal_aq = off`, and PTP fields, then starts the GUI. Use this to validate
+`temporal_aq = off`, PTP fields, `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, and
+the configured default detect engine, then starts the GUI. Use this to validate
 without launching the GUI:
 
 ```bash
 ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh
 ```
+
+During the next GUI validation, also check the visible timing status:
+
+- before recording: `Stream` elapsed time counts up and recording is idle
+- while recording: `Recording` elapsed time counts independently
+- after pause/stop recording while streaming remains on: `Finalizing` counts
+  drain/finalization time, then the UI should show the last recording duration
+
+After recording, validate the artifact with:
+
+```bash
+scripts/validate_gui_ptp_recording.py --latest
+```
+
+`--latest` intentionally validates the newest attempted GUI artifact, including
+metadata-only/fail-fast folders. If that lands on an incomplete attempt and the
+goal is to inspect the newest real recording, use:
+
+```bash
+scripts/validate_gui_ptp_recording.py --latest-complete
+```
+
+The validator defaults to the current production-like expectation:
+`sync_mode = ptp_gate`, `ptp.enabled = true`, `ptp.mode = TwoStep`,
+`ptp_register_read_decimate = 100`, zero camera gaps/GetFrame errors/encode
+failures, valid decoded full-frame videos, and low YOLO queue wait.
 
 Recent measured GUI PTP/AQ-off result:
 
@@ -361,7 +388,11 @@ multi-GPU split-GOP throughput.
   `ptp4l|phc2sys` processes and no `/var/run/ptp4l` socket. For future PTP
   runs, remember that auto-started host PTP should be explicitly stopped with
   `scripts/ptp_stack.sh stop` when validation is done.
-- Next check is GUI/session external-recorder supervision plus
-  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`.
+- Next operator check is a GUI PTP/AQ-off in-process recording with
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, visible stream/recording/finalizing
+  timer confirmation, and `scripts/validate_gui_ptp_recording.py --latest` or
+  `--latest-complete` artifact validation.
+- GUI/session external-recorder supervision and finalization remain the next
+  larger architecture slice after the in-process GUI path is revalidated.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

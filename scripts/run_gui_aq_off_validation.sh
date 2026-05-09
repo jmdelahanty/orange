@@ -125,6 +125,10 @@ Validation environment:
 
 After recording, validate the artifact with:
   scripts/validate_gui_ptp_recording.py <recording_folder>
+Or validate the newest artifact with:
+  scripts/validate_gui_ptp_recording.py --latest
+Or validate the newest real recording artifact with:
+  scripts/validate_gui_ptp_recording.py --latest-complete
 EOF
 
 if [[ "${ORANGE_GUI_VALIDATE_ONLY:-0}" == "1" ]]; then
