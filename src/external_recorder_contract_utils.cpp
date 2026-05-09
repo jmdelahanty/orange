@@ -192,6 +192,69 @@ bool ReadExternalRecorderContractConfigFile(const std::string& path,
     return true;
 }
 
+nlohmann::json BuildExternalRecorderRecordingControlJson(
+    const RecordingControlIntent& recording_control)
+{
+    return {
+        {"record_for_seconds", recording_control.record_for_seconds},
+        {"clip_seconds", recording_control.clip_seconds}
+    };
+}
+
+nlohmann::json BuildExternalRecorderRolloverJson(
+    const RecordingControlIntent& recording_control)
+{
+    if (recording_control.rolling_requested()) {
+        return {
+            {"requested", true},
+            {"status", "unsupported"},
+            {"implementation", "external_recorder_rolling_not_implemented"},
+            {"seamless_writer_switch", false},
+            {"records_during_rollover", false},
+            {"boundary", "gop_first_frame_id"},
+            {"clip_directory_template", "clips/clip_%06d"},
+            {"reason", kExternalRecorderRollingNotImplementedReason}
+        };
+    }
+    return {
+        {"requested", false},
+        {"status", "not_requested"},
+        {"implementation", "none"},
+        {"seamless_writer_switch", false}
+    };
+}
+
+void ApplyExternalRecorderRecordingControlToContract(
+    nlohmann::json* contract,
+    const RecordingControlIntent& recording_control)
+{
+    if (!contract || !contract->is_object()) {
+        return;
+    }
+
+    const nlohmann::json control =
+        BuildExternalRecorderRecordingControlJson(recording_control);
+    const nlohmann::json rollover =
+        BuildExternalRecorderRolloverJson(recording_control);
+    (*contract)["recording_control"] = control;
+    (*contract)["rollover"] = rollover;
+
+    if (!contract->contains("streams") || !(*contract)["streams"].is_object()) {
+        return;
+    }
+    for (auto it = (*contract)["streams"].begin();
+         it != (*contract)["streams"].end();
+         ++it) {
+        if (!it.value().is_object()) {
+            continue;
+        }
+        it.value()["recording_control"] = control;
+        if (recording_control.rolling_requested()) {
+            it.value()["rollover"] = rollover;
+        }
+    }
+}
+
 nlohmann::json MaterializeExternalRecorderContractForCameras(
     const CameraContractMaterializationInput& input)
 {
@@ -299,6 +362,9 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
     }
 
     contract["streams"] = std::move(streams);
+    ApplyExternalRecorderRecordingControlToContract(
+        &contract,
+        input.recording_control);
     return contract;
 }
 
@@ -343,17 +409,31 @@ FailFastArtifactResult WriteExternalRecorderFailFastArtifacts(
                   << error << std::endl;
     }
 
+    const nlohmann::json recording_control =
+        BuildExternalRecorderRecordingControlJson(options.recording_control);
+    const nlohmann::json rollover =
+        BuildExternalRecorderRolloverJson(options.recording_control);
     nlohmann::json session_manifest = {
         {"schema_id", "orange.recording_session"},
         {"schema_version", 1},
         {"producer", options.producer},
         {"recording_id", options.recording_id},
+        {"session_id", options.recording_id},
+        {"mode", options.recording_control.rolling_requested()
+                     ? "rolling_clips"
+                     : "single_clip"},
         {"recording_folder", options.recording_folder},
         {"status", "failed"},
         {"reason", options.reason},
+        {"recording_control", recording_control},
+        {"rollover", rollover},
         {"recording_backend", {
             {"mode", "external_ipc"},
-            {"status", "not_implemented"},
+            {"status", options.recording_control.rolling_requested()
+                           ? "unsupported"
+                           : "not_implemented"},
+            {"reason", options.reason},
+            {"rolling_supported", false},
             {"external_recorder_contract_path", result.external_recorder_contract_path},
             {"external_recorder_supervisor_plan_path", result.external_recorder_supervisor_plan_path}
         }}

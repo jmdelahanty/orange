@@ -14,6 +14,21 @@ struct SupervisorRuntimeState;
 
 inline constexpr const char* kGuiExternalRecorderNotImplementedReason =
     "external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording";
+inline constexpr const char* kExternalRecorderRollingNotImplementedReason =
+    "external recorder rolling clips are not implemented yet; use in-process recording for rolling clips or external_ipc with clip_seconds=0";
+
+struct RecordingControlIntent {
+    int record_for_seconds = 0;
+    int clip_seconds = 0;
+
+    bool enabled() const {
+        return record_for_seconds > 0 || clip_seconds > 0;
+    }
+
+    bool rolling_requested() const {
+        return clip_seconds > 0;
+    }
+};
 
 struct CameraContractMaterializationInput {
     const nlohmann::json* contract_config = nullptr;
@@ -22,6 +37,7 @@ struct CameraContractMaterializationInput {
     const CameraParams* cameras_params = nullptr;
     const CameraEachSelect* cameras_select = nullptr;
     int num_cameras = 0;
+    RecordingControlIntent recording_control;
 };
 
 struct FailFastArtifactOptions {
@@ -30,6 +46,7 @@ struct FailFastArtifactOptions {
     std::string producer = "orange_gui";
     std::string reason = kGuiExternalRecorderNotImplementedReason;
     nlohmann::json contract = nlohmann::json::object();
+    RecordingControlIntent recording_control;
 };
 
 struct FailFastArtifactResult {
@@ -89,6 +106,16 @@ nlohmann::json ExtractExternalRecorderContractObject(const nlohmann::json& paylo
 bool ReadExternalRecorderContractConfigFile(const std::string& path,
                                             nlohmann::json* contract_out,
                                             std::string* error_out = nullptr);
+
+nlohmann::json BuildExternalRecorderRecordingControlJson(
+    const RecordingControlIntent& recording_control);
+
+nlohmann::json BuildExternalRecorderRolloverJson(
+    const RecordingControlIntent& recording_control);
+
+void ApplyExternalRecorderRecordingControlToContract(
+    nlohmann::json* contract,
+    const RecordingControlIntent& recording_control);
 
 nlohmann::json MaterializeExternalRecorderContractForCameras(
     const CameraContractMaterializationInput& input);

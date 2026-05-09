@@ -766,9 +766,10 @@ nlohmann::json build_headless_recording_control_config_json(
 }
 
 nlohmann::json build_headless_external_recorder_contract_config_json(
-    const HeadlessExternalRecorderContractConfig& config)
+    const HeadlessExternalRecorderContractConfig& config,
+    const HeadlessRecordingControlConfig* recording_control = nullptr)
 {
-    return {
+    nlohmann::json contract = {
         {"schema_id", config.schema_id},
         {"schema_version", config.schema_version},
         {"mode", config.mode},
@@ -782,6 +783,15 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         {"require_gop_routing", config.require_gop_routing},
         {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
+    if (recording_control) {
+        orange::external_recorder::RecordingControlIntent intent;
+        intent.record_for_seconds = recording_control->record_for_seconds;
+        intent.clip_seconds = recording_control->clip_seconds;
+        orange::external_recorder::ApplyExternalRecorderRecordingControlToContract(
+            &contract,
+            intent);
+    }
+    return contract;
 }
 
 struct ExperimentVideoArtifactStats {
@@ -2779,6 +2789,15 @@ bool parse_headless_external_recorder_contract_json(
         config.require_gop_routing =
             contract_node.value("require_gop_routing", config.require_gop_routing);
         config.streams = contract_node.value("streams", nlohmann::json::object());
+        const nlohmann::json rollover =
+            contract_node.value("rollover", nlohmann::json::object());
+        if (rollover.is_object() && rollover.value("requested", false)) {
+            if (error_out) {
+                *error_out = context + ": " +
+                    orange::external_recorder::kExternalRecorderRollingNotImplementedReason;
+            }
+            return false;
+        }
     } else {
         if (error_out) {
             *error_out =
@@ -6318,6 +6337,16 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         return false;
     }
+    if (spec->recording_sink_mode == "external_ipc" &&
+        spec->recording_control.clip_seconds > 0) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.recording_control.clip_seconds > 0 is not supported "
+                "with fixed.recording_sink_mode=external_ipc yet: " +
+                std::string(orange::external_recorder::kExternalRecorderRollingNotImplementedReason);
+        }
+        return false;
+    }
     if (spec->external_recorder_contract.enabled() &&
         spec->recording_sink_mode != "external_ipc") {
         if (error_out) {
@@ -6661,7 +6690,8 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
                                                                      run.options.recording_control)},
                                                                 {"external_recorder_contract",
                                                                  build_headless_external_recorder_contract_config_json(
-                                                                     run.options.external_recorder_contract)},
+                                                                     run.options.external_recorder_contract,
+                                                                     &run.options.recording_control)},
                                                             };
                                                             if (spec.has_recording_override) {
                                                                 run.config_json["recording"] =
@@ -7141,7 +7171,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         orange::external_recorder::SupervisedRecorderLifecycleOptions lifecycle_options;
         lifecycle_options.contract =
             build_headless_external_recorder_contract_config_json(
-                options.external_recorder_contract);
+                options.external_recorder_contract,
+                &options.recording_control);
         lifecycle_options.recorder_tool_path =
             options.external_recorder_contract.recorder_tool_path;
         lifecycle_options.default_session_id =

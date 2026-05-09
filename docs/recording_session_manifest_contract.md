@@ -15,7 +15,9 @@ Current implementation rule:
 - `clip_seconds > 0` is implemented for headless `fixed.recording_control`
   with seamless GOP-boundary writer switching.
 - GUI/session rolling supervision and external-recorder rolling supervision are
-  still future work.
+  still future work. External IPC contracts and GUI fail-fast manifests carry
+  `recording_control` and `rollover` metadata, but external IPC rejects
+  `clip_seconds > 0` until the recorder owns GOP-boundary rollover.
 
 The current headless rolling implementation keeps acquisition and recording
 active during clip rollover:

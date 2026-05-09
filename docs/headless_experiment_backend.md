@@ -339,6 +339,16 @@ in `runs.json` / `runs.csv`; `scripts/verify_external_recorder_session.py`
 validates those artifacts after the recorder process finalizes. The schema is
 documented in `docs/external_recorder_contract.md`.
 
+The external IPC contract now also carries the session `recording_control`
+intent and a `rollover` object. Timed single-video external IPC runs can use
+`record_for_seconds > 0` with `clip_seconds = 0`. External IPC rolling clips
+are intentionally rejected for now: `fixed.recording_sink_mode = "external_ipc"`
+with `fixed.recording_control.clip_seconds > 0` fails before camera start with
+`external recorder rolling clips are not implemented yet; use in-process
+recording for rolling clips or external_ipc with clip_seconds=0`. This keeps
+the headless supervised path from pretending to produce seamless external
+rollover before the recorder owns GOP-boundary writer switching.
+
 For control-plane checks that should not touch cameras, TensorRT, sockets, or
 NVENC, use the dry-run supervisor-plan CLI:
 

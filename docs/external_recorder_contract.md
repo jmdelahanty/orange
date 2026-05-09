@@ -154,6 +154,16 @@ This contract covers the current diagnostic external recorder path:
     "require_video_sanity": true,
     "require_merged_mp4": true,
     "require_gop_routing": true,
+    "recording_control": {
+      "record_for_seconds": 0,
+      "clip_seconds": 0
+    },
+    "rollover": {
+      "requested": false,
+      "status": "not_requested",
+      "implementation": "none",
+      "seamless_writer_switch": false
+    },
     "streams": {
       "2010095": {
         "stream_id": "2010095",
@@ -166,6 +176,10 @@ This contract covers the current diagnostic external recorder path:
         "video_sanity_json": "/tmp/.../Cam2010095_external_video_sanity.json",
         "mp4": "/tmp/.../Cam2010095_external.mp4",
         "gop_routing_csv": "/tmp/.../Cam2010095_external_gop_routing.csv",
+        "recording_control": {
+          "record_for_seconds": 0,
+          "clip_seconds": 0
+        },
         "encode_fps": 100,
         "encode_max_fps": 0,
         "encode_queue_depth": 32,
@@ -206,6 +220,15 @@ Current semantics:
 - `encode_queue_depth`, `prewarm_*`, codec, GOP, and bitrate fields are
   optional launch-plan fields. If a stream omits them, the dry-run supervisor
   plan tool fills in production-like defaults.
+- `recording_control` is copied from the Orange session/spec intent so external
+  consumers can distinguish continuous, timed, and future rolling sessions.
+- `rollover.requested = true` is currently unsupported for external IPC. Specs
+  with `fixed.recording_sink_mode = "external_ipc"` and
+  `fixed.recording_control.clip_seconds > 0` fail fast before camera start with
+  the reason `external recorder rolling clips are not implemented yet; use
+  in-process recording for rolling clips or external_ipc with clip_seconds=0`.
+  Until the recorder owns GOP-boundary rollover, use in-process recording for
+  rolling clips or keep `clip_seconds = 0` for external IPC.
 
 ## Supervisor Plan Dry Run
 

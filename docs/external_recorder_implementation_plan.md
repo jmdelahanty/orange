@@ -477,9 +477,11 @@ Current contract-hardening status:
   routing before any camera/GUI work is required.
 - `src/external_recorder_contract_utils.*` now owns shared contract extraction,
   per-camera materialization, supervisor-plan artifact generation, and the
-  metadata-only fail-fast `recording_session.json` shape. The GUI external
-  recorder path uses this helper, and it is linked into `orange_client` for the
-  next headless/session consolidation slice.
+  metadata-only fail-fast `recording_session.json` shape. The helper also
+  annotates contracts with `recording_control` and current `rollover` intent so
+  GUI/session and headless supervised paths describe the same backend contract.
+  The GUI external recorder path uses this helper, and it is linked into
+  `orange_client` for the next headless/session consolidation slice.
 - The supervised headless path now also uses that helper for the provisional
   `external_recorder_session.json` and `external_recorder_supervisor_plan.json`
   writes, and its parser uses the same wrapper-object extraction rule as the
@@ -529,6 +531,11 @@ Current contract-hardening status:
 - In supervised headless mode, `orange_client` now writes provisional
   manifests, runs per-stream external MP4 video sanity, runs the session
   verifier, and records the result in `external_recorder_finalization.json`.
+- External IPC rolling clips are not implemented yet. Headless specs with
+  `fixed.recording_sink_mode = "external_ipc"` and
+  `fixed.recording_control.clip_seconds > 0` fail fast before camera start;
+  contracts carry `rollover.status = "unsupported"` for that intent until the
+  recorder owns GOP-boundary writer switching.
 - The smoke runners generate `external_recorder_session.json`, inject the same
   contract into the temporary experiment spec, and run the verifier
   automatically.
