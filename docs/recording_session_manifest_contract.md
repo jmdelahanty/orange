@@ -313,6 +313,22 @@ Latest longer validation:
   `0` preprocess drops
 - `scripts/verify_timed_recording.py` passed
 
+Latest two-camera PTP validation:
+
+- artifact:
+  `/tmp/orange_two_camera_ptp_rolling_bt2/2010095_2010096_headless_ptp_seamless_rolling_bt2`
+- checked-in spec:
+  `experiment_specs/2010095_2010096_headless_ptp_rolling_clip_smoke_a16.json`
+- `record_for_seconds = 18`, `clip_seconds = 6`, stream duration `24 s`,
+  warmup `2 s`, `ptp_register_read_decimate = 100`
+- recording duration is anchored at the first observed `recording_frame_id`;
+  this avoids under-recording during the PTP gate startup countdown
+- both cameras wrote three clip directories, continuous frames `1-1801`, total
+  ffprobe duration `18.010 s`, and video-content status `pass`
+- camera health: `0` frame-ID gaps, `0` GetFrame errors, `0` encode failures,
+  `0` preprocess drops
+- `scripts/verify_timed_recording.py` passed for both cameras
+
 ## Remaining Work
 
 - Add GUI/session controls and validation for rolling clips.

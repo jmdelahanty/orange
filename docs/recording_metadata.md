@@ -713,6 +713,9 @@ Notes:
   keyframe frame `0`.
 - Rolling clip metadata keeps `frame_id` session-continuous across clips, while
   each MP4 uses a clip-local timeline starting at zero.
+- For `fixed.recording_control`, the recording-duration clock is anchored to
+  the first observed recording frame, not camera-thread launch. This keeps PTP
+  gate startup countdown time from shortening the requested video duration.
 - GOP-boundary alignment can make individual clip durations vary by up to one
   GOP; consumers should use continuous `frame_id` coverage and total ffprobe
   duration for whole-recording validation.

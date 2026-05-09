@@ -158,7 +158,10 @@ stopped and drained:
 
 Current behavior:
 
-- recording starts at the normal headless recording start time
+- recording is armed at the normal headless recording start time
+- for `fixed.recording_control`, the duration clock starts when the first
+  `recording_frame_id` is observed, so a PTP gate startup countdown does not
+  consume requested recording time before frames arrive
 - after `record_for_seconds`, the runner requests the same explicit recording
   drain used by the GUI stop-recording path
 - acquisition continues until the overall `duration_s + warmup_s` run deadline
@@ -243,6 +246,26 @@ Longer seamless rolling validation:
 - camera result reported `0` frame-ID gaps, `0` GetFrame errors,
   `0` preprocess drops, and `0` encode failures
 - `scripts/verify_timed_recording.py` passed
+
+Two-camera PTP seamless rolling validation:
+
+- spec:
+  `experiment_specs/2010095_2010096_headless_ptp_rolling_clip_smoke_a16.json`
+- artifact:
+  `/tmp/orange_two_camera_ptp_rolling_bt2/2010095_2010096_headless_ptp_seamless_rolling_bt2`
+- stream requested `24 s` plus `2 s` warmup, recording requested `18 s`, clip
+  interval `6 s`, `ptp_register_read_decimate = 100`
+- `recording_session.json` anchored `recording.started_at_elapsed_s` at first
+  recorded frame after the PTP gate countdown, then stopped at
+  `18.006 s` of recording-clock time
+- both cameras wrote three clip folders with continuous frames `1-1801`, total
+  ffprobe duration `18.010 s`, and `0` per-clip metadata gaps
+- `summary.json` reported `pass_runs = 1`, `fail_runs = 0`
+- camera result reported `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures, and video-content status `pass`
+- steady YOLO `acquisition_to_detect_done_ms` p95 after frame 50 was
+  `3.655 ms` for `2010095` and `3.927 ms` for `2010096`
+- `scripts/verify_timed_recording.py` passed for both cameras
 
 `fixed.frame_ipc` is an explicit testability knob for the same shared-memory
 frame IPC path used by the GUI:

@@ -7248,6 +7248,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::string recording_stop_requested_at_utc;
     std::string recording_drained_at_utc;
     std::string recording_stop_reason;
+    bool recording_clock_anchored = !options.recording_control.enabled();
     bool recording_auto_stop_requested = false;
     bool recording_drain_completed = false;
     std::vector<HeadlessRollingClipRuntime> rolling_clips;
@@ -7283,6 +7284,37 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             return 0.0;
         }
         return std::chrono::duration<double>(finish - start).count();
+    };
+    auto anchor_recording_clock_if_ready = [&]() {
+        if (!enable_recording ||
+            !recording_armed ||
+            recording_clock_anchored ||
+            !options.recording_control.enabled()) {
+            return false;
+        }
+        const uint64_t first_recording_frame_id =
+            camera_control.latest_recording_frame_id.load(std::memory_order_relaxed);
+        if (first_recording_frame_id == 0) {
+            return false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        const std::string now_utc = get_current_utc_timestamp();
+        recording_start_time = now;
+        recording_started_at_utc = now_utc;
+        recording_clock_anchored = true;
+        if (rolling_clip_recording &&
+            active_rolling_clip.active &&
+            !active_rolling_clip.finalized &&
+            active_rolling_clip.clip_index == 0) {
+            active_rolling_clip.started_time = now;
+            active_rolling_clip.started_at_utc = now_utc;
+        }
+        std::cout << "Local headless timed recording clock started."
+                  << " first_recording_frame_id=" << first_recording_frame_id
+                  << " folder=" << options.record_folder
+                  << std::endl;
+        return true;
     };
     auto begin_rolling_clip = [&](const int clip_index,
                                   const std::string& start_reason,
@@ -7395,8 +7427,13 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     };
 
     if (enable_recording && recording_armed) {
-        recording_start_time = run_start_time;
-        recording_started_at_utc = get_current_utc_timestamp();
+        if (options.recording_control.enabled()) {
+            recording_start_time = {};
+            recording_started_at_utc.clear();
+        } else {
+            recording_start_time = run_start_time;
+            recording_started_at_utc = get_current_utc_timestamp();
+        }
         if (rolling_clip_recording) {
             begin_rolling_clip(
                 0,
@@ -7430,12 +7467,19 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             camera_control.stop_record = false;
             camera_control.record_video = true;
             recording_armed = true;
-            recording_start_time = now;
-            recording_started_at_utc = now_utc;
+            if (options.recording_control.enabled()) {
+                recording_start_time = {};
+                recording_started_at_utc.clear();
+                recording_clock_anchored = false;
+            } else {
+                recording_start_time = now;
+                recording_started_at_utc = now_utc;
+            }
             std::cout << "Local headless recording armed after warmup."
                       << " folder=" << options.record_folder
                       << std::endl;
         }
+        anchor_recording_clock_if_ready();
         if (enable_recording && rolling_clip_recording) {
             complete_pending_rollover_if_ready();
         }
@@ -7498,6 +7542,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         } else if (enable_recording &&
                    rolling_clip_recording &&
                    recording_armed &&
+                   recording_start_time.time_since_epoch().count() > 0 &&
                    !recording_auto_stop_requested &&
                    active_rolling_clip.active &&
                    !pending_next_rolling_clip.pending_next_clip &&

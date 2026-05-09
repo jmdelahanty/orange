@@ -63,6 +63,16 @@ Refs:
     continuous frames `1-3600`, and total ffprobe duration `36.000 s`.
 - Both runs passed with `0` camera frame-ID gaps, `0` GetFrame errors,
   `0` encode failures, and `0` preprocess drops.
+- A two-camera PTP real-YOLO rolling smoke also passed after anchoring the
+  timed-recording clock to first recorded frame instead of camera-thread launch:
+  `/tmp/orange_two_camera_ptp_rolling_bt2/2010095_2010096_headless_ptp_seamless_rolling_bt2`.
+  It used `record_for_seconds = 18`, `clip_seconds = 6`,
+  `ptp_register_read_decimate = 100`, wrote three clip folders per camera,
+  covered frames `1-1801` continuously on both cameras, and produced
+  `18.010 s` of total ffprobe video per camera.
+- The first PTP attempt before this timing-anchor fix produced continuous
+  frames but only `15.000 s` of media for an `18 s` request because the PTP
+  gate startup countdown consumed part of the wall-clock recording timer.
 - `scripts/verify_timed_recording.py` now checks the seamless rollover
   contract, per-clip manifests, cross-clip `recording_frame_id` continuity, and
   keyframe frame `0` at the start of each clip.
@@ -76,9 +86,10 @@ Refs:
 ## Remaining Gap
 
 The headless in-process full-frame encoder path now satisfies the first
-"without intentional drops between clips" requirement in one-camera smoke tests.
-Remaining production gaps are GUI/session adoption, external-recorder adoption,
-multi-camera PTP rolling validation, failure policy, and long soak testing.
+"without intentional drops between clips" requirement in one-camera smokes and
+a short two-camera PTP real-YOLO smoke. Remaining production gaps are
+GUI/session adoption, external-recorder adoption, broader failure policy, and
+long soak testing.
 
 ## Implementation Plan
 
