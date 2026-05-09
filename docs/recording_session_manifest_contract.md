@@ -16,8 +16,9 @@ Current implementation rule:
   with seamless GOP-boundary writer switching.
 - External IPC rolling is implemented for supervised headless diagnostic
   recorder runs. The external recorder owns GOP-boundary writer rotation and
-  writes its clip list in `external_recorder_summary.json`; the local Orange
-  `recording_session.json` does not yet mirror those external clips.
+  writes its clip list in `external_recorder_summary.json`; after recorder
+  finalization, Orange mirrors that clip list into the shared analytics
+  `recording_session.json`.
 - GUI/session rolling supervision is still future work. GUI fail-fast manifests
   carry `recording_control` and `rollover` metadata, but the GUI path refuses
   external recorder supervision until lifecycle, drain, and finalization state
@@ -38,10 +39,11 @@ The manifest records this with `rollover.implementation =
 
 The external IPC rolling recorder records the same high-level intent with
 `rollover.implementation =
-"external_recorder_gop_boundary_writer_rotation"`. Its current clip outputs are
-described by `external_recorder_summary.json` rather than the Orange
-`recording_session.json`; each clip still carries continuous
-`recording_frame_id` metadata and clip-local MP4 timestamps.
+"external_recorder_gop_boundary_writer_rotation"`. The external summaries remain
+the recorder's per-stream truth, and the analytics `recording_session.json`
+mirrors those summaries into one multi-camera `rolling_clips` manifest. Each
+clip carries continuous `recording_frame_id` metadata and clip-local MP4
+timestamps.
 
 ## Single-Video Layout
 
@@ -381,11 +383,11 @@ Latest two-camera PTP validation:
 
 Latest supervised external IPC rolling validation:
 
-- equivalent checked-in spec:
+- one-camera checked-in spec:
   `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`
-- artifact:
+- one-camera artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`
-- recorder artifact:
+- one-camera recorder artifact:
   `/tmp/orange_external_recorder_rolling_2010096`
 - `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps = 100`,
   `routing_policy = "gop_modulo"`, shard GPUs `5,6`
@@ -394,10 +396,22 @@ Latest supervised external IPC rolling validation:
   `601-602`
 - merged MP4 video sanity and `scripts/verify_external_recorder_session.py`
   passed
+- two-camera PTP checked-in spec:
+  `experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16.json`
+- latest two-camera PTP recorder artifact:
+  `/tmp/orange_external_recorder_ptp_rolling_20260509_ptp_rolling_bridge_28478`
+- latest two-camera PTP analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_bridge_20260509_ptp_rolling_bridge_28478`
+- both cameras received/ACKed/encoded `601` frames with `0` encode drops, four
+  rolling clips, and merged MP4 video sanity pass
+- analytics `recording_session.json` reported `mode = "rolling_clips"`,
+  `producer = "orange_headless_external_ipc"`, `recording_backend.mode =
+  "external_ipc"`, and external clip paths for both cameras; the external
+  verifier passed against this shared manifest
 
 ## Remaining Work
 
 - Add GUI/session controls and validation for rolling clips.
-- Add external-recorder rolling supervision using the same manifest contract.
+- Carry external-recorder rolling supervision into the GUI/session lifecycle.
 - Add session-level frame/status CSVs for easier downstream indexing across
   many clips.

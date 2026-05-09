@@ -233,6 +233,11 @@ Current semantics:
   `rollover.implementation = "external_recorder_gop_boundary_writer_rotation"`.
   It writes the merged session MP4 plus per-clip outputs under
   `clips/clip_%06d/`.
+- After supervised headless recorder finalization, Orange mirrors the external
+  clip list into the analytics `recording_session.json` using the shared
+  `orange.recording_session` contract. The manifest records
+  `recording_backend.mode = "external_ipc"` and per-camera clip video,
+  metadata, and keyframe paths under `clips[].camera_artifacts`.
 - Rolling clip boundaries are aligned upward to whole GOPs. For example,
   `clip_seconds = 2`, `encode_fps = 100`, and `gop = 25` produce 200-frame
   clip spans.
@@ -397,6 +402,10 @@ Verifier checks:
 - merged output is finalized for multi-shard runs
 - MP4 exists, has a valid video stream, and passes video sanity when required
 - GOP routing CSV has one data row per received frame
+- for rolling runs, analytics `recording_session.json` is `mode =
+  "rolling_clips"`, uses `producer = "orange_headless_external_ipc"`, records
+  `recording_backend.mode = "external_ipc"`, and its per-camera clip artifacts
+  match the verified external summaries
 
 Smoke runners:
 

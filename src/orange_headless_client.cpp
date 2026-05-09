@@ -11,6 +11,8 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <iterator>
+#include <map>
 #include <memory>
 #include <limits>
 #include <mutex>
@@ -5305,6 +5307,303 @@ bool run_supervised_external_recorder_verifier(
     return ok;
 }
 
+std::string format_external_recorder_clip_id(const int clip_index)
+{
+    std::ostringstream out;
+    out << "clip_" << std::setw(6) << std::setfill('0') << clip_index;
+    return out.str();
+}
+
+bool write_supervised_external_recorder_recording_session_manifest(
+    const ExperimentRunPlan& run,
+    nlohmann::json* bridge_out,
+    std::string* error_out)
+{
+    const HeadlessExternalRecorderContractConfig& config =
+        run.options.external_recorder_contract;
+    if (!config.enabled() ||
+        !config.supervise_processes ||
+        run.options.recording_sink_mode != "external_ipc" ||
+        run.options.recording_control.record_for_seconds <= 0 ||
+        run.options.recording_control.clip_seconds <= 0) {
+        return true;
+    }
+    if (!config.streams.is_object()) {
+        if (error_out) {
+            *error_out = "external recorder rolling manifest bridge requires stream contracts";
+        }
+        return false;
+    }
+
+    const std::filesystem::path run_folder(run.recording_folder);
+    const nlohmann::json local_manifest =
+        read_json_file_best_effort(run_folder / "recording_session.json");
+    const nlohmann::json local_stream =
+        local_manifest.value("stream", nlohmann::json::object());
+    const nlohmann::json local_recording =
+        local_manifest.value("recording", nlohmann::json::object());
+
+    std::map<int, orange::session::RollingClipManifestOptions> clips_by_index;
+    std::vector<std::string> camera_serials;
+    nlohmann::json summary_paths = nlohmann::json::object();
+    nlohmann::json merged_mp4s = nlohmann::json::object();
+    bool all_clips_ok = true;
+
+    for (auto it = config.streams.begin(); it != config.streams.end(); ++it) {
+        if (!it.value().is_object()) {
+            continue;
+        }
+        const nlohmann::json& stream = it.value();
+        const std::string serial =
+            stream.value("camera_serial", stream.value("stream_id", it.key()));
+        const std::string summary_path = stream.value("summary_json", std::string());
+        if (serial.empty() || summary_path.empty()) {
+            if (error_out) {
+                *error_out = "external recorder rolling manifest bridge missing serial or summary_json";
+            }
+            return false;
+        }
+
+        nlohmann::json summary;
+        std::string read_error;
+        if (!read_json_file(summary_path, &summary, &read_error)) {
+            if (error_out) {
+                *error_out = read_error;
+            }
+            return false;
+        }
+        const nlohmann::json rolling =
+            summary.value("rolling_output", nlohmann::json::object());
+        if (!rolling.is_object() || !rolling.value("enabled", false)) {
+            if (error_out) {
+                *error_out =
+                    "external recorder summary missing enabled rolling_output for camera " +
+                    serial;
+            }
+            return false;
+        }
+        const nlohmann::json summary_clips =
+            rolling.value("clips", nlohmann::json::array());
+        if (!summary_clips.is_array() || summary_clips.empty()) {
+            if (error_out) {
+                *error_out = "external recorder rolling_output has no clips for camera " + serial;
+            }
+            return false;
+        }
+
+        camera_serials.push_back(serial);
+        summary_paths[serial] = summary_path;
+        merged_mp4s[serial] = stream.value("mp4", std::string());
+        const int fps = std::max(1, summary.value("fps", stream.value("encode_fps", 100)));
+
+        for (const nlohmann::json& clip : summary_clips) {
+            if (!clip.is_object()) {
+                continue;
+            }
+            const int clip_index = clip.value("clip_index", -1);
+            if (clip_index < 0) {
+                if (error_out) {
+                    *error_out = "external recorder rolling clip missing clip_index for camera " + serial;
+                }
+                return false;
+            }
+            orange::session::RollingClipManifestOptions& manifest_clip =
+                clips_by_index[clip_index];
+            if (manifest_clip.clip_id.empty()) {
+                manifest_clip.producer = "orange_headless_external_ipc";
+                manifest_clip.session_id = run.run_id;
+                manifest_clip.clip_index = clip_index;
+                manifest_clip.clip_id =
+                    clip.value("clip_id", format_external_recorder_clip_id(clip_index));
+                manifest_clip.directory = clip.value("directory", std::string());
+                manifest_clip.recording_folder = manifest_clip.directory;
+                manifest_clip.status = "completed";
+                manifest_clip.drain_completed = true;
+            }
+
+            const bool clip_failed = clip.value("failed", false);
+            all_clips_ok = all_clips_ok && !clip_failed;
+            if (clip_failed) {
+                manifest_clip.status = "failed";
+                manifest_clip.drain_completed = false;
+            }
+
+            const uint64_t frame_count = clip.value("frame_count", 0ULL);
+            const uint64_t first_frame = clip.value("first_recording_frame_id", 0ULL);
+            const uint64_t last_frame = clip.value("last_recording_frame_id", 0ULL);
+            if (first_frame > 0 &&
+                (manifest_clip.first_recording_frame_id == 0 ||
+                 first_frame < manifest_clip.first_recording_frame_id)) {
+                manifest_clip.first_recording_frame_id = first_frame;
+            }
+            if (last_frame > manifest_clip.last_recording_frame_id) {
+                manifest_clip.last_recording_frame_id = last_frame;
+            }
+            manifest_clip.actual_duration_s =
+                std::max(
+                    manifest_clip.actual_duration_s,
+                    static_cast<double>(frame_count) / static_cast<double>(fps));
+
+            manifest_clip.cameras.push_back({
+                serial,
+                clip.value("mp4", std::string()),
+                clip.value("metadata", std::string()),
+                clip.value("keyframes", std::string()),
+                frame_count,
+                first_frame,
+                last_frame,
+                0
+            });
+        }
+    }
+
+    if (clips_by_index.empty()) {
+        if (error_out) {
+            *error_out = "external recorder rolling manifest bridge found no clips";
+        }
+        return false;
+    }
+    std::sort(camera_serials.begin(), camera_serials.end());
+    camera_serials.erase(
+        std::unique(camera_serials.begin(), camera_serials.end()),
+        camera_serials.end());
+
+    std::vector<orange::session::RollingClipManifestOptions> clip_options;
+    clip_options.reserve(clips_by_index.size());
+    double sum_clip_actual_duration_s = 0.0;
+    for (auto it = clips_by_index.begin(); it != clips_by_index.end(); ++it) {
+        orange::session::RollingClipManifestOptions clip = std::move(it->second);
+        const bool final_clip = std::next(it) == clips_by_index.end();
+        clip.start_reason = it == clips_by_index.begin() ? "recording_start" : "rollover";
+        clip.stop_reason =
+            final_clip
+                ? local_recording.value("stop_reason", std::string("record_for_seconds_elapsed"))
+                : "clip_seconds_elapsed";
+        clip.final_clip = final_clip;
+        clip.timed_stop_hit = final_clip && clip.stop_reason == "record_for_seconds_elapsed";
+        clip.requested_duration_s =
+            final_clip
+                ? clip.actual_duration_s
+                : static_cast<double>(run.options.recording_control.clip_seconds);
+        clip.rollover_request_id = 0;
+        if (!final_clip) {
+            clip.rollover_at_recording_frame_id =
+                std::next(it)->second.first_recording_frame_id;
+        } else if (it != clips_by_index.begin()) {
+            clip.rollover_at_recording_frame_id = clip.first_recording_frame_id;
+        }
+        clip.pending_next_clip = false;
+        sum_clip_actual_duration_s += clip.actual_duration_s;
+
+        std::string clip_manifest_error;
+        if (!orange::session::write_recording_session_manifest(
+                (std::filesystem::path(clip.recording_folder) /
+                 "clip_manifest.json").string(),
+                orange::session::build_recording_clip_manifest(clip),
+                &clip_manifest_error)) {
+            if (error_out) {
+                *error_out = clip_manifest_error;
+            }
+            return false;
+        }
+        clip_options.push_back(std::move(clip));
+    }
+
+    orange::session::RollingRecordingSessionManifestOptions manifest_options;
+    manifest_options.producer = "orange_headless_external_ipc";
+    manifest_options.session_id = run.run_id;
+    manifest_options.created_at_utc =
+        local_manifest.value("created_at_utc", std::string());
+    manifest_options.updated_at_utc = get_current_utc_timestamp();
+    manifest_options.recording_folder = run.recording_folder;
+    manifest_options.status = all_clips_ok ? "completed" : "incomplete";
+    manifest_options.requested_stream_duration_seconds = run.options.duration_seconds;
+    manifest_options.stream_start_delay_seconds =
+        local_stream.value("stream_start_delay_seconds", run.options.stream_start_delay_seconds);
+    manifest_options.stream_started_at_utc =
+        local_stream.value("started_at_utc", std::string());
+    manifest_options.stream_finished_at_utc =
+        local_stream.value("finished_at_utc", std::string());
+    manifest_options.stream_actual_elapsed_s =
+        local_stream.value("actual_elapsed_s", 0.0);
+    manifest_options.stream_interrupted =
+        local_stream.value("interrupted", false);
+    manifest_options.recording_control = {
+        run.options.recording_control.record_for_seconds,
+        run.options.recording_control.clip_seconds
+    };
+    manifest_options.recording_started =
+        local_recording.value("started", true);
+    manifest_options.recording_started_at_utc =
+        local_recording.value("started_at_utc", std::string());
+    manifest_options.recording_started_at_elapsed_s =
+        local_recording.value("started_at_elapsed_s", 0.0);
+    manifest_options.recording_stop_requested =
+        local_recording.value("stop_requested", true);
+    manifest_options.recording_stop_requested_at_utc =
+        local_recording.value("stop_requested_at_utc", std::string());
+    manifest_options.recording_stop_requested_at_elapsed_s =
+        local_recording.value("stop_requested_at_elapsed_s", 0.0);
+    manifest_options.recording_stop_reason =
+        local_recording.value("stop_reason", std::string("external_recorder_finalized"));
+    manifest_options.recording_drain_completed =
+        local_recording.value("drain_completed", true);
+    manifest_options.recording_drained_at_utc =
+        local_recording.value("drained_at_utc", std::string());
+    manifest_options.recording_drained_at_elapsed_s =
+        local_recording.value("drained_at_elapsed_s", 0.0);
+    manifest_options.actual_recording_duration_s = sum_clip_actual_duration_s;
+    manifest_options.drain_duration_s =
+        local_recording.value("drain_duration_s", 0.0);
+    manifest_options.sum_clip_actual_duration_s = sum_clip_actual_duration_s;
+    manifest_options.rollover_implementation =
+        orange::external_recorder::kExternalRecorderRollingImplementation;
+    manifest_options.rollover_next_writer_preopened = false;
+    manifest_options.recording_backend = {
+        {"mode", "external_ipc"},
+        {"status", all_clips_ok ? "completed" : "incomplete"},
+        {"artifact_root", config.artifact_root},
+        {"source", "external_recorder_summary"},
+        {"summary_json", summary_paths},
+        {"merged_mp4", merged_mp4s},
+        {"external_recorder_session_json",
+         (std::filesystem::path(config.artifact_root) /
+          "external_recorder_session.json").string()},
+        {"external_recorder_finalization_json",
+         (std::filesystem::path(config.artifact_root) /
+          "external_recorder_finalization.json").string()}
+    };
+    manifest_options.camera_serials = std::move(camera_serials);
+    manifest_options.clips = std::move(clip_options);
+
+    const nlohmann::json manifest =
+        orange::session::build_rolling_clip_recording_session_manifest(manifest_options);
+    const std::filesystem::path manifest_path = run_folder / "recording_session.json";
+    std::string manifest_error;
+    if (!orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            manifest,
+            &manifest_error)) {
+        if (error_out) {
+            *error_out = manifest_error;
+        }
+        return false;
+    }
+
+    if (bridge_out) {
+        *bridge_out = {
+            {"pass", all_clips_ok},
+            {"path", manifest_path.string()},
+            {"mode", "rolling_clips"},
+            {"producer", "orange_headless_external_ipc"},
+            {"clip_count", manifest_options.clips.size()},
+            {"camera_count", manifest_options.camera_serials.size()},
+            {"summary_json", summary_paths}
+        };
+    }
+    return all_clips_ok;
+}
+
 bool finalize_supervised_external_recorder_run(
     const ExperimentRunPlan& run,
     const std::filesystem::path& experiment_root,
@@ -5325,11 +5624,18 @@ bool finalize_supervised_external_recorder_run(
     nlohmann::json finalization =
         orange::external_recorder::BuildExternalRecorderFinalizationManifest(
             finalization_options);
+    nlohmann::json recording_session_bridge;
 
     bool ok = run_supervised_external_recorder_video_sanity(
         config,
         &finalization,
         error_out);
+    if (ok) {
+        ok = write_supervised_external_recorder_recording_session_manifest(
+            run,
+            &recording_session_bridge,
+            error_out);
+    }
     if (ok) {
         ok = run_supervised_external_recorder_verifier(
             config,
@@ -5352,6 +5658,9 @@ bool finalize_supervised_external_recorder_run(
     finalization =
         orange::external_recorder::BuildExternalRecorderFinalizationManifest(
             finalization_options);
+    if (!recording_session_bridge.is_null()) {
+        finalization["recording_session_manifest"] = recording_session_bridge;
+    }
 
     const orange::external_recorder::ArtifactWriteResult write_result =
         orange::external_recorder::WriteExternalRecorderFinalizationArtifact(

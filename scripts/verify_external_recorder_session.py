@@ -229,7 +229,7 @@ def verify_rolling_output(
     contract: dict[str, Any],
     frames_encoded: int,
     ffprobe: str,
-) -> int:
+) -> list[dict[str, Any]]:
     recording_control = recording_control_for(contract, stream)
     clip_seconds = as_int(recording_control.get("clip_seconds", 0), "recording_control.clip_seconds")
     record_for_seconds = as_int(
@@ -237,7 +237,7 @@ def verify_rolling_output(
         "recording_control.record_for_seconds",
     )
     if clip_seconds <= 0:
-        return 0
+        return []
     require(record_for_seconds > 0, f"rolling output for {serial} requires record_for_seconds > 0")
 
     rolling = summary.get("rolling_output")
@@ -256,6 +256,7 @@ def verify_rolling_output(
 
     expected_next_frame = 1
     total_clip_frames = 0
+    verified_clips: list[dict[str, Any]] = []
     for expected_index, clip in enumerate(clips):
         require(isinstance(clip, dict), f"rolling clip {expected_index} is not an object for {serial}")
         require(clip.get("clip_index") == expected_index, f"unexpected clip_index for {serial}: {clip.get('clip_index')!r}")
@@ -277,11 +278,23 @@ def verify_rolling_output(
         require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
         require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
         require(count_csv_data_rows(metadata_path) == frame_count, f"rolling metadata rows mismatch for {serial}: {metadata_path}")
+        verified_clips.append(
+            {
+                "clip_index": expected_index,
+                "clip_id": str(clip.get("clip_id")),
+                "first_recording_frame_id": first_frame,
+                "last_recording_frame_id": last_frame,
+                "frame_count": frame_count,
+                "mp4": str(mp4_path),
+                "metadata": str(metadata_path),
+                "keyframes": str(keyframe_path),
+            }
+        )
         total_clip_frames += frame_count
         expected_next_frame = last_frame + 1
 
     require(total_clip_frames == frames_encoded, f"rolling clip frames != frames_encoded for {serial}: {total_clip_frames} vs {frames_encoded}")
-    return len(clips)
+    return verified_clips
 
 
 def verify_summary(
@@ -375,7 +388,7 @@ def verify_summary(
         video_sanity_path,
         allow_missing_video_sanity or not bool(contract.get("require_video_sanity", True)),
     )
-    rolling_clip_count = verify_rolling_output(
+    rolling_clips = verify_rolling_output(
         artifact_root,
         serial,
         summary,
@@ -394,18 +407,25 @@ def verify_summary(
         "shard_count": len(shards),
         "routing_policy": summary.get("routing_policy"),
         "video_sanity": sanity_status,
-        "rolling_clip_count": rolling_clip_count,
+        "rolling_clip_count": len(rolling_clips),
+        "rolling_clips": rolling_clips,
     }
 
 
-def verify_analytics_root(analytics_root: Path, serials: list[str]) -> None:
+def verify_analytics_root(analytics_root: Path, serials: list[str]) -> list[Path]:
     runs_path = analytics_root / "runs.json"
     runs_json = read_json(runs_path)
     rows: list[dict[str, Any]] = []
+    recording_folders: list[Path] = []
     for run in runs_json.get("runs", []):
         for row in run.get("camera_results", []):
             if str(row.get("camera_serial")) in serials:
                 rows.append(row)
+                folder = run.get("recording_folder") or row.get("recording_folder")
+                if isinstance(folder, str) and folder:
+                    path = Path(folder)
+                    if path not in recording_folders:
+                        recording_folders.append(path)
     require(len(rows) == len(serials), f"runs.json did not contain one row per verified camera in {analytics_root}")
     for row in rows:
         serial = str(row.get("camera_serial"))
@@ -416,6 +436,69 @@ def verify_analytics_root(analytics_root: Path, serials: list[str]) -> None:
         acked = as_int(row.get("external_ipc_frames_acked_final", 0), "external_ipc_frames_acked_final")
         submitted = as_int(row.get("submitted_frames_final", 0), "submitted_frames_final")
         require(submitted == 0 or acked >= submitted, f"external IPC ACKed fewer frames than submitted for {serial}")
+    return recording_folders
+
+
+def verify_analytics_recording_session_manifests(
+    recording_folders: list[Path],
+    summaries: list[dict[str, Any]],
+) -> None:
+    rolling_summaries = [item for item in summaries if item.get("rolling_clip_count", 0) > 0]
+    if not rolling_summaries:
+        return
+    require(bool(recording_folders), "rolling external recorder verification has no analytics recording folder")
+    for recording_folder in recording_folders:
+        manifest_path = recording_folder / "recording_session.json"
+        manifest = read_json(manifest_path)
+        require(manifest.get("mode") == "rolling_clips", f"analytics recording_session.json is not rolling_clips: {manifest_path}")
+        require(
+            manifest.get("producer") == "orange_headless_external_ipc",
+            f"unexpected recording_session producer for external IPC rolling: {manifest.get('producer')!r}",
+        )
+        rollover = manifest.get("rollover")
+        require(isinstance(rollover, dict), f"recording_session missing rollover object: {manifest_path}")
+        require(
+            rollover.get("implementation") == "external_recorder_gop_boundary_writer_rotation",
+            f"recording_session rollover implementation mismatch: {rollover.get('implementation')!r}",
+        )
+        backend = manifest.get("recording_backend")
+        require(isinstance(backend, dict), f"recording_session missing recording_backend: {manifest_path}")
+        require(backend.get("mode") == "external_ipc", f"recording_session backend is not external_ipc: {manifest_path}")
+        clips = manifest.get("clips")
+        require(isinstance(clips, list) and bool(clips), f"recording_session has no clips: {manifest_path}")
+
+        for item in rolling_summaries:
+            serial = str(item["serial"])
+            for expected in item["rolling_clips"]:
+                clip_index = as_int(expected.get("clip_index"), "rolling clip index")
+                require(clip_index < len(clips), f"recording_session missing clip {clip_index} for {serial}")
+                manifest_clip = clips[clip_index]
+                require(isinstance(manifest_clip, dict), f"recording_session clip {clip_index} is not an object")
+                camera_artifacts = manifest_clip.get("camera_artifacts")
+                require(isinstance(camera_artifacts, dict), f"recording_session clip {clip_index} missing camera_artifacts")
+                camera_artifact = camera_artifacts.get(serial)
+                require(isinstance(camera_artifact, dict), f"recording_session clip {clip_index} missing camera {serial}")
+                require(
+                    as_int(camera_artifact.get("first_recording_frame_id"), "camera first_recording_frame_id") ==
+                    as_int(expected.get("first_recording_frame_id"), "expected first_recording_frame_id"),
+                    f"recording_session first frame mismatch for {serial} clip {clip_index}",
+                )
+                require(
+                    as_int(camera_artifact.get("last_recording_frame_id"), "camera last_recording_frame_id") ==
+                    as_int(expected.get("last_recording_frame_id"), "expected last_recording_frame_id"),
+                    f"recording_session last frame mismatch for {serial} clip {clip_index}",
+                )
+                require(
+                    as_int(camera_artifact.get("frame_count"), "camera frame_count") ==
+                    as_int(expected.get("frame_count"), "expected frame_count"),
+                    f"recording_session frame_count mismatch for {serial} clip {clip_index}",
+                )
+                video_path = path_from(camera_artifact.get("video"), recording_folder)
+                metadata_path = path_from(camera_artifact.get("metadata"), recording_folder)
+                keyframe_path = path_from(camera_artifact.get("keyframes"), recording_folder)
+                require(video_path.exists() and video_path.stat().st_size > 0, f"recording_session video path missing: {video_path}")
+                require(metadata_path.exists() and metadata_path.stat().st_size > 0, f"recording_session metadata path missing: {metadata_path}")
+                require(keyframe_path.exists() and keyframe_path.stat().st_size > 0, f"recording_session keyframe path missing: {keyframe_path}")
 
 
 def verify(args: argparse.Namespace) -> None:
@@ -445,8 +528,10 @@ def verify(args: argparse.Namespace) -> None:
         for serial, stream in streams.items()
     ]
 
+    recording_folders: list[Path] = []
     if analytics_root is not None:
-        verify_analytics_root(analytics_root, list(streams.keys()))
+        recording_folders = verify_analytics_root(analytics_root, list(streams.keys()))
+        verify_analytics_recording_session_manifests(recording_folders, summaries)
 
     total_frames = sum(item["frames_received"] for item in summaries)
     print("External recorder verification passed")

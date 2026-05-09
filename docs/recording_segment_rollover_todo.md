@@ -155,6 +155,8 @@ Refs:
   rolling clips.
 - [x] Write parent `recording_session.json` and per-clip
   `clip_manifest.json` for headless seamless rolling clips.
+- [x] Mirror supervised headless external IPC rolling clips into the shared
+  analytics `recording_session.json` and verify it against external summaries.
 - [ ] Write session-level frame/status indexes for seamless rolling:
   - segment file paths
   - first/last `recording_frame_id`

@@ -1,0 +1,117 @@
+{
+  "experiment_id": "2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16",
+  "notes": "Two-camera PTP headless real-YOLO smoke for supervised external IPC rolling clips. Each camera records through a two-shard external split-GOP recorder and writes GOP-boundary rolling clips.",
+  "selection": {
+    "camera_serials": ["2010095", "2010096"],
+    "gpu_ids": [5, 7]
+  },
+  "fixed": {
+    "duration_s": 8,
+    "warmup_s": 1,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "ptp_gate",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/home/jeremy/orange_data/config/local/100_cam4_ptp",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "ptp_register_read_decimate": 100,
+    "recording_control": {
+      "record_for_seconds": 6,
+      "clip_seconds": 2
+    },
+    "nvenc_direct_input": false,
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "supervise_processes": true,
+      "artifact_root": "/tmp/orange_external_recorder_ptp_rolling",
+      "session_id": "2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16",
+      "require_summary": true,
+      "require_video_sanity": true,
+      "require_merged_mp4": true,
+      "require_gop_routing": true,
+      "streams": {
+        "2010095": {
+          "stream_id": "2010095",
+          "camera_serial": "2010095",
+          "analytics_gpu_id": 5,
+          "recorder_gpu_id": 5,
+          "expected_shard_gpu_ids": [5, 6],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_ptp_rolling/Cam2010095_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_ptp_rolling/Cam2010095_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_ptp_rolling/Cam2010095_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_ptp_rolling/Cam2010095_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        },
+        "2010096": {
+          "stream_id": "2010096",
+          "camera_serial": "2010096",
+          "analytics_gpu_id": 7,
+          "recorder_gpu_id": 7,
+          "expected_shard_gpu_ids": [7, 8],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_ptp_rolling/Cam2010096_external_summary.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_ptp_rolling/Cam2010096_external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_ptp_rolling/Cam2010096_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_ptp_rolling/Cam2010096_external_gop_routing.csv",
+          "encode_fps": 100,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p1",
+          "tuning": "ll",
+          "gop": 25,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    },
+    "yolo_worker": {
+      "mode": "real",
+      "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine",
+      "decimate": 1,
+      "publish_live_ipc": false,
+      "timeout_ms": 500,
+      "prewarm_iterations": 3,
+      "fail_on_init_error": true
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p1"],
+    "tuning": ["ll"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [25],
+    "aq": ["off"],
+    "temporal_aq": ["off"],
+    "lookahead": ["off"]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}

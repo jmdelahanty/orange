@@ -383,24 +383,27 @@ multi-GPU split-GOP throughput.
   `acquisition_to_detect_done_ms p95 = 4.488/4.598 ms` for
   `2010095/2010096`; YOLO queue wait p95 stayed `0.018/0.020 ms`.
 - Supervised headless external IPC rolling is now implemented in the
-  diagnostic recorder. The checked-in repeatable spec is
-  `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`.
-  The latest successful validation used recorder artifact
-  `/tmp/orange_external_recorder_rolling_2010096`
+  diagnostic recorder. The one-camera checked-in repeatable spec is
+  `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`;
+  the two-camera PTP checked-in spec is
+  `experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16.json`.
+  The latest two-camera PTP validation used recorder artifact
+  `/tmp/orange_external_recorder_ptp_rolling_20260509_ptp_rolling_bridge_28478`
   and analytics artifact
-  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`.
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_bridge_20260509_ptp_rolling_bridge_28478`.
   It used `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps = 100`,
-  `encode_max_fps = 0`, and GOP shards on GPUs `5,6`. The recorder
-  received/ACKed/encoded `602/602` frames, had `0` encode drops, wrote four
-  rolling clips covering frame ranges `1-200`, `201-400`, `401-600`, and
-  `601-602`, passed merged MP4 video sanity, and passed
+  `encode_max_fps = 0`, and GOP shards `2010095 -> 5,6` and
+  `2010096 -> 7,8`. Both cameras received/ACKed/encoded `601/601` frames, had
+  `0` encode drops, wrote four rolling clips covering frame ranges `1-200`,
+  `201-400`, `401-600`, and `601`, passed merged MP4 video sanity, and passed
   `scripts/verify_external_recorder_session.py`.
-- The local Orange `recording_session.json` for external IPC rolling still
-  describes local timing/drain state, not the external clip list. Use
-  `external_recorder_session.json`, `external_recorder_summary.json`, and
-  `external_recorder_finalization.json` as the current source of truth for
-  external IPC rolling artifacts until the shared manifest is wired into the
-  external path.
+- For supervised headless external IPC rolling, Orange now rewrites the shared
+  analytics `recording_session.json` from external recorder summaries after
+  recorder finalization. That manifest reports `mode = "rolling_clips"`,
+  `producer = "orange_headless_external_ipc"`, `recording_backend.mode =
+  "external_ipc"`, and per-camera clip video/metadata/keyframe paths under
+  `clips[].camera_artifacts`. The external verifier now requires that manifest
+  to match the external summaries for rolling runs.
 - In that run the host PTP stack was initially not ready, so headless startup
   repaired it via `scripts/ptp_stack.sh` and left `ptp4l`/`phc2sys` running on
   exit. The stack was later stopped manually and verified stopped: no

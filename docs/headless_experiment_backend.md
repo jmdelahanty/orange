@@ -352,28 +352,38 @@ GOP-boundary writer rotation:
 - `scripts/verify_external_recorder_session.py` validates rolling clip count,
   clip file existence, ffprobe readability, per-clip metadata row counts, and
   continuous `recording_frame_id` coverage across clips.
+- After supervised recorder finalization, Orange rewrites the analytics
+  `recording_session.json` from the external summaries so the shared manifest
+  has `mode = "rolling_clips"`, `producer = "orange_headless_external_ipc"`,
+  `recording_backend.mode = "external_ipc"`, and per-camera clip paths in
+  `clips[].camera_artifacts`.
 - For full-rate `4512x4512 @ 100 fps`, use split-GOP shard routing rather than
   one external encoder lane. The checked-in smoke uses shard GPUs `5,6`.
 
 Validated external IPC rolling smoke:
 
-- equivalent checked-in spec:
+- one-camera checked-in spec:
   `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`
-- artifact:
+- one-camera artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`
-- recorder artifact:
+- one-camera recorder artifact:
   `/tmp/orange_external_recorder_rolling_2010096`
 - `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps = 100`,
   `encode_max_fps = 0`, `routing_policy = "gop_modulo"`, shard GPUs `5,6`
 - recorder received/ACKed/encoded `602` frames with `0` encode drops
 - clips: `1-200`, `201-400`, `401-600`, and final tail `601-602`
 - merged MP4 video sanity passed and external recorder verification passed
-
-The current Orange-run `recording_session.json` for `external_ipc` is still a
-local timing/drain manifest and does not yet mirror the external clip list.
-Use `external_recorder_session.json`, `external_recorder_summary.json`, and the
-verifier output as the source of truth for external IPC rolling artifacts until
-the shared manifest is wired into the external path.
+- two-camera PTP checked-in spec:
+  `experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16.json`
+- latest two-camera PTP artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_bridge_20260509_ptp_rolling_bridge_28478`
+- latest two-camera PTP recorder artifact:
+  `/tmp/orange_external_recorder_ptp_rolling_20260509_ptp_rolling_bridge_28478`
+- both cameras received/ACKed/encoded `601` frames with `0` encode drops;
+  clips were `1-200`, `201-400`, `401-600`, and final tail `601`
+- the analytics `recording_session.json` was rewritten as the shared
+  `rolling_clips` manifest and external recorder verification passed against
+  that manifest
 
 For control-plane checks that should not touch cameras, TensorRT, sockets, or
 NVENC, use the dry-run supervisor-plan CLI:

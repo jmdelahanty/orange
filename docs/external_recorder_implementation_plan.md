@@ -538,6 +538,12 @@ Current contract-hardening status:
   "external_recorder_gop_boundary_writer_rotation"`. The verifier now checks
   rolling clip count, clip MP4/metadata/keyframe sidecars, and continuous
   `recording_frame_id` coverage across clips.
+- For supervised headless rolling runs, `orange_client` now rewrites the
+  analytics `recording_session.json` from the external summaries after recorder
+  finalization. The shared manifest reports `mode = "rolling_clips"`,
+  `producer = "orange_headless_external_ipc"`, and `recording_backend.mode =
+  "external_ipc"`; the verifier requires its per-camera clip artifacts to match
+  the external summaries.
 - The smoke runners generate `external_recorder_session.json`, inject the same
   contract into the temporary experiment spec, and run the verifier
   automatically.
@@ -569,6 +575,14 @@ Supervised hardware smoke result:
   received/ACKed/encoded `602` frames, had `0` encode drops, wrote four rolling
   clips covering `1-200`, `201-400`, `401-600`, and `601-602`, passed merged
   MP4 video sanity, and passed `scripts/verify_external_recorder_session.py`.
+- Two-camera PTP supervised external IPC rolling artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_bridge_20260509_ptp_rolling_bridge_28478`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_ptp_rolling_20260509_ptp_rolling_bridge_28478`.
+  Both cameras received/ACKed/encoded `601` frames with `0` encode drops, wrote
+  four rolling clips covering `1-200`, `201-400`, `401-600`, and `601`, passed
+  merged MP4 video sanity, and passed verifier checks against the shared
+  analytics `recording_session.json`.
 - The two-camera PTP run used `fixed.ptp_register_read_decimate = 100`, sampled
   `9` PTP register reads per camera, and the cadence probe showed embedded
   timestamp skew from `-18 ns` to `+22 ns`.

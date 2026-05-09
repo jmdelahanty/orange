@@ -327,7 +327,7 @@ nlohmann::json build_single_clip_recording_session_manifest(
         };
     }
 
-    return {
+    nlohmann::json manifest = {
         {"schema_id", "orange.recording_session"},
         {"schema_version", 1},
         {"producer", options.producer},
@@ -387,6 +387,7 @@ nlohmann::json build_single_clip_recording_session_manifest(
                   }}
              }})}
     };
+    return manifest;
 }
 
 nlohmann::json build_recording_clip_manifest(
@@ -416,7 +417,7 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
         clips.push_back(build_rolling_clip_entry_json(clip, false));
     }
 
-    return {
+    nlohmann::json manifest = {
         {"schema_id", "orange.recording_session"},
         {"schema_version", 1},
         {"producer", options.producer},
@@ -452,17 +453,21 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
              {"actual_recording_duration_s", options.actual_recording_duration_s},
              {"sum_clip_actual_duration_s", sum_clip_actual_duration_s},
              {"drain_duration_s", options.drain_duration_s}
-         }},
+        }},
         {"rollover",
          {
-             {"implementation", "headless_gop_boundary_writer_switch"},
+             {"implementation", options.rollover_implementation},
              {"seamless_writer_switch", true},
              {"records_during_rollover", true},
              {"boundary", "gop_first_frame_id"},
-             {"next_writer_preopened", true}
+             {"next_writer_preopened", options.rollover_next_writer_preopened}
          }},
         {"clips", clips}
     };
+    if (options.recording_backend.is_object() && !options.recording_backend.empty()) {
+        manifest["recording_backend"] = options.recording_backend;
+    }
+    return manifest;
 }
 
 bool write_recording_session_manifest(const std::string& path,
