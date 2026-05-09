@@ -113,6 +113,7 @@ private:
     std::vector<uint64_t> note_emitted_packets_and_collect_completed_gops(
         const std::vector<uint64_t>& packet_sample_indices);
     void flush_pending_gops(bool flush_all);
+    int64_t normalize_writer_sample_index(int64_t sample_index);
     size_t pending_gop_backlog_count() const;
     int64_t oldest_pending_gop_age_ms() const;
     bool split_harvest_requested() const;
@@ -259,6 +260,7 @@ private:
     std::vector<ReferenceCaptureStagingSlot> pre_encoder_reference_staging_slots_;
     std::deque<PendingReferenceCapture> pending_pre_encoder_reference_captures_;
     std::string active_recording_folder_;
+    std::string active_recording_session_folder_;
     std::vector<int8_t> importance_map_qp_delta_;
     std::size_t importance_map_qp_delta_size_ = 0;
     cudaStream_t m_stream = nullptr;
@@ -274,12 +276,16 @@ private:
     size_t writer_queue_peak_bytes_ = 0;
     std::map<uint64_t, PendingGop> pending_gops_;
     uint64_t next_gop_to_flush_ = 0;
+    bool next_gop_to_flush_initialized_ = false;
+    int64_t writer_sample_index_base_ = 0;
+    bool writer_sample_index_base_initialized_ = false;
     size_t pending_gop_buffered_bytes_ = 0;
     size_t pending_gop_peak_count_ = 0;
     size_t pending_gop_peak_backlog_count_ = 0;
     size_t pending_gop_peak_bytes_ = 0;
     bool pending_gop_overflowed_ = false;
     uint64_t pending_gop_overflow_events_ = 0;
+    bool force_next_idr_ = false;
     std::deque<uint64_t> pending_output_sample_indices_;
     std::map<uint64_t, uint32_t> submitted_frames_by_gop_;
     std::map<uint64_t, uint32_t> emitted_frames_by_gop_;

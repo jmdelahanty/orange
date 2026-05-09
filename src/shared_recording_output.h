@@ -160,6 +160,7 @@ private:
     void flush_pending_gops_locked(bool flush_all);
     void refresh_writer_queue_metrics_locked();
     void write_metadata_row_locked(const RecordingMetadataRow& metadata_row);
+    int64_t normalize_writer_sample_index_locked(int64_t sample_index);
     void record_pending_gop_overflow_locked(const char* reason,
                                             uint64_t completion_gop_index,
                                             size_t limit);
@@ -178,6 +179,9 @@ private:
     uint32_t recording_gop_length_ = 1;
     std::map<uint64_t, PendingGop> pending_gops_;
     uint64_t next_gop_to_flush_ = 0;
+    bool next_gop_to_flush_initialized_ = false;
+    int64_t writer_sample_index_base_ = 0;
+    bool writer_sample_index_base_initialized_ = false;
     size_t pending_gop_buffered_bytes_ = 0;
     size_t pending_gop_peak_count_ = 0;
     size_t pending_gop_peak_backlog_count_ = 0;

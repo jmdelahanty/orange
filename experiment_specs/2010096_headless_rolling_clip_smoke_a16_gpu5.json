@@ -1,6 +1,6 @@
 {
-  "experiment_id": "2010096_headless_rolling_clip_expected_fail_a16_gpu5",
-  "notes": "Negative schema/contract smoke: clip_seconds > 0 requests rolling clips, which are intentionally rejected until rollover is implemented.",
+  "experiment_id": "2010096_headless_rolling_clip_smoke_a16_gpu5",
+  "notes": "Short single-camera headless smoke for experimental fixed.recording_control rolling clips. The stream runs longer than recording, recording auto-stops after 12 seconds, and recording_session.json records two clip directories.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [5]

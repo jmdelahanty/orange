@@ -1551,9 +1551,17 @@ void EncoderHwWorker::finalize_recording()
             ? std::to_string(camera_params_->camera_id)
             : camera_params_->camera_serial;
         nlohmann::json encoder_info = build_encoder_snapshot_json();
-        update_recording_snapshot_encoder(active_recording_folder_, camera_key, encoder_info);
+        if (!active_recording_session_folder_.empty() &&
+            active_recording_session_folder_ != active_recording_folder_) {
+            update_recording_snapshot_encoder(active_recording_session_folder_, camera_key, encoder_info);
+        } else {
+            update_recording_snapshot_encoder(active_recording_folder_, camera_key, encoder_info);
+        }
     }
+    const std::string finalized_recording_folder = active_recording_folder_;
+    const std::string finalized_session_folder = active_recording_session_folder_;
     active_recording_folder_.clear();
+    active_recording_session_folder_.clear();
     is_recording_ = false;
 
     if (owns_recording_output_ && camera_control_) {
@@ -1564,7 +1572,13 @@ void EncoderHwWorker::finalize_recording()
             }
             camera_control_->stop_record = false;
             std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
-            camera_control_->recording_folder.clear();
+            if (camera_control_->recording_output_folder == finalized_recording_folder) {
+                camera_control_->recording_output_folder.clear();
+            }
+            if (!camera_control_->preserve_recording_session_state &&
+                camera_control_->recording_folder == finalized_session_folder) {
+                camera_control_->recording_folder.clear();
+            }
         }
     }
 }
@@ -1626,8 +1640,11 @@ void EncoderHwWorker::reset_pending_gop_state()
     submitted_frames_by_gop_.clear();
     emitted_frames_by_gop_.clear();
     submitted_complete_gops_.clear();
+    writer_sample_index_base_ = 0;
+    writer_sample_index_base_initialized_ = false;
     if (shared_output_) {
         next_gop_to_flush_ = 0;
+        next_gop_to_flush_initialized_ = false;
         pending_gop_buffered_bytes_ = 0;
         pending_gop_peak_count_ = 0;
         pending_gop_peak_backlog_count_ = 0;
@@ -1638,6 +1655,7 @@ void EncoderHwWorker::reset_pending_gop_state()
     }
     pending_gops_.clear();
     next_gop_to_flush_ = 0;
+    next_gop_to_flush_initialized_ = false;
     pending_gop_buffered_bytes_ = 0;
     pending_gop_peak_count_ = 0;
     pending_gop_peak_backlog_count_ = 0;
@@ -1761,10 +1779,11 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
                 ? static_cast<int64_t>(output_timestamps[i])
                 : fallback_sample_index;
             if (writer_.video) {
+                const int64_t writer_sample_index = normalize_writer_sample_index(sample_index);
                 writer_.video->push_packet(
                     const_cast<uint8_t*>(packets[i].data()),
                     static_cast<int>(packets[i].size()),
-                    sample_index);
+                    writer_sample_index);
             }
             if (sample_index >= 0) {
                 last_recording_frame_id_ = std::max<uint64_t>(
@@ -1783,6 +1802,10 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
         const uint64_t gop_index = sample_index >= 0
             ? static_cast<uint64_t>(sample_index) / recording_gop_length_
             : completion_gop_index;
+        if (!next_gop_to_flush_initialized_) {
+            next_gop_to_flush_ = gop_index;
+            next_gop_to_flush_initialized_ = true;
+        }
 
         auto [it, inserted] = pending_gops_.try_emplace(gop_index);
         PendingGop& pending = it->second;
@@ -1823,6 +1846,10 @@ void EncoderHwWorker::buffer_encoded_packets(const std::vector<std::vector<uint8
     }
 
     if (mark_complete) {
+        if (!next_gop_to_flush_initialized_) {
+            next_gop_to_flush_ = completion_gop_index;
+            next_gop_to_flush_initialized_ = true;
+        }
         auto [it, inserted] = pending_gops_.try_emplace(completion_gop_index);
         PendingGop& pending = it->second;
         if (inserted) {
@@ -1869,15 +1896,29 @@ void EncoderHwWorker::flush_pending_gops(bool flush_all)
 
         for (const auto& packet : pending.packets) {
             if (writer_.video) {
+                const int64_t writer_sample_index =
+                    normalize_writer_sample_index(packet.sample_index);
                 writer_.video->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
                     static_cast<int>(packet.bytes.size()),
-                    packet.sample_index);
+                    writer_sample_index);
             }
         }
         next_gop_to_flush_++;
     }
     refresh_writer_queue_metrics();
+}
+
+int64_t EncoderHwWorker::normalize_writer_sample_index(int64_t sample_index)
+{
+    if (sample_index < 0) {
+        return sample_index;
+    }
+    if (!writer_sample_index_base_initialized_) {
+        writer_sample_index_base_ = sample_index;
+        writer_sample_index_base_initialized_ = true;
+    }
+    return sample_index - writer_sample_index_base_;
 }
 
 size_t EncoderHwWorker::pending_gop_backlog_count() const
@@ -2497,14 +2538,19 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
         // Create a new timestamped folder
         std::string current_recording_folder;
+        std::string current_session_folder;
         {
             std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
             if (camera_control_->recording_folder.empty()) {
                 camera_control_->recording_folder = base_folder_name_ + "/" + get_current_date_time();
             }
-            current_recording_folder = camera_control_->recording_folder;
+            current_session_folder = camera_control_->recording_folder;
+            current_recording_folder = camera_control_->recording_output_folder.empty()
+                ? current_session_folder
+                : camera_control_->recording_output_folder;
         }
         active_recording_folder_ = current_recording_folder;
+        active_recording_session_folder_ = current_session_folder;
         {
             orange::ScopedFsuid fsuid_guard;
             (void)fsuid_guard;
@@ -2515,6 +2561,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             writer_queue_peak_packets_ = 0;
             writer_queue_peak_bytes_ = 0;
             reset_pending_gop_state();
+            force_next_idr_ = true;
 
             const auto metadata_tags = build_metadata_tags(
                 camera_params_,
@@ -2565,7 +2612,11 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 ? std::to_string(camera_params_->camera_id)
                 : camera_params_->camera_serial;
             nlohmann::json encoder_info = build_encoder_snapshot_json();
-            update_recording_snapshot_encoder(current_recording_folder, camera_key, encoder_info);
+            if (!current_session_folder.empty() && current_session_folder != current_recording_folder) {
+                update_recording_snapshot_encoder(current_session_folder, camera_key, encoder_info);
+            } else {
+                update_recording_snapshot_encoder(current_recording_folder, camera_key, encoder_info);
+            }
         }
         if (owns_recording_output_) {
             camera_control_->active_recorders.fetch_add(1, std::memory_order_relaxed);
@@ -2629,6 +2680,11 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
     pic_params.inputTimeStamp = zero_based_recording_frame;
     pic_params.inputDuration = 1;
+    const bool force_idr_for_frame = force_next_idr_;
+    if (force_idr_for_frame) {
+        pic_params.encodePicFlags |= NV_ENC_PIC_FLAG_FORCEIDR;
+        pic_params.encodePicFlags |= NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
+    }
 
     if (importance_map_active()) {
         pic_params.qpDeltaMap = importance_map_qp_delta_.data();
@@ -2727,6 +2783,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                     &bitstream_fetch_duration_ns,
                     &encode_timing);
                 const uint64_t encode_frame_end_ns = steady_clock_now_ns();
+                force_next_idr_ = false;
                 if (encode_frame_end_ns >= encode_frame_start_ns) {
                     timing_sample.nvenc_encode_frame_total_ns +=
                         encode_frame_end_ns - encode_frame_start_ns;
@@ -2801,6 +2858,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                         &encode_timing);
                 }
                 const uint64_t encode_frame_end_ns = steady_clock_now_ns();
+                force_next_idr_ = false;
                 if (encode_frame_end_ns >= encode_frame_start_ns) {
                     timing_sample.nvenc_encode_frame_total_ns +=
                         encode_frame_end_ns - encode_frame_start_ns;

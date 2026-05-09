@@ -121,7 +121,7 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.frame_ipc.mode = "producer_only" | "verify_drain"`
 - `fixed.pose_worker.mode = "off" | "noop" | "real"`
 - `fixed.recording_control.record_for_seconds = 0 | <positive seconds>`
-- `fixed.recording_control.clip_seconds = 0`
+- `fixed.recording_control.clip_seconds = 0 | <positive seconds>`
 - `fixed.external_recorder_contract.mode = "off" | "diagnostic_ipc_v1"`
 
 `fixed.stream_only = true` keeps the experiment runner in acquisition-only mode
@@ -142,9 +142,9 @@ for that run:
 That gives us a documented “stream-only experiment spec” mode instead of having
 to drop down to the ad hoc direct CLI.
 
-`fixed.recording_control` is an experimental single-clip recording-duration
-control for headless runs. It lets the stream/run continue after the recorder
-has been stopped and drained:
+`fixed.recording_control` is an experimental recording-duration control for
+headless runs. It lets the stream/run continue after the recorder has been
+stopped and drained:
 
 ```json
 "fixed": {
@@ -169,16 +169,28 @@ Current behavior:
   `record_for_seconds`, acquisition stayed healthy, and error/drop counters
   remain within policy
 - `scripts/verify_timed_recording.py <experiment_root>` verifies the current
-  single-clip contract from `recording_session.json`, per-camera clip
+  timed-recording contract from `recording_session.json`, per-camera clip
   artifacts, `runs.json`, and `ffprobe`
 
-`clip_seconds > 0` is deliberately rejected for now. Rolling/seamless
-multi-clip recording is the next slice, not part of this first
-duration-control smoke. The planned session and clip manifest contract is
-documented in `docs/recording_session_manifest_contract.md`. The current
-manifest builder and rolling-clip validation live in
-`src/session/recording_session.*` so later GUI/session and external-recorder
-paths can share the same contract.
+`clip_seconds > 0` enables the first headless-only rolling-clip path. This
+current implementation is conservative drain/rearm, not seamless writer
+switching:
+
+- clip folders are written under `clips/clip_000000`,
+  `clips/clip_000001`, etc.
+- each clip writes `clip_manifest.json`, `Cam<serial>.mp4`,
+  `Cam<serial>_meta.csv`, and `Cam<serial>_keyframe.json`
+- the parent folder writes `recording_session.json` with
+  `mode = "rolling_clips"`
+- `recording_frame_id` remains continuous across clip metadata
+- MP4 timestamps are clip-local and start at zero for each clip
+- the manifest records `rollover.implementation = "headless_drain_rearm"`,
+  `seamless_writer_switch = false`, and `records_during_drain_gap = false`
+
+The shared session and clip manifest contract is documented in
+`docs/recording_session_manifest_contract.md`. The manifest builder and
+rolling-clip validation live in `src/session/recording_session.*` so later
+GUI/session and external-recorder paths can share the same contract.
 
 Validated smoke:
 
@@ -194,6 +206,26 @@ Validated smoke:
 - `summary.json` reported `pass_runs = 1`, `fail_runs = 0`
 - camera result reported `0` frame-ID gaps, `0` GetFrame errors,
   `0` preprocess drops, and `0` encode failures
+
+Validated rolling smoke:
+
+- spec:
+  `experiment_specs/2010096_headless_rolling_clip_smoke_a16_gpu5.json`
+- latest artifact:
+  `/tmp/orange_rolling_spec_validation_bt11/2010096_headless_rolling_clip_smoke_a16_gpu5_bt11`
+- stream requested `20 s`, recording requested `12 s`, clip interval `6 s`
+- `recording_session.json` reported `mode = "rolling_clips"`,
+  `status = completed`, `stop_reason = record_for_seconds_elapsed`, and
+  `drain_completed = true`
+- ffprobe reported `clip_000000` duration `6.000 s` and `clip_000001`
+  duration `6.000 s`
+- both clip keyframe sidecars start with keyframe frame `0`; rollover now
+  forces the first NVENC picture in each clip to IDR with SPS/PPS
+- `summary.json` reported `pass_runs = 1`, `fail_runs = 0`
+- camera result reported `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, and `0` encode failures
+- `scripts/verify_timed_recording.py` passed with total ffprobe duration
+  `12.000 s` for a requested `12.000 s`
 
 `fixed.frame_ipc` is an explicit testability knob for the same shared-memory
 frame IPC path used by the GUI:

@@ -1574,7 +1574,9 @@ void acquire_frames(
                 last_recording_frame_count = current_entry->recording_frame_id;
             } else {
                 current_entry->recording_frame_id = 0;
-                local_recording_frame_count = 0;
+                if (!camera_control->preserve_recording_session_state) {
+                    local_recording_frame_count = 0;
+                }
             }
 
             const std::string live_recording_folder = current_recording_folder(camera_control);

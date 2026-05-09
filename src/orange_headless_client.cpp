@@ -959,16 +959,12 @@ uint64_t json_u64_or_default(const nlohmann::json& value, uint64_t fallback)
     return fallback;
 }
 
-ExperimentVideoArtifactStats summarize_video_artifact(const std::string& recording_folder,
-                                                      const std::string& camera_serial)
+ExperimentVideoArtifactStats summarize_video_artifact_path(const std::filesystem::path& video_path)
 {
     ExperimentVideoArtifactStats stats;
-    if (recording_folder.empty() || camera_serial.empty()) {
+    if (video_path.empty()) {
         return stats;
     }
-
-    const std::filesystem::path video_path =
-        std::filesystem::path(recording_folder) / ("Cam" + camera_serial + ".mp4");
     stats.video_path = video_path.string();
 
     std::error_code fs_error;
@@ -1080,6 +1076,132 @@ ExperimentVideoArtifactStats summarize_video_artifact(const std::string& recordi
     }
 
     return stats;
+}
+
+ExperimentVideoArtifactStats summarize_video_artifact(const std::string& recording_folder,
+                                                      const std::string& camera_serial)
+{
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return ExperimentVideoArtifactStats{};
+    }
+    return summarize_video_artifact_path(
+        std::filesystem::path(recording_folder) / ("Cam" + camera_serial + ".mp4"));
+}
+
+nlohmann::json read_json_file_best_effort(const std::filesystem::path& path)
+{
+    std::ifstream input(path);
+    if (!input) {
+        return nlohmann::json::object();
+    }
+    return nlohmann::json::parse(input, nullptr, false);
+}
+
+std::filesystem::path resolve_clip_video_path(const std::filesystem::path& run_folder,
+                                              const nlohmann::json& clip,
+                                              const std::string& camera_serial)
+{
+    const nlohmann::json artifacts = clip.value("artifacts", nlohmann::json::object());
+    const nlohmann::json videos = artifacts.value("videos", nlohmann::json::object());
+    if (videos.is_object()) {
+        const std::string configured = videos.value(camera_serial, "");
+        if (!configured.empty()) {
+            std::filesystem::path path(configured);
+            if (!path.is_absolute()) {
+                path = run_folder / path;
+            }
+            return path;
+        }
+    }
+
+    const std::string clip_folder = clip.value("recording_folder", "");
+    if (!clip_folder.empty()) {
+        return std::filesystem::path(clip_folder) / ("Cam" + camera_serial + ".mp4");
+    }
+    const std::string directory = clip.value("directory", "");
+    if (!directory.empty()) {
+        return run_folder / directory / ("Cam" + camera_serial + ".mp4");
+    }
+    return {};
+}
+
+ExperimentVideoArtifactStats summarize_rolling_video_artifacts(
+    const std::string& recording_folder,
+    const std::string& camera_serial)
+{
+    ExperimentVideoArtifactStats aggregate;
+    if (recording_folder.empty() || camera_serial.empty()) {
+        return aggregate;
+    }
+
+    const std::filesystem::path run_folder(recording_folder);
+    const nlohmann::json manifest =
+        read_json_file_best_effort(run_folder / "recording_session.json");
+    if (!manifest.is_object() || manifest.value("mode", "") != "rolling_clips") {
+        return aggregate;
+    }
+    const nlohmann::json clips = manifest.value("clips", nlohmann::json::array());
+    if (!clips.is_array() || clips.empty()) {
+        return aggregate;
+    }
+
+    bool saw_content_status = false;
+    std::size_t expected_videos = 0;
+    std::size_t present_videos = 0;
+    uint64_t file_size_bytes = 0;
+    for (const nlohmann::json& clip : clips) {
+        if (!clip.is_object()) {
+            continue;
+        }
+        const std::filesystem::path path =
+            resolve_clip_video_path(run_folder, clip, camera_serial);
+        if (path.empty()) {
+            continue;
+        }
+        ++expected_videos;
+        ExperimentVideoArtifactStats clip_stats = summarize_video_artifact_path(path);
+        if (aggregate.video_path.empty()) {
+            aggregate.video_path = path.string();
+        }
+        if (!clip_stats.video_present) {
+            aggregate.content_status = "missing_clip_video";
+            saw_content_status = true;
+            continue;
+        }
+        ++present_videos;
+        file_size_bytes += clip_stats.file_size_bytes;
+        aggregate.duration_s += clip_stats.duration_s;
+        if (!aggregate.content_checked && clip_stats.content_checked) {
+            aggregate.first_frame_luma_mean = clip_stats.first_frame_luma_mean;
+            aggregate.first_frame_luma_stddev = clip_stats.first_frame_luma_stddev;
+            aggregate.first_frame_black_fraction = clip_stats.first_frame_black_fraction;
+            aggregate.first_frame_decoded_bytes = clip_stats.first_frame_decoded_bytes;
+        }
+        aggregate.content_checked = aggregate.content_checked || clip_stats.content_checked;
+        if (clip_stats.content_checked && !clip_stats.content_valid && !saw_content_status) {
+            aggregate.content_status = "clip_" +
+                std::to_string(clip.value("clip_index", 0)) + "_" + clip_stats.content_status;
+            saw_content_status = true;
+        }
+    }
+
+    aggregate.video_present = expected_videos > 0 && present_videos == expected_videos;
+    aggregate.file_size_bytes = file_size_bytes;
+    if (aggregate.file_size_bytes > 0 && aggregate.duration_s > 0.0) {
+        aggregate.achieved_bitrate_bps = static_cast<uint64_t>(
+            std::llround((static_cast<long double>(aggregate.file_size_bytes) * 8.0L) /
+                         aggregate.duration_s));
+    }
+    aggregate.content_valid =
+        aggregate.video_present && aggregate.content_checked && !saw_content_status;
+    if (aggregate.content_valid) {
+        aggregate.content_status = "pass";
+    } else if (!saw_content_status && expected_videos == 0) {
+        aggregate.content_status = "missing_clip_artifacts";
+    } else if (!saw_content_status && !aggregate.content_checked) {
+        aggregate.content_status = "not_checked";
+    }
+    return aggregate;
 }
 
 std::string canonicalize_headless_camera_serial(std::string value)
@@ -3619,6 +3741,8 @@ void drain_and_shutdown_recording(std::vector<std::unique_ptr<ModernRecordingPip
     camera_control->stop_record = false;
     std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
     camera_control->recording_folder.clear();
+    camera_control->recording_output_folder.clear();
+    camera_control->preserve_recording_session_state = false;
 }
 
 void request_recording_drain(std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
@@ -3866,6 +3990,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const PreEncoderReferenceCaptureConfig& pre_encoder_reference_capture,
     int record_start_delay_seconds = 0,
     bool enable_recording = true,
+    const std::string& initial_recording_output_folder = "",
     const yolo_event_log::SyntheticYoloEventConfig& yolo_event_log_config =
         yolo_event_log::SyntheticYoloEventConfig{},
     const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{})
@@ -4095,6 +4220,13 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                 return false;
             }
+            if (!initial_recording_output_folder.empty()) {
+                orange::ScopedFsuid fsuid_guard;
+                (void)fsuid_guard;
+                make_folder(initial_recording_output_folder);
+                std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+                camera_control->recording_output_folder = initial_recording_output_folder;
+            }
 
             start_headless_gpu_dmon_monitor(
                 gpu_dmon_monitor,
@@ -4211,52 +4343,74 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     for (int idx : selected_indices)
     {
         auto synthetic_yolo_emitter = synthetic_yolo_emitters[idx];
+        CameraEmergent* ecams_ptr = ecams;
+        CameraParams* cameras_params_ptr = cameras_params;
+        CameraEachSelect* cameras_select_ptr = cameras_select;
+        CameraControl* camera_control_ptr = camera_control;
+        PTPParams* ptp_params_ptr = ptp_params;
+        auto* recording_pipelines_ptr = &recording_pipelines;
+        auto* yolo_workers_ptr = &yolo_workers;
+        auto* frame_ipc_managers_ptr = &frame_ipc_managers;
+        auto* camera_resources_ptr = &camera_resources;
         camera_threads.push_back(std::thread(
-            [&, idx, thread_failure_state, synthetic_yolo_emitter]() {
+            [idx,
+             thread_failure_state,
+             synthetic_yolo_emitter,
+             ecams_ptr,
+             cameras_params_ptr,
+             cameras_select_ptr,
+             camera_control_ptr,
+             ptp_params_ptr,
+             recording_pipelines_ptr,
+             yolo_workers_ptr,
+             frame_ipc_managers_ptr,
+             camera_resources_ptr]() {
                 try {
                     acquire_frames(
-                        &ecams[idx],
-                        &cameras_params[idx],
-                        &cameras_select[idx],
-                        camera_control,
-                        ptp_params,
+                        &ecams_ptr[idx],
+                        &cameras_params_ptr[idx],
+                        &cameras_select_ptr[idx],
+                        camera_control_ptr,
+                        ptp_params_ptr,
                         nullptr,
                         nullptr,
-                        recording_pipelines[idx] ? recording_pipelines[idx]->recording_ingress() : nullptr,
-                        yolo_workers[idx].get(),
+                        (*recording_pipelines_ptr)[idx]
+                            ? (*recording_pipelines_ptr)[idx]->recording_ingress()
+                            : nullptr,
+                        (*yolo_workers_ptr)[idx].get(),
                         nullptr,
-                        &camera_resources[idx],
-                        frame_ipc_managers[idx].get(),
+                        &(*camera_resources_ptr)[idx],
+                        (*frame_ipc_managers_ptr)[idx].get(),
                         synthetic_yolo_emitter.get());
                 } catch (const std::exception& ex) {
                     std::ostringstream message;
                     message << "Headless camera thread failed for camera "
-                            << cameras_params[idx].camera_serial
+                            << cameras_params_ptr[idx].camera_serial
                             << ": " << ex.what();
                     std::cerr << message.str() << std::endl;
                     if (thread_failure_state) {
                         thread_failure_state->record_failure(message.str());
                     }
-                    if (camera_control) {
-                        camera_control->subscribe = false;
-                        camera_control->record_video = false;
-                        camera_control->recording_draining = true;
-                        camera_control->stop_record = true;
+                    if (camera_control_ptr) {
+                        camera_control_ptr->subscribe = false;
+                        camera_control_ptr->record_video = false;
+                        camera_control_ptr->recording_draining = true;
+                        camera_control_ptr->stop_record = true;
                     }
                     quit_server = true;
                 } catch (...) {
                     const std::string message =
                         "Headless camera thread failed with an unknown exception for camera " +
-                        cameras_params[idx].camera_serial;
+                        cameras_params_ptr[idx].camera_serial;
                     std::cerr << message << std::endl;
                     if (thread_failure_state) {
                         thread_failure_state->record_failure(message);
                     }
-                    if (camera_control) {
-                        camera_control->subscribe = false;
-                        camera_control->record_video = false;
-                        camera_control->recording_draining = true;
-                        camera_control->stop_record = true;
+                    if (camera_control_ptr) {
+                        camera_control_ptr->subscribe = false;
+                        camera_control_ptr->record_video = false;
+                        camera_control_ptr->recording_draining = true;
+                        camera_control_ptr->stop_record = true;
                     }
                     quit_server = true;
                 }
@@ -6514,6 +6668,133 @@ std::vector<ExperimentRunPlan> build_experiment_run_plans(const ExperimentSpec& 
     return runs;
 }
 
+struct HeadlessRollingClipRuntime {
+    int clip_index = 0;
+    std::string clip_id;
+    std::string directory;
+    std::string recording_folder;
+    std::string start_reason;
+    std::string stop_reason;
+    std::chrono::steady_clock::time_point started_time{};
+    std::chrono::steady_clock::time_point stop_requested_time{};
+    std::chrono::steady_clock::time_point finalized_time{};
+    std::string started_at_utc;
+    std::string stop_requested_at_utc;
+    std::string finalized_at_utc;
+    double requested_duration_s = 0.0;
+    bool timed_stop_hit = false;
+    bool final_clip = false;
+    bool drain_completed = false;
+    bool active = false;
+    bool finalized = false;
+};
+
+struct MetadataFrameStats {
+    uint64_t frame_count = 0;
+    uint64_t first_recording_frame_id = 0;
+    uint64_t last_recording_frame_id = 0;
+    uint64_t recording_frame_id_gaps = 0;
+};
+
+std::string format_headless_clip_id(const int clip_index)
+{
+    std::ostringstream out;
+    out << "clip_" << std::setw(6) << std::setfill('0') << clip_index;
+    return out.str();
+}
+
+std::string headless_clip_directory(const int clip_index)
+{
+    return (std::filesystem::path("clips") / format_headless_clip_id(clip_index)).string();
+}
+
+std::string headless_clip_folder(const std::string& recording_folder, const int clip_index)
+{
+    return (std::filesystem::path(recording_folder) / headless_clip_directory(clip_index)).string();
+}
+
+void set_headless_recording_output_folder(CameraControl* camera_control,
+                                          const std::string& output_folder)
+{
+    if (!camera_control) {
+        return;
+    }
+    if (!output_folder.empty()) {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(output_folder);
+    }
+    std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+    camera_control->recording_output_folder = output_folder;
+}
+
+MetadataFrameStats read_metadata_frame_stats(const std::filesystem::path& metadata_path)
+{
+    MetadataFrameStats stats;
+    std::ifstream input(metadata_path);
+    if (!input) {
+        return stats;
+    }
+
+    std::string header;
+    if (!std::getline(input, header)) {
+        return stats;
+    }
+
+    std::string line;
+    uint64_t previous_frame_id = 0;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        const std::size_t comma = line.find(',');
+        const std::string frame_text =
+            comma == std::string::npos ? line : line.substr(0, comma);
+        try {
+            const uint64_t frame_id = static_cast<uint64_t>(std::stoull(frame_text));
+            if (stats.frame_count == 0) {
+                stats.first_recording_frame_id = frame_id;
+            } else if (frame_id > previous_frame_id + 1) {
+                stats.recording_frame_id_gaps += frame_id - previous_frame_id - 1;
+            }
+            previous_frame_id = frame_id;
+            stats.last_recording_frame_id = frame_id;
+            ++stats.frame_count;
+        } catch (...) {
+        }
+    }
+    return stats;
+}
+
+std::vector<orange::session::RecordingSessionCameraArtifact>
+build_headless_clip_camera_artifacts(const std::vector<int>& selected_inventory_indices,
+                                     const CameraParams* cameras_params,
+                                     const std::string& clip_folder)
+{
+    std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
+    if (!cameras_params) {
+        return camera_artifacts;
+    }
+    for (int idx : selected_inventory_indices) {
+        const std::string camera_serial = cameras_params[idx].camera_serial;
+        const std::filesystem::path folder(clip_folder);
+        const std::filesystem::path metadata_path =
+            folder / ("Cam" + camera_serial + "_meta.csv");
+        const MetadataFrameStats frame_stats = read_metadata_frame_stats(metadata_path);
+        orange::session::RecordingSessionCameraArtifact artifact;
+        artifact.camera_serial = camera_serial;
+        artifact.video_path = (folder / ("Cam" + camera_serial + ".mp4")).string();
+        artifact.metadata_path = metadata_path.string();
+        artifact.keyframe_path = (folder / ("Cam" + camera_serial + "_keyframe.json")).string();
+        artifact.frame_count = frame_stats.frame_count;
+        artifact.first_recording_frame_id = frame_stats.first_recording_frame_id;
+        artifact.last_recording_frame_id = frame_stats.last_recording_frame_id;
+        artifact.recording_frame_id_gaps = frame_stats.recording_frame_id_gaps;
+        camera_artifacts.push_back(std::move(artifact));
+    }
+    return camera_artifacts;
+}
+
 int run_local_recording_session(const HeadlessCliOptions& options, bool print_inventory)
 {
     GigEVisionDeviceInfo unsorted_device_info[max_cameras];
@@ -6802,6 +7083,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     }
 
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
+    const bool rolling_clip_recording =
+        enable_recording &&
+        options.recording_control.record_for_seconds > 0 &&
+        options.recording_control.clip_seconds > 0;
+    const std::string initial_recording_output_folder =
+        rolling_clip_recording
+            ? headless_clip_folder(active_record_folder, 0)
+            : std::string();
+    if (rolling_clip_recording) {
+        camera_control.preserve_recording_session_state = true;
+    }
     const bool started = start_camera_thread(
         camera_threads,
         camera_resources,
@@ -6828,6 +7120,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         options.pre_encoder_reference_capture,
         options.record_start_delay_seconds,
         enable_recording,
+        initial_recording_output_folder,
         options.yolo_event_log,
         options.yolo_worker);
 
@@ -6863,9 +7156,84 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::string recording_stop_reason;
     bool recording_auto_stop_requested = false;
     bool recording_drain_completed = false;
+    std::vector<HeadlessRollingClipRuntime> rolling_clips;
+    HeadlessRollingClipRuntime active_rolling_clip;
+
+    auto elapsed_since_run_start = [&](std::chrono::steady_clock::time_point time) {
+        if (time.time_since_epoch().count() == 0) {
+            return 0.0;
+        }
+        return std::chrono::duration<double>(time - run_start_time).count();
+    };
+    auto elapsed_between = [](std::chrono::steady_clock::time_point start,
+                              std::chrono::steady_clock::time_point finish) {
+        if (start.time_since_epoch().count() == 0 ||
+            finish.time_since_epoch().count() == 0 ||
+            finish < start) {
+            return 0.0;
+        }
+        return std::chrono::duration<double>(finish - start).count();
+    };
+    auto begin_rolling_clip = [&](const int clip_index,
+                                  const std::string& start_reason,
+                                  const std::chrono::steady_clock::time_point start_time,
+                                  const std::string& start_utc) {
+        active_rolling_clip = HeadlessRollingClipRuntime{};
+        active_rolling_clip.clip_index = clip_index;
+        active_rolling_clip.clip_id = format_headless_clip_id(clip_index);
+        active_rolling_clip.directory = headless_clip_directory(clip_index);
+        active_rolling_clip.recording_folder = headless_clip_folder(active_record_folder, clip_index);
+        active_rolling_clip.start_reason = start_reason;
+        active_rolling_clip.started_time = start_time;
+        active_rolling_clip.started_at_utc = start_utc.empty() ? get_current_utc_timestamp() : start_utc;
+        active_rolling_clip.requested_duration_s =
+            static_cast<double>(options.recording_control.clip_seconds);
+        active_rolling_clip.active = true;
+        set_headless_recording_output_folder(&camera_control, active_rolling_clip.recording_folder);
+        {
+            std::lock_guard<std::mutex> lock(camera_control.recording_folder_mutex);
+            camera_control.recording_folder = active_record_folder;
+            camera_control.preserve_recording_session_state = true;
+        }
+        std::cout << "Local headless rolling clip armed."
+                  << " clip_id=" << active_rolling_clip.clip_id
+                  << " folder=" << active_rolling_clip.recording_folder
+                  << std::endl;
+    };
+    auto finish_rolling_clip = [&](const std::string& stop_reason,
+                                   const bool final_clip,
+                                   const std::chrono::steady_clock::time_point stop_time,
+                                   const std::string& stop_utc,
+                                   const bool drain_completed,
+                                   const std::chrono::steady_clock::time_point drain_done_time,
+                                   const std::string& drain_done_utc) {
+        if (!active_rolling_clip.active || active_rolling_clip.finalized) {
+            return;
+        }
+        active_rolling_clip.stop_reason = stop_reason;
+        active_rolling_clip.stop_requested_time = stop_time;
+        active_rolling_clip.stop_requested_at_utc = stop_utc;
+        active_rolling_clip.finalized_time = drain_done_time;
+        active_rolling_clip.finalized_at_utc = drain_done_utc;
+        active_rolling_clip.timed_stop_hit = stop_reason == "record_for_seconds_elapsed";
+        active_rolling_clip.final_clip = final_clip;
+        active_rolling_clip.drain_completed = drain_completed;
+        active_rolling_clip.finalized = true;
+        active_rolling_clip.active = false;
+        rolling_clips.push_back(active_rolling_clip);
+        std::cout << "Local headless rolling clip finalized."
+                  << " clip_id=" << active_rolling_clip.clip_id
+                  << " stop_reason=" << stop_reason
+                  << " drain=" << (drain_completed ? "completed" : "timed_out")
+                  << std::endl;
+    };
+
     if (enable_recording && recording_armed) {
         recording_start_time = run_start_time;
         recording_started_at_utc = get_current_utc_timestamp();
+        if (rolling_clip_recording) {
+            begin_rolling_clip(0, "recording_start", recording_start_time, recording_started_at_utc);
+        }
     }
     if (enable_recording && !recording_armed && options.record_start_delay_seconds > 0) {
         std::cout << "Local headless stream warmup started."
@@ -6882,12 +7250,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             !recording_armed &&
             options.record_start_delay_seconds > 0 &&
             std::chrono::steady_clock::now() >= record_arm_time) {
+            const auto now = std::chrono::steady_clock::now();
+            const std::string now_utc = get_current_utc_timestamp();
+            if (rolling_clip_recording) {
+                begin_rolling_clip(0, "recording_start", now, now_utc);
+            }
             camera_control.recording_draining = false;
             camera_control.stop_record = false;
             camera_control.record_video = true;
             recording_armed = true;
-            recording_start_time = std::chrono::steady_clock::now();
-            recording_started_at_utc = get_current_utc_timestamp();
+            recording_start_time = now;
+            recording_started_at_utc = now_utc;
             std::cout << "Local headless recording armed after warmup."
                       << " folder=" << options.record_folder
                       << std::endl;
@@ -6900,14 +7273,19 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             std::chrono::steady_clock::now() >=
                 recording_start_time + std::chrono::seconds(
                     options.recording_control.record_for_seconds)) {
-            recording_stop_request_time = std::chrono::steady_clock::now();
-            recording_stop_requested_at_utc = get_current_utc_timestamp();
+            const auto now = std::chrono::steady_clock::now();
+            const std::string now_utc = get_current_utc_timestamp();
+            recording_stop_request_time = now;
+            recording_stop_requested_at_utc = now_utc;
             recording_stop_reason = "record_for_seconds_elapsed";
             std::cout << "Local headless timed recording stop requested."
                       << " record_for_seconds="
                       << options.recording_control.record_for_seconds
                       << " folder=" << options.record_folder
                       << std::endl;
+            if (rolling_clip_recording) {
+                camera_control.preserve_recording_session_state = false;
+            }
             request_recording_drain(recording_pipelines, &camera_control);
             recording_drain_completed = wait_for_recording_drain(
                 &camera_control,
@@ -6915,11 +7293,59 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 "Headless timed recording drain");
             recording_drain_done_time = std::chrono::steady_clock::now();
             recording_drained_at_utc = get_current_utc_timestamp();
+            if (rolling_clip_recording) {
+                finish_rolling_clip(
+                    recording_stop_reason,
+                    true,
+                    recording_stop_request_time,
+                    recording_stop_requested_at_utc,
+                    recording_drain_completed,
+                    recording_drain_done_time,
+                    recording_drained_at_utc);
+            }
             recording_auto_stop_requested = true;
             std::cout << "Local headless timed recording drain "
                       << (recording_drain_completed ? "completed." : "timed out.")
                       << " folder=" << options.record_folder
                       << std::endl;
+        } else if (enable_recording &&
+                   rolling_clip_recording &&
+                   recording_armed &&
+                   !recording_auto_stop_requested &&
+                   active_rolling_clip.active &&
+                   std::chrono::steady_clock::now() >=
+                       active_rolling_clip.started_time +
+                           std::chrono::seconds(options.recording_control.clip_seconds)) {
+            const auto clip_stop_time = std::chrono::steady_clock::now();
+            const std::string clip_stop_utc = get_current_utc_timestamp();
+            const std::string clip_stop_reason = "clip_seconds_elapsed";
+            std::cout << "Local headless rolling clip stop requested."
+                      << " clip_id=" << active_rolling_clip.clip_id
+                      << " folder=" << active_rolling_clip.recording_folder
+                      << std::endl;
+            request_recording_drain(recording_pipelines, &camera_control);
+            const bool clip_drain_completed = wait_for_recording_drain(
+                &camera_control,
+                std::chrono::seconds(10),
+                "Headless rolling clip drain");
+            const auto clip_drain_done_time = std::chrono::steady_clock::now();
+            const std::string clip_drain_done_utc = get_current_utc_timestamp();
+            finish_rolling_clip(
+                clip_stop_reason,
+                false,
+                clip_stop_time,
+                clip_stop_utc,
+                clip_drain_completed,
+                clip_drain_done_time,
+                clip_drain_done_utc);
+            begin_rolling_clip(
+                static_cast<int>(rolling_clips.size()),
+                "rollover",
+                clip_drain_done_time,
+                clip_drain_done_utc);
+            camera_control.recording_draining = false;
+            camera_control.stop_record = false;
+            camera_control.record_video = true;
         }
         usleep(100000);
     }
@@ -6963,22 +7389,16 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             recording_drain_completed =
                 camera_control.active_recorders.load(std::memory_order_relaxed) == 0;
         }
-
-        auto elapsed_since_run_start = [&](std::chrono::steady_clock::time_point time) {
-            if (time.time_since_epoch().count() == 0) {
-                return 0.0;
-            }
-            return std::chrono::duration<double>(time - run_start_time).count();
-        };
-        auto elapsed_between = [](std::chrono::steady_clock::time_point start,
-                                  std::chrono::steady_clock::time_point finish) {
-            if (start.time_since_epoch().count() == 0 ||
-                finish.time_since_epoch().count() == 0 ||
-                finish < start) {
-                return 0.0;
-            }
-            return std::chrono::duration<double>(finish - start).count();
-        };
+        if (rolling_clip_recording && active_rolling_clip.active && !active_rolling_clip.finalized) {
+            finish_rolling_clip(
+                recording_stop_reason,
+                true,
+                recording_stop_request_time,
+                recording_stop_requested_at_utc,
+                recording_drain_completed,
+                recording_drain_done_time,
+                recording_drained_at_utc);
+        }
 
         std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
         for (int idx : selected_inventory_indices) {
@@ -7000,46 +7420,160 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         const bool timed_stop_hit =
             recording_stop_reason == "record_for_seconds_elapsed";
 
-        orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
-        manifest_options.producer = "orange_headless";
-        manifest_options.session_id = std::filesystem::path(active_record_folder).filename().string();
-        manifest_options.created_at_utc = session_started_at_utc;
-        manifest_options.updated_at_utc = session_finished_at_utc;
-        manifest_options.recording_folder = active_record_folder;
-        manifest_options.status =
-            (recording_started && recording_drain_completed) ? "completed" : "incomplete";
-        manifest_options.requested_stream_duration_seconds = options.duration_seconds;
-        manifest_options.stream_start_delay_seconds = options.stream_start_delay_seconds;
-        manifest_options.stream_started_at_utc = session_started_at_utc;
-        manifest_options.stream_finished_at_utc = session_finished_at_utc;
-        manifest_options.stream_actual_elapsed_s =
-            std::chrono::duration<double>(session_finished_time - run_start_time).count();
-        manifest_options.stream_interrupted = quit_server;
-        manifest_options.recording_control = {
-            options.recording_control.record_for_seconds,
-            options.recording_control.clip_seconds
-        };
-        manifest_options.recording_started = recording_started;
-        manifest_options.recording_started_at_utc = recording_started_at_utc;
-        manifest_options.recording_started_at_elapsed_s =
-            elapsed_since_run_start(recording_start_time);
-        manifest_options.recording_stop_requested =
-            recording_stop_request_time.time_since_epoch().count() > 0;
-        manifest_options.recording_stop_requested_at_utc = recording_stop_requested_at_utc;
-        manifest_options.recording_stop_requested_at_elapsed_s =
-            elapsed_since_run_start(recording_stop_request_time);
-        manifest_options.recording_stop_reason = recording_stop_reason;
-        manifest_options.recording_drain_completed = recording_drain_completed;
-        manifest_options.recording_drained_at_utc = recording_drained_at_utc;
-        manifest_options.recording_drained_at_elapsed_s =
-            elapsed_since_run_start(recording_drain_done_time);
-        manifest_options.actual_recording_duration_s = actual_recording_duration_s;
-        manifest_options.drain_duration_s = drain_duration_s;
-        manifest_options.timed_stop_hit = timed_stop_hit;
-        manifest_options.cameras = std::move(camera_artifacts);
+        nlohmann::json manifest;
+        if (rolling_clip_recording) {
+            std::vector<std::string> camera_serials;
+            camera_serials.reserve(selected_inventory_indices.size());
+            for (int idx : selected_inventory_indices) {
+                camera_serials.push_back(cameras_params[idx].camera_serial);
+            }
 
-        const nlohmann::json manifest =
-            orange::session::build_single_clip_recording_session_manifest(manifest_options);
+            std::vector<orange::session::RollingClipManifestOptions> clip_options;
+            clip_options.reserve(rolling_clips.size());
+            double sum_clip_actual_duration_s = 0.0;
+            bool all_clips_drained = !rolling_clips.empty();
+            for (const HeadlessRollingClipRuntime& clip : rolling_clips) {
+                orange::session::RollingClipManifestOptions clip_manifest;
+                clip_manifest.producer = "orange_headless";
+                clip_manifest.session_id =
+                    std::filesystem::path(active_record_folder).filename().string();
+                clip_manifest.clip_index = clip.clip_index;
+                clip_manifest.clip_id = clip.clip_id;
+                clip_manifest.recording_folder = clip.recording_folder;
+                clip_manifest.directory = clip.directory;
+                clip_manifest.status = clip.drain_completed ? "completed" : "incomplete";
+                clip_manifest.start_reason = clip.start_reason;
+                clip_manifest.stop_reason = clip.stop_reason;
+                clip_manifest.started_at_utc = clip.started_at_utc;
+                clip_manifest.started_at_elapsed_s =
+                    elapsed_since_run_start(clip.started_time);
+                clip_manifest.stop_requested_at_utc = clip.stop_requested_at_utc;
+                clip_manifest.stop_requested_at_elapsed_s =
+                    elapsed_since_run_start(clip.stop_requested_time);
+                clip_manifest.finalized_at_utc = clip.finalized_at_utc;
+                clip_manifest.finalized_at_elapsed_s =
+                    elapsed_since_run_start(clip.finalized_time);
+                const double clip_actual_duration_s =
+                    elapsed_between(clip.started_time, clip.stop_requested_time);
+                clip_manifest.actual_duration_s = clip_actual_duration_s;
+                clip_manifest.drain_duration_s =
+                    elapsed_between(clip.stop_requested_time, clip.finalized_time);
+                clip_manifest.requested_duration_s = clip.final_clip
+                    ? std::max(
+                          0.0,
+                          static_cast<double>(options.recording_control.record_for_seconds) -
+                              elapsed_between(recording_start_time, clip.started_time))
+                    : clip.requested_duration_s;
+                clip_manifest.timed_stop_hit = clip.timed_stop_hit;
+                clip_manifest.final_clip = clip.final_clip;
+                clip_manifest.drain_completed = clip.drain_completed;
+                clip_manifest.cameras = build_headless_clip_camera_artifacts(
+                    selected_inventory_indices,
+                    cameras_params.get(),
+                    clip.recording_folder);
+
+                sum_clip_actual_duration_s += clip_actual_duration_s;
+                all_clips_drained = all_clips_drained && clip.drain_completed;
+
+                std::string clip_manifest_error;
+                if (!orange::session::write_recording_session_manifest(
+                        (std::filesystem::path(clip.recording_folder) /
+                         "clip_manifest.json").string(),
+                        orange::session::build_recording_clip_manifest(clip_manifest),
+                        &clip_manifest_error)) {
+                    std::cerr << clip_manifest_error << std::endl;
+                    stop_headless_frame_ipc_managers(frame_ipc_managers);
+                    stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+                    clear_headless_frame_ipc_managers(frame_ipc_managers);
+                    return 1;
+                }
+                clip_options.push_back(std::move(clip_manifest));
+            }
+
+            orange::session::RollingRecordingSessionManifestOptions manifest_options;
+            manifest_options.producer = "orange_headless";
+            manifest_options.session_id =
+                std::filesystem::path(active_record_folder).filename().string();
+            manifest_options.created_at_utc = session_started_at_utc;
+            manifest_options.updated_at_utc = session_finished_at_utc;
+            manifest_options.recording_folder = active_record_folder;
+            manifest_options.status =
+                (recording_started && recording_drain_completed && all_clips_drained)
+                    ? "completed"
+                    : "incomplete";
+            manifest_options.requested_stream_duration_seconds = options.duration_seconds;
+            manifest_options.stream_start_delay_seconds = options.stream_start_delay_seconds;
+            manifest_options.stream_started_at_utc = session_started_at_utc;
+            manifest_options.stream_finished_at_utc = session_finished_at_utc;
+            manifest_options.stream_actual_elapsed_s =
+                std::chrono::duration<double>(session_finished_time - run_start_time).count();
+            manifest_options.stream_interrupted = quit_server;
+            manifest_options.recording_control = {
+                options.recording_control.record_for_seconds,
+                options.recording_control.clip_seconds
+            };
+            manifest_options.recording_started = recording_started;
+            manifest_options.recording_started_at_utc = recording_started_at_utc;
+            manifest_options.recording_started_at_elapsed_s =
+                elapsed_since_run_start(recording_start_time);
+            manifest_options.recording_stop_requested =
+                recording_stop_request_time.time_since_epoch().count() > 0;
+            manifest_options.recording_stop_requested_at_utc = recording_stop_requested_at_utc;
+            manifest_options.recording_stop_requested_at_elapsed_s =
+                elapsed_since_run_start(recording_stop_request_time);
+            manifest_options.recording_stop_reason = recording_stop_reason;
+            manifest_options.recording_drain_completed = recording_drain_completed;
+            manifest_options.recording_drained_at_utc = recording_drained_at_utc;
+            manifest_options.recording_drained_at_elapsed_s =
+                elapsed_since_run_start(recording_drain_done_time);
+            manifest_options.actual_recording_duration_s = actual_recording_duration_s;
+            manifest_options.drain_duration_s = drain_duration_s;
+            manifest_options.sum_clip_actual_duration_s = sum_clip_actual_duration_s;
+            manifest_options.camera_serials = std::move(camera_serials);
+            manifest_options.clips = std::move(clip_options);
+            manifest =
+                orange::session::build_rolling_clip_recording_session_manifest(manifest_options);
+        } else {
+            orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
+            manifest_options.producer = "orange_headless";
+            manifest_options.session_id = std::filesystem::path(active_record_folder).filename().string();
+            manifest_options.created_at_utc = session_started_at_utc;
+            manifest_options.updated_at_utc = session_finished_at_utc;
+            manifest_options.recording_folder = active_record_folder;
+            manifest_options.status =
+                (recording_started && recording_drain_completed) ? "completed" : "incomplete";
+            manifest_options.requested_stream_duration_seconds = options.duration_seconds;
+            manifest_options.stream_start_delay_seconds = options.stream_start_delay_seconds;
+            manifest_options.stream_started_at_utc = session_started_at_utc;
+            manifest_options.stream_finished_at_utc = session_finished_at_utc;
+            manifest_options.stream_actual_elapsed_s =
+                std::chrono::duration<double>(session_finished_time - run_start_time).count();
+            manifest_options.stream_interrupted = quit_server;
+            manifest_options.recording_control = {
+                options.recording_control.record_for_seconds,
+                options.recording_control.clip_seconds
+            };
+            manifest_options.recording_started = recording_started;
+            manifest_options.recording_started_at_utc = recording_started_at_utc;
+            manifest_options.recording_started_at_elapsed_s =
+                elapsed_since_run_start(recording_start_time);
+            manifest_options.recording_stop_requested =
+                recording_stop_request_time.time_since_epoch().count() > 0;
+            manifest_options.recording_stop_requested_at_utc = recording_stop_requested_at_utc;
+            manifest_options.recording_stop_requested_at_elapsed_s =
+                elapsed_since_run_start(recording_stop_request_time);
+            manifest_options.recording_stop_reason = recording_stop_reason;
+            manifest_options.recording_drain_completed = recording_drain_completed;
+            manifest_options.recording_drained_at_utc = recording_drained_at_utc;
+            manifest_options.recording_drained_at_elapsed_s =
+                elapsed_since_run_start(recording_drain_done_time);
+            manifest_options.actual_recording_duration_s = actual_recording_duration_s;
+            manifest_options.drain_duration_s = drain_duration_s;
+            manifest_options.timed_stop_hit = timed_stop_hit;
+            manifest_options.cameras = std::move(camera_artifacts);
+            manifest =
+                orange::session::build_single_clip_recording_session_manifest(manifest_options);
+        }
 
         std::string manifest_error;
         if (!orange::session::write_recording_session_manifest(
@@ -7315,8 +7849,13 @@ nlohmann::json build_experiment_camera_result(const ExperimentSpec& spec,
         read_json_file(std::filesystem::path(run.recording_folder) / "ptp_sync_summary.json", &out, &error);
         return out;
     }();
+    const bool rolling_clip_recording =
+        run.options.recording_control.clip_seconds > 0 &&
+        run.options.recording_control.record_for_seconds > 0;
     const ExperimentVideoArtifactStats video_stats =
-        summarize_video_artifact(run.recording_folder, camera_serial);
+        rolling_clip_recording
+            ? summarize_rolling_video_artifacts(run.recording_folder, camera_serial)
+            : summarize_video_artifact(run.recording_folder, camera_serial);
     yolo_event_log::SyntheticYoloEventConfig yolo_summary_config =
         run.options.yolo_event_log;
     if (run.options.yolo_worker.enabled() && !yolo_summary_config.enabled()) {

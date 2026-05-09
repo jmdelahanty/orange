@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -386,24 +387,30 @@ def verify_run_row(
         require(bool(row.get("video_content_valid")), "runs.json video_content_checked is true but video_content_valid is false")
 
 
-def verify(args: argparse.Namespace) -> None:
-    target_path = Path(args.path).expanduser()
-    run_folder, experiment_root, run_entry = load_target(target_path, args.run_id)
-    manifest_path = run_folder / "recording_session.json"
-    manifest = read_json(manifest_path)
+def metadata_frame_ids(path: Path) -> list[int]:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except FileNotFoundError as exc:
+        raise VerificationError(f"metadata artifact missing: {path}") from exc
+    frame_ids: list[int] = []
+    for line in lines[1:]:
+        line = line.strip()
+        if not line:
+            continue
+        frame_ids.append(as_int(line.split(",", 1)[0], f"metadata frame_id in {path}"))
+    return frame_ids
 
-    schema_id = manifest.get("schema_id")
-    require(schema_id in ACCEPTED_SCHEMA_IDS, f"unexpected recording_session schema_id: {schema_id!r}")
-    require(manifest.get("schema_version") == 1, f"unexpected schema_version: {manifest.get('schema_version')!r}")
-    require(manifest.get("mode") == "single_clip", f"expected mode single_clip, got {manifest.get('mode')!r}")
-    require(manifest.get("status") == "completed", f"expected completed manifest, got {manifest.get('status')!r}")
 
+def verify_common_manifest(
+    manifest: dict[str, Any],
+    duration_tolerance_s: float,
+) -> tuple[list[str], dict[str, Any], float, float, dict[str, Any]]:
     recording_control = manifest.get("recording_control")
     require(isinstance(recording_control, dict), "recording_session.json missing recording_control")
     record_for_seconds = as_float(recording_control.get("record_for_seconds"), "recording_control.record_for_seconds")
     clip_seconds = as_float(recording_control.get("clip_seconds"), "recording_control.clip_seconds")
     require(record_for_seconds > 0, "recording_control.record_for_seconds must be positive")
-    require(clip_seconds == 0, "current timed-recording verifier expects clip_seconds = 0")
 
     recording = manifest.get("recording")
     require(isinstance(recording, dict), "recording_session.json missing recording")
@@ -416,11 +423,31 @@ def verify(args: argparse.Namespace) -> None:
         "recording.actual_recording_duration_s",
     )
     require(
-        abs(actual_recording_duration - record_for_seconds) <= args.duration_tolerance_s,
+        abs(actual_recording_duration - record_for_seconds) <= duration_tolerance_s,
         (
             "recording.actual_recording_duration_s outside tolerance "
             f"({actual_recording_duration:.3f}s vs requested {record_for_seconds:.3f}s)"
         ),
+    )
+    return manifest_camera_serials(manifest), recording_control, record_for_seconds, clip_seconds, recording
+
+
+def verify_single_clip(
+    args: argparse.Namespace,
+    run_folder: Path,
+    experiment_root: Path | None,
+    run_entry: dict[str, Any] | None,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    cameras: list[str],
+    record_for_seconds: float,
+    clip_seconds: float,
+    recording: dict[str, Any],
+) -> None:
+    require(clip_seconds == 0, "single-clip timed verifier expects clip_seconds = 0")
+    actual_recording_duration = as_float(
+        recording.get("actual_recording_duration_s"),
+        "recording.actual_recording_duration_s",
     )
 
     clips = manifest.get("clips")
@@ -441,7 +468,7 @@ def verify(args: argparse.Namespace) -> None:
         "clip.requested_duration_s does not match recording_control.record_for_seconds",
     )
 
-    cameras = select_cameras(manifest, args.camera)
+    cameras = [camera for camera in cameras if not args.camera or camera == args.camera]
     verify_clip_artifact_coherence(run_folder, manifest, clip, cameras)
 
     ffprobe_durations: dict[str, float] = {}
@@ -485,6 +512,158 @@ def verify(args: argparse.Namespace) -> None:
     print(f"  manifest actual: {actual_recording_duration:.3f}s")
     for camera, duration in ffprobe_durations.items():
         print(f"  Cam{camera} ffprobe video: {duration:.3f}s")
+
+
+def verify_rolling_clips(
+    args: argparse.Namespace,
+    run_folder: Path,
+    experiment_root: Path | None,
+    run_entry: dict[str, Any] | None,
+    manifest_path: Path,
+    manifest: dict[str, Any],
+    cameras: list[str],
+    record_for_seconds: float,
+    clip_seconds: float,
+    recording: dict[str, Any],
+) -> None:
+    require(clip_seconds > 0, "rolling-clip manifest requires clip_seconds > 0")
+    selected_cameras = [camera for camera in cameras if not args.camera or camera == args.camera]
+    require(bool(selected_cameras), f"camera {args.camera} not listed in recording_session.json cameras={cameras}")
+    clips = manifest.get("clips")
+    require(isinstance(clips, list) and bool(clips), "rolling manifest has no clips")
+    if record_for_seconds > clip_seconds:
+        require(len(clips) >= 2, "rolling manifest expected at least two clips")
+    expected_min_clips = max(1, math.ceil((record_for_seconds - args.duration_tolerance_s) / clip_seconds))
+    require(
+        len(clips) >= expected_min_clips,
+        f"rolling manifest has too few clips: {len(clips)} < {expected_min_clips}",
+    )
+
+    ffprobe_totals: dict[str, float] = {camera: 0.0 for camera in selected_cameras}
+    previous_last_frame_id: dict[str, int] = {}
+    for expected_index, clip in enumerate(clips):
+        require(isinstance(clip, dict), f"clip {expected_index} is not an object")
+        require(clip.get("clip_index") == expected_index, f"unexpected clip_index: {clip.get('clip_index')!r}")
+        require(clip.get("clip_id") == f"clip_{expected_index:06d}", f"unexpected clip_id: {clip.get('clip_id')!r}")
+        require(bool(clip.get("drain_completed")), f"clip {expected_index} drain_completed is false")
+        require(clip.get("status") == "completed", f"clip {expected_index} status is {clip.get('status')!r}")
+        if expected_index < len(clips) - 1:
+            require(clip.get("stop_reason") == "clip_seconds_elapsed", f"unexpected rollover stop_reason: {clip.get('stop_reason')!r}")
+        else:
+            require(clip.get("stop_reason") == "record_for_seconds_elapsed", f"unexpected final stop_reason: {clip.get('stop_reason')!r}")
+
+        clip_folder = Path(str(clip.get("recording_folder", "")))
+        require(bool(str(clip_folder)), f"clip {expected_index} missing recording_folder")
+        require(clip_folder.exists(), f"clip folder missing: {clip_folder}")
+        clip_manifest_path = clip_folder / "clip_manifest.json"
+        clip_manifest = read_json(clip_manifest_path)
+        require(clip_manifest.get("schema_id") == "orange.recording_clip", f"unexpected clip manifest schema: {clip_manifest.get('schema_id')!r}")
+        require(clip_manifest.get("clip_id") == clip.get("clip_id"), "clip manifest clip_id mismatch")
+
+        for camera in selected_cameras:
+            video_path = manifest_artifact_path(run_folder, clip, "videos", camera)
+            metadata_path = manifest_artifact_path(run_folder, clip, "metadata", camera)
+            keyframe_path = manifest_artifact_path(run_folder, clip, "keyframes", camera)
+            require(video_path.exists(), f"video artifact missing for camera {camera}: {video_path}")
+            require(metadata_path.exists(), f"metadata artifact missing for camera {camera}: {metadata_path}")
+            require(keyframe_path.exists(), f"keyframe artifact missing for camera {camera}: {keyframe_path}")
+            duration = ffprobe_duration(video_path, args.ffprobe)
+            require(duration > 0, f"ffprobe duration is zero for camera {camera}: {video_path}")
+            ffprobe_totals[camera] += duration
+
+            frame_ids = metadata_frame_ids(metadata_path)
+            require(bool(frame_ids), f"metadata has no frame rows for camera {camera}: {metadata_path}")
+            for left, right in zip(frame_ids, frame_ids[1:]):
+                require(right == left + 1, f"metadata frame_id gap inside {metadata_path}: {left} -> {right}")
+            if camera in previous_last_frame_id:
+                require(
+                    frame_ids[0] == previous_last_frame_id[camera] + 1,
+                    (
+                        f"recording_frame_id is not continuous across clips for camera {camera}: "
+                        f"{previous_last_frame_id[camera]} -> {frame_ids[0]}"
+                    ),
+                )
+            previous_last_frame_id[camera] = frame_ids[-1]
+
+    for camera, total_duration in ffprobe_totals.items():
+        require(
+            abs(total_duration - record_for_seconds) <= args.duration_tolerance_s,
+            (
+                f"total rolling video duration outside tolerance for camera {camera} "
+                f"({total_duration:.3f}s vs requested {record_for_seconds:.3f}s)"
+            ),
+        )
+        row = select_camera_row(run_entry, camera)
+        if run_entry is not None:
+            require(row is not None, f"runs.json has no camera_result for camera {camera}")
+            verify_run_row(
+                row,
+                camera,
+                record_for_seconds,
+                clip_seconds,
+                manifest_path,
+                total_duration,
+                args.duration_tolerance_s,
+            )
+
+    run_id = run_entry.get("run_id") if run_entry else run_folder.name
+    experiment_text = f"\n  experiment: {experiment_root}" if experiment_root else ""
+    print("Rolling timed recording verification passed")
+    print(f"  run: {run_id}")
+    print(f"  folder: {run_folder}{experiment_text}")
+    print(f"  cameras: {', '.join(selected_cameras)}")
+    print(f"  requested: {record_for_seconds:.3f}s")
+    print(f"  clips: {len(clips)}")
+    for camera, duration in ffprobe_totals.items():
+        print(f"  Cam{camera} total ffprobe video: {duration:.3f}s")
+
+
+def verify(args: argparse.Namespace) -> None:
+    target_path = Path(args.path).expanduser()
+    run_folder, experiment_root, run_entry = load_target(target_path, args.run_id)
+    manifest_path = run_folder / "recording_session.json"
+    manifest = read_json(manifest_path)
+
+    schema_id = manifest.get("schema_id")
+    require(schema_id in ACCEPTED_SCHEMA_IDS, f"unexpected recording_session schema_id: {schema_id!r}")
+    require(manifest.get("schema_version") == 1, f"unexpected schema_version: {manifest.get('schema_version')!r}")
+    require(manifest.get("status") == "completed", f"expected completed manifest, got {manifest.get('status')!r}")
+    cameras, _recording_control, record_for_seconds, clip_seconds, recording = verify_common_manifest(
+        manifest,
+        args.duration_tolerance_s,
+    )
+    if args.camera:
+        require(args.camera in cameras, f"camera {args.camera} not listed in recording_session.json cameras={cameras}")
+
+    mode = manifest.get("mode")
+    if mode == "single_clip":
+        verify_single_clip(
+            args,
+            run_folder,
+            experiment_root,
+            run_entry,
+            manifest_path,
+            manifest,
+            cameras,
+            record_for_seconds,
+            clip_seconds,
+            recording,
+        )
+    elif mode == "rolling_clips":
+        verify_rolling_clips(
+            args,
+            run_folder,
+            experiment_root,
+            run_entry,
+            manifest_path,
+            manifest,
+            cameras,
+            record_for_seconds,
+            clip_seconds,
+            recording,
+        )
+    else:
+        raise VerificationError(f"unexpected recording_session mode: {mode!r}")
 
 
 def main() -> int:

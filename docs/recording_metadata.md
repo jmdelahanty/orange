@@ -697,20 +697,24 @@ Current schema:
 
 Notes:
 
-- This is a first single-clip manifest, not the future rolling-clip session
-  manifest. The broader session/clip contract is documented in
+- The broader session/clip contract is documented in
   `docs/recording_session_manifest_contract.md`.
-- The single-clip manifest is built by the shared
-  `src/session/recording_session.*` helper so headless, GUI/session, and future
-  external-recorder paths can converge on one `orange.recording_session`
-  contract.
+- The manifest is built by the shared `src/session/recording_session.*` helper
+  so headless, GUI/session, and future external-recorder paths can converge on
+  one `orange.recording_session` contract.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
-  layout. Values above zero are rejected in the current implementation.
+  layout.
+- `clip_seconds > 0` is implemented for headless experimental specs as
+  conservative drain/rearm rolling clips. Each clip writes a
+  `clip_manifest.json` plus per-camera MP4/metadata/keyframe files under
+  `clips/clip_000000`, `clips/clip_000001`, etc.
+- Rolling clip metadata keeps `frame_id` session-continuous across clips, while
+  each MP4 uses a clip-local timeline starting at zero.
 - The manifest records the control-plane timing of the requested stop/drain.
   Consumers should use each `Cam<serial>.mp4` container duration when they need
   exact encoded media duration.
 - Use `scripts/verify_timed_recording.py <experiment_root>` to check the
-  current single-clip timed-recording contract against `recording_session.json`,
+  current timed-recording contract against `recording_session.json`,
   `runs.json`, and `ffprobe`.
 
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value

@@ -145,6 +145,8 @@ struct CameraControl
     bool sync_camera = false;
     std::mutex recording_folder_mutex;
     std::string recording_folder;
+    std::string recording_output_folder;
+    bool preserve_recording_session_state = false;
 };
 
 struct CameraResources {

@@ -3,24 +3,33 @@
 ## Purpose
 
 This document defines the recording-session artifact contract Orange should use
-for both the current single-video layout and the future rolling-clip layout.
-The shared C++ helper for the current single-clip manifest lives in
+for the compatibility single-video layout and the experimental headless
+rolling-clip layout. The shared C++ helper lives in
 `src/session/recording_session.*`; headless recording uses that helper so the
-GUI/session path and future external-recorder supervision can converge on the
-same contract instead of carrying separate manifest shapes.
+GUI/session path and external-recorder supervision can converge on the same
+manifest shapes instead of carrying separate contracts.
 
-The immediate implementation rule is conservative:
+Current implementation rule:
 
-- `clip_seconds = 0` keeps the current flat recording layout.
-- `clip_seconds > 0` is rejected with a clear error until rollover is actually
-  implemented.
+- `clip_seconds = 0` keeps the existing flat single-video layout.
+- `clip_seconds > 0` is implemented for headless `fixed.recording_control`
+  only, using conservative drain/rearm rollover.
+- GUI/session rolling supervision and external-recorder rolling supervision are
+  still future work.
 
-This prevents consumers from treating a partially implemented rolling layout as
-production-ready.
+The current headless rolling implementation is intentionally not seamless:
 
-## Modes
+- it stops recording at the clip boundary,
+- waits for the active encoders/writers to drain,
+- writes the finalized clip manifest,
+- arms the next clip folder,
+- resumes recording while acquisition continues.
 
-### Single-Video Layout
+The manifest records this with `rollover.implementation =
+"headless_drain_rearm"`, `seamless_writer_switch = false`, and
+`records_during_drain_gap = false`.
+
+## Single-Video Layout
 
 When `clip_seconds = 0`, keep the existing structure:
 
@@ -40,25 +49,22 @@ When `clip_seconds = 0`, keep the existing structure:
 ```
 
 This remains the compatibility layout for existing Orange, Citrus, and analysis
-consumers. The current headless `recording_control.record_for_seconds` slice
-uses this layout and writes a `recording_session.json` manifest with
+consumers. Headless `recording_control.record_for_seconds` with
+`clip_seconds = 0` writes `recording_session.json` with
 `mode = "single_clip"`.
 
-### Rolling-Clip Layout
+## Rolling-Clip Layout
 
-When rollover is implemented and `clip_seconds > 0`, use a parent session folder
-with per-clip subfolders:
+When headless `recording_control.clip_seconds > 0`, the parent session folder is
+the discovery root and each clip gets its own subfolder:
 
 ```text
 <recording_folder>/
   recording_session.json
   recording_snapshot.json
   ptp_sync_summary.json
-  session_events.jsonl
-  Cam2010095_session_frames.csv
-  Cam2010095_session_status.csv
-  Cam2010096_session_frames.csv
-  Cam2010096_session_status.csv
+  Cam2010095_pipeline_perf.csv
+  Cam2010096_pipeline_perf.csv
 
   clips/
     clip_000000/
@@ -80,199 +86,177 @@ with per-clip subfolders:
       Cam2010096_keyframe.json
 ```
 
-Rationale:
+Future seamless rollover should add session-level frame/status CSVs. The current
+headless drain/rearm slice keeps cross-clip continuity in the per-clip metadata
+and the parent `recording_session.json`.
 
-- Each clip folder is self-contained enough to inspect or copy independently.
-- The parent folder remains the session discovery root.
-- Existing single-video recordings keep their current flat file contract.
-- Session-level CSVs provide cross-clip continuity without forcing consumers to
-  scan every per-clip metadata file first.
+## Rolling Session Manifest
 
-## Session Manifest
-
-Future rolling mode should use this top-level shape:
+The top-level rolling manifest uses this shape:
 
 ```json
 {
   "schema_id": "orange.recording_session",
   "schema_version": 1,
-  "session_id": "2026_05_07_21_30_00",
+  "producer": "orange_headless",
+  "session_id": "run_0001__codec_hevc__...",
   "mode": "rolling_clips",
   "status": "completed",
   "recording_folder": "/abs/path/to/session",
-  "created_at_utc": "2026-05-07T21:30:00Z",
-  "updated_at_utc": "2026-05-09T21:30:03Z",
+  "created_at_utc": "2026-05-09T02:32:10Z",
+  "updated_at_utc": "2026-05-09T02:32:31Z",
+  "cameras": ["2010096"],
   "recording_control": {
-    "record_for_seconds": 172800,
-    "clip_seconds": 1800,
-    "rollover_policy": "gop_boundary",
-    "allow_frame_gap_between_clips": false,
-    "align_to_wall_clock": false
+    "record_for_seconds": 12,
+    "clip_seconds": 6
   },
-  "timing": {
-    "started_at_utc": "2026-05-07T21:30:00Z",
-    "stop_requested_at_utc": "2026-05-09T21:30:00Z",
-    "finalized_at_utc": "2026-05-09T21:30:03Z",
-    "actual_recording_duration_s": 172800.2,
-    "drain_duration_s": 3.1
+  "rollover": {
+    "implementation": "headless_drain_rearm",
+    "seamless_writer_switch": false,
+    "records_during_drain_gap": false,
+    "note": "headless rolling clips currently rotate by draining the current clip and arming the next clip; seamless GOP-boundary writer switching is not implemented yet."
   },
-  "cameras": {
-    "2010095": {
-      "camera_serial": "2010095",
-      "snapshot_camera_key": "2010095",
-      "session_frames_csv": "Cam2010095_session_frames.csv",
-      "session_status_csv": "Cam2010095_session_status.csv"
-    },
-    "2010096": {
-      "camera_serial": "2010096",
-      "snapshot_camera_key": "2010096",
-      "session_frames_csv": "Cam2010096_session_frames.csv",
-      "session_status_csv": "Cam2010096_session_status.csv"
-    }
+  "recording": {
+    "started": true,
+    "stop_requested": true,
+    "stop_reason": "record_for_seconds_elapsed",
+    "drain_completed": true,
+    "actual_recording_duration_s": 12.0,
+    "sum_clip_actual_duration_s": 11.9
+  },
+  "stream": {
+    "requested_duration_seconds": 20,
+    "actual_elapsed_s": 20.0,
+    "interrupted": false
   },
   "clips": [
     {
       "clip_index": 0,
       "clip_id": "clip_000000",
-      "path": "clips/clip_000000/clip_manifest.json",
       "directory": "clips/clip_000000",
+      "status": "completed",
       "start_reason": "recording_start",
       "stop_reason": "clip_seconds_elapsed",
-      "status": "finalized"
+      "drain_completed": true,
+      "final_clip": false
     },
     {
       "clip_index": 1,
       "clip_id": "clip_000001",
-      "path": "clips/clip_000001/clip_manifest.json",
       "directory": "clips/clip_000001",
+      "status": "completed",
       "start_reason": "rollover",
-      "stop_reason": "clip_seconds_elapsed",
-      "status": "finalized"
+      "stop_reason": "record_for_seconds_elapsed",
+      "drain_completed": true,
+      "final_clip": true
     }
   ]
 }
 ```
 
-The top-level session manifest is the stable discovery entrypoint. It should not
-duplicate all per-camera frame ranges for every clip; that belongs in each
-`clip_manifest.json` and the session frame index CSVs.
+The top-level manifest is the stable discovery entrypoint. Consumers should use
+the `clips[*].directory` entries to enumerate clip folders and then read each
+clip's manifest for per-camera frame ranges.
 
 ## Clip Manifest
 
-Each rolling clip should write:
+Each rolling clip writes:
 
 ```text
 clips/clip_000000/clip_manifest.json
 ```
 
-Recommended shape:
+Shape:
 
 ```json
 {
   "schema_id": "orange.recording_clip",
   "schema_version": 1,
-  "session_id": "2026_05_07_21_30_00",
+  "producer": "orange_headless",
+  "session_id": "run_0001__codec_hevc__...",
   "clip_id": "clip_000000",
   "clip_index": 0,
-  "status": "finalized",
+  "status": "completed",
   "directory": "clips/clip_000000",
-  "started_at_utc": "2026-05-07T21:30:00Z",
-  "stop_requested_at_utc": "2026-05-07T22:00:00Z",
-  "finalized_at_utc": "2026-05-07T22:00:01Z",
+  "recording_folder": "/abs/path/to/session/clips/clip_000000",
   "start_reason": "recording_start",
   "stop_reason": "clip_seconds_elapsed",
-  "rollover_boundary": {
-    "policy": "gop_boundary",
-    "requested_clip_seconds": 1800,
-    "boundary_recording_frame_id": 180000,
-    "idempotency_key": "clip_000000_to_clip_000001"
-  },
-  "cameras": {
-    "2010095": {
-      "status": "finalized",
-      "video": "Cam2010095.mp4",
-      "metadata": "Cam2010095_meta.csv",
-      "keyframes": "Cam2010095_keyframe.json",
+  "requested_duration_s": 6.0,
+  "actual_duration_s": 6.0,
+  "drain_completed": true,
+  "drain_duration_s": 0.03,
+  "cameras": ["2010096"],
+  "camera_artifacts": {
+    "2010096": {
+      "video": "/abs/path/to/session/clips/clip_000000/Cam2010096.mp4",
+      "metadata": "/abs/path/to/session/clips/clip_000000/Cam2010096_meta.csv",
+      "keyframes": "/abs/path/to/session/clips/clip_000000/Cam2010096_keyframe.json",
+      "frame_count": 600,
       "first_recording_frame_id": 1,
-      "last_recording_frame_id": 180000,
-      "first_clip_frame_id": 1,
-      "last_clip_frame_id": 180000,
-      "first_camera_frame_id": 123456,
-      "last_camera_frame_id": 303455,
-      "frame_count": 180000,
-      "frame_gaps": 0,
-      "container_duration_s": 1800.0
+      "last_recording_frame_id": 600,
+      "recording_frame_id_gaps": 0
     }
   }
 }
 ```
 
-## CSV Roles
-
-Per-clip, per-camera metadata:
+Per-clip `Cam<serial>_meta.csv` currently uses the existing header:
 
 ```text
-clips/clip_000000/Cam2010095_meta.csv
+frame_id,timestamp,timestamp_sys
 ```
 
-This describes the encoded frames in that one MP4:
+Here `frame_id` is the session-continuous `recording_frame_id`. The MP4
+container timeline is clip-local and starts at zero for each clip, even though
+metadata frame IDs continue across clips.
 
-- `recording_frame_id`
-- `clip_frame_id`
-- `camera_frame_id`
-- camera and host timestamps
-- keyframe/GOP fields when available
-- per-frame recording diagnostics needed to interpret that MP4
-
-Session-level, per-camera frame index:
-
-```text
-Cam2010095_session_frames.csv
-```
-
-This is the cross-clip join table:
-
-- `recording_frame_id`
-- `clip_id`
-- `clip_frame_id`
-- `camera_frame_id`
-- timestamp fields
-- relative video path
-
-Session-level, per-camera status:
-
-```text
-Cam2010095_session_status.csv
-```
-
-This is low-rate health/status telemetry across the whole recording session:
-
-- acquisition FPS
-- encode FPS
-- queue depths
-- dropped-frame and error counters
-- PTP/cadence summaries
-- encoder slow/fail counters
-
-## Frame-Identity Rules
+## Frame Identity
 
 - `recording_frame_id` is session-continuous across clips.
-- `clip_frame_id` resets to `1` for each clip.
-- `camera_frame_id` remains the camera/vendor frame id.
-- Consumers should join across clips with `recording_frame_id` first.
-- A clip boundary must not intentionally create a `recording_frame_id` gap.
+- MP4 presentation timestamps are clip-local and start at zero for each MP4.
+- `camera_frame_id` is not in the current per-clip CSV; camera/vendor frame
+  continuity is still summarized by pipeline and run health fields.
+- Consumers should join across clips with `recording_frame_id`.
+- Current drain/rearm rollover may produce a small intentional recording gap
+  while the previous clip drains and the next writer opens. The manifest marks
+  this with `records_during_drain_gap = false`.
 
-## Current Implementation Status
+## Validation
 
-- Single-video headless `recording_control.record_for_seconds` is implemented.
-- Current single-video layout remains flat for compatibility.
-- Current headless timed recording writes `recording_session.json` with
-  `schema_id = "orange.recording_session"`, `producer = "orange_headless"`,
-  and `mode = "single_clip"`.
-- `clip_seconds > 0` is rejected during experiment-spec validation with a clear
-  "rolling clips are not implemented yet" error.
-- `scripts/verify_timed_recording.py` validates the single-clip manifest,
-  session/clip artifact coherence, per-camera video/metadata/keyframe presence,
-  runs.json health fields when available, and encoded video duration.
-- Rolling writer rollover, per-clip directories, session frame CSVs, and
-  session status CSVs are future work.
+Use:
+
+```bash
+scripts/verify_timed_recording.py <experiment_root>
+```
+
+The verifier now handles both `mode = "single_clip"` and
+`mode = "rolling_clips"`. For rolling clips it checks:
+
+- parent `recording_session.json`,
+- per-clip `clip_manifest.json`,
+- per-camera clip MP4/metadata/keyframe paths,
+- per-clip and cross-clip `recording_frame_id` continuity,
+- `runs.json` health/pass fields when present,
+- total ffprobe video duration within tolerance.
+
+Latest validated headless rolling smoke:
+
+- artifact:
+  `/tmp/orange_rolling_spec_validation_bt11/2010096_headless_rolling_clip_smoke_a16_gpu5_bt11`
+- `record_for_seconds = 12`, `clip_seconds = 6`, stream duration `20 s`
+- `summary.json`: `pass_runs = 1`, `fail_runs = 0`
+- camera health: `0` frame-ID gaps, `0` GetFrame errors, `0` encode failures,
+  `0` preprocess drops
+- clips: `clip_000000` ffprobe duration `6.000 s`, `clip_000001` `6.000 s`
+- both clips start with keyframe frame `0` after forcing IDR/SPS/PPS on each
+  newly opened clip
+- verifier total: `12.000 s` for a requested `12.000 s`
+
+## Remaining Work
+
+- Implement seamless GOP-boundary writer switching so recording continues during
+  rollover without the conservative drain/rearm gap.
+- Add GUI/session controls and validation for rolling clips.
+- Add external-recorder rolling supervision using the same manifest contract.
+- Add session-level frame/status CSVs once seamless rollover needs richer
+  cross-clip indexing.

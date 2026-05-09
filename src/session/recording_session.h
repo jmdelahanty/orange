@@ -12,9 +12,9 @@
 
 namespace orange::session {
 
-inline constexpr const char* kRollingClipsNotImplementedReason =
-    "recording_control.clip_seconds > 0 requests rolling clips, but rollover is not "
-    "implemented yet. Use clip_seconds=0 for the current single-video layout.";
+inline constexpr const char* kConservativeRollingClipsNote =
+    "headless rolling clips currently rotate by draining the current clip and "
+    "arming the next clip; seamless GOP-boundary writer switching is not implemented yet.";
 
 struct RecordingSessionState {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
@@ -47,6 +47,10 @@ struct RecordingSessionCameraArtifact {
     std::string video_path;
     std::string metadata_path;
     std::string keyframe_path;
+    uint64_t frame_count = 0;
+    uint64_t first_recording_frame_id = 0;
+    uint64_t last_recording_frame_id = 0;
+    uint64_t recording_frame_id_gaps = 0;
 };
 
 struct SingleClipRecordingSessionManifestOptions {
@@ -79,12 +83,72 @@ struct SingleClipRecordingSessionManifestOptions {
     std::vector<RecordingSessionCameraArtifact> cameras;
 };
 
+struct RollingClipManifestOptions {
+    std::string producer = "orange";
+    std::string session_id;
+    int clip_index = 0;
+    std::string clip_id;
+    std::string recording_folder;
+    std::string directory;
+    std::string status = "incomplete";
+    std::string start_reason;
+    std::string stop_reason;
+    std::string started_at_utc;
+    double started_at_elapsed_s = 0.0;
+    std::string stop_requested_at_utc;
+    double stop_requested_at_elapsed_s = 0.0;
+    std::string finalized_at_utc;
+    double finalized_at_elapsed_s = 0.0;
+    double requested_duration_s = 0.0;
+    double actual_duration_s = 0.0;
+    double drain_duration_s = 0.0;
+    bool timed_stop_hit = false;
+    bool final_clip = false;
+    bool drain_completed = false;
+    std::vector<RecordingSessionCameraArtifact> cameras;
+};
+
+struct RollingRecordingSessionManifestOptions {
+    std::string producer = "orange";
+    std::string session_id;
+    std::string created_at_utc;
+    std::string updated_at_utc;
+    std::string recording_folder;
+    std::string status = "incomplete";
+    int requested_stream_duration_seconds = 0;
+    int stream_start_delay_seconds = 0;
+    std::string stream_started_at_utc;
+    std::string stream_finished_at_utc;
+    double stream_actual_elapsed_s = 0.0;
+    bool stream_interrupted = false;
+    RecordingControlConfig recording_control;
+    bool recording_started = false;
+    std::string recording_started_at_utc;
+    double recording_started_at_elapsed_s = 0.0;
+    bool recording_stop_requested = false;
+    std::string recording_stop_requested_at_utc;
+    double recording_stop_requested_at_elapsed_s = 0.0;
+    std::string recording_stop_reason;
+    bool recording_drain_completed = false;
+    std::string recording_drained_at_utc;
+    double recording_drained_at_elapsed_s = 0.0;
+    double actual_recording_duration_s = 0.0;
+    double drain_duration_s = 0.0;
+    double sum_clip_actual_duration_s = 0.0;
+    std::vector<std::string> camera_serials;
+    std::vector<RollingClipManifestOptions> clips;
+};
+
 nlohmann::json build_recording_control_json(const RecordingControlConfig& config);
 bool validate_recording_control_config(const RecordingControlConfig& config,
                                        std::string* error_out = nullptr,
                                        const std::string& context = {});
 nlohmann::json build_single_clip_recording_session_manifest(
     const SingleClipRecordingSessionManifestOptions& options);
+nlohmann::json build_recording_clip_manifest(
+    const RollingClipManifestOptions& options);
+nlohmann::json build_rolling_clip_recording_session_manifest(
+    const RollingRecordingSessionManifestOptions& options);
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
                                       std::string* error_out = nullptr);

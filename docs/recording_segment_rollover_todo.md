@@ -30,14 +30,17 @@ When recording is active, automatically start a new segment every N minutes (def
 
 - Recording is a global toggle (`record_video`) with drain state (`recording_draining`) and active recorder counting.
 - Each recorder opens one output set and finalizes when recording turns off.
-- No periodic segment rollover exists today.
-- The planned session/clip artifact contract is now documented in
-  `docs/recording_session_manifest_contract.md`. Until rollover lands,
-  `clip_seconds > 0` is rejected during headless experiment-spec validation.
-- The current single-clip manifest builder and `clip_seconds > 0` validation
-  live in the shared `src/session/recording_session.*` module so future GUI,
-  headless, and external-recorder implementations do not fork the session
-  contract.
+- First headless-only conservative rolling clips now exist behind
+  `fixed.recording_control.record_for_seconds > 0` and
+  `fixed.recording_control.clip_seconds > 0`.
+- This first slice is not seamless: the headless runner stops recording at a
+  clip boundary, waits for encoder/writer drain, writes `clip_manifest.json`,
+  arms the next clip folder, then resumes recording while acquisition continues.
+- The session/clip artifact contract is documented in
+  `docs/recording_session_manifest_contract.md`.
+- The manifest builder and validation live in the shared
+  `src/session/recording_session.*` module so future GUI, headless, and
+  external-recorder implementations do not fork the session contract.
 
 Refs:
 - `src/orange.cpp:1127`
@@ -46,13 +49,31 @@ Refs:
 - `src/crop_and_encode_worker.cpp:202`
 - `src/gpu_video_encoder.cpp:383`
 
-## Audit Update (2026-03-16)
+## Audit Update (2026-05-09)
 
-- Re-checked current runtime behavior: rollover is still not implemented.
-- Recording remains one session-level start/stop toggle driven from the UI in `src/orange.cpp`.
-- Each recorder still opens one writer set when recording starts and finalizes only when recording stops.
-- No session manifest, segment index, rollover timer, or cross-camera boundary coordinator exists in the current code.
-- Note: comments in some encoder paths refer to a new "recording segment", but today that means a fresh manual recording session, not timed rollover during a continuous run.
+- Headless drain/rearm rolling was validated with a one-camera 2010096 smoke:
+  `record_for_seconds = 12`, `clip_seconds = 6`, stream duration `20 s`.
+- Latest artifact:
+  `/tmp/orange_rolling_spec_validation_bt11/2010096_headless_rolling_clip_smoke_a16_gpu5_bt11`.
+- The run passed with `0` camera frame-ID gaps, `0` GetFrame errors,
+  `0` encode failures, and `0` preprocess drops.
+- `scripts/verify_timed_recording.py` passed: two clip manifests, continuous
+  `recording_frame_id` across clips, and total ffprobe duration `12.000 s`
+  for a requested `12.000 s`.
+- The latest validation also fixed the rollover boundary decode issue: each new
+  clip now forces the first submitted NVENC picture to IDR with SPS/PPS, so the
+  second clip does not depend on headers or reference frames from the previous
+  clip.
+- During debugging we also fixed an existing headless thread lifetime bug:
+  the camera thread lambda now captures camera/control pointer values instead
+  of references to `start_camera_thread` stack parameters.
+
+## Remaining Gap
+
+The conservative headless implementation is useful for short bounded
+experiments and contract validation, but it does not satisfy the original
+"without ever dropping frames between clips" requirement. That still needs
+seamless GOP-boundary writer switching or process/external-recorder rollover.
 
 ## Implementation Plan
 
@@ -105,7 +126,11 @@ Refs:
 
 ## Phase 4: Metadata and Discoverability
 
-- [ ] Write per-segment metadata and keyframe sidecars as today, plus session-level index:
+- [x] Write per-clip metadata and keyframe sidecars for headless drain/rearm
+  rolling clips.
+- [x] Write parent `recording_session.json` and per-clip
+  `clip_manifest.json` for headless drain/rearm rolling clips.
+- [ ] Write session-level frame/status indexes for seamless rolling:
   - segment file paths
   - first/last `recording_frame_id`
   - start/end timestamps

@@ -232,10 +232,12 @@ void SharedRecordingOutput::buffer_packets_locked(
                 ? static_cast<int64_t>(output_timestamps[i])
                 : fallback_sample_index;
             if (writer_.video) {
+                const int64_t writer_sample_index =
+                    normalize_writer_sample_index_locked(sample_index);
                 writer_.video->push_packet(
                     const_cast<uint8_t*>(packets[i].data()),
                     static_cast<int>(packets[i].size()),
-                    sample_index);
+                    writer_sample_index);
             }
         }
         if (metadata_row.has_value()) {
@@ -246,6 +248,10 @@ void SharedRecordingOutput::buffer_packets_locked(
     }
 
     const auto append_metadata_row = [&](uint64_t gop_index, const RecordingMetadataRow& row) {
+        if (!next_gop_to_flush_initialized_) {
+            next_gop_to_flush_ = gop_index;
+            next_gop_to_flush_initialized_ = true;
+        }
         auto [it, inserted] = pending_gops_.try_emplace(gop_index);
         PendingGop& pending = it->second;
         if (inserted) {
@@ -263,6 +269,10 @@ void SharedRecordingOutput::buffer_packets_locked(
         const uint64_t gop_index = sample_index >= 0
             ? static_cast<uint64_t>(sample_index) / recording_gop_length_
             : completion_gop_index;
+        if (!next_gop_to_flush_initialized_) {
+            next_gop_to_flush_ = gop_index;
+            next_gop_to_flush_initialized_ = true;
+        }
 
         auto [it, inserted] = pending_gops_.try_emplace(gop_index);
         PendingGop& pending = it->second;
@@ -301,6 +311,10 @@ void SharedRecordingOutput::buffer_packets_locked(
     }
 
     if (mark_complete) {
+        if (!next_gop_to_flush_initialized_) {
+            next_gop_to_flush_ = completion_gop_index;
+            next_gop_to_flush_initialized_ = true;
+        }
         auto [it, inserted] = pending_gops_.try_emplace(completion_gop_index);
         PendingGop& pending = it->second;
         if (inserted) {
@@ -363,10 +377,12 @@ void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
             const auto& packet = pending.packets[packet_index];
             if (writer_.video) {
                 NVTX_ENCODE_DYNAMIC(std::string("SharedRecordingOutput push packet to writer"));
+                const int64_t writer_sample_index =
+                    normalize_writer_sample_index_locked(packet.sample_index);
                 writer_.video->push_packet(
                     const_cast<uint8_t*>(packet.bytes.data()),
                     static_cast<int>(packet.bytes.size()),
-                    packet.sample_index,
+                    writer_sample_index,
                     pending.gop_index,
                     packet_index + 1 == pending.packets.size(),
                     release_started_ns);
@@ -403,6 +419,18 @@ void SharedRecordingOutput::write_metadata_row_locked(const RecordingMetadataRow
                           << metadata_row.timestamp << ","
                           << metadata_row.timestamp_sys << '\n';
     }
+}
+
+int64_t SharedRecordingOutput::normalize_writer_sample_index_locked(int64_t sample_index)
+{
+    if (sample_index < 0) {
+        return sample_index;
+    }
+    if (!writer_sample_index_base_initialized_) {
+        writer_sample_index_base_ = sample_index;
+        writer_sample_index_base_initialized_ = true;
+    }
+    return sample_index - writer_sample_index_base_;
 }
 
 void SharedRecordingOutput::record_pending_gop_overflow_locked(const char* reason,
@@ -610,6 +638,9 @@ void SharedRecordingOutput::reset_pending_state_locked()
 {
     pending_gops_.clear();
     next_gop_to_flush_ = 0;
+    next_gop_to_flush_initialized_ = false;
+    writer_sample_index_base_ = 0;
+    writer_sample_index_base_initialized_ = false;
     pending_gop_buffered_bytes_ = 0;
     pending_gop_peak_count_ = 0;
     pending_gop_peak_backlog_count_ = 0;
