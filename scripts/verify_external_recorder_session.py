@@ -86,6 +86,14 @@ def as_int(value: Any, field: str) -> int:
         raise VerificationError(f"invalid integer {field}={value!r}") from exc
 
 
+def recording_control_for(contract: dict[str, Any], stream: dict[str, Any]) -> dict[str, Any]:
+    value = stream.get("recording_control")
+    if isinstance(value, dict):
+        return value
+    value = contract.get("recording_control")
+    return value if isinstance(value, dict) else {}
+
+
 def path_from(value: Any, base: Path) -> Path:
     path = Path(str(value))
     return path if path.is_absolute() else base / path
@@ -108,7 +116,13 @@ def contract_from_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(fixed, dict):
         return None
     contract = fixed.get("external_recorder_contract")
-    return contract if isinstance(contract, dict) else None
+    if not isinstance(contract, dict):
+        return None
+    contract = dict(contract)
+    recording_control = fixed.get("recording_control")
+    if isinstance(recording_control, dict) and not isinstance(contract.get("recording_control"), dict):
+        contract["recording_control"] = recording_control
+    return contract
 
 
 def synthesize_contract(artifact_root: Path, cameras: list[str] | None) -> dict[str, Any]:
@@ -207,6 +221,69 @@ def count_csv_data_rows(path: Path) -> int:
         raise VerificationError(f"missing CSV file: {path}") from exc
 
 
+def verify_rolling_output(
+    artifact_root: Path,
+    serial: str,
+    summary: dict[str, Any],
+    stream: dict[str, Any],
+    contract: dict[str, Any],
+    frames_encoded: int,
+    ffprobe: str,
+) -> int:
+    recording_control = recording_control_for(contract, stream)
+    clip_seconds = as_int(recording_control.get("clip_seconds", 0), "recording_control.clip_seconds")
+    record_for_seconds = as_int(
+        recording_control.get("record_for_seconds", 0),
+        "recording_control.record_for_seconds",
+    )
+    if clip_seconds <= 0:
+        return 0
+    require(record_for_seconds > 0, f"rolling output for {serial} requires record_for_seconds > 0")
+
+    rolling = summary.get("rolling_output")
+    require(isinstance(rolling, dict), f"summary missing rolling_output for {serial}")
+    require(rolling.get("enabled") is True, f"rolling_output disabled for {serial}")
+    require(
+        rolling.get("implementation") == "external_recorder_gop_boundary_writer_rotation",
+        f"unexpected rolling implementation for {serial}: {rolling.get('implementation')!r}",
+    )
+    require(as_int(rolling.get("clip_seconds"), "rolling_output.clip_seconds") == clip_seconds, f"clip_seconds mismatch for {serial}")
+    clips = rolling.get("clips")
+    require(isinstance(clips, list) and bool(clips), f"rolling_output has no clips for {serial}")
+    require(as_int(rolling.get("clip_count"), "rolling_output.clip_count") == len(clips), f"clip_count mismatch for {serial}")
+    if record_for_seconds > clip_seconds:
+        require(len(clips) >= 2, f"expected multiple rolling clips for {serial}")
+
+    expected_next_frame = 1
+    total_clip_frames = 0
+    for expected_index, clip in enumerate(clips):
+        require(isinstance(clip, dict), f"rolling clip {expected_index} is not an object for {serial}")
+        require(clip.get("clip_index") == expected_index, f"unexpected clip_index for {serial}: {clip.get('clip_index')!r}")
+        require(clip.get("clip_id") == f"clip_{expected_index:06d}", f"unexpected clip_id for {serial}: {clip.get('clip_id')!r}")
+        require(clip.get("failed") is False, f"rolling clip failed for {serial}: {clip.get('clip_id')}")
+
+        mp4_path = path_from(clip.get("mp4"), artifact_root)
+        metadata_path = path_from(clip.get("metadata"), artifact_root)
+        keyframe_path = path_from(clip.get("keyframes"), artifact_root)
+        require(mp4_path.exists() and mp4_path.stat().st_size > 0, f"missing rolling clip MP4 for {serial}: {mp4_path}")
+        require(metadata_path.exists() and metadata_path.stat().st_size > 0, f"missing rolling metadata for {serial}: {metadata_path}")
+        require(keyframe_path.exists() and keyframe_path.stat().st_size > 0, f"missing rolling keyframe sidecar for {serial}: {keyframe_path}")
+        ffprobe_video(mp4_path, ffprobe)
+
+        frame_count = as_int(clip.get("frame_count"), "rolling clip frame_count")
+        first_frame = as_int(clip.get("first_recording_frame_id"), "rolling clip first_recording_frame_id")
+        last_frame = as_int(clip.get("last_recording_frame_id"), "rolling clip last_recording_frame_id")
+        require(frame_count > 0, f"rolling clip has no frames for {serial}: {clip.get('clip_id')}")
+        require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
+        require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
+        require(count_csv_data_rows(metadata_path) == frame_count, f"rolling metadata rows mismatch for {serial}: {metadata_path}")
+        total_clip_frames += frame_count
+        expected_next_frame = last_frame + 1
+
+    require(total_clip_frames == frames_encoded, f"rolling clip frames != frames_encoded for {serial}: {total_clip_frames} vs {frames_encoded}")
+    return len(clips)
+
+
 def verify_summary(
     artifact_root: Path,
     serial: str,
@@ -298,6 +375,15 @@ def verify_summary(
         video_sanity_path,
         allow_missing_video_sanity or not bool(contract.get("require_video_sanity", True)),
     )
+    rolling_clip_count = verify_rolling_output(
+        artifact_root,
+        serial,
+        summary,
+        stream,
+        contract,
+        frames_encoded,
+        ffprobe,
+    )
 
     return {
         "serial": serial,
@@ -308,6 +394,7 @@ def verify_summary(
         "shard_count": len(shards),
         "routing_policy": summary.get("routing_policy"),
         "video_sanity": sanity_status,
+        "rolling_clip_count": rolling_clip_count,
     }
 
 
@@ -373,7 +460,8 @@ def verify(args: argparse.Namespace) -> None:
             "  "
             f"camera={item['serial']} frames={item['frames_received']} "
             f"encoded={item['frames_encoded']} shards={item['shard_count']} "
-            f"routing={item['routing_policy']} video_sanity={item['video_sanity']}"
+            f"routing={item['routing_policy']} video_sanity={item['video_sanity']} "
+            f"rolling_clips={item['rolling_clip_count']}"
         )
 
 

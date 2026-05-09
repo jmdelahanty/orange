@@ -132,9 +132,14 @@ long soak testing.
 
 ## Phase 3: Recorder Path Coverage
 
+- [x] Implement supervised headless external IPC rolling clips in
+  `external_recorder_ipc_probe` with GOP-boundary writer rotation and verifier
+  coverage.
 - [ ] Apply rollover implementation consistently to:
   - `EncoderHwWorker` main recording path (headless full-frame path is now
     implemented; GUI/session validation still needed),
+  - external recorder production/GUI supervision path (headless diagnostic
+    external IPC path is now implemented),
   - `CropAndEncodeWorker` crop recording path,
   - `GPUVideoEncoder` path (headless / legacy path where used).
 - [x] Keep headless full-frame `recording_frame_id` continuity across segments.

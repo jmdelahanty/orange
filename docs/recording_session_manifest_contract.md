@@ -14,10 +14,14 @@ Current implementation rule:
 - `clip_seconds = 0` keeps the existing flat single-video layout.
 - `clip_seconds > 0` is implemented for headless `fixed.recording_control`
   with seamless GOP-boundary writer switching.
-- GUI/session rolling supervision and external-recorder rolling supervision are
-  still future work. External IPC contracts and GUI fail-fast manifests carry
-  `recording_control` and `rollover` metadata, but external IPC rejects
-  `clip_seconds > 0` until the recorder owns GOP-boundary rollover.
+- External IPC rolling is implemented for supervised headless diagnostic
+  recorder runs. The external recorder owns GOP-boundary writer rotation and
+  writes its clip list in `external_recorder_summary.json`; the local Orange
+  `recording_session.json` does not yet mirror those external clips.
+- GUI/session rolling supervision is still future work. GUI fail-fast manifests
+  carry `recording_control` and `rollover` metadata, but the GUI path refuses
+  external recorder supervision until lifecycle, drain, and finalization state
+  are wired through the session UI.
 
 The current headless rolling implementation keeps acquisition and recording
 active during clip rollover:
@@ -31,6 +35,13 @@ active during clip rollover:
 The manifest records this with `rollover.implementation =
 "headless_gop_boundary_writer_switch"`, `seamless_writer_switch = true`,
 `records_during_rollover = true`, and `next_writer_preopened = true`.
+
+The external IPC rolling recorder records the same high-level intent with
+`rollover.implementation =
+"external_recorder_gop_boundary_writer_rotation"`. Its current clip outputs are
+described by `external_recorder_summary.json` rather than the Orange
+`recording_session.json`; each clip still carries continuous
+`recording_frame_id` metadata and clip-local MP4 timestamps.
 
 ## Single-Video Layout
 
@@ -88,6 +99,43 @@ the discovery root and each clip gets its own subfolder:
       Cam2010096_meta.csv
       Cam2010096_keyframe.json
 ```
+
+## External IPC Rolling Layout
+
+Supervised headless `recording_sink_mode = "external_ipc"` writes the external
+recorder artifacts under the contract `artifact_root`:
+
+```text
+<external_artifact_root>/
+  external_recorder_session.json
+  external_recorder_summary.json
+  external_recorder_finalization.json
+  external_video_sanity.json
+  external_gop_routing.csv
+  external_detach.csv
+  external_encode_shard0_gpu5.csv
+  external_encode_shard1_gpu6.csv
+  Cam2010096_external.mp4
+  Cam2010096_external_keyframes.json
+  Cam2010096_external_shard0_gpu5.mp4
+  Cam2010096_external_shard1_gpu6.mp4
+
+  clips/
+    clip_000000/
+      Cam2010096_external.mp4
+      Cam2010096_external_meta.csv
+      Cam2010096_external_keyframe.json
+
+    clip_000001/
+      Cam2010096_external.mp4
+      Cam2010096_external_meta.csv
+      Cam2010096_external_keyframe.json
+```
+
+The external recorder keeps the merged full-session MP4 for compatibility and
+also writes one MP4 per rolling clip. Full-rate A16 validation uses split-GOP
+shards, so per-shard MP4s remain diagnostic outputs while the merged MP4 and
+clip MP4s are the consumer-facing media.
 
 Future multi-day production rollover should add session-level frame/status CSVs.
 The current headless slice keeps cross-clip continuity in the per-clip metadata
@@ -330,6 +378,22 @@ Latest two-camera PTP validation:
 - camera health: `0` frame-ID gaps, `0` GetFrame errors, `0` encode failures,
   `0` preprocess drops
 - `scripts/verify_timed_recording.py` passed for both cameras
+
+Latest supervised external IPC rolling validation:
+
+- equivalent checked-in spec:
+  `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`
+- recorder artifact:
+  `/tmp/orange_external_recorder_rolling_2010096`
+- `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps = 100`,
+  `routing_policy = "gop_modulo"`, shard GPUs `5,6`
+- recorder received/ACKed/encoded `602` frames with `0` encode drops
+- clips covered continuous frame ranges `1-200`, `201-400`, `401-600`, and
+  `601-602`
+- merged MP4 video sanity and `scripts/verify_external_recorder_session.py`
+  passed
 
 ## Remaining Work
 

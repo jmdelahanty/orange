@@ -44,6 +44,8 @@ struct RecorderStreamPlan {
     std::string encode_csv;
     std::string gop_routing_csv;
     std::string recorder_log;
+    int record_for_seconds = 0;
+    int clip_seconds = 0;
     int encode_fps = 100;
     int encode_max_fps = 0;
     int encode_queue_depth = 32;

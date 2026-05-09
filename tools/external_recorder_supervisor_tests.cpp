@@ -185,6 +185,44 @@ void test_spec_requires_selected_stream()
             "failure should identify missing camera");
 }
 
+void test_spec_recording_control_flows_to_command()
+{
+    nlohmann::json spec = {
+        {"experiment_id", "rolling_control"},
+        {"selection", {{"camera_serials", {"2010096"}}, {"gpu_ids", {5}}}},
+        {"fixed", {
+            {"recording_sink_mode", "external_ipc"},
+            {"recording_control", {
+                {"record_for_seconds", 6},
+                {"clip_seconds", 2},
+            }},
+            {"external_recorder_contract", make_contract({5, 6}, "gop_modulo")},
+        }},
+    };
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromExperimentSpec(spec, {}, &plan, &error),
+            "spec recording_control should build: " + error);
+    require(plan.streams.size() == 1, "expected one stream");
+    require(plan.streams[0].record_for_seconds == 6,
+            "record_for_seconds should flow from fixed.recording_control");
+    require(plan.streams[0].clip_seconds == 2,
+            "clip_seconds should flow from fixed.recording_control");
+
+    const std::vector<std::string> argv = BuildRecorderCommand(plan, plan.streams[0]);
+    require(has_arg_pair(argv, "--record-for-seconds", "6"),
+            "command should include record duration");
+    require(has_arg_pair(argv, "--clip-seconds", "2"),
+            "command should include clip duration");
+
+    const nlohmann::json json_plan = SupervisorPlanToJson(plan);
+    require(json_plan["streams"][0]["recording_control"]["record_for_seconds"] == 6,
+            "plan json should include record duration");
+    require(json_plan["streams"][0]["recording_control"]["clip_seconds"] == 2,
+            "plan json should include clip duration");
+}
+
 void test_invalid_shard_policy_fails()
 {
     SupervisorPlan plan;
@@ -351,6 +389,7 @@ int main(int argc, char** argv)
         {"two_shard_plan_builds_gop_modulo_command", test_two_shard_plan_builds_gop_modulo_command},
         {"spec_requires_external_ipc_sink", test_spec_requires_external_ipc_sink},
         {"spec_requires_selected_stream", test_spec_requires_selected_stream},
+        {"spec_recording_control_flows_to_command", test_spec_recording_control_flows_to_command},
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},
         {"process_lifecycle_waits_socket_and_stops", test_process_lifecycle_waits_socket_and_stops},
         {"supervised_lifecycle_writes_artifacts_and_env", test_supervised_lifecycle_writes_artifacts_and_env},

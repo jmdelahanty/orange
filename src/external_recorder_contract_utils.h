@@ -14,8 +14,8 @@ struct SupervisorRuntimeState;
 
 inline constexpr const char* kGuiExternalRecorderNotImplementedReason =
     "external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording";
-inline constexpr const char* kExternalRecorderRollingNotImplementedReason =
-    "external recorder rolling clips are not implemented yet; use in-process recording for rolling clips or external_ipc with clip_seconds=0";
+inline constexpr const char* kExternalRecorderRollingImplementation =
+    "external_recorder_gop_boundary_writer_rotation";
 
 struct RecordingControlIntent {
     int record_for_seconds = 0;

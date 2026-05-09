@@ -531,11 +531,13 @@ Current contract-hardening status:
 - In supervised headless mode, `orange_client` now writes provisional
   manifests, runs per-stream external MP4 video sanity, runs the session
   verifier, and records the result in `external_recorder_finalization.json`.
-- External IPC rolling clips are not implemented yet. Headless specs with
-  `fixed.recording_sink_mode = "external_ipc"` and
-  `fixed.recording_control.clip_seconds > 0` fail fast before camera start;
-  contracts carry `rollover.status = "unsupported"` for that intent until the
-  recorder owns GOP-boundary writer switching.
+- External IPC rolling clips are implemented for supervised headless diagnostic
+  recorder runs. `fixed.recording_control.clip_seconds > 0` is passed to the
+  recorder, which rotates GOP-boundary clip writers and reports
+  `rollover.implementation =
+  "external_recorder_gop_boundary_writer_rotation"`. The verifier now checks
+  rolling clip count, clip MP4/metadata/keyframe sidecars, and continuous
+  `recording_frame_id` coverage across clips.
 - The smoke runners generate `external_recorder_session.json`, inject the same
   contract into the temporary experiment spec, and run the verifier
   automatically.
@@ -558,6 +560,15 @@ Supervised hardware smoke result:
 - Two-camera steady-state post-frame-50 `acquisition_to_detect_done_ms p95` was
   `4.488 ms` for `2010095` and `4.598 ms` for `2010096`; YOLO queue wait p95
   was `0.018 ms` and `0.020 ms`, respectively.
+- One-camera supervised external IPC rolling artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_rolling_2010096`.
+  The run used `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps =
+  100`, `encode_max_fps = 0`, and two GOP shards on GPUs `5,6`. The recorder
+  received/ACKed/encoded `602` frames, had `0` encode drops, wrote four rolling
+  clips covering `1-200`, `201-400`, `401-600`, and `601-602`, passed merged
+  MP4 video sanity, and passed `scripts/verify_external_recorder_session.py`.
 - The two-camera PTP run used `fixed.ptp_register_read_decimate = 100`, sampled
   `9` PTP register reads per camera, and the cadence probe showed embedded
   timestamp skew from `-18 ns` to `+22 ns`.

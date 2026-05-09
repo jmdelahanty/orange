@@ -207,13 +207,13 @@ nlohmann::json BuildExternalRecorderRolloverJson(
     if (recording_control.rolling_requested()) {
         return {
             {"requested", true},
-            {"status", "unsupported"},
-            {"implementation", "external_recorder_rolling_not_implemented"},
-            {"seamless_writer_switch", false},
-            {"records_during_rollover", false},
+            {"status", "supported"},
+            {"implementation", kExternalRecorderRollingImplementation},
+            {"seamless_writer_switch", true},
+            {"records_during_rollover", true},
             {"boundary", "gop_first_frame_id"},
             {"clip_directory_template", "clips/clip_%06d"},
-            {"reason", kExternalRecorderRollingNotImplementedReason}
+            {"next_writer_preopened", false}
         };
     }
     return {

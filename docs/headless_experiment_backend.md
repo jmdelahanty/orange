@@ -341,13 +341,39 @@ documented in `docs/external_recorder_contract.md`.
 
 The external IPC contract now also carries the session `recording_control`
 intent and a `rollover` object. Timed single-video external IPC runs can use
-`record_for_seconds > 0` with `clip_seconds = 0`. External IPC rolling clips
-are intentionally rejected for now: `fixed.recording_sink_mode = "external_ipc"`
-with `fixed.recording_control.clip_seconds > 0` fails before camera start with
-`external recorder rolling clips are not implemented yet; use in-process
-recording for rolling clips or external_ipc with clip_seconds=0`. This keeps
-the headless supervised path from pretending to produce seamless external
-rollover before the recorder owns GOP-boundary writer switching.
+`record_for_seconds > 0` with `clip_seconds = 0`. In supervised headless mode,
+external IPC rolling clips are implemented in the external recorder through
+GOP-boundary writer rotation:
+
+- Orange owns recorder process startup/shutdown and passes
+  `--record-for-seconds` / `--clip-seconds` to `external_recorder_ipc_probe`.
+- The recorder writes the merged session MP4 plus clip MP4/metadata/keyframe
+  sidecars under `clips/clip_%06d/`.
+- `scripts/verify_external_recorder_session.py` validates rolling clip count,
+  clip file existence, ffprobe readability, per-clip metadata row counts, and
+  continuous `recording_frame_id` coverage across clips.
+- For full-rate `4512x4512 @ 100 fps`, use split-GOP shard routing rather than
+  one external encoder lane. The checked-in smoke uses shard GPUs `5,6`.
+
+Validated external IPC rolling smoke:
+
+- equivalent checked-in spec:
+  `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`
+- recorder artifact:
+  `/tmp/orange_external_recorder_rolling_2010096`
+- `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps = 100`,
+  `encode_max_fps = 0`, `routing_policy = "gop_modulo"`, shard GPUs `5,6`
+- recorder received/ACKed/encoded `602` frames with `0` encode drops
+- clips: `1-200`, `201-400`, `401-600`, and final tail `601-602`
+- merged MP4 video sanity passed and external recorder verification passed
+
+The current Orange-run `recording_session.json` for `external_ipc` is still a
+local timing/drain manifest and does not yet mirror the external clip list.
+Use `external_recorder_session.json`, `external_recorder_summary.json`, and the
+verifier output as the source of truth for external IPC rolling artifacts until
+the shared manifest is wired into the external path.
 
 For control-plane checks that should not touch cameras, TensorRT, sockets, or
 NVENC, use the dry-run supervisor-plan CLI:

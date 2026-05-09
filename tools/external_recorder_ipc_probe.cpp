@@ -69,6 +69,8 @@ struct Options {
     std::string gop_routing_csv_path;
     std::string session_id;
     std::string stream_id;
+    uint32_t record_for_seconds = 0;
+    uint32_t clip_seconds = 0;
     int shard_id = 0;
     std::vector<int> shard_gpu_ids;
     std::string routing_policy = "single_shard";
@@ -163,6 +165,8 @@ void signal_handler(int)
         << "  --gop-routing-csv <path> Optional per-frame route/shard CSV.\n"
         << "  --session-id <id>     Session id for artifacts. Defaults to first descriptor.\n"
         << "  --stream-id <id>      Stream id for artifacts. Defaults to camera serial.\n"
+        << "  --record-for-seconds <int> Session recording duration intent. Default 0.\n"
+        << "  --clip-seconds <int>  Enable GOP-aligned rolling clip MP4 outputs. Default 0.\n"
         << "  --shard-id <int>      Recorder shard id for this process/lane. Default 0.\n"
         << "  --shard-gpu-ids <csv> Diagnostic multi-shard GPU ids, e.g. 5,6.\n"
         << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
@@ -318,6 +322,10 @@ Options parse_options(int argc, char** argv)
             options.session_id = consume(arg.c_str());
         } else if (arg == "--stream-id") {
             options.stream_id = consume(arg.c_str());
+        } else if (arg == "--record-for-seconds") {
+            options.record_for_seconds = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--clip-seconds") {
+            options.clip_seconds = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--shard-id") {
             options.shard_id = parse_i32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--shard-gpu-ids") {
@@ -447,6 +455,13 @@ std::string add_suffix_to_path_stem(const std::string& path, const std::string& 
 std::string shard_suffix(size_t shard_index, int gpu_id)
 {
     return "_shard" + std::to_string(shard_index) + "_gpu" + std::to_string(gpu_id);
+}
+
+std::string format_clip_id(int clip_index)
+{
+    std::ostringstream out;
+    out << "clip_" << std::setw(6) << std::setfill('0') << clip_index;
+    return out.str();
 }
 
 std::string json_escape(const std::string& value)
@@ -927,6 +942,32 @@ struct EncodeSummary {
     std::string mp4_keyframe_path;
 };
 
+struct RollingClipOutputSummary {
+    int clip_index = 0;
+    std::string clip_id;
+    std::string directory;
+    std::string mp4_path;
+    std::string metadata_path;
+    std::string keyframe_path;
+    uint64_t first_recording_frame_id = 0;
+    uint64_t last_recording_frame_id = 0;
+    uint64_t frame_count = 0;
+    uint64_t packets_written = 0;
+    uint64_t bytes_written = 0;
+    uint64_t gops_released = 0;
+    bool failed = false;
+};
+
+struct RollingOutputSummary {
+    bool enabled = false;
+    std::string implementation;
+    uint32_t record_for_seconds = 0;
+    uint32_t clip_seconds = 0;
+    uint64_t clip_span_frames = 0;
+    uint64_t clip_span_gops = 0;
+    std::vector<RollingClipOutputSummary> clips;
+};
+
 struct MergedOutputSummary {
     bool enabled = false;
     bool failed = false;
@@ -946,6 +987,7 @@ struct MergedOutputSummary {
     std::string mp4_path;
     std::string mp4_keyframe_path;
     std::string error_message;
+    RollingOutputSummary rolling;
 };
 
 EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summaries)
@@ -1068,7 +1110,20 @@ public:
           mp4_keyframe_path_(
               options_.mp4_keyframe_path.empty()
                   ? derive_keyframe_path(options_.mp4_out_path)
-                  : options_.mp4_keyframe_path) {}
+                  : options_.mp4_keyframe_path)
+    {
+        rolling_enabled_ = options_.clip_seconds > 0;
+        if (rolling_enabled_) {
+            const uint64_t requested_clip_frames =
+                static_cast<uint64_t>(std::max<uint32_t>(1, options_.clip_seconds)) *
+                static_cast<uint64_t>(std::max<uint32_t>(1, options_.fps));
+            clip_span_gops_ = std::max<uint64_t>(
+                1,
+                (requested_clip_frames + static_cast<uint64_t>(gop_length_) - 1) /
+                    static_cast<uint64_t>(gop_length_));
+            clip_span_frames_ = clip_span_gops_ * static_cast<uint64_t>(gop_length_);
+        }
+    }
 
     void note_submitted(const FrameDescriptor& desc)
     {
@@ -1081,6 +1136,22 @@ public:
         PendingGop& gop = pending_gops_[desc.gop_index];
         gop.gop_index = desc.gop_index;
         gop.submitted_count++;
+        gop.frames.push_back(SubmittedFrame{
+            desc.camera_serial,
+            desc.session_id,
+            desc.stream_id,
+            desc.recording_frame_id,
+            desc.local_frame_id,
+            desc.gop_index,
+            desc.frame_index_within_gop,
+            desc.source_gpu_id,
+            desc.assigned_gpu_id,
+            desc.assigned_shard_id,
+            desc.width,
+            desc.height,
+            desc.bytes,
+            desc.timestamp,
+            desc.timestamp_sys});
         if (desc.frame_index_within_gop + 1 >= gop_length_) {
             gop.submitted_complete = true;
         }
@@ -1126,6 +1197,7 @@ public:
         std::lock_guard<std::mutex> lock(mutex_);
         flush_ready_locked(true);
         finish_writer_locked();
+        finish_clip_writer_locked();
     }
 
     MergedOutputSummary summary() const
@@ -1150,6 +1222,14 @@ public:
         out.mp4_path = mp4_path_;
         out.mp4_keyframe_path = mp4_keyframe_path_;
         out.error_message = error_message_;
+        out.rolling.enabled = rolling_enabled_;
+        out.rolling.implementation =
+            rolling_enabled_ ? "external_recorder_gop_boundary_writer_rotation" : "none";
+        out.rolling.record_for_seconds = options_.record_for_seconds;
+        out.rolling.clip_seconds = options_.clip_seconds;
+        out.rolling.clip_span_frames = clip_span_frames_;
+        out.rolling.clip_span_gops = clip_span_gops_;
+        out.rolling.clips = clip_summaries_;
         return out;
     }
 
@@ -1157,6 +1237,24 @@ private:
     struct BufferedPacket {
         std::vector<uint8_t> bytes;
         uint64_t zero_based_frame = 0;
+    };
+
+    struct SubmittedFrame {
+        std::string camera_serial;
+        std::string session_id;
+        std::string stream_id;
+        uint64_t recording_frame_id = 0;
+        uint64_t local_frame_id = 0;
+        uint64_t gop_index = 0;
+        uint32_t frame_index_within_gop = 0;
+        int source_gpu_id = -1;
+        int assigned_gpu_id = -1;
+        int assigned_shard_id = 0;
+        int width = 0;
+        int height = 0;
+        uint64_t bytes = 0;
+        uint64_t timestamp = 0;
+        uint64_t timestamp_sys = 0;
     };
 
     struct PendingGop {
@@ -1167,6 +1265,7 @@ private:
         bool submitted_complete = false;
         bool complete = false;
         std::vector<BufferedPacket> packets;
+        std::vector<SubmittedFrame> frames;
     };
 
     void ensure_writer_locked(const FrameDescriptor& desc)
@@ -1202,6 +1301,163 @@ private:
             throw std::runtime_error(error_message_);
         }
         writer_->create_thread();
+    }
+
+    int clip_index_for_zero_based_frame(uint64_t zero_based_frame) const
+    {
+        if (!rolling_enabled_ || clip_span_frames_ == 0) {
+            return 0;
+        }
+        return static_cast<int>(zero_based_frame / clip_span_frames_);
+    }
+
+    std::filesystem::path clip_directory_path(int clip_index) const
+    {
+        const std::filesystem::path root =
+            std::filesystem::path(mp4_path_).parent_path();
+        return root / "clips" / format_clip_id(clip_index);
+    }
+
+    std::string clip_output_path(int clip_index, const std::string& suffix) const
+    {
+        const std::filesystem::path base(mp4_path_);
+        return (clip_directory_path(clip_index) /
+                (base.stem().string() + suffix)).string();
+    }
+
+    void finish_clip_writer_locked()
+    {
+        if (clip_writer_) {
+            clip_writer_->quit_thread();
+            clip_writer_->join_thread();
+            const bool overflowed = clip_writer_->has_queue_overflowed();
+            current_clip_summary_.failed = current_clip_summary_.failed || overflowed;
+            failed_ = failed_ || overflowed;
+            if (overflowed && error_message_.empty()) {
+                error_message_ = "rolling clip MP4 writer queue overflowed";
+            }
+            clip_writer_.reset();
+        }
+        if (clip_metadata_) {
+            clip_metadata_->flush();
+            clip_metadata_.reset();
+        }
+        if (current_clip_index_ >= 0 &&
+            (current_clip_summary_.frame_count > 0 ||
+             current_clip_summary_.packets_written > 0)) {
+            clip_summaries_.push_back(current_clip_summary_);
+        }
+        current_clip_summary_ = RollingClipOutputSummary{};
+        current_clip_index_ = -1;
+        current_clip_pts_counter_ = 0;
+    }
+
+    void ensure_clip_writer_locked(const FrameDescriptor& desc, int clip_index)
+    {
+        if (!rolling_enabled_ || mp4_path_.empty()) {
+            return;
+        }
+        if (clip_writer_ && current_clip_index_ == clip_index) {
+            return;
+        }
+        if (current_clip_index_ >= 0 && current_clip_index_ != clip_index) {
+            finish_clip_writer_locked();
+        }
+
+        current_clip_index_ = clip_index;
+        current_clip_pts_counter_ = 0;
+        current_clip_summary_ = RollingClipOutputSummary{};
+        current_clip_summary_.clip_index = clip_index;
+        current_clip_summary_.clip_id = format_clip_id(clip_index);
+        current_clip_summary_.directory = clip_directory_path(clip_index).string();
+        current_clip_summary_.mp4_path = clip_output_path(clip_index, ".mp4");
+        current_clip_summary_.metadata_path = clip_output_path(clip_index, "_meta.csv");
+        current_clip_summary_.keyframe_path = clip_output_path(clip_index, "_keyframe.json");
+
+        ensure_parent_directory(current_clip_summary_.mp4_path);
+        ensure_parent_directory(current_clip_summary_.metadata_path);
+        ensure_parent_directory(current_clip_summary_.keyframe_path);
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            clip_metadata_ = std::make_unique<std::ofstream>(
+                current_clip_summary_.metadata_path,
+                std::ios::out | std::ios::trunc);
+        }
+        if (!clip_metadata_ || !*clip_metadata_) {
+            throw std::runtime_error(
+                "failed to open rolling clip metadata: " +
+                current_clip_summary_.metadata_path);
+        }
+        *clip_metadata_
+            << "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
+               "timestamp,timestamp_sys,source_gpu_id,assigned_gpu_id,assigned_shard_id,bytes\n";
+
+        const AVCodecID codec_id =
+            options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;
+        const std::vector<std::pair<std::string, std::string>> metadata_tags = {
+            {"producer", "external_recorder_ipc_probe"},
+            {"camera_serial", desc.camera_serial},
+            {"codec", options_.codec},
+            {"preset", options_.preset},
+            {"tuning", options_.tuning},
+            {"external_recorder", "true"},
+            {"rolling_clip", "true"},
+            {"clip_id", current_clip_summary_.clip_id},
+            {"routing_policy", options_.routing_policy}
+        };
+        clip_writer_ = std::make_unique<FFmpegWriter>(
+            codec_id,
+            desc.width,
+            desc.height,
+            static_cast<int>(std::max<uint32_t>(1, options_.fps)),
+            current_clip_summary_.mp4_path.c_str(),
+            current_clip_summary_.keyframe_path.c_str(),
+            metadata_tags);
+        if (!clip_writer_->is_open()) {
+            failed_ = true;
+            error_message_ = "failed to open rolling clip MP4 output: " +
+                current_clip_summary_.mp4_path;
+            throw std::runtime_error(error_message_);
+        }
+        clip_writer_->create_thread();
+    }
+
+    void write_clip_metadata_rows_locked(PendingGop& gop)
+    {
+        if (!rolling_enabled_ || !clip_metadata_) {
+            return;
+        }
+        std::stable_sort(
+            gop.frames.begin(),
+            gop.frames.end(),
+            [](const SubmittedFrame& lhs, const SubmittedFrame& rhs) {
+                return lhs.recording_frame_id < rhs.recording_frame_id;
+            });
+        for (const SubmittedFrame& frame : gop.frames) {
+            *clip_metadata_
+                << frame.recording_frame_id << ","
+                << frame.local_frame_id << ","
+                << frame.gop_index << ","
+                << frame.frame_index_within_gop << ","
+                << frame.timestamp << ","
+                << frame.timestamp_sys << ","
+                << frame.source_gpu_id << ","
+                << frame.assigned_gpu_id << ","
+                << frame.assigned_shard_id << ","
+                << frame.bytes << "\n";
+            if (current_clip_summary_.first_recording_frame_id == 0 ||
+                frame.recording_frame_id <
+                    current_clip_summary_.first_recording_frame_id) {
+                current_clip_summary_.first_recording_frame_id =
+                    frame.recording_frame_id;
+            }
+            current_clip_summary_.last_recording_frame_id =
+                std::max(
+                    current_clip_summary_.last_recording_frame_id,
+                    frame.recording_frame_id);
+            current_clip_summary_.frame_count++;
+        }
     }
 
     void refresh_complete_locked(PendingGop& gop)
@@ -1258,6 +1514,32 @@ private:
             [](const BufferedPacket& lhs, const BufferedPacket& rhs) {
                 return lhs.zero_based_frame < rhs.zero_based_frame;
             });
+        const uint64_t first_zero_based_frame =
+            !gop.packets.empty()
+                ? gop.packets.front().zero_based_frame
+                : gop.gop_index * static_cast<uint64_t>(gop_length_);
+        if (rolling_enabled_) {
+            FrameDescriptor clip_desc;
+            if (!gop.frames.empty()) {
+                const SubmittedFrame& frame = gop.frames.front();
+                clip_desc.camera_serial = frame.camera_serial;
+                clip_desc.session_id = frame.session_id;
+                clip_desc.stream_id = frame.stream_id;
+                clip_desc.recording_frame_id = frame.recording_frame_id;
+                clip_desc.local_frame_id = frame.local_frame_id;
+                clip_desc.gop_index = frame.gop_index;
+                clip_desc.frame_index_within_gop = frame.frame_index_within_gop;
+                clip_desc.source_gpu_id = frame.source_gpu_id;
+                clip_desc.assigned_gpu_id = frame.assigned_gpu_id;
+                clip_desc.assigned_shard_id = frame.assigned_shard_id;
+                clip_desc.width = frame.width;
+                clip_desc.height = frame.height;
+            }
+            ensure_clip_writer_locked(
+                clip_desc,
+                clip_index_for_zero_based_frame(first_zero_based_frame));
+            write_clip_metadata_rows_locked(gop);
+        }
         const uint64_t release_started_ns = steady_clock_now_ns();
         for (size_t i = 0; i < gop.packets.size(); ++i) {
             const BufferedPacket& packet = gop.packets[i];
@@ -1268,8 +1550,22 @@ private:
                 gop.gop_index,
                 i + 1 == gop.packets.size(),
                 release_started_ns);
+            if (rolling_enabled_ && clip_writer_) {
+                clip_writer_->push_packet(
+                    const_cast<uint8_t*>(packet.bytes.data()),
+                    static_cast<int>(packet.bytes.size()),
+                    static_cast<int64_t>(current_clip_pts_counter_++),
+                    gop.gop_index,
+                    i + 1 == gop.packets.size(),
+                    release_started_ns);
+                current_clip_summary_.packets_written++;
+                current_clip_summary_.bytes_written += packet.bytes.size();
+            }
             packets_written_++;
             bytes_written_ += packet.bytes.size();
+        }
+        if (rolling_enabled_ && current_clip_index_ >= 0) {
+            current_clip_summary_.gops_released++;
         }
         gops_released_++;
     }
@@ -1300,6 +1596,15 @@ private:
     mutable std::mutex mutex_;
     std::map<uint64_t, PendingGop> pending_gops_;
     std::unique_ptr<FFmpegWriter> writer_;
+    std::unique_ptr<FFmpegWriter> clip_writer_;
+    std::unique_ptr<std::ofstream> clip_metadata_;
+    std::vector<RollingClipOutputSummary> clip_summaries_;
+    RollingClipOutputSummary current_clip_summary_;
+    int current_clip_index_ = -1;
+    uint64_t current_clip_pts_counter_ = 0;
+    bool rolling_enabled_ = false;
+    uint64_t clip_span_frames_ = 0;
+    uint64_t clip_span_gops_ = 0;
     uint64_t next_gop_to_release_ = 0;
     uint64_t merged_pts_counter_ = 0;
     uint64_t packets_written_ = 0;
@@ -2087,6 +2392,24 @@ void write_summary_json(const Options& options,
     out << "  \"encode_prewarm_bytes\": " << options.encode_prewarm_bytes << ",\n";
     out << "  \"encode_prewarm_peer_copy\": "
         << (options.encode_prewarm_peer_copy ? "true" : "false") << ",\n";
+    out << "  \"recording_control\": {\n";
+    out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
+    out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
+    out << "  },\n";
+    out << "  \"rollover\": {\n";
+    out << "    \"requested\": " << (options.clip_seconds > 0 ? "true" : "false") << ",\n";
+    out << "    \"status\": \""
+        << (options.clip_seconds > 0 ? "completed" : "not_requested") << "\",\n";
+    out << "    \"implementation\": \""
+        << (options.clip_seconds > 0
+                ? "external_recorder_gop_boundary_writer_rotation"
+                : "none") << "\",\n";
+    out << "    \"seamless_writer_switch\": "
+        << (options.clip_seconds > 0 ? "true" : "false") << ",\n";
+    out << "    \"records_during_rollover\": "
+        << (options.clip_seconds > 0 ? "true" : "false") << ",\n";
+    out << "    \"boundary\": \"gop_first_frame_id\"\n";
+    out << "  },\n";
     out << "  \"frames_received\": " << frames_received << ",\n";
     out << "  \"acks_sent\": " << acks_sent << ",\n";
     out << "  \"detach_copied\": " << detach_copied << ",\n";
@@ -2172,6 +2495,42 @@ void write_summary_json(const Options& options,
     out << "    \"mp4_keyframe\": \"" << json_escape(merged.mp4_keyframe_path) << "\",\n";
     out << "    \"error_message\": \"" << json_escape(merged.error_message) << "\"\n";
     out << "  },\n";
+    out << "  \"rolling_output\": {\n";
+    out << "    \"enabled\": " << (merged.rolling.enabled ? "true" : "false") << ",\n";
+    out << "    \"implementation\": \"" << json_escape(merged.rolling.implementation) << "\",\n";
+    out << "    \"record_for_seconds\": " << merged.rolling.record_for_seconds << ",\n";
+    out << "    \"clip_seconds\": " << merged.rolling.clip_seconds << ",\n";
+    out << "    \"clip_span_frames\": " << merged.rolling.clip_span_frames << ",\n";
+    out << "    \"clip_span_gops\": " << merged.rolling.clip_span_gops << ",\n";
+    out << "    \"clip_count\": " << merged.rolling.clips.size() << ",\n";
+    out << "    \"clips\": [\n";
+    for (size_t i = 0; i < merged.rolling.clips.size(); ++i) {
+        const RollingClipOutputSummary& clip = merged.rolling.clips[i];
+        out << "      {\n";
+        out << "        \"clip_index\": " << clip.clip_index << ",\n";
+        out << "        \"clip_id\": \"" << json_escape(clip.clip_id) << "\",\n";
+        out << "        \"directory\": \"" << json_escape(clip.directory) << "\",\n";
+        out << "        \"mp4\": \"" << json_escape(clip.mp4_path) << "\",\n";
+        out << "        \"metadata\": \"" << json_escape(clip.metadata_path) << "\",\n";
+        out << "        \"keyframes\": \"" << json_escape(clip.keyframe_path) << "\",\n";
+        out << "        \"first_recording_frame_id\": "
+            << clip.first_recording_frame_id << ",\n";
+        out << "        \"last_recording_frame_id\": "
+            << clip.last_recording_frame_id << ",\n";
+        out << "        \"frame_count\": " << clip.frame_count << ",\n";
+        out << "        \"packets_written\": " << clip.packets_written << ",\n";
+        out << "        \"bytes_written\": " << clip.bytes_written << ",\n";
+        out << "        \"gops_released\": " << clip.gops_released << ",\n";
+        out << "        \"failed\": " << (clip.failed ? "true" : "false") << ",\n";
+        out << "        \"file_sizes\": {\n";
+        out << "          \"mp4_bytes\": " << file_size_or_zero(clip.mp4_path) << ",\n";
+        out << "          \"metadata_bytes\": " << file_size_or_zero(clip.metadata_path) << ",\n";
+        out << "          \"keyframe_bytes\": " << file_size_or_zero(clip.keyframe_path) << "\n";
+        out << "        }\n";
+        out << "      }" << (i + 1 < merged.rolling.clips.size() ? "," : "") << "\n";
+    }
+    out << "    ]\n";
+    out << "  },\n";
     out << "  \"detach_timing\": {\n";
     out << "    \"total_p95_ms\": " << percentile_ms(detach_total_samples, 95.0) << ",\n";
     out << "    \"open_handle_p95_ms\": " << percentile_ms(detach_open_samples, 95.0) << ",\n";
@@ -2216,7 +2575,9 @@ int main(int argc, char** argv)
         bool encode_workers_peer_prewarmed = false;
         if (options.encode) {
             const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
-            if (shard_gpu_ids.size() > 1 && !options.mp4_out_path.empty()) {
+            const bool rolling_requested = options.clip_seconds > 0;
+            if ((shard_gpu_ids.size() > 1 || rolling_requested) &&
+                !options.mp4_out_path.empty()) {
                 merged_output = std::make_unique<MergedGopOutput>(options);
             }
             encode_workers.reserve(shard_gpu_ids.size());
@@ -2226,6 +2587,14 @@ int main(int argc, char** argv)
                     shard_index,
                     shard_gpu_ids.size(),
                     shard_gpu_ids[shard_index]);
+                if (merged_output && shard_gpu_ids.size() == 1) {
+                    const std::string suffix =
+                        shard_suffix(shard_index, shard_gpu_ids[shard_index]);
+                    shard_options.mp4_out_path =
+                        add_suffix_to_path_stem(options.mp4_out_path, suffix);
+                    shard_options.mp4_keyframe_path =
+                        add_suffix_to_path_stem(options.mp4_keyframe_path, suffix);
+                }
                 auto worker = std::make_unique<ExternalEncodeWorker>(
                     std::move(shard_options),
                     merged_output.get());

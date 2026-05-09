@@ -2789,15 +2789,6 @@ bool parse_headless_external_recorder_contract_json(
         config.require_gop_routing =
             contract_node.value("require_gop_routing", config.require_gop_routing);
         config.streams = contract_node.value("streams", nlohmann::json::object());
-        const nlohmann::json rollover =
-            contract_node.value("rollover", nlohmann::json::object());
-        if (rollover.is_object() && rollover.value("requested", false)) {
-            if (error_out) {
-                *error_out = context + ": " +
-                    orange::external_recorder::kExternalRecorderRollingNotImplementedReason;
-            }
-            return false;
-        }
     } else {
         if (error_out) {
             *error_out =
@@ -6337,22 +6328,24 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
         }
         return false;
     }
-    if (spec->recording_sink_mode == "external_ipc" &&
-        spec->recording_control.clip_seconds > 0) {
-        if (error_out) {
-            *error_out =
-                "Experiment spec fixed.recording_control.clip_seconds > 0 is not supported "
-                "with fixed.recording_sink_mode=external_ipc yet: " +
-                std::string(orange::external_recorder::kExternalRecorderRollingNotImplementedReason);
-        }
-        return false;
-    }
     if (spec->external_recorder_contract.enabled() &&
         spec->recording_sink_mode != "external_ipc") {
         if (error_out) {
             *error_out =
                 "Experiment spec fixed.external_recorder_contract requires "
                 "fixed.recording_sink_mode=external_ipc.";
+        }
+        return false;
+    }
+    if (spec->recording_sink_mode == "external_ipc" &&
+        spec->recording_control.clip_seconds > 0 &&
+        (!spec->external_recorder_contract.enabled() ||
+         !spec->external_recorder_contract.supervise_processes)) {
+        if (error_out) {
+            *error_out =
+                "Experiment spec fixed.recording_control.clip_seconds > 0 with "
+                "fixed.recording_sink_mode=external_ipc requires supervised "
+                "fixed.external_recorder_contract.";
         }
         return false;
     }
@@ -7210,6 +7203,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool rolling_clip_recording =
         enable_recording &&
+        options.recording_sink_mode != "external_ipc" &&
         options.recording_control.record_for_seconds > 0 &&
         options.recording_control.clip_seconds > 0;
     const std::string initial_recording_output_folder =

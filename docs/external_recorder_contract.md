@@ -137,6 +137,8 @@ The verifier uses the stream contract to ask concrete questions:
 - Did the merged MP4 exist when multi-shard output was expected?
 - Did the MP4 pass video sanity?
 - Did the GOP routing CSV have one row per received frame?
+- For rolling sessions, did the recorder write multiple GOP-boundary clip MP4s
+  with continuous `recording_frame_id` coverage?
 
 This contract covers the current diagnostic external recorder path:
 
@@ -221,14 +223,27 @@ Current semantics:
   optional launch-plan fields. If a stream omits them, the dry-run supervisor
   plan tool fills in production-like defaults.
 - `recording_control` is copied from the Orange session/spec intent so external
-  consumers can distinguish continuous, timed, and future rolling sessions.
-- `rollover.requested = true` is currently unsupported for external IPC. Specs
-  with `fixed.recording_sink_mode = "external_ipc"` and
-  `fixed.recording_control.clip_seconds > 0` fail fast before camera start with
-  the reason `external recorder rolling clips are not implemented yet; use
-  in-process recording for rolling clips or external_ipc with clip_seconds=0`.
-  Until the recorder owns GOP-boundary rollover, use in-process recording for
-  rolling clips or keep `clip_seconds = 0` for external IPC.
+  consumers can distinguish continuous, timed, and rolling sessions. If a
+  headless spec places the control at `fixed.recording_control`, the supervisor
+  and verifier treat it as the contract-level default unless a stream overrides
+  it.
+- `rollover.requested = true` is supported for the supervised headless
+  diagnostic IPC recorder when `clip_seconds > 0`. The recorder owns
+  GOP-boundary writer rotation and reports
+  `rollover.implementation = "external_recorder_gop_boundary_writer_rotation"`.
+  It writes the merged session MP4 plus per-clip outputs under
+  `clips/clip_%06d/`.
+- Rolling clip boundaries are aligned upward to whole GOPs. For example,
+  `clip_seconds = 2`, `encode_fps = 100`, and `gop = 25` produce 200-frame
+  clip spans.
+- Full-rate `4512x4512 @ 100 fps` rolling external IPC should use split-GOP
+  shard routing. A single same-GPU external encoder lane can drop frames at
+  this rate; the validated smoke uses `expected_shard_gpu_ids = [5, 6]` and
+  `routing_policy = "gop_modulo"`.
+- GUI/session supervision for external IPC remains separate future work; the
+  GUI path can recognize the backend contract but still refuses to run the
+  external recorder until GUI lifecycle, drain, and finalization reporting are
+  implemented.
 
 ## Supervisor Plan Dry Run
 

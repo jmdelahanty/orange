@@ -265,6 +265,33 @@ bool read_gpu_id_array(const nlohmann::json& node,
     return true;
 }
 
+bool read_recording_control(const nlohmann::json& node,
+                            int* record_for_seconds,
+                            int* clip_seconds,
+                            std::string* error_out,
+                            const std::string& context)
+{
+    if (!node.contains("recording_control")) {
+        return true;
+    }
+    if (!node["recording_control"].is_object()) {
+        return set_error(error_out, context + ".recording_control must be an object");
+    }
+    const nlohmann::json& recording_control = node["recording_control"];
+    return read_int_field(recording_control,
+                          "record_for_seconds",
+                          record_for_seconds,
+                          error_out,
+                          context + ".recording_control",
+                          0) &&
+           read_int_field(recording_control,
+                          "clip_seconds",
+                          clip_seconds,
+                          error_out,
+                          context + ".recording_control",
+                          0);
+}
+
 bool append_selection_camera_serials(const nlohmann::json& experiment_spec,
                                      std::vector<std::string>* camera_serials,
                                      std::string* error_out)
@@ -401,6 +428,15 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                          "external_recorder_contract")) {
         return false;
     }
+    int contract_record_for_seconds = 0;
+    int contract_clip_seconds = 0;
+    if (!read_recording_control(contract,
+                                &contract_record_for_seconds,
+                                &contract_clip_seconds,
+                                error_out,
+                                "external_recorder_contract")) {
+        return false;
+    }
 
     if (!contract.contains("streams") || !contract["streams"].is_object()) {
         return set_error(error_out, "external_recorder_contract.streams must be an object");
@@ -457,6 +493,8 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         stream_plan.bitrate_bps = options.default_bitrate_bps;
         stream_plan.max_bitrate_bps = options.default_max_bitrate_bps;
         stream_plan.vbv_buffer_size = options.default_vbv_buffer_size;
+        stream_plan.record_for_seconds = contract_record_for_seconds;
+        stream_plan.clip_seconds = contract_clip_seconds;
 
         bool saw_recorder_gpu = stream.contains("recorder_gpu_id");
         if (!read_int_field(stream,
@@ -526,6 +564,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                                &stream_plan.socket_path,
                                error_out,
                                context) ||
+            !read_recording_control(stream,
+                                    &stream_plan.record_for_seconds,
+                                    &stream_plan.clip_seconds,
+                                    error_out,
+                                    context) ||
             !read_int_field(stream,
                             "encode_fps",
                             &stream_plan.encode_fps,
@@ -620,6 +663,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                              context +
                                  ".routing_policy=gop_modulo requires at least two shard GPUs");
         }
+        if (stream_plan.clip_seconds > 0 && stream_plan.record_for_seconds <= 0) {
+            return set_error(error_out,
+                             context +
+                                 ".recording_control.clip_seconds requires record_for_seconds > 0");
+        }
         if (plan.require_summary && stream_plan.summary_json.empty()) {
             return set_error(error_out, context + ".summary_json is required");
         }
@@ -709,8 +757,16 @@ bool BuildSupervisorPlanFromExperimentSpec(const nlohmann::json& experiment_spec
         }
     }
 
+    nlohmann::json contract = fixed["external_recorder_contract"];
+    if (fixed.contains("recording_control") &&
+        fixed["recording_control"].is_object() &&
+        contract.is_object() &&
+        !contract.contains("recording_control")) {
+        contract["recording_control"] = fixed["recording_control"];
+    }
+
     SupervisorPlan plan;
-    if (!BuildSupervisorPlanFromContract(fixed["external_recorder_contract"],
+    if (!BuildSupervisorPlanFromContract(contract,
                                          options_with_spec,
                                          &plan,
                                          error_out)) {
@@ -722,7 +778,7 @@ bool BuildSupervisorPlanFromExperimentSpec(const nlohmann::json& experiment_spec
         return false;
     }
     for (const std::string& serial : selected_serials) {
-        if (!stream_key_exists(fixed["external_recorder_contract"]["streams"], serial)) {
+        if (!stream_key_exists(contract["streams"], serial)) {
             return set_error(error_out,
                              "fixed.external_recorder_contract.streams missing selected camera " +
                                  serial);
@@ -781,6 +837,10 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         plan.session_id,
         "--stream-id",
         stream.stream_id,
+        "--record-for-seconds",
+        std::to_string(stream.record_for_seconds),
+        "--clip-seconds",
+        std::to_string(stream.clip_seconds),
         "--shard-id",
         std::to_string(stream.shard_id),
         "--routing-policy",
@@ -821,6 +881,10 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"encode_csv", stream.encode_csv},
             {"gop_routing_csv", stream.gop_routing_csv},
             {"recorder_log", stream.recorder_log},
+            {"recording_control", {
+                {"record_for_seconds", stream.record_for_seconds},
+                {"clip_seconds", stream.clip_seconds},
+            }},
             {"encode_fps", stream.encode_fps},
             {"encode_max_fps", stream.encode_max_fps},
             {"encode_queue_depth", stream.encode_queue_depth},
