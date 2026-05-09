@@ -30,12 +30,12 @@ When recording is active, automatically start a new segment every N minutes (def
 
 - Recording is a global toggle (`record_video`) with drain state (`recording_draining`) and active recorder counting.
 - Each recorder opens one output set and finalizes when recording turns off.
-- First headless-only conservative rolling clips now exist behind
+- Headless-only seamless rolling clips now exist behind
   `fixed.recording_control.record_for_seconds > 0` and
   `fixed.recording_control.clip_seconds > 0`.
-- This first slice is not seamless: the headless runner stops recording at a
-  clip boundary, waits for encoder/writer drain, writes `clip_manifest.json`,
-  arms the next clip folder, then resumes recording while acquisition continues.
+- The headless runner now preopens the next clip writer, switches at a GOP
+  first-frame boundary, forces IDR/SPS/PPS on the first frame in the new clip,
+  writes `clip_manifest.json`, and keeps recording active across rollover.
 - The session/clip artifact contract is documented in
   `docs/recording_session_manifest_contract.md`.
 - The manifest builder and validation live in the shared
@@ -51,29 +51,34 @@ Refs:
 
 ## Audit Update (2026-05-09)
 
-- Headless drain/rearm rolling was validated with a one-camera 2010096 smoke:
-  `record_for_seconds = 12`, `clip_seconds = 6`, stream duration `20 s`.
-- Latest artifact:
-  `/tmp/orange_rolling_spec_validation_bt11/2010096_headless_rolling_clip_smoke_a16_gpu5_bt11`.
-- The run passed with `0` camera frame-ID gaps, `0` GetFrame errors,
+- Headless seamless GOP-boundary rolling was validated with one-camera 2010096
+  smokes:
+  - short artifact:
+    `/tmp/orange_seamless_rolling_bt1/2010096_headless_seamless_rolling_clip_smoke_bt1`
+    with `record_for_seconds = 18`, `clip_seconds = 6`, three clip folders,
+    continuous frames `1-1800`, and total ffprobe duration `18.000 s`.
+  - longer artifact:
+    `/tmp/orange_seamless_rolling_long_bt2/2010096_headless_seamless_rolling_clip_long_bt2`
+    with `record_for_seconds = 36`, `clip_seconds = 6`, six clip folders,
+    continuous frames `1-3600`, and total ffprobe duration `36.000 s`.
+- Both runs passed with `0` camera frame-ID gaps, `0` GetFrame errors,
   `0` encode failures, and `0` preprocess drops.
-- `scripts/verify_timed_recording.py` passed: two clip manifests, continuous
-  `recording_frame_id` across clips, and total ffprobe duration `12.000 s`
-  for a requested `12.000 s`.
-- The latest validation also fixed the rollover boundary decode issue: each new
-  clip now forces the first submitted NVENC picture to IDR with SPS/PPS, so the
-  second clip does not depend on headers or reference frames from the previous
-  clip.
+- `scripts/verify_timed_recording.py` now checks the seamless rollover
+  contract, per-clip manifests, cross-clip `recording_frame_id` continuity, and
+  keyframe frame `0` at the start of each clip.
+- Rollover boundary decode is protected by forcing the first submitted NVENC
+  picture in each new clip to IDR with SPS/PPS, so a clip does not depend on
+  headers or reference frames from the previous clip.
 - During debugging we also fixed an existing headless thread lifetime bug:
   the camera thread lambda now captures camera/control pointer values instead
   of references to `start_camera_thread` stack parameters.
 
 ## Remaining Gap
 
-The conservative headless implementation is useful for short bounded
-experiments and contract validation, but it does not satisfy the original
-"without ever dropping frames between clips" requirement. That still needs
-seamless GOP-boundary writer switching or process/external-recorder rollover.
+The headless in-process full-frame encoder path now satisfies the first
+"without intentional drops between clips" requirement in one-camera smoke tests.
+Remaining production gaps are GUI/session adoption, external-recorder adoption,
+multi-camera PTP rolling validation, failure policy, and long soak testing.
 
 ## Implementation Plan
 
@@ -103,21 +108,25 @@ seamless GOP-boundary writer switching or process/external-recorder rollover.
 
 ## Phase 2: Non-Blocking Writer Switch
 
-- [ ] Implement writer rollover without stopping acquisition threads.
-- [ ] On boundary:
-  - pre-create/open next segment writer,
-  - atomically switch active writer target for new packets,
-  - retire old writer asynchronously (finalize on background cleanup path).
-- [ ] Ensure rollover path does not block encode worker hot path on I/O.
-- [ ] If codec path supports it, request a keyframe near boundary to improve segment independence.
+- [x] Implement headless full-frame writer rollover without stopping
+  acquisition threads.
+- [x] Pre-create/open the next segment writer before the boundary.
+- [x] Switch the active writer target at a GOP first-frame boundary.
+- [ ] Retire the old writer on a background cleanup path; current headless
+  slice finalizes the old writer in the switch path after the prior GOP has
+  been emitted.
+- [ ] Ensure rollover path does not block encode worker hot path on I/O under
+  multi-camera production load.
+- [x] Force IDR/SPS/PPS at the first frame of each new clip.
 
 ## Phase 3: Recorder Path Coverage
 
 - [ ] Apply rollover implementation consistently to:
-  - `EncoderHwWorker` main recording path,
+  - `EncoderHwWorker` main recording path (headless full-frame path is now
+    implemented; GUI/session validation still needed),
   - `CropAndEncodeWorker` crop recording path,
   - `GPUVideoEncoder` path (headless / legacy path where used).
-- [ ] Keep per-path frame-id continuity (`recording_frame_id`) across segments.
+- [x] Keep headless full-frame `recording_frame_id` continuity across segments.
 
 Refs:
 - `src/encoder_hw_worker.cpp:560`
@@ -126,10 +135,10 @@ Refs:
 
 ## Phase 4: Metadata and Discoverability
 
-- [x] Write per-clip metadata and keyframe sidecars for headless drain/rearm
+- [x] Write per-clip metadata and keyframe sidecars for headless seamless
   rolling clips.
 - [x] Write parent `recording_session.json` and per-clip
-  `clip_manifest.json` for headless drain/rearm rolling clips.
+  `clip_manifest.json` for headless seamless rolling clips.
 - [ ] Write session-level frame/status indexes for seamless rolling:
   - segment file paths
   - first/last `recording_frame_id`

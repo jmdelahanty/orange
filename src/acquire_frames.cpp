@@ -1572,10 +1572,16 @@ void acquire_frames(
             if (camera_control->record_video) {
                 current_entry->recording_frame_id = ++local_recording_frame_count;
                 last_recording_frame_count = current_entry->recording_frame_id;
+                camera_control->latest_recording_frame_id.store(
+                    current_entry->recording_frame_id,
+                    std::memory_order_relaxed);
             } else {
                 current_entry->recording_frame_id = 0;
                 if (!camera_control->preserve_recording_session_state) {
                     local_recording_frame_count = 0;
+                    camera_control->latest_recording_frame_id.store(
+                        0,
+                        std::memory_order_relaxed);
                 }
             }
 

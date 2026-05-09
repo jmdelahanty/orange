@@ -1616,6 +1616,25 @@ void EncoderHwWorker::refresh_writer_queue_metrics()
         pending_gop_overflowed_ = output_stats.pending_gop_overflowed;
         pending_gop_overflow_events_ = output_stats.pending_gop_overflow_events;
         next_gop_to_flush_ = output_stats.next_gop_to_flush;
+        if (!output_stats.active_folder.empty()) {
+            active_recording_folder_ = output_stats.active_folder;
+        }
+        if (camera_control_ &&
+            output_stats.rollover_completed_request_id > 0 &&
+            !output_stats.rollover_completed_folder.empty()) {
+            std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+            if (output_stats.rollover_completed_request_id >
+                camera_control_->recording_rollover_completed_request_id) {
+                camera_control_->recording_rollover_completed_request_id =
+                    output_stats.rollover_completed_request_id;
+                camera_control_->recording_rollover_completed_frame_id =
+                    output_stats.rollover_completed_frame_id;
+                camera_control_->recording_rollover_completed_folder =
+                    output_stats.rollover_completed_folder;
+                camera_control_->recording_output_folder =
+                    output_stats.rollover_completed_folder;
+            }
+        }
         return;
     }
     if (!writer_.video) {
@@ -1642,6 +1661,7 @@ void EncoderHwWorker::reset_pending_gop_state()
     submitted_complete_gops_.clear();
     writer_sample_index_base_ = 0;
     writer_sample_index_base_initialized_ = false;
+    forced_rollover_request_id_ = 0;
     if (shared_output_) {
         next_gop_to_flush_ = 0;
         next_gop_to_flush_initialized_ = false;
@@ -1662,6 +1682,99 @@ void EncoderHwWorker::reset_pending_gop_state()
     pending_gop_peak_bytes_ = 0;
     pending_gop_overflowed_ = false;
     pending_gop_overflow_events_ = 0;
+}
+
+SharedRecordingOutputOpenParams EncoderHwWorker::build_shared_output_open_params(
+    const std::string& folder_name) const
+{
+    const auto metadata_tags = build_metadata_tags(
+        camera_params_,
+        recording_output_config_,
+        codec_,
+        preset_,
+        tuning_,
+        rate_control_mode_,
+        quality_value_,
+        gop_length_,
+        encoder_control_overrides_,
+        importance_map_config_);
+    FFmpegWriterQueueConfig queue_config;
+    if (recording_strategy_config_.split_gop_enabled()) {
+        queue_config.max_queued_packets =
+            static_cast<size_t>(recording_strategy_config_.split_gop.writer_queue.max_packets);
+        queue_config.max_queued_bytes =
+            static_cast<size_t>(recording_strategy_config_.split_gop.writer_queue.max_bytes);
+    }
+
+    SharedRecordingOutputOpenParams open_params;
+    open_params.camera_params = camera_params_;
+    open_params.recording_output_config = recording_output_config_;
+    open_params.folder_name = folder_name;
+    open_params.codec = codec_;
+    open_params.metadata_tags = metadata_tags;
+    open_params.queue_config = queue_config;
+    open_params.split_gop_config = recording_strategy_config_.split_gop;
+    open_params.recording_gop_length = recording_gop_length_;
+    return open_params;
+}
+
+void EncoderHwWorker::prepare_requested_rollover(uint64_t recording_frame_id)
+{
+    (void)recording_frame_id;
+    if (!shared_output_ || !camera_control_ || !is_recording_) {
+        return;
+    }
+
+    std::string next_folder;
+    uint64_t rollover_at_frame_id = 0;
+    uint64_t request_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+        request_id = camera_control_->recording_rollover_request_id;
+        rollover_at_frame_id = camera_control_->recording_rollover_at_frame_id;
+        next_folder = camera_control_->pending_recording_output_folder;
+        if (request_id == 0 ||
+            request_id <= camera_control_->recording_rollover_completed_request_id ||
+            rollover_at_frame_id == 0 ||
+            next_folder.empty()) {
+            return;
+        }
+    }
+
+    shared_output_->prepare_rollover(
+        build_shared_output_open_params(next_folder),
+        rollover_at_frame_id,
+        request_id);
+    sync_shared_rollover_completion();
+}
+
+void EncoderHwWorker::sync_shared_rollover_completion()
+{
+    if (!shared_output_ || !camera_control_) {
+        return;
+    }
+
+    const SharedRecordingOutputStats stats = shared_output_->stats();
+    if (!stats.active_folder.empty()) {
+        active_recording_folder_ = stats.active_folder;
+    }
+    if (stats.rollover_completed_request_id == 0 ||
+        stats.rollover_completed_folder.empty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+    if (stats.rollover_completed_request_id <=
+        camera_control_->recording_rollover_completed_request_id) {
+        return;
+    }
+    camera_control_->recording_rollover_completed_request_id =
+        stats.rollover_completed_request_id;
+    camera_control_->recording_rollover_completed_frame_id =
+        stats.rollover_completed_frame_id;
+    camera_control_->recording_rollover_completed_folder =
+        stats.rollover_completed_folder;
+    camera_control_->recording_output_folder = stats.rollover_completed_folder;
 }
 
 std::vector<uint64_t> EncoderHwWorker::resolve_output_sample_indices(
@@ -2644,6 +2757,17 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
 
     const uint64_t zero_based_recording_frame =
         entry->recording_frame_id > 0 ? entry->recording_frame_id - 1 : 0;
+    prepare_requested_rollover(entry->recording_frame_id);
+    uint64_t force_rollover_request_id = 0;
+    {
+        std::lock_guard<std::mutex> lock(camera_control_->recording_folder_mutex);
+        if (camera_control_->recording_rollover_request_id > 0 &&
+            camera_control_->recording_rollover_request_id != forced_rollover_request_id_ &&
+            camera_control_->recording_rollover_at_frame_id > 0 &&
+            entry->recording_frame_id >= camera_control_->recording_rollover_at_frame_id) {
+            force_rollover_request_id = camera_control_->recording_rollover_request_id;
+        }
+    }
     entry->gop_index = zero_based_recording_frame / recording_gop_length_;
     entry->frame_index_within_gop =
         static_cast<uint32_t>(zero_based_recording_frame % recording_gop_length_);
@@ -2680,7 +2804,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
     pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
     pic_params.inputTimeStamp = zero_based_recording_frame;
     pic_params.inputDuration = 1;
-    const bool force_idr_for_frame = force_next_idr_;
+    const bool force_idr_for_frame = force_next_idr_ || force_rollover_request_id > 0;
     if (force_idr_for_frame) {
         pic_params.encodePicFlags |= NV_ENC_PIC_FLAG_FORCEIDR;
         pic_params.encodePicFlags |= NV_ENC_PIC_FLAG_OUTPUT_SPSPPS;
@@ -2784,6 +2908,9 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                     &encode_timing);
                 const uint64_t encode_frame_end_ns = steady_clock_now_ns();
                 force_next_idr_ = false;
+                if (force_rollover_request_id > 0) {
+                    forced_rollover_request_id_ = force_rollover_request_id;
+                }
                 if (encode_frame_end_ns >= encode_frame_start_ns) {
                     timing_sample.nvenc_encode_frame_total_ns +=
                         encode_frame_end_ns - encode_frame_start_ns;
@@ -2859,6 +2986,9 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 }
                 const uint64_t encode_frame_end_ns = steady_clock_now_ns();
                 force_next_idr_ = false;
+                if (force_rollover_request_id > 0) {
+                    forced_rollover_request_id_ = force_rollover_request_id;
+                }
                 if (encode_frame_end_ns >= encode_frame_start_ns) {
                     timing_sample.nvenc_encode_frame_total_ns +=
                         encode_frame_end_ns - encode_frame_start_ns;

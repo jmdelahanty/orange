@@ -51,6 +51,7 @@ struct RecordingOutputTimingSample {
 
 struct SharedRecordingOutputStats {
     bool is_open = false;
+    std::string active_folder;
     bool writer_queue_overflowed = false;
     uint64_t writer_queue_overflow_events = 0;
     size_t writer_queue_peak_packets = 0;
@@ -74,6 +75,12 @@ struct SharedRecordingOutputStats {
     bool pending_gop_overflow_frontier_present = false;
     bool pending_gop_overflow_frontier_complete = false;
     std::vector<uint64_t> pending_gop_overflow_pending_keys;
+    bool rollover_pending = false;
+    uint64_t rollover_request_id = 0;
+    uint64_t rollover_at_frame_id = 0;
+    uint64_t rollover_completed_request_id = 0;
+    uint64_t rollover_completed_frame_id = 0;
+    std::string rollover_completed_folder;
     LatencyAggregateStats encoder_cuda_set_device;
     LatencyAggregateStats preprocess_complete_stream_wait_enqueue;
     LatencyAggregateStats source_to_helper_copy_sync_wait;
@@ -118,6 +125,9 @@ public:
     ~SharedRecordingOutput();
 
     void open_if_needed(const SharedRecordingOutputOpenParams& params);
+    void prepare_rollover(const SharedRecordingOutputOpenParams& params,
+                          uint64_t rollover_first_frame_id,
+                          uint64_t request_id);
     void submit_frame_output(const std::vector<std::vector<uint8_t>>& packets,
                              const std::vector<uint64_t>& output_timestamps,
                              int64_t fallback_sample_index,
@@ -161,6 +171,8 @@ private:
     void refresh_writer_queue_metrics_locked();
     void write_metadata_row_locked(const RecordingMetadataRow& metadata_row);
     int64_t normalize_writer_sample_index_locked(int64_t sample_index);
+    void maybe_switch_to_prepared_writer_locked(uint64_t gop_index);
+    void switch_to_prepared_writer_locked();
     void record_pending_gop_overflow_locked(const char* reason,
                                             uint64_t completion_gop_index,
                                             size_t limit);
@@ -171,10 +183,19 @@ private:
 
     mutable std::mutex mutex_;
     Writer writer_;
+    Writer prepared_writer_;
     bool is_open_ = false;
     size_t active_worker_sessions_ = 0;
     bool close_requested_ = false;
     std::string active_folder_;
+    bool rollover_pending_ = false;
+    uint64_t rollover_request_id_ = 0;
+    uint64_t rollover_at_frame_id_ = 0;
+    uint64_t rollover_gop_index_ = 0;
+    std::string rollover_folder_;
+    uint64_t rollover_completed_request_id_ = 0;
+    uint64_t rollover_completed_frame_id_ = 0;
+    std::string rollover_completed_folder_;
     SplitGopConfig split_gop_config_;
     uint32_t recording_gop_length_ = 1;
     std::map<uint64_t, PendingGop> pending_gops_;

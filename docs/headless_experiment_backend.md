@@ -172,9 +172,8 @@ Current behavior:
   timed-recording contract from `recording_session.json`, per-camera clip
   artifacts, `runs.json`, and `ffprobe`
 
-`clip_seconds > 0` enables the first headless-only rolling-clip path. This
-current implementation is conservative drain/rearm, not seamless writer
-switching:
+`clip_seconds > 0` enables the headless-only rolling-clip path. The current
+implementation uses seamless GOP-boundary writer switching:
 
 - clip folders are written under `clips/clip_000000`,
   `clips/clip_000001`, etc.
@@ -184,8 +183,15 @@ switching:
   `mode = "rolling_clips"`
 - `recording_frame_id` remains continuous across clip metadata
 - MP4 timestamps are clip-local and start at zero for each clip
-- the manifest records `rollover.implementation = "headless_drain_rearm"`,
-  `seamless_writer_switch = false`, and `records_during_drain_gap = false`
+- the next clip writer is preopened before the switch
+- the active writer switches at a GOP first-frame boundary
+- each new clip starts with an IDR/SPS/PPS picture and keyframe frame `0`
+- the manifest records `rollover.implementation =
+  "headless_gop_boundary_writer_switch"`, `seamless_writer_switch = true`,
+  `records_during_rollover = true`, and `next_writer_preopened = true`
+- GOP-boundary alignment can move individual clip durations by up to one GOP;
+  use the total ffprobe duration and continuous `recording_frame_id` coverage
+  for the recording-duration check
 
 The shared session and clip manifest contract is documented in
 `docs/recording_session_manifest_contract.md`. The manifest builder and
@@ -212,20 +218,31 @@ Validated rolling smoke:
 - spec:
   `experiment_specs/2010096_headless_rolling_clip_smoke_a16_gpu5.json`
 - latest artifact:
-  `/tmp/orange_rolling_spec_validation_bt11/2010096_headless_rolling_clip_smoke_a16_gpu5_bt11`
-- stream requested `20 s`, recording requested `12 s`, clip interval `6 s`
+  `/tmp/orange_seamless_rolling_bt1/2010096_headless_seamless_rolling_clip_smoke_bt1`
+- stream requested `24 s`, recording requested `18 s`, clip interval `6 s`
 - `recording_session.json` reported `mode = "rolling_clips"`,
   `status = completed`, `stop_reason = record_for_seconds_elapsed`, and
   `drain_completed = true`
-- ffprobe reported `clip_000000` duration `6.000 s` and `clip_000001`
-  duration `6.000 s`
-- both clip keyframe sidecars start with keyframe frame `0`; rollover now
-  forces the first NVENC picture in each clip to IDR with SPS/PPS
+- ffprobe reported three clips totaling `18.000 s`
+- all clip keyframe sidecars start with keyframe frame `0`; rollover forces
+  the first NVENC picture in each clip to IDR with SPS/PPS
 - `summary.json` reported `pass_runs = 1`, `fail_runs = 0`
 - camera result reported `0` frame-ID gaps, `0` GetFrame errors,
   `0` preprocess drops, and `0` encode failures
 - `scripts/verify_timed_recording.py` passed with total ffprobe duration
-  `12.000 s` for a requested `12.000 s`
+  `18.000 s` for a requested `18.000 s`
+
+Longer seamless rolling validation:
+
+- artifact:
+  `/tmp/orange_seamless_rolling_long_bt2/2010096_headless_seamless_rolling_clip_long_bt2`
+- stream requested `42 s`, recording requested `36 s`, clip interval `6 s`
+- six clip folders, continuous frames `1-3600`, total ffprobe duration
+  `36.000 s`
+- `summary.json` reported `pass_runs = 1`, `fail_runs = 0`
+- camera result reported `0` frame-ID gaps, `0` GetFrame errors,
+  `0` preprocess drops, and `0` encode failures
+- `scripts/verify_timed_recording.py` passed
 
 `fixed.frame_ipc` is an explicit testability knob for the same shared-memory
 frame IPC path used by the GUI:

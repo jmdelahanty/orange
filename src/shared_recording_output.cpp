@@ -95,6 +95,14 @@ void SharedRecordingOutput::open_locked(const SharedRecordingOutputOpenParams& p
     active_folder_ = params.folder_name;
     active_worker_sessions_ = 0;
     close_requested_ = false;
+    rollover_pending_ = false;
+    rollover_request_id_ = 0;
+    rollover_at_frame_id_ = 0;
+    rollover_gop_index_ = 0;
+    rollover_folder_.clear();
+    rollover_completed_request_id_ = 0;
+    rollover_completed_frame_id_ = 0;
+    rollover_completed_folder_.clear();
     split_gop_config_ = params.split_gop_config;
     recording_gop_length_ = std::max<uint32_t>(1u, params.recording_gop_length);
     reset_pending_state_locked();
@@ -105,6 +113,55 @@ void SharedRecordingOutput::open_locked(const SharedRecordingOutputOpenParams& p
 
     initialize_writer_locked(&writer_, params);
     is_open_ = true;
+}
+
+void SharedRecordingOutput::prepare_rollover(const SharedRecordingOutputOpenParams& params,
+                                             uint64_t rollover_first_frame_id,
+                                             uint64_t request_id)
+{
+    if (params.folder_name.empty() || rollover_first_frame_id == 0 || request_id == 0) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_open_) {
+        return;
+    }
+    if (request_id <= rollover_completed_request_id_) {
+        return;
+    }
+    if (rollover_pending_ &&
+        rollover_request_id_ == request_id &&
+        rollover_folder_ == params.folder_name) {
+        return;
+    }
+    if (active_folder_ == params.folder_name) {
+        rollover_completed_request_id_ = request_id;
+        rollover_completed_frame_id_ = rollover_first_frame_id;
+        rollover_completed_folder_ = params.folder_name;
+        return;
+    }
+
+    close_writer_locked(&prepared_writer_);
+
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        make_folder(params.folder_name);
+    }
+    initialize_writer_locked(&prepared_writer_, params);
+    rollover_pending_ = true;
+    rollover_request_id_ = request_id;
+    rollover_at_frame_id_ = rollover_first_frame_id;
+    rollover_gop_index_ =
+        (rollover_first_frame_id - 1) / std::max<uint32_t>(1u, params.recording_gop_length);
+    rollover_folder_ = params.folder_name;
+    std::cout << "[SharedRecordingOutput] Prepared rolling clip writer."
+              << " folder=" << rollover_folder_
+              << " rollover_at_frame=" << rollover_at_frame_id_
+              << " gop=" << rollover_gop_index_
+              << " request_id=" << rollover_request_id_
+              << std::endl;
 }
 
 void SharedRecordingOutput::submit_frame_output(
@@ -231,6 +288,11 @@ void SharedRecordingOutput::buffer_packets_locked(
             const int64_t sample_index = i < output_timestamps.size()
                 ? static_cast<int64_t>(output_timestamps[i])
                 : fallback_sample_index;
+            if (sample_index >= 0) {
+                const uint64_t gop_index =
+                    static_cast<uint64_t>(sample_index) / recording_gop_length_;
+                maybe_switch_to_prepared_writer_locked(gop_index);
+            }
             if (writer_.video) {
                 const int64_t writer_sample_index =
                     normalize_writer_sample_index_locked(sample_index);
@@ -241,6 +303,11 @@ void SharedRecordingOutput::buffer_packets_locked(
             }
         }
         if (metadata_row.has_value()) {
+            if (metadata_row->frame_id > 0) {
+                const uint64_t gop_index =
+                    (metadata_row->frame_id - 1) / recording_gop_length_;
+                maybe_switch_to_prepared_writer_locked(gop_index);
+            }
             write_metadata_row_locked(*metadata_row);
         }
         refresh_writer_queue_metrics_locked();
@@ -345,6 +412,7 @@ void SharedRecordingOutput::flush_pending_gops_locked(bool flush_all)
     }
 
     while (true) {
+        maybe_switch_to_prepared_writer_locked(next_gop_to_flush_);
         auto it = pending_gops_.find(next_gop_to_flush_);
         if (it == pending_gops_.end()) {
             break;
@@ -433,6 +501,49 @@ int64_t SharedRecordingOutput::normalize_writer_sample_index_locked(int64_t samp
     return sample_index - writer_sample_index_base_;
 }
 
+void SharedRecordingOutput::maybe_switch_to_prepared_writer_locked(uint64_t gop_index)
+{
+    if (!rollover_pending_ || !prepared_writer_.video) {
+        return;
+    }
+    if (gop_index < rollover_gop_index_) {
+        return;
+    }
+    switch_to_prepared_writer_locked();
+}
+
+void SharedRecordingOutput::switch_to_prepared_writer_locked()
+{
+    if (!rollover_pending_ || !prepared_writer_.video) {
+        return;
+    }
+
+    refresh_writer_queue_metrics_locked();
+    close_writer_locked(&writer_);
+    writer_ = prepared_writer_;
+    prepared_writer_ = Writer{};
+    active_folder_ = rollover_folder_;
+    writer_sample_index_base_ = 0;
+    writer_sample_index_base_initialized_ = false;
+    writer_latency_stats_ = {};
+
+    rollover_completed_request_id_ = rollover_request_id_;
+    rollover_completed_frame_id_ = rollover_at_frame_id_;
+    rollover_completed_folder_ = rollover_folder_;
+
+    std::cout << "[SharedRecordingOutput] Switched rolling clip writer."
+              << " folder=" << active_folder_
+              << " rollover_at_frame=" << rollover_completed_frame_id_
+              << " request_id=" << rollover_completed_request_id_
+              << std::endl;
+
+    rollover_pending_ = false;
+    rollover_request_id_ = 0;
+    rollover_at_frame_id_ = 0;
+    rollover_gop_index_ = 0;
+    rollover_folder_.clear();
+}
+
 void SharedRecordingOutput::record_pending_gop_overflow_locked(const char* reason,
                                                                uint64_t completion_gop_index,
                                                                size_t limit)
@@ -511,15 +622,22 @@ bool SharedRecordingOutput::close_worker_session(bool request_close_when_idle)
 void SharedRecordingOutput::close_locked()
 {
     if (!is_open_) {
+        close_writer_locked(&prepared_writer_);
         return;
     }
     flush_pending_gops_locked(true);
     refresh_writer_queue_metrics_locked();
     close_writer_locked(&writer_);
+    close_writer_locked(&prepared_writer_);
     active_folder_.clear();
     is_open_ = false;
     active_worker_sessions_ = 0;
     close_requested_ = false;
+    rollover_pending_ = false;
+    rollover_request_id_ = 0;
+    rollover_at_frame_id_ = 0;
+    rollover_gop_index_ = 0;
+    rollover_folder_.clear();
 }
 
 SharedRecordingOutputStats SharedRecordingOutput::stats() const
@@ -527,6 +645,7 @@ SharedRecordingOutputStats SharedRecordingOutput::stats() const
     std::lock_guard<std::mutex> lock(mutex_);
     SharedRecordingOutputStats out;
     out.is_open = is_open_;
+    out.active_folder = active_folder_;
     out.writer_queue_overflowed = writer_queue_overflowed_;
     out.writer_queue_overflow_events = writer_queue_overflow_events_;
     out.writer_queue_peak_packets = writer_queue_peak_packets_;
@@ -550,6 +669,12 @@ SharedRecordingOutputStats SharedRecordingOutput::stats() const
     out.pending_gop_overflow_frontier_present = pending_gop_overflow_frontier_present_;
     out.pending_gop_overflow_frontier_complete = pending_gop_overflow_frontier_complete_;
     out.pending_gop_overflow_pending_keys = pending_gop_overflow_pending_keys_;
+    out.rollover_pending = rollover_pending_;
+    out.rollover_request_id = rollover_request_id_;
+    out.rollover_at_frame_id = rollover_at_frame_id_;
+    out.rollover_completed_request_id = rollover_completed_request_id_;
+    out.rollover_completed_frame_id = rollover_completed_frame_id_;
+    out.rollover_completed_folder = rollover_completed_folder_;
     out.encoder_cuda_set_device = encoder_cuda_set_device_latency_;
     out.preprocess_complete_stream_wait_enqueue =
         preprocess_complete_stream_wait_enqueue_latency_;

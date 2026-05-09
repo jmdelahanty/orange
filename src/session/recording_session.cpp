@@ -279,6 +279,14 @@ nlohmann::json build_rolling_clip_entry_json(
         {"requested_duration_s", clip.requested_duration_s},
         {"actual_duration_s", clip.actual_duration_s},
         {"drain_duration_s", clip.drain_duration_s},
+        {"rollover",
+         {
+             {"request_id", clip.rollover_request_id},
+             {"rollover_at_recording_frame_id", clip.rollover_at_recording_frame_id},
+             {"first_recording_frame_id", clip.first_recording_frame_id},
+             {"last_recording_frame_id", clip.last_recording_frame_id},
+             {"pending_next_clip", clip.pending_next_clip}
+         }},
         {"timed_stop_hit", clip.timed_stop_hit},
         {"final_clip", clip.final_clip},
         {"drain_completed", clip.drain_completed},
@@ -447,10 +455,11 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
          }},
         {"rollover",
          {
-             {"implementation", "headless_drain_rearm"},
-             {"seamless_writer_switch", false},
-             {"records_during_drain_gap", false},
-             {"note", kConservativeRollingClipsNote}
+             {"implementation", "headless_gop_boundary_writer_switch"},
+             {"seamless_writer_switch", true},
+             {"records_during_rollover", true},
+             {"boundary", "gop_first_frame_id"},
+             {"next_writer_preopened", true}
          }},
         {"clips", clips}
     };
@@ -564,6 +573,16 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
 
     camera_control->recording_draining = false;
     camera_control->stop_record = false;
+    camera_control->latest_recording_frame_id.store(0, std::memory_order_relaxed);
+    {
+        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+        camera_control->pending_recording_output_folder.clear();
+        camera_control->recording_rollover_at_frame_id = 0;
+        camera_control->recording_rollover_request_id = 0;
+        camera_control->recording_rollover_completed_request_id = 0;
+        camera_control->recording_rollover_completed_frame_id = 0;
+        camera_control->recording_rollover_completed_folder.clear();
+    }
 
     std::string recording_id = get_current_date_time();
     std::string recording_folder;
@@ -671,6 +690,12 @@ void request_stop_recording_run(CameraControl* camera_control)
     camera_control->record_video = false;
     camera_control->recording_draining = true;
     camera_control->stop_record = true;
+    {
+        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+        camera_control->pending_recording_output_folder.clear();
+        camera_control->recording_rollover_at_frame_id = 0;
+        camera_control->recording_rollover_request_id = 0;
+    }
     if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
         camera_control->recording_draining = false;
         camera_control->stop_record = false;

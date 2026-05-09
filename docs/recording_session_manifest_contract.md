@@ -13,21 +13,22 @@ Current implementation rule:
 
 - `clip_seconds = 0` keeps the existing flat single-video layout.
 - `clip_seconds > 0` is implemented for headless `fixed.recording_control`
-  only, using conservative drain/rearm rollover.
+  with seamless GOP-boundary writer switching.
 - GUI/session rolling supervision and external-recorder rolling supervision are
   still future work.
 
-The current headless rolling implementation is intentionally not seamless:
+The current headless rolling implementation keeps acquisition and recording
+active during clip rollover:
 
-- it stops recording at the clip boundary,
-- waits for the active encoders/writers to drain,
-- writes the finalized clip manifest,
-- arms the next clip folder,
-- resumes recording while acquisition continues.
+- it preopens the next clip writer while the current writer is active,
+- switches writers at a GOP first-frame boundary,
+- forces the first submitted NVENC picture in the new clip to IDR with SPS/PPS,
+- finalizes the previous clip after the switch,
+- keeps `recording_frame_id` continuous across clips.
 
 The manifest records this with `rollover.implementation =
-"headless_drain_rearm"`, `seamless_writer_switch = false`, and
-`records_during_drain_gap = false`.
+"headless_gop_boundary_writer_switch"`, `seamless_writer_switch = true`,
+`records_during_rollover = true`, and `next_writer_preopened = true`.
 
 ## Single-Video Layout
 
@@ -86,9 +87,9 @@ the discovery root and each clip gets its own subfolder:
       Cam2010096_keyframe.json
 ```
 
-Future seamless rollover should add session-level frame/status CSVs. The current
-headless drain/rearm slice keeps cross-clip continuity in the per-clip metadata
-and the parent `recording_session.json`.
+Future multi-day production rollover should add session-level frame/status CSVs.
+The current headless slice keeps cross-clip continuity in the per-clip metadata
+and records per-clip frame ranges in the parent `recording_session.json`.
 
 ## Rolling Session Manifest
 
@@ -107,26 +108,27 @@ The top-level rolling manifest uses this shape:
   "updated_at_utc": "2026-05-09T02:32:31Z",
   "cameras": ["2010096"],
   "recording_control": {
-    "record_for_seconds": 12,
+    "record_for_seconds": 18,
     "clip_seconds": 6
   },
   "rollover": {
-    "implementation": "headless_drain_rearm",
-    "seamless_writer_switch": false,
-    "records_during_drain_gap": false,
-    "note": "headless rolling clips currently rotate by draining the current clip and arming the next clip; seamless GOP-boundary writer switching is not implemented yet."
+    "implementation": "headless_gop_boundary_writer_switch",
+    "seamless_writer_switch": true,
+    "records_during_rollover": true,
+    "boundary": "gop_first_frame_id",
+    "next_writer_preopened": true
   },
   "recording": {
     "started": true,
     "stop_requested": true,
     "stop_reason": "record_for_seconds_elapsed",
     "drain_completed": true,
-    "actual_recording_duration_s": 12.0,
-    "sum_clip_actual_duration_s": 11.9
+    "actual_recording_duration_s": 18.0,
+    "sum_clip_actual_duration_s": 18.0
   },
   "stream": {
-    "requested_duration_seconds": 20,
-    "actual_elapsed_s": 20.0,
+    "requested_duration_seconds": 24,
+    "actual_elapsed_s": 24.0,
     "interrupted": false
   },
   "clips": [
@@ -138,6 +140,13 @@ The top-level rolling manifest uses this shape:
       "start_reason": "recording_start",
       "stop_reason": "clip_seconds_elapsed",
       "drain_completed": true,
+      "rollover": {
+        "request_id": 1,
+        "rollover_at_recording_frame_id": 601,
+        "first_recording_frame_id": 1,
+        "last_recording_frame_id": 600,
+        "pending_next_clip": false
+      },
       "final_clip": false
     },
     {
@@ -146,8 +155,32 @@ The top-level rolling manifest uses this shape:
       "directory": "clips/clip_000001",
       "status": "completed",
       "start_reason": "rollover",
+      "stop_reason": "clip_seconds_elapsed",
+      "drain_completed": true,
+      "rollover": {
+        "request_id": 2,
+        "rollover_at_recording_frame_id": 1226,
+        "first_recording_frame_id": 601,
+        "last_recording_frame_id": 1225,
+        "pending_next_clip": false
+      },
+      "final_clip": false
+    },
+    {
+      "clip_index": 2,
+      "clip_id": "clip_000002",
+      "directory": "clips/clip_000002",
+      "status": "completed",
+      "start_reason": "rollover",
       "stop_reason": "record_for_seconds_elapsed",
       "drain_completed": true,
+      "rollover": {
+        "request_id": 2,
+        "rollover_at_recording_frame_id": 1226,
+        "first_recording_frame_id": 1226,
+        "last_recording_frame_id": 1800,
+        "pending_next_clip": false
+      },
       "final_clip": true
     }
   ]
@@ -157,6 +190,12 @@ The top-level rolling manifest uses this shape:
 The top-level manifest is the stable discovery entrypoint. Consumers should use
 the `clips[*].directory` entries to enumerate clip folders and then read each
 clip's manifest for per-camera frame ranges.
+
+The per-clip `rollover` object carries the session-continuous frame range for
+that clip. For non-final clips, `rollover_at_recording_frame_id` is the first
+recording frame of the next clip. For a final clip that was opened by a prior
+rollover, it records that opening boundary and can match the final clip's
+`first_recording_frame_id`.
 
 ## Clip Manifest
 
@@ -185,6 +224,13 @@ Shape:
   "actual_duration_s": 6.0,
   "drain_completed": true,
   "drain_duration_s": 0.03,
+  "rollover": {
+    "request_id": 1,
+    "rollover_at_recording_frame_id": 601,
+    "first_recording_frame_id": 1,
+    "last_recording_frame_id": 600,
+    "pending_next_clip": false
+  },
   "cameras": ["2010096"],
   "camera_artifacts": {
     "2010096": {
@@ -217,9 +263,9 @@ metadata frame IDs continue across clips.
 - `camera_frame_id` is not in the current per-clip CSV; camera/vendor frame
   continuity is still summarized by pipeline and run health fields.
 - Consumers should join across clips with `recording_frame_id`.
-- Current drain/rearm rollover may produce a small intentional recording gap
-  while the previous clip drains and the next writer opens. The manifest marks
-  this with `records_during_drain_gap = false`.
+- Seamless rollover switches at a GOP boundary. Individual clip media durations
+  can vary by up to one GOP while the total requested recording duration and
+  `recording_frame_id` coverage remain continuous.
 
 ## Validation
 
@@ -236,27 +282,40 @@ The verifier now handles both `mode = "single_clip"` and
 - per-clip `clip_manifest.json`,
 - per-camera clip MP4/metadata/keyframe paths,
 - per-clip and cross-clip `recording_frame_id` continuity,
+- parent rollover contract for seamless writer switching,
+- each clip starts with keyframe frame `0`,
 - `runs.json` health/pass fields when present,
 - total ffprobe video duration within tolerance.
 
 Latest validated headless rolling smoke:
 
 - artifact:
-  `/tmp/orange_rolling_spec_validation_bt11/2010096_headless_rolling_clip_smoke_a16_gpu5_bt11`
-- `record_for_seconds = 12`, `clip_seconds = 6`, stream duration `20 s`
+  `/tmp/orange_seamless_rolling_bt1/2010096_headless_seamless_rolling_clip_smoke_bt1`
+- `record_for_seconds = 18`, `clip_seconds = 6`, stream duration `24 s`
 - `summary.json`: `pass_runs = 1`, `fail_runs = 0`
 - camera health: `0` frame-ID gaps, `0` GetFrame errors, `0` encode failures,
   `0` preprocess drops
-- clips: `clip_000000` ffprobe duration `6.000 s`, `clip_000001` `6.000 s`
-- both clips start with keyframe frame `0` after forcing IDR/SPS/PPS on each
+- clips: three clip directories, continuous frames `1-1800`, total ffprobe
+  duration `18.000 s`
+- all clips start with keyframe frame `0` after forcing IDR/SPS/PPS on each
   newly opened clip
-- verifier total: `12.000 s` for a requested `12.000 s`
+- verifier total: `18.000 s` for a requested `18.000 s`
+
+Latest longer validation:
+
+- artifact:
+  `/tmp/orange_seamless_rolling_long_bt2/2010096_headless_seamless_rolling_clip_long_bt2`
+- `record_for_seconds = 36`, `clip_seconds = 6`, stream duration `42 s`
+- six clip directories, continuous frames `1-3600`, total ffprobe duration
+  `36.000 s`
+- `summary.json`: `pass_runs = 1`, `fail_runs = 0`
+- camera health: `0` frame-ID gaps, `0` GetFrame errors, `0` encode failures,
+  `0` preprocess drops
+- `scripts/verify_timed_recording.py` passed
 
 ## Remaining Work
 
-- Implement seamless GOP-boundary writer switching so recording continues during
-  rollover without the conservative drain/rearm gap.
 - Add GUI/session controls and validation for rolling clips.
 - Add external-recorder rolling supervision using the same manifest contract.
-- Add session-level frame/status CSVs once seamless rollover needs richer
-  cross-clip indexing.
+- Add session-level frame/status CSVs for easier downstream indexing across
+  many clips.

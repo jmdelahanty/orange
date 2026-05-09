@@ -97,6 +97,10 @@ private:
     bool importance_map_active() const;
     void refresh_writer_queue_metrics();
     void reset_pending_gop_state();
+    SharedRecordingOutputOpenParams build_shared_output_open_params(
+        const std::string& folder_name) const;
+    void prepare_requested_rollover(uint64_t recording_frame_id);
+    void sync_shared_rollover_completion();
     void buffer_encoded_packets(const std::vector<std::vector<uint8_t>>& packets,
                                 const std::vector<uint64_t>& output_timestamps,
                                 int64_t fallback_sample_index,
@@ -286,6 +290,7 @@ private:
     bool pending_gop_overflowed_ = false;
     uint64_t pending_gop_overflow_events_ = 0;
     bool force_next_idr_ = false;
+    uint64_t forced_rollover_request_id_ = 0;
     std::deque<uint64_t> pending_output_sample_indices_;
     std::map<uint64_t, uint32_t> submitted_frames_by_gop_;
     std::map<uint64_t, uint32_t> emitted_frames_by_gop_;

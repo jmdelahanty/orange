@@ -146,7 +146,14 @@ struct CameraControl
     std::mutex recording_folder_mutex;
     std::string recording_folder;
     std::string recording_output_folder;
+    std::string pending_recording_output_folder;
+    uint64_t recording_rollover_at_frame_id = 0;
+    uint64_t recording_rollover_request_id = 0;
+    uint64_t recording_rollover_completed_request_id = 0;
+    uint64_t recording_rollover_completed_frame_id = 0;
+    std::string recording_rollover_completed_folder;
     bool preserve_recording_session_state = false;
+    std::atomic<uint64_t> latest_recording_frame_id{0};
 };
 
 struct CameraResources {

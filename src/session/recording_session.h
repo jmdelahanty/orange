@@ -12,10 +12,6 @@
 
 namespace orange::session {
 
-inline constexpr const char* kConservativeRollingClipsNote =
-    "headless rolling clips currently rotate by draining the current clip and "
-    "arming the next clip; seamless GOP-boundary writer switching is not implemented yet.";
-
 struct RecordingSessionState {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::string recording_sink_mode = "real";
@@ -102,6 +98,11 @@ struct RollingClipManifestOptions {
     double requested_duration_s = 0.0;
     double actual_duration_s = 0.0;
     double drain_duration_s = 0.0;
+    uint64_t rollover_request_id = 0;
+    uint64_t rollover_at_recording_frame_id = 0;
+    uint64_t first_recording_frame_id = 0;
+    uint64_t last_recording_frame_id = 0;
+    bool pending_next_clip = false;
     bool timed_stop_hit = false;
     bool final_clip = false;
     bool drain_completed = false;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify the current headless timed-recording single-clip contract."""
+"""Verify the current headless timed-recording single-clip and rolling contracts."""
 
 from __future__ import annotations
 
@@ -402,6 +402,13 @@ def metadata_frame_ids(path: Path) -> list[int]:
     return frame_ids
 
 
+def keyframe_frames(path: Path) -> list[int]:
+    payload = read_json(path)
+    frames = payload.get("keyframe_frames")
+    require(isinstance(frames, list), f"keyframe sidecar missing keyframe_frames: {path}")
+    return [as_int(frame, f"keyframe frame in {path}") for frame in frames]
+
+
 def verify_common_manifest(
     manifest: dict[str, Any],
     duration_tolerance_s: float,
@@ -538,9 +545,20 @@ def verify_rolling_clips(
         len(clips) >= expected_min_clips,
         f"rolling manifest has too few clips: {len(clips)} < {expected_min_clips}",
     )
+    rollover_contract = manifest.get("rollover")
+    require(isinstance(rollover_contract, dict), "rolling manifest missing rollover object")
+    require(
+        rollover_contract.get("implementation") == "headless_gop_boundary_writer_switch",
+        f"unexpected rollover implementation: {rollover_contract.get('implementation')!r}",
+    )
+    require(bool(rollover_contract.get("seamless_writer_switch")), "rollover.seamless_writer_switch is false")
+    require(bool(rollover_contract.get("next_writer_preopened")), "rollover.next_writer_preopened is false")
+    if "records_during_rollover" in rollover_contract:
+        require(bool(rollover_contract.get("records_during_rollover")), "rollover.records_during_rollover is false")
 
     ffprobe_totals: dict[str, float] = {camera: 0.0 for camera in selected_cameras}
     previous_last_frame_id: dict[str, int] = {}
+    previous_rollover_at_frame_id: dict[str, int] = {}
     for expected_index, clip in enumerate(clips):
         require(isinstance(clip, dict), f"clip {expected_index} is not an object")
         require(clip.get("clip_index") == expected_index, f"unexpected clip_index: {clip.get('clip_index')!r}")
@@ -559,6 +577,21 @@ def verify_rolling_clips(
         clip_manifest = read_json(clip_manifest_path)
         require(clip_manifest.get("schema_id") == "orange.recording_clip", f"unexpected clip manifest schema: {clip_manifest.get('schema_id')!r}")
         require(clip_manifest.get("clip_id") == clip.get("clip_id"), "clip manifest clip_id mismatch")
+        rollover = clip.get("rollover")
+        require(isinstance(rollover, dict), f"clip {expected_index} missing rollover object")
+        clip_manifest_rollover = clip_manifest.get("rollover")
+        require(isinstance(clip_manifest_rollover, dict), f"clip manifest {expected_index} missing rollover object")
+        for field in (
+            "request_id",
+            "rollover_at_recording_frame_id",
+            "first_recording_frame_id",
+            "last_recording_frame_id",
+        ):
+            require(
+                as_int(clip_manifest_rollover.get(field, 0), f"clip_manifest.rollover.{field}")
+                == as_int(rollover.get(field, 0), f"clip.rollover.{field}"),
+                f"clip manifest rollover.{field} mismatch for clip {expected_index}",
+            )
 
         for camera in selected_cameras:
             video_path = manifest_artifact_path(run_folder, clip, "videos", camera)
@@ -570,6 +603,12 @@ def verify_rolling_clips(
             duration = ffprobe_duration(video_path, args.ffprobe)
             require(duration > 0, f"ffprobe duration is zero for camera {camera}: {video_path}")
             ffprobe_totals[camera] += duration
+            keyframes = keyframe_frames(keyframe_path)
+            require(bool(keyframes), f"keyframe sidecar has no keyframes for camera {camera}: {keyframe_path}")
+            require(
+                keyframes[0] == 0,
+                f"clip {expected_index} for camera {camera} does not start on keyframe 0: {keyframes[:3]}",
+            )
 
             frame_ids = metadata_frame_ids(metadata_path)
             require(bool(frame_ids), f"metadata has no frame rows for camera {camera}: {metadata_path}")
@@ -583,6 +622,44 @@ def verify_rolling_clips(
                         f"{previous_last_frame_id[camera]} -> {frame_ids[0]}"
                     ),
                 )
+                if camera in previous_rollover_at_frame_id:
+                    require(
+                        frame_ids[0] == previous_rollover_at_frame_id[camera],
+                        (
+                            f"clip {expected_index} for camera {camera} did not start at prior "
+                            f"rollover frame {previous_rollover_at_frame_id[camera]}: {frame_ids[0]}"
+                        ),
+                    )
+            manifest_first = as_int(rollover.get("first_recording_frame_id", 0), "rollover.first_recording_frame_id")
+            manifest_last = as_int(rollover.get("last_recording_frame_id", 0), "rollover.last_recording_frame_id")
+            require(
+                manifest_first == frame_ids[0],
+                (
+                    f"clip {expected_index} first_recording_frame_id mismatch for camera {camera}: "
+                    f"{manifest_first} vs metadata {frame_ids[0]}"
+                ),
+            )
+            require(
+                manifest_last == frame_ids[-1],
+                (
+                    f"clip {expected_index} last_recording_frame_id mismatch for camera {camera}: "
+                    f"{manifest_last} vs metadata {frame_ids[-1]}"
+                ),
+            )
+            if expected_index < len(clips) - 1:
+                rollover_at = as_int(
+                    rollover.get("rollover_at_recording_frame_id", 0),
+                    "rollover.rollover_at_recording_frame_id",
+                )
+                require(rollover_at > 0, f"clip {expected_index} missing rollover_at_recording_frame_id")
+                require(
+                    frame_ids[-1] == rollover_at - 1,
+                    (
+                        f"clip {expected_index} last frame does not end before rollover frame "
+                        f"for camera {camera}: {frame_ids[-1]} vs {rollover_at}"
+                    ),
+                )
+                previous_rollover_at_frame_id[camera] = rollover_at
             previous_last_frame_id[camera] = frame_ids[-1]
 
     for camera, total_duration in ffprobe_totals.items():

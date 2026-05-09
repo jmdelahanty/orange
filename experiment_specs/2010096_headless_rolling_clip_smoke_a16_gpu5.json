@@ -1,12 +1,12 @@
 {
-  "experiment_id": "2010096_headless_rolling_clip_smoke_a16_gpu5",
-  "notes": "Short single-camera headless smoke for experimental fixed.recording_control rolling clips. The stream runs longer than recording, recording auto-stops after 12 seconds, and recording_session.json records two clip directories.",
+  "experiment_id": "2010096_headless_seamless_rolling_clip_smoke_a16_gpu5",
+  "notes": "Short single-camera headless smoke for seamless GOP-boundary fixed.recording_control rolling clips. The stream runs longer than recording, recording auto-stops after 18 seconds, and recording_session.json records three continuous clip directories.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [5]
   },
   "fixed": {
-    "duration_s": 20,
+    "duration_s": 24,
     "warmup_s": 0,
     "display": false,
     "yolo": false,
@@ -17,7 +17,7 @@
     "output_root": "/home/jeremy/orange_data/exp/unsorted",
     "nvenc_direct_input": false,
     "recording_control": {
-      "record_for_seconds": 12,
+      "record_for_seconds": 18,
       "clip_seconds": 6
     }
   },

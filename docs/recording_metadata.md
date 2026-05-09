@@ -705,11 +705,17 @@ Notes:
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as
-  conservative drain/rearm rolling clips. Each clip writes a
+  seamless GOP-boundary rolling clips. Each clip writes a
   `clip_manifest.json` plus per-camera MP4/metadata/keyframe files under
   `clips/clip_000000`, `clips/clip_000001`, etc.
+- The next clip writer is preopened and the active writer switches at a GOP
+  first-frame boundary. Each new clip starts with an IDR/SPS/PPS picture and
+  keyframe frame `0`.
 - Rolling clip metadata keeps `frame_id` session-continuous across clips, while
   each MP4 uses a clip-local timeline starting at zero.
+- GOP-boundary alignment can make individual clip durations vary by up to one
+  GOP; consumers should use continuous `frame_id` coverage and total ffprobe
+  duration for whole-recording validation.
 - The manifest records the control-plane timing of the requested stop/drain.
   Consumers should use each `Cam<serial>.mp4` container duration when they need
   exact encoded media duration.
