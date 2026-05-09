@@ -104,7 +104,9 @@ scripts/validate_gui_ptp_recording.py --latest-complete
 The validator defaults to the current production-like expectation:
 `sync_mode = ptp_gate`, `ptp.enabled = true`, `ptp.mode = TwoStep`,
 `ptp_register_read_decimate = 100`, zero camera gaps/GetFrame errors/encode
-failures, valid decoded full-frame videos, and low YOLO queue wait.
+failures, valid decoded full-frame videos, a GUI-written
+`recording_session.json`, real per-camera packet counts, and low YOLO queue
+wait.
 
 Recent measured GUI PTP/AQ-off result:
 
@@ -387,10 +389,10 @@ multi-GPU split-GOP throughput.
   `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`;
   the two-camera PTP checked-in spec is
   `experiment_specs/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_smoke_a16.json`.
-  The latest two-camera PTP validation used recorder artifact
-  `/tmp/orange_external_recorder_ptp_rolling_20260509_ptp_rolling_bridge_28478`
+  The latest two-camera PTP index validation used recorder artifact
+  `/tmp/orange_external_recorder_ptp_rolling_20260509_index_external`
   and analytics artifact
-  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_bridge_20260509_ptp_rolling_bridge_28478`.
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_external_ipc_rolling_index_20260509_index_external`.
   It used `record_for_seconds = 6`, `clip_seconds = 2`, `encode_fps = 100`,
   `encode_max_fps = 0`, and GOP shards `2010095 -> 5,6` and
   `2010096 -> 7,8`. Both cameras received/ACKed/encoded `601/601` frames, had
@@ -401,12 +403,50 @@ multi-GPU split-GOP throughput.
   analytics `recording_session.json` from external recorder summaries after
   recorder finalization. That manifest reports `mode = "rolling_clips"`,
   `producer = "orange_headless_external_ipc"`, `recording_backend.mode =
-  "external_ipc"`, and per-camera clip video/metadata/keyframe paths under
-  `clips[].camera_artifacts`. The external verifier now requires that manifest
-  to match the external summaries for rolling runs.
-- In that run the host PTP stack was initially not ready, so headless startup
-  repaired it via `scripts/ptp_stack.sh` and left `ptp4l`/`phc2sys` running on
-  exit. The stack was later stopped manually and verified stopped: no
+  "external_ipc"`, and per-camera clip video/metadata/keyframe paths, frame
+  counts, and packet counts under `clips[].camera_artifacts`. The external
+  verifier now requires that manifest to match the external summaries for
+  rolling runs.
+- Rolling sessions now also write `recording_clip_index.json` and
+  `recording_clip_index.csv` in the parent recording folder, and
+  `recording_snapshot.json` carries `session.recording_session_index` absolute
+  pointers. Latest native index validation:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_rolling_clip_index_20260509_index_native`.
+- Latest packet-count validation:
+  native in-process rolling artifact
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_rolling_packet_counts_20260509/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off`
+  passed `scripts/verify_timed_recording.py` with
+  `packet_count_source = "ffprobe_nb_read_packets"`. Two-camera external IPC
+  rolling analytics artifact
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_external_ipc_rolling_packet_counts_20260509_021533`
+  with recorder artifact
+  `/tmp/orange_external_recorder_ptp_rolling_packet_counts_20260509` passed
+  `scripts/verify_external_recorder_session.py`; both cameras
+  received/ACKed/encoded `601/601` frames and index rows used
+  `packet_count_source = "external_recorder_summary.packets_written"`.
+- Latest terminal-tail coalescing validation:
+  two-camera external IPC rolling analytics artifact
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_external_ipc_rolling_tail_coalesce_20260509_120903`
+  with recorder artifact `/tmp/orange_external_recorder_ptp_rolling` passed
+  `scripts/verify_external_recorder_session.py`. Both cameras
+  received/ACKed/encoded `601/601` frames, but the former 1-frame fourth clip
+  was coalesced into the final clip: `1-200`, `201-400`, `401-601`.
+  Recorder summaries reported `target_frame_count = 600`,
+  `terminal_tail_coalesced_frames = 1`, and
+  `terminal_tail_coalesce_frames = 25`. Native in-process rolling also
+  revalidated at
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_rolling_tail_coalesce_20260509_121015/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off`
+  with three clips and `scripts/verify_timed_recording.py` passing.
+- GUI in-process recordings now write a shared single-clip
+  `recording_session.json` after the recording drain completes, and
+  `recording_snapshot.json` points at it. This is build-verified but still
+  needs the next GUI validation run.
+- GUI app storage can now set `recording.ptp_register_read_decimate`; the env
+  var `ORANGE_PTP_REGISTER_READ_DECIMATE` still takes precedence.
+- In the latest native index-validation run, the host PTP stack was initially
+  not ready, so headless startup repaired it via `scripts/ptp_stack.sh` and
+  left `ptp4l`/`phc2sys` running on exit. The stack was later stopped manually
+  and verified stopped: no
   `ptp4l|phc2sys` processes and no `/var/run/ptp4l` socket. For future PTP
   runs, remember that auto-started host PTP should be explicitly stopped with
   `scripts/ptp_stack.sh stop` when validation is done.

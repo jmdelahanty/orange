@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import shutil
@@ -409,6 +410,154 @@ def keyframe_frames(path: Path) -> list[int]:
     return [as_int(frame, f"keyframe frame in {path}") for frame in frames]
 
 
+def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            return list(reader.fieldnames or []), rows
+    except FileNotFoundError as exc:
+        raise VerificationError(f"missing CSV file: {path}") from exc
+
+
+def index_path_from_manifest(run_folder: Path, indexes: dict[str, Any], field: str) -> Path:
+    value = indexes.get(field)
+    require(isinstance(value, str) and value, f"recording_session.indexes missing {field}")
+    path = Path(value)
+    return path if path.is_absolute() else run_folder / path
+
+
+def verify_rolling_index_artifacts(
+    run_folder: Path,
+    manifest: dict[str, Any],
+    clips: list[dict[str, Any]],
+) -> None:
+    indexes = manifest.get("indexes")
+    require(isinstance(indexes, dict), "rolling manifest missing indexes object")
+    require(
+        indexes.get("schema_id") == "orange.recording_session.indexes",
+        f"unexpected indexes schema: {indexes.get('schema_id')!r}",
+    )
+    require(indexes.get("row_granularity") == "clip_camera", "indexes.row_granularity must be clip_camera")
+
+    index_json_path = index_path_from_manifest(run_folder, indexes, "clip_index_json")
+    index_csv_path = index_path_from_manifest(run_folder, indexes, "clip_index_csv")
+    index = read_json(index_json_path)
+    require(index.get("schema_id") == "orange.recording_clip_index", f"unexpected clip index schema: {index.get('schema_id')!r}")
+    require(index.get("schema_version") == 1, "unexpected clip index schema_version")
+    require(index.get("session_id") == manifest.get("session_id"), "clip index session_id mismatch")
+    require(index.get("mode") == "rolling_clips", "clip index mode mismatch")
+    snapshot_path = run_folder / "recording_snapshot.json"
+    snapshot = read_json(snapshot_path)
+    snapshot_session = snapshot.get("session")
+    require(isinstance(snapshot_session, dict), "recording_snapshot.json missing session object")
+    require(snapshot_session.get("recording_mode") == "rolling_clips", "recording_snapshot session recording_mode mismatch")
+    require(
+        path_key(Path(str(snapshot_session.get("recording_session_manifest_path"))))
+        == path_key(run_folder / "recording_session.json"),
+        "recording_snapshot recording_session_manifest_path mismatch",
+    )
+    snapshot_index = snapshot_session.get("recording_session_index")
+    require(isinstance(snapshot_index, dict), "recording_snapshot missing recording_session_index")
+    require(
+        path_key(Path(str(snapshot_index.get("clip_index_json_path")))) == path_key(index_json_path),
+        "recording_snapshot clip_index_json_path mismatch",
+    )
+    require(
+        path_key(Path(str(snapshot_index.get("clip_index_csv_path")))) == path_key(index_csv_path),
+        "recording_snapshot clip_index_csv_path mismatch",
+    )
+    rows = index.get("rows")
+    require(isinstance(rows, list), "clip index missing rows array")
+    columns = index.get("columns")
+    require(isinstance(columns, list) and columns, "clip index missing columns")
+    csv_columns, csv_rows = read_csv_rows(index_csv_path)
+    require(csv_columns == [str(column) for column in columns], "clip index CSV header does not match JSON columns")
+
+    expected: dict[tuple[int, str], dict[str, Any]] = {}
+    for clip in clips:
+        camera_artifacts = clip.get("camera_artifacts")
+        require(isinstance(camera_artifacts, dict), f"clip {clip.get('clip_index')} missing camera_artifacts")
+        for camera, artifact in camera_artifacts.items():
+            require(isinstance(artifact, dict), f"clip {clip.get('clip_index')} camera {camera} artifact is not an object")
+            key = (as_int(clip.get("clip_index"), "clip_index"), str(camera))
+            expected[key] = {
+                "clip_id": clip.get("clip_id"),
+                "status": clip.get("status"),
+                "start_reason": clip.get("start_reason"),
+                "stop_reason": clip.get("stop_reason"),
+                "frame_count": as_int(artifact.get("frame_count", 0), "camera frame_count"),
+                "first_recording_frame_id": as_int(artifact.get("first_recording_frame_id", 0), "camera first_recording_frame_id"),
+                "last_recording_frame_id": as_int(artifact.get("last_recording_frame_id", 0), "camera last_recording_frame_id"),
+                "recording_frame_id_gaps": as_int(artifact.get("recording_frame_id_gaps", 0), "camera recording_frame_id_gaps"),
+                "packet_count": as_int(artifact.get("packet_count"), "camera packet_count"),
+                "packet_count_source": str(artifact.get("packet_count_source", "")),
+                "video": artifact.get("video"),
+                "metadata": artifact.get("metadata"),
+                "keyframes": artifact.get("keyframes"),
+            }
+
+    require(len(rows) == len(expected), f"clip index row count mismatch: {len(rows)} vs {len(expected)}")
+    require(as_int(index.get("row_count"), "clip index row_count") == len(expected), "clip index row_count mismatch")
+    require(as_int(indexes.get("row_count"), "manifest indexes row_count") == len(expected), "manifest indexes row_count mismatch")
+    require(as_int(index.get("clip_count"), "clip index clip_count") == len(clips), "clip index clip_count mismatch")
+    require(as_int(indexes.get("clip_count"), "manifest indexes clip_count") == len(clips), "manifest indexes clip_count mismatch")
+
+    rows_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        require(isinstance(row, dict), "clip index row is not an object")
+        key = (as_int(row.get("clip_index"), "clip index row clip_index"), str(row.get("camera_serial")))
+        require(key not in rows_by_key, f"duplicate clip index row for {key}")
+        rows_by_key[key] = row
+    require(set(rows_by_key.keys()) == set(expected.keys()), "clip index rows do not match manifest clip/camera keys")
+
+    csv_by_key: dict[tuple[int, str], dict[str, str]] = {}
+    for row in csv_rows:
+        key = (as_int(row.get("clip_index"), "clip index CSV clip_index"), str(row.get("camera_serial")))
+        csv_by_key[key] = row
+    require(set(csv_by_key.keys()) == set(expected.keys()), "clip index CSV rows do not match manifest clip/camera keys")
+
+    for key, expected_row in expected.items():
+        row = rows_by_key[key]
+        for field in ("clip_id", "status", "start_reason", "stop_reason", "video", "metadata", "keyframes"):
+            require(str(row.get(field, "")) == str(expected_row.get(field, "")), f"clip index {field} mismatch for {key}")
+        for field in ("frame_count", "first_recording_frame_id", "last_recording_frame_id", "recording_frame_id_gaps"):
+            require(as_int(row.get(field), f"clip index {field}") == expected_row[field], f"clip index {field} mismatch for {key}")
+        require(expected_row["packet_count"] > 0, f"camera artifact packet_count missing for {key}")
+        require(
+            expected_row["packet_count_source"] not in {"", "not_collected", "unavailable"},
+            f"camera artifact packet_count_source not real for {key}: {expected_row['packet_count_source']!r}",
+        )
+        require(as_int(row.get("packet_count"), "clip index packet_count") == expected_row["packet_count"], f"clip index packet_count mismatch for {key}")
+        require(str(row.get("packet_count_source")) == expected_row["packet_count_source"], f"clip index packet_count_source mismatch for {key}")
+        clip_manifest_path = Path(str(row.get("clip_manifest_path", "")))
+        require(clip_manifest_path.exists(), f"clip index clip_manifest_path missing for {key}: {clip_manifest_path}")
+
+        csv_row = csv_by_key[key]
+        require(csv_row.get("clip_id") == str(row.get("clip_id")), f"clip index CSV clip_id mismatch for {key}")
+        require(csv_row.get("video") == str(row.get("video")), f"clip index CSV video mismatch for {key}")
+        require(as_int(csv_row.get("frame_count"), "clip index CSV frame_count") == expected_row["frame_count"], f"clip index CSV frame_count mismatch for {key}")
+        require(as_int(csv_row.get("packet_count"), "clip index CSV packet_count") == expected_row["packet_count"], f"clip index CSV packet_count mismatch for {key}")
+
+    camera_ranges = index.get("camera_ranges")
+    require(isinstance(camera_ranges, dict), "clip index missing camera_ranges")
+    for camera in {camera for _, camera in expected.keys()}:
+        camera_rows = [row for key, row in rows_by_key.items() if key[1] == camera]
+        camera_range = camera_ranges.get(camera)
+        require(isinstance(camera_range, dict), f"clip index missing camera range for {camera}")
+        require(as_int(camera_range.get("clip_count"), "camera clip_count") == len(camera_rows), f"camera clip_count mismatch for {camera}")
+        require(
+            as_int(camera_range.get("total_frame_count"), "camera total_frame_count")
+            == sum(as_int(row.get("frame_count"), "row frame_count") for row in camera_rows),
+            f"camera total_frame_count mismatch for {camera}",
+        )
+        require(
+            as_int(camera_range.get("total_packet_count"), "camera total_packet_count")
+            == sum(as_int(row.get("packet_count"), "row packet_count") for row in camera_rows),
+            f"camera total_packet_count mismatch for {camera}",
+        )
+
+
 def verify_common_manifest(
     manifest: dict[str, Any],
     duration_tolerance_s: float,
@@ -545,6 +694,7 @@ def verify_rolling_clips(
         len(clips) >= expected_min_clips,
         f"rolling manifest has too few clips: {len(clips)} < {expected_min_clips}",
     )
+    verify_rolling_index_artifacts(run_folder, manifest, clips)
     rollover_contract = manifest.get("rollover")
     require(isinstance(rollover_contract, dict), "rolling manifest missing rollover object")
     require(

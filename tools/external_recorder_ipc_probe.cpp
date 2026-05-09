@@ -965,6 +965,9 @@ struct RollingOutputSummary {
     uint32_t clip_seconds = 0;
     uint64_t clip_span_frames = 0;
     uint64_t clip_span_gops = 0;
+    uint64_t target_frame_count = 0;
+    uint64_t terminal_tail_coalesce_frames = 0;
+    uint64_t terminal_tail_coalesced_frames = 0;
     std::vector<RollingClipOutputSummary> clips;
 };
 
@@ -1122,6 +1125,12 @@ public:
                 (requested_clip_frames + static_cast<uint64_t>(gop_length_) - 1) /
                     static_cast<uint64_t>(gop_length_));
             clip_span_frames_ = clip_span_gops_ * static_cast<uint64_t>(gop_length_);
+            if (options_.record_for_seconds > 0) {
+                target_frame_count_ =
+                    static_cast<uint64_t>(options_.record_for_seconds) *
+                    static_cast<uint64_t>(std::max<uint32_t>(1, options_.fps));
+                terminal_tail_coalesce_frames_ = static_cast<uint64_t>(gop_length_);
+            }
         }
     }
 
@@ -1229,6 +1238,9 @@ public:
         out.rolling.clip_seconds = options_.clip_seconds;
         out.rolling.clip_span_frames = clip_span_frames_;
         out.rolling.clip_span_gops = clip_span_gops_;
+        out.rolling.target_frame_count = target_frame_count_;
+        out.rolling.terminal_tail_coalesce_frames = terminal_tail_coalesce_frames_;
+        out.rolling.terminal_tail_coalesced_frames = terminal_tail_coalesced_frames_;
         out.rolling.clips = clip_summaries_;
         return out;
     }
@@ -1303,12 +1315,47 @@ private:
         writer_->create_thread();
     }
 
-    int clip_index_for_zero_based_frame(uint64_t zero_based_frame) const
+    int raw_clip_index_for_zero_based_frame(uint64_t zero_based_frame) const
     {
         if (!rolling_enabled_ || clip_span_frames_ == 0) {
             return 0;
         }
         return static_cast<int>(zero_based_frame / clip_span_frames_);
+    }
+
+    int expected_final_clip_index() const
+    {
+        if (!rolling_enabled_ || clip_span_frames_ == 0 || target_frame_count_ == 0) {
+            return -1;
+        }
+        const uint64_t expected_clip_count =
+            (target_frame_count_ + clip_span_frames_ - 1) / clip_span_frames_;
+        return static_cast<int>(expected_clip_count > 0 ? expected_clip_count - 1 : 0);
+    }
+
+    bool should_coalesce_terminal_tail(uint64_t zero_based_frame) const
+    {
+        if (target_frame_count_ == 0 || terminal_tail_coalesce_frames_ == 0) {
+            return false;
+        }
+        if (zero_based_frame < target_frame_count_) {
+            return false;
+        }
+        const uint64_t one_based_frame = zero_based_frame + 1;
+        const uint64_t overrun_frames = one_based_frame - target_frame_count_;
+        return overrun_frames > 0 && overrun_frames <= terminal_tail_coalesce_frames_;
+    }
+
+    int clip_index_for_zero_based_frame(uint64_t zero_based_frame) const
+    {
+        const int raw_clip_index = raw_clip_index_for_zero_based_frame(zero_based_frame);
+        const int final_clip_index = expected_final_clip_index();
+        if (final_clip_index >= 0 &&
+            raw_clip_index > final_clip_index &&
+            should_coalesce_terminal_tail(zero_based_frame)) {
+            return final_clip_index;
+        }
+        return raw_clip_index;
     }
 
     std::filesystem::path clip_directory_path(int clip_index) const
@@ -1518,6 +1565,10 @@ private:
             !gop.packets.empty()
                 ? gop.packets.front().zero_based_frame
                 : gop.gop_index * static_cast<uint64_t>(gop_length_);
+        const int raw_clip_index =
+            raw_clip_index_for_zero_based_frame(first_zero_based_frame);
+        const int assigned_clip_index =
+            clip_index_for_zero_based_frame(first_zero_based_frame);
         if (rolling_enabled_) {
             FrameDescriptor clip_desc;
             if (!gop.frames.empty()) {
@@ -1537,7 +1588,15 @@ private:
             }
             ensure_clip_writer_locked(
                 clip_desc,
-                clip_index_for_zero_based_frame(first_zero_based_frame));
+                assigned_clip_index);
+            if (assigned_clip_index != raw_clip_index &&
+                should_coalesce_terminal_tail(first_zero_based_frame)) {
+                for (const SubmittedFrame& frame : gop.frames) {
+                    if (frame.recording_frame_id > target_frame_count_) {
+                        terminal_tail_coalesced_frames_++;
+                    }
+                }
+            }
             write_clip_metadata_rows_locked(gop);
         }
         const uint64_t release_started_ns = steady_clock_now_ns();
@@ -1605,6 +1664,9 @@ private:
     bool rolling_enabled_ = false;
     uint64_t clip_span_frames_ = 0;
     uint64_t clip_span_gops_ = 0;
+    uint64_t target_frame_count_ = 0;
+    uint64_t terminal_tail_coalesce_frames_ = 0;
+    uint64_t terminal_tail_coalesced_frames_ = 0;
     uint64_t next_gop_to_release_ = 0;
     uint64_t merged_pts_counter_ = 0;
     uint64_t packets_written_ = 0;
@@ -2502,6 +2564,11 @@ void write_summary_json(const Options& options,
     out << "    \"clip_seconds\": " << merged.rolling.clip_seconds << ",\n";
     out << "    \"clip_span_frames\": " << merged.rolling.clip_span_frames << ",\n";
     out << "    \"clip_span_gops\": " << merged.rolling.clip_span_gops << ",\n";
+    out << "    \"target_frame_count\": " << merged.rolling.target_frame_count << ",\n";
+    out << "    \"terminal_tail_coalesce_frames\": "
+        << merged.rolling.terminal_tail_coalesce_frames << ",\n";
+    out << "    \"terminal_tail_coalesced_frames\": "
+        << merged.rolling.terminal_tail_coalesced_frames << ",\n";
     out << "    \"clip_count\": " << merged.rolling.clips.size() << ",\n";
     out << "    \"clips\": [\n";
     for (size_t i = 0; i < merged.rolling.clips.size(); ++i) {

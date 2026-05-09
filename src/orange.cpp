@@ -116,6 +116,20 @@ struct GuiSessionTimingSnapshot {
     std::string finalizing_elapsed = "00:00:00";
 };
 
+struct GuiRecordingRunState {
+    bool active = false;
+    bool finalizing = false;
+    std::string recording_folder;
+    std::string recording_sink_mode = "real";
+    std::string recording_started_at_utc;
+    std::string recording_stop_requested_at_utc;
+    std::string recording_drained_at_utc;
+    std::string stop_reason = "manual_stop";
+    std::chrono::steady_clock::time_point recording_started_at{};
+    std::chrono::steady_clock::time_point recording_stop_requested_at{};
+    std::chrono::steady_clock::time_point recording_drained_at{};
+};
+
 bool has_gui_timepoint(const std::chrono::steady_clock::time_point& timepoint)
 {
     return timepoint.time_since_epoch() != std::chrono::steady_clock::duration::zero();
@@ -129,6 +143,175 @@ std::chrono::seconds gui_elapsed_since(
         return std::chrono::seconds{0};
     }
     return std::chrono::duration_cast<std::chrono::seconds>(now - started_at);
+}
+
+double gui_elapsed_seconds_between(const std::chrono::steady_clock::time_point& start,
+                                   const std::chrono::steady_clock::time_point& finish)
+{
+    if (!has_gui_timepoint(start) || !has_gui_timepoint(finish) || finish < start) {
+        return 0.0;
+    }
+    return std::chrono::duration<double>(finish - start).count();
+}
+
+std::vector<std::string> gui_recording_camera_serials(const CameraParams* cameras_params,
+                                                      const CameraEachSelect* cameras_select,
+                                                      const int num_cameras)
+{
+    std::vector<std::string> serials;
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return serials;
+    }
+    for (int i = 0; i < num_cameras; ++i) {
+        if (cameras_select[i].record && !cameras_params[i].camera_serial.empty()) {
+            serials.push_back(cameras_params[i].camera_serial);
+        }
+    }
+    return serials;
+}
+
+void gui_note_recording_started(GuiRecordingRunState* run,
+                                CameraControl* camera_control,
+                                const std::string& recording_folder,
+                                const std::string& recording_sink_mode)
+{
+    if (!run) {
+        return;
+    }
+    run->active = true;
+    run->finalizing = false;
+    run->recording_folder = recording_folder;
+    run->recording_sink_mode = recording_sink_mode.empty() ? "real" : recording_sink_mode;
+    run->recording_started_at = std::chrono::steady_clock::now();
+    run->recording_started_at_utc = get_current_utc_timestamp();
+    run->recording_stop_requested_at = {};
+    run->recording_stop_requested_at_utc.clear();
+    run->recording_drained_at = {};
+    run->recording_drained_at_utc.clear();
+    run->stop_reason = "manual_stop";
+    if (camera_control) {
+        camera_control->preserve_recording_session_state = true;
+    }
+}
+
+void gui_note_recording_stop_requested(GuiRecordingRunState* run,
+                                       const std::string& stop_reason)
+{
+    if (!run || !run->active) {
+        return;
+    }
+    if (!run->finalizing) {
+        run->recording_stop_requested_at = std::chrono::steady_clock::now();
+        run->recording_stop_requested_at_utc = get_current_utc_timestamp();
+    }
+    run->finalizing = true;
+    run->stop_reason = stop_reason.empty() ? "manual_stop" : stop_reason;
+}
+
+bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
+                                             CameraControl* camera_control,
+                                             const CameraParams* cameras_params,
+                                             const CameraEachSelect* cameras_select,
+                                             const int num_cameras)
+{
+    if (!run || !run->active || !run->finalizing || run->recording_folder.empty()) {
+        return false;
+    }
+    if (camera_control &&
+        (camera_control->record_video ||
+         camera_control->recording_draining ||
+         camera_control->active_recorders.load(std::memory_order_relaxed) > 0)) {
+        return false;
+    }
+
+    run->recording_drained_at = std::chrono::steady_clock::now();
+    run->recording_drained_at_utc = get_current_utc_timestamp();
+    if (!has_gui_timepoint(run->recording_stop_requested_at)) {
+        run->recording_stop_requested_at = run->recording_drained_at;
+        run->recording_stop_requested_at_utc = run->recording_drained_at_utc;
+    }
+
+    const std::vector<std::string> camera_serials =
+        gui_recording_camera_serials(cameras_params, cameras_select, num_cameras);
+    std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts =
+        orange::session::build_recording_camera_artifacts(
+            camera_serials,
+            run->recording_folder,
+            true);
+
+    orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
+    manifest_options.producer = "orange_gui";
+    manifest_options.session_id =
+        std::filesystem::path(run->recording_folder).filename().string();
+    manifest_options.created_at_utc = run->recording_started_at_utc;
+    manifest_options.updated_at_utc = run->recording_drained_at_utc;
+    manifest_options.recording_folder = run->recording_folder;
+    manifest_options.status = "completed";
+    manifest_options.stream_started_at_utc = run->recording_started_at_utc;
+    manifest_options.stream_finished_at_utc = run->recording_drained_at_utc;
+    manifest_options.stream_actual_elapsed_s =
+        gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
+    manifest_options.recording_started = true;
+    manifest_options.recording_started_at_utc = run->recording_started_at_utc;
+    manifest_options.recording_started_at_elapsed_s = 0.0;
+    manifest_options.recording_stop_requested = true;
+    manifest_options.recording_stop_requested_at_utc = run->recording_stop_requested_at_utc;
+    manifest_options.recording_stop_requested_at_elapsed_s =
+        gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
+    manifest_options.recording_stop_reason = run->stop_reason;
+    manifest_options.recording_drain_completed = true;
+    manifest_options.recording_drained_at_utc = run->recording_drained_at_utc;
+    manifest_options.recording_drained_at_elapsed_s =
+        gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
+    manifest_options.actual_recording_duration_s =
+        gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
+    manifest_options.drain_duration_s =
+        gui_elapsed_seconds_between(run->recording_stop_requested_at, run->recording_drained_at);
+    manifest_options.timed_stop_hit = false;
+    manifest_options.cameras = std::move(camera_artifacts);
+
+    const nlohmann::json manifest =
+        orange::session::build_single_clip_recording_session_manifest(manifest_options);
+    std::string manifest_error;
+    const std::filesystem::path manifest_path =
+        std::filesystem::path(run->recording_folder) / "recording_session.json";
+    if (!orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            manifest,
+            &manifest_error)) {
+        std::cerr << "[GUI][recording] Failed to write recording_session.json: "
+                  << manifest_error << std::endl;
+        return false;
+    }
+
+    const nlohmann::json snapshot_update = {
+        {"recording_mode", "single_clip"},
+        {"recording_session_manifest_path", manifest_path.string()},
+        {"recording_session_status", "completed"},
+        {"recording_session_camera_count", camera_serials.size()}
+    };
+    if (!update_recording_snapshot_session_artifacts(
+            run->recording_folder,
+            snapshot_update)) {
+        std::cerr << "[GUI][recording] Failed to update recording_snapshot.json session pointers."
+                  << std::endl;
+        return false;
+    }
+
+    if (camera_control) {
+        camera_control->preserve_recording_session_state = false;
+        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+        if (camera_control->recording_folder == run->recording_folder) {
+            camera_control->recording_folder.clear();
+        }
+        if (camera_control->recording_output_folder == run->recording_folder) {
+            camera_control->recording_output_folder.clear();
+        }
+    }
+    std::cout << "[GUI][recording] Wrote recording session manifest: "
+              << manifest_path.string() << std::endl;
+    *run = GuiRecordingRunState{};
+    return true;
 }
 
 void gui_mark_stream_started(GuiSessionTimingState* timing)
@@ -2624,6 +2807,15 @@ int main(int argc, char **args) {
     if (!load_app_storage_config(orange_root_dir_str, &app_storage_config, &app_storage_config_error)) {
         std::cerr << "App storage config warning: " << app_storage_config_error << std::endl;
     }
+    if (app_storage_config.gui_ptp_register_read_decimate > 1 &&
+        std::getenv("ORANGE_PTP_REGISTER_READ_DECIMATE") == nullptr) {
+        const std::string decimate_value =
+            std::to_string(app_storage_config.gui_ptp_register_read_decimate);
+        setenv("ORANGE_PTP_REGISTER_READ_DECIMATE", decimate_value.c_str(), 1);
+        std::cout << "[GUI][PTP] PTP register-read decimation from app config: 1/"
+                  << app_storage_config.gui_ptp_register_read_decimate
+                  << std::endl;
+    }
     std::string app_storage_warning;
     std::string input_folder = resolve_default_recording_root(orange_root_dir_str, &app_storage_warning);
     if (!app_storage_warning.empty()) {
@@ -2663,6 +2855,7 @@ int main(int argc, char **args) {
     std::vector<CameraResources> camera_resources;
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
+    GuiRecordingRunState gui_recording_run;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
@@ -3786,10 +3979,16 @@ int main(int argc, char **args) {
                         // STOP STREAMING
                         std::cout << "STOPPING STREAMING SESSION..." << std::endl;
                         if (camera_control->record_video) {
+                            gui_note_recording_stop_requested(
+                                &gui_recording_run,
+                                "stream_shutdown");
                             orange::session::request_drain_recording_run(&recording_session, camera_control);
                             gui_mark_recording_finalizing(&gui_session_timing);
                             std::cout << "Recording toggled OFF by stream shutdown. Encoders will drain queued frames." << std::endl;
                         } else if (camera_control->recording_draining) {
+                            gui_note_recording_stop_requested(
+                                &gui_recording_run,
+                                "stream_shutdown");
                             gui_mark_recording_finalizing(&gui_session_timing);
                         }
 
@@ -3912,6 +4111,15 @@ int main(int argc, char **args) {
                         }
                         camera_resources.clear();
                         std::cout << "Cleaned up all per-camera resources." << std::endl;
+                        if (gui_finalize_recording_session_if_ready(
+                                &gui_recording_run,
+                                camera_control,
+                                cameras_params,
+                                cameras_select,
+                                num_cameras)) {
+                            std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
+                                      << std::endl;
+                        }
                         gui_mark_recording_finished(&gui_session_timing);
                         gui_mark_stream_stopped(&gui_session_timing);
                     }
@@ -4027,6 +4235,11 @@ int main(int argc, char **args) {
                                 // START RECORDING
                                 try_start_timer();
                                 gui_mark_recording_started(&gui_session_timing);
+                                gui_note_recording_started(
+                                    &gui_recording_run,
+                                    camera_control,
+                                    resolved_recording_folder,
+                                    resolved_recording_sink_mode);
                                 std::cout << "Recording toggled ON." << std::endl;
                                 if (resolved_recording_sink_mode != "real") {
                                     std::cout << "Full-frame video disabled by GUI recording sink mode: "
@@ -4037,6 +4250,9 @@ int main(int argc, char **args) {
                                 }
                             } else {
                                 // STOP RECORDING
+                                gui_note_recording_stop_requested(
+                                    &gui_recording_run,
+                                    "manual_stop");
                                 orange::session::request_drain_recording_run(&recording_session, camera_control);
                                 gui_mark_recording_finalizing(&gui_session_timing);
                                 for (int i = 0; i < num_cameras; ++i) {
@@ -4070,6 +4286,15 @@ int main(int argc, char **args) {
                     ImGui::SetClipboardText(active_recording_folder.c_str());
                 }
                 ImGui::TextWrapped("Recording path: %s", active_recording_folder.c_str());
+            }
+
+            if (gui_finalize_recording_session_if_ready(
+                    &gui_recording_run,
+                    camera_control,
+                    cameras_params,
+                    cameras_select,
+                    num_cameras)) {
+                gui_mark_recording_finished(&gui_session_timing);
             }
 
             if (camera_control->open) {

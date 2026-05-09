@@ -87,9 +87,10 @@ Refs:
 
 The headless in-process full-frame encoder path now satisfies the first
 "without intentional drops between clips" requirement in one-camera smokes and
-a short two-camera PTP real-YOLO smoke. Remaining production gaps are
-GUI/session adoption, external-recorder adoption, broader failure policy, and
-long soak testing.
+a short two-camera PTP real-YOLO smoke. Supervised headless external IPC rolling
+also writes verified clip manifests, parent indexes, and packet counts.
+Remaining production gaps are GUI/session rolling adoption, external-recorder
+GUI supervision, broader failure policy, and long soak testing.
 
 ## Implementation Plan
 
@@ -135,6 +136,8 @@ long soak testing.
 - [x] Implement supervised headless external IPC rolling clips in
   `external_recorder_ipc_probe` with GOP-boundary writer rotation and verifier
   coverage.
+- [x] Coalesce tiny terminal tails for external IPC rolling so a timed stop just
+  after a clip boundary does not create a standalone 1-frame final clip.
 - [ ] Apply rollover implementation consistently to:
   - `EncoderHwWorker` main recording path (headless full-frame path is now
     implemented; GUI/session validation still needed),
@@ -157,13 +160,16 @@ Refs:
   `clip_manifest.json` for headless seamless rolling clips.
 - [x] Mirror supervised headless external IPC rolling clips into the shared
   analytics `recording_session.json` and verify it against external summaries.
-- [ ] Write session-level frame/status indexes for seamless rolling:
+- [x] Write session-level frame/status indexes for seamless rolling:
   - segment file paths
   - first/last `recording_frame_id`
   - start/end timestamps
-  - packet/frame counts
+  - frame counts
   - rollover reason (time/manual/recovery).
-- [ ] Update pointer/snapshot metadata so consumers can discover multi-segment sessions cleanly.
+- [x] Update pointer/snapshot metadata so consumers can discover multi-segment sessions cleanly.
+- [x] Add reliable per-clip packet counts to the session index:
+  - native in-process clips use ffprobe `nb_read_packets` after finalization
+  - external IPC clips use recorder summary `packets_written`
 
 Refs:
 - `docs/recording_metadata.md`

@@ -270,6 +270,103 @@ def nested_dict(value: Any, *keys: str) -> dict[str, Any]:
     return current if isinstance(current, dict) else {}
 
 
+def path_from_recording_folder(recording_folder: Path, value: Any) -> Path:
+    path = Path(str(value or ""))
+    return path if path.is_absolute() else recording_folder / path
+
+
+def count_csv_data_rows(path: Path) -> int | None:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return max(0, sum(1 for _ in handle) - 1)
+    except OSError:
+        return None
+
+
+def check_recording_session_manifest(
+    reporter: Reporter,
+    recording_folder: Path,
+    snapshot: dict[str, Any],
+    cameras: list[str],
+) -> None:
+    manifest_path = recording_folder / "recording_session.json"
+    manifest = read_json(manifest_path)
+    reporter.check(
+        manifest.get("schema_id") == "orange.recording_session",
+        "recording_session.json present",
+        f"recording_session.json missing or invalid at {manifest_path}",
+    )
+    if not manifest:
+        return
+
+    reporter.check(
+        manifest.get("producer") == "orange_gui",
+        "recording_session producer is orange_gui",
+        f"recording_session producer={manifest.get('producer')!r}",
+    )
+    reporter.check(
+        manifest.get("mode") == "single_clip",
+        "recording_session mode is single_clip",
+        f"recording_session mode={manifest.get('mode')!r}",
+    )
+
+    snapshot_session = snapshot.get("session")
+    snapshot_session = snapshot_session if isinstance(snapshot_session, dict) else {}
+    reporter.check(
+        Path(str(snapshot_session.get("recording_session_manifest_path", ""))).resolve()
+        == manifest_path.resolve(),
+        "recording_snapshot points at recording_session.json",
+        "recording_snapshot session recording_session_manifest_path mismatch",
+    )
+    reporter.check(
+        snapshot_session.get("recording_mode") == "single_clip",
+        "recording_snapshot session mode is single_clip",
+        f"recording_snapshot recording_mode={snapshot_session.get('recording_mode')!r}",
+    )
+
+    camera_artifacts = manifest.get("camera_artifacts")
+    camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
+    for serial in cameras:
+        artifact = camera_artifacts.get(serial)
+        artifact = artifact if isinstance(artifact, dict) else {}
+        if not artifact:
+            reporter.fail(f"Cam{serial} missing recording_session camera_artifacts")
+            continue
+
+        metadata_path = path_from_recording_folder(recording_folder, artifact.get("metadata"))
+        video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+        frame_count = integer(artifact.get("frame_count"))
+        packet_count = integer(artifact.get("packet_count"))
+        packet_source = str(artifact.get("packet_count_source", ""))
+        metadata_rows = count_csv_data_rows(metadata_path)
+
+        reporter.check(
+            metadata_path.exists() and metadata_rows is not None,
+            f"Cam{serial} recording_session metadata present",
+            f"Cam{serial} recording_session metadata missing: {metadata_path}",
+        )
+        reporter.check(
+            video_path.exists() and video_path.stat().st_size > 0,
+            f"Cam{serial} recording_session video present",
+            f"Cam{serial} recording_session video missing: {video_path}",
+        )
+        reporter.check(
+            frame_count is not None and metadata_rows == frame_count,
+            f"Cam{serial} recording_session frame_count matches metadata",
+            f"Cam{serial} recording_session frame_count={frame_count}, metadata_rows={metadata_rows}",
+        )
+        reporter.check(
+            packet_count is not None and packet_count > 0,
+            f"Cam{serial} recording_session packet_count present",
+            f"Cam{serial} recording_session packet_count={packet_count}",
+        )
+        reporter.check(
+            packet_source not in {"", "not_collected", "unavailable"},
+            f"Cam{serial} recording_session packet_count_source={packet_source}",
+            f"Cam{serial} recording_session packet_count_source={packet_source!r}",
+        )
+
+
 def metric(summary: dict[str, Any], serial: str, field: str) -> dict[str, Any]:
     yolo = nested_dict(summary, "yolo", serial)
     metrics = yolo.get("metrics")
@@ -755,6 +852,7 @@ def main() -> int:
             args.expect_ptp_register_read_decimate,
             args.skip_ptp_register_decimate_check,
         )
+        check_recording_session_manifest(reporter, recording_folder, snapshot, cameras)
         check_pipeline(reporter, summary, cameras)
         video_sanity = check_videos(
             reporter,

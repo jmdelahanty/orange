@@ -653,7 +653,13 @@ Current schema:
     "2010096": {
       "video": "Cam2010096.mp4",
       "metadata": "Cam2010096_meta.csv",
-      "keyframes": "Cam2010096_keyframe.json"
+      "keyframes": "Cam2010096_keyframe.json",
+      "frame_count": 600,
+      "first_recording_frame_id": 1,
+      "last_recording_frame_id": 600,
+      "recording_frame_id_gaps": 0,
+      "packet_count": 600,
+      "packet_count_source": "ffprobe_nb_read_packets"
     }
   },
   "stream": {
@@ -702,6 +708,11 @@ Notes:
 - The manifest is built by the shared `src/session/recording_session.*` helper
   so headless, GUI/session, and future external-recorder paths can converge on
   one `orange.recording_session` contract.
+- GUI in-process recordings now use the shared helper too. After the recording
+  drain completes, the GUI writes `recording_session.json` with
+  `producer = "orange_gui"` and updates `recording_snapshot.json` with
+  `session.recording_mode = "single_clip"` plus
+  `session.recording_session_manifest_path`.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as
@@ -713,6 +724,19 @@ Notes:
   keyframe frame `0`.
 - Rolling clip metadata keeps `frame_id` session-continuous across clips, while
   each MP4 uses a clip-local timeline starting at zero.
+- Rolling sessions also write `recording_clip_index.json` and
+  `recording_clip_index.csv` in the parent recording folder. These are
+  session-level `(clip, camera)` indexes with status, rollover reason, frame
+  range/count, artifact paths, and `clip_manifest.json` pointers, so consumers
+  do not need to walk every clip directory.
+- Native in-process rolling indexes include real packet counts measured after
+  finalization with ffprobe (`ffprobe_nb_read_packets`). Supervised external
+  IPC rolling indexes use recorder summary `packets_written`
+  (`external_recorder_summary.packets_written`).
+- `recording_snapshot.json` records `session.recording_mode =
+  "rolling_clips"`, `session.recording_session_manifest_path`, and
+  `session.recording_session_index` with absolute paths to the index JSON/CSV.
+  The latest-recording pointer also includes `recording_session_manifest_path`.
 - For `fixed.recording_control`, the recording-duration clock is anchored to
   the first observed recording frame, not camera-thread launch. This keeps PTP
   gate startup countdown time from shortening the requested video duration.
@@ -724,7 +748,8 @@ Notes:
   exact encoded media duration.
 - Use `scripts/verify_timed_recording.py <experiment_root>` to check the
   current timed-recording contract against `recording_session.json`,
-  `runs.json`, and `ffprobe`.
+  `recording_clip_index.{json,csv}`, `recording_snapshot.json`, `runs.json`,
+  and `ffprobe`.
 
 `encoders` is a dictionary keyed by camera serial number (as a string). Each value
 captures resolved runtime encoder parameters for one or more outputs for that

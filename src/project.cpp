@@ -170,6 +170,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_recording_sink_mode = "real";
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
+    config.gui_ptp_register_read_decimate = 1;
     config.write_local_pointer = true;
     config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
     config.write_run_pointer = true;
@@ -299,6 +300,26 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
             }
             config.gui_external_recorder_contract_path =
                 trim_ascii_copy(recording["external_recorder_contract_path"].get<std::string>());
+        }
+        if (recording.contains("ptp_register_read_decimate")) {
+            if (!recording["ptp_register_read_decimate"].is_number_integer()) {
+                if (error_out) {
+                    *error_out =
+                        "recording.ptp_register_read_decimate must be an integer in " +
+                        config_path.string();
+                }
+                return false;
+            }
+            const int decimate = recording["ptp_register_read_decimate"].get<int>();
+            if (decimate < 1) {
+                if (error_out) {
+                    *error_out =
+                        "recording.ptp_register_read_decimate must be >= 1 in " +
+                        config_path.string();
+                }
+                return false;
+            }
+            config.gui_ptp_register_read_decimate = decimate;
         }
     }
 
@@ -2400,6 +2421,8 @@ bool write_latest_recording_pointer(const std::string& base_folder,
     pointer["timestamp_utc"] = timestamp_utc;
     pointer["recording_folder"] = recording_folder;
     pointer["snapshot_path"] = (std::filesystem::path(recording_folder) / "recording_snapshot.json").string();
+    pointer["recording_session_manifest_path"] =
+        (std::filesystem::path(recording_folder) / "recording_session.json").string();
 
     bool wrote_any = false;
     bool attempted_any = false;
@@ -3163,6 +3186,39 @@ bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folde
     }
 
     return true;
+}
+
+bool update_recording_snapshot_session_artifacts(const std::string& recording_folder,
+                                                 const nlohmann::json& session_info) {
+    if (recording_folder.empty() || !session_info.is_object()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+    if (!snapshot.contains("session") || !snapshot["session"].is_object()) {
+        snapshot["session"] = nlohmann::json::object();
+    }
+    for (auto it = session_info.begin(); it != session_info.end(); ++it) {
+        snapshot["session"][it.key()] = it.value();
+    }
+    snapshot["session"]["updated_at_utc"] = get_current_utc_timestamp();
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(
+        snapshot_path,
+        snapshot,
+        std::filesystem::perms::unknown,
+        false,
+        "recording snapshot");
 }
 
 bool update_recording_snapshot_model(const std::string& recording_folder,

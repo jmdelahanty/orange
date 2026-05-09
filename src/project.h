@@ -31,6 +31,7 @@ struct AppStorageConfig {
     std::string gui_recording_sink_mode = "real";
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
+    int gui_ptp_register_read_decimate = 1;
     bool write_local_pointer = true;
     std::string canonical_pointer_root;
     bool write_run_pointer = true;
@@ -105,6 +106,8 @@ bool update_recording_snapshot_pipeline_metrics(const std::string& recording_fol
 bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folder,
                                               const std::string& monitor_name,
                                               const nlohmann::json& monitor_info);
+bool update_recording_snapshot_session_artifacts(const std::string& recording_folder,
+                                                 const nlohmann::json& session_info);
 bool update_recording_snapshot_model(const std::string& recording_folder,
                                      const std::string& camera_serial,
                                      const std::string& model_kind,

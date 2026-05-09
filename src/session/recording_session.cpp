@@ -7,11 +7,15 @@
 #include "recording_output_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <sstream>
 
 namespace orange::session {
 
@@ -46,6 +50,143 @@ std::string trim_ascii_copy(std::string value)
         return !is_space(c);
     }).base(), value.end());
     return value;
+}
+
+std::string shell_single_quote(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size() + 2);
+    out.push_back('\'');
+    for (char c : value) {
+        if (c == '\'') {
+            out += "'\\''";
+        } else {
+            out.push_back(c);
+        }
+    }
+    out.push_back('\'');
+    return out;
+}
+
+bool read_command_stdout(const std::string& command, std::string* stdout_out)
+{
+    if (stdout_out) {
+        stdout_out->clear();
+    }
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return false;
+    }
+
+    std::array<char, 512> buffer{};
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        if (stdout_out) {
+            *stdout_out += buffer.data();
+        }
+    }
+
+    return pclose(pipe) == 0;
+}
+
+std::filesystem::path resolve_ffprobe_path()
+{
+    const std::filesystem::path bundled("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe");
+    std::error_code ec;
+    if (std::filesystem::exists(bundled, ec) && !ec) {
+        return bundled;
+    }
+    return "ffprobe";
+}
+
+bool count_video_packets(const std::filesystem::path& video_path,
+                         uint64_t* packet_count_out)
+{
+    if (packet_count_out) {
+        *packet_count_out = 0;
+    }
+    if (video_path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    if (!std::filesystem::exists(video_path, ec) || ec) {
+        return false;
+    }
+
+    const std::string command =
+        shell_single_quote(resolve_ffprobe_path().string()) +
+        " -v error -select_streams v:0 -count_packets "
+        "-show_entries stream=nb_read_packets "
+        "-of default=noprint_wrappers=1:nokey=1 " +
+        shell_single_quote(video_path.string()) + " 2>/dev/null";
+
+    std::string output;
+    if (!read_command_stdout(command, &output)) {
+        return false;
+    }
+    output = trim_ascii_copy(output);
+    if (output.empty() || output == "N/A") {
+        return false;
+    }
+    try {
+        if (packet_count_out) {
+            *packet_count_out = static_cast<uint64_t>(std::stoull(output));
+        }
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+struct MetadataFrameStats {
+    uint64_t frame_count = 0;
+    uint64_t first_recording_frame_id = 0;
+    uint64_t last_recording_frame_id = 0;
+    uint64_t recording_frame_id_gaps = 0;
+};
+
+MetadataFrameStats read_metadata_frame_stats(const std::filesystem::path& metadata_path)
+{
+    MetadataFrameStats stats;
+    std::ifstream input(metadata_path);
+    if (!input) {
+        return stats;
+    }
+
+    std::string header;
+    if (!std::getline(input, header)) {
+        return stats;
+    }
+
+    std::string line;
+    uint64_t previous_frame_id = 0;
+    while (std::getline(input, line)) {
+        if (line.empty()) {
+            continue;
+        }
+        const std::size_t comma = line.find(',');
+        const std::string frame_text =
+            comma == std::string::npos ? line : line.substr(0, comma);
+        try {
+            const uint64_t frame_id = static_cast<uint64_t>(std::stoull(frame_text));
+            if (stats.frame_count == 0) {
+                stats.first_recording_frame_id = frame_id;
+            } else if (frame_id > previous_frame_id + 1) {
+                stats.recording_frame_id_gaps += frame_id - previous_frame_id - 1;
+            }
+            previous_frame_id = frame_id;
+            stats.last_recording_frame_id = frame_id;
+            ++stats.frame_count;
+        } catch (...) {
+        }
+    }
+    return stats;
+}
+
+std::string artifact_path_string(const std::filesystem::path& folder,
+                                 const std::string& file_name,
+                                 const bool relative_paths)
+{
+    return relative_paths ? file_name : (folder / file_name).string();
 }
 
 std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_config)
@@ -158,6 +299,173 @@ bool write_json_file(const std::filesystem::path& path,
     return true;
 }
 
+std::string csv_escape_value(const nlohmann::json& value)
+{
+    std::string text;
+    if (value.is_null()) {
+        text.clear();
+    } else if (value.is_string()) {
+        text = value.get<std::string>();
+    } else if (value.is_boolean()) {
+        text = value.get<bool>() ? "true" : "false";
+    } else {
+        text = value.dump();
+    }
+
+    const bool needs_quotes =
+        text.find_first_of(",\"\n\r") != std::string::npos;
+    if (!needs_quotes) {
+        return text;
+    }
+
+    std::string escaped;
+    escaped.reserve(text.size() + 2);
+    escaped.push_back('"');
+    for (char c : text) {
+        if (c == '"') {
+            escaped.push_back('"');
+        }
+        escaped.push_back(c);
+    }
+    escaped.push_back('"');
+    return escaped;
+}
+
+bool write_csv_file(const std::filesystem::path& path,
+                    const std::vector<std::string>& columns,
+                    const nlohmann::json& rows,
+                    std::string* error_out)
+{
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+
+    std::error_code create_error;
+    std::filesystem::create_directories(path.parent_path(), create_error);
+    if (create_error && !std::filesystem::exists(path.parent_path())) {
+        if (error_out) {
+            *error_out = "Failed to create parent directory for " +
+                         path.string() + ": " + create_error.message();
+        }
+        return false;
+    }
+
+    std::ofstream output(path);
+    if (!output) {
+        if (error_out) {
+            *error_out = "Failed to open " + path.string() + " for writing";
+        }
+        return false;
+    }
+
+    for (std::size_t i = 0; i < columns.size(); ++i) {
+        if (i > 0) {
+            output << ',';
+        }
+        output << columns[i];
+    }
+    output << '\n';
+
+    if (rows.is_array()) {
+        for (const nlohmann::json& row : rows) {
+            for (std::size_t i = 0; i < columns.size(); ++i) {
+                if (i > 0) {
+                    output << ',';
+                }
+                if (row.is_object()) {
+                    const auto it = row.find(columns[i]);
+                    if (it != row.end()) {
+                        output << csv_escape_value(*it);
+                    }
+                }
+            }
+            output << '\n';
+        }
+    }
+
+    if (!output.good()) {
+        if (error_out) {
+            *error_out = "Failed to write " + path.string();
+        }
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json default_rolling_index_manifest_json(const std::size_t clip_count,
+                                                   const std::size_t row_count)
+{
+    return {
+        {"schema_id", "orange.recording_session.indexes"},
+        {"schema_version", 1},
+        {"clip_index_json", "recording_clip_index.json"},
+        {"clip_index_csv", "recording_clip_index.csv"},
+        {"row_granularity", "clip_camera"},
+        {"path_style", "relative_to_recording_folder"},
+        {"clip_count", clip_count},
+        {"row_count", row_count}
+    };
+}
+
+nlohmann::json make_clip_index_row(const nlohmann::json& manifest,
+                                   const nlohmann::json& clip,
+                                   const std::string& camera_serial,
+                                   const nlohmann::json& camera_artifact)
+{
+    const nlohmann::json rollover =
+        clip.value("rollover", nlohmann::json::object());
+    const std::string clip_folder =
+        clip.value("recording_folder", std::string());
+    const std::filesystem::path clip_manifest_path =
+        clip_folder.empty()
+            ? std::filesystem::path()
+            : std::filesystem::path(clip_folder) / "clip_manifest.json";
+    const bool has_packet_count =
+        camera_artifact.contains("packet_count") &&
+        !camera_artifact["packet_count"].is_null();
+    const std::string packet_count_source =
+        camera_artifact.value(
+            "packet_count_source",
+            has_packet_count ? std::string("unknown") : std::string("not_collected"));
+
+    nlohmann::json row = {
+        {"session_id", manifest.value("session_id", std::string())},
+        {"producer", manifest.value("producer", std::string())},
+        {"clip_index", clip.value("clip_index", 0)},
+        {"clip_id", clip.value("clip_id", std::string())},
+        {"camera_serial", camera_serial},
+        {"status", clip.value("status", std::string())},
+        {"start_reason", clip.value("start_reason", std::string())},
+        {"stop_reason", clip.value("stop_reason", std::string())},
+        {"final_clip", clip.value("final_clip", false)},
+        {"timed_stop_hit", clip.value("timed_stop_hit", false)},
+        {"drain_completed", clip.value("drain_completed", false)},
+        {"started_at_utc", clip.value("started_at_utc", std::string())},
+        {"stop_requested_at_utc", clip.value("stop_requested_at_utc", std::string())},
+        {"finalized_at_utc", clip.value("finalized_at_utc", std::string())},
+        {"started_at_elapsed_s", clip.value("started_at_elapsed_s", 0.0)},
+        {"stop_requested_at_elapsed_s", clip.value("stop_requested_at_elapsed_s", 0.0)},
+        {"finalized_at_elapsed_s", clip.value("finalized_at_elapsed_s", 0.0)},
+        {"requested_duration_s", clip.value("requested_duration_s", 0.0)},
+        {"actual_duration_s", clip.value("actual_duration_s", 0.0)},
+        {"drain_duration_s", clip.value("drain_duration_s", 0.0)},
+        {"first_recording_frame_id", camera_artifact.value("first_recording_frame_id", 0ULL)},
+        {"last_recording_frame_id", camera_artifact.value("last_recording_frame_id", 0ULL)},
+        {"frame_count", camera_artifact.value("frame_count", 0ULL)},
+        {"recording_frame_id_gaps", camera_artifact.value("recording_frame_id_gaps", 0ULL)},
+        {"packet_count", has_packet_count ? camera_artifact["packet_count"] : nlohmann::json(nullptr)},
+        {"packet_count_source", packet_count_source},
+        {"rollover_request_id", rollover.value("request_id", 0ULL)},
+        {"rollover_at_recording_frame_id", rollover.value("rollover_at_recording_frame_id", 0ULL)},
+        {"clip_directory", clip.value("directory", std::string())},
+        {"clip_recording_folder", clip_folder},
+        {"clip_manifest_path", clip_manifest_path.string()},
+        {"video", camera_artifact.value("video", std::string())},
+        {"metadata", camera_artifact.value("metadata", std::string())},
+        {"keyframes", camera_artifact.value("keyframes", std::string())}
+    };
+    return row;
+}
+
 }  // namespace
 
 nlohmann::json build_recording_control_json(const RecordingControlConfig& config)
@@ -212,6 +520,10 @@ nlohmann::json build_camera_artifact_json(
         out["first_recording_frame_id"] = camera.first_recording_frame_id;
         out["last_recording_frame_id"] = camera.last_recording_frame_id;
         out["recording_frame_id_gaps"] = camera.recording_frame_id_gaps;
+    }
+    if (!camera.packet_count_source.empty()) {
+        out["packet_count"] = camera.packet_count;
+        out["packet_count_source"] = camera.packet_count_source;
     }
     return out;
 }
@@ -320,11 +632,7 @@ nlohmann::json build_single_clip_recording_session_manifest(
         video_artifacts[camera.camera_serial] = camera.video_path;
         metadata_artifacts[camera.camera_serial] = camera.metadata_path;
         keyframe_artifacts[camera.camera_serial] = camera.keyframe_path;
-        camera_artifacts[camera.camera_serial] = {
-            {"video", camera.video_path},
-            {"metadata", camera.metadata_path},
-            {"keyframes", camera.keyframe_path}
-        };
+        camera_artifacts[camera.camera_serial] = build_camera_artifact_json(camera);
     }
 
     nlohmann::json manifest = {
@@ -407,6 +715,7 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     }
 
     nlohmann::json clips = nlohmann::json::array();
+    std::size_t index_row_count = 0;
     double sum_clip_actual_duration_s = options.sum_clip_actual_duration_s;
     if (sum_clip_actual_duration_s <= 0.0) {
         for (const RollingClipManifestOptions& clip : options.clips) {
@@ -415,6 +724,7 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     }
     for (const RollingClipManifestOptions& clip : options.clips) {
         clips.push_back(build_rolling_clip_entry_json(clip, false));
+        index_row_count += clip.cameras.size();
     }
 
     nlohmann::json manifest = {
@@ -462,12 +772,71 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
              {"boundary", "gop_first_frame_id"},
              {"next_writer_preopened", options.rollover_next_writer_preopened}
          }},
+        {"indexes", default_rolling_index_manifest_json(options.clips.size(), index_row_count)},
         {"clips", clips}
     };
     if (options.recording_backend.is_object() && !options.recording_backend.empty()) {
         manifest["recording_backend"] = options.recording_backend;
     }
     return manifest;
+}
+
+RecordingSessionCameraArtifact build_recording_camera_artifact(
+    const std::string& camera_serial,
+    const std::string& recording_folder,
+    const bool relative_paths)
+{
+    RecordingSessionCameraArtifact artifact;
+    artifact.camera_serial = camera_serial;
+    if (camera_serial.empty() || recording_folder.empty()) {
+        return artifact;
+    }
+
+    const std::filesystem::path folder(recording_folder);
+    const std::string video_name = "Cam" + camera_serial + ".mp4";
+    const std::string metadata_name = "Cam" + camera_serial + "_meta.csv";
+    const std::string keyframe_name = "Cam" + camera_serial + "_keyframe.json";
+    const std::filesystem::path video_path = folder / video_name;
+    const std::filesystem::path metadata_path = folder / metadata_name;
+
+    artifact.video_path = artifact_path_string(folder, video_name, relative_paths);
+    artifact.metadata_path = artifact_path_string(folder, metadata_name, relative_paths);
+    artifact.keyframe_path = artifact_path_string(folder, keyframe_name, relative_paths);
+
+    const MetadataFrameStats frame_stats = read_metadata_frame_stats(metadata_path);
+    artifact.frame_count = frame_stats.frame_count;
+    artifact.first_recording_frame_id = frame_stats.first_recording_frame_id;
+    artifact.last_recording_frame_id = frame_stats.last_recording_frame_id;
+    artifact.recording_frame_id_gaps = frame_stats.recording_frame_id_gaps;
+
+    uint64_t packet_count = 0;
+    if (count_video_packets(video_path, &packet_count)) {
+        artifact.packet_count = packet_count;
+        artifact.packet_count_source = "ffprobe_nb_read_packets";
+    } else {
+        artifact.packet_count = 0;
+        artifact.packet_count_source = "unavailable";
+    }
+    return artifact;
+}
+
+std::vector<RecordingSessionCameraArtifact> build_recording_camera_artifacts(
+    const std::vector<std::string>& camera_serials,
+    const std::string& recording_folder,
+    const bool relative_paths)
+{
+    std::vector<RecordingSessionCameraArtifact> artifacts;
+    artifacts.reserve(camera_serials.size());
+    for (const std::string& camera_serial : camera_serials) {
+        if (camera_serial.empty()) {
+            continue;
+        }
+        artifacts.push_back(build_recording_camera_artifact(
+            camera_serial,
+            recording_folder,
+            relative_paths));
+    }
+    return artifacts;
 }
 
 bool write_recording_session_manifest(const std::string& path,
@@ -481,6 +850,182 @@ bool write_recording_session_manifest(const std::string& path,
         return false;
     }
     return write_json_file(std::filesystem::path(path), manifest, error_out);
+}
+
+bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
+                                        const nlohmann::json& manifest,
+                                        RecordingSessionIndexArtifacts* artifacts_out,
+                                        std::string* error_out)
+{
+    if (artifacts_out) {
+        *artifacts_out = RecordingSessionIndexArtifacts{};
+    }
+    if (recording_folder.empty()) {
+        if (error_out) {
+            *error_out = "recording folder is empty for rolling clip index artifacts";
+        }
+        return false;
+    }
+    if (!manifest.is_object() || manifest.value("mode", std::string()) != "rolling_clips") {
+        if (error_out) {
+            *error_out = "rolling clip index artifacts require a rolling_clips manifest";
+        }
+        return false;
+    }
+
+    const std::filesystem::path folder(recording_folder);
+    const nlohmann::json indexes =
+        manifest.value("indexes", default_rolling_index_manifest_json(0, 0));
+    const std::filesystem::path json_path =
+        folder / indexes.value("clip_index_json", std::string("recording_clip_index.json"));
+    const std::filesystem::path csv_path =
+        folder / indexes.value("clip_index_csv", std::string("recording_clip_index.csv"));
+    const nlohmann::json clips = manifest.value("clips", nlohmann::json::array());
+    if (!clips.is_array() || clips.empty()) {
+        if (error_out) {
+            *error_out = "rolling clip index artifacts require at least one clip";
+        }
+        return false;
+    }
+
+    nlohmann::json rows = nlohmann::json::array();
+    nlohmann::json camera_ranges = nlohmann::json::object();
+    for (const nlohmann::json& clip : clips) {
+        if (!clip.is_object()) {
+            continue;
+        }
+        const nlohmann::json camera_artifacts =
+            clip.value("camera_artifacts", nlohmann::json::object());
+        if (!camera_artifacts.is_object()) {
+            continue;
+        }
+        for (auto it = camera_artifacts.begin(); it != camera_artifacts.end(); ++it) {
+            if (!it.value().is_object()) {
+                continue;
+            }
+            const std::string camera_serial = it.key();
+            nlohmann::json row =
+                make_clip_index_row(manifest, clip, camera_serial, it.value());
+            rows.push_back(row);
+
+            nlohmann::json& camera_range = camera_ranges[camera_serial];
+            if (!camera_range.is_object()) {
+                camera_range = {
+                    {"clip_count", 0},
+                    {"total_frame_count", 0ULL},
+                    {"total_packet_count", 0ULL},
+                    {"packet_count_source", "not_collected"},
+                    {"first_recording_frame_id", 0ULL},
+                    {"last_recording_frame_id", 0ULL},
+                    {"recording_frame_id_gaps", 0ULL},
+                    {"total_actual_duration_s", 0.0}
+                };
+            }
+            const uint64_t first = row.value("first_recording_frame_id", 0ULL);
+            const uint64_t last = row.value("last_recording_frame_id", 0ULL);
+            const uint64_t frame_count = row.value("frame_count", 0ULL);
+            const uint64_t gaps = row.value("recording_frame_id_gaps", 0ULL);
+            const bool has_packet_count =
+                row.contains("packet_count") && !row["packet_count"].is_null();
+            camera_range["clip_count"] =
+                camera_range.value("clip_count", 0) + 1;
+            camera_range["total_frame_count"] =
+                camera_range.value("total_frame_count", 0ULL) + frame_count;
+            if (has_packet_count) {
+                camera_range["total_packet_count"] =
+                    camera_range.value("total_packet_count", 0ULL) +
+                    row.value("packet_count", 0ULL);
+                const std::string existing_source =
+                    camera_range.value("packet_count_source", std::string("not_collected"));
+                const std::string row_source =
+                    row.value("packet_count_source", std::string("unknown"));
+                camera_range["packet_count_source"] =
+                    (existing_source == "not_collected" || existing_source == row_source)
+                        ? row_source
+                        : "mixed";
+            }
+            if (first > 0 &&
+                (camera_range.value("first_recording_frame_id", 0ULL) == 0 ||
+                 first < camera_range.value("first_recording_frame_id", 0ULL))) {
+                camera_range["first_recording_frame_id"] = first;
+            }
+            if (last > camera_range.value("last_recording_frame_id", 0ULL)) {
+                camera_range["last_recording_frame_id"] = last;
+            }
+            camera_range["recording_frame_id_gaps"] =
+                camera_range.value("recording_frame_id_gaps", 0ULL) + gaps;
+            camera_range["total_actual_duration_s"] =
+                camera_range.value("total_actual_duration_s", 0.0) +
+                row.value("actual_duration_s", 0.0);
+        }
+    }
+
+    const std::vector<std::string> columns = {
+        "session_id",
+        "producer",
+        "clip_index",
+        "clip_id",
+        "camera_serial",
+        "status",
+        "start_reason",
+        "stop_reason",
+        "final_clip",
+        "timed_stop_hit",
+        "drain_completed",
+        "started_at_utc",
+        "stop_requested_at_utc",
+        "finalized_at_utc",
+        "started_at_elapsed_s",
+        "stop_requested_at_elapsed_s",
+        "finalized_at_elapsed_s",
+        "requested_duration_s",
+        "actual_duration_s",
+        "drain_duration_s",
+        "first_recording_frame_id",
+        "last_recording_frame_id",
+        "frame_count",
+        "recording_frame_id_gaps",
+        "packet_count",
+        "packet_count_source",
+        "rollover_request_id",
+        "rollover_at_recording_frame_id",
+        "clip_directory",
+        "clip_recording_folder",
+        "clip_manifest_path",
+        "video",
+        "metadata",
+        "keyframes"
+    };
+
+    nlohmann::json index = {
+        {"schema_id", "orange.recording_clip_index"},
+        {"schema_version", 1},
+        {"producer", manifest.value("producer", std::string())},
+        {"session_id", manifest.value("session_id", std::string())},
+        {"mode", "rolling_clips"},
+        {"generated_at_utc", manifest.value("updated_at_utc", std::string())},
+        {"recording_folder", recording_folder},
+        {"row_granularity", "clip_camera"},
+        {"columns", columns},
+        {"cameras", manifest.value("cameras", nlohmann::json::array())},
+        {"clip_count", clips.size()},
+        {"row_count", rows.size()},
+        {"camera_ranges", camera_ranges},
+        {"rows", rows}
+    };
+
+    if (!write_json_file(json_path, index, error_out)) {
+        return false;
+    }
+    if (!write_csv_file(csv_path, columns, rows, error_out)) {
+        return false;
+    }
+
+    if (artifacts_out) {
+        artifacts_out->clip_index_json_path = json_path.string();
+        artifacts_out->clip_index_csv_path = csv_path.string();
+    }
+    return true;
 }
 
 void create_recording_pipelines_for_stream(RecordingSessionState* state,
@@ -704,8 +1249,10 @@ void request_stop_recording_run(CameraControl* camera_control)
     if (camera_control->active_recorders.load(std::memory_order_relaxed) == 0) {
         camera_control->recording_draining = false;
         camera_control->stop_record = false;
-        std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-        camera_control->recording_folder.clear();
+        if (!camera_control->preserve_recording_session_state) {
+            std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+            camera_control->recording_folder.clear();
+        }
     }
 }
 

@@ -357,6 +357,18 @@ GOP-boundary writer rotation:
   has `mode = "rolling_clips"`, `producer = "orange_headless_external_ipc"`,
   `recording_backend.mode = "external_ipc"`, and per-camera clip paths in
   `clips[].camera_artifacts`.
+- Rolling runs write parent-level `recording_clip_index.json` and
+  `recording_clip_index.csv` with one row per `(clip, camera)` range. The
+  parent `recording_session.json` advertises those files under `indexes`, and
+  `recording_snapshot.json` carries absolute index pointers for consumers that
+  start from the latest-recording pointer.
+- Rolling indexes now include real packet counts. Native in-process runs count
+  video packets after finalization with ffprobe; supervised external IPC runs
+  use recorder summary `packets_written`.
+- External IPC rolling coalesces a tiny terminal tail into the previous final
+  clip when timed stop lands just after a nominal clip boundary. The threshold
+  is one GOP; larger overruns still produce additional clips so stop failures
+  remain visible.
 - For full-rate `4512x4512 @ 100 fps`, use split-GOP shard routing rather than
   one external encoder lane. The checked-in smoke uses shard GPUs `5,6`.
 
@@ -379,11 +391,22 @@ Validated external IPC rolling smoke:
   `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_external_ipc_rolling_bridge_20260509_ptp_rolling_bridge_28478`
 - latest two-camera PTP recorder artifact:
   `/tmp/orange_external_recorder_ptp_rolling_20260509_ptp_rolling_bridge_28478`
-- both cameras received/ACKed/encoded `601` frames with `0` encode drops;
-  clips were `1-200`, `201-400`, `401-600`, and final tail `601`
+- a later tail-coalescing validation used analytics artifact
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_external_ipc_rolling_tail_coalesce_20260509_120903`
+  and recorder artifact `/tmp/orange_external_recorder_ptp_rolling`
+- both cameras received/ACKed/encoded `601` frames with `0` encode drops; the
+  prior one-frame fourth clip was coalesced into the final clip, yielding
+  `1-200`, `201-400`, and `401-601`
+- recorder summaries reported `target_frame_count = 600`,
+  `terminal_tail_coalesce_frames = 25`, and
+  `terminal_tail_coalesced_frames = 1`
 - the analytics `recording_session.json` was rewritten as the shared
   `rolling_clips` manifest and external recorder verification passed against
   that manifest
+- packet-count validation passed for a later native rolling smoke and a
+  two-camera external IPC rolling smoke; `scripts/verify_timed_recording.py`
+  and `scripts/verify_external_recorder_session.py` now reject missing or
+  placeholder rolling index packet counts
 
 For control-plane checks that should not touch cameras, TensorRT, sockets, or
 NVENC, use the dry-run supervisor-plan CLI:

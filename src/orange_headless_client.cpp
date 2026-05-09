@@ -1216,6 +1216,36 @@ ExperimentVideoArtifactStats summarize_rolling_video_artifacts(
     return aggregate;
 }
 
+nlohmann::json build_rolling_recording_session_snapshot_update(
+    const std::string& recording_folder,
+    const nlohmann::json& manifest,
+    const orange::session::RecordingSessionIndexArtifacts& index_artifacts)
+{
+    nlohmann::json indexes =
+        manifest.value("indexes", nlohmann::json::object());
+    if (indexes.is_object()) {
+        if (!index_artifacts.clip_index_json_path.empty()) {
+            indexes["clip_index_json_path"] = index_artifacts.clip_index_json_path;
+        }
+        if (!index_artifacts.clip_index_csv_path.empty()) {
+            indexes["clip_index_csv_path"] = index_artifacts.clip_index_csv_path;
+        }
+    }
+
+    nlohmann::json update = {
+        {"recording_mode", manifest.value("mode", std::string())},
+        {"recording_session_manifest_path",
+         (std::filesystem::path(recording_folder) / "recording_session.json").string()},
+        {"recording_session_index", indexes},
+        {"rolling_clip_count", manifest.value("clips", nlohmann::json::array()).size()},
+        {"rolling_index_row_count", indexes.value("row_count", 0)}
+    };
+    if (manifest.contains("recording_backend")) {
+        update["recording_backend"] = manifest["recording_backend"];
+    }
+    return update;
+}
+
 std::string canonicalize_headless_camera_serial(std::string value)
 {
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char c) {
@@ -5444,16 +5474,18 @@ bool write_supervised_external_recorder_recording_session_manifest(
                     manifest_clip.actual_duration_s,
                     static_cast<double>(frame_count) / static_cast<double>(fps));
 
-            manifest_clip.cameras.push_back({
-                serial,
-                clip.value("mp4", std::string()),
-                clip.value("metadata", std::string()),
-                clip.value("keyframes", std::string()),
-                frame_count,
-                first_frame,
-                last_frame,
-                0
-            });
+            orange::session::RecordingSessionCameraArtifact camera_artifact;
+            camera_artifact.camera_serial = serial;
+            camera_artifact.video_path = clip.value("mp4", std::string());
+            camera_artifact.metadata_path = clip.value("metadata", std::string());
+            camera_artifact.keyframe_path = clip.value("keyframes", std::string());
+            camera_artifact.frame_count = frame_count;
+            camera_artifact.first_recording_frame_id = first_frame;
+            camera_artifact.last_recording_frame_id = last_frame;
+            camera_artifact.recording_frame_id_gaps = 0;
+            camera_artifact.packet_count = clip.value("packets_written", 0ULL);
+            camera_artifact.packet_count_source = "external_recorder_summary.packets_written";
+            manifest_clip.cameras.push_back(std::move(camera_artifact));
         }
     }
 
@@ -5579,6 +5611,14 @@ bool write_supervised_external_recorder_recording_session_manifest(
     const nlohmann::json manifest =
         orange::session::build_rolling_clip_recording_session_manifest(manifest_options);
     const std::filesystem::path manifest_path = run_folder / "recording_session.json";
+    orange::session::RecordingSessionIndexArtifacts index_artifacts;
+    if (!orange::session::write_rolling_clip_index_artifacts(
+            run.recording_folder,
+            manifest,
+            &index_artifacts,
+            error_out)) {
+        return false;
+    }
     std::string manifest_error;
     if (!orange::session::write_recording_session_manifest(
             manifest_path.string(),
@@ -5586,6 +5626,17 @@ bool write_supervised_external_recorder_recording_session_manifest(
             &manifest_error)) {
         if (error_out) {
             *error_out = manifest_error;
+        }
+        return false;
+    }
+    const nlohmann::json snapshot_update =
+        build_rolling_recording_session_snapshot_update(
+            run.recording_folder,
+            manifest,
+            index_artifacts);
+    if (!update_recording_snapshot_session_artifacts(run.recording_folder, snapshot_update)) {
+        if (error_out) {
+            *error_out = "failed to update recording_snapshot.json with external IPC rolling index";
         }
         return false;
     }
@@ -5598,6 +5649,11 @@ bool write_supervised_external_recorder_recording_session_manifest(
             {"producer", "orange_headless_external_ipc"},
             {"clip_count", manifest_options.clips.size()},
             {"camera_count", manifest_options.camera_serials.size()},
+            {"indexes",
+             {
+                 {"clip_index_json", index_artifacts.clip_index_json_path},
+                 {"clip_index_csv", index_artifacts.clip_index_csv_path}
+             }},
             {"summary_json", summary_paths}
         };
     }
@@ -7197,28 +7253,17 @@ build_headless_clip_camera_artifacts(const std::vector<int>& selected_inventory_
                                      const CameraParams* cameras_params,
                                      const std::string& clip_folder)
 {
-    std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
+    std::vector<std::string> camera_serials;
     if (!cameras_params) {
-        return camera_artifacts;
+        return {};
     }
     for (int idx : selected_inventory_indices) {
-        const std::string camera_serial = cameras_params[idx].camera_serial;
-        const std::filesystem::path folder(clip_folder);
-        const std::filesystem::path metadata_path =
-            folder / ("Cam" + camera_serial + "_meta.csv");
-        const MetadataFrameStats frame_stats = read_metadata_frame_stats(metadata_path);
-        orange::session::RecordingSessionCameraArtifact artifact;
-        artifact.camera_serial = camera_serial;
-        artifact.video_path = (folder / ("Cam" + camera_serial + ".mp4")).string();
-        artifact.metadata_path = metadata_path.string();
-        artifact.keyframe_path = (folder / ("Cam" + camera_serial + "_keyframe.json")).string();
-        artifact.frame_count = frame_stats.frame_count;
-        artifact.first_recording_frame_id = frame_stats.first_recording_frame_id;
-        artifact.last_recording_frame_id = frame_stats.last_recording_frame_id;
-        artifact.recording_frame_id_gaps = frame_stats.recording_frame_id_gaps;
-        camera_artifacts.push_back(std::move(artifact));
+        camera_serials.push_back(cameras_params[idx].camera_serial);
     }
-    return camera_artifacts;
+    return orange::session::build_recording_camera_artifacts(
+        camera_serials,
+        clip_folder,
+        false);
 }
 
 int run_local_recording_session(const HeadlessCliOptions& options, bool print_inventory)
@@ -7603,6 +7648,21 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                         0.05,
                         2.0 * static_cast<double>(rolling_gop_length) /
                             static_cast<double>(std::max<uint32_t>(1u, rolling_frame_rate))))));
+    const uint64_t rolling_target_frame_count =
+        static_cast<uint64_t>(std::max(0, options.recording_control.record_for_seconds)) *
+        static_cast<uint64_t>(std::max<uint32_t>(1u, rolling_frame_rate));
+    const uint64_t rolling_terminal_tail_coalesce_frames =
+        static_cast<uint64_t>(std::max<uint32_t>(1u, rolling_gop_length));
+    bool terminal_tail_rollover_suppressed = false;
+    auto rollover_would_create_terminal_tail = [&](const uint64_t rollover_at_frame_id) {
+        if (!rolling_clip_recording ||
+            rolling_target_frame_count == 0 ||
+            rollover_at_frame_id <= rolling_target_frame_count) {
+            return false;
+        }
+        return rollover_at_frame_id - rolling_target_frame_count <=
+            rolling_terminal_tail_coalesce_frames;
+    };
 
     auto elapsed_since_run_start = [&](std::chrono::steady_clock::time_point time) {
         if (time.time_since_epoch().count() == 0) {
@@ -7880,6 +7940,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                    !recording_auto_stop_requested &&
                    active_rolling_clip.active &&
                    !pending_next_rolling_clip.pending_next_clip &&
+                   !terminal_tail_rollover_suppressed &&
                    std::chrono::steady_clock::now() + rolling_prepare_margin >=
                        active_rolling_clip.started_time +
                            std::chrono::seconds(options.recording_control.clip_seconds)) {
@@ -7902,6 +7963,17 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                     rolling_gop_length);
             }
             const int next_clip_index = active_rolling_clip.clip_index + 1;
+            if (rollover_would_create_terminal_tail(rollover_at_frame_id)) {
+                terminal_tail_rollover_suppressed = true;
+                std::cout << "Local headless rolling terminal tail rollover suppressed."
+                          << " clip_id=" << active_rolling_clip.clip_id
+                          << " rollover_at_frame=" << rollover_at_frame_id
+                          << " target_frame=" << rolling_target_frame_count
+                          << " coalesce_frames=" << rolling_terminal_tail_coalesce_frames
+                          << std::endl;
+                usleep(20000);
+                continue;
+            }
             const std::string next_clip_folder =
                 headless_clip_folder(active_record_folder, next_clip_index);
             const uint64_t rollover_request_id = request_headless_recording_rollover(
@@ -7993,16 +8065,16 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 camera_control.latest_recording_frame_id.load(std::memory_order_relaxed));
         }
 
-        std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts;
+        std::vector<std::string> selected_camera_serials;
+        selected_camera_serials.reserve(selected_inventory_indices.size());
         for (int idx : selected_inventory_indices) {
-            const std::string camera_serial = cameras_params[idx].camera_serial;
-            camera_artifacts.push_back({
-                camera_serial,
-                "Cam" + camera_serial + ".mp4",
-                "Cam" + camera_serial + "_meta.csv",
-                "Cam" + camera_serial + "_keyframe.json"
-            });
+            selected_camera_serials.push_back(cameras_params[idx].camera_serial);
         }
+        std::vector<orange::session::RecordingSessionCameraArtifact> camera_artifacts =
+            orange::session::build_recording_camera_artifacts(
+                selected_camera_serials,
+                active_record_folder,
+                true);
 
         const double actual_recording_duration_s =
             elapsed_between(recording_start_time, recording_stop_request_time);
@@ -8014,6 +8086,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             recording_stop_reason == "record_for_seconds_elapsed";
 
         nlohmann::json manifest;
+        orange::session::RecordingSessionIndexArtifacts rolling_index_artifacts;
         if (rolling_clip_recording) {
             std::vector<std::string> camera_serials;
             camera_serials.reserve(selected_inventory_indices.size());
@@ -8146,6 +8219,18 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             manifest_options.clips = std::move(clip_options);
             manifest =
                 orange::session::build_rolling_clip_recording_session_manifest(manifest_options);
+            std::string index_error;
+            if (!orange::session::write_rolling_clip_index_artifacts(
+                    active_record_folder,
+                    manifest,
+                    &rolling_index_artifacts,
+                    &index_error)) {
+                std::cerr << index_error << std::endl;
+                stop_headless_frame_ipc_managers(frame_ipc_managers);
+                stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+                clear_headless_frame_ipc_managers(frame_ipc_managers);
+                return 1;
+            }
         } else {
             orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
             manifest_options.producer = "orange_headless";
@@ -8198,6 +8283,23 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
             clear_headless_frame_ipc_managers(frame_ipc_managers);
             return 1;
+        }
+        if (rolling_clip_recording) {
+            const nlohmann::json snapshot_update =
+                build_rolling_recording_session_snapshot_update(
+                    active_record_folder,
+                    manifest,
+                    rolling_index_artifacts);
+            if (!update_recording_snapshot_session_artifacts(
+                    active_record_folder,
+                    snapshot_update)) {
+                std::cerr << "Failed to update recording snapshot with rolling clip index."
+                          << std::endl;
+                stop_headless_frame_ipc_managers(frame_ipc_managers);
+                stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+                clear_headless_frame_ipc_managers(frame_ipc_managers);
+                return 1;
+            }
         }
     }
 

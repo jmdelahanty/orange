@@ -184,6 +184,33 @@ This keeps the GUI contract aligned with the headless supervised recorder path
 without pretending the GUI can supervise, drain, and finalize external recorder
 processes yet.
 
+### `recording.ptp_register_read_decimate`
+
+Type:
+
+- integer, minimum `1`
+
+Meaning:
+
+- GUI default for `ORANGE_PTP_REGISTER_READ_DECIMATE` when the environment
+  variable is not already set
+
+Recommended local PTP validation value:
+
+- `100`
+
+The value controls how often the GUI acquisition hot path polls the camera
+`GevTimestampValue*` registers for diagnostics. `1` keeps the old per-frame
+polling behavior. Larger values keep PTP gate synchronization and embedded
+frame timestamps, but move most register-read diagnostics out of the per-frame
+hot path.
+
+Environment precedence:
+
+- `ORANGE_PTP_REGISTER_READ_DECIMATE` wins when it is already set.
+- Otherwise the GUI applies `recording.ptp_register_read_decimate` before
+  starting acquisition threads.
+
 ### `recording.external_recorder_contract_path`
 
 Type:

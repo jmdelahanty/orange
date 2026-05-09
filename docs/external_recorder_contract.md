@@ -237,7 +237,22 @@ Current semantics:
   clip list into the analytics `recording_session.json` using the shared
   `orange.recording_session` contract. The manifest records
   `recording_backend.mode = "external_ipc"` and per-camera clip video,
-  metadata, and keyframe paths under `clips[].camera_artifacts`.
+  metadata, keyframe paths, frame ranges, and packet counts under
+  `clips[].camera_artifacts`.
+- The analytics folder also gets `recording_clip_index.json` and
+  `recording_clip_index.csv` with one row per external `(clip, camera)` range,
+  plus `recording_snapshot.json` pointers to the shared manifest and index
+  files.
+- External IPC packet counts are sourced from per-clip
+  `packets_written` in the recorder summaries and are exposed as
+  `packet_count_source = "external_recorder_summary.packets_written"`.
+- Rolling summaries also report `target_frame_count`,
+  `terminal_tail_coalesce_frames`, and `terminal_tail_coalesced_frames`.
+  When timed stop lands just after a nominal clip boundary, the recorder
+  coalesces a tiny terminal tail into the previous final clip instead of
+  creating a standalone 1-frame clip. The current threshold is one GOP; larger
+  overruns still create additional clips and should be treated as diagnostic
+  evidence that stop/drain timing missed the intended boundary.
 - Rolling clip boundaries are aligned upward to whole GOPs. For example,
   `clip_seconds = 2`, `encode_fps = 100`, and `gop = 25` produce 200-frame
   clip spans.
@@ -405,6 +420,9 @@ Verifier checks:
 - for rolling runs, analytics `recording_session.json` is `mode =
   "rolling_clips"`, uses `producer = "orange_headless_external_ipc"`, records
   `recording_backend.mode = "external_ipc"`, and its per-camera clip artifacts
+  match the verified external summaries
+- for rolling runs, analytics `recording_clip_index.json`,
+  `recording_clip_index.csv`, and `recording_snapshot.json` index pointers
   match the verified external summaries
 
 Smoke runners:

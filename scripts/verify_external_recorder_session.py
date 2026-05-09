@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import shutil
 import subprocess
 import sys
@@ -97,6 +98,10 @@ def recording_control_for(contract: dict[str, Any], stream: dict[str, Any]) -> d
 def path_from(value: Any, base: Path) -> Path:
     path = Path(str(value))
     return path if path.is_absolute() else base / path
+
+
+def path_key(path: Path) -> str:
+    return str(path.expanduser().resolve(strict=False))
 
 
 def load_spec(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -221,6 +226,16 @@ def count_csv_data_rows(path: Path) -> int:
         raise VerificationError(f"missing CSV file: {path}") from exc
 
 
+def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            rows = list(reader)
+            return list(reader.fieldnames or []), rows
+    except FileNotFoundError as exc:
+        raise VerificationError(f"missing CSV file: {path}") from exc
+
+
 def verify_rolling_output(
     artifact_root: Path,
     serial: str,
@@ -251,8 +266,34 @@ def verify_rolling_output(
     clips = rolling.get("clips")
     require(isinstance(clips, list) and bool(clips), f"rolling_output has no clips for {serial}")
     require(as_int(rolling.get("clip_count"), "rolling_output.clip_count") == len(clips), f"clip_count mismatch for {serial}")
+    clip_span_frames = as_int(rolling.get("clip_span_frames", 0), "rolling_output.clip_span_frames")
+    target_frame_count = as_int(rolling.get("target_frame_count", 0), "rolling_output.target_frame_count")
+    terminal_tail_coalesce_frames = as_int(
+        rolling.get("terminal_tail_coalesce_frames", 0),
+        "rolling_output.terminal_tail_coalesce_frames",
+    )
+    terminal_tail_coalesced_frames = as_int(
+        rolling.get("terminal_tail_coalesced_frames", 0),
+        "rolling_output.terminal_tail_coalesced_frames",
+    )
     if record_for_seconds > clip_seconds:
         require(len(clips) >= 2, f"expected multiple rolling clips for {serial}")
+    if (
+        target_frame_count > 0
+        and clip_span_frames > 0
+        and frames_encoded > target_frame_count
+        and frames_encoded - target_frame_count <= terminal_tail_coalesce_frames
+    ):
+        expected_clip_count = math.ceil(target_frame_count / clip_span_frames)
+        require(
+            len(clips) == expected_clip_count,
+            f"terminal tail was not coalesced for {serial}: clips={len(clips)} expected={expected_clip_count}",
+        )
+        require(
+            terminal_tail_coalesced_frames == frames_encoded - target_frame_count,
+            f"terminal tail coalesced frame count mismatch for {serial}: "
+            f"{terminal_tail_coalesced_frames} vs {frames_encoded - target_frame_count}",
+        )
 
     expected_next_frame = 1
     total_clip_frames = 0
@@ -272,9 +313,11 @@ def verify_rolling_output(
         ffprobe_video(mp4_path, ffprobe)
 
         frame_count = as_int(clip.get("frame_count"), "rolling clip frame_count")
+        packet_count = as_int(clip.get("packets_written"), "rolling clip packets_written")
         first_frame = as_int(clip.get("first_recording_frame_id"), "rolling clip first_recording_frame_id")
         last_frame = as_int(clip.get("last_recording_frame_id"), "rolling clip last_recording_frame_id")
         require(frame_count > 0, f"rolling clip has no frames for {serial}: {clip.get('clip_id')}")
+        require(packet_count > 0, f"rolling clip has no packets for {serial}: {clip.get('clip_id')}")
         require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
         require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
         require(count_csv_data_rows(metadata_path) == frame_count, f"rolling metadata rows mismatch for {serial}: {metadata_path}")
@@ -285,6 +328,7 @@ def verify_rolling_output(
                 "first_recording_frame_id": first_frame,
                 "last_recording_frame_id": last_frame,
                 "frame_count": frame_count,
+                "packet_count": packet_count,
                 "mp4": str(mp4_path),
                 "metadata": str(metadata_path),
                 "keyframes": str(keyframe_path),
@@ -439,6 +483,134 @@ def verify_analytics_root(analytics_root: Path, serials: list[str]) -> list[Path
     return recording_folders
 
 
+def index_path_from_manifest(recording_folder: Path, indexes: dict[str, Any], field: str) -> Path:
+    value = indexes.get(field)
+    require(isinstance(value, str) and value, f"recording_session.indexes missing {field}")
+    path = Path(value)
+    return path if path.is_absolute() else recording_folder / path
+
+
+def verify_analytics_recording_session_indexes(
+    recording_folder: Path,
+    manifest: dict[str, Any],
+    rolling_summaries: list[dict[str, Any]],
+) -> None:
+    indexes = manifest.get("indexes")
+    require(isinstance(indexes, dict), f"recording_session missing indexes: {recording_folder}")
+    require(
+        indexes.get("schema_id") == "orange.recording_session.indexes",
+        f"recording_session indexes schema mismatch: {indexes.get('schema_id')!r}",
+    )
+    require(indexes.get("row_granularity") == "clip_camera", "recording_session indexes row_granularity mismatch")
+    index_json_path = index_path_from_manifest(recording_folder, indexes, "clip_index_json")
+    index_csv_path = index_path_from_manifest(recording_folder, indexes, "clip_index_csv")
+    index = read_json(index_json_path)
+    require(index.get("schema_id") == "orange.recording_clip_index", f"unexpected clip index schema: {index_json_path}")
+    require(index.get("schema_version") == 1, f"unexpected clip index schema_version: {index_json_path}")
+    require(index.get("session_id") == manifest.get("session_id"), "clip index session_id mismatch")
+    require(index.get("mode") == "rolling_clips", "clip index mode mismatch")
+    rows = index.get("rows")
+    require(isinstance(rows, list), "clip index missing rows array")
+    columns = index.get("columns")
+    require(isinstance(columns, list) and columns, "clip index missing columns")
+    csv_columns, csv_rows = read_csv_rows(index_csv_path)
+    require(csv_columns == [str(column) for column in columns], "clip index CSV header does not match JSON columns")
+
+    expected: dict[tuple[int, str], dict[str, Any]] = {}
+    clips = manifest.get("clips")
+    require(isinstance(clips, list), "recording_session clips is not an array")
+    for item in rolling_summaries:
+        serial = str(item["serial"])
+        for expected_clip in item["rolling_clips"]:
+            clip_index = as_int(expected_clip.get("clip_index"), "expected clip_index")
+            require(clip_index < len(clips), f"recording_session missing clip {clip_index} for {serial}")
+            manifest_clip = clips[clip_index]
+            require(isinstance(manifest_clip, dict), f"recording_session clip {clip_index} is not an object")
+            camera_artifacts = manifest_clip.get("camera_artifacts")
+            require(isinstance(camera_artifacts, dict), f"recording_session clip {clip_index} missing camera_artifacts")
+            camera_artifact = camera_artifacts.get(serial)
+            require(isinstance(camera_artifact, dict), f"recording_session clip {clip_index} missing camera {serial}")
+            expected[(clip_index, serial)] = {
+                "clip_id": manifest_clip.get("clip_id"),
+                "status": manifest_clip.get("status"),
+                "stop_reason": manifest_clip.get("stop_reason"),
+                "frame_count": as_int(expected_clip.get("frame_count"), "expected frame_count"),
+                "first_recording_frame_id": as_int(expected_clip.get("first_recording_frame_id"), "expected first_recording_frame_id"),
+                "last_recording_frame_id": as_int(expected_clip.get("last_recording_frame_id"), "expected last_recording_frame_id"),
+                "packet_count": as_int(expected_clip.get("packet_count"), "expected packet_count"),
+                "video": str(expected_clip.get("mp4")),
+                "metadata": str(expected_clip.get("metadata")),
+                "keyframes": str(expected_clip.get("keyframes")),
+            }
+
+    require(len(rows) == len(expected), f"clip index row count mismatch: {len(rows)} vs {len(expected)}")
+    require(as_int(index.get("row_count"), "clip index row_count") == len(expected), "clip index row_count mismatch")
+    require(as_int(indexes.get("row_count"), "manifest indexes row_count") == len(expected), "manifest indexes row_count mismatch")
+    require(as_int(index.get("clip_count"), "clip index clip_count") == len(clips), "clip index clip_count mismatch")
+    require(as_int(indexes.get("clip_count"), "manifest indexes clip_count") == len(clips), "manifest indexes clip_count mismatch")
+
+    rows_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    for row in rows:
+        require(isinstance(row, dict), "clip index row is not an object")
+        key = (as_int(row.get("clip_index"), "clip index row clip_index"), str(row.get("camera_serial")))
+        require(key not in rows_by_key, f"duplicate clip index row for {key}")
+        rows_by_key[key] = row
+    require(set(rows_by_key.keys()) == set(expected.keys()), "clip index rows do not match external summary keys")
+
+    csv_by_key: dict[tuple[int, str], dict[str, str]] = {}
+    for row in csv_rows:
+        key = (as_int(row.get("clip_index"), "clip index CSV clip_index"), str(row.get("camera_serial")))
+        csv_by_key[key] = row
+    require(set(csv_by_key.keys()) == set(expected.keys()), "clip index CSV rows do not match external summary keys")
+
+    for key, expected_row in expected.items():
+        row = rows_by_key[key]
+        for field in ("clip_id", "status", "stop_reason", "video", "metadata", "keyframes"):
+            require(str(row.get(field, "")) == str(expected_row.get(field, "")), f"clip index {field} mismatch for {key}")
+        for field in ("frame_count", "first_recording_frame_id", "last_recording_frame_id"):
+            require(as_int(row.get(field), f"clip index {field}") == expected_row[field], f"clip index {field} mismatch for {key}")
+        require(as_int(row.get("packet_count"), "clip index packet_count") == expected_row["packet_count"], f"clip index packet_count mismatch for {key}")
+        require(str(row.get("packet_count_source")) == "external_recorder_summary.packets_written", f"unexpected packet_count_source for {key}")
+        clip_manifest_path = Path(str(row.get("clip_manifest_path", "")))
+        require(clip_manifest_path.exists(), f"clip index clip_manifest_path missing for {key}: {clip_manifest_path}")
+        csv_row = csv_by_key[key]
+        require(csv_row.get("video") == str(row.get("video")), f"clip index CSV video mismatch for {key}")
+        require(as_int(csv_row.get("frame_count"), "clip index CSV frame_count") == expected_row["frame_count"], f"clip index CSV frame_count mismatch for {key}")
+        require(as_int(csv_row.get("packet_count"), "clip index CSV packet_count") == expected_row["packet_count"], f"clip index CSV packet_count mismatch for {key}")
+
+    camera_ranges = index.get("camera_ranges")
+    require(isinstance(camera_ranges, dict), "clip index missing camera_ranges")
+    for camera in {camera for _, camera in expected.keys()}:
+        camera_rows = [row for key, row in rows_by_key.items() if key[1] == camera]
+        camera_range = camera_ranges.get(camera)
+        require(isinstance(camera_range, dict), f"clip index missing camera range for {camera}")
+        require(
+            as_int(camera_range.get("total_packet_count"), "camera total_packet_count")
+            == sum(as_int(row.get("packet_count"), "row packet_count") for row in camera_rows),
+            f"camera total_packet_count mismatch for {camera}",
+        )
+
+    snapshot = read_json(recording_folder / "recording_snapshot.json")
+    snapshot_session = snapshot.get("session")
+    require(isinstance(snapshot_session, dict), "recording_snapshot.json missing session object")
+    require(snapshot_session.get("recording_mode") == "rolling_clips", "recording_snapshot session recording_mode mismatch")
+    require(
+        path_key(Path(str(snapshot_session.get("recording_session_manifest_path"))))
+        == path_key(recording_folder / "recording_session.json"),
+        "recording_snapshot recording_session_manifest_path mismatch",
+    )
+    snapshot_index = snapshot_session.get("recording_session_index")
+    require(isinstance(snapshot_index, dict), "recording_snapshot missing recording_session_index")
+    require(
+        path_key(Path(str(snapshot_index.get("clip_index_json_path")))) == path_key(index_json_path),
+        "recording_snapshot clip_index_json_path mismatch",
+    )
+    require(
+        path_key(Path(str(snapshot_index.get("clip_index_csv_path")))) == path_key(index_csv_path),
+        "recording_snapshot clip_index_csv_path mismatch",
+    )
+
+
 def verify_analytics_recording_session_manifests(
     recording_folders: list[Path],
     summaries: list[dict[str, Any]],
@@ -466,6 +638,7 @@ def verify_analytics_recording_session_manifests(
         require(backend.get("mode") == "external_ipc", f"recording_session backend is not external_ipc: {manifest_path}")
         clips = manifest.get("clips")
         require(isinstance(clips, list) and bool(clips), f"recording_session has no clips: {manifest_path}")
+        verify_analytics_recording_session_indexes(recording_folder, manifest, rolling_summaries)
 
         for item in rolling_summaries:
             serial = str(item["serial"])

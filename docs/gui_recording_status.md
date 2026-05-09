@@ -151,6 +151,31 @@ The branch now supports:
 
 `/run/orange` is expected to be provisioned via `tmpfiles.d`, not ad hoc.
 
+The latest-recording pointer also includes
+`recording_session_manifest_path`, pointing at
+`<recording_folder>/recording_session.json`.
+
+### GUI Recording Session Manifest
+
+In-process GUI recordings now write the shared
+`orange.recording_session` single-clip manifest after the recording drain
+completes. The manifest uses `producer = "orange_gui"` and includes per-camera
+video, metadata, keyframe, frame-count, frame-range, and packet-count fields.
+`recording_snapshot.json` is updated at the same time with
+`session.recording_mode = "single_clip"`,
+`session.recording_session_manifest_path`, and
+`session.recording_session_status = "completed"`.
+
+The GUI external recorder fail-fast path still writes a metadata-only failed
+manifest before refusing to run the backend.
+
+### GUI PTP Register-Read Decimation
+
+`recording.ptp_register_read_decimate` in app storage can now provide the GUI
+default for `ORANGE_PTP_REGISTER_READ_DECIMATE`. The environment variable still
+wins when set explicitly; otherwise the GUI applies the app-storage value before
+starting acquisition threads.
+
 ## Validated Behavior
 
 ### Headless

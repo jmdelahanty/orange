@@ -47,6 +47,8 @@ struct RecordingSessionCameraArtifact {
     uint64_t first_recording_frame_id = 0;
     uint64_t last_recording_frame_id = 0;
     uint64_t recording_frame_id_gaps = 0;
+    uint64_t packet_count = 0;
+    std::string packet_count_source;
 };
 
 struct SingleClipRecordingSessionManifestOptions {
@@ -143,6 +145,11 @@ struct RollingRecordingSessionManifestOptions {
     std::vector<RollingClipManifestOptions> clips;
 };
 
+struct RecordingSessionIndexArtifacts {
+    std::string clip_index_json_path;
+    std::string clip_index_csv_path;
+};
+
 nlohmann::json build_recording_control_json(const RecordingControlConfig& config);
 bool validate_recording_control_config(const RecordingControlConfig& config,
                                        std::string* error_out = nullptr,
@@ -153,9 +160,21 @@ nlohmann::json build_recording_clip_manifest(
     const RollingClipManifestOptions& options);
 nlohmann::json build_rolling_clip_recording_session_manifest(
     const RollingRecordingSessionManifestOptions& options);
+RecordingSessionCameraArtifact build_recording_camera_artifact(
+    const std::string& camera_serial,
+    const std::string& recording_folder,
+    bool relative_paths);
+std::vector<RecordingSessionCameraArtifact> build_recording_camera_artifacts(
+    const std::vector<std::string>& camera_serials,
+    const std::string& recording_folder,
+    bool relative_paths);
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
                                       std::string* error_out = nullptr);
+bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
+                                        const nlohmann::json& manifest,
+                                        RecordingSessionIndexArtifacts* artifacts_out = nullptr,
+                                        std::string* error_out = nullptr);
 
 void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraParams* cameras_params,

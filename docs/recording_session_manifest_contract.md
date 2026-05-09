@@ -19,6 +19,8 @@ Current implementation rule:
   writes its clip list in `external_recorder_summary.json`; after recorder
   finalization, Orange mirrors that clip list into the shared analytics
   `recording_session.json`.
+- GUI in-process recordings now write the same single-clip
+  `recording_session.json` contract after the recording drain completes.
 - GUI/session rolling supervision is still future work. GUI fail-fast manifests
   carry `recording_control` and `rollover` metadata, but the GUI path refuses
   external recorder supervision until lifecycle, drain, and finalization state
@@ -139,9 +141,20 @@ also writes one MP4 per rolling clip. Full-rate A16 validation uses split-GOP
 shards, so per-shard MP4s remain diagnostic outputs while the merged MP4 and
 clip MP4s are the consumer-facing media.
 
-Future multi-day production rollover should add session-level frame/status CSVs.
-The current headless slice keeps cross-clip continuity in the per-clip metadata
-and records per-clip frame ranges in the parent `recording_session.json`.
+Rolling sessions also write session-level clip indexes:
+
+```text
+recording_clip_index.json
+recording_clip_index.csv
+```
+
+Each index row is one `(clip, camera)` range. It carries the clip status,
+rollover/start/stop reason, first/last `recording_frame_id`, frame count,
+per-camera artifact paths, the `clip_manifest.json` pointer, `packet_count`,
+and `packet_count_source`. Native in-process clips use
+`packet_count_source = "ffprobe_nb_read_packets"`. Supervised external IPC
+clips use `external_recorder_summary.packets_written` as the packet count
+source.
 
 ## Rolling Session Manifest
 
@@ -182,6 +195,16 @@ The top-level rolling manifest uses this shape:
     "requested_duration_seconds": 24,
     "actual_elapsed_s": 24.0,
     "interrupted": false
+  },
+  "indexes": {
+    "schema_id": "orange.recording_session.indexes",
+    "schema_version": 1,
+    "clip_index_json": "recording_clip_index.json",
+    "clip_index_csv": "recording_clip_index.csv",
+    "row_granularity": "clip_camera",
+    "path_style": "relative_to_recording_folder",
+    "clip_count": 3,
+    "row_count": 3
   },
   "clips": [
     {
@@ -292,7 +315,9 @@ Shape:
       "frame_count": 600,
       "first_recording_frame_id": 1,
       "last_recording_frame_id": 600,
-      "recording_frame_id_gaps": 0
+      "recording_frame_id_gaps": 0,
+      "packet_count": 600,
+      "packet_count_source": "ffprobe_nb_read_packets"
     }
   }
 }
@@ -335,6 +360,10 @@ The verifier now handles both `mode = "single_clip"` and
 - per-camera clip MP4/metadata/keyframe paths,
 - per-clip and cross-clip `recording_frame_id` continuity,
 - parent rollover contract for seamless writer switching,
+- session-level `recording_clip_index.json` / `recording_clip_index.csv`,
+- real per-clip packet counts in camera artifacts and clip indexes,
+- `recording_snapshot.json` pointers back to `recording_session.json` and the
+  clip index artifacts,
 - each clip starts with keyframe frame `0`,
 - `runs.json` health/pass fields when present,
 - total ffprobe video duration within tolerance.
@@ -408,10 +437,54 @@ Latest supervised external IPC rolling validation:
   `producer = "orange_headless_external_ipc"`, `recording_backend.mode =
   "external_ipc"`, and external clip paths for both cameras; the external
   verifier passed against this shared manifest
+- latest index-validation native artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_rolling_clip_index_20260509_index_native`
+- latest index-validation external recorder artifact:
+  `/tmp/orange_external_recorder_ptp_rolling_20260509_index_external`
+- latest index-validation external analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_external_ipc_rolling_index_20260509_index_external`
+- those runs wrote `recording_clip_index.json`, `recording_clip_index.csv`, and
+  `recording_snapshot.json` index pointers; `scripts/verify_timed_recording.py`
+  and `scripts/verify_external_recorder_session.py` both passed with index
+  checks enabled
+
+Latest packet-count index validation:
+
+- native in-process rolling artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_rolling_packet_counts_20260509/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off`
+- native rows reported clip packet counts `200`, `225`, and `177` with
+  `packet_count_source = "ffprobe_nb_read_packets"`
+- supervised two-camera external IPC rolling analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_external_ipc_rolling_packet_counts_20260509_021533`
+- external recorder artifact:
+  `/tmp/orange_external_recorder_ptp_rolling_packet_counts_20260509`
+- both external cameras received/ACKed/encoded `601` frames, wrote four rolling
+  clips with packet counts `200`, `200`, `200`, and `1`, and passed
+  `scripts/verify_external_recorder_session.py`
+
+Latest terminal-tail coalescing validation:
+
+- supervised two-camera external IPC rolling analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010095_2010096_external_ipc_rolling_tail_coalesce_20260509_120903`
+- external recorder artifact:
+  `/tmp/orange_external_recorder_ptp_rolling`
+- both external cameras received/ACKed/encoded `601` frames with `0` encode
+  drops
+- the recorder coalesced the one-frame post-duration tail into the final clip:
+  `1-200`, `201-400`, and `401-601`
+- recorder summaries reported `target_frame_count = 600`,
+  `terminal_tail_coalesced_frames = 1`, and
+  `terminal_tail_coalesce_frames = 25`
+- analytics `recording_clip_index.json` reported packet counts `200`, `200`,
+  and `201` per camera, all sourced from
+  `external_recorder_summary.packets_written`
+- `scripts/verify_external_recorder_session.py` passed and now checks that a
+  tiny terminal tail does not become a standalone clip
 
 ## Remaining Work
 
 - Add GUI/session controls and validation for rolling clips.
 - Carry external-recorder rolling supervision into the GUI/session lifecycle.
-- Add session-level frame/status CSVs for easier downstream indexing across
-  many clips.
+- Add direct muxer-reported packet counters if they become available; current
+  native indexes use ffprobe after finalization and external IPC indexes use
+  recorder summary `packets_written`.
