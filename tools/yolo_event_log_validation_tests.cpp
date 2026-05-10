@@ -256,6 +256,25 @@ void test_real_worker_log_skips_synthetic_cadence()
     require(stats.failed_rows == 1, "expected one failed row");
 }
 
+void test_runtime_synthetic_marker_mismatch_fails_schema()
+{
+    TestDir dir("synthetic_marker");
+    auto config = make_config();
+    config.mode = "real";
+    write_metadata(dir.path, 20);
+    write_event_log(dir.path, config, 20, [](const uint64_t line, nlohmann::json* event) {
+        if (line == 10) {
+            (*event)["yolo"]["detection_source"] = "synthetic_center_box";
+            (*event)["yolo"]["synthetic_runtime_detection"] = true;
+            (*event)["yolo"]["production_detection_valid"] = true;
+        }
+    });
+
+    const auto stats = summarize(dir.path, config);
+    require(stats.status == "fail", "runtime synthetic production marker mismatch should fail");
+    require(stats.schema_errors == 1, "expected one runtime synthetic marker schema error");
+}
+
 }  // namespace
 
 int main()
@@ -274,6 +293,8 @@ int main()
         {"malformed_json_fails", &test_malformed_json_fails},
         {"unknown_status_fails_schema", &test_unknown_status_fails_schema},
         {"real_worker_log_skips_synthetic_cadence", &test_real_worker_log_skips_synthetic_cadence},
+        {"runtime_synthetic_marker_mismatch_fails_schema",
+         &test_runtime_synthetic_marker_mismatch_fails_schema},
     };
 
     for (const auto& test : tests) {

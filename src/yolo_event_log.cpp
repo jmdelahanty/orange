@@ -181,7 +181,10 @@ void YoloEventLogger::WriteResult(const YoloResultRecord& record) {
         {"coordinate_space", "source_frame_pixels"},
         {"model_id", record.model_id},
         {"engine_path", record.engine_path},
-        {"gpu_id", record.gpu_id}
+        {"gpu_id", record.gpu_id},
+        {"detection_source", record.detection_source},
+        {"synthetic_runtime_detection", record.synthetic_runtime_detection},
+        {"production_detection_valid", !record.synthetic_runtime_detection}
     };
     if (!record.error.empty()) {
         yolo["error"] = record.error;

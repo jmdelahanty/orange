@@ -620,6 +620,11 @@ Current behavior:
 - The file is append-only during recording.
 - Rows include frame identity, timestamps, YOLO result status, detections, and
   Citrus live IPC request status.
+- Runtime synthetic pose-plumbing detections are explicitly marked under
+  `yolo` with `detection_source = "synthetic_center_box"`,
+  `synthetic_runtime_detection = true`, and
+  `production_detection_valid = false`. Those rows must never be used as
+  validation of production detections or real detection-to-pose behavior.
 - Current runtime records whether a live IPC update was requested/queued, but
   does not yet emit final asynchronous `citrus_live_ipc_decision` rows.
 - Headless synthetic rows are audit-only and do not publish synthetic detection
@@ -636,9 +641,16 @@ Path:
 - `<recording_folder>/Cam<serial>_pose_events.jsonl`
 
 Gate:
-- GUI Pose is enabled for that camera.
-- Crop+Encode and YOLO are enabled because the current pose worker consumes
-  `CropFrame` payloads produced from YOLO-selected ROIs.
+- Pose is enabled for that camera in the GUI or in a headless
+  `fixed.pose_worker.mode = "noop"` or `fixed.pose_worker.mode = "real"`
+  experiment spec.
+- YOLO is enabled because the current pose worker consumes `CropFrame`
+  payloads produced from the YOLO worker result path. With
+  `roi_source = "yolo_top_detection"`, the crop comes from a real model
+  detection. With `roi_source = "synthetic_center_box"`, the crop comes from a
+  non-production synthetic centered box for plumbing diagnostics only. GUI crop
+  output may be enabled as a sidecar consumer, but headless pose does not
+  require crop-video encoding.
 - The crop frame carries `recording_frame_id > 0`.
 
 Current emitted row type:
@@ -649,9 +661,12 @@ Current behavior:
 - Rows include frame identity, source-frame dimensions, crop geometry, selected
   detection geometry, pose backend/model metadata, per-stage latency fields, and
   an explicit `poses` array.
-- Until a TensorRT pose backend lands, `pose.backend = "noop"`,
-  `pose.status = "no_result"`, and `poses = []`. This is intentional: the
-  artifact contract can be validated without pretending to have keypoints.
+- Noop pose writes `pose.backend = "noop"`, `pose.status = "no_result"`, and
+  `poses = []`. This remains useful for artifact contract validation without
+  pretending to have keypoints.
+- Real pose writes `pose.backend = "tensorrt"`. Rows can be `poses`,
+  `no_result`, or `failed`; the first TensorRT backend supports FP32/NCHW
+  `1x3x256x256` input and FP32 YOLO-pose-style output.
 - The file is audit-only today. Pose results are not published to Citrus IPC or
   drawn as GUI overlays yet.
 
@@ -973,23 +988,42 @@ run folder exists.
 Top-level fields:
 - `schema_id = "orange.headless.frame_ipc_summary"`
 - `schema_version = 1`
-- `mode = "producer_only" | "verify_drain"`
+- `mode = "producer_only" | "verify_drain" | "verify_drain_v2"`
+- `queue_version = 1 | 2`
 - `queue_naming = "serial"`
 - `cameras`: object keyed by camera serial
 
 Per-camera fields include:
-- `queue_name`: `/shm_cam_<camera_serial>`
-- `frames_sent`, `updates_sent`
+- `queue_name`: active verifier queue, either `/shm_cam_<camera_serial>` or
+  `/shm_cam_<camera_serial>_v2`
+- `v1_queue_name`, `v2_queue_name`
+- `frames_sent`, `updates_sent`: active queue publish counts for the selected
+  mode
+- `v1_frames_sent`, `v1_updates_sent`
 - `base_queue_drops`, `update_queue_drops`, `update_stale_drops`
 - `update_stale_drops` means delayed older-frame detection updates were
   intentionally suppressed from the Citrus live queue
-- `ipc_push_failures`
+- `ipc_push_failures`: active queue push failures for the selected mode
+- `v1_ipc_push_failures`, `v2_ipc_push_failures`
+- `v2_frames_published`, `v2_yolo_updates_published`,
+  `v2_pose_updates_published`
+- `v2_yolo_stale_suppressed`, `v2_pose_stale_suppressed`
+- `v2_pending_drops`, `v2_queue_drops`
 - `reader_messages_popped`, `reader_base_messages`
+- `reader_v2_latest_state_messages`, `reader_v2_detection_pending_messages`,
+  `reader_v2_detection_result_messages`, `reader_v2_pose_result_messages`
 - `reader_frame_id_gaps`, `reader_camera_id_mismatches`
+- `reader_sequence_id_gaps`, `reader_non_monotonic_sequence_ids`
 - `status = "pass" | "fail"`
 
-`verify_drain` starts an internal single-consumer reader, so it is a test mode
-and should not be used while another consumer is expected to receive every slot.
+`verify_drain` and `verify_drain_v2` start internal single-consumer readers, so
+they are test modes and should not be used while another consumer is expected to
+receive every slot.
+
+In `verify_drain_v2`, the transitional v1 queue is still created but the
+internal verifier drains only the v2 queue. Use `ipc_push_failures` or
+`v2_ipc_push_failures` for active-mode validation; `v1_ipc_push_failures` may
+rise when no v1 consumer is attached.
 
 ## ENet / FlatBuffer Payload Contract
 
@@ -1037,6 +1071,7 @@ Current runtime note:
 - If Citrus later needs live `camera_timestamp_ns`, keep the current queue
   unchanged and add a versioned `/shm_cam_<camera_serial>_v2` contract with
   explicit schema/version fields and the same stale-update suppression rules.
+  See [shaman_v2_live_state_contract.md](./shaman_v2_live_state_contract.md).
 
 ## Known Inconsistencies and Caveats
 

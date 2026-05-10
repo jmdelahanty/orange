@@ -48,6 +48,28 @@ bool env_flag_enabled(const char* name, bool default_value)
            normalized != "off" &&
            normalized != "no";
 }
+
+int env_int_or_default(const char* name, int default_value, int min_value, int max_value)
+{
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(raw, &end, 10);
+    if (end == raw || (end && *end != '\0')) {
+        std::cerr << "[CropProducer] Ignoring invalid " << name << "='" << raw << "'"
+                  << std::endl;
+        return default_value;
+    }
+    if (parsed < min_value || parsed > max_value) {
+        std::cerr << "[CropProducer] Ignoring out-of-range " << name << "=" << parsed
+                  << " (expected " << min_value << "-" << max_value << ")"
+                  << std::endl;
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
 }  // namespace
 
 CropProducer::CropProducer(
@@ -67,6 +89,8 @@ CropProducer::CropProducer(
     crop_copy_kernel_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_KERNEL", false);
     crop_source_stage_enabled_ = env_flag_enabled("ORANGE_CROP_STAGE_SOURCE", false);
     crop_early_owned_frame_enabled_ = env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false);
+    crop_frame_pool_size_ =
+        env_int_or_default("ORANGE_CROP_FRAME_POOL_SIZE", kCropFramePoolSize, 1, 512);
 
     std::cout << "[CropProducer] Crop copy mode "
               << (crop_copy_kernel_enabled_ ? "kernel" : "memcpy2d")
@@ -74,6 +98,7 @@ CropProducer::CropProducer(
               << (crop_source_stage_enabled_ ? "enabled" : "disabled")
               << ", analytics early owned frame "
               << (crop_early_owned_frame_enabled_ ? "enabled" : "disabled")
+              << ", crop frame pool size " << crop_frame_pool_size_
               << ", GPU timing "
               << (crop_copy_timing_enabled_ ? "enabled" : "disabled")
               << " for camera " << camera_params_->camera_serial << std::endl;
@@ -84,7 +109,7 @@ CropProducer::CropProducer(
         free_source_release_events_.push(&source_release_event_pool_[i]);
     }
 
-    crop_frame_pool_.resize(kCropFramePoolSize);
+    crop_frame_pool_.resize(crop_frame_pool_size_);
     for (auto& crop_frame : crop_frame_pool_) {
         ck(cudaMalloc(&crop_frame.d_crop_mono, crop_mono_bytes()));
         if (crop_copy_timing_enabled_) {

@@ -183,19 +183,161 @@ Current latency interpretation (2026-04-23):
 - Therefore the next architectural optimization target is not "make noop pose
   faster"; it is to shorten and isolate the `detect -> crop_ready` path.
 
-Headless schema slice (updated 2026-05-06):
+Headless pose wiring slice (updated 2026-05-09):
 
 - Headless experiment specs now parse `fixed.pose_worker`.
-- Supported schema modes are `off`, `noop`, and reserved `real`.
-- `noop` validates `Cam<serial>_pose_events.jsonl` as a no-result pose artifact
-  with `pose.backend = "noop"`, `pose.mode = "noop"`, and empty `poses`.
-- `real` requires `engine_path` in the spec but TensorRT keypoint inference is
-  still not implemented.
-- The headless schema currently requires `fixed.yolo_worker.mode = "real"` and
-  `roi_source = "yolo_top_detection"`.
-- The headless runtime still does not wire crop production into pose. Until
-  that slice lands, enabling `fixed.pose_worker.mode = "noop"` is expected to
-  fail validation because the pose JSONL artifact is missing.
+- Supported schema modes are `off`, `noop`, and `real`.
+- `noop` now wires the existing `CropProducerWorker -> CropProducer ->
+  PoseWorker` path into headless runs when real YOLO is enabled. This is the
+  same crop/lease/worker machinery used by the GUI path, not a separate
+  headless pose implementation.
+- `noop` validates `Cam<serial>_pose_events.jsonl` as a no-result pose
+  artifact with `pose.backend = "noop"`, `pose.mode = "noop"`, and empty
+  `poses`.
+- `real` requires `engine_path` in the spec and now loads a TensorRT keypoint
+  engine through the same `PoseWorker`. The first backend supports FP32/NCHW
+  `1x3x256x256` input and FP32 `1x(5+3K)xN` YOLO-pose output.
+- `fixed.pose_worker.prewarm_iterations` warms the pose engine before live
+  frames. `fixed.pose_worker.crop_frame_pool_size` can raise the crop-frame
+  pool for real pose tests where inference spikes briefly hold more crop
+  buffers than the historical 8-slot default.
+- The headless schema currently requires `fixed.yolo_worker.mode = "real"`.
+  `roi_source = "yolo_top_detection"` is the production-relevant ROI source.
+- `roi_source = "synthetic_center_box"` can inject a centered runtime detection
+  for pose-plumbing diagnostics only. It must never be treated as validation of
+  production YOLO detections, detection quality, real ROI selection, or real
+  detection-to-pose behavior.
+- Pose JSONL rows are emitted only for accepted recording crop frames, so a run
+  with no YOLO detections can still fail pose validation with zero/missing pose
+  rows. Use a detectable subject before treating noop pose validation as a full
+  end-to-end pass.
+- First headless wiring smoke on 2026-05-09:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_wiring_smoke_20260509_151301`.
+  The shared workers started and shut down cleanly, `Cam2010096_pose_perf.csv`
+  was written, and YOLO logged `401` zero-detection rows. No crop frames were
+  produced (`pose_offered = 0`), so `Cam2010096_pose_events.jsonl` was absent
+  and the run failed only the pose-event validation gate. This is the expected
+  no-detection outcome, not evidence of missing headless wiring.
+- First synthetic-center-box pose plumbing smoke on 2026-05-09:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_synthetic_center_box_a16_gpu5`.
+  The run produced `401` YOLO event rows, `401` noop pose event rows, and
+  passed the artifact validators. The YOLO rows are explicitly marked
+  `synthetic_runtime_detection = true` and
+  `production_detection_valid = false`, so this validates only the
+  crop/pose/artifact plumbing.
+- First real TensorRT pose plumbing smoke on 2026-05-09:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_real_synthetic_center_box_pool32_a16_gpu5`.
+  The pose engine loaded on GPU `5`, the run produced `401` YOLO event rows
+  and `401` TensorRT pose event rows, and validation passed with `0` pose
+  failures, `0` camera frame-id gaps, `0` encode failures, and `0` crop-pool
+  misses. Pose inference p50 was about `0.894 ms` and p95 about `14.328 ms`.
+  All pose rows were `no_result` because the ROI was synthetic/no-fish; this
+  validates engine plumbing and artifact shape, not real keypoint quality.
+
+Real TensorRT pose p95 interpretation (updated 2026-05-10):
+
+- The high pose p95 in the real-recording smoke is not primarily a warmup
+  issue. `prewarm_iterations = 3` was active before live frames.
+- The slow path appears as occasional long `pose_start_to_pose_done` service
+  rows, followed by multiple frames with high `crop_ready_to_pose_start` queue
+  residence behind the single pose worker. In the real-recording smoke:
+  `pose_start_to_pose_done p50 = 0.894 ms`, `p95 = 14.328 ms`,
+  `max = 87.023 ms`; `crop_ready_to_pose_start p50 = 0.017 ms`,
+  `p95 = 65.371 ms`, `max = 95.767 ms`; pose queue high-water was `11`.
+- A matching diagnostic run with full encode/output removed used
+  `recording_sink_mode = "preprocess_only"`:
+  `/tmp/orange_pose_trt_compare/2010096_pose_real_pool32_preprocess_only_20260510`.
+  It still produced `401` YOLO rows and `401` TensorRT pose rows with no
+  crop-pool misses, but `pose_start_to_pose_done p95` dropped to
+  `0.898 ms`, `crop_ready_to_pose_start p95` dropped to `0.114 ms`, and pose
+  queue high-water dropped to `1`.
+- Interpretation: the TensorRT pose model is fast once warmed. The real
+  p95/p99 tail is same-process full-frame recording/CUDA/NVENC contention plus
+  queue amplification in the current synchronous, one-frame-at-a-time pose
+  worker. Process-isolated recording/external recorder routing is the more
+  important production fix than more pose warmup.
+
+External IPC pose discriminator (updated 2026-05-10):
+
+- The same real TensorRT pose synthetic-center-box spec was run through the
+  one-camera full-rate external split-GOP path:
+
+```bash
+scripts/run_external_recorder_smoke.sh \
+  --spec experiment_specs/2010096_headless_real_yolo_pose_real_synthetic_center_box_pool32_a16_gpu5.json \
+  --duration 3 \
+  --warmup 1 \
+  --encode-fps 100 \
+  --encode-max-fps 0 \
+  --queue-depth 32 \
+  --shard-gpu-ids 5,6 \
+  --output-dir /tmp \
+  --skip-video-sanity
+```
+
+- Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_real_synthetic_center_box_pool32_a16_gpu5_2010096_20260509_201621`.
+- Recorder artifact:
+  `/tmp/orange_external_recorder_2010096_20260509_201621`.
+- The run produced `401` YOLO event rows and `401` TensorRT pose event rows
+  with `0` pose failures, `0` camera frame-id gaps, `0` preprocess drops, and
+  `0` crop-pool misses.
+- Pose stayed close to the `preprocess_only` control even while full-rate
+  external split-GOP encode ran: pose queue high-water was `1`,
+  `pose_start_to_pose_done p50 = 0.992 ms`, `p95 = 1.794 ms`,
+  `max = 2.798 ms`; `crop_ready_to_pose_start p95 = 0.0205 ms`;
+  `capture_to_pose_done p95 = 6.273 ms`.
+- The external recorder received/ACKed/encoded `401/401` frames with `0`
+  skips/drops. Detach copy p95 was `0.154 ms`; external encode/lock p95 was
+  about `11.96 ms`, but that tail stayed in the recorder process and did not
+  back up pose.
+- A standalone MP4 sanity check passed after the smoke:
+  `401` frames, mean luma about `225`, max stddev about `75.7`, and black
+  fraction about `0.000002`.
+- Interpretation: external IPC/process isolation preserves the warmed pose
+  timing profile while full-frame recording continues in another process. This
+  is the stronger production direction for pose plus recording than trying to
+  tune pose warmup further inside the in-process recorder.
+
+Sync and async pose design note (updated 2026-05-10):
+
+- Treat synchronization as either correctness synchronization or convenience
+  synchronization. Correctness syncs protect buffer lifetimes, output ordering,
+  failure visibility, and artifact determinism. Convenience syncs make the code
+  easier to reason about but force the CPU to wait for GPU work on every frame.
+- The current real TensorRT pose worker uses the simple correctness-first
+  shape: enqueue crop preprocess, enqueue TensorRT inference, enqueue
+  device-to-host output copy, then wait before decoding/writing the result.
+  This is acceptable as the baseline because the external IPC run kept
+  `pose_start_to_pose_done_ms p95 = 1.794` and
+  `capture_to_pose_done_ms p95 = 6.273`.
+- Keep sync-like pressure while the pose contract is still stabilizing when it
+  directly protects resource lifetime, ordered JSONL/CSV artifacts, clear
+  per-frame failure reporting, and reproducible validation.
+- Remove or decimate sync-like pressure from the hot path when it is only for
+  immediate observability. Examples are per-frame CUDA stream synchronization
+  solely to decode pose output immediately, and per-frame camera control-plane
+  reads such as `GevTimestampValueHigh/Low` when embedded frame timestamps are
+  already available. The PTP register-read decimation work is the model for
+  this: keep full polling as a diagnostic mode, but do not make it the default
+  hot-path cost.
+- The future high-FPS pose shape should use a bounded pool of
+  `PoseInferenceSlot` records containing device input, device output, pinned
+  host output, a CUDA event, and frame metadata. The submit path should enqueue
+  preprocess, TensorRT, device-to-host copy, and event recording, then advance
+  without waiting on that frame. A result collector should poll completed
+  events, decode host outputs, write JSONL/CSV rows in recording-frame order
+  when needed, and surface late CUDA/TensorRT failures with frame ids.
+- Backpressure must be explicit in that future shape. At the pool bound, the
+  system should intentionally choose whether to drop pose for a frame, skip the
+  frame before pose submission, or block. It should not accidentally block
+  every frame because result decoding is coupled to submission.
+
+Current recommendation: keep the synchronous real-pose backend as the
+correctness baseline while external IPC and artifact contracts are still being
+hardened. Revisit async pose collection when targeting much higher rates such
+as `500 fps`, adding multi-camera pose, or making pose results part of a fast
+tracking/control loop.
 
 ## Data Structures
 ### New: CropFrame / PoseEntry (pool item)
@@ -238,7 +380,10 @@ Headless schema slice (updated 2026-05-06):
 ## Event Model
 - `crop_ready_event` recorded in crop worker stream.
 - Pose worker waits on the event in its own stream.
-- No CPU sync in hot path.
+- Long-term target: no per-frame CPU sync in the submit hot path. The current
+  real TensorRT backend intentionally keeps a correctness sync after the output
+  copy until the artifact contract, lifetime model, and failure handling are
+  hardened enough for an async collector.
 
 ## Configuration
 - Add a toggle in `CameraEachSelect` (e.g., `pose` flag).

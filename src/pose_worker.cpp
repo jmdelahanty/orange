@@ -1,13 +1,21 @@
 #include "pose_worker.h"
 
+#include "common.hpp"
 #include "fsuid_guard.h"
+#include "NvInferPlugin.h"
+#include "optimized_yolo_preprocess.h"
 #include "project.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <sstream>
+#include <stdexcept>
 #include <vector>
 
 namespace {
@@ -77,7 +85,434 @@ LatencySummary summarize_latency(const std::vector<double>& samples)
     return summary;
 }
 
+std::once_flag g_pose_trt_plugins_once;
+
+void initialize_pose_trt_plugins()
+{
+    std::call_once(g_pose_trt_plugins_once, []() {
+        Logger logger(nvinfer1::ILogger::Severity::kWARNING);
+        initLibNvInferPlugins(&logger, "");
+        std::cout << "[PoseWorker] TensorRT plugins initialized." << std::endl;
+    });
+}
+
+std::vector<char> read_binary_file(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Pose TensorRT: cannot open engine file: " + path);
+    }
+    file.seekg(0, std::ios::end);
+    const std::streamoff size = file.tellg();
+    if (size <= 0) {
+        throw std::runtime_error("Pose TensorRT: empty engine file: " + path);
+    }
+    file.seekg(0, std::ios::beg);
+    std::vector<char> data(static_cast<size_t>(size));
+    file.read(data.data(), size);
+    if (!file) {
+        throw std::runtime_error("Pose TensorRT: failed to read engine file: " + path);
+    }
+    return data;
+}
+
+bool dims_has_dynamic_extent(const nvinfer1::Dims& dims)
+{
+    for (int i = 0; i < dims.nbDims; ++i) {
+        if (dims.d[i] < 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string dims_to_string(const nvinfer1::Dims& dims)
+{
+    std::ostringstream oss;
+    for (int i = 0; i < dims.nbDims; ++i) {
+        if (i > 0) {
+            oss << 'x';
+        }
+        oss << dims.d[i];
+    }
+    return oss.str();
+}
+
+float clamp_unit(float value)
+{
+    if (!std::isfinite(value)) {
+        return 0.0f;
+    }
+    return std::max(0.0f, std::min(1.0f, value));
+}
+
+std::vector<std::string> default_pose_keypoint_labels(size_t keypoint_count)
+{
+    if (keypoint_count == 3) {
+        return {"bladder", "eye_left", "eye_right"};
+    }
+    std::vector<std::string> labels;
+    labels.reserve(keypoint_count);
+    for (size_t i = 0; i < keypoint_count; ++i) {
+        labels.push_back("keypoint_" + std::to_string(i));
+    }
+    return labels;
+}
+
+int env_int_or_default(const char* name, int default_value, int min_value, int max_value)
+{
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(raw, &end, 10);
+    if (end == raw || (end && *end != '\0')) {
+        std::cerr << "[PoseWorker] Ignoring invalid " << name << "='" << raw << "'"
+                  << std::endl;
+        return default_value;
+    }
+    if (parsed < min_value || parsed > max_value) {
+        std::cerr << "[PoseWorker] Ignoring out-of-range " << name << "=" << parsed
+                  << " (expected " << min_value << "-" << max_value << ")"
+                  << std::endl;
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
+
 }  // namespace
+
+class TensorRtPoseBackend {
+public:
+    TensorRtPoseBackend(const std::string& engine_path, int gpu_id, cudaStream_t stream)
+        : engine_path_(engine_path),
+          gpu_id_(gpu_id),
+          stream_(stream)
+    {
+        if (engine_path_.empty()) {
+            throw std::runtime_error("Pose TensorRT: engine path is empty");
+        }
+        if (!stream_) {
+            throw std::runtime_error("Pose TensorRT: CUDA stream is null");
+        }
+
+        ck(cudaSetDevice(gpu_id_));
+        initialize_pose_trt_plugins();
+        const std::vector<char> engine_bytes = read_binary_file(engine_path_);
+        runtime_ = nvinfer1::createInferRuntime(logger_);
+        if (!runtime_) {
+            throw std::runtime_error("Pose TensorRT: failed to create runtime");
+        }
+        engine_ = runtime_->deserializeCudaEngine(engine_bytes.data(), engine_bytes.size());
+        if (!engine_) {
+            throw std::runtime_error("Pose TensorRT: failed to deserialize engine");
+        }
+        context_ = engine_->createExecutionContext();
+        if (!context_) {
+            throw std::runtime_error("Pose TensorRT: failed to create execution context");
+        }
+
+        bind_metadata();
+        allocate_buffers();
+        bind_tensors();
+
+        std::cout << "[PoseWorker] TensorRT pose backend loaded."
+                  << " engine=" << engine_path_
+                  << " gpu=" << gpu_id_
+                  << " input=" << input_name_ << ":" << dims_to_string(input_dims_)
+                  << " output=" << output_name_ << ":" << dims_to_string(output_dims_)
+                  << " keypoints=" << keypoint_count_
+                  << std::endl;
+    }
+
+    ~TensorRtPoseBackend()
+    {
+        if (stream_) {
+            cudaStreamSynchronize(stream_);
+        }
+        if (d_input_) {
+            cudaFree(d_input_);
+        }
+        if (d_output_) {
+            cudaFree(d_output_);
+        }
+        if (h_output_) {
+            cudaFreeHost(h_output_);
+        }
+        if (context_) {
+            delete context_;
+        }
+        if (engine_) {
+            delete engine_;
+        }
+        if (runtime_) {
+            delete runtime_;
+        }
+    }
+
+    void Warmup(int iterations)
+    {
+        if (iterations <= 0) {
+            return;
+        }
+        ck(cudaSetDevice(gpu_id_));
+        std::cout << "[PoseWorker] TensorRT pose prewarm starting. iterations="
+                  << iterations << std::endl;
+        for (int i = 0; i < iterations; ++i) {
+            ck(cudaMemsetAsync(d_input_, 0, input_bytes_, stream_));
+            if (!context_->enqueueV3(stream_)) {
+                throw std::runtime_error("Pose TensorRT: prewarm enqueue failed");
+            }
+            ck(cudaMemcpyAsync(
+                h_output_,
+                d_output_,
+                output_bytes_,
+                cudaMemcpyDeviceToHost,
+                stream_));
+            ck(cudaStreamSynchronize(stream_));
+        }
+        std::cout << "[PoseWorker] TensorRT pose prewarm complete." << std::endl;
+    }
+
+    void infer(const CropFrame& crop_frame,
+               std::string* status_out,
+               std::string* error_out,
+               std::vector<pose_event_log::PoseInstanceRecord>* poses_out)
+    {
+        if (!status_out || !error_out || !poses_out) {
+            throw std::runtime_error("Pose TensorRT: null output pointer");
+        }
+        *status_out = "no_result";
+        error_out->clear();
+        poses_out->clear();
+
+        if (!crop_frame.d_crop_mono) {
+            *status_out = "failed";
+            *error_out = "missing_crop_buffer";
+            return;
+        }
+
+        ck(cudaSetDevice(gpu_id_));
+        launch_optimized_yolo_preprocess(
+            crop_frame.d_crop_mono,
+            static_cast<float*>(d_input_),
+            crop_frame.frame.crop_w,
+            crop_frame.frame.crop_h,
+            input_width_,
+            input_height_,
+            false,
+            stream_);
+
+        if (!context_->enqueueV3(stream_)) {
+            *status_out = "failed";
+            *error_out = "enqueue_failed";
+            return;
+        }
+
+        ck(cudaMemcpyAsync(
+            h_output_,
+            d_output_,
+            output_bytes_,
+            cudaMemcpyDeviceToHost,
+            stream_));
+        ck(cudaStreamSynchronize(stream_));
+
+        decode_best_pose(crop_frame, status_out, poses_out);
+    }
+
+    int input_width() const { return input_width_; }
+    int input_height() const { return input_height_; }
+    int keypoint_count() const { return static_cast<int>(keypoint_count_); }
+
+private:
+    void bind_metadata()
+    {
+        const int tensor_count = engine_->getNbIOTensors();
+        for (int i = 0; i < tensor_count; ++i) {
+            const char* name = engine_->getIOTensorName(i);
+            if (!name) {
+                continue;
+            }
+            const nvinfer1::TensorIOMode mode = engine_->getTensorIOMode(name);
+            if (mode == nvinfer1::TensorIOMode::kINPUT) {
+                input_name_ = name;
+            } else if (mode == nvinfer1::TensorIOMode::kOUTPUT) {
+                output_name_ = name;
+            }
+        }
+
+        if (input_name_.empty() || output_name_.empty()) {
+            throw std::runtime_error("Pose TensorRT: expected one input and one output tensor");
+        }
+
+        input_dtype_ = engine_->getTensorDataType(input_name_.c_str());
+        output_dtype_ = engine_->getTensorDataType(output_name_.c_str());
+        if (input_dtype_ != nvinfer1::DataType::kFLOAT) {
+            throw std::runtime_error(
+                "Pose TensorRT: only FP32 input tensors are supported by the current crop preprocess path");
+        }
+        if (output_dtype_ != nvinfer1::DataType::kFLOAT) {
+            throw std::runtime_error(
+                "Pose TensorRT: only FP32 output tensors are supported by the current decoder");
+        }
+
+        input_dims_ = engine_->getTensorShape(input_name_.c_str());
+        if (dims_has_dynamic_extent(input_dims_)) {
+            input_dims_ = engine_->getProfileShape(
+                input_name_.c_str(),
+                0,
+                nvinfer1::OptProfileSelector::kOPT);
+            if (!context_->setInputShape(input_name_.c_str(), input_dims_)) {
+                throw std::runtime_error("Pose TensorRT: failed to set dynamic input shape");
+            }
+        }
+        if (input_dims_.nbDims != 4 || input_dims_.d[0] != 1 || input_dims_.d[1] != 3) {
+            throw std::runtime_error(
+                "Pose TensorRT: expected NCHW input shape 1x3xHxW, got " +
+                dims_to_string(input_dims_));
+        }
+        input_height_ = input_dims_.d[2];
+        input_width_ = input_dims_.d[3];
+        input_size_ = static_cast<size_t>(get_size_by_dims(input_dims_));
+        if (input_height_ <= 0 || input_width_ <= 0 || input_size_ == 0) {
+            throw std::runtime_error("Pose TensorRT: invalid input shape " +
+                                     dims_to_string(input_dims_));
+        }
+
+        output_dims_ = context_->getTensorShape(output_name_.c_str());
+        if (dims_has_dynamic_extent(output_dims_)) {
+            output_dims_ = engine_->getTensorShape(output_name_.c_str());
+        }
+        if (output_dims_.nbDims != 3 || output_dims_.d[0] != 1) {
+            throw std::runtime_error(
+                "Pose TensorRT: expected output shape 1xCxN, got " +
+                dims_to_string(output_dims_));
+        }
+        output_channels_ = output_dims_.d[1];
+        output_candidates_ = output_dims_.d[2];
+        if (output_channels_ < 8 || output_candidates_ <= 0 ||
+            ((output_channels_ - 5) % 3) != 0) {
+            throw std::runtime_error(
+                "Pose TensorRT: expected YOLO-pose output 1x(5+3K)xN, got " +
+                dims_to_string(output_dims_));
+        }
+        keypoint_count_ = static_cast<size_t>((output_channels_ - 5) / 3);
+        keypoint_labels_ = default_pose_keypoint_labels(keypoint_count_);
+        output_size_ = static_cast<size_t>(get_size_by_dims(output_dims_));
+    }
+
+    void allocate_buffers()
+    {
+        input_bytes_ = input_size_ * type_to_size(input_dtype_);
+        output_bytes_ = output_size_ * type_to_size(output_dtype_);
+        ck(cudaMalloc(&d_input_, input_bytes_));
+        ck(cudaMalloc(&d_output_, output_bytes_));
+        ck(cudaHostAlloc(reinterpret_cast<void**>(&h_output_), output_bytes_, 0));
+    }
+
+    void bind_tensors()
+    {
+        if (!context_->setTensorAddress(input_name_.c_str(), d_input_)) {
+            throw std::runtime_error("Pose TensorRT: failed to bind input tensor");
+        }
+        if (!context_->setTensorAddress(output_name_.c_str(), d_output_)) {
+            throw std::runtime_error("Pose TensorRT: failed to bind output tensor");
+        }
+    }
+
+    float output_at(int channel, int candidate) const
+    {
+        return h_output_[static_cast<size_t>(channel) *
+                         static_cast<size_t>(output_candidates_) +
+                         static_cast<size_t>(candidate)];
+    }
+
+    void decode_best_pose(const CropFrame& crop_frame,
+                          std::string* status_out,
+                          std::vector<pose_event_log::PoseInstanceRecord>* poses_out) const
+    {
+        int best_candidate = -1;
+        float best_score = confidence_threshold_;
+        for (int candidate = 0; candidate < output_candidates_; ++candidate) {
+            const float score = output_at(4, candidate);
+            if (std::isfinite(score) && score > best_score) {
+                best_score = score;
+                best_candidate = candidate;
+            }
+        }
+
+        if (best_candidate < 0) {
+            *status_out = "no_result";
+            return;
+        }
+
+        const float ratio = std::min(
+            static_cast<float>(input_width_) / static_cast<float>(std::max(1, crop_frame.frame.crop_w)),
+            static_cast<float>(input_height_) / static_cast<float>(std::max(1, crop_frame.frame.crop_h)));
+        const float dw = (static_cast<float>(input_width_) -
+                          static_cast<float>(crop_frame.frame.crop_w) * ratio) * 0.5f;
+        const float dh = (static_cast<float>(input_height_) -
+                          static_cast<float>(crop_frame.frame.crop_h) * ratio) * 0.5f;
+
+        pose_event_log::PoseInstanceRecord pose;
+        pose.index = 0;
+        pose.label = "fish";
+        pose.confidence = clamp_unit(best_score);
+        pose.keypoints.reserve(keypoint_count_);
+        for (size_t k = 0; k < keypoint_count_; ++k) {
+            const int base = 5 + static_cast<int>(k) * 3;
+            const float model_x = output_at(base, best_candidate);
+            const float model_y = output_at(base + 1, best_candidate);
+            const float keypoint_score = output_at(base + 2, best_candidate);
+            pose_event_log::PoseKeypointRecord keypoint;
+            keypoint.label = keypoint_labels_[k];
+            keypoint.x_px = clamp(
+                (model_x - dw) / std::max(1.0f, ratio),
+                0.0f,
+                static_cast<float>(std::max(1, crop_frame.frame.crop_w)));
+            keypoint.y_px = clamp(
+                (model_y - dh) / std::max(1.0f, ratio),
+                0.0f,
+                static_cast<float>(std::max(1, crop_frame.frame.crop_h)));
+            keypoint.confidence = clamp_unit(keypoint_score);
+            keypoint.visible = keypoint.confidence >= keypoint_confidence_threshold_;
+            pose.keypoints.push_back(keypoint);
+        }
+
+        poses_out->push_back(std::move(pose));
+        *status_out = "poses";
+    }
+
+    std::string engine_path_;
+    int gpu_id_ = -1;
+    cudaStream_t stream_ = nullptr;
+    Logger logger_{nvinfer1::ILogger::Severity::kERROR};
+    nvinfer1::IRuntime* runtime_ = nullptr;
+    nvinfer1::ICudaEngine* engine_ = nullptr;
+    nvinfer1::IExecutionContext* context_ = nullptr;
+    std::string input_name_;
+    std::string output_name_;
+    nvinfer1::DataType input_dtype_ = nvinfer1::DataType::kFLOAT;
+    nvinfer1::DataType output_dtype_ = nvinfer1::DataType::kFLOAT;
+    nvinfer1::Dims input_dims_{};
+    nvinfer1::Dims output_dims_{};
+    int input_width_ = 0;
+    int input_height_ = 0;
+    int output_channels_ = 0;
+    int output_candidates_ = 0;
+    size_t keypoint_count_ = 0;
+    size_t input_size_ = 0;
+    size_t output_size_ = 0;
+    size_t input_bytes_ = 0;
+    size_t output_bytes_ = 0;
+    void* d_input_ = nullptr;
+    void* d_output_ = nullptr;
+    float* h_output_ = nullptr;
+    std::vector<std::string> keypoint_labels_;
+    float confidence_threshold_ = 0.25f;
+    float keypoint_confidence_threshold_ = 0.25f;
+};
 
 PoseWorker::PoseWorker(const char* name, CameraParams* camera_params, CropProducer* crop_producer)
     : CThreadWorker<CropFrame>(name),
@@ -94,6 +529,18 @@ PoseWorker::PoseWorker(const char* name, CameraParams* camera_params, CropProduc
             pose_model_id_ = build_model_id_from_path(pose_engine_path_);
         }
     }
+    if (const char* mode = std::getenv("ORANGE_POSE_MODE")) {
+        if (std::strcmp(mode, "real") == 0) {
+            pose_mode_ = "real";
+            pose_backend_ = "tensorrt";
+        } else if (std::strcmp(mode, "noop") == 0) {
+            pose_mode_ = "noop";
+            pose_backend_ = "noop";
+        }
+    } else if (!pose_engine_path_.empty()) {
+        pose_mode_ = "real";
+        pose_backend_ = "tensorrt";
+    }
     if (const char* skeleton_path = std::getenv("ORANGE_POSE_SKELETON_PATH")) {
         pose_skeleton_path_ = skeleton_path;
     }
@@ -103,6 +550,15 @@ PoseWorker::PoseWorker(const char* name, CameraParams* camera_params, CropProduc
 
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
+    if (pose_mode_ == "real") {
+        tensorrt_backend_ = std::make_unique<TensorRtPoseBackend>(
+            pose_engine_path_,
+            camera_params_->gpu_id,
+            stream_);
+        pose_prewarm_iterations_ =
+            env_int_or_default("ORANGE_POSE_PREWARM_ITERATIONS", 0, 0, 1000);
+        tensorrt_backend_->Warmup(pose_prewarm_iterations_);
+    }
 }
 
 PoseWorker::~PoseWorker()
@@ -112,6 +568,7 @@ PoseWorker::~PoseWorker()
     if (camera_params_) {
         ck(cudaSetDevice(camera_params_->gpu_id));
     }
+    tensorrt_backend_.reset();
     if (stream_) {
         cudaStreamSynchronize(stream_);
         cudaStreamDestroy(stream_);
@@ -244,6 +701,23 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
         ck(cudaStreamWaitEvent(stream_, crop_frame->crop_ready_event, 0));
     }
     const uint64_t pose_start_host_ns = steady_now_ns();
+    std::string pose_status = "no_result";
+    std::string pose_error;
+    std::vector<pose_event_log::PoseInstanceRecord> poses;
+    if (tensorrt_backend_) {
+        try {
+            tensorrt_backend_->infer(
+                *crop_frame,
+                &pose_status,
+                &pose_error,
+                &poses);
+        } catch (const std::exception& ex) {
+            pose_status = "failed";
+            pose_error = ex.what();
+            std::cerr << "[PoseWorker] TensorRT pose inference failed for "
+                      << threadName << ": " << ex.what() << std::endl;
+        }
+    }
 
     frames_processed_.fetch_add(1, std::memory_order_relaxed);
     const bool record_active =
@@ -298,7 +772,10 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
         pose_event_logger_.Enqueue(build_pose_event_record(
             crop_frame->frame,
             pose_start_host_ns,
-            pose_done_host_ns));
+            pose_done_host_ns,
+            pose_status,
+            pose_error,
+            poses));
     }
 
     if (crop_producer_) {
@@ -310,11 +787,15 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
 pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
     const CropFrameSnapshot& frame,
     uint64_t pose_start_host_ns,
-    uint64_t pose_done_host_ns) const
+    uint64_t pose_done_host_ns,
+    const std::string& status,
+    const std::string& error,
+    const std::vector<pose_event_log::PoseInstanceRecord>& poses) const
 {
     pose_event_log::PoseResultRecord record;
     record.recording_folder = frame.recording_folder;
-    record.status = "no_result";
+    record.status = status;
+    record.error = error;
     record.backend = pose_backend_;
     record.mode = pose_mode_;
     record.model_id = pose_model_id_;
@@ -364,6 +845,7 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
     record.timing.capture_to_pose_done_ms = elapsed_ms(
         frame.acquisition_receive_host_ns,
         pose_done_host_ns);
+    record.poses = poses;
     return record;
 }
 
@@ -415,7 +897,7 @@ void PoseWorker::write_recording_summary_locked()
 
     pose_perf << camera_params_->camera_serial << ','
               << camera_params_->gpu_id << ','
-              << "PoseWorker,noop,noop,"
+              << "PoseWorker," << pose_backend_ << ',' << pose_mode_ << ','
               << max_queue_size_ << ','
               << run_frames_enqueued_.load(std::memory_order_relaxed) << ','
               << run_frames_processed_.load(std::memory_order_relaxed) << ','

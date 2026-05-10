@@ -413,8 +413,8 @@ Drain-specific headless validation:
 
 - `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_expected_fail_a16_gpu5_drain_smoke2`
 
-That smoke intentionally still fails the pose-noop expectation because no pose
-event log is produced in the current headless crop/pose wiring. The recording
+That smoke predates the headless noop pose wiring and intentionally failed the
+pose-noop expectation because no pose event log was produced. The recording
 drain behavior itself was healthy: recording was toggled off before acquisition
 stop, full-frame HW encoders finalized while the stream was still alive, and no
 active-recorder drain timeout or `SharedRecordingOutput received packets before

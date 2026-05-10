@@ -134,6 +134,21 @@ Recommended safe path:
 - preserve the same monotonic live-state contract and stale-update suppression
   rules so delayed older-frame detections still cannot regress Citrus state
 
+The first concrete v2 design is documented in
+[shaman_v2_live_state_contract.md](./shaman_v2_live_state_contract.md). It
+keeps v2 as a Citrus live-control latest-state stream, not a complete event log,
+and adds explicit YOLO/pose status plus source-frame pose keypoints.
+
+Orange can create the v2 writer from the existing `FrameIPCManager` by setting:
+
+```bash
+ORANGE_SHAMAN_V2_LIVE_STATE=1
+```
+
+This is currently an implementation smoke switch, not the default production
+GUI/headless contract. Citrus still needs an opt-in v2 reader before the queue
+is useful for live stimulus control.
+
 ## Headless IPC Testing
 
 Headless local runs keep frame IPC disabled by default. Enable it explicitly when
@@ -142,6 +157,7 @@ the run is meant to exercise the shared-memory producer path:
 ```bash
 orange_client --mode local --record-folder /abs/run --frame-ipc producer_only
 orange_client --mode local --record-folder /abs/run --frame-ipc verify_drain
+orange_client --mode local --record-folder /abs/run --frame-ipc verify_drain_v2
 ```
 
 Experiment specs use `fixed.frame_ipc`.
@@ -150,11 +166,17 @@ Experiment specs use `fixed.frame_ipc`.
   external consumer to drain `/shm_cam_<camera_serial>`.
 - `verify_drain` creates those writers plus one built-in reader per selected
   camera and writes `frame_ipc_summary.json` into the run folder.
+- `verify_drain_v2` forces the Shaman v2 live-state writer, drains
+  `/shm_cam_<camera_serial>_v2`, and records v2 reader/publisher counters in
+  the same `frame_ipc_summary.json` contract.
 - `verify_drain` consumes the queue contents. Do not use it for a Citrus
   integration run where Citrus must see every IPC message.
+- `verify_drain_v2` is also a single-consumer test mode. Do not run it while a
+  Citrus v2 reader is expected to consume the same queue.
 - `--frame-ipc-unlink-existing` or
   `fixed.frame_ipc.unlink_existing_queues=true` removes stale serial-named SHM
-  objects before the writers are created.
+  objects before the writers are created. In v2 mode it also removes the
+  corresponding `_v2` object.
 
 Validated 2026-04-21 smoke:
 
@@ -166,6 +188,21 @@ Validated 2026-04-21 smoke:
 - push failures: `0`
 - artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_frame_ipc_verify_stream_only_a16_gpu5_retry/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25/frame_ipc_summary.json`
+
+Validated 2026-05-10 v2 smoke:
+
+- `verify_drain_v2` on camera `2010096`
+- queue: `/shm_cam_2010096_v2`
+- active v2 frames published: `501`
+- frames drained by verifier: `501`
+- frame-id gaps: `0`
+- sequence-id gaps: `0`
+- active v2 push failures: `0`
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_frame_ipc_verify_v2_stream_only_a16_gpu5_rerun/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25/frame_ipc_summary.json`
+
+The same v2 smoke intentionally does not drain the transitional v1 queue, so
+`v1_ipc_push_failures` can be nonzero without failing the active v2 verifier.
 
 ## Troubleshooting
 

@@ -161,6 +161,96 @@ Do not block process-isolation or encoder-contention experiments on having fish
 available. Do require fish or another valid detectable subject before declaring
 crop/pose/track latency solved.
 
+## Pose Worker Status
+
+- GUI pose and headless noop/real pose now use the same shared
+  `CropProducerWorker -> CropProducer -> PoseWorker` path. Headless no longer
+  has only schema/validation stubs for `fixed.pose_worker.mode = "noop"`.
+- Headless `fixed.pose_worker.mode = "real"` now has a first TensorRT backend.
+  It loads the pose engine from `engine_path`, runs the shared crop-preprocess
+  path, enqueues TensorRT, decodes the best YOLO-pose candidate, and writes
+  `Cam<serial>_pose_events.jsonl` with `pose.backend = "tensorrt"`.
+- `fixed.pose_worker.prewarm_iterations` now prewarms the pose engine, and
+  `fixed.pose_worker.crop_frame_pool_size` can raise the crop frame pool for
+  slower second-stage inference.
+- Noop pose event rows are emitted only for accepted recording crop frames from
+  YOLO-selected detections. A no-fish/no-detection run can therefore start the
+  headless pose workers and write `Cam<serial>_pose_perf.csv` while still
+  failing pose-event validation because `Cam<serial>_pose_events.jsonl` is
+  absent.
+- Latest headless noop wiring smoke:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_wiring_smoke_20260509_151301`.
+  It started/stopped `HeadlessCropProducer` and `HeadlessPoseWorker` cleanly,
+  logged `401` YOLO zero-detection rows, produced `0` pose crops
+  (`pose_offered = 0`), and failed only the pose-event validation gate.
+- A separate headless pose-plumbing-only diagnostic can inject synthetic
+  centered detections with `fixed.pose_worker.roi_source =
+  "synthetic_center_box"`. This exists only to test crop/pose plumbing when no
+  real detections are available. Never treat it as validation of production
+  YOLO detections, detection quality, real ROI selection, or real
+  detection-to-pose behavior.
+- Latest synthetic-center-box pose plumbing smoke:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_synthetic_center_box_a16_gpu5`.
+  It wrote `401` YOLO event rows and `401` noop pose event rows, passed the
+  artifact validators, and every YOLO event row marks
+  `synthetic_runtime_detection = true` and
+  `production_detection_valid = false`.
+- Latest real TensorRT pose plumbing smoke:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_real_synthetic_center_box_pool32_a16_gpu5`.
+  The engine
+  `/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine`
+  loaded on GPU `5` with input `1x3x256x256` and output `1x14x1344`.
+  With `prewarm_iterations = 3` and `crop_frame_pool_size = 32`, the run wrote
+  `401` YOLO event rows and `401` TensorRT pose event rows, had `0` pose
+  failures, `0` camera frame-id gaps, `0` encode failures, and `0` crop-pool
+  misses. Pose queue high-water was `11`; pose inference p50 was about
+  `0.894 ms` and p95 about `14.328 ms`. All pose rows were `no_result`, which
+  is expected for the synthetic/no-fish ROI and is not evidence about real
+  model quality.
+- Pose p95 interpretation, 2026-05-10: the high real-recording pose p95 is not
+  mainly lack of warmup or intrinsically slow TensorRT pose inference. In the
+  real-recording smoke, occasional long `pose_start_to_pose_done` rows backed
+  up the single pose worker, so following frames accumulated large
+  `crop_ready_to_pose_start` queue residence. The same spec rerun as a
+  `recording_sink_mode = "preprocess_only"` diagnostic at
+  `/tmp/orange_pose_trt_compare/2010096_pose_real_pool32_preprocess_only_20260510`
+  kept `401/401` pose rows but dropped pose queue high-water to `1`,
+  `pose_start_to_pose_done p95` to about `0.898 ms`, and
+  `crop_ready_to_pose_start p95` to about `0.114 ms`. Treat the real-recording
+  pose p95 as same-process full-frame recording/CUDA/NVENC contention plus
+  queue amplification. The next production-relevant fix is recording process
+  isolation/external recorder routing and/or decoupling pose output handling,
+  not more pose-engine warmup.
+- External IPC pose discriminator, 2026-05-10: the same real TensorRT pose
+  synthetic-center-box spec was run through the one-camera full-rate external
+  split-GOP path:
+  `scripts/run_external_recorder_smoke.sh --spec experiment_specs/2010096_headless_real_yolo_pose_real_synthetic_center_box_pool32_a16_gpu5.json --duration 3 --warmup 1 --encode-fps 100 --encode-max-fps 0 --queue-depth 32 --shard-gpu-ids 5,6 --output-dir /tmp --skip-video-sanity`.
+  Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_real_synthetic_center_box_pool32_a16_gpu5_2010096_20260509_201621`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_2010096_20260509_201621`.
+  The analytics run wrote `401` YOLO event rows and `401` TensorRT pose rows
+  with `0` pose failures, `0` camera gaps, and `0` crop-pool misses. Pose
+  queue high-water was `1`; `pose_start_to_pose_done p95 = 1.794 ms`,
+  `crop_ready_to_pose_start p95 = 0.0205 ms`, and
+  `capture_to_pose_done p95 = 6.273 ms`. The recorder received/ACKed/encoded
+  `401/401` frames with `0` skips/drops; detach copy p95 was `0.154 ms`.
+  External encode/lock p95 was about `11.96 ms`, but that tail stayed in the
+  recorder process and did not back up pose. A standalone MP4 sanity check
+  passed (`401` frames, mean luma about `225`, max stddev about `75.7`,
+  black fraction about `0.000002`). This strongly supports external IPC/process
+  isolation as the right direction for production pose plus full-frame
+  recording.
+- Pose synchronization design note: the current real TensorRT backend still
+  synchronizes after the device-to-host output copy. Keep that
+  correctness-first shape for now because it protects buffer lifetime, artifact
+  ordering, and clear per-frame failure reporting while the contract is
+  stabilizing, and external IPC already keeps pose p95 acceptable. For high-FPS
+  or multi-camera pose scaling, move to a bounded in-flight
+  `PoseInferenceSlot` pool with CUDA events and a result collector. Keep camera
+  control-plane reads decimated or diagnostic-only on the hot path, following
+  the PTP register-read decimation pattern.
+
 ## External Recorder Smoke
 
 The current one-camera external-recorder smoke is:

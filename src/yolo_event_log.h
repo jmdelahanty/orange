@@ -32,6 +32,8 @@ struct YoloResultRecord {
     int gpu_id = -1;
     std::string model_id = "unknown";
     std::string engine_path;
+    std::string detection_source = "model";
+    bool synthetic_runtime_detection = false;
     std::vector<pose::Object> detections;
     std::string queue_name;
     bool ipc_enabled = false;

@@ -6,9 +6,12 @@
 #include "threadworker.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+class TensorRtPoseBackend;
 
 class PoseWorker : public CThreadWorker<CropFrame>
 {
@@ -28,11 +31,15 @@ private:
     pose_event_log::PoseResultRecord build_pose_event_record(
         const CropFrameSnapshot& frame,
         uint64_t pose_start_host_ns,
-        uint64_t pose_done_host_ns) const;
+        uint64_t pose_done_host_ns,
+        const std::string& status,
+        const std::string& error,
+        const std::vector<pose_event_log::PoseInstanceRecord>& poses) const;
 
     CameraParams* camera_params_ = nullptr;
     CropProducer* crop_producer_ = nullptr;
     cudaStream_t stream_ = nullptr;
+    std::unique_ptr<TensorRtPoseBackend> tensorrt_backend_;
     pose_event_log::PoseEventLogger pose_event_logger_;
     std::string pose_backend_ = "noop";
     std::string pose_mode_ = "noop";
@@ -40,6 +47,7 @@ private:
     std::string pose_engine_path_;
     std::string pose_skeleton_id_ = "unknown";
     std::string pose_skeleton_path_;
+    int pose_prewarm_iterations_ = 0;
     int max_queue_size_ = 32;
     std::mutex recording_mutex_;
     std::string current_recording_folder_;

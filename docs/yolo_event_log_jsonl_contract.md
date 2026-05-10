@@ -142,7 +142,10 @@ result.
     "coordinate_space": "source_frame_pixels",
     "model_id": "fish_jinyao",
     "engine_path": "/abs/path/models/fish_jinyao.engine",
-    "gpu_id": 5
+    "gpu_id": 5,
+    "detection_source": "model",
+    "synthetic_runtime_detection": false,
+    "production_detection_valid": true
   },
   "detections": [
     {
@@ -187,6 +190,15 @@ Detection semantics:
 - `confidence` is the model/object probability.
 - `keypoints` is reserved for pose-style models and is an empty array for
   current box-only YOLO.
+- `yolo.detection_source = "model"` means the row reflects normal model output.
+- `yolo.detection_source = "synthetic_center_box"` means Orange replaced model
+  detections with an explicit centered synthetic box for pose-plumbing
+  diagnostics.
+- `yolo.synthetic_runtime_detection = true` and
+  `yolo.production_detection_valid = false` are mandatory for runtime
+  synthetic detections. Consumers must never treat those rows as validation of
+  production YOLO detections, detection quality, real ROI selection, or real
+  detection-to-pose behavior.
 
 `citrus_live_ipc.request_status` values:
 
@@ -195,6 +207,9 @@ Detection semantics:
 - `not_enabled`: frame IPC was not enabled for this camera.
 - `not_requested_synthetic`: headless synthetic YOLO emitted an audit row but
   intentionally did not publish a detection update into the live Citrus queue.
+- `not_requested_synthetic_runtime`: runtime synthetic pose-plumbing detection
+  was emitted as an artifact row but intentionally not published into the live
+  Citrus queue.
 - `not_requested_zero_detections`: zero-detection results are not published to
   the current Citrus live queue.
 - `not_requested_failed`: failed/timeout results are not published to the
@@ -378,6 +393,9 @@ Current implementation emits:
   recording folder.
 - deterministic headless synthetic `yolo_result` rows when
   `fixed.yolo_event_log.mode = "synthetic"` is enabled in an experiment spec.
+- runtime synthetic centered detections for headless pose-plumbing diagnostics
+  when `fixed.pose_worker.roi_source = "synthetic_center_box"`. These rows
+  carry non-production markers and do not validate real detections.
 
 Phase 2 should add:
 

@@ -5,6 +5,7 @@
 #include <cuda_runtime_api.h>
 #include <nppi.h>
 #include <npp.h>
+#include <algorithm>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -49,6 +50,99 @@ static constexpr int kYoloProfileLogEvery = 60;
 #endif
 
 namespace {
+int ParseEnvInt(const char* name, const int default_value, const int min_value)
+{
+    const char* env = std::getenv(name);
+    if (!env || !*env) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || parsed < min_value) {
+        std::cerr << "[YOLO] Ignoring invalid " << name << "='" << env
+                  << "', using " << default_value << std::endl;
+        return default_value;
+    }
+    return static_cast<int>(parsed);
+}
+
+double ParseEnvDouble(const char* name,
+                      const double default_value,
+                      const double min_value,
+                      const double max_value)
+{
+    const char* env = std::getenv(name);
+    if (!env || !*env) {
+        return default_value;
+    }
+    char* end = nullptr;
+    const double parsed = std::strtod(env, &end);
+    if (end == env || *end != '\0' || parsed < min_value || parsed > max_value) {
+        std::cerr << "[YOLO] Ignoring invalid " << name << "='" << env
+                  << "', using " << default_value << std::endl;
+        return default_value;
+    }
+    return parsed;
+}
+
+struct RuntimeSyntheticDetectionConfig {
+    bool enabled = false;
+    int every_n_frames = 1;
+    int box_width_px = 64;
+    int box_height_px = 64;
+    int label = 0;
+    double confidence = 0.99;
+};
+
+const RuntimeSyntheticDetectionConfig& GetRuntimeSyntheticDetectionConfig()
+{
+    static const RuntimeSyntheticDetectionConfig config = []() {
+        RuntimeSyntheticDetectionConfig cfg;
+        const char* env = std::getenv("ORANGE_HEADLESS_POSE_SYNTHETIC_RUNTIME_DETECTIONS");
+        cfg.enabled = env && *env && std::strcmp(env, "0") != 0;
+        if (!cfg.enabled) {
+            return cfg;
+        }
+        cfg.every_n_frames = ParseEnvInt(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_EVERY_N_FRAMES", 1, 1);
+        cfg.box_width_px = ParseEnvInt(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_BOX_WIDTH_PX", 64, 1);
+        cfg.box_height_px = ParseEnvInt(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_BOX_HEIGHT_PX", 64, 1);
+        cfg.label = ParseEnvInt("ORANGE_HEADLESS_POSE_SYNTHETIC_LABEL", 0, 0);
+        cfg.confidence = ParseEnvDouble(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_CONFIDENCE", 0.99, 0.0, 1.0);
+        std::cout << "[YOLO] Headless synthetic runtime detections enabled for "
+                  << "pose plumbing only. These detections are non-production."
+                  << " every_n_frames=" << cfg.every_n_frames
+                  << " box=" << cfg.box_width_px << "x" << cfg.box_height_px
+                  << " confidence=" << cfg.confidence
+                  << " label=" << cfg.label
+                  << std::endl;
+        return cfg;
+    }();
+    return config;
+}
+
+pose::Object BuildRuntimeSyntheticDetection(const RuntimeSyntheticDetectionConfig& config,
+                                            const int source_width,
+                                            const int source_height)
+{
+    pose::Object detection{};
+    const float width = static_cast<float>(
+        std::min(std::max(1, config.box_width_px), std::max(1, source_width)));
+    const float height = static_cast<float>(
+        std::min(std::max(1, config.box_height_px), std::max(1, source_height)));
+    detection.rect.x = std::max(0.0f, (static_cast<float>(source_width) - width) * 0.5f);
+    detection.rect.y = std::max(0.0f, (static_cast<float>(source_height) - height) * 0.5f);
+    detection.rect.width = width;
+    detection.rect.height = height;
+    detection.label = config.label;
+    detection.prob = static_cast<float>(config.confidence);
+    detection.num_kps = 0;
+    return detection;
+}
+
 bool SkipCpuResults()
 {
     static const bool enabled = []() {
@@ -1549,6 +1643,26 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             entry->detections.clear();
         }
 
+        const RuntimeSyntheticDetectionConfig& synthetic_detection_config =
+            GetRuntimeSyntheticDetectionConfig();
+        const bool synthetic_detection_mode =
+            synthetic_detection_config.enabled && finished_in_time && !skip_cpu_results;
+        bool synthetic_detection_emitted = false;
+        if (synthetic_detection_mode) {
+            entry->detections.clear();
+            const uint64_t synthetic_frame_id =
+                entry->recording_frame_id > 0 ? entry->recording_frame_id : entry->frame_id;
+            if (synthetic_frame_id > 0 &&
+                (synthetic_frame_id %
+                 static_cast<uint64_t>(synthetic_detection_config.every_n_frames)) == 0) {
+                entry->detections.push_back(BuildRuntimeSyntheticDetection(
+                    synthetic_detection_config,
+                    camera_width,
+                    camera_height));
+                synthetic_detection_emitted = true;
+            }
+        }
+
         // Update velocity tracking with new detections
 #if YOLO_PROFILE
         const auto track_start = std::chrono::steady_clock::now();
@@ -1641,7 +1755,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 : "not_enabled";
         }
 
-        if (!skip_cpu_results && frame_ipc && entry->has_detections) {
+        if (!skip_cpu_results && frame_ipc && entry->has_detections && !synthetic_detection_mode) {
             if (frame_ipc && frame_ipc->isEnabled()) {
                 // Convert detections to shaman format for IPC
                 std::vector<shaman::Object> shaman_objects = conv_shaman(entry->detections);
@@ -1653,6 +1767,8 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                     frame_ipc_request_status = "not_enabled";
                 }
             }
+        } else if (synthetic_detection_mode && frame_ipc_enabled && entry->has_detections) {
+            frame_ipc_request_status = "not_requested_synthetic_runtime";
         }
 #if YOLO_PROFILE
         const auto ipc_end = std::chrono::steady_clock::now();
@@ -1663,7 +1779,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
 #if YOLO_PROFILE
         const auto enet_start = std::chrono::steady_clock::now();
 #endif
-        if (!skip_cpu_results && enet_target_peer_ && associated_camera_select_->send_yolo_via_enet && !entry->detections.empty()) {
+        if (!skip_cpu_results && !synthetic_detection_mode && enet_target_peer_ && associated_camera_select_->send_yolo_via_enet && !entry->detections.empty()) {
             // ENet code remains unchanged
         }
 #if YOLO_PROFILE
@@ -1693,6 +1809,13 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 ? associated_camera_select_->yolo_model
                 : "";
             record.model_id = build_model_id_from_path(record.engine_path);
+            record.detection_source = synthetic_detection_mode
+                ? "synthetic_center_box"
+                : "model";
+            record.synthetic_runtime_detection = synthetic_detection_mode;
+            if (synthetic_detection_mode && synthetic_detection_emitted) {
+                record.error = "synthetic_runtime_detection_non_production";
+            }
             record.detections = entry->detections;
             record.queue_name = frame_ipc_queue_name;
             record.ipc_enabled = frame_ipc_enabled;

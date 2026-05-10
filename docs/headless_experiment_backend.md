@@ -120,6 +120,7 @@ Experiment specs now support two useful fixed-mode toggles:
 - `fixed.frame_ipc.enabled = true | false`
 - `fixed.frame_ipc.mode = "producer_only" | "verify_drain"`
 - `fixed.pose_worker.mode = "off" | "noop" | "real"`
+- `fixed.pose_worker.roi_source = "yolo_top_detection" | "synthetic_center_box"`
 - `fixed.recording_control.record_for_seconds = 0 | <positive seconds>`
 - `fixed.recording_control.clip_seconds = 0 | <positive seconds>`
 - `fixed.external_recorder_contract.mode = "off" | "diagnostic_ipc_v1"`
@@ -275,10 +276,13 @@ frame IPC path used by the GUI:
   external consumer, such as Citrus, to drain the queues
 - `verify_drain` also starts a built-in headless reader per selected camera and
   writes `frame_ipc_summary.json`
-- `verify_drain` is single-consumer test mode; do not run it while Citrus is
-  expected to consume the same queues
+- `verify_drain_v2` forces the Shaman v2 live-state writer and drains
+  `/shm_cam_<camera_serial>_v2` with the same summary artifact
+- `verify_drain` and `verify_drain_v2` are single-consumer test modes; do not
+  run either while Citrus is expected to consume the same queues
 - `unlink_existing_queues=true` removes stale `/dev/shm/shm_cam_<serial>`
-  objects before creating writers
+  objects before creating writers; in v2 mode it also removes the matching
+  `/dev/shm/shm_cam_<serial>_v2` objects
 
 Example:
 
@@ -502,20 +506,40 @@ Headless pose worker schema:
 - `fixed.pose_worker.mode = "off"` is the default and does not request any
   pose artifacts.
 - `fixed.pose_worker.mode = "noop"` is the first schema/validation mode. It
-  expects `Cam<serial>_pose_events.jsonl` rows with
+  wires the existing crop producer into the noop `PoseWorker` and expects
+  `Cam<serial>_pose_events.jsonl` rows with
   `pose.backend = "noop"`, `pose.mode = "noop"`, `pose.status = "no_result"`,
   `pose.instance_count = 0`, and an empty `poses` array.
-- `fixed.pose_worker.mode = "real"` reserves the future TensorRT keypoint
-  path. In this mode, `engine_path` is required by the schema, but the runtime
-  inference path is not implemented yet.
+- `fixed.pose_worker.mode = "real"` loads a TensorRT keypoint engine from
+  `engine_path`, preprocesses accepted crop frames into the model input,
+  enqueues TensorRT, decodes the best YOLO-pose candidate, and writes
+  `pose.backend = "tensorrt"` rows. The first supported engine shape is
+  FP32/NCHW `1x3x256x256` input with FP32 `1x(5+3K)xN` output.
 - Headless pose currently requires `fixed.yolo_worker.mode = "real"` because
-  `roi_source = "yolo_top_detection"` is the only supported ROI source.
+  the crop producer is driven from the YOLO worker result path.
+- `roi_source = "yolo_top_detection"` uses real model detections and is the
+  only mode that can contribute to production detection-to-pose validation.
+- `roi_source = "synthetic_center_box"` replaces model detections at runtime
+  with an explicit synthetic centered box. This is only for crop/pose plumbing
+  diagnostics when no detectable subject is available. It must never be used as
+  validation of production YOLO detections, detection quality, real ROI
+  selection, or real detection-to-pose behavior.
+- Runtime synthetic detection rows are marked in `Cam<serial>_yolo_events.jsonl`
+  with `yolo.detection_source = "synthetic_center_box"`,
+  `yolo.synthetic_runtime_detection = true`, and
+  `yolo.production_detection_valid = false`.
 - `stream_only = true` is rejected when pose is enabled because pose validation
   is recording-artifact based.
-- This slice is intentionally validation-first: if `mode = "noop"` is enabled
-  but the headless runtime does not produce `Cam<serial>_pose_events.jsonl`,
-  `runs.json` / `runs.csv` mark the camera row as failed with
-  `pose event log validation failed`.
+- Pose rows are emitted for accepted recording crop frames. If the YOLO run
+  produces no detections, pose validation can still fail with zero or missing
+  pose rows; use detectable content before treating this as an end-to-end pose
+  pass.
+- `prewarm_iterations` warms the TensorRT pose backend before live frames when
+  `mode = "real"`.
+- `crop_frame_pool_size` is optional. `0` keeps the default crop frame pool;
+  higher values set `ORANGE_CROP_FRAME_POOL_SIZE` for the run. Real pose
+  plumbing smokes use `32` so transient inference spikes do not drop accepted
+  pose crops.
 
 Example:
 
@@ -539,10 +563,46 @@ Example:
     "normalization": "model_default",
     "roi_source": "yolo_top_detection",
     "queue_depth": 32,
+    "crop_frame_pool_size": 0,
     "timeout_ms": 500,
     "prewarm_iterations": 0,
     "fail_on_init_error": true,
     "write_events_jsonl": true
+  }
+}
+```
+
+Real TensorRT pose-plumbing-only fragment:
+
+```json
+"pose_worker": {
+  "mode": "real",
+  "engine_path": "/home/jeremy/pose_cedar_shadow_filtered_gray_latest_traditional_a4c30ae1_v001_r001_fp16.engine",
+  "skeleton_id": "fish_v1",
+  "input_width": 256,
+  "input_height": 256,
+  "input_layout": "nchw",
+  "input_dtype": "fp32",
+  "roi_source": "synthetic_center_box",
+  "queue_depth": 32,
+  "crop_frame_pool_size": 32,
+  "prewarm_iterations": 3,
+  "write_events_jsonl": true
+}
+```
+
+Synthetic pose-plumbing-only fragment:
+
+```json
+"pose_worker": {
+  "mode": "noop",
+  "roi_source": "synthetic_center_box",
+  "synthetic_detection": {
+    "every_n_frames": 1,
+    "box_width_px": 64,
+    "box_height_px": 64,
+    "label": 0,
+    "confidence": 0.99
   }
 }
 ```

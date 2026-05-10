@@ -37,6 +37,7 @@
 #include "fetch_generated.h"
 #include "acquire_frames.h"
 #include "frame_ipc_manager.h"
+#include "shaman_v2.h"
 #include "modern_recording_pipeline.h"
 #include "recording_ingress.h"
 #include "session/recording_session.h"
@@ -48,6 +49,8 @@
 #include "yolo_worker.h"
 #include "yolo_event_log.h"
 #include "yolo_event_log_validation.h"
+#include "crop_producer_worker.h"
+#include "pose_worker.h"
 #include "pose_event_log_validation.h"
 #include <signal.h>
 
@@ -80,6 +83,7 @@ enum class HeadlessFrameIpcMode {
     Off,
     ProducerOnly,
     VerifyDrain,
+    VerifyDrainV2,
 };
 
 struct HeadlessFrameIpcConfig {
@@ -118,7 +122,13 @@ struct HeadlessPoseWorkerConfig {
     std::string input_dtype = "fp16";
     std::string normalization = "model_default";
     std::string roi_source = "yolo_top_detection";
+    int synthetic_detection_every_n_frames = 1;
+    int synthetic_detection_box_width_px = 64;
+    int synthetic_detection_box_height_px = 64;
+    int synthetic_detection_label = 0;
+    double synthetic_detection_confidence = 0.99;
     int queue_depth = 32;
+    int crop_frame_pool_size = 0;
     int timeout_ms = 500;
     int prewarm_iterations = 0;
     bool fail_on_init_error = true;
@@ -126,6 +136,10 @@ struct HeadlessPoseWorkerConfig {
 
     bool enabled() const {
         return mode == "noop" || mode == "real";
+    }
+
+    bool synthetic_runtime_detection_enabled() const {
+        return roi_source == "synthetic_center_box";
     }
 };
 
@@ -614,17 +628,26 @@ struct HeadlessFrameIpcReaderStats {
     std::string camera_serial;
     uint32_t camera_id = 0;
     std::string queue_name;
+    bool v2 = false;
     bool reader_started = false;
     std::string reader_error;
     uint64_t messages_popped = 0;
     uint64_t base_messages = 0;
     uint64_t detection_update_messages = 0;
     uint64_t yolo_enabled_messages = 0;
+    uint64_t v2_latest_state_messages = 0;
+    uint64_t v2_detection_pending_messages = 0;
+    uint64_t v2_detection_result_messages = 0;
+    uint64_t v2_pose_result_messages = 0;
     uint64_t camera_id_mismatches = 0;
     uint64_t frame_id_gaps = 0;
     uint64_t non_monotonic_frame_ids = 0;
+    uint64_t sequence_id_gaps = 0;
+    uint64_t non_monotonic_sequence_ids = 0;
     uint64_t first_frame_id = 0;
     uint64_t last_frame_id = 0;
+    uint64_t first_sequence_id = 0;
+    uint64_t last_sequence_id = 0;
 };
 
 struct HeadlessFrameIpcRuntime {
@@ -662,8 +685,21 @@ std::string headless_frame_ipc_mode_to_string(HeadlessFrameIpcMode mode)
             return "producer_only";
         case HeadlessFrameIpcMode::VerifyDrain:
             return "verify_drain";
+        case HeadlessFrameIpcMode::VerifyDrainV2:
+            return "verify_drain_v2";
     }
     return "off";
+}
+
+bool headless_frame_ipc_mode_is_verify_drain(HeadlessFrameIpcMode mode)
+{
+    return mode == HeadlessFrameIpcMode::VerifyDrain ||
+           mode == HeadlessFrameIpcMode::VerifyDrainV2;
+}
+
+bool headless_frame_ipc_mode_uses_v2(HeadlessFrameIpcMode mode)
+{
+    return mode == HeadlessFrameIpcMode::VerifyDrainV2;
 }
 
 bool parse_headless_frame_ipc_mode(const std::string& value, HeadlessFrameIpcMode* out)
@@ -688,12 +724,22 @@ bool parse_headless_frame_ipc_mode(const std::string& value, HeadlessFrameIpcMod
         *out = HeadlessFrameIpcMode::VerifyDrain;
         return true;
     }
+    if (normalized == "verify_drain_v2" || normalized == "verify_v2" ||
+        normalized == "drain_v2" || normalized == "v2") {
+        *out = HeadlessFrameIpcMode::VerifyDrainV2;
+        return true;
+    }
     return false;
 }
 
 std::string build_frame_ipc_queue_name_for_serial(const std::string& camera_serial)
 {
     return "/shm_cam_" + camera_serial;
+}
+
+std::string build_frame_ipc_v2_queue_name_for_serial(const std::string& camera_serial)
+{
+    return shaman_v2::queue_name_for_camera_serial(camera_serial);
 }
 
 nlohmann::json build_headless_yolo_event_log_config_json(
@@ -749,7 +795,21 @@ nlohmann::json build_headless_pose_worker_config_json(
         {"input_dtype", config.input_dtype},
         {"normalization", config.normalization},
         {"roi_source", config.roi_source},
+        {"synthetic_detection", {
+            {"enabled", config.synthetic_runtime_detection_enabled()},
+            {"every_n_frames", config.synthetic_detection_every_n_frames},
+            {"box_width_px", config.synthetic_detection_box_width_px},
+            {"box_height_px", config.synthetic_detection_box_height_px},
+            {"label", config.synthetic_detection_label},
+            {"confidence", config.synthetic_detection_confidence},
+            {"production_detection_valid", !config.synthetic_runtime_detection_enabled()},
+            {"validation_scope",
+             config.synthetic_runtime_detection_enabled()
+                 ? "pose_plumbing_only"
+                 : "production_detection"}
+        }},
         {"queue_depth", config.queue_depth},
+        {"crop_frame_pool_size", config.crop_frame_pool_size},
         {"timeout_ms", config.timeout_ms},
         {"prewarm_iterations", config.prewarm_iterations},
         {"fail_on_init_error", config.fail_on_init_error},
@@ -2049,8 +2109,8 @@ void print_headless_usage(const char* argv0)
         << "  --acquisition-buffer-mode <auto|force_ring_copy>\n"
         << "                              Optional. Experimental override for acquisition buffer ownership.\n"
         << "  --ptp-gate-stagger-ns <int>  Optional. Apply a per-camera gate-time offset for ptp_gate runs.\n"
-        << "  --frame-ipc <off|producer_only|verify_drain>\n"
-        << "                              Optional. Publish serial-named /shm_cam_<serial> frame IPC.\n"
+        << "  --frame-ipc <off|producer_only|verify_drain|verify_drain_v2>\n"
+        << "                              Optional. Publish serial-named frame IPC queues.\n"
         << "  --frame-ipc-unlink-existing Optional. Remove stale serial-named IPC queues before creating writers.\n"
         << "  --frame-ipc-allow-push-failures\n"
         << "                              Optional. Do not fail verification on full/undrained IPC rings.\n"
@@ -2197,7 +2257,13 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
             config.input_dtype != "fp16" ||
             config.normalization != "model_default" ||
             config.roi_source != "yolo_top_detection" ||
+            config.synthetic_detection_every_n_frames != 1 ||
+            config.synthetic_detection_box_width_px != 64 ||
+            config.synthetic_detection_box_height_px != 64 ||
+            config.synthetic_detection_label != 0 ||
+            config.synthetic_detection_confidence != 0.99 ||
             config.queue_depth != 32 ||
+            config.crop_frame_pool_size != 0 ||
             config.timeout_ms != 500 ||
             config.prewarm_iterations != 0 ||
             !config.fail_on_init_error ||
@@ -2241,15 +2307,54 @@ bool validate_headless_pose_worker_config(const HeadlessPoseWorkerConfig& config
         }
         return false;
     }
-    if (config.roi_source != "yolo_top_detection") {
+    if (config.roi_source != "yolo_top_detection" &&
+        config.roi_source != "synthetic_center_box") {
         if (error_out) {
-            *error_out = prefix + "pose_worker.roi_source must be yolo_top_detection";
+            *error_out =
+                prefix + "pose_worker.roi_source must be yolo_top_detection|synthetic_center_box";
         }
         return false;
+    }
+    if (config.synthetic_runtime_detection_enabled()) {
+        if (config.synthetic_detection_every_n_frames <= 0) {
+            if (error_out) {
+                *error_out =
+                    prefix + "pose_worker.synthetic_detection.every_n_frames must be > 0";
+            }
+            return false;
+        }
+        if (config.synthetic_detection_box_width_px <= 0 ||
+            config.synthetic_detection_box_height_px <= 0) {
+            if (error_out) {
+                *error_out =
+                    prefix + "pose_worker.synthetic_detection box dimensions must be > 0";
+            }
+            return false;
+        }
+        if (config.synthetic_detection_label < 0) {
+            if (error_out) {
+                *error_out = prefix + "pose_worker.synthetic_detection.label must be >= 0";
+            }
+            return false;
+        }
+        if (config.synthetic_detection_confidence < 0.0 ||
+            config.synthetic_detection_confidence > 1.0) {
+            if (error_out) {
+                *error_out =
+                    prefix + "pose_worker.synthetic_detection.confidence must be in [0,1]";
+            }
+            return false;
+        }
     }
     if (config.queue_depth <= 0) {
         if (error_out) {
             *error_out = prefix + "pose_worker.queue_depth must be > 0";
+        }
+        return false;
+    }
+    if (config.crop_frame_pool_size < 0 || config.crop_frame_pool_size > 512) {
+        if (error_out) {
+            *error_out = prefix + "pose_worker.crop_frame_pool_size must be in [0,512]";
         }
         return false;
     }
@@ -2515,7 +2620,7 @@ bool parse_headless_frame_ipc_json(const nlohmann::json& node,
     if (!parse_headless_frame_ipc_mode(mode_string, &config.mode)) {
         if (error_out) {
             *error_out =
-                context + ": frame_ipc.mode must be off|producer_only|verify_drain";
+                context + ": frame_ipc.mode must be off|producer_only|verify_drain|verify_drain_v2";
         }
         return false;
     }
@@ -2527,7 +2632,7 @@ bool parse_headless_frame_ipc_json(const nlohmann::json& node,
         if (enabled) {
             if (error_out) {
                 *error_out =
-                    context + ": frame_ipc.enabled=true requires mode producer_only or verify_drain";
+                    context + ": frame_ipc.enabled=true requires mode producer_only, verify_drain, or verify_drain_v2";
             }
             return false;
         }
@@ -2719,7 +2824,32 @@ bool parse_headless_pose_worker_json(
         config.normalization = node.value("normalization", config.normalization);
         config.roi_source =
             normalize_headless_token(node.value("roi_source", config.roi_source));
+        if (node.contains("synthetic_detection")) {
+            const nlohmann::json& synthetic = node["synthetic_detection"];
+            if (!synthetic.is_object()) {
+                if (error_out) {
+                    *error_out = context + ": pose_worker.synthetic_detection must be an object";
+                }
+                return false;
+            }
+            config.synthetic_detection_every_n_frames =
+                synthetic.value("every_n_frames",
+                                config.synthetic_detection_every_n_frames);
+            config.synthetic_detection_box_width_px =
+                synthetic.value("box_width_px",
+                                config.synthetic_detection_box_width_px);
+            config.synthetic_detection_box_height_px =
+                synthetic.value("box_height_px",
+                                config.synthetic_detection_box_height_px);
+            config.synthetic_detection_label =
+                synthetic.value("label", config.synthetic_detection_label);
+            config.synthetic_detection_confidence =
+                synthetic.value("confidence",
+                                config.synthetic_detection_confidence);
+        }
         config.queue_depth = node.value("queue_depth", config.queue_depth);
+        config.crop_frame_pool_size =
+            node.value("crop_frame_pool_size", config.crop_frame_pool_size);
         config.timeout_ms = node.value("timeout_ms", config.timeout_ms);
         config.prewarm_iterations =
             node.value("prewarm_iterations", config.prewarm_iterations);
@@ -3574,6 +3704,28 @@ void stop_headless_yolo_workers(std::vector<std::unique_ptr<YoloWorker>>& yolo_w
     yolo_workers.clear();
 }
 
+void stop_headless_pose_pipeline(
+    std::vector<std::unique_ptr<CropProducerWorker>>& crop_producer_workers,
+    std::vector<std::unique_ptr<PoseWorker>>& pose_workers)
+{
+    for (auto& worker : crop_producer_workers) {
+        if (worker) {
+            worker->StopThread();
+            worker->CloseRecording();
+        }
+    }
+
+    for (auto& worker : pose_workers) {
+        if (worker) {
+            worker->StopThread();
+            worker->CloseRecording();
+        }
+    }
+
+    crop_producer_workers.clear();
+    pose_workers.clear();
+}
+
 void close_all_cameras(CameraEmergent* ecams,
                        CameraParams* cameras_params,
                        int num_cameras)
@@ -3621,6 +3773,8 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
                            std::vector<int>& active_camera_indices,
                            std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
                            std::vector<std::unique_ptr<YoloWorker>>& yolo_workers,
+                           std::vector<std::unique_ptr<CropProducerWorker>>& crop_producer_workers,
+                           std::vector<std::unique_ptr<PoseWorker>>& pose_workers,
                            HeadlessGpuDmonMonitor* gpu_dmon_monitor,
                            CameraEmergent* ecams,
                            CameraParams* cameras_params,
@@ -3650,6 +3804,7 @@ void shutdown_headless_run(std::vector<std::thread>& camera_threads,
     camera_threads.clear();
 
     stop_headless_yolo_workers(yolo_workers);
+    stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
 
     if (camera_control) {
         drain_and_shutdown_recording(recording_pipelines, camera_control);
@@ -3878,18 +4033,109 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
         return true;
     }
     runtime->reset(config);
-    if (config.mode != HeadlessFrameIpcMode::VerifyDrain) {
+    if (!headless_frame_ipc_mode_is_verify_drain(config.mode)) {
         return true;
     }
 
+    const bool use_v2 = headless_frame_ipc_mode_uses_v2(config.mode);
     runtime->reader_stats.resize(selected_indices.size());
     for (std::size_t stats_index = 0; stats_index < selected_indices.size(); ++stats_index) {
         const int camera_index = selected_indices[stats_index];
         HeadlessFrameIpcReaderStats& stats = runtime->reader_stats[stats_index];
         stats.camera_serial = cameras_params[camera_index].camera_serial;
         stats.camera_id = static_cast<uint32_t>(cameras_params[camera_index].camera_id);
-        stats.queue_name = build_frame_ipc_queue_name_for_serial(stats.camera_serial);
+        stats.v2 = use_v2;
+        stats.queue_name = use_v2
+            ? build_frame_ipc_v2_queue_name_for_serial(stats.camera_serial)
+            : build_frame_ipc_queue_name_for_serial(stats.camera_serial);
         HeadlessFrameIpcReaderStats* stats_ptr = &stats;
+
+        if (use_v2) {
+            runtime->reader_threads.emplace_back([runtime, stats_ptr]() {
+                HeadlessFrameIpcReaderStats& stats = *stats_ptr;
+                try {
+                    shaman_v2::SharedLiveStateQueue reader(stats.queue_name, false /* writer */);
+                    stats.reader_started = true;
+                    while (true) {
+                        bool popped_any = false;
+                        shaman_v2::Slot slot;
+                        while (reader.pop(slot)) {
+                            popped_any = true;
+                            stats.messages_popped++;
+                            stats.v2_latest_state_messages++;
+                            const uint64_t frame_id = slot.state_frame_id;
+                            if (slot.camera_id != stats.camera_id) {
+                                stats.camera_id_mismatches++;
+                            }
+
+                            const auto detection_status =
+                                static_cast<shaman_v2::DetectionStatus>(slot.detection_status);
+                            if (detection_status == shaman_v2::DetectionStatus::kPending ||
+                                detection_status == shaman_v2::DetectionStatus::kNotScheduled) {
+                                stats.base_messages++;
+                            }
+                            if (detection_status == shaman_v2::DetectionStatus::kPending) {
+                                stats.v2_detection_pending_messages++;
+                            }
+                            if (detection_status == shaman_v2::DetectionStatus::kDetections ||
+                                detection_status == shaman_v2::DetectionStatus::kZeroDetections ||
+                                detection_status == shaman_v2::DetectionStatus::kFailed) {
+                                stats.detection_update_messages++;
+                                stats.v2_detection_result_messages++;
+                                stats.yolo_enabled_messages++;
+                            }
+
+                            const auto pose_status =
+                                static_cast<shaman_v2::PoseStatus>(slot.pose_status);
+                            if (pose_status == shaman_v2::PoseStatus::kPoses ||
+                                pose_status == shaman_v2::PoseStatus::kNoResult ||
+                                pose_status == shaman_v2::PoseStatus::kFailed) {
+                                stats.v2_pose_result_messages++;
+                            }
+
+                            if (stats.messages_popped == 1) {
+                                stats.first_frame_id = frame_id;
+                                stats.first_sequence_id = slot.sequence_id;
+                            } else {
+                                if (frame_id == stats.last_frame_id) {
+                                    // Base, detection, and pose state updates may share a frame id.
+                                } else if (frame_id == stats.last_frame_id + 1) {
+                                    // Expected next source frame.
+                                } else if (frame_id > stats.last_frame_id + 1) {
+                                    stats.frame_id_gaps += frame_id - stats.last_frame_id - 1;
+                                } else if (frame_id < stats.last_frame_id) {
+                                    stats.non_monotonic_frame_ids++;
+                                }
+
+                                if (slot.sequence_id == stats.last_sequence_id + 1) {
+                                    // Expected next queue slot.
+                                } else if (slot.sequence_id > stats.last_sequence_id + 1) {
+                                    stats.sequence_id_gaps +=
+                                        slot.sequence_id - stats.last_sequence_id - 1;
+                                } else if (slot.sequence_id <= stats.last_sequence_id) {
+                                    stats.non_monotonic_sequence_ids++;
+                                }
+                            }
+                            stats.last_frame_id = frame_id;
+                            stats.last_sequence_id = slot.sequence_id;
+                        }
+
+                        if (runtime->stop_requested.load(std::memory_order_acquire)) {
+                            if (!popped_any) {
+                                break;
+                            }
+                            continue;
+                        }
+                        usleep(1000);
+                    }
+                } catch (const std::exception& ex) {
+                    stats.reader_error = ex.what();
+                } catch (...) {
+                    stats.reader_error = "unknown Shaman v2 frame IPC reader exception";
+                }
+            });
+            continue;
+        }
 
         runtime->reader_threads.emplace_back([runtime, stats_ptr]() {
             HeadlessFrameIpcReaderStats& stats = *stats_ptr;
@@ -4031,6 +4277,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     std::vector<int>& active_camera_indices,
     std::vector<std::unique_ptr<ModernRecordingPipeline>>& recording_pipelines,
     std::vector<std::unique_ptr<YoloWorker>>& yolo_workers,
+    std::vector<std::unique_ptr<CropProducerWorker>>& crop_producer_workers,
+    std::vector<std::unique_ptr<PoseWorker>>& pose_workers,
     std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers,
     HeadlessFrameIpcRuntime* frame_ipc_runtime,
     const HeadlessFrameIpcConfig& frame_ipc_config,
@@ -4048,7 +4296,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const std::string& initial_recording_output_folder = "",
     const yolo_event_log::SyntheticYoloEventConfig& yolo_event_log_config =
         yolo_event_log::SyntheticYoloEventConfig{},
-    const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{})
+    const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{},
+    const HeadlessPoseWorkerConfig& pose_worker_config = HeadlessPoseWorkerConfig{})
 {
     std::cout << "start camera sthread..." << std::endl;
     if (thread_failure_state) {
@@ -4076,6 +4325,14 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
               << " vbv_buffer_size=" << encoder_settings.control_overrides.vbv_buffer_size
               << " cameras=" << format_selected_camera_serials(encoder_settings)
               << std::endl;
+
+    if (pose_worker_config.enabled() && !yolo_worker_config.enabled()) {
+        std::cerr << "Headless pose_worker requires fixed.yolo_worker.mode=real "
+                  << "because the current pose crop producer is driven by "
+                  << "the YOLO worker result path."
+                  << std::endl;
+        return false;
+    }
 
     std::vector<int> selected_indices;
     size_t max_frame_size_bytes = 0;
@@ -4124,14 +4381,22 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         frame_ipc_managers.clear();
         frame_ipc_managers.resize(num_cameras);
         if (frame_ipc_config.enabled()) {
+            const bool force_v2_live_state =
+                headless_frame_ipc_mode_uses_v2(frame_ipc_config.mode);
             for (int idx : selected_indices) {
                 const std::string queue_name =
                     build_frame_ipc_queue_name_for_serial(cameras_params[idx].camera_serial);
+                const std::string v2_queue_name =
+                    build_frame_ipc_v2_queue_name_for_serial(cameras_params[idx].camera_serial);
                 if (frame_ipc_config.unlink_existing_queues) {
                     shaman::unlinkQueue(queue_name.c_str());
+                    if (force_v2_live_state) {
+                        shaman_v2::unlink_queue(v2_queue_name);
+                    }
                 }
                 frame_ipc_managers[idx] =
-                    std::make_unique<FrameIPCManager>(&cameras_params[idx]);
+                    std::make_unique<FrameIPCManager>(&cameras_params[idx],
+                                                      force_v2_live_state);
                 if (!frame_ipc_managers[idx]->isEnabled()) {
                     std::cerr << "Headless frame IPC initialization failed for camera "
                               << cameras_params[idx].camera_serial
@@ -4142,11 +4407,33 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                     cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
                     return false;
                 }
+                if (force_v2_live_state &&
+                    !frame_ipc_managers[idx]->isV2Enabled()) {
+                    std::cerr << "Headless Shaman v2 frame IPC initialization failed for camera "
+                              << cameras_params[idx].camera_serial
+                              << " queue=" << v2_queue_name
+                              << ": " << frame_ipc_managers[idx]->getV2InitError()
+                              << std::endl;
+                    clear_headless_frame_ipc_managers(frame_ipc_managers);
+                    cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+                    return false;
+                }
                 if (frame_ipc_managers[idx]->getQueueName() != queue_name) {
                     std::cerr << "Headless frame IPC queue-name mismatch for camera "
                               << cameras_params[idx].camera_serial
                               << " expected=" << queue_name
                               << " actual=" << frame_ipc_managers[idx]->getQueueName()
+                              << std::endl;
+                    clear_headless_frame_ipc_managers(frame_ipc_managers);
+                    cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
+                    return false;
+                }
+                if (force_v2_live_state &&
+                    frame_ipc_managers[idx]->getV2QueueName() != v2_queue_name) {
+                    std::cerr << "Headless Shaman v2 frame IPC queue-name mismatch for camera "
+                              << cameras_params[idx].camera_serial
+                              << " expected=" << v2_queue_name
+                              << " actual=" << frame_ipc_managers[idx]->getV2QueueName()
                               << std::endl;
                     clear_headless_frame_ipc_managers(frame_ipc_managers);
                     cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
@@ -4177,17 +4464,23 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
         camera_resources.resize(num_cameras);
         yolo_workers.clear();
         yolo_workers.resize(num_cameras);
+        crop_producer_workers.clear();
+        crop_producer_workers.resize(num_cameras);
+        pose_workers.clear();
+        pose_workers.resize(num_cameras);
         if (yolo_worker_config.enabled()) {
             YOLOv8::initialize_plugins();
         }
         for (int idx : selected_indices) {
             const bool enable_real_yolo = yolo_worker_config.enabled();
+            const bool enable_pose = pose_worker_config.enabled();
             cameras_select[idx].stream_on = false;
             cameras_select[idx].record = enable_recording;
             cameras_select[idx].yolo = enable_real_yolo;
             cameras_select[idx].yolo_model =
                 enable_real_yolo ? yolo_worker_config.engine_path.c_str() : nullptr;
             cameras_select[idx].crop_and_encode = false;
+            cameras_select[idx].pose = enable_pose;
             cameras_select[idx].send_frame_ipc = frame_ipc_config.enabled();
             cameras_select[idx].send_yolo_via_frame_ipc =
                 frame_ipc_config.enabled() && yolo_worker_config.publish_live_ipc;
@@ -4201,6 +4494,7 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     } catch (const std::exception& ex) {
         std::cerr << "Failed to start thread: " << ex.what() << std::endl;
         stop_headless_yolo_workers(yolo_workers);
+        stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
         stop_headless_frame_ipc_runtime(frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
         cleanup_selected_camera_buffers(selected_indices, ecams, cameras_params, camera_resources);
@@ -4332,6 +4626,53 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             }
         }
 
+        if (pose_worker_config.enabled()) {
+            std::cout << "Headless pose worker enabled."
+                      << " mode=" << pose_worker_config.mode
+                      << " runtime=CropProducerWorker->PoseWorker"
+                      << " roi_source=" << pose_worker_config.roi_source
+                      << " queue_depth=" << pose_worker_config.queue_depth
+                      << " write_events_jsonl="
+                      << (pose_worker_config.write_events_jsonl ? "true" : "false")
+                      << std::endl;
+            if (pose_worker_config.synthetic_runtime_detection_enabled()) {
+                std::cout << "Headless pose synthetic_center_box is enabled for "
+                          << "pose plumbing validation only; it is not a "
+                          << "production detection workflow validation."
+                          << " every_n_frames="
+                          << pose_worker_config.synthetic_detection_every_n_frames
+                          << " box="
+                          << pose_worker_config.synthetic_detection_box_width_px
+                          << "x"
+                          << pose_worker_config.synthetic_detection_box_height_px
+                          << std::endl;
+            }
+            for (int idx : selected_indices) {
+                const int crop_size_px =
+                    CropProducerWorker::SanitizeCropSize(
+                        cameras_params[idx].crop_pipeline.crop_size_px);
+                std::string crop_name = "HeadlessCropProducer_Cam_" +
+                    cameras_params[idx].camera_serial;
+                crop_producer_workers[idx] = std::make_unique<CropProducerWorker>(
+                    crop_name.c_str(),
+                    &cameras_params[idx],
+                    *camera_resources[idx].recycle_queue,
+                    camera_control,
+                    crop_size_px);
+                crop_producer_workers[idx]->RotateRecordingFolder(record_folder);
+
+                std::string pose_name = "HeadlessPoseWorker_Cam_" +
+                    cameras_params[idx].camera_serial;
+                pose_workers[idx] = std::make_unique<PoseWorker>(
+                    pose_name.c_str(),
+                    &cameras_params[idx],
+                    crop_producer_workers[idx]->GetCropProducer());
+                pose_workers[idx]->SetMaxQueueSize(pose_worker_config.queue_depth);
+                pose_workers[idx]->RotateRecordingFolder(record_folder);
+                crop_producer_workers[idx]->SetPoseWorker(pose_workers[idx].get());
+            }
+        }
+
         if (yolo_worker_config.enabled()) {
             std::cout << "Headless real YOLO enabled."
                       << " source=TensorRT"
@@ -4353,11 +4694,16 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                         &cameras_select[idx],
                         camera_control,
                         *camera_resources[idx].recycle_queue);
+                    if (crop_producer_workers[idx]) {
+                        yolo_workers[idx]->SetCropProducerWorker(
+                            crop_producer_workers[idx].get());
+                    }
                     yolo_workers[idx]->SetMaxQueueSize(240);
                     yolo_workers[idx]->Warmup(yolo_worker_config.prewarm_iterations);
                     yolo_workers[idx]->StartThread();
                 } catch (const std::exception& ex) {
-                    if (yolo_worker_config.fail_on_init_error) {
+                    if (yolo_worker_config.fail_on_init_error ||
+                        pose_worker_config.enabled()) {
                         throw;
                     }
                     std::cerr << "Headless real YOLO disabled for camera "
@@ -4370,12 +4716,23 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             }
         }
 
+        for (int idx : selected_indices) {
+            if (pose_workers[idx]) {
+                pose_workers[idx]->StartThread();
+            }
+            if (crop_producer_workers[idx]) {
+                crop_producer_workers[idx]->SetMaxQueueSize(240);
+                crop_producer_workers[idx]->StartThread();
+            }
+        }
+
         // Match the GUI path: build the recording pipeline first, then open the
         // camera stream and allocate EVT frame buffers against the active GPU.
         allocate_selected_camera_frame_buffers(ecams, cameras_params, selected_indices);
     } catch (const std::exception& ex) {
         std::cerr << "Failed to initialize headless recording pipelines: " << ex.what() << std::endl;
         stop_headless_yolo_workers(yolo_workers);
+        stop_headless_pose_pipeline(crop_producer_workers, pose_workers);
         stop_headless_frame_ipc_runtime(frame_ipc_runtime);
         clear_headless_frame_ipc_managers(frame_ipc_managers);
         if (enable_artifacts) {
@@ -4523,6 +4880,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<std::unique_ptr<YoloWorker>> yolo_workers;
+    std::vector<std::unique_ptr<CropProducerWorker>> crop_producer_workers;
+    std::vector<std::unique_ptr<PoseWorker>> pose_workers;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
@@ -4557,6 +4916,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         active_camera_indices,
                         recording_pipelines,
                         yolo_workers,
+                        crop_producer_workers,
+                        pose_workers,
                         frame_ipc_managers,
                         &frame_ipc_runtime,
                         HeadlessFrameIpcConfig{},
@@ -4590,6 +4951,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                         active_camera_indices,
                         recording_pipelines,
                         yolo_workers,
+                        crop_producer_workers,
+                        pose_workers,
                         &gpu_dmon_monitor,
                         ecams,
                         cameras_params,
@@ -4628,6 +4991,8 @@ void create_camera_manager(int* cam_count, ManagerContext* manager_context, GigE
                 active_camera_indices,
                 recording_pipelines,
                 yolo_workers,
+                crop_producer_workers,
+                pose_workers,
                 &gpu_dmon_monitor,
                 ecams,
                 cameras_params,
@@ -4875,12 +5240,14 @@ bool write_headless_frame_ipc_summary(
     }
 
     bool overall_ok = true;
+    const bool use_v2 = headless_frame_ipc_mode_uses_v2(config.mode);
     nlohmann::json summary = {
         {"schema_id", "orange.headless.frame_ipc_summary"},
         {"schema_version", 1},
         {"created_at_utc", get_current_utc_timestamp()},
         {"enabled", config.enabled()},
         {"mode", headless_frame_ipc_mode_to_string(config.mode)},
+        {"queue_version", use_v2 ? 2 : 1},
         {"queue_naming", "serial"},
         {"unlink_existing_queues", config.unlink_existing_queues},
         {"require_base_frames", config.require_base_frames},
@@ -4891,30 +5258,55 @@ bool write_headless_frame_ipc_summary(
     for (int idx : selected_indices) {
         const CameraParams& camera_params = cameras_params[idx];
         const std::string camera_serial = camera_params.camera_serial;
-        const std::string queue_name = build_frame_ipc_queue_name_for_serial(camera_serial);
+        const std::string v1_queue_name = build_frame_ipc_queue_name_for_serial(camera_serial);
+        const std::string v2_queue_name = build_frame_ipc_v2_queue_name_for_serial(camera_serial);
+        const std::string queue_name = use_v2 ? v2_queue_name : v1_queue_name;
         nlohmann::json camera_json = {
             {"camera_serial", camera_serial},
             {"camera_id", camera_params.camera_id},
             {"queue_name", queue_name},
+            {"v1_queue_name", v1_queue_name},
+            {"v2_queue_name", v2_queue_name},
             {"manager_enabled", false},
             {"manager_init_error", ""},
+            {"v2_manager_enabled", false},
+            {"v2_manager_init_error", ""},
             {"frames_sent", 0ULL},
             {"updates_sent", 0ULL},
+            {"v1_frames_sent", 0ULL},
+            {"v1_updates_sent", 0ULL},
             {"base_queue_drops", 0ULL},
             {"update_queue_drops", 0ULL},
             {"update_stale_drops", 0ULL},
             {"ipc_push_failures", 0ULL},
+            {"v1_ipc_push_failures", 0ULL},
+            {"v2_ipc_push_failures", 0ULL},
+            {"v2_frames_published", 0ULL},
+            {"v2_yolo_updates_published", 0ULL},
+            {"v2_pose_updates_published", 0ULL},
+            {"v2_yolo_stale_suppressed", 0ULL},
+            {"v2_pose_stale_suppressed", 0ULL},
+            {"v2_pending_drops", 0ULL},
+            {"v2_queue_drops", 0ULL},
             {"reader_started", false},
             {"reader_error", ""},
             {"reader_messages_popped", 0ULL},
             {"reader_base_messages", 0ULL},
             {"reader_detection_update_messages", 0ULL},
             {"reader_yolo_enabled_messages", 0ULL},
+            {"reader_v2_latest_state_messages", 0ULL},
+            {"reader_v2_detection_pending_messages", 0ULL},
+            {"reader_v2_detection_result_messages", 0ULL},
+            {"reader_v2_pose_result_messages", 0ULL},
             {"reader_camera_id_mismatches", 0ULL},
             {"reader_frame_id_gaps", 0ULL},
             {"reader_non_monotonic_frame_ids", 0ULL},
+            {"reader_sequence_id_gaps", 0ULL},
+            {"reader_non_monotonic_sequence_ids", 0ULL},
             {"reader_first_frame_id", 0ULL},
             {"reader_last_frame_id", 0ULL},
+            {"reader_first_sequence_id", 0ULL},
+            {"reader_last_sequence_id", 0ULL},
             {"status", "pass"},
             {"failures", nlohmann::json::array()}
         };
@@ -4931,16 +5323,41 @@ bool write_headless_frame_ipc_summary(
             const FrameIPCManager& manager = *frame_ipc_managers[idx];
             camera_json["manager_enabled"] = manager.isEnabled();
             camera_json["manager_init_error"] = manager.getInitError();
-            camera_json["frames_sent"] = manager.getFramesSent();
-            camera_json["updates_sent"] = manager.getUpdatesSent();
+            camera_json["v2_manager_enabled"] = manager.isV2Enabled();
+            camera_json["v2_manager_init_error"] = manager.getV2InitError();
+            camera_json["v1_frames_sent"] = manager.getFramesSent();
+            camera_json["v1_updates_sent"] = manager.getUpdatesSent();
             camera_json["base_queue_drops"] = manager.getBaseQueueDrops();
             camera_json["update_queue_drops"] = manager.getUpdateQueueDrops();
             camera_json["update_stale_drops"] = manager.getUpdateStaleDrops();
-            camera_json["ipc_push_failures"] = manager.getIpcPushFailures();
+            camera_json["v1_ipc_push_failures"] = manager.getIpcPushFailures();
+            const shaman_v2::LiveStateCounters v2_counters = manager.getV2Counters();
+            camera_json["v2_ipc_push_failures"] = v2_counters.push_failures;
+            camera_json["v2_frames_published"] = v2_counters.frames_published;
+            camera_json["v2_yolo_updates_published"] = v2_counters.yolo_updates_published;
+            camera_json["v2_pose_updates_published"] = v2_counters.pose_updates_published;
+            camera_json["v2_yolo_stale_suppressed"] = v2_counters.yolo_stale_suppressed;
+            camera_json["v2_pose_stale_suppressed"] = v2_counters.pose_stale_suppressed;
+            camera_json["v2_pending_drops"] = v2_counters.pending_drops;
+            camera_json["v2_queue_drops"] = v2_counters.queue_drops;
+            camera_json["frames_sent"] = use_v2
+                ? v2_counters.frames_published
+                : manager.getFramesSent();
+            camera_json["updates_sent"] = use_v2
+                ? (v2_counters.yolo_updates_published +
+                   v2_counters.pose_updates_published)
+                : manager.getUpdatesSent();
+            camera_json["ipc_push_failures"] = use_v2
+                ? v2_counters.push_failures
+                : manager.getIpcPushFailures();
             if (!manager.isEnabled()) {
                 add_failure("manager_not_enabled");
             }
-            if (!config.allow_push_failures && manager.getIpcPushFailures() > 0) {
+            if (use_v2 && !manager.isV2Enabled()) {
+                add_failure("v2_manager_not_enabled");
+            }
+            if (!config.allow_push_failures &&
+                camera_json.value("ipc_push_failures", 0ULL) > 0) {
                 add_failure("ipc_push_failures");
             }
         } else {
@@ -4956,20 +5373,33 @@ bool write_headless_frame_ipc_summary(
             camera_json["reader_base_messages"] = stats.base_messages;
             camera_json["reader_detection_update_messages"] = stats.detection_update_messages;
             camera_json["reader_yolo_enabled_messages"] = stats.yolo_enabled_messages;
+            camera_json["reader_v2_latest_state_messages"] = stats.v2_latest_state_messages;
+            camera_json["reader_v2_detection_pending_messages"] =
+                stats.v2_detection_pending_messages;
+            camera_json["reader_v2_detection_result_messages"] =
+                stats.v2_detection_result_messages;
+            camera_json["reader_v2_pose_result_messages"] = stats.v2_pose_result_messages;
             camera_json["reader_camera_id_mismatches"] = stats.camera_id_mismatches;
             camera_json["reader_frame_id_gaps"] = stats.frame_id_gaps;
             camera_json["reader_non_monotonic_frame_ids"] = stats.non_monotonic_frame_ids;
+            camera_json["reader_sequence_id_gaps"] = stats.sequence_id_gaps;
+            camera_json["reader_non_monotonic_sequence_ids"] =
+                stats.non_monotonic_sequence_ids;
             camera_json["reader_first_frame_id"] = stats.first_frame_id;
             camera_json["reader_last_frame_id"] = stats.last_frame_id;
+            camera_json["reader_first_sequence_id"] = stats.first_sequence_id;
+            camera_json["reader_last_sequence_id"] = stats.last_sequence_id;
 
-            if (config.mode == HeadlessFrameIpcMode::VerifyDrain) {
+            if (headless_frame_ipc_mode_is_verify_drain(config.mode)) {
                 if (!stats.reader_started) {
                     add_failure("reader_not_started");
                 }
                 if (!stats.reader_error.empty()) {
                     add_failure("reader_error");
                 }
-                if (config.require_base_frames && stats.base_messages == 0) {
+                const uint64_t base_read_count =
+                    use_v2 ? stats.v2_latest_state_messages : stats.base_messages;
+                if (config.require_base_frames && base_read_count == 0) {
                     add_failure("no_base_messages_read");
                 }
                 if (stats.camera_id_mismatches > 0) {
@@ -4981,8 +5411,14 @@ bool write_headless_frame_ipc_summary(
                 if (stats.non_monotonic_frame_ids > 0) {
                     add_failure("reader_non_monotonic_frame_ids");
                 }
+                if (use_v2 && stats.sequence_id_gaps > 0) {
+                    add_failure("reader_sequence_id_gaps");
+                }
+                if (use_v2 && stats.non_monotonic_sequence_ids > 0) {
+                    add_failure("reader_non_monotonic_sequence_ids");
+                }
             }
-        } else if (config.mode == HeadlessFrameIpcMode::VerifyDrain) {
+        } else if (headless_frame_ipc_mode_is_verify_drain(config.mode)) {
             add_failure("missing_reader_stats");
         }
 
@@ -6629,7 +7065,7 @@ bool load_experiment_spec(const HeadlessCliOptions& cli_options,
     if (spec->pose_worker.enabled() && !spec->yolo_worker.enabled()) {
         if (error_out) {
             *error_out =
-                "Experiment spec fixed.pose_worker currently requires fixed.yolo_worker mode=real as its ROI source.";
+                "Experiment spec fixed.pose_worker currently requires fixed.yolo_worker mode=real because pose crops are driven by the YOLO worker result path.";
         }
         return false;
     }
@@ -7479,6 +7915,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     std::vector<int> active_camera_indices;
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::vector<std::unique_ptr<YoloWorker>> yolo_workers;
+    std::vector<std::unique_ptr<CropProducerWorker>> crop_producer_workers;
+    std::vector<std::unique_ptr<PoseWorker>> pose_workers;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     HeadlessFrameIpcRuntime frame_ipc_runtime;
     HeadlessThreadFailureState thread_failure_state;
@@ -7553,6 +7991,58 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
             "ORANGE_YOLO_DECIMATE",
             yolo_decimate_value.c_str());
     }
+    std::unique_ptr<ScopedEnvVarOverride> pose_engine_path_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_mode_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_skeleton_id_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_skeleton_path_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_detection_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_every_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_box_width_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_box_height_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_label_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_synthetic_confidence_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_prewarm_iterations_override;
+    std::unique_ptr<ScopedEnvVarOverride> pose_crop_frame_pool_size_override;
+    if (options.pose_worker.enabled()) {
+        pose_mode_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_POSE_MODE",
+            options.pose_worker.mode.c_str());
+        pose_engine_path_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_POSE_ENGINE_PATH",
+            options.pose_worker.engine_path.c_str());
+        pose_skeleton_id_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_POSE_SKELETON_ID",
+            options.pose_worker.skeleton_id.c_str());
+        pose_skeleton_path_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_POSE_SKELETON_PATH",
+            options.pose_worker.skeleton_path.c_str());
+        pose_synthetic_detection_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_RUNTIME_DETECTIONS",
+            options.pose_worker.synthetic_runtime_detection_enabled() ? "1" : "0");
+        pose_synthetic_every_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_EVERY_N_FRAMES",
+            std::to_string(options.pose_worker.synthetic_detection_every_n_frames).c_str());
+        pose_synthetic_box_width_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_BOX_WIDTH_PX",
+            std::to_string(options.pose_worker.synthetic_detection_box_width_px).c_str());
+        pose_synthetic_box_height_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_BOX_HEIGHT_PX",
+            std::to_string(options.pose_worker.synthetic_detection_box_height_px).c_str());
+        pose_synthetic_label_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_LABEL",
+            std::to_string(options.pose_worker.synthetic_detection_label).c_str());
+        pose_synthetic_confidence_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_HEADLESS_POSE_SYNTHETIC_CONFIDENCE",
+            std::to_string(options.pose_worker.synthetic_detection_confidence).c_str());
+        pose_prewarm_iterations_override = std::make_unique<ScopedEnvVarOverride>(
+            "ORANGE_POSE_PREWARM_ITERATIONS",
+            std::to_string(options.pose_worker.prewarm_iterations).c_str());
+        if (options.pose_worker.crop_frame_pool_size > 0) {
+            pose_crop_frame_pool_size_override = std::make_unique<ScopedEnvVarOverride>(
+                "ORANGE_CROP_FRAME_POOL_SIZE",
+                std::to_string(options.pose_worker.crop_frame_pool_size).c_str());
+        }
+    }
 
     const std::string encoder_setup = build_headless_encoder_setup_string(options.encoder_settings);
     const bool rolling_clip_recording =
@@ -7573,6 +8063,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         active_camera_indices,
         recording_pipelines,
         yolo_workers,
+        crop_producer_workers,
+        pose_workers,
         frame_ipc_managers,
         &frame_ipc_runtime,
         options.frame_ipc,
@@ -7595,7 +8087,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         enable_recording,
         initial_recording_output_folder,
         options.yolo_event_log,
-        options.yolo_worker);
+        options.yolo_worker,
+        options.pose_worker);
 
     if (!started) {
         stop_supervised_external_recorder();
@@ -8027,6 +8520,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         active_camera_indices,
         recording_pipelines,
         yolo_workers,
+        crop_producer_workers,
+        pose_workers,
         &gpu_dmon_monitor,
         ecams.get(),
         cameras_params.get(),

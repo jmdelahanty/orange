@@ -9,6 +9,12 @@ Updated 2026-04-21: do not extend the existing Citrus live-control queue with
 delayed keyed pose or YOLO updates until Citrus has an explicit versioned event
 contract.
 
+Updated 2026-05-10: design the versioned path as a separate
+`/shm_cam_<serial>_v2` live-state queue, not as an in-place mutation of the
+current queue. The v2 queue should still enforce stale-update suppression:
+pose results for older frames are recorded in Orange JSONL but not published to
+Citrus as current live state.
+
 The prior primary plan was to extend the existing IPC update payload in the same
 queue. That is only safe if the payload represents complete latest live state
 with monotonic ids. It is not safe for delayed older-frame semantic updates
@@ -16,6 +22,7 @@ because Citrus currently drains the queue and keeps latest state, without keyed
 merge semantics.
 
 See [yolo_ipc_citrus_contract_plan.md](./yolo_ipc_citrus_contract_plan.md).
+See also [shaman_v2_live_state_contract.md](./shaman_v2_live_state_contract.md).
 
 ## Current IPC Baseline
 
@@ -59,8 +66,9 @@ Why:
 Fallback if this proves too coupled:
 
 - Orange-owned recording/audit artifact for delayed semantic history,
-- separate pose/event queue per camera with a new consumer contract,
-- explicit `payload_kind` and `sequence_id` in the Shaman slot struct
+- separate v2 live-state queue per camera with a new consumer contract,
+- explicit `schema_version`, `payload_kind`, `sequence_id`, `state_frame_id`,
+  `source_frame_id`, and status fields in the Shaman v2 slot struct
   coordinated with Citrus.
 
 ## TODO Plan
@@ -79,12 +87,14 @@ Fallback if this proves too coupled:
 
 ## Phase 1: Contract Update
 
-- [ ] Update the contract to distinguish Citrus live latest-state IPC from
+- [x] Update the contract to distinguish Citrus live latest-state IPC from
       Orange recording/audit event history.
 - [ ] For the current `/shm_cam_<serial>` queue, require monotonic live-control
       state. Do not allow delayed older-frame pose updates.
-- [ ] For delayed pose history, define an Orange-owned audit artifact or a new
-      versioned event IPC contract.
+- [x] For delayed pose history, define Orange-owned audit artifacts as the
+      source of truth. The v2 Shaman queue remains live-state only.
+- [x] Draft the separate Shaman v2 live-state contract:
+      [shaman_v2_live_state_contract.md](./shaman_v2_live_state_contract.md).
 - [ ] Record this in `agent_contracts/orange_jeremy_ipc_contract.md` only after
       Citrus has agreed to the consumer behavior.
 
@@ -94,13 +104,19 @@ Fallback if this proves too coupled:
   - `frame_id`, `camera_id`,
   - optional `recording_frame_id` mirror semantics,
   - pose list: bbox/ref + keypoints + per-point/instance confidence.
-- [ ] Define exact encoding in current `shaman::Object`:
-  - how pose keypoints map into `kps[]`,
-  - how many floats per keypoint,
-  - how `num_kps` is interpreted.
-- [ ] Confirm keypoint capacity for target model(s) vs `MAX_KEYPOINTS` limits.
-  - refs: `src/shaman.h:30`, `src/common.hpp:121`
-- [ ] Decide coordinate convention (crop-local vs full-frame) and document.
+- [ ] For the current queue, avoid adding delayed pose updates. If pose is ever
+      packed into current `shaman::Object`, it must obey the same latest-state
+      stale-update rule.
+- [x] For v2, define fixed keypoint structs instead of packing triples into the
+      current `kps[]` float array.
+- [x] Decide coordinate convention for v2: source-frame camera pixels for boxes
+      and keypoints; Citrus owns homography/application-space transforms.
+- [x] Add the first Orange-side v2 queue/publisher implementation in
+      `src/shaman_v2.h` and `src/shaman_v2_live_state.h`, with unit coverage in
+      `tools/shaman_v2_tests.cpp`.
+- [x] Add opt-in Orange runtime v2 queue creation and base/YOLO live-state
+      publishing through `FrameIPCManager` behind
+      `ORANGE_SHAMAN_V2_LIVE_STATE=1`.
 
 ## Phase 3: Producer Wiring
 

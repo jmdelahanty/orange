@@ -45,6 +45,27 @@ std::string json_string_or_default(const nlohmann::json& object,
     return it->get<std::string>();
 }
 
+bool json_bool_or_default(const nlohmann::json& object,
+                          const char* key,
+                          const bool fallback,
+                          bool* valid_out = nullptr)
+{
+    if (valid_out) {
+        *valid_out = false;
+    }
+    if (!object.is_object()) {
+        return fallback;
+    }
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_boolean()) {
+        return fallback;
+    }
+    if (valid_out) {
+        *valid_out = true;
+    }
+    return it->get<bool>();
+}
+
 }  // namespace
 
 std::unordered_set<uint64_t> read_recording_metadata_frame_ids(
@@ -169,6 +190,38 @@ YoloEventLogValidationStats summarize_yolo_event_log(
         const uint64_t detection_count =
             json_u64_or_default(yolo.value("detection_count", nlohmann::json()),
                                 std::numeric_limits<uint64_t>::max());
+        const std::string detection_source =
+            json_string_or_default(yolo, "detection_source", "");
+        bool synthetic_runtime_detection_valid = false;
+        const bool synthetic_runtime_detection =
+            json_bool_or_default(yolo,
+                                 "synthetic_runtime_detection",
+                                 false,
+                                 &synthetic_runtime_detection_valid);
+        bool production_detection_valid_present = false;
+        const bool production_detection_valid =
+            json_bool_or_default(yolo,
+                                 "production_detection_valid",
+                                 true,
+                                 &production_detection_valid_present);
+        const bool known_detection_source =
+            detection_source.empty() ||
+            detection_source == "model" ||
+            detection_source == "synthetic_center_box";
+        const bool invalid_runtime_synthetic_markers =
+            detection_source == "synthetic_center_box" &&
+            (!synthetic_runtime_detection_valid ||
+             !synthetic_runtime_detection ||
+             !production_detection_valid_present ||
+             production_detection_valid);
+        const bool invalid_production_marker =
+            synthetic_runtime_detection &&
+            (!production_detection_valid_present || production_detection_valid);
+        if (!known_detection_source ||
+            invalid_runtime_synthetic_markers ||
+            invalid_production_marker) {
+            stats.schema_errors++;
+        }
         const bool should_have_detection =
             config.every_n_frames > 0 &&
             recording_frame_id > 0 &&

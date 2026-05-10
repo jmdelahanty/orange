@@ -1,6 +1,6 @@
 {
-  "experiment_id": "2010096_headless_real_yolo_pose_noop_expected_fail_a16_gpu5",
-  "notes": "Short single-camera headless real-YOLO plus real recording run that exercises fixed.pose_worker noop wiring and manifest validation. Headless now uses the shared CropProducerWorker -> PoseWorker path. This spec can still fail when the scene has no YOLO detections because noop pose rows are emitted only for accepted recording crop frames.",
+  "experiment_id": "2010096_headless_real_yolo_pose_noop_synthetic_center_box_a16_gpu5",
+  "notes": "Short single-camera headless real-YOLO plus real recording run that injects explicit synthetic center-box runtime detections only to validate crop/pose plumbing. This must never be treated as validation of production YOLO detections, detection quality, or real detection-to-pose behavior.",
   "selection": {
     "camera_serials": ["2010096"],
     "gpu_ids": [5]
@@ -33,7 +33,14 @@
       "input_layout": "nchw",
       "input_dtype": "fp16",
       "normalization": "model_default",
-      "roi_source": "yolo_top_detection",
+      "roi_source": "synthetic_center_box",
+      "synthetic_detection": {
+        "every_n_frames": 1,
+        "box_width_px": 64,
+        "box_height_px": 64,
+        "label": 0,
+        "confidence": 0.99
+      },
       "queue_depth": 32,
       "timeout_ms": 500,
       "prewarm_iterations": 0,

@@ -398,6 +398,13 @@ if(BUILD_TESTING)
     target_compile_features(pose_event_log_validation_tests PRIVATE cxx_std_17)
     add_test(NAME pose_event_log_validation_tests COMMAND pose_event_log_validation_tests)
 
+    add_executable(shaman_v2_tests
+        "tools/shaman_v2_tests.cpp"
+    )
+    target_include_directories(shaman_v2_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(shaman_v2_tests PRIVATE cxx_std_17)
+    add_test(NAME shaman_v2_tests COMMAND shaman_v2_tests)
+
     add_executable(external_recorder_supervisor_tests
         "tools/external_recorder_supervisor_tests.cpp"
         "${SRC_DIR}/external_recorder_contract_utils.cpp"

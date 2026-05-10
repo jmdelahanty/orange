@@ -129,10 +129,18 @@ event history and Citrus owns live stimulus state.
 
 ## Future Versioned IPC Contract
 
-If Citrus must eventually receive or log every semantic Orange event, the shared
-memory schema needs an explicit versioned event model.
+If Citrus must eventually receive or log every semantic Orange event, Orange and
+Citrus need an explicit versioned IPC model. That can be a live-state queue, a
+separate event-log queue, or both.
 
-Candidate additive fields:
+Updated 2026-05-10: the first v2 queue should be a versioned live-state queue,
+not a complete event-log queue. See
+[shaman_v2_live_state_contract.md](./shaman_v2_live_state_contract.md). It adds
+explicit schema/status/source-frame fields while preserving the stale-update
+rule: delayed older-frame YOLO or pose updates are suppressed from Citrus live
+state and remain available through Orange audit artifacts.
+
+Candidate additive fields for a versioned live-state queue:
 
 - `schema_version`
 - `sequence_id`
@@ -142,21 +150,24 @@ Candidate additive fields:
 - `state_frame_id`
 - `source_frame_id`
 - `detection_status`
+- `pose_status`
 
-Candidate `payload_kind` values:
+Candidate `payload_kind` values for the first live-state v2 queue:
 
-- `base_frame`
 - `latest_tracking_state`
-- `yolo_detections`
-- `yolo_zero_detections`
-- `yolo_failed`
-- `pose_update`
+- `stream_status`
+
+Historical event-style payloads such as `yolo_detections`,
+`yolo_zero_detections`, `yolo_failed`, or `pose_update` should belong to a
+separate event-log IPC contract if Citrus later needs every semantic event.
+They should not be mixed into the first v2 live-state queue unless they still
+obey the complete-state and stale-update rules.
 
 This is a breaking or coordinated schema change. Citrus would need to:
 
 - reject or warn on backward `sequence_id`,
-- distinguish complete latest state from keyed historical events,
-- merge async updates by `(camera_id, source_frame_id)` when requested,
+- distinguish complete latest state from any future keyed historical events,
+- avoid keyed historical merge behavior for the first v2 live-state queue,
 - define stale-update policy explicitly,
 - log zero-detection completions intentionally,
 - keep live-control state monotonic even when old event-log updates arrive.

@@ -186,6 +186,7 @@ private:
     bool crop_copy_kernel_enabled_ = false;
     bool crop_source_stage_enabled_ = false;
     bool crop_early_owned_frame_enabled_ = false;
+    int crop_frame_pool_size_ = 0;
     PoseWorker* pose_worker_ = nullptr;
     std::atomic<int> pending_source_release_count_{0};
     std::atomic<int> pending_crop_frame_recycle_count_{0};
