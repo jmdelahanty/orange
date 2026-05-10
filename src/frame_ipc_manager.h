@@ -106,6 +106,32 @@ public:
         return true;
     }
 
+    bool updateFrameWithPoseResult(shaman_v2::Slot pose_slot) {
+        if (!enabled_ || !v2_publisher_) {
+            return false;
+        }
+        if (pose_slot.state_frame_id == 0) {
+            pose_slot.state_frame_id = pose_slot.source_frame_id;
+        }
+        if (pose_slot.source_frame_id == 0) {
+            pose_slot.source_frame_id = pose_slot.state_frame_id;
+        }
+        if (pose_slot.state_frame_id == 0) {
+            return false;
+        }
+
+        bool dropped = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            pose_update_queue_.PushDropOldest(std::move(pose_slot), &dropped);
+        }
+        if (dropped) {
+            pose_update_queue_drops_++;
+        }
+        cv_.notify_one();
+        return true;
+    }
+
     bool isEnabled() const { return enabled_; }
     const std::string& getQueueName() const { return queue_name_; }
     const std::string& getInitError() const { return init_error_; }
@@ -116,6 +142,7 @@ public:
     uint64_t getUpdatesSent() const { return updates_sent_; }
     uint64_t getBaseQueueDrops() const { return base_queue_drops_; }
     uint64_t getUpdateQueueDrops() const { return update_queue_drops_; }
+    uint64_t getPoseUpdateQueueDrops() const { return pose_update_queue_drops_; }
     uint64_t getUpdateStaleDrops() const { return update_stale_drops_; }
     uint64_t getIpcPushFailures() const { return ipc_push_failures_; }
     shaman_v2::LiveStateCounters getV2Counters() const
@@ -221,7 +248,8 @@ private:
         std::unique_lock<std::mutex> lock(mutex_);
         while (running_) {
             cv_.wait(lock, [this]() {
-                return !running_ || !frame_queue_.Empty() || !update_queue_.Empty();
+                return !running_ || !frame_queue_.Empty() || !update_queue_.Empty() ||
+                       !pose_update_queue_.Empty();
             });
             lock.unlock();
             DrainQueues();
@@ -283,6 +311,17 @@ private:
                 EmitV2Yolo(update);
                 update_stale_drops_++;
             }
+        }
+
+        shaman_v2::Slot pose_update;
+        while (true) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                if (!pose_update_queue_.Pop(pose_update)) {
+                    break;
+                }
+            }
+            EmitV2Pose(pose_update);
         }
     }
 
@@ -393,6 +432,24 @@ private:
         v2_publisher_->publish_yolo_result(slot);
     }
 
+    void EmitV2Pose(shaman_v2::Slot slot) {
+        if (!v2_publisher_) {
+            return;
+        }
+        if (slot.state_frame_id == 0) {
+            slot.state_frame_id = slot.source_frame_id;
+        }
+        if (slot.source_frame_id == 0) {
+            slot.source_frame_id = slot.state_frame_id;
+        }
+        slot.camera_id = static_cast<uint32_t>(camera_params_->camera_id);
+        shaman_v2::copy_camera_serial(slot.camera_serial, camera_params_->camera_serial);
+        slot.source_width_px = static_cast<uint32_t>(camera_params_->width);
+        slot.source_height_px = static_cast<uint32_t>(camera_params_->height);
+        slot.payload_kind = static_cast<uint32_t>(shaman_v2::PayloadKind::kLatestTrackingState);
+        v2_publisher_->publish_pose_result(slot);
+    }
+
     static constexpr size_t kQueueDepth = shaman::QUEUE_SIZE;
 
     CameraParams* camera_params_;
@@ -408,6 +465,7 @@ private:
 
     BoundedQueue<FrameEvent> frame_queue_;
     BoundedQueue<UpdateEvent> update_queue_;
+    BoundedQueue<shaman_v2::Slot> pose_update_queue_{kQueueDepth};
     std::mutex mutex_;
     std::condition_variable cv_;
     std::thread writer_thread_;
@@ -421,6 +479,7 @@ private:
     std::atomic<uint64_t> updates_sent_{0};
     std::atomic<uint64_t> base_queue_drops_{0};
     std::atomic<uint64_t> update_queue_drops_{0};
+    std::atomic<uint64_t> pose_update_queue_drops_{0};
     std::atomic<uint64_t> update_stale_drops_{0};  // Delayed older-frame detections suppressed from Citrus live IPC.
     std::atomic<uint64_t> ipc_push_failures_{0};
 };

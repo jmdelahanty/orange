@@ -339,6 +339,13 @@ hardened. Revisit async pose collection when targeting much higher rates such
 as `500 fps`, adding multi-camera pose, or making pose results part of a fast
 tracking/control loop.
 
+Shaman v2 IPC update: `PoseWorker` now publishes pose latest-state updates
+through the shared `FrameIPCManager` when `/shm_cam_<serial>_v2` is enabled.
+The worker converts crop-local keypoints back into source-frame camera pixels
+before publishing. Late older-frame pose results remain in
+`Cam<serial>_pose_events.jsonl` but are suppressed from the live v2 queue by
+the same monotonic stale-update rule used for YOLO.
+
 ## Data Structures
 ### New: CropFrame / PoseEntry (pool item)
 - `unsigned char* d_crop` in the crop producer's canonical GPU layout
@@ -626,6 +633,8 @@ tracking/control loop.
   - `PoseWorker`: enqueued / processed / queue-full drops / queue-high-water
   - `CropProducerWorker`: jobs offered / accepted / queue-full drops
   - `CropAndEncodeWorker`: jobs enqueued / queue-full drops / queue-high-water
+  - Shaman v2 frame IPC: pose updates published, stale suppressed, queue drops,
+    and push failures in `frame_ipc_summary.json`
 - Recording artifacts now also persist the crop sidecar admission summary in
   `Cam<serial>_crop_sidecar_perf.csv`, and `recording_snapshot.json` lists that
   file under crop outputs.

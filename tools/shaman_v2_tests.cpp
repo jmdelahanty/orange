@@ -367,6 +367,70 @@ void test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale()
     shaman_v2::unlink_queue(v2_name);
 }
 
+void test_frame_ipc_manager_publishes_v2_pose_update()
+{
+    const std::string serial = "v2pose" + std::to_string(getpid());
+    const std::string v1_name = "/shm_cam_" + serial;
+    const std::string v2_name = shaman_v2::queue_name_for_camera_serial(serial);
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+
+    {
+        CameraParams camera = make_test_camera(serial);
+        FrameIPCManager manager(&camera, true /* force_v2_live_state */);
+        require(manager.isEnabled(), "v1 frame IPC manager should initialize for pose test");
+        require(manager.isV2Enabled(), "v2 frame IPC manager should initialize for pose test");
+
+        shaman_v2::SharedLiveStateQueue reader(v2_name, false);
+        require(manager.sendFrame(11, 1111, true), "pose test base frame enqueue should succeed");
+
+        shaman_v2::Slot pose;
+        pose.state_frame_id = 11;
+        pose.source_frame_id = 11;
+        pose.camera_frame_id = 1011;
+        pose.recording_frame_id = 11;
+        pose.camera_timestamp_ns = 2222;
+        pose.timestamp_sys_ns = 3333;
+        pose.detection_status = static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections);
+        pose.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
+        pose.object_count = 1;
+        pose.objects[0].x_px = 100.0f;
+        pose.objects[0].y_px = 200.0f;
+        pose.objects[0].width_px = 30.0f;
+        pose.objects[0].height_px = 40.0f;
+        pose.objects[0].confidence = 0.8f;
+        pose.objects[0].flags = shaman_v2::kObjectHasBbox | shaman_v2::kObjectHasPose;
+        pose.objects[0].keypoint_count = 1;
+        pose.objects[0].keypoints[0].x_px = 111.0f;
+        pose.objects[0].keypoints[0].y_px = 222.0f;
+        pose.objects[0].keypoints[0].confidence = 0.7f;
+        pose.objects[0].keypoints[0].flags = shaman_v2::kKeypointVisible;
+        require(manager.updateFrameWithPoseResult(pose),
+                "same-frame v2 pose update should enqueue");
+
+        const std::vector<shaman_v2::Slot> slots = wait_for_v2_slots(reader, 2);
+        require(slots.size() == 2, "v2 reader should receive base and pose slots");
+        require(slots[0].state_frame_id == 11, "pose test base frame id should be 11");
+        require(slots[1].state_frame_id == 11, "pose update frame id should be 11");
+        require(slots[1].pose_status ==
+                    static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses),
+                "pose update status should be poses");
+        require(slots[1].detection_status ==
+                    static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections),
+                "pose update should preserve detection result status");
+        require(slots[1].object_count == 1, "pose update should carry one object");
+        require(slots[1].objects[0].keypoint_count == 1,
+                "pose update should carry one keypoint");
+        require(slots[1].objects[0].keypoints[0].x_px == 111.0f,
+                "pose update keypoint should round trip");
+
+        manager.stop();
+    }
+
+    shaman_v2::unlink_queue(v1_name);
+    shaman_v2::unlink_queue(v2_name);
+}
+
 } // namespace
 
 int main()
@@ -380,6 +444,7 @@ int main()
         test_live_state_publisher_suppresses_stale_updates();
         test_live_state_publisher_applies_pending_same_frame_updates();
         test_frame_ipc_manager_opt_in_v2_base_yolo_and_stale();
+        test_frame_ipc_manager_publishes_v2_pose_update();
     } catch (const std::exception& ex) {
         std::cerr << "shaman_v2_tests failed: " << ex.what() << std::endl;
         return 1;

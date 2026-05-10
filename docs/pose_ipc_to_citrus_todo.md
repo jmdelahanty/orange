@@ -15,6 +15,11 @@ current queue. The v2 queue should still enforce stale-update suppression:
 pose results for older frames are recorded in Orange JSONL but not published to
 Citrus as current live state.
 
+Updated later 2026-05-10: Orange now publishes pose results into the Shaman v2
+live-state queue from the shared `PoseWorker` path. This is verified headlessly
+with synthetic center-box detections for plumbing only. Citrus still needs an
+opt-in v2 reader before this is an end-to-end Citrus workflow.
+
 The prior primary plan was to extend the existing IPC update payload in the same
 queue. That is only safe if the payload represents complete latest live state
 with monotonic ids. It is not safe for delayed older-frame semantic updates
@@ -117,17 +122,20 @@ Fallback if this proves too coupled:
 - [x] Add opt-in Orange runtime v2 queue creation and base/YOLO live-state
       publishing through `FrameIPCManager` behind
       `ORANGE_SHAMAN_V2_LIVE_STATE=1`.
+- [x] Add v2 pose latest-state publishing from `PoseWorker` through
+      `FrameIPCManager::updateFrameWithPoseResult(...)`, with keypoints
+      converted from crop pixels to source-frame camera pixels.
 
 ## Phase 3: Producer Wiring
 
-- [ ] Emit Citrus live pose IPC only when the payload is complete current state
+- [x] Emit Citrus live pose IPC only when the payload is complete current state
       and preserves monotonic `frame_id` behavior.
-- [ ] Use the same live-state frame identity policy as existing IPC
+- [x] Use the same live-state frame identity policy as existing IPC
       (`ipc_frame_id` / recording-aware behavior) only for Citrus-facing state.
-- [ ] Do not emit a late pose result for an older `frame_id` into
+- [x] Do not emit a late pose result for an older `frame_id` into
       `/shm_cam_<serial>`.
-- [ ] Add an Orange audit path for late pose results if pose history matters.
-- [ ] Keep pose IPC best-effort/non-blocking:
+- [x] Add an Orange audit path for late pose results if pose history matters.
+- [x] Keep pose IPC best-effort/non-blocking:
   - bounded queues,
   - drop oldest on overflow,
   - explicit drop counters.
@@ -142,15 +150,16 @@ Fallback if this proves too coupled:
 
 ## Phase 5: Observability and Validation
 
-- [ ] Add producer counters:
+- [x] Add producer counters:
   - pose events sent,
   - queue drops,
   - stale drops,
   - push failures.
-- [ ] Add integration test:
+- [x] Add headless Orange integration test:
   - stream with frame IPC + YOLO + pose enabled,
-  - verify Citrus receives monotonic live pose state,
+  - verify the built-in v2 reader drains monotonic live pose state,
   - verify delayed older-frame pose events are not published to the live queue.
+- [ ] Add Citrus integration test with the future Citrus v2 reader.
 - [ ] Add soak test under load with backpressure; verify YOLO/acquisition are not stalled by pose IPC.
 
 ## Phase 6: Model and Skeleton Runtime Metadata

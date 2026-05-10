@@ -166,6 +166,12 @@ private:
     void apply_pose_update(const Slot& update)
     {
         current_.source_frame_id = current_.state_frame_id;
+        if (update.detection_status == static_cast<uint32_t>(DetectionStatus::kDetections) ||
+            update.detection_status == static_cast<uint32_t>(DetectionStatus::kZeroDetections) ||
+            update.detection_status == static_cast<uint32_t>(DetectionStatus::kFailed)) {
+            current_.detection_status = update.detection_status;
+            current_.detection_model_id_hash = update.detection_model_id_hash;
+        }
         current_.pose_status = update.pose_status;
         current_.pose_model_id_hash = update.pose_model_id_hash;
         current_.pose_skeleton_id_hash = update.pose_skeleton_id_hash;

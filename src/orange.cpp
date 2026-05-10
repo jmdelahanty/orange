@@ -3891,7 +3891,8 @@ int main(int argc, char **args) {
                                     poseWorkers[i] = new PoseWorker(
                                         name.c_str(),
                                         &cameras_params[i],
-                                        cropProducerWorkers[i]->GetCropProducer());
+                                        cropProducerWorkers[i]->GetCropProducer(),
+                                        frame_ipc_managers[i].get());
                                     cropProducerWorkers[i]->SetPoseWorker(poseWorkers[i]);
                                 }
                             }

@@ -12,11 +12,15 @@
 #include <vector>
 
 class TensorRtPoseBackend;
+class FrameIPCManager;
 
 class PoseWorker : public CThreadWorker<CropFrame>
 {
 public:
-    PoseWorker(const char* name, CameraParams* camera_params, CropProducer* crop_producer);
+    PoseWorker(const char* name,
+               CameraParams* camera_params,
+               CropProducer* crop_producer,
+               FrameIPCManager* frame_ipc_manager = nullptr);
     ~PoseWorker() override;
 
     void SetMaxQueueSize(int size);
@@ -35,9 +39,14 @@ private:
         const std::string& status,
         const std::string& error,
         const std::vector<pose_event_log::PoseInstanceRecord>& poses) const;
+    void publish_pose_result_v2(
+        const CropFrameSnapshot& frame,
+        const std::string& status,
+        const std::vector<pose_event_log::PoseInstanceRecord>& poses);
 
     CameraParams* camera_params_ = nullptr;
     CropProducer* crop_producer_ = nullptr;
+    FrameIPCManager* frame_ipc_manager_ = nullptr;
     cudaStream_t stream_ = nullptr;
     std::unique_ptr<TensorRtPoseBackend> tensorrt_backend_;
     pose_event_log::PoseEventLogger pose_event_logger_;

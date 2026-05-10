@@ -991,6 +991,8 @@ Top-level fields:
 - `mode = "producer_only" | "verify_drain" | "verify_drain_v2"`
 - `queue_version = 1 | 2`
 - `queue_naming = "serial"`
+- `require_v2_pose_results`: true when the headless run had pose enabled and
+  the v2 verifier should fail if no pose-result states are drained
 - `cameras`: object keyed by camera serial
 
 Per-camera fields include:
@@ -1000,7 +1002,8 @@ Per-camera fields include:
 - `frames_sent`, `updates_sent`: active queue publish counts for the selected
   mode
 - `v1_frames_sent`, `v1_updates_sent`
-- `base_queue_drops`, `update_queue_drops`, `update_stale_drops`
+- `base_queue_drops`, `update_queue_drops`, `pose_update_queue_drops`,
+  `update_stale_drops`
 - `update_stale_drops` means delayed older-frame detection updates were
   intentionally suppressed from the Citrus live queue
 - `ipc_push_failures`: active queue push failures for the selected mode
@@ -1024,6 +1027,11 @@ In `verify_drain_v2`, the transitional v1 queue is still created but the
 internal verifier drains only the v2 queue. Use `ipc_push_failures` or
 `v2_ipc_push_failures` for active-mode validation; `v1_ipc_push_failures` may
 rise when no v1 consumer is attached.
+
+When pose is enabled, `verify_drain_v2` requires at least one drained v2 pose
+state. Pose-result states may be fewer than pose event JSONL rows because late
+older-frame pose results are stale for live Citrus control and are deliberately
+suppressed from the v2 queue.
 
 ## ENet / FlatBuffer Payload Contract
 

@@ -204,6 +204,25 @@ Validated 2026-05-10 v2 smoke:
 The same v2 smoke intentionally does not drain the transitional v1 queue, so
 `v1_ipc_push_failures` can be nonzero without failing the active v2 verifier.
 
+Validated 2026-05-10 pose-to-v2 smoke:
+
+- `verify_drain_v2` plus noop `pose_worker` on camera `2010096`
+- synthetic center-box runtime detections were enabled for pose plumbing only
+- v2 base states published: `410`
+- v2 pose update states published: `282`
+- v2 slots drained by verifier: `692`
+- frame-id gaps: `0`
+- sequence-id gaps: `0`
+- active v2 push failures: `0`
+- pose JSONL rows: `401`
+- stale v2 pose suppressions: `128`
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_pose_noop_synthetic_center_box_v2_ipc_rerun2/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off/frame_ipc_summary.json`
+
+The stale suppressions are expected live-state behavior: Orange keeps the full
+pose history in `Cam2010096_pose_events.jsonl`, while v2 IPC publishes only
+same-frame pose state that is still current for Citrus.
+
 ## Troubleshooting
 
 ### Orange shows `init_error=shm_open failed ... Permission denied`

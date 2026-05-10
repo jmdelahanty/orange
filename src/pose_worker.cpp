@@ -1,6 +1,7 @@
 #include "pose_worker.h"
 
 #include "common.hpp"
+#include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
 #include "NvInferPlugin.h"
 #include "optimized_yolo_preprocess.h"
@@ -157,6 +158,16 @@ std::vector<std::string> default_pose_keypoint_labels(size_t keypoint_count)
         labels.push_back("keypoint_" + std::to_string(i));
     }
     return labels;
+}
+
+uint64_t fnv1a64(const std::string& value)
+{
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned char byte : value) {
+        hash ^= static_cast<uint64_t>(byte);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
 }
 
 int env_int_or_default(const char* name, int default_value, int min_value, int max_value)
@@ -514,10 +525,14 @@ private:
     float keypoint_confidence_threshold_ = 0.25f;
 };
 
-PoseWorker::PoseWorker(const char* name, CameraParams* camera_params, CropProducer* crop_producer)
+PoseWorker::PoseWorker(const char* name,
+                       CameraParams* camera_params,
+                       CropProducer* crop_producer,
+                       FrameIPCManager* frame_ipc_manager)
     : CThreadWorker<CropFrame>(name),
       camera_params_(camera_params),
       crop_producer_(crop_producer),
+      frame_ipc_manager_(frame_ipc_manager),
       pose_event_logger_(
           camera_params ? camera_params->camera_serial : std::string(),
           camera_params ? camera_params->camera_id : 0,
@@ -777,6 +792,7 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
             pose_error,
             poses));
     }
+    publish_pose_result_v2(crop_frame->frame, pose_status, poses);
 
     if (crop_producer_) {
         crop_producer_->RecycleAfterConsumerStream(crop_frame, stream_);
@@ -847,6 +863,91 @@ pose_event_log::PoseResultRecord PoseWorker::build_pose_event_record(
         pose_done_host_ns);
     record.poses = poses;
     return record;
+}
+
+void PoseWorker::publish_pose_result_v2(
+    const CropFrameSnapshot& frame,
+    const std::string& status,
+    const std::vector<pose_event_log::PoseInstanceRecord>& poses)
+{
+    if (!frame_ipc_manager_ || !frame_ipc_manager_->isV2Enabled()) {
+        return;
+    }
+
+    const uint64_t frame_id =
+        frame.recording_frame_id > 0 ? frame.recording_frame_id : frame.local_frame_id;
+    if (frame_id == 0) {
+        return;
+    }
+
+    shaman_v2::Slot slot;
+    slot.state_frame_id = frame_id;
+    slot.source_frame_id = frame_id;
+    slot.camera_frame_id = frame.camera_frame_id;
+    slot.recording_frame_id = frame.recording_frame_id;
+    slot.camera_timestamp_ns = frame.timestamp;
+    slot.timestamp_sys_ns = frame.timestamp_sys;
+    slot.camera_id = camera_params_ ? static_cast<uint32_t>(camera_params_->camera_id) : 0;
+    if (camera_params_) {
+        shaman_v2::copy_camera_serial(slot.camera_serial, camera_params_->camera_serial);
+    }
+    slot.source_width_px = static_cast<uint32_t>(std::max(0, frame.source_width));
+    slot.source_height_px = static_cast<uint32_t>(std::max(0, frame.source_height));
+    slot.detection_status = frame.has_detection
+        ? static_cast<uint32_t>(shaman_v2::DetectionStatus::kDetections)
+        : static_cast<uint32_t>(shaman_v2::DetectionStatus::kNotScheduled);
+    if (status == "poses") {
+        slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kPoses);
+    } else if (status == "failed") {
+        slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kFailed);
+    } else {
+        slot.pose_status = static_cast<uint32_t>(shaman_v2::PoseStatus::kNoResult);
+    }
+    slot.pose_model_id_hash = fnv1a64(pose_model_id_);
+    slot.pose_skeleton_id_hash = fnv1a64(pose_skeleton_id_);
+
+    const bool publish_detection_bbox = frame.has_detection &&
+        frame.detection_w > 0.0f && frame.detection_h > 0.0f;
+    const size_t object_count = !poses.empty()
+        ? poses.size()
+        : (publish_detection_bbox ? 1U : 0U);
+    slot.object_count = static_cast<uint32_t>(
+        std::min<size_t>(object_count, shaman_v2::kMaxObjects));
+
+    for (uint32_t object_index = 0; object_index < slot.object_count; ++object_index) {
+        const pose_event_log::PoseInstanceRecord* pose =
+            object_index < poses.size() ? &poses[object_index] : nullptr;
+        shaman_v2::Object& object = slot.objects[object_index];
+        object.x_px = frame.detection_x;
+        object.y_px = frame.detection_y;
+        object.width_px = frame.detection_w;
+        object.height_px = frame.detection_h;
+        object.confidence = pose ? static_cast<float>(pose->confidence) : frame.detection_confidence;
+        object.label_id = 0;
+        object.track_id = -1;
+        object.flags = publish_detection_bbox ? shaman_v2::kObjectHasBbox : 0;
+        if (pose) {
+            object.flags |= shaman_v2::kObjectHasPose;
+            object.keypoint_count = static_cast<uint32_t>(
+                std::min<size_t>(pose->keypoints.size(), shaman_v2::kMaxKeypointsPerObject));
+            for (uint32_t keypoint_index = 0; keypoint_index < object.keypoint_count; ++keypoint_index) {
+                const pose_event_log::PoseKeypointRecord& keypoint =
+                    pose->keypoints[keypoint_index];
+                object.keypoints[keypoint_index].x_px =
+                    static_cast<float>(frame.crop_x + keypoint.x_px);
+                object.keypoints[keypoint_index].y_px =
+                    static_cast<float>(frame.crop_y + keypoint.y_px);
+                object.keypoints[keypoint_index].confidence =
+                    static_cast<float>(keypoint.confidence);
+                object.keypoints[keypoint_index].label_id =
+                    static_cast<uint16_t>(keypoint_index);
+                object.keypoints[keypoint_index].flags =
+                    keypoint.visible ? shaman_v2::kKeypointVisible : 0;
+            }
+        }
+    }
+
+    (void)frame_ipc_manager_->updateFrameWithPoseResult(std::move(slot));
 }
 
 void PoseWorker::reset_run_counters()

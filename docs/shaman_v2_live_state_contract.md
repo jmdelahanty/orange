@@ -1,11 +1,11 @@
 # Shaman V2 Live-State Queue Contract
 
 Date: 2026-05-10
-Status: first Orange-side queue/publisher slice implemented. Orange
-`FrameIPCManager` can create the v2 live-state queue behind
-`ORANGE_SHAMAN_V2_LIVE_STATE=1`, and headless runs can force and verify the v2
-writer with `frame_ipc.mode = "verify_drain_v2"`. Citrus v2 reader and
-pose-result runtime wiring are not implemented yet.
+Status: Orange-side queue/publisher slice implemented for base frames, YOLO
+detections, and pose results. Orange `FrameIPCManager` can create the v2
+live-state queue behind `ORANGE_SHAMAN_V2_LIVE_STATE=1`, and headless runs can
+force and verify the v2 writer with `frame_ipc.mode = "verify_drain_v2"`.
+Citrus v2 reader wiring is not implemented yet.
 
 ## Decision
 
@@ -363,6 +363,24 @@ First headless v2 verifier smoke:
 - `v1_ipc_push_failures` was nonzero because this verifier drains only the v2
   queue; that is reported separately and does not fail v2 validation.
 
+First headless pose-to-v2 verifier smoke:
+
+- Spec:
+  `experiment_specs/2010096_headless_real_yolo_pose_noop_synthetic_center_box_v2_ipc_a16_gpu5.json`
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_pose_noop_synthetic_center_box_v2_ipc_rerun2/run_0001__codec_hevc__preset_p1__tuning_ll__rc_vbr__q_20__gop_25__aq_off__tempaq_off__lookahead_off/frame_ipc_summary.json`
+- Camera `2010096` published `410` base v2 states and `282` same-frame pose
+  update states; the verifier drained `692` total v2 slots.
+- `require_v2_pose_results = true`, `reader_v2_pose_result_messages = 282`,
+  `reader_v2_detection_result_messages = 282`, `reader_frame_id_gaps = 0`,
+  `reader_sequence_id_gaps = 0`, and `v2_ipc_push_failures = 0`.
+- `v2_pose_stale_suppressed = 128`, which means delayed older-frame pose
+  results were preserved in `Cam2010096_pose_events.jsonl` but intentionally
+  not published as live Citrus state.
+- This smoke uses synthetic center-box runtime detections and validates
+  pose-to-v2 IPC plumbing only. It is not production YOLO detection, ROI
+  selection, or real detection-to-pose validation.
+
 ## Implementation Slices
 
 1. [x] Add `src/shaman_v2.h` with fixed ABI structs, constants, and a minimal
@@ -377,7 +395,7 @@ First headless v2 verifier smoke:
 6. [x] Add runtime stale-suppression tests around `FrameIPCManager` or the
    headless verifier boundary.
 7. [x] Add a headless `verify_drain_v2` mode and runtime integration summary.
-8. [ ] Add pose v2 latest-state publishing from `PoseWorker` results with
+8. [x] Add pose v2 latest-state publishing from `PoseWorker` results with
    source-frame keypoint conversion.
 9. [ ] Add Citrus opt-in `ShamanV2IPCReaderModule` and keep the current reader as
    the default until v2 is validated.

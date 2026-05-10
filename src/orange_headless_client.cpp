@@ -4070,9 +4070,14 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
 
                             const auto detection_status =
                                 static_cast<shaman_v2::DetectionStatus>(slot.detection_status);
+                            const auto pose_status =
+                                static_cast<shaman_v2::PoseStatus>(slot.pose_status);
                             if (detection_status == shaman_v2::DetectionStatus::kPending ||
                                 detection_status == shaman_v2::DetectionStatus::kNotScheduled) {
-                                stats.base_messages++;
+                                if (pose_status == shaman_v2::PoseStatus::kDisabled &&
+                                    slot.object_count == 0) {
+                                    stats.base_messages++;
+                                }
                             }
                             if (detection_status == shaman_v2::DetectionStatus::kPending) {
                                 stats.v2_detection_pending_messages++;
@@ -4085,8 +4090,6 @@ bool start_headless_frame_ipc_runtime(HeadlessFrameIpcRuntime* runtime,
                                 stats.yolo_enabled_messages++;
                             }
 
-                            const auto pose_status =
-                                static_cast<shaman_v2::PoseStatus>(slot.pose_status);
                             if (pose_status == shaman_v2::PoseStatus::kPoses ||
                                 pose_status == shaman_v2::PoseStatus::kNoResult ||
                                 pose_status == shaman_v2::PoseStatus::kFailed) {
@@ -4666,7 +4669,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
                 pose_workers[idx] = std::make_unique<PoseWorker>(
                     pose_name.c_str(),
                     &cameras_params[idx],
-                    crop_producer_workers[idx]->GetCropProducer());
+                    crop_producer_workers[idx]->GetCropProducer(),
+                    frame_ipc_managers[idx].get());
                 pose_workers[idx]->SetMaxQueueSize(pose_worker_config.queue_depth);
                 pose_workers[idx]->RotateRecordingFolder(record_folder);
                 crop_producer_workers[idx]->SetPoseWorker(pose_workers[idx].get());
@@ -5224,6 +5228,7 @@ bool write_json_file(const std::filesystem::path& path, const nlohmann::json& va
 bool write_headless_frame_ipc_summary(
     const std::string& record_folder,
     const HeadlessFrameIpcConfig& config,
+    bool require_v2_pose_results,
     const CameraParams* cameras_params,
     const std::vector<int>& selected_indices,
     const std::vector<std::unique_ptr<FrameIPCManager>>& frame_ipc_managers,
@@ -5251,6 +5256,7 @@ bool write_headless_frame_ipc_summary(
         {"queue_naming", "serial"},
         {"unlink_existing_queues", config.unlink_existing_queues},
         {"require_base_frames", config.require_base_frames},
+        {"require_v2_pose_results", require_v2_pose_results},
         {"allow_push_failures", config.allow_push_failures},
         {"cameras", nlohmann::json::object()}
     };
@@ -5277,6 +5283,7 @@ bool write_headless_frame_ipc_summary(
             {"v1_updates_sent", 0ULL},
             {"base_queue_drops", 0ULL},
             {"update_queue_drops", 0ULL},
+            {"pose_update_queue_drops", 0ULL},
             {"update_stale_drops", 0ULL},
             {"ipc_push_failures", 0ULL},
             {"v1_ipc_push_failures", 0ULL},
@@ -5329,6 +5336,7 @@ bool write_headless_frame_ipc_summary(
             camera_json["v1_updates_sent"] = manager.getUpdatesSent();
             camera_json["base_queue_drops"] = manager.getBaseQueueDrops();
             camera_json["update_queue_drops"] = manager.getUpdateQueueDrops();
+            camera_json["pose_update_queue_drops"] = manager.getPoseUpdateQueueDrops();
             camera_json["update_stale_drops"] = manager.getUpdateStaleDrops();
             camera_json["v1_ipc_push_failures"] = manager.getIpcPushFailures();
             const shaman_v2::LiveStateCounters v2_counters = manager.getV2Counters();
@@ -5416,6 +5424,10 @@ bool write_headless_frame_ipc_summary(
                 }
                 if (use_v2 && stats.non_monotonic_sequence_ids > 0) {
                     add_failure("reader_non_monotonic_sequence_ids");
+                }
+                if (use_v2 && require_v2_pose_results &&
+                    stats.v2_pose_result_messages == 0) {
+                    add_failure("no_v2_pose_result_messages_read");
                 }
             }
         } else if (headless_frame_ipc_mode_is_verify_drain(config.mode)) {
@@ -8804,6 +8816,7 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
     if (!write_headless_frame_ipc_summary(
             active_record_folder,
             options.frame_ipc,
+            options.pose_worker.enabled(),
             cameras_params.get(),
             selected_inventory_indices,
             frame_ipc_managers,
