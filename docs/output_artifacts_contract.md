@@ -396,7 +396,19 @@ Current emitted top-level fields:
   - `sync_camera_enabled`
   - `finalized`
   - `updated_at_utc`
-  - `frame_count`
+  - `frame_count` (legacy alias for
+    `acquisition_frames_received_total`)
+  - `frame_count_semantics`
+  - `acquisition_frames_received_total`
+  - `sync_observed_frames_total`
+  - `sync_observed_frame_count_source`
+  - `recording_frames_assigned_total`
+  - `last_recording_frame_id`
+  - `recording_ingress_submitted_frames`
+  - `encoded_frames_total` (currently `null`; encoded counts are reported
+    by the video/metadata/session artifacts)
+  - `encoded_frame_count_source`
+  - `encoded_frame_count_authoritative_artifacts`
   - `frames_received`
   - `dropped_frames` (camera-side frame-ID gaps and `EVT_CameraGetFrame` errors)
   - `last_frame_timestamp_ns`
@@ -413,6 +425,10 @@ Contract notes:
 - This sidecar is updated during acquisition and finalized when the active
   recording folder lifetime ends for that camera thread.
 - It is a summarized diagnostic artifact, not a per-frame timing trace.
+- Its frame population is acquisition/sync-observed frames, not encoded MP4
+  frames. Use `recording_session.json` camera `frame_count`,
+  `Cam*_meta.csv` data rows, or `Cam*_keyframe.json.total_frames` for
+  video-ingest row counts.
 
 ## CSV Contracts
 

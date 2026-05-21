@@ -30,6 +30,8 @@ public:
     void request_stop();
     void request_recording_drain();
     void shutdown();
+    bool is_drained() const;
+    void reset_external_ipc_connection();
 
     RecordingIngress* recording_ingress() const { return recording_ingress_.get(); }
     EncoderPreprocessWorker* preprocess_worker() const { return preprocess_worker_.get(); }

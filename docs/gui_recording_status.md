@@ -166,8 +166,14 @@ video, metadata, keyframe, frame-count, frame-range, and packet-count fields.
 `session.recording_session_manifest_path`, and
 `session.recording_session_status = "completed"`.
 
-The GUI external recorder fail-fast path still writes a metadata-only failed
-manifest before refusing to run the backend.
+GUI external IPC recordings now use the supervised external recorder lifecycle
+for the first process-isolated recording slice. The GUI starts recorder
+processes on record start, drains IPC handoff queues on stop, stops the
+recorders during finalization, and writes a shared single-clip manifest with
+`producer = "orange_gui_external_ipc"` and
+`recording_backend.mode = "external_ipc"`. Runtime GUI hardware validation is
+still pending, and decoded-video sanity/full verifier execution remain manual
+checks for now.
 
 ### GUI PTP Register-Read Decimation
 
@@ -484,17 +490,17 @@ Current GUI implication:
   recover the headless external-recorder latency profile.
 - GUI/session now recognizes `recording.sink_mode = "external_ipc"` from app
   config or `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`. On record start it
-  uses the shared `src/external_recorder_contract_utils.*` helper to write the
-  intended `external_recorder_contract.json`,
-  `external_recorder_supervisor_plan.json`, and `recording_session.json` into
-  the proposed recording folder, then refuses to start recording with:
-  `external recorder GUI supervision is not implemented yet; use headless
-  supervised spec or in-process recording`.
-- GUI still does not supervise external recorder startup, heartbeat, drain, or
-  finalization. External recording remains a headless diagnostic/backend path
-  until that process lifecycle integration lands.
+  writes the intended `external_recorder_contract.json`, starts supervised
+  external recorder processes, and records
+  `external_recorder_supervisor_plan.json`.
+- GUI finalization now waits for the IPC handoff queues to drain, closes the
+  socket connections, stops the supervised recorders, and writes
+  `recording_session.json` from external recorder summaries.
+- The remaining GUI external-recorder gaps are runtime hardware validation,
+  decoded-video sanity integration, verifier execution, and user-visible
+  heartbeat/failure reporting.
 
-Validated GUI external-recorder fail-fast artifact:
+Earlier GUI external-recorder fail-fast artifact:
 
 - `/home/jeremy/orange_data/exp/unsorted/2026_05_07_17_54_23`
 - `recording_snapshot.json` reports `recording_sink_mode = "external_ipc"` and

@@ -12,6 +12,7 @@ See also:
 - `docs/encoding_importance_map_todo.md`
 - `docs/nvenc_direct_input_v1_plan.md`
 - `docs/recording_metadata.md`
+- `docs/detect_int8_quantization_plan.md`
 
 ## Goal
 
@@ -69,6 +70,7 @@ Not:
 - legacy `GPUVideoEncoder` path
 - long-run uncompressed recording as a user-facing default mode
 - sensor-native Bayer / Mono8 reference capture
+- exact YOLO input tensor capture
 - polished consumer-facing UI workflow in v1
 - final offline replay/encode harness in the same slice
 - portable interchange container work if a simpler raw dump is sufficient
@@ -169,6 +171,30 @@ When enabled, the feature should add:
 but should not require a second recording backend or a permanent architectural
 split.
 
+### 7. INT8 Calibration Use Is Indirect
+
+The reference-capture dump can help collect representative frames for a YOLO
+INT8 calibration experiment, but it is not itself a TensorRT calibration tensor
+dump.
+
+For INT8 work:
+
+- use it as a bounded source-frame capture mechanism,
+- read the full-resolution luma plane from the captured `NV12` frames when the
+  metadata confirms the expected full-frame Mono8 path,
+- ignore the neutral UV plane for mono cameras,
+- run the exact Orange YOLO preprocessing offline to produce
+  `1x3x640x640` FP32 `images` tensors,
+- keep a manifest linking each calibration tensor back to camera serial,
+  recording frame id, timestamp, and byte offset in the raw dump.
+
+Do not feed `Cam<serial>_preenc_ref.bin` directly to TensorRT calibration.
+The dump is encoder-ready `NV12`, while the detector expects planar FP32
+B/G/R channels after resize/letterbox/normalization. The cleaner future feature
+for INT8 would be a separate bounded YOLO calibration tensor dump after
+`optimized_yolo_preprocess.cu`; this reference-capture feature should remain
+focused on prepared encoder input.
+
 ## Proposed Control Shape
 
 The control plane should expose a narrow reference-capture config block rather
@@ -191,6 +217,9 @@ Rules:
 - exactly one of `max_frames` or `max_seconds` should be required in v1
 - if both are supplied later, the earliest stopping condition wins
 - if disabled or omitted, no additional capture occurs
+- the current headless implementation supports this only with
+  `recording_sink_mode = "real"`; it is not supported with `stream_only`,
+  `preprocess_only`, or `external_ipc`
 
 V1 recommendation:
 

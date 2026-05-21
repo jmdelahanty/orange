@@ -136,9 +136,9 @@ public:
           source_gpu_id_(source_gpu_id),
           route_hint_gpu_id_(route_hint_gpu_id),
           recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
-          session_id_(resolve_session_id()),
+          session_id_("external_ipc_" + camera_serial_),
           stream_id_(camera_serial_),
-          socket_path_(resolve_socket_path()),
+          socket_path_("/tmp/orange_external_recorder_" + camera_serial_ + ".sock"),
           ack_timeout_ms_(resolve_ack_timeout_ms()) {}
 
     ~ExternalIpcHandoffWorker() override
@@ -154,6 +154,12 @@ public:
     uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
+    void ResetConnection()
+    {
+        close_socket();
+        session_id_ = "external_ipc_" + camera_serial_;
+        socket_path_ = "/tmp/orange_external_recorder_" + camera_serial_ + ".sock";
+    }
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override
@@ -318,6 +324,8 @@ private:
 
     bool detach_frame(WORKER_ENTRY* entry)
     {
+        refresh_session_from_environment();
+
         if (source_gpu_id_ >= 0) {
             cudaSetDevice(source_gpu_id_);
         }
@@ -426,6 +434,18 @@ private:
             std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_
                       << " " << message << std::endl;
         }
+    }
+
+    void refresh_session_from_environment()
+    {
+        const std::string next_session_id = resolve_session_id();
+        const std::string next_socket_path = resolve_socket_path();
+        if (next_session_id == session_id_ && next_socket_path == socket_path_) {
+            return;
+        }
+        close_socket();
+        session_id_ = next_session_id;
+        socket_path_ = next_socket_path;
     }
 
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
@@ -848,6 +868,18 @@ void RecordingIngress::shutdown()
     request_stop();
     threaded_handoff_worker_.reset();
     external_ipc_handoff_worker_.reset();
+}
+
+void RecordingIngress::reset_external_ipc_connection()
+{
+    if (external_ipc_handoff_worker_) {
+        external_ipc_handoff_worker_->ResetConnection();
+    }
+}
+
+bool RecordingIngress::requires_owned_cuda_source() const
+{
+    return recording_sink_mode_ == "external_ipc";
 }
 
 void RecordingIngress::release_entry(WORKER_ENTRY* entry)

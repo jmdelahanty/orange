@@ -12,8 +12,10 @@ namespace orange::external_recorder {
 struct SupervisorPlan;
 struct SupervisorRuntimeState;
 
+inline constexpr const char* kGuiExternalRecorderStartupUnavailableReason =
+    "external recorder GUI startup failed before frames were submitted; see external recorder supervisor artifacts";
 inline constexpr const char* kGuiExternalRecorderNotImplementedReason =
-    "external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording";
+    kGuiExternalRecorderStartupUnavailableReason;
 inline constexpr const char* kExternalRecorderRollingImplementation =
     "external_recorder_gop_boundary_writer_rotation";
 
@@ -44,7 +46,7 @@ struct FailFastArtifactOptions {
     std::string recording_folder;
     std::string recording_id;
     std::string producer = "orange_gui";
-    std::string reason = kGuiExternalRecorderNotImplementedReason;
+    std::string reason = kGuiExternalRecorderStartupUnavailableReason;
     nlohmann::json contract = nlohmann::json::object();
     RecordingControlIntent recording_control;
 };

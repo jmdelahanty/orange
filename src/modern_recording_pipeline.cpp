@@ -310,6 +310,18 @@ void ModernRecordingPipeline::request_recording_drain()
     }
 }
 
+bool ModernRecordingPipeline::is_drained() const
+{
+    return !recording_ingress_ || recording_ingress_->IsDrained();
+}
+
+void ModernRecordingPipeline::reset_external_ipc_connection()
+{
+    if (recording_ingress_) {
+        recording_ingress_->reset_external_ipc_connection();
+    }
+}
+
 void ModernRecordingPipeline::shutdown()
 {
     refresh_split_gop_runtime_topology_snapshot();

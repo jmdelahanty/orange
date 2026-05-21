@@ -1153,13 +1153,32 @@ void acquire_frames(
 
     auto build_ptp_camera_summary_json = [&](bool finalized) {
         nlohmann::json summary = nlohmann::json::object();
+        const uint64_t acquisition_frames = camera_state.frame_count;
+        const uint64_t recording_frames_assigned = last_recording_frame_count;
+        const RecordingIngressStats recording_stats =
+            recording_ingress ? recording_ingress->GetStats() : RecordingIngressStats{};
         summary["camera_serial"] = camera_params->camera_serial;
         summary["camera_id"] = camera_params->camera_id;
         summary["gpu_id"] = camera_params->gpu_id;
         summary["sync_camera_enabled"] = camera_control->sync_camera;
         summary["finalized"] = finalized;
         summary["updated_at_utc"] = get_current_utc_timestamp();
-        summary["frame_count"] = camera_state.frame_count;
+        summary["frame_count"] = acquisition_frames;
+        summary["frame_count_semantics"] = "legacy_alias_for_acquisition_frames_received_total";
+        summary["acquisition_frames_received_total"] = acquisition_frames;
+        summary["sync_observed_frames_total"] =
+            camera_control->sync_camera ? acquisition_frames : 0ULL;
+        summary["sync_observed_frame_count_source"] = "successful_EVT_CameraGetFrame";
+        summary["recording_frames_assigned_total"] = recording_frames_assigned;
+        summary["last_recording_frame_id"] = recording_frames_assigned;
+        summary["recording_ingress_submitted_frames"] = recording_stats.submitted_frames;
+        summary["encoded_frames_total"] = nullptr;
+        summary["encoded_frame_count_source"] = "not_available_in_ptp_sync_summary";
+        summary["encoded_frame_count_authoritative_artifacts"] = {
+            {"metadata_csv", "Cam" + camera_params->camera_serial + "_meta.csv"},
+            {"keyframe_json", "Cam" + camera_params->camera_serial + "_keyframe.json"},
+            {"recording_session_json", "recording_session.json"}
+        };
         summary["frames_received"] = camera_state.frames_recd;
         summary["dropped_frames"] = camera_state.dropped_frames;
         summary["camera_frame_id_gaps"] = camera_state.dropped_frames;
@@ -1634,7 +1653,14 @@ void acquire_frames(
                 use_direct_pointer &&
                 !force_ring_copy;
             const bool use_analytics_hybrid = analytics_owned_frame_enabled;
-            bool use_ring_copy = use_direct_pointer && dispatch_count > 1 && !use_analytics_hybrid;
+            const bool recording_requires_owned_source =
+                will_record &&
+                recording_ingress &&
+                recording_ingress->requires_owned_cuda_source();
+            bool use_ring_copy =
+                use_direct_pointer &&
+                (dispatch_count > 1 || recording_requires_owned_source) &&
+                !use_analytics_hybrid;
             if (force_ring_copy) {
                 use_ring_copy = true;
             }

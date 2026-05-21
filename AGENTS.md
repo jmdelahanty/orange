@@ -474,6 +474,57 @@ multi-GPU split-GOP throughput.
   `0` GetFrame errors, and both merged MP4s passed video sanity. Post-frame-50
   `acquisition_to_detect_done_ms p95 = 4.488/4.598 ms` for
   `2010095/2010096`; YOLO queue wait p95 stayed `0.018/0.020 ms`.
+- Four-camera supervised headless PTP external-recorder validation on
+  2026-05-20 used a stamped temporary copy of
+  `experiment_specs/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised.json`.
+  Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised_20260520_195813`;
+  recorder metadata artifact:
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp_20260520_195813`;
+  recorder MP4/summary outputs:
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp`. All four cameras
+  opened after `2010093` returned, sustained about `100 fps`, acquired `401`
+  frames with `0` frame-id gaps/GetFrame errors/preprocess drops, and the
+  external recorders received/ACKed/encoded `400/400` frames per camera with
+  `0` skips/drops. All four merged MP4s passed video sanity.
+- In that four-camera run, real YOLO ran full-rate (`decimate = 1`) on all
+  four cameras. Post-frame-50 steady `acquisition_to_detect_done_ms p95` was
+  `4.595/4.601/4.631/4.618 ms` for
+  `2010093/2010094/2010095/2010096`; YOLO queue wait p95 stayed
+  `0.022-0.028 ms`. This is effectively the same speed as the good two-camera
+  external IPC results (`4.49-4.60 ms` supervised on 2026-05-07 and
+  `4.58/4.585 ms` in the longer 2026-04-26 run) and about `60%` lower p95
+  than the old two-camera in-process headless/GUI baselines at roughly
+  `11-12 ms`. The YOLO event rows were all zero-detection rows, so this
+  validates four-camera recording plus real inference plumbing, not positive
+  detection quality.
+- Four-camera A16 high-effort TensorRT validation on 2026-05-20 reran the same
+  supervised external IPC shape with
+  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine`.
+  Analytics artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised_a16_bo5_avg32_20260520_202903`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp_a16_bo5_avg32_20260520_202903`.
+  All four cameras passed again: `401` acquired frames each, `0` frame-id
+  gaps/GetFrame errors/preprocess drops, `400/400` external
+  received/ACKed/encoded frames per camera, and video sanity passed for all
+  merged MP4s.
+- The high-effort engine lowered post-frame-50 steady
+  `acquisition_to_detect_done_ms p95` to
+  `3.888/3.813/3.931/3.844 ms` for
+  `2010093/2010094/2010095/2010096`, average `3.869 ms`. That is a
+  `0.742 ms` or about `16.1%` p95 improvement over the same-day four-camera
+  default-engine average of `4.611 ms`. The win landed in model execution:
+  `infer_ms p95` moved from about `4.10 ms` to `3.19-3.28 ms`, while YOLO
+  queue wait p95 stayed tiny at `0.020-0.024 ms`. This matches the earlier
+  two-camera high-effort external IPC result (`3.944-3.950 ms` p95) and is the
+  strongest current evidence that the A16 high-effort FP16 engine should be the
+  next default candidate after quality/GUI validation.
+- Operational note for repeated four-camera comparisons: the repeatable
+  four-camera supervised spec has a reusable `artifact_root`, but its per-stream
+  recorder output paths currently point at the static
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp` directory. Stamp those
+  stream paths or clean that directory before preserving multiple runs.
 - Supervised headless external IPC rolling is now implemented in the
   diagnostic recorder. The one-camera checked-in repeatable spec is
   `experiment_specs/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6.json`;
@@ -544,7 +595,11 @@ multi-GPU split-GOP throughput.
   `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, visible stream/recording/finalizing
   timer confirmation, and `scripts/validate_gui_ptp_recording.py --latest` or
   `--latest-complete` artifact validation.
-- GUI/session external-recorder supervision and finalization remain the next
-  larger architecture slice after the in-process GUI path is revalidated.
+- GUI/session external-recorder supervision and finalization now have a first
+  implemented slice: GUI record start launches supervised external recorder
+  processes, finalization drains IPC handoff queues, stops recorders, and writes
+  an `orange_gui_external_ipc` `recording_session.json`. This is build/config
+  validated, but the next operator check is still a real GUI external IPC
+  recording on hardware.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.

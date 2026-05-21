@@ -437,7 +437,21 @@ std::string derive_keyframe_path(const std::string& mp4_path)
 {
     std::filesystem::path path(mp4_path);
     const std::string stem = path.stem().string();
-    path.replace_filename(stem + "_keyframes.csv");
+    path.replace_filename(stem + "_keyframes.json");
+    return path.string();
+}
+
+std::string normalize_keyframe_sidecar_path(const std::string& keyframe_path)
+{
+    if (keyframe_path.empty()) {
+        return {};
+    }
+    std::filesystem::path path(keyframe_path);
+    if (path.extension() == ".csv") {
+        path.replace_extension(".json");
+    } else if (path.extension().empty()) {
+        path += ".json";
+    }
     return path.string();
 }
 
@@ -1113,7 +1127,7 @@ public:
           mp4_keyframe_path_(
               options_.mp4_keyframe_path.empty()
                   ? derive_keyframe_path(options_.mp4_out_path)
-                  : options_.mp4_keyframe_path)
+                  : normalize_keyframe_sidecar_path(options_.mp4_keyframe_path))
     {
         rolling_enabled_ = options_.clip_seconds > 0;
         if (rolling_enabled_) {
@@ -2034,7 +2048,7 @@ private:
             ensure_parent_directory(options_.mp4_out_path);
             resolved_mp4_keyframe_path_ = options_.mp4_keyframe_path.empty()
                 ? derive_keyframe_path(options_.mp4_out_path)
-                : options_.mp4_keyframe_path;
+                : normalize_keyframe_sidecar_path(options_.mp4_keyframe_path);
             ensure_parent_directory(resolved_mp4_keyframe_path_);
             const AVCodecID codec_id =
                 options_.codec == "h264" ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC;

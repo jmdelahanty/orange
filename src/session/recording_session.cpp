@@ -1,6 +1,7 @@
 #include "session/recording_session.h"
 
 #include "external_recorder_contract_utils.h"
+#include "external_recorder_supervisor.h"
 #include "fsuid_guard.h"
 #include "project.h"
 #include "recording_ingress.h"
@@ -695,6 +696,9 @@ nlohmann::json build_single_clip_recording_session_manifest(
                   }}
              }})}
     };
+    if (options.recording_backend.is_object() && !options.recording_backend.empty()) {
+        manifest["recording_backend"] = options.recording_backend;
+    }
     return manifest;
 }
 
@@ -1107,7 +1111,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
     }
 }
 
-RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
+RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
+                                            CameraControl* camera_control,
                                             CameraParams* cameras_params,
                                             const CameraEachSelect* cameras_select,
                                             const int num_cameras,
@@ -1158,6 +1163,20 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
 
     const std::string normalized_sink_mode = normalize_recording_sink_mode(recording_sink_mode);
     const bool external_recorder_requested = normalized_sink_mode == "external_ipc";
+    auto cleanup_failed_start = [&]() {
+        {
+            std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
+            if (camera_control->recording_folder == recording_folder) {
+                camera_control->recording_folder.clear();
+            }
+            if (camera_control->recording_output_folder == recording_folder) {
+                camera_control->recording_output_folder.clear();
+            }
+        }
+        camera_control->record_video = false;
+        camera_control->recording_draining = false;
+        camera_control->stop_record = false;
+    };
 
     make_folder(recording_folder);
     write_recording_snapshot(
@@ -1178,6 +1197,21 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
         ptp_params);
 
     if (external_recorder_requested) {
+        if (!state) {
+            result.recording_folder = recording_folder;
+            result.recording_sink_mode = normalized_sink_mode;
+            result.error_message = "external_ipc recording requires a recording session state";
+            cleanup_failed_start();
+            return result;
+        }
+        if (state->external_recorder_lifecycle.started) {
+            std::string stop_error;
+            (void)orange::external_recorder::StopSupervisedRecorderLifecycle(
+                &state->external_recorder_lifecycle,
+                &stop_error);
+        }
+        reset_external_ipc_connections(state);
+
         orange::external_recorder::CameraContractMaterializationInput contract_input;
         contract_input.contract_config = external_recorder_contract_config;
         contract_input.recording_folder = recording_folder;
@@ -1189,39 +1223,81 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
             orange::external_recorder::MaterializeExternalRecorderContractForCameras(
                 contract_input);
 
-        orange::external_recorder::FailFastArtifactOptions artifact_options;
-        artifact_options.recording_folder = recording_folder;
-        artifact_options.recording_id = recording_id;
-        artifact_options.producer = "orange_gui";
-        artifact_options.reason =
-            orange::external_recorder::kGuiExternalRecorderNotImplementedReason;
-        artifact_options.contract = contract;
-        const orange::external_recorder::FailFastArtifactResult artifact_result =
-            orange::external_recorder::WriteExternalRecorderFailFastArtifacts(
-                artifact_options);
-        result.ok = false;
-        result.recording_folder = recording_folder;
-        result.recording_sink_mode = normalized_sink_mode;
-        result.error_message = artifact_result.error_message.empty()
-            ? orange::external_recorder::kGuiExternalRecorderNotImplementedReason
-            : artifact_result.error_message;
-        result.external_recorder_contract_path =
-            artifact_result.external_recorder_contract_path;
-        result.external_recorder_supervisor_plan_path =
-            artifact_result.external_recorder_supervisor_plan_path;
-        {
-            std::lock_guard<std::mutex> lock(camera_control->recording_folder_mutex);
-            if (camera_control->recording_folder == recording_folder) {
-                camera_control->recording_folder.clear();
-            }
+        state->active_external_recorder_contract = contract;
+        state->external_recorder_last_error.clear();
+
+        const std::filesystem::path contract_path =
+            std::filesystem::path(recording_folder) / "external_recorder_contract.json";
+        std::string artifact_error;
+        if (!write_json_file(contract_path, contract, &artifact_error)) {
+            result.recording_folder = recording_folder;
+            result.recording_sink_mode = normalized_sink_mode;
+            result.error_message = artifact_error;
+            state->external_recorder_last_error = artifact_error;
+            cleanup_failed_start();
+            return result;
         }
-        camera_control->record_video = false;
-        camera_control->recording_draining = false;
-        camera_control->stop_record = false;
-        std::cerr << "[recording_session] " << result.error_message
-                  << ". Wrote intended external recorder contract to "
-                  << result.external_recorder_contract_path << std::endl;
-        return result;
+        state->external_recorder_contract_path = contract_path.string();
+        result.external_recorder_contract_path = state->external_recorder_contract_path;
+
+        orange::external_recorder::SupervisedRecorderLifecycleOptions lifecycle_options;
+        lifecycle_options.contract = contract;
+        lifecycle_options.default_session_id = recording_id;
+        lifecycle_options.analytics_root = recording_folder;
+        lifecycle_options.verifier_path = "scripts/verify_external_recorder_session.py";
+        std::string supervisor_error;
+        if (!orange::external_recorder::StartSupervisedRecorderLifecycle(
+                lifecycle_options,
+                &state->external_recorder_lifecycle,
+                &supervisor_error)) {
+            result.recording_folder = recording_folder;
+            result.recording_sink_mode = normalized_sink_mode;
+            result.error_message = supervisor_error.empty()
+                ? "failed to start GUI external recorder supervisor"
+                : supervisor_error;
+            state->external_recorder_last_error = result.error_message;
+            if (!state->external_recorder_lifecycle.last_artifact_error.empty()) {
+                state->external_recorder_last_error += "; " +
+                    state->external_recorder_lifecycle.last_artifact_error;
+            }
+            std::cerr << "[recording_session] " << state->external_recorder_last_error << std::endl;
+            cleanup_failed_start();
+            return result;
+        }
+
+        const std::filesystem::path plan_path =
+            std::filesystem::path(recording_folder) / "external_recorder_supervisor_plan.json";
+        if (write_json_file(
+                plan_path,
+                orange::external_recorder::SupervisorPlanToJson(
+                    state->external_recorder_lifecycle.plan),
+                &artifact_error)) {
+            state->external_recorder_supervisor_plan_path = plan_path.string();
+            result.external_recorder_supervisor_plan_path =
+                state->external_recorder_supervisor_plan_path;
+        } else {
+            std::cerr << "[recording_session] Failed to write GUI external recorder supervisor plan: "
+                      << artifact_error << std::endl;
+        }
+
+        std::cout << "[recording_session] GUI external recorder supervisor started."
+                  << " streams=" << state->external_recorder_lifecycle.plan.streams.size()
+                  << " artifact_root=" << state->external_recorder_lifecycle.plan.artifact_root
+                  << std::endl;
+
+        if (!write_recording_snapshot(
+                recording_folder,
+                recording_id,
+                cameras_params,
+                num_cameras,
+                resolved_base_folder,
+                true,
+                camera_control->sync_camera,
+                ptp_params,
+                normalized_sink_mode)) {
+            std::cerr << "[recording_session] Failed to refresh latest-recording pointer for GUI external recorder run."
+                      << std::endl;
+        }
     }
 
     camera_control->record_video = true;
@@ -1265,6 +1341,37 @@ void request_drain_recording_run(RecordingSessionState* state, CameraControl* ca
     for (auto& pipeline : state->recording_pipelines) {
         if (pipeline) {
             pipeline->request_recording_drain();
+        }
+    }
+    if (state->recording_sink_mode == "external_ipc" &&
+        camera_control &&
+        !recording_pipelines_drained(state)) {
+        camera_control->recording_draining = true;
+        camera_control->stop_record = true;
+    }
+}
+
+bool recording_pipelines_drained(const RecordingSessionState* state)
+{
+    if (!state) {
+        return true;
+    }
+    for (const auto& pipeline : state->recording_pipelines) {
+        if (pipeline && !pipeline->is_drained()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void reset_external_ipc_connections(RecordingSessionState* state)
+{
+    if (!state) {
+        return;
+    }
+    for (auto& pipeline : state->recording_pipelines) {
+        if (pipeline) {
+            pipeline->reset_external_ipc_connection();
         }
     }
 }

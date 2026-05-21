@@ -67,6 +67,8 @@ public:
     void start();
     void request_stop();
     void shutdown();
+    void reset_external_ipc_connection();
+    bool requires_owned_cuda_source() const;
 
     EncoderPreprocessWorker* primary_preprocess_worker() const { return primary_preprocess_worker_; }
 

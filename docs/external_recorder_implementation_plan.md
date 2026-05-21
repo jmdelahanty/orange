@@ -457,13 +457,14 @@ two-camera PTP full-rate external split-GOP validation
 headless supervised recorder lifecycle validation
 ```
 
-The highest-signal next work is no longer headless split-GOP routing or
+The highest-signal remaining work is no longer headless split-GOP routing or
 headless process lifecycle validation; it is GUI/session production hardening:
 
-1. Add GUI/session supervision for external recorder startup, heartbeat, drain,
-   and finalization.
-2. Validate the GUI/session path with `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
+1. Validate the GUI/session external IPC path with
+   `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
    and the high-effort A16 detect engine candidate.
+2. Add user-visible recorder heartbeat/failure reporting beyond the current
+   finalization summary.
 3. Turn the diagnostic descriptor/routing contract into a versioned production
    recorder protocol.
 
@@ -495,9 +496,14 @@ Current contract-hardening status:
 - `src/external_recorder_lifecycle.*` now owns the shared supervised lifecycle
   wrapper for plan build, initial artifact writes, recorder process
   start/stop, per-camera socket/session env-var handoff, runtime artifact
-  writing, and verifier-handoff writing. Headless calls this wrapper; GUI
-  supervision remains deferred until the GUI/session layer is ready to expose
-  process failures and drain/finalization state.
+  writing, and verifier-handoff writing. Headless calls this wrapper, and the
+  GUI now uses it for the first external IPC recording slice.
+- GUI/session external IPC now starts supervised recorder processes on record
+  start, refreshes the IPC socket/session handoff after stream startup,
+  preserves recording drain state until the IPC handoff queues are empty, stops
+  the supervised recorders at finalization, and writes an
+  `orange_gui_external_ipc` single-clip `recording_session.json` from external
+  recorder summaries. Runtime GUI hardware validation is still pending.
 - A single-camera supervised headless smoke on 2026-05-07 validated that path:
   analytics root
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke_20260507_215347`,
@@ -566,6 +572,46 @@ Supervised hardware smoke result:
 - Two-camera steady-state post-frame-50 `acquisition_to_detect_done_ms p95` was
   `4.488 ms` for `2010095` and `4.598 ms` for `2010096`; YOLO queue wait p95
   was `0.018 ms` and `0.020 ms`, respectively.
+- Four-camera PTP supervised artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised_20260520_195813`;
+  recorder metadata artifact:
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp_20260520_195813`;
+  recorder MP4/summary outputs:
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp`. The run passed with
+  `400/400` frames received/ACKed/encoded for each of
+  `2010093/2010094/2010095/2010096`, `0` skips, `0` drops, `0` camera
+  frame-id gaps, `0` GetFrame errors, merged MP4 output enabled, and
+  `video_sanity=pass` for all four cameras.
+- Four-camera steady-state post-frame-50 `acquisition_to_detect_done_ms p95`
+  was `4.595 ms` for `2010093`, `4.601 ms` for `2010094`, `4.631 ms` for
+  `2010095`, and `4.618 ms` for `2010096`; YOLO queue wait p95 stayed between
+  `0.022 ms` and `0.028 ms`. This is within about `0.03-0.07 ms` of the good
+  two-camera external IPC p95 average and about `60%` lower than the old
+  two-camera in-process headless/GUI baselines at roughly `11-12 ms`.
+- The four-camera run used real YOLO at `decimate = 1`, but produced `400`
+  zero-detection event rows per camera and `0` positive detection rows. Treat
+  it as validation of four-camera acquisition, full-rate real inference
+  plumbing, and external split-GOP recording throughput, not detection quality.
+- Four-camera A16 high-effort FP16 TensorRT artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised_a16_bo5_avg32_20260520_202903`;
+  recorder artifact:
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp_a16_bo5_avg32_20260520_202903`.
+  This reran the same supervised external IPC shape with
+  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine`.
+  The run passed with `400/400` frames received/ACKed/encoded for all four
+  cameras, `0` skips, `0` drops, `0` frame-id gaps, `0` GetFrame errors, and
+  `video_sanity=pass` for all merged MP4s.
+- Four-camera high-effort steady-state post-frame-50
+  `acquisition_to_detect_done_ms p95` was `3.888 ms` for `2010093`,
+  `3.813 ms` for `2010094`, `3.931 ms` for `2010095`, and `3.844 ms` for
+  `2010096`, averaging `3.869 ms`. Compared with the same-day four-camera
+  default-engine average of `4.611 ms`, this is a `0.742 ms` or about `16.1%`
+  p95 improvement. `infer_ms p95` dropped from about `4.10 ms` to
+  `3.19-3.28 ms`; YOLO queue wait p95 remained `0.020-0.024 ms`.
+- Operational note: the repeatable four-camera supervised spec currently uses
+  static per-stream recorder output paths under
+  `/tmp/orange_external_recorder_supervised_fourcam_ptp`. Use a stamped copy or
+  clean/stamp those paths before preserving multiple comparison runs.
 - One-camera supervised external IPC rolling artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_rolling_smoke_a16_gpu5_6`;
   recorder artifact:
@@ -590,9 +636,9 @@ Supervised hardware smoke result:
   `ptp4l`/`phc2sys`, and left them running on exit. Stop with
   `scripts/ptp_stack.sh stop` when no more PTP validation is needed.
 
-Next production slice: carry this supervised lifecycle into the GUI/session
-path: config selection, process supervision, health/heartbeat, drain/finalize,
-and user-visible failure reporting.
+Next production slice: validate the GUI/session external IPC path on hardware,
+then add user-visible recorder health/heartbeat and failure reporting around
+the supervised lifecycle.
 
 Detailed Stage 5 protocol and routing design:
 

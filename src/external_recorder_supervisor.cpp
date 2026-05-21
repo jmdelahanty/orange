@@ -68,7 +68,7 @@ std::string derive_keyframe_path(const std::string& mp4_path)
         return {};
     }
     const std::filesystem::path path(mp4_path);
-    return (path.parent_path() / (path.stem().string() + "_keyframes.csv")).string();
+    return (path.parent_path() / (path.stem().string() + "_keyframes.json")).string();
 }
 
 std::string join_gpu_ids(const std::vector<int>& gpu_ids)

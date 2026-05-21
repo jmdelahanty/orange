@@ -171,18 +171,19 @@ Recommended default:
 
 `ORANGE_GUI_RECORDING_SINK_MODE` still overrides this field for diagnostics.
 
-`external_ipc` is recognized by the GUI/session path, but intentionally fails
-fast today. On record start, Orange writes the intended external recorder
-contract and supervisor plan into the proposed recording folder, then refuses
-to start recording with:
+`external_ipc` is the first GUI/session path for process-isolated recording.
+On record start, Orange materializes the external recorder contract, starts the
+supervised diagnostic recorder processes, and routes full-frame descriptors
+through the existing IPC handoff path. On drain/finalize, the GUI stops the
+supervised recorders and writes a shared `recording_session.json` with
+`producer = "orange_gui_external_ipc"` and
+`recording_backend.mode = "external_ipc"`.
 
-```text
-external recorder GUI supervision is not implemented yet; use headless supervised spec or in-process recording
-```
-
-This keeps the GUI contract aligned with the headless supervised recorder path
-without pretending the GUI can supervise, drain, and finalize external recorder
-processes yet.
+This path is still an early production-hardening slice. Build/config validation
+exists, but a real GUI hardware recording still needs to be run before treating
+it as the default operator path. The GUI finalization currently records
+external recorder summary metadata; decoded-video sanity and full verifier
+execution remain manual follow-up checks.
 
 ### `recording.ptp_register_read_decimate`
 

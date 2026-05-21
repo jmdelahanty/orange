@@ -563,6 +563,20 @@ Current emitted `ptp_sync_summary.json` shape:
       "finalized": true,
       "updated_at_utc": "YYYY-MM-DDTHH:MM:SSZ",
       "frame_count": 12345,
+      "frame_count_semantics": "legacy_alias_for_acquisition_frames_received_total",
+      "acquisition_frames_received_total": 12345,
+      "sync_observed_frames_total": 12345,
+      "sync_observed_frame_count_source": "successful_EVT_CameraGetFrame",
+      "recording_frames_assigned_total": 12000,
+      "last_recording_frame_id": 12000,
+      "recording_ingress_submitted_frames": 12000,
+      "encoded_frames_total": null,
+      "encoded_frame_count_source": "not_available_in_ptp_sync_summary",
+      "encoded_frame_count_authoritative_artifacts": {
+        "metadata_csv": "Cam02010093_meta.csv",
+        "keyframe_json": "Cam02010093_keyframe.json",
+        "recording_session_json": "recording_session.json"
+      },
       "frames_received": 12345,
       "dropped_frames": 0,
       "last_frame_timestamp_ns": 1234567890,
@@ -583,6 +597,20 @@ Notes:
 - Per-camera stat blocks are updated at low rate from the live acquisition loop.
 - `finalized=true` indicates the last update written for that camera during the
   active recording folder lifetime.
+- `frame_count` is a legacy alias for
+  `acquisition_frames_received_total`. It is the count of successful
+  `EVT_CameraGetFrame` returns observed by the acquisition loop for that camera
+  stream, not an encoded-video frame count.
+- `sync_observed_frames_total` is the same acquisition-frame population when
+  camera sync/PTP is enabled. It can include frames outside the recording-local
+  encoded video interval, such as stream pre-roll before recording is toggled on
+  or frames observed while recording is stopping/finalizing.
+- `recording_frames_assigned_total` / `last_recording_frame_id` are the
+  recording-local IDs assigned while `record_video` is active. They are closer
+  to the recording interval but still are not the authoritative encoded count.
+- `encoded_frames_total` is intentionally `null` in this sidecar. Use
+  `recording_session.json` camera artifacts, `Cam*_meta.csv` row count, or
+  `Cam*_keyframe.json.total_frames` for encoded/video ingest counts.
 - The summary is intended for session-level diagnostics and cross-camera timing
   comparisons, not for reconstructing exact per-frame order.
 

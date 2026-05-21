@@ -140,11 +140,24 @@ explicit Q/DQ quantization for durable model artifacts.
 
 Calibration does not require labels. Accuracy validation does.
 
+The dataset contract for Palette is documented in
+[Detect TensorRT Calibration Dataset](/home/jeremy/orange-gop-split-a16/docs/detect_tensorrt_calibration_dataset.md).
+That document should be treated as the handoff contract when collecting
+Orange frames/tensors for INT8 engine creation.
+
+For TensorRT INT8, "calibration frames" means representative examples used to
+measure activation ranges inside the floating-point network so TensorRT can
+choose INT8 scales. They are not training labels, and they are not necessarily
+the final validation set. Bad calibration frames can make a fast INT8 engine
+miss fish by clipping useful activations or wasting the limited INT8 range on
+conditions that never occur in production.
+
 Recommended calibration data shape:
 
 - Use real Orange camera frames or exact preprocessed tensors.
-- Cover both cameras, or at least representative samples from both camera
-  serials.
+- Cover every production camera family used by the engine. For the local
+  four-camera A16 setup, include `2010093`, `2010094`, `2010095`, and
+  `2010096`, not only the old two-camera pair.
 - Include fish present, no-fish, fish near edges, fish partially occluded,
   bright/dim lighting, normal dish background, bubbles/debris, motion blur,
   and any exposure/gain settings used in production.
@@ -152,6 +165,127 @@ Recommended calibration data shape:
   better if the set is redundant; coverage matters more than raw count.
 - Keep a manifest with source run folder, camera serial, frame id, timestamp,
   preprocessing version, and whether fish is present.
+- Keep calibration and validation split. It is fine for calibration frames to
+  be unlabeled, but the held-out validation set needs labels or trusted FP16
+  reference outputs.
+
+Preferred calibration representation:
+
+```text
+FP32 tensors named images, shape 1x3x640x640
+same letterbox/resize/padding/channel replication/normalization as Orange
+```
+
+Acceptable capture sources, in preference order:
+
+1. A future YOLO calibration dump that writes the exact post-preprocess FP32
+   `images` tensors. This is the cleanest because the TensorRT calibrator sees
+   exactly what Orange feeds to `enqueue`.
+2. Source-like full-resolution Mono8 frames plus a calibrator that reuses the
+   exact Orange YOLO preprocessing code offline.
+3. Current `pre_encoder_reference_capture` artifacts, but only with the
+   caveats below.
+
+### Using `pre_encoder_reference_capture`
+
+Orange already has a bounded dump path for short raw frame clips:
+`fixed.pre_encoder_reference_capture` in experiment specs, or
+`--preenc-ref-max-frames` / `--preenc-ref-max-seconds` in local headless mode.
+
+This is useful for INT8 calibration only if it is interpreted correctly:
+
+- It captures the prepared encoder input, not sensor-native camera raw and not
+  the already-preprocessed YOLO tensor.
+- The v1 artifact is `NV12`: `Cam<serial>_preenc_ref.bin` plus
+  `Cam<serial>_preenc_ref_index.csv` and `Cam<serial>_preenc_ref.json`.
+- For the current Mono8 full-frame path, the luma plane can be treated as the
+  source image for offline YOLO preprocessing when metadata confirms full
+  resolution, no downsample, expected pitch/height, and normal camera settings.
+- The UV plane is encoder-format bookkeeping for mono sources and should not be
+  treated as extra model information.
+- The offline calibrator must still run the same Orange YOLO preprocessing
+  contract: resize/letterbox to `640x640`, padding `114/255`, mono replicated
+  into planar B/G/R channels, FP32 normalized to `[0, 1]`.
+- Do not feed the raw NV12 dump directly to TensorRT calibration.
+
+Current implementation constraints:
+
+- `pre_encoder_reference_capture` requires the real in-process recording path.
+  It is not supported with `stream_only`, `preprocess_only`, or
+  `external_ipc`.
+- Keep captures short. The feature adds GPU-to-host copy and disk I/O, so it is
+  a data-collection tool, not a normal throughput benchmark mode.
+- For four-camera external IPC latency work, keep using the external IPC specs;
+  use separate short in-process reference captures only to collect calibration
+  examples.
+
+Example experiment-spec fragment for collecting a small calibration sample:
+
+```json
+{
+  "fixed": {
+    "duration_s": 3,
+    "warmup_s": 1,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "recording_sink_mode": "real",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_100fps_gop25_fourcam_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "pre_encoder_reference_capture": {
+      "enabled": true,
+      "max_frames": 120
+    }
+  }
+}
+```
+
+After the run, use `runs.json` or `runs.csv` to find:
+
+```text
+pre_encoder_reference_raw_dump_path
+pre_encoder_reference_index_path
+pre_encoder_reference_metadata_path
+```
+
+Then build a calibration manifest with, at minimum:
+
+```text
+camera_serial
+recording_frame_id
+timestamp
+raw_dump_path
+byte_offset
+byte_size
+width
+height
+pitch
+pixel_format
+source_run
+fish_present / no_fish / unknown
+```
+
+For a production-quality calibration set, sample across several short captures
+rather than dumping one long homogeneous segment. A good first target is
+roughly `100-300` frames per camera across multiple visual states, then a
+separate held-out validation set with positive fish examples.
+
+### Missing Better Capture Path
+
+The repository does not currently have a first-class "YOLO calibration tensor
+dump" that writes the exact `1x3x640x640` FP32 input tensors. If INT8 becomes
+the next active model-runtime experiment, that is the cleanest small feature to
+add:
+
+- tap after `optimized_yolo_preprocess.cu` produces the model input
+- sample every Nth accepted YOLO frame
+- write tensor bytes or `.npy` plus manifest rows
+- include camera serial, frame id, source image dimensions, preprocessing
+  version/hash, engine/model id, and normalization metadata
+- keep it bounded and disabled by default
+
+Until that exists, use the pre-encoder reference dump only as a source-frame
+capture mechanism and reproduce YOLO preprocessing offline.
 
 Recommended validation data shape:
 

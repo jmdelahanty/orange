@@ -91,12 +91,59 @@ at about `4.580 ms` / `4.585 ms` steady detect p95, the long validation shows
 about a `0.63-0.64 ms` p95 win for the high-effort candidate while preserving
 `100 fps` acquisition and external split-GOP recording health.
 
+Four-camera headless PTP supervised external-recorder validation with the
+high-effort `bo5_avg32` candidate:
+
+```text
+Cam2010093:
+  frames:                  400/400 received/ACKed/encoded
+  steady detect p95:       3.888 ms
+  steady YOLO total p95:   3.789 ms
+  steady infer p95:        3.220 ms
+  queue wait p95:          0.024 ms
+  drops/gaps/errors:       0
+
+Cam2010094:
+  frames:                  400/400 received/ACKed/encoded
+  steady detect p95:       3.813 ms
+  steady YOLO total p95:   3.773 ms
+  steady infer p95:        3.235 ms
+  queue wait p95:          0.024 ms
+  drops/gaps/errors:       0
+
+Cam2010095:
+  frames:                  400/400 received/ACKed/encoded
+  steady detect p95:       3.931 ms
+  steady YOLO total p95:   3.866 ms
+  steady infer p95:        3.192 ms
+  queue wait p95:          0.023 ms
+  drops/gaps/errors:       0
+
+Cam2010096:
+  frames:                  400/400 received/ACKed/encoded
+  steady detect p95:       3.844 ms
+  steady YOLO total p95:   3.816 ms
+  steady infer p95:        3.282 ms
+  queue wait p95:          0.020 ms
+  drops/gaps/errors:       0
+```
+
+The four-camera high-effort run averaged `3.869 ms` steady detect p95, versus
+`4.611 ms` for the same-day four-camera default-engine run. That is a
+`0.742 ms` or about `16.1%` p95 improvement. The win landed in TensorRT model
+execution: four-camera `infer_ms p95` dropped from about `4.10 ms` with the
+default engine to `3.19-3.28 ms` with the high-effort engine, while queue wait
+remained negligible. The result also matches the earlier two-camera high-effort
+long validation (`3.944-3.950 ms` p95), so the high-effort engine scales to
+four concurrent cameras in the external IPC recording path.
+
 ## Artifacts
 
 Source ONNX copied from the model-generation workstation:
 
 ```text
 /home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb.onnx
+sha256: dd13e5749411987143bfaa974c751a6c5c42a7d01970bea7088c084ffd6739a7
 ```
 
 Existing default engine:
@@ -142,6 +189,13 @@ High-effort longer validation output:
 ```text
 /tmp/orange_external_recorder_ptp_20260426_021831
 /home/jeremy/orange_data/exp/unsorted/2010095_2010096_headless_real_yolo_aq_off_100_cam4_ptp_a16_bo5_avg32_external_ipc_20260426_021831
+```
+
+Four-camera high-effort validation output:
+
+```text
+/tmp/orange_external_recorder_supervised_fourcam_ptp_a16_bo5_avg32_20260520_202903
+/home/jeremy/orange_data/exp/unsorted/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised_a16_bo5_avg32_20260520_202903
 ```
 
 ## Build Command
@@ -195,6 +249,74 @@ Important interpretation:
 - CPU postprocess remains tiny because NMS is inside TensorRT and only one
   result is copied/converted.
 - The app does not need a CPU NMS path for this engine.
+
+## Palette Handoff Metadata
+
+This artifact is an A16-optimized TensorRT engine build of the existing detect
+ONNX. It is not a newly trained detector and does not change the learned model
+weights, class semantics, output contract, or Orange preprocessing contract.
+
+Palette should treat the high-effort engine as hardware-specific deployment
+metadata for this model:
+
+```text
+model family:
+  omnifin0_cedar_shadow_v007_detect
+
+source ONNX:
+  /home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb.onnx
+
+source ONNX sha256:
+  dd13e5749411987143bfaa974c751a6c5c42a7d01970bea7088c084ffd6739a7
+
+recommended A16 FP16 engine:
+  /home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine
+
+recommended A16 FP16 engine sha256:
+  88a37effb634540ba987d1ebb39e952037c1082cbba0a7e79c7c82de2d03847b
+
+TensorRT:
+  10.0.1
+
+build target:
+  NVIDIA A16, CUDA device 5
+
+precision:
+  FP16 tactics with FP32 input/output bindings
+
+input tensor:
+  images, FP32, 1x3x640x640
+
+outputs:
+  num_dets INT32 1x1
+  bboxes FP32 1x1x4
+  scores FP32 1x1
+  labels INT32 1x1
+
+postprocess:
+  EfficientNMS_TRT inside TensorRT
+```
+
+Orange-side preprocessing is still the current mono detect contract:
+
+```text
+Mono8/luma source frame
+  -> letterbox resize to 640x640
+  -> padding value 114
+  -> divide by 255.0
+  -> replicate luma into B, G, R planes
+  -> planar NCHW FP32 tensor
+```
+
+Local Orange metadata does not currently include training-side provenance for
+the source model, such as training dataset, label schema, epochs, training
+commit, augmentation policy, or training/validation metrics. A Palette agent
+that needs training provenance should retrieve it from the model-generation
+workstation or training registry using the source model identifier:
+
+```text
+omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb
+```
 
 ## Why This Helped
 

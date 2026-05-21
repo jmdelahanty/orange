@@ -236,6 +236,45 @@ def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         raise VerificationError(f"missing CSV file: {path}") from exc
 
 
+def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
+    fieldnames, rows = read_csv_rows(path)
+    field_set = set(fieldnames)
+    if "recording_frame_id" in field_set:
+        frame_id_column = "recording_frame_id"
+    elif "frame_id" in field_set:
+        frame_id_column = "frame_id"
+    else:
+        raise VerificationError(
+            f"metadata CSV missing recording_frame_id/frame_id column: {path}"
+        )
+
+    for required_column in ("timestamp", "timestamp_sys"):
+        require(
+            required_column in field_set,
+            f"metadata CSV missing {required_column} column: {path}",
+        )
+
+    parsed_rows: list[dict[str, int]] = []
+    for row_index, row in enumerate(rows, start=2):
+        parsed_rows.append(
+            {
+                "recording_frame_id": as_int(
+                    row.get(frame_id_column),
+                    f"{frame_id_column} row {row_index} in {path}",
+                ),
+                "timestamp": as_int(
+                    row.get("timestamp"),
+                    f"timestamp row {row_index} in {path}",
+                ),
+                "timestamp_sys": as_int(
+                    row.get("timestamp_sys"),
+                    f"timestamp_sys row {row_index} in {path}",
+                ),
+            }
+        )
+    return parsed_rows
+
+
 def verify_rolling_output(
     artifact_root: Path,
     serial: str,
@@ -320,7 +359,29 @@ def verify_rolling_output(
         require(packet_count > 0, f"rolling clip has no packets for {serial}: {clip.get('clip_id')}")
         require(first_frame == expected_next_frame, f"rolling frame continuity break for {serial}: expected {expected_next_frame}, got {first_frame}")
         require(last_frame == first_frame + frame_count - 1, f"rolling frame range mismatch for {serial}: {clip.get('clip_id')}")
-        require(count_csv_data_rows(metadata_path) == frame_count, f"rolling metadata rows mismatch for {serial}: {metadata_path}")
+        metadata_rows = read_metadata_frame_rows(metadata_path)
+        require(
+            len(metadata_rows) == frame_count,
+            f"rolling metadata rows mismatch for {serial}: {metadata_path}",
+        )
+        require(
+            metadata_rows[0]["recording_frame_id"] == first_frame,
+            f"rolling metadata first frame mismatch for {serial}: {metadata_path}",
+        )
+        require(
+            metadata_rows[-1]["recording_frame_id"] == last_frame,
+            f"rolling metadata last frame mismatch for {serial}: {metadata_path}",
+        )
+        for left, right in zip(metadata_rows, metadata_rows[1:]):
+            left_frame = left["recording_frame_id"]
+            right_frame = right["recording_frame_id"]
+            require(
+                right_frame == left_frame + 1,
+                (
+                    f"rolling metadata frame gap inside {metadata_path}: "
+                    f"{left_frame} -> {right_frame}"
+                ),
+            )
         verified_clips.append(
             {
                 "clip_index": expected_index,

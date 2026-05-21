@@ -1,6 +1,7 @@
 #pragma once
 
 #include "modern_recording_pipeline.h"
+#include "external_recorder_lifecycle.h"
 #include "project.h"
 #include "recording_config_state.h"
 #include "video_capture.h"
@@ -18,6 +19,11 @@ struct RecordingSessionState {
     std::string external_recorder_config_status;
     std::string external_recorder_contract_source;
     nlohmann::json external_recorder_contract_config = nlohmann::json::object();
+    nlohmann::json active_external_recorder_contract = nlohmann::json::object();
+    orange::external_recorder::SupervisedRecorderLifecycleState external_recorder_lifecycle;
+    std::string external_recorder_contract_path;
+    std::string external_recorder_supervisor_plan_path;
+    std::string external_recorder_last_error;
 };
 
 struct RecordingRunStartResult {
@@ -78,6 +84,7 @@ struct SingleClipRecordingSessionManifestOptions {
     double actual_recording_duration_s = 0.0;
     double drain_duration_s = 0.0;
     bool timed_stop_hit = false;
+    nlohmann::json recording_backend = nlohmann::json::object();
     std::vector<RecordingSessionCameraArtifact> cameras;
 };
 
@@ -184,7 +191,8 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraResources* camera_resources,
                                            CameraControl* camera_control,
                                            const AppStorageConfig* app_storage_config = nullptr);
-RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
+RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
+                                            CameraControl* camera_control,
                                             CameraParams* cameras_params,
                                             const CameraEachSelect* cameras_select,
                                             int num_cameras,
@@ -194,6 +202,8 @@ RecordingRunStartResult begin_recording_run(CameraControl* camera_control,
                                             const nlohmann::json* external_recorder_contract_config = nullptr);
 void request_stop_recording_run(CameraControl* camera_control);
 void request_drain_recording_run(RecordingSessionState* state, CameraControl* camera_control);
+bool recording_pipelines_drained(const RecordingSessionState* state);
+void reset_external_ipc_connections(RecordingSessionState* state);
 std::string current_recording_folder(CameraControl* camera_control);
 void start_recording_pipeline_for_camera(RecordingSessionState* state, int camera_index);
 void request_stop_recording_pipeline_for_camera(RecordingSessionState* state, int camera_index);

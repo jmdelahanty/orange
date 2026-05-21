@@ -10,6 +10,8 @@ See also:
 - `docs/codec_quality_evaluation_protocol.md`
 - `docs/nvenc_throughput_todo.md`
 - `docs/encoding_importance_map_todo.md`
+- `docs/detect_int8_quantization_plan.md`
+- `docs/detect_calibration_dataset_tooling_todo.md`
 
 ## Rules For This Slice
 
@@ -109,6 +111,17 @@ below.
 - [ ] Add offline replay / encode tooling for captured reference clips.
 - [ ] Add a small analysis helper for decoding or previewing the raw dump.
 - [ ] Add explicit benchmark workflow docs once the first implementation lands.
+- [ ] Add an INT8 calibration extraction helper that reads bounded
+      `pre_encoder_reference_capture` artifacts, uses the luma plane as the
+      source image for full-resolution Mono8 captures, runs the exact Orange
+      YOLO preprocessing contract offline, and writes calibration tensors plus
+      a manifest. Deferred implementation checklist:
+      `docs/detect_calibration_dataset_tooling_todo.md`.
+- [ ] Add a separate bounded YOLO calibration tensor dump if INT8 becomes an
+      active production candidate. This should tap post-YOLO-preprocess
+      `1x3x640x640` FP32 tensors, not encoder-ready `NV12`. Deferred
+      implementation checklist:
+      `docs/detect_calibration_dataset_tooling_todo.md`.
 - [ ] Decide later whether simultaneous encoded-output + reference-capture runs
   are sufficient, or whether a reference-only capture mode is also worth adding.
 
