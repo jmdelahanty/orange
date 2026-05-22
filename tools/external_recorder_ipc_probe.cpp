@@ -904,6 +904,7 @@ struct EncodeSample {
     uint64_t bytes = 0;
     double enqueue_age_ms = 0.0;
     double prepare_ms = 0.0;
+    double slot_reuse_wait_ms = 0.0;
     double encode_total_ms = 0.0;
     double encode_picture_ms = 0.0;
     double completion_wait_ms = 0.0;
@@ -939,6 +940,7 @@ struct EncodeSummary {
     size_t mp4_peak_queued_bytes = 0;
     double enqueue_age_p95_ms = 0.0;
     double prepare_p95_ms = 0.0;
+    double slot_reuse_wait_p95_ms = 0.0;
     double encode_total_p95_ms = 0.0;
     double encode_picture_p95_ms = 0.0;
     double lock_bitstream_p95_ms = 0.0;
@@ -1038,6 +1040,8 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
             std::max(out.enqueue_age_p95_ms, summary.enqueue_age_p95_ms);
         out.prepare_p95_ms =
             std::max(out.prepare_p95_ms, summary.prepare_p95_ms);
+        out.slot_reuse_wait_p95_ms =
+            std::max(out.slot_reuse_wait_p95_ms, summary.slot_reuse_wait_p95_ms);
         out.encode_total_p95_ms =
             std::max(out.encode_total_p95_ms, summary.encode_total_p95_ms);
         out.encode_picture_p95_ms =
@@ -1072,7 +1076,7 @@ void write_encode_csv_header(std::ofstream& csv)
     csv << "encode_index,source_frame_index,camera_serial,session_id,stream_id,"
            "recording_frame_id,local_frame_id,gop_index,frame_index_within_gop,"
            "source_gpu_id,assigned_gpu_id,assigned_shard_id,routing_policy,bytes,"
-           "enqueue_age_ms,prepare_ms,encode_total_ms,"
+           "enqueue_age_ms,prepare_ms,slot_reuse_wait_ms,encode_total_ms,"
            "encode_picture_ms,completion_wait_ms,lock_bitstream_ms,"
            "bitstream_copy_ms,unlock_bitstream_ms,unmap_input_resource_ms,"
            "bitstream_fetch_ms,output_packets,output_bytes,returned_packets,"
@@ -1098,6 +1102,7 @@ void write_encode_csv_row(std::ofstream& csv, const EncodeSample& sample)
         << std::fixed << std::setprecision(6)
         << sample.enqueue_age_ms << ","
         << sample.prepare_ms << ","
+        << sample.slot_reuse_wait_ms << ","
         << sample.encode_total_ms << ","
         << sample.encode_picture_ms << ","
         << sample.completion_wait_ms << ","
@@ -1116,6 +1121,10 @@ struct DeviceSlot {
     void* ptr = nullptr;
     uint64_t bytes = 0;
     bool allocated = false;
+    cudaEvent_t detach_ready_event = nullptr;
+    cudaEvent_t slot_reusable_event = nullptr;
+    bool detach_ready_recorded = false;
+    bool slot_reusable_recorded = false;
 };
 
 class MergedGopOutput {
@@ -1766,6 +1775,7 @@ public:
                             Sample* sample)
     {
         check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external detach shard)");
+        ensure_copy_stream();
         const size_t slot_index = acquire_free_slot(desc.bytes);
         if (slot_index == kInvalidSlot) {
             if (sample) {
@@ -1777,13 +1787,22 @@ public:
             return false;
         }
 
+        DeviceSlot& slot = slots_[slot_index];
         check_cuda(
-            cudaMemcpy(
-                slots_[slot_index].ptr,
+            cudaMemcpyAsync(
+                slot.ptr,
                 imported_ptr,
                 desc.bytes,
-                cudaMemcpyDeviceToDevice),
-            "cudaMemcpy(external encode detach slot)");
+                cudaMemcpyDeviceToDevice,
+                copy_stream_),
+            "cudaMemcpyAsync(external encode detach slot)");
+        check_cuda(
+            cudaEventRecord(slot.detach_ready_event, copy_stream_),
+            "cudaEventRecord(external detach slot ready)");
+        slot.detach_ready_recorded = true;
+        check_cuda(
+            cudaEventSynchronize(slot.detach_ready_event),
+            "cudaEventSynchronize(external detach slot ready)");
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -1834,6 +1853,7 @@ public:
         out.mp4_peak_queued_bytes = mp4_peak_queued_bytes_;
         out.enqueue_age_p95_ms = percentile_ms(enqueue_age_samples_, 95.0);
         out.prepare_p95_ms = percentile_ms(prepare_samples_, 95.0);
+        out.slot_reuse_wait_p95_ms = percentile_ms(slot_reuse_wait_samples_, 95.0);
         out.encode_total_p95_ms = percentile_ms(encode_total_samples_, 95.0);
         out.encode_picture_p95_ms = percentile_ms(encode_picture_samples_, 95.0);
         out.lock_bitstream_p95_ms = percentile_ms(lock_bitstream_samples_, 95.0);
@@ -1894,6 +1914,16 @@ public:
 private:
     static constexpr size_t kInvalidSlot = std::numeric_limits<size_t>::max();
 
+    void ensure_copy_stream()
+    {
+        if (copy_stream_) {
+            return;
+        }
+        check_cuda(
+            cudaStreamCreateWithFlags(&copy_stream_, cudaStreamNonBlocking),
+            "cudaStreamCreateWithFlags(external detach copy)");
+    }
+
     void prewarm_peer_source(const void* peer_source_ptr)
     {
         if (!options_.encode_prewarm_peer_copy ||
@@ -1937,6 +1967,16 @@ private:
     void ensure_slot_allocated_locked(size_t slot_index, uint64_t bytes)
     {
         DeviceSlot& slot = slots_[slot_index];
+        if (!slot.detach_ready_event) {
+            check_cuda(
+                cudaEventCreateWithFlags(&slot.detach_ready_event, cudaEventDisableTiming),
+                "cudaEventCreateWithFlags(external detach ready)");
+        }
+        if (!slot.slot_reusable_event) {
+            check_cuda(
+                cudaEventCreateWithFlags(&slot.slot_reusable_event, cudaEventDisableTiming),
+                "cudaEventCreateWithFlags(external slot reusable)");
+        }
         if (!slot.allocated || slot.bytes < bytes) {
             if (slot.ptr) {
                 cudaFree(slot.ptr);
@@ -1964,6 +2004,9 @@ private:
     void release_slot(size_t slot_index)
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        DeviceSlot& slot = slots_[slot_index];
+        slot.detach_ready_recorded = false;
+        slot.slot_reusable_recorded = false;
         free_slots_.push_back(slot_index);
     }
 
@@ -1975,16 +2018,30 @@ private:
 
     void release_slots()
     {
-        if (!slots_.empty()) {
+        if (!slots_.empty() || copy_stream_) {
             cudaSetDevice(options_.gpu_id);
+        }
+        if (copy_stream_) {
+            cudaStreamDestroy(copy_stream_);
+            copy_stream_ = nullptr;
         }
         for (auto& slot : slots_) {
             if (slot.ptr) {
                 cudaFree(slot.ptr);
                 slot.ptr = nullptr;
             }
+            if (slot.detach_ready_event) {
+                cudaEventDestroy(slot.detach_ready_event);
+                slot.detach_ready_event = nullptr;
+            }
+            if (slot.slot_reusable_event) {
+                cudaEventDestroy(slot.slot_reusable_event);
+                slot.slot_reusable_event = nullptr;
+            }
             slot.bytes = 0;
             slot.allocated = false;
+            slot.detach_ready_recorded = false;
+            slot.slot_reusable_recorded = false;
         }
     }
 
@@ -2137,6 +2194,17 @@ private:
         }
     }
 
+    void wait_for_slot_reusable(size_t slot_index)
+    {
+        DeviceSlot& slot = slots_[slot_index];
+        if (!slot.slot_reusable_recorded || !slot.slot_reusable_event) {
+            return;
+        }
+        check_cuda(
+            cudaEventSynchronize(slot.slot_reusable_event),
+            "cudaEventSynchronize(external slot reusable)");
+    }
+
     void push_packet_to_outputs(const std::vector<uint8_t>& packet, bool flush_packet)
     {
         if (packet.empty()) {
@@ -2169,6 +2237,7 @@ private:
         returned_bytes_ += sample.returned_bytes;
         enqueue_age_samples_.push_back(sample.enqueue_age_ms);
         prepare_samples_.push_back(sample.prepare_ms);
+        slot_reuse_wait_samples_.push_back(sample.slot_reuse_wait_ms);
         encode_total_samples_.push_back(sample.encode_total_ms);
         encode_picture_samples_.push_back(sample.encode_picture_ms);
         lock_bitstream_samples_.push_back(sample.lock_bitstream_ms);
@@ -2217,7 +2286,19 @@ private:
         if (!input_frame || !input_frame->inputPtr) {
             throw std::runtime_error("NvEncoder returned no input frame");
         }
+        DeviceSlot& slot = slots_[item.slot_index];
+        if (slot.detach_ready_recorded && slot.detach_ready_event) {
+            check_cuda(
+                cudaStreamWaitEvent(stream_, slot.detach_ready_event, 0),
+                "cudaStreamWaitEvent(external detach ready)");
+        }
         prepare_input_frame(item, *input_frame);
+        if (slot.slot_reusable_event) {
+            check_cuda(
+                cudaEventRecord(slot.slot_reusable_event, stream_),
+                "cudaEventRecord(external slot reusable)");
+            slot.slot_reusable_recorded = true;
+        }
         sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
 
         NV_ENC_PIC_PARAMS pic_params = {NV_ENC_PIC_PARAMS_VER};
@@ -2248,6 +2329,9 @@ private:
         sample.output_packets = timing.output_packets;
         sample.output_bytes = timing.output_bytes;
         sample.returned_packets = static_cast<uint32_t>(packets.size());
+        const auto slot_wait_start = std::chrono::steady_clock::now();
+        wait_for_slot_reusable(item.slot_index);
+        sample.slot_reuse_wait_ms = ns_to_ms(elapsed_ns(slot_wait_start));
         if (merged_output_) {
             merged_output_->submit_packets(packets, output_timestamps, item.desc);
         }
@@ -2339,6 +2423,7 @@ private:
     std::chrono::steady_clock::time_point next_encode_time_;
     CUcontext cu_context_ = nullptr;
     cudaStream_t stream_ = nullptr;
+    cudaStream_t copy_stream_ = nullptr;
     std::unique_ptr<NvEncoderCuda> encoder_;
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
@@ -2360,6 +2445,7 @@ private:
     std::string resolved_mp4_keyframe_path_;
     std::vector<double> enqueue_age_samples_;
     std::vector<double> prepare_samples_;
+    std::vector<double> slot_reuse_wait_samples_;
     std::vector<double> encode_total_samples_;
     std::vector<double> encode_picture_samples_;
     std::vector<double> lock_bitstream_samples_;
@@ -2507,6 +2593,7 @@ void write_summary_json(const Options& options,
     out << "    \"flush_bytes\": " << enc.flush_bytes << ",\n";
     out << "    \"enqueue_age_p95_ms\": " << enc.enqueue_age_p95_ms << ",\n";
     out << "    \"prepare_p95_ms\": " << enc.prepare_p95_ms << ",\n";
+    out << "    \"slot_reuse_wait_p95_ms\": " << enc.slot_reuse_wait_p95_ms << ",\n";
     out << "    \"encode_total_p95_ms\": " << enc.encode_total_p95_ms << ",\n";
     out << "    \"encode_picture_p95_ms\": " << enc.encode_picture_p95_ms << ",\n";
     out << "    \"lock_bitstream_p95_ms\": " << enc.lock_bitstream_p95_ms << ",\n";
@@ -2536,6 +2623,7 @@ void write_summary_json(const Options& options,
         out << "      \"returned_bytes\": " << shard.returned_bytes << ",\n";
         out << "      \"mp4_packets\": " << shard.mp4_packets << ",\n";
         out << "      \"mp4_bytes\": " << shard.mp4_bytes << ",\n";
+        out << "      \"slot_reuse_wait_p95_ms\": " << shard.slot_reuse_wait_p95_ms << ",\n";
         out << "      \"encode_total_p95_ms\": " << shard.encode_total_p95_ms << ",\n";
         out << "      \"encode_picture_p95_ms\": " << shard.encode_picture_p95_ms << ",\n";
         out << "      \"lock_bitstream_p95_ms\": " << shard.lock_bitstream_p95_ms << ",\n";
