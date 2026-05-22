@@ -502,6 +502,56 @@ scripts/run_external_recorder_two_camera_ptp_smoke.sh \
   --skip-video-sanity
 ```
 
+## Reusable Build Wrapper
+
+Future FP16 detect-engine builds should use the checked-in wrapper instead of
+hand-running `trtexec` into the runtime detect directory:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+
+scripts/stage_detect_onnx_export.sh \
+  --onnx /path/to/model.onnx \
+  --onnx-manifest /path/to/model.onnx.manifest.json
+```
+
+This stages incoming Palette ONNX exports in:
+
+```text
+/home/jeremy/orange_data/model_sources/detect/<run_id>/
+```
+
+Then build from the staged source:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+
+scripts/build_tensorrt_detect_engine.sh \
+  --onnx /home/jeremy/orange_data/model_sources/detect/<run_id>/source.onnx \
+  --onnx-manifest /home/jeremy/orange_data/model_sources/detect/<run_id>/source.onnx.manifest.json \
+  --run-id <palette_run_id> \
+  --device 5 \
+  --target-hardware-class A16 \
+  --create-handoff
+```
+
+The wrapper builds in:
+
+```text
+/home/jeremy/orange_data/trt_builds/detect/<run_id>/<build_id>_<stamp>/
+```
+
+and copies only the deployment `.engine` plus runtime `.manifest.json` into:
+
+```text
+/home/jeremy/orange_data/detect/
+```
+
+It also writes `build_manifest.json`, `SHA256SUMS`, TensorRT profile/layer
+exports, benchmark timing, and an optional Palette handoff tarball. INT8 is
+intentionally not implemented in this wrapper yet because it needs an explicit
+calibration cache/data contract.
+
 ## Caveats
 
 - The first smoke was short: `101` frames per camera. The later `30 s` run

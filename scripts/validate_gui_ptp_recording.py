@@ -173,6 +173,14 @@ def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
         for serial in [gui_summary.camera_serial_from_video(path)]
         if serial is not None
     }
+    manifest = read_json(recording_folder / "recording_session.json")
+    camera_artifacts = manifest.get("camera_artifacts")
+    camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
+    for serial, artifact in camera_artifacts.items():
+        artifact = artifact if isinstance(artifact, dict) else {}
+        video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+        if video_path.exists() and video_path.stat().st_size > 0:
+            videos.add(str(serial))
     pipeline = {
         serial
         for path in recording_folder.glob("Cam*_pipeline_perf.csv")
@@ -299,9 +307,13 @@ def check_recording_session_manifest(
     if not manifest:
         return
 
+    producer = str(manifest.get("producer", ""))
+    backend = manifest.get("recording_backend")
+    backend = backend if isinstance(backend, dict) else {}
+    external_ipc = producer == "orange_gui_external_ipc" or backend.get("mode") == "external_ipc"
     reporter.check(
-        manifest.get("producer") == "orange_gui",
-        "recording_session producer is orange_gui",
+        producer in {"orange_gui", "orange_gui_external_ipc"},
+        f"recording_session producer is {producer}",
         f"recording_session producer={manifest.get('producer')!r}",
     )
     reporter.check(
@@ -341,7 +353,7 @@ def check_recording_session_manifest(
         metadata_rows = count_csv_data_rows(metadata_path)
 
         reporter.check(
-            metadata_path.exists() and metadata_rows is not None,
+            metadata_path.exists(),
             f"Cam{serial} recording_session metadata present",
             f"Cam{serial} recording_session metadata missing: {metadata_path}",
         )
@@ -350,11 +362,45 @@ def check_recording_session_manifest(
             f"Cam{serial} recording_session video present",
             f"Cam{serial} recording_session video missing: {video_path}",
         )
-        reporter.check(
-            frame_count is not None and metadata_rows == frame_count,
-            f"Cam{serial} recording_session frame_count matches metadata",
-            f"Cam{serial} recording_session frame_count={frame_count}, metadata_rows={metadata_rows}",
-        )
+        if external_ipc:
+            summary = read_json(metadata_path)
+            frames_received = integer(summary.get("frames_received"))
+            acks_sent = integer(summary.get("acks_sent"))
+            frames_encoded = integer(summary.get("frames_encoded"))
+            merged_output = summary.get("merged_output")
+            merged_output = merged_output if isinstance(merged_output, dict) else {}
+            packets_written = integer(merged_output.get("packets_written"))
+            reporter.check(
+                frame_count is not None and frames_received == frame_count,
+                f"Cam{serial} recording_session frame_count matches external frames_received",
+                (
+                    f"Cam{serial} recording_session frame_count={frame_count}, "
+                    f"external frames_received={frames_received}"
+                ),
+            )
+            reporter.check(
+                frame_count is not None and acks_sent == frame_count and frames_encoded == frame_count,
+                f"Cam{serial} external ACK/encoded counts match frame_count",
+                (
+                    f"Cam{serial} external counts frame_count={frame_count}, "
+                    f"acks_sent={acks_sent}, frames_encoded={frames_encoded}"
+                ),
+            )
+            if packets_written is not None and packet_count is not None:
+                reporter.check(
+                    packets_written == packet_count,
+                    f"Cam{serial} recording_session packet_count matches external packets",
+                    (
+                        f"Cam{serial} recording_session packet_count={packet_count}, "
+                        f"external packets_written={packets_written}"
+                    ),
+                )
+        else:
+            reporter.check(
+                frame_count is not None and metadata_rows == frame_count,
+                f"Cam{serial} recording_session frame_count matches metadata",
+                f"Cam{serial} recording_session frame_count={frame_count}, metadata_rows={metadata_rows}",
+            )
         reporter.check(
             packet_count is not None and packet_count > 0,
             f"Cam{serial} recording_session packet_count present",

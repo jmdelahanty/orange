@@ -741,6 +741,15 @@ Notes:
   `producer = "orange_gui"` and updates `recording_snapshot.json` with
   `session.recording_mode = "single_clip"` plus
   `session.recording_session_manifest_path`.
+- GUI external IPC recordings use the same `single_clip` manifest shape with
+  `producer = "orange_gui_external_ipc"` and
+  `recording_backend.mode = "external_ipc"`. In that layout,
+  `camera_artifacts.<serial>.video` points at
+  `external_recorder/Cam<serial>_external.mp4`, and
+  `camera_artifacts.<serial>.metadata` points at the external recorder summary
+  JSON instead of a per-frame `Cam*_meta.csv`. Consumers should compare
+  `camera_artifacts.<serial>.frame_count` to external summary fields such as
+  `frames_received`, `acks_sent`, and `frames_encoded`.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as

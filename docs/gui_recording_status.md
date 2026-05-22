@@ -171,9 +171,10 @@ for the first process-isolated recording slice. The GUI starts recorder
 processes on record start, drains IPC handoff queues on stop, stops the
 recorders during finalization, and writes a shared single-clip manifest with
 `producer = "orange_gui_external_ipc"` and
-`recording_backend.mode = "external_ipc"`. Runtime GUI hardware validation is
-still pending, and decoded-video sanity/full verifier execution remain manual
-checks for now.
+`recording_backend.mode = "external_ipc"`. The first two-camera hardware GUI
+validation passed on 2026-05-21. The standard GUI validator now follows the
+external video paths in `recording_session.json`, so GUI external IPC artifacts
+do not need root-level `Cam*.mp4` files.
 
 ### GUI PTP Register-Read Decimation
 
@@ -496,9 +497,21 @@ Current GUI implication:
 - GUI finalization now waits for the IPC handoff queues to drain, closes the
   socket connections, stops the supervised recorders, and writes
   `recording_session.json` from external recorder summaries.
-- The remaining GUI external-recorder gaps are runtime hardware validation,
-  decoded-video sanity integration, verifier execution, and user-visible
-  heartbeat/failure reporting.
+- The first GUI external-recorder hardware validation passed:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`.
+  The run used `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`,
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, `100_cam4_ptp`, and the A16
+  `640x640` TensorRT detect engine.
+- Both cameras produced `1645` submitted/ACKed/encoded frames with
+  `0` external IPC failures, `0` ACK timeouts, `0` frame-ID gaps,
+  `0` GetFrame errors, and `0` encode failures.
+- External MP4s were `4512x4512`, `100 fps`, `1645` frames, about
+  `151.3 Mbps`, and decoded video sanity passed.
+- YOLO steady detect p95 was `4.314 ms` for `2010095` and `4.227 ms` for
+  `2010096`; YOLO queue p95 stayed `0.019/0.017 ms`.
+- Remaining GUI external-recorder gaps are user-visible recorder
+  heartbeat/failure reporting and a GUI-side PTP preflight/repair path. The
+  existing validation is command-line driven after the recording completes.
 
 Earlier GUI external-recorder fail-fast artifact:
 
@@ -524,12 +537,17 @@ Current GUI validation tooling:
   be incomplete and the failure reason matters.
 - `scripts/validate_gui_ptp_recording.py --latest-complete` skips
   metadata-only folders and selects the newest direct child with
-  `recording_snapshot.json` plus at least one camera that has a main `Cam*.mp4`,
-  `Cam*_pipeline_perf.csv`, and `Cam*_yolo_perf.csv`.
+  `recording_snapshot.json` plus at least one camera that has video either as a
+  root-level `Cam*.mp4` or through `recording_session.json` camera artifacts,
+  plus `Cam*_pipeline_perf.csv` and `Cam*_yolo_perf.csv`.
 - The validator defaults match the current GUI PTP target:
   `sync_mode = ptp_gate`, `ptp.enabled = true`, `ptp.mode = TwoStep`,
   `ptp_register_read_decimate = 100`, zero camera gaps/GetFrame errors/encode
   failures, valid decoded full-frame video content, and low YOLO queue wait.
+- For GUI `external_ipc`, the validator accepts
+  `producer = "orange_gui_external_ipc"`, validates frame counts against the
+  external recorder summaries, and decodes the external MP4s referenced by
+  `recording_session.json`.
 - The next GUI run should also visually confirm the new status timers:
   stream elapsed while streaming, active recording elapsed while recording, and
   finalizing elapsed during drain after the recording button is paused/stopped.
@@ -539,10 +557,33 @@ Current decision:
 - the GUI is acceptable at its current capability level for now
 - validated GUI recording can start, stop, drain, and finalize without requiring
   `Stop streaming` to complete the recording drain
-- the remaining GUI detect-latency gap is documented and understood as
-  in-process recording contention, not as a PTP register-polling issue
-- GUI external-recorder integration is deferred rather than treated as the next
-  mandatory step
+- GUI external IPC is now the validated low-latency process-isolated recording
+  path for the two-camera `100_cam4_ptp` setup
+- the remaining GUI detect-latency gap is specific to in-process recording
+  contention, not PTP register polling or the GUI display lifecycle
+
+### PTP Stack Operational Caveat
+
+The 2026-05-21 GUI external IPC retry initially showed `Streaming FPS = 0` and
+`YOLO FPS = 0` because the host PTP stack was stopped. In the current GUI path,
+`ptp_gate` startup can wait in the PTP offset/gate setup before
+`AcquisitionStart`, so the stream appears idle rather than failing fast. Before
+GUI PTP validation, check:
+
+```bash
+sudo -n ./scripts/ptp_stack.sh status
+```
+
+If `ptp4l`/`phc2sys` or `/var/run/ptp4l` are missing, start them:
+
+```bash
+sudo -n ./scripts/ptp_stack.sh start
+sudo -n ./scripts/ptp_stack.sh status
+```
+
+Headless PTP runs may repair this automatically. The GUI path still needs a
+preflight/repair guard so operators do not have to infer the issue from zero
+streaming FPS.
 
 ## Known Caveats
 

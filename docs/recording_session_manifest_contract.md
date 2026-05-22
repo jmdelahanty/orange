@@ -439,6 +439,28 @@ Latest supervised external IPC rolling validation:
   verifier passed against this shared manifest
 - latest index-validation native artifact:
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_rolling_clip_index_20260509_index_native`
+
+Latest GUI external IPC single-clip validation:
+
+- artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`
+- launch shape:
+  `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc ORANGE_PTP_REGISTER_READ_DECIMATE=100 ./scripts/run_gui_aq_off_validation.sh`
+- `recording_session.json` reported `mode = "single_clip"`,
+  `producer = "orange_gui_external_ipc"`, and
+  `recording_backend.mode = "external_ipc"`
+- `camera_artifacts.<serial>.video` points at
+  `external_recorder/Cam<serial>_external.mp4`; root-level `Cam*.mp4` files
+  are not required for this GUI external IPC layout
+- `camera_artifacts.<serial>.metadata` points at the external recorder summary
+  JSON, not a per-frame `Cam*_meta.csv`; frame-count validation must therefore
+  compare `camera_artifacts.<serial>.frame_count` to the external summary's
+  `frames_received`, `acks_sent`, and `frames_encoded`
+- both cameras recorded `1645` submitted/ACKed/encoded frames with no frame
+  gaps, GetFrame errors, external IPC failures, or ACK timeouts
+- the standard GUI validator now accepts this manifest shape and
+  `scripts/validate_gui_ptp_recording.py --latest-complete` passes against the
+  artifact
 - latest index-validation external recorder artifact:
   `/tmp/orange_external_recorder_ptp_rolling_20260509_index_external`
 - latest index-validation external analytics artifact:

@@ -503,7 +503,8 @@ Current contract-hardening status:
   preserves recording drain state until the IPC handoff queues are empty, stops
   the supervised recorders at finalization, and writes an
   `orange_gui_external_ipc` single-clip `recording_session.json` from external
-  recorder summaries. Runtime GUI hardware validation is still pending.
+  recorder summaries. Two-camera GUI hardware validation passed on 2026-05-21;
+  see the latest GUI/session validation note below.
 - A single-camera supervised headless smoke on 2026-05-07 validated that path:
   analytics root
   `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_external_ipc_supervised_encode_smoke_20260507_215347`,
@@ -636,9 +637,33 @@ Supervised hardware smoke result:
   `ptp4l`/`phc2sys`, and left them running on exit. Stop with
   `scripts/ptp_stack.sh stop` when no more PTP validation is needed.
 
-Next production slice: validate the GUI/session external IPC path on hardware,
-then add user-visible recorder health/heartbeat and failure reporting around
-the supervised lifecycle.
+Latest GUI/session external IPC validation:
+
+- GUI artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`
+- command shape:
+  `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc ORANGE_PTP_REGISTER_READ_DECIMATE=100 ./scripts/run_gui_aq_off_validation.sh`
+- config: `100_cam4_ptp`, `sync_mode = "ptp_gate"`, `ptp.enabled = true`,
+  `ptp.mode = "TwoStep"`, A16 `640x640` TensorRT detect engine
+- the GUI wrote `producer = "orange_gui_external_ipc"` and
+  `recording_backend.mode = "external_ipc"` in `recording_session.json`
+- both cameras recorded `1645` submitted/ACKed/encoded frames with
+  `0` external IPC failures, `0` ACK timeouts, `0` camera frame-ID gaps,
+  `0` GetFrame errors, and `0` encode failures
+- merged external MP4s were `4512x4512`, `100 fps`, `1645` frames, about
+  `151.3 Mbps`, and decoded video sanity passed
+- YOLO steady detect p95 was `4.314 ms` for `2010095` and `4.227 ms` for
+  `2010096`; YOLO queue p95 was `0.019/0.017 ms`
+- `scripts/verify_external_recorder_session.py` passed against the external
+  recorder artifact root
+- `scripts/validate_gui_ptp_recording.py --latest-complete` now passes after
+  the validator was updated to use `recording_session.json` external video
+  paths instead of requiring root-level `Cam*.mp4` files
+
+Next production slice: add GUI-visible recorder health/heartbeat and failure
+reporting around the supervised lifecycle, and add a GUI PTP stack
+preflight/repair guard so `ptp_gate` startup fails clearly instead of leaving
+streaming/YOLO FPS at zero when `ptp4l`/`phc2sys` are stopped.
 
 Detailed Stage 5 protocol and routing design:
 

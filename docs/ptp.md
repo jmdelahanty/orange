@@ -77,6 +77,24 @@ main UI now also exposes a `Host PTP Stack` section with:
 The UI calls `scripts/ptp_stack.sh` directly and shows captured stdout/stderr,
 plus a compact status summary for `ptp4l`, `phc2sys`, and socket presence.
 
+GUI validation note: the GUI `ptp_gate` streaming path currently does not
+auto-repair a stopped host PTP stack the way headless validation can. If
+`ptp4l`/`phc2sys` are stopped, starting a GUI PTP stream may leave
+`Streaming FPS` and `YOLO FPS` at `0` while startup waits in PTP offset/gate
+setup before acquisition begins. Before GUI PTP validation, run:
+
+```bash
+sudo -n ./scripts/ptp_stack.sh status
+```
+
+If the status shows missing `ptp4l`, `phc2sys`, or `/var/run/ptp4l`, start the
+stack and recheck:
+
+```bash
+sudo -n ./scripts/ptp_stack.sh start
+sudo -n ./scripts/ptp_stack.sh status
+```
+
 Optional shell alias:
 
 ```bash

@@ -179,11 +179,19 @@ supervised recorders and writes a shared `recording_session.json` with
 `producer = "orange_gui_external_ipc"` and
 `recording_backend.mode = "external_ipc"`.
 
-This path is still an early production-hardening slice. Build/config validation
-exists, but a real GUI hardware recording still needs to be run before treating
-it as the default operator path. The GUI finalization currently records
-external recorder summary metadata; decoded-video sanity and full verifier
-execution remain manual follow-up checks.
+This path passed the first two-camera GUI hardware validation on 2026-05-21 at:
+
+```text
+/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24
+```
+
+The run used `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`,
+`ORANGE_PTP_REGISTER_READ_DECIMATE=100`, and `100_cam4_ptp`. Both cameras
+recorded `1645` submitted/ACKed/encoded frames with no external IPC failures,
+ACK timeouts, frame gaps, GetFrame errors, or encode failures. The standard GUI
+validator now follows `recording_session.json` external video paths and passes
+for this layout. Remaining production-hardening work is GUI-visible recorder
+health/failure reporting and GUI PTP-stack preflight/repair.
 
 ### `recording.ptp_register_read_decimate`
 

@@ -258,13 +258,21 @@ Current read:
   camera over `401` acquired frames, encoded/ACKed `400/400` frames per camera,
   had no camera gaps/GetFrame errors, and kept cadence-probe embedded timestamp
   skew within `-18 ns` to `+22 ns`.
-- The next PTP validation is GUI/session with
-  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, after the GUI/session layer can
-  supervise external recorder startup/drain/finalization.
+- GUI/session PTP validation with supervised external IPC is now complete for
+  the two-camera `100_cam4_ptp` setup. The 2026-05-21 artifact
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24` used
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, sampled `27` PTP register reads per
+  camera, recorded `1645/1645` submitted/ACKed/encoded frames per camera, and
+  passed `scripts/validate_gui_ptp_recording.py --latest-complete`.
 - Operational note: headless `ptp_gate` runs may auto-start `scripts/ptp_stack.sh`
   if the host PTP stack is not ready. If Orange starts it, the stack is left
   running after the run and should be stopped explicitly with
   `scripts/ptp_stack.sh stop` when no more PTP validation is planned.
+- GUI `ptp_gate` currently does not do the same automatic repair. If the host
+  PTP stack is stopped, the GUI stream can remain at `0` streaming/YOLO FPS
+  while startup waits in PTP offset/gate setup before acquisition begins. Add a
+  GUI preflight/repair guard so this becomes an explicit operator-visible
+  failure or repair action.
 - The original hardening items below are still relevant: deadline-based
   barriers, thread-safe shared state, robust reset after partial failure, and
   GUI/headless lifecycle symmetry are not solved by register-read decimation.

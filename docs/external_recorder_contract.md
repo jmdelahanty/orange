@@ -363,9 +363,14 @@ GUI/session status:
   camera, and writes a shared single-clip `recording_session.json` with
   `producer = "orange_gui_external_ipc"` and
   `recording_backend.mode = "external_ipc"`.
-- This is the first GUI/session supervision slice. Runtime GUI hardware
-  validation, decoded-video sanity integration, verifier execution, and
-  user-visible heartbeat/failure reporting remain follow-up work.
+- First GUI/session hardware validation passed on 2026-05-21:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`. Both cameras
+  recorded `1645` submitted/ACKed/encoded frames with no external IPC
+  failures, no ACK timeouts, no frame gaps/GetFrame errors, and valid decoded
+  external MP4s. `scripts/validate_gui_ptp_recording.py --latest-complete`
+  now follows `recording_session.json` external video paths for this layout.
+- User-visible recorder heartbeat/failure reporting and GUI-side PTP stack
+  preflight remain follow-up work.
 
 CLI lifecycle smoke without cameras:
 

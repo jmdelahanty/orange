@@ -49,6 +49,11 @@ def read_json(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def path_from_recording_folder(recording_folder: Path, value: Any) -> Path:
+    path = Path(str(value or ""))
+    return path if path.is_absolute() else recording_folder / path
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -414,7 +419,21 @@ def summarize_videos(recording_folder: Path, ffprobe: str) -> dict[str, Any]:
         serial = camera_serial_from_video(path)
         if serial is None:
             continue
-        out[serial] = {"path": str(path), **ffprobe_video(path, ffprobe)}
+        out[serial] = {"path": str(path), "source": "recording_folder", **ffprobe_video(path, ffprobe)}
+
+    manifest = read_json(recording_folder / "recording_session.json")
+    camera_artifacts = manifest.get("camera_artifacts")
+    camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
+    for serial, artifact in sorted(camera_artifacts.items()):
+        artifact = artifact if isinstance(artifact, dict) else {}
+        video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+        if not video_path.exists() or video_path.stat().st_size == 0:
+            continue
+        out[str(serial)] = {
+            "path": str(video_path),
+            "source": "recording_session",
+            **ffprobe_video(video_path, ffprobe),
+        }
     return out
 
 

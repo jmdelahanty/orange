@@ -106,7 +106,9 @@ The validator defaults to the current production-like expectation:
 `ptp_register_read_decimate = 100`, zero camera gaps/GetFrame errors/encode
 failures, valid decoded full-frame videos, a GUI-written
 `recording_session.json`, real per-camera packet counts, and low YOLO queue
-wait.
+wait. For GUI `external_ipc` recordings, the validator follows the
+`recording_session.json` external video paths rather than requiring root-level
+`Cam*.mp4` files.
 
 Recent measured GUI PTP/AQ-off result:
 
@@ -580,8 +582,9 @@ multi-GPU split-GOP throughput.
   with three clips and `scripts/verify_timed_recording.py` passing.
 - GUI in-process recordings now write a shared single-clip
   `recording_session.json` after the recording drain completes, and
-  `recording_snapshot.json` points at it. This is build-verified but still
-  needs the next GUI validation run.
+  `recording_snapshot.json` points at it. This is build-verified; if the
+  in-process sink is used again, it still needs a separate GUI revalidation
+  because the latest GUI hardware pass used `external_ipc`.
 - GUI app storage can now set `recording.ptp_register_read_decimate`; the env
   var `ORANGE_PTP_REGISTER_READ_DECIMATE` still takes precedence.
 - In the latest native index-validation run, the host PTP stack was initially
@@ -591,15 +594,27 @@ multi-GPU split-GOP throughput.
   `ptp4l|phc2sys` processes and no `/var/run/ptp4l` socket. For future PTP
   runs, remember that auto-started host PTP should be explicitly stopped with
   `scripts/ptp_stack.sh stop` when validation is done.
-- Next operator check is a GUI PTP/AQ-off in-process recording with
-  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, visible stream/recording/finalizing
-  timer confirmation, and `scripts/validate_gui_ptp_recording.py --latest` or
-  `--latest-complete` artifact validation.
 - GUI/session external-recorder supervision and finalization now have a first
   implemented slice: GUI record start launches supervised external recorder
   processes, finalization drains IPC handoff queues, stops recorders, and writes
-  an `orange_gui_external_ipc` `recording_session.json`. This is build/config
-  validated, but the next operator check is still a real GUI external IPC
-  recording on hardware.
+  an `orange_gui_external_ipc` `recording_session.json`.
+- Latest GUI external IPC hardware validation:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`, launched with
+  `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc` and
+  `ORANGE_PTP_REGISTER_READ_DECIMATE=100`, passed
+  `scripts/validate_gui_ptp_recording.py --latest-complete` after the
+  validator was updated to follow `recording_session.json` external video
+  paths. Both cameras used `sync_mode = "ptp_gate"`, `ptp.enabled = true`,
+  `ptp.mode = "TwoStep"`, and sampled `27` PTP register reads. Both cameras
+  recorded `1645` submitted/ACKed/encoded frames with `0` external IPC
+  failures, `0` ACK timeouts, `0` frame gaps, `0` GetFrame errors, and
+  `0` encode failures. External MP4s were `4512x4512`, `100 fps`,
+  `1645` frames, about `151.3 Mbps`, and decoded video sanity passed.
+  YOLO steady detect p95 was `4.314 ms` for `2010095` and `4.227 ms` for
+  `2010096`; YOLO queue p95 stayed `0.019/0.017 ms`.
+- Operational caveat from that validation: the GUI `ptp_gate` stream can appear
+  stuck at `0` streaming/YOLO FPS if the host PTP stack is stopped before
+  streaming. Start or verify it with `sudo -n ./scripts/ptp_stack.sh start`
+  and `sudo -n ./scripts/ptp_stack.sh status` before GUI PTP validation.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
