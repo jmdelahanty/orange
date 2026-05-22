@@ -9,11 +9,13 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <unordered_map>
 #include <unistd.h>
 #include <utility>
 
@@ -55,6 +57,22 @@ void release_recording_entry_to_recycle(SafeQueue<WORKER_ENTRY*>* recycle_queue,
     if (recycle_queue) {
         recycle_queue->push(entry);
     }
+}
+
+bool recording_ingress_env_flag_enabled(const char* name, bool default_value = false)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    std::string normalized = value;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return normalized == "1" ||
+           normalized == "true" ||
+           normalized == "yes" ||
+           normalized == "on";
 }
 } // namespace
 
@@ -139,42 +157,89 @@ public:
           session_id_("external_ipc_" + camera_serial_),
           stream_id_(camera_serial_),
           socket_path_("/tmp/orange_external_recorder_" + camera_serial_ + ".sock"),
-          ack_timeout_ms_(resolve_ack_timeout_ms()) {}
+          ack_timeout_ms_(resolve_ack_timeout_ms()),
+          deferred_release_(recording_ingress_env_flag_enabled(
+              "ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false))
+    {
+        if (deferred_release_) {
+            std::cout << "[ExternalIpcRecorder] camera=" << camera_serial_
+                      << " forcing deferred source release protocol" << std::endl;
+        }
+    }
 
     ~ExternalIpcHandoffWorker() override
     {
+        release_all_pending("worker shutdown");
         close_socket();
     }
 
     double fps() const { return current_fps_.load(std::memory_order_relaxed); }
-    bool IsDrained() const {
+    bool IsDrained()
+    {
+        if (in_flight_.load(std::memory_order_relaxed) == 0 &&
+            pending_release_count() > 0) {
+            poll_protocol_lines(false);
+        }
         return in_flight_.load(std::memory_order_relaxed) == 0 &&
-               GetCountQueueIn() == 0;
+               GetCountQueueIn() == 0 &&
+               pending_release_count() == 0;
     }
     uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
     void ResetConnection()
     {
+        release_all_pending("connection reset");
         close_socket();
         session_id_ = "external_ipc_" + camera_serial_;
         socket_path_ = "/tmp/orange_external_recorder_" + camera_serial_ + ".sock";
     }
 
 protected:
+    void ThreadRunning() override
+    {
+        std::cout << "Child Thread Start 0 (ExternalIpcRecorder_Cam_"
+                  << camera_serial_ << ")" << std::endl;
+        while (IsMachineOn() || GetCountQueueIn() > 0 || pending_release_count() > 0) {
+            if (deferred_release_ || pending_release_count() > 0) {
+                poll_protocol_lines(false);
+            }
+            WORKER_ENTRY* entry = GetObjectFromQueueIn();
+            if (entry) {
+                WorkerFunction(entry);
+                continue;
+            }
+            usleep(1000);
+        }
+        std::cout << "Child Thread DONE 0 (ExternalIpcRecorder_Cam_"
+                  << camera_serial_ << ")" << std::endl;
+    }
+
     bool WorkerFunction(WORKER_ENTRY* entry) override
     {
         if (!entry) {
+            if (deferred_release_) {
+                poll_protocol_lines(false);
+            }
             return false;
         }
         in_flight_.fetch_add(1, std::memory_order_relaxed);
-        const bool ok = detach_frame(entry);
+        if (deferred_release_) {
+            poll_protocol_lines(false);
+        }
+        bool release_entry_now = true;
+        const bool ok = detach_frame(entry, &release_entry_now);
         if (ok) {
             frames_acked_.fetch_add(1, std::memory_order_relaxed);
         } else {
             failures_.fetch_add(1, std::memory_order_relaxed);
         }
-        release_recording_entry_to_recycle(recycle_queue_, entry);
+        if (release_entry_now) {
+            release_recording_entry_to_recycle(recycle_queue_, entry);
+        }
+        if (deferred_release_) {
+            poll_protocol_lines(false);
+        }
         update_fps();
         in_flight_.fetch_sub(1, std::memory_order_relaxed);
         return false;
@@ -241,6 +306,7 @@ private:
             close(socket_fd_);
             socket_fd_ = -1;
         }
+        receive_buffer_.clear();
     }
 
     bool ensure_connected()
@@ -295,35 +361,168 @@ private:
         return true;
     }
 
-    bool read_ack(uint64_t recording_frame_id)
+    bool read_protocol_line(std::string* line, bool blocking, bool* timed_out)
     {
-        std::string line;
-        char ch = '\0';
-        while (line.size() < 256) {
-            const ssize_t n = recv(socket_fd_, &ch, 1, 0);
+        if (timed_out) {
+            *timed_out = false;
+        }
+        if (!line) {
+            return false;
+        }
+        while (receive_buffer_.find('\n') == std::string::npos) {
+            char ch = '\0';
+            const int flags = blocking ? 0 : MSG_DONTWAIT;
+            const ssize_t n = recv(socket_fd_, &ch, 1, flags);
             if (n == 0) {
                 return false;
             }
             if (n < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
                 if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                    ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                    if (blocking) {
+                        ack_timeouts_.fetch_add(1, std::memory_order_relaxed);
+                        if (timed_out) {
+                            *timed_out = true;
+                        }
+                    }
                 }
                 return false;
             }
-            if (ch == '\n') {
-                break;
+            receive_buffer_.push_back(ch);
+            if (receive_buffer_.size() > 4096) {
+                log_limited("external IPC protocol line exceeded 4096 bytes");
+                return false;
             }
-            line.push_back(ch);
         }
-        std::istringstream in(line);
-        std::string ack;
-        uint64_t ack_frame_id = 0;
-        in >> ack >> ack_frame_id;
-        return ack == "ACK" && ack_frame_id == recording_frame_id;
+
+        const size_t newline = receive_buffer_.find('\n');
+        *line = receive_buffer_.substr(0, newline);
+        receive_buffer_.erase(0, newline + 1);
+        return true;
     }
 
-    bool detach_frame(WORKER_ENTRY* entry)
+    bool handle_release_line(uint64_t recording_frame_id)
     {
+        WORKER_ENTRY* released_entry = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(pending_release_mutex_);
+            auto it = pending_release_entries_.find(recording_frame_id);
+            if (it == pending_release_entries_.end()) {
+                return false;
+            }
+            released_entry = it->second;
+            pending_release_entries_.erase(it);
+        }
+        release_recording_entry_to_recycle(recycle_queue_, released_entry);
+        frames_released_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    bool handle_protocol_line(const std::string& line,
+                              uint64_t expected_ack_frame_id,
+                              bool* matched_expected_ack,
+                              bool* ack_deferred_release)
+    {
+        if (matched_expected_ack) {
+            *matched_expected_ack = false;
+        }
+        if (ack_deferred_release) {
+            *ack_deferred_release = false;
+        }
+        std::istringstream in(line);
+        std::string kind;
+        uint64_t frame_id = 0;
+        in >> kind >> frame_id;
+        if (kind == "RELEASE") {
+            if (!handle_release_line(frame_id)) {
+                log_limited("unexpected external IPC RELEASE for frame " +
+                            std::to_string(frame_id));
+            }
+            return true;
+        }
+        if (kind == "ACK") {
+            if (frame_id == expected_ack_frame_id) {
+                std::string token;
+                while (in >> token) {
+                    if (token == "deferred_release" ||
+                        token == "deferred_source_release") {
+                        if (ack_deferred_release) {
+                            *ack_deferred_release = true;
+                        }
+                    }
+                }
+                if (matched_expected_ack) {
+                    *matched_expected_ack = true;
+                }
+                return true;
+            }
+            log_limited("unexpected external IPC ACK for frame " +
+                        std::to_string(frame_id) +
+                        " while waiting for " +
+                        std::to_string(expected_ack_frame_id));
+            return false;
+        }
+        log_limited("unexpected external IPC protocol line: " + line);
+        return false;
+    }
+
+    void poll_protocol_lines(bool blocking)
+    {
+        if (socket_fd_ < 0) {
+            return;
+        }
+        while (true) {
+            std::string line;
+            bool timed_out = false;
+            if (!read_protocol_line(&line, blocking, &timed_out)) {
+                return;
+            }
+            bool matched_ack = false;
+            if (!handle_protocol_line(line, 0, &matched_ack, nullptr)) {
+                return;
+            }
+            if (blocking) {
+                return;
+            }
+        }
+    }
+
+    bool read_ack(uint64_t recording_frame_id, bool* ack_deferred_release)
+    {
+        if (ack_deferred_release) {
+            *ack_deferred_release = false;
+        }
+        while (true) {
+            std::string line;
+            bool timed_out = false;
+            if (!read_protocol_line(&line, true, &timed_out)) {
+                return false;
+            }
+            bool matched_ack = false;
+            bool line_deferred_release = false;
+            if (!handle_protocol_line(
+                    line,
+                    recording_frame_id,
+                    &matched_ack,
+                    &line_deferred_release)) {
+                return false;
+            }
+            if (matched_ack) {
+                if (ack_deferred_release) {
+                    *ack_deferred_release = line_deferred_release;
+                }
+                return true;
+            }
+        }
+    }
+
+    bool detach_frame(WORKER_ENTRY* entry, bool* release_entry_now)
+    {
+        if (release_entry_now) {
+            *release_entry_now = true;
+        }
         refresh_session_from_environment();
 
         if (source_gpu_id_ >= 0) {
@@ -406,13 +605,74 @@ private:
             close_socket();
             return false;
         }
-        if (!read_ack(entry->recording_frame_id)) {
+        const bool force_deferred_release = deferred_release_;
+        if (force_deferred_release) {
+            {
+                std::lock_guard<std::mutex> lock(pending_release_mutex_);
+                pending_release_entries_[entry->recording_frame_id] = entry;
+            }
+            if (release_entry_now) {
+                *release_entry_now = false;
+            }
+        }
+        bool ack_deferred_release = false;
+        if (!read_ack(entry->recording_frame_id, &ack_deferred_release)) {
             log_limited("detach ack failed for frame " +
                         std::to_string(entry->recording_frame_id));
+            bool still_pending = false;
+            if (force_deferred_release) {
+                std::lock_guard<std::mutex> lock(pending_release_mutex_);
+                auto it = pending_release_entries_.find(entry->recording_frame_id);
+                if (it != pending_release_entries_.end()) {
+                    pending_release_entries_.erase(it);
+                    still_pending = true;
+                }
+            }
+            if (release_entry_now) {
+                *release_entry_now = still_pending || !force_deferred_release;
+            }
             close_socket();
             return false;
         }
+        if (ack_deferred_release && !force_deferred_release) {
+            {
+                std::lock_guard<std::mutex> lock(pending_release_mutex_);
+                pending_release_entries_[entry->recording_frame_id] = entry;
+            }
+            if (release_entry_now) {
+                *release_entry_now = false;
+            }
+        }
+        if (force_deferred_release || ack_deferred_release) {
+            poll_protocol_lines(false);
+        }
         return true;
+    }
+
+    size_t pending_release_count() const
+    {
+        std::lock_guard<std::mutex> lock(pending_release_mutex_);
+        return pending_release_entries_.size();
+    }
+
+    void release_all_pending(const char* reason)
+    {
+        std::unordered_map<uint64_t, WORKER_ENTRY*> pending;
+        {
+            std::lock_guard<std::mutex> lock(pending_release_mutex_);
+            pending.swap(pending_release_entries_);
+        }
+        if (pending.empty()) {
+            return;
+        }
+        std::cerr << "[ExternalIpcRecorder] camera=" << camera_serial_
+                  << " releasing " << pending.size()
+                  << " pending external IPC frames during "
+                  << (reason ? reason : "cleanup") << std::endl;
+        for (auto& [frame_id, entry] : pending) {
+            (void)frame_id;
+            release_recording_entry_to_recycle(recycle_queue_, entry);
+        }
     }
 
     void update_fps()
@@ -443,6 +703,7 @@ private:
         if (next_session_id == session_id_ && next_socket_path == socket_path_) {
             return;
         }
+        release_all_pending("session refresh");
         close_socket();
         session_id_ = next_session_id;
         socket_path_ = next_socket_path;
@@ -458,12 +719,17 @@ private:
     std::string socket_path_;
     int ack_timeout_ms_ = 1000;
     int socket_fd_ = -1;
+    bool deferred_release_ = false;
+    std::string receive_buffer_;
+    mutable std::mutex pending_release_mutex_;
+    std::unordered_map<uint64_t, WORKER_ENTRY*> pending_release_entries_;
     std::unordered_map<unsigned char*, std::string> handle_cache_;
     std::chrono::steady_clock::time_point last_fps_update_time_ = std::chrono::steady_clock::now();
     std::atomic<int> frame_counter_{0};
     std::atomic<double> current_fps_{0.0};
     std::atomic<int> in_flight_{0};
     std::atomic<uint64_t> frames_acked_{0};
+    std::atomic<uint64_t> frames_released_{0};
     std::atomic<uint64_t> failures_{0};
     std::atomic<uint64_t> ack_timeouts_{0};
     std::atomic<uint64_t> failures_logged_{0};

@@ -27,6 +27,8 @@ Options:
   --prewarm-slots <int>      Prewarm encode detach slots per shard. Default 4.
   --prewarm-bytes <int|auto> Pre-listen prewarm byte size. Default auto from spec config.
   --no-prewarm-peer-copy     Do not warm the first source-to-shard peer copy.
+  --direct-input-source      Copy IPC source directly into NVENC input. Experimental.
+  --deferred-source-release  ACK accepted work, then RELEASE after source consumption. Experimental.
   --yolo-prewarm-iterations <int> Synthetic YOLO prewarm iterations. Default 3.
   --ptp-register-read-decimate <n> Read GevTimestampValue every n frames. Default 1.
   --socket <path>            Unix socket path. Default /tmp/orange_external_recorder_<serial>.sock.
@@ -57,6 +59,8 @@ QUEUE_DEPTH=8
 PREWARM_SLOTS=4
 PREWARM_BYTES=auto
 PREWARM_PEER_COPY=1
+DIRECT_INPUT_SOURCE="${ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT:-0}"
+DEFERRED_SOURCE_RELEASE="${ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE:-0}"
 YOLO_PREWARM_ITERATIONS=3
 PTP_REGISTER_READ_DECIMATE=1
 ANALYTICS_EARLY_OWNED_FRAME="${ORANGE_ANALYTICS_EARLY_OWNED_FRAME:-1}"
@@ -160,6 +164,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-prewarm-peer-copy)
       PREWARM_PEER_COPY=0
+      shift
+      ;;
+    --direct-input-source)
+      DIRECT_INPUT_SOURCE=1
+      shift
+      ;;
+    --deferred-source-release)
+      DEFERRED_SOURCE_RELEASE=1
       shift
       ;;
     --yolo-prewarm-iterations)
@@ -402,6 +414,7 @@ echo "[external-recorder] socket=$SOCKET_PATH"
 echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
 echo "[external-recorder] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
+echo "[external-recorder] direct_input_source=$DIRECT_INPUT_SOURCE deferred_source_release=$DEFERRED_SOURCE_RELEASE"
 echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
 echo "[external-recorder] ptp_register_read_decimate=$PTP_REGISTER_READ_DECIMATE"
 echo "[external-recorder] analytics_early_owned_frame=$ANALYTICS_EARLY_OWNED_FRAME yolo_ready_event_fastpath=$YOLO_READY_EVENT_FASTPATH yolo_detach_input=$YOLO_DETACH_INPUT"
@@ -442,6 +455,12 @@ if [[ "$PREWARM_BYTES" =~ ^[0-9]+$ && "$PREWARM_BYTES" -gt 0 ]]; then
 fi
 if [[ "$PREWARM_PEER_COPY" -eq 1 ]]; then
   RECORDER_ARGS+=(--prewarm-peer-copy)
+fi
+if [[ "$DIRECT_INPUT_SOURCE" != "0" ]]; then
+  RECORDER_ARGS+=(--direct-input-source)
+fi
+if [[ "$DEFERRED_SOURCE_RELEASE" != "0" ]]; then
+  RECORDER_ARGS+=(--deferred-source-release)
 fi
 if [[ -n "$SHARD_GPU_IDS" ]]; then
   RECORDER_ARGS+=(--shard-gpu-ids "$SHARD_GPU_IDS")
@@ -514,8 +533,10 @@ summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 enc = summary.get("external_encode", {})
 print("[external-recorder] summary:")
 print(f"  frames_received={summary.get('frames_received')} acks_sent={summary.get('acks_sent')} detach_copied={summary.get('detach_copied')}")
+print(f"  direct_input_source={summary.get('direct_input_source')} deferred_source_release={summary.get('deferred_source_release')}")
 print(f"  session_id={summary.get('session_id')} assigned_gpu_id={summary.get('assigned_gpu_id')} assigned_shard_id={summary.get('assigned_shard_id')} routing_policy={summary.get('routing_policy')}")
 print(f"  encode_enqueued={summary.get('encode_enqueued')} encode_skipped={summary.get('encode_skipped')} encode_dropped={summary.get('encode_dropped')} frames_encoded={summary.get('frames_encoded')}")
+print(f"  source_releases_sent={enc.get('source_releases_sent')} source_release_failures={enc.get('source_release_failures')}")
 print(f"  detach_copy_p95_ms={summary.get('detach_timing', {}).get('copy_p95_ms')} encode_total_p95_ms={enc.get('encode_total_p95_ms')} lock_bitstream_p95_ms={enc.get('lock_bitstream_p95_ms')}")
 print(f"  prewarm_slots={enc.get('prewarm_slots')} prewarm_ms={enc.get('prewarm_ms')} prewarm_peer_copy={enc.get('prewarm_peer_copy')}")
 print(f"  mp4_bytes={summary.get('output_file_sizes', {}).get('mp4_bytes')} worker_failed={summary.get('worker_failed')}")

@@ -51,6 +51,8 @@ struct Options {
     uint32_t encode_prewarm_slots = 0;
     uint64_t encode_prewarm_bytes = 0;
     bool encode_prewarm_peer_copy = false;
+    bool direct_input_source = false;
+    bool deferred_source_release = false;
     uint32_t fps = 60;
     std::string codec = "hevc";
     std::string preset = "p1";
@@ -148,6 +150,8 @@ void signal_handler(int)
         << "  --prewarm-slots <int> Preallocate this many encode detach slots per shard. Default 0.\n"
         << "  --prewarm-bytes <int> Frame byte size for pre-listen detach slot allocation. Default 0.\n"
         << "  --prewarm-peer-copy   After first IPC import, copy 1 byte into each shard to warm peer paths.\n"
+        << "  --direct-input-source Copy IPC source directly into NVENC input before ACK. Experimental.\n"
+        << "  --deferred-source-release Send RELEASE after source consumption; ACK only accepts work. Experimental.\n"
         << "  --fps <int>           Encoder nominal FPS. Default 60.\n"
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
@@ -243,9 +247,26 @@ std::string lower_ascii(std::string value)
     return value;
 }
 
+bool env_flag_enabled(const char* name, bool default_value = false)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    const std::string normalized = lower_ascii(value);
+    return normalized == "1" ||
+           normalized == "true" ||
+           normalized == "yes" ||
+           normalized == "on";
+}
+
 Options parse_options(int argc, char** argv)
 {
     Options options;
+    options.direct_input_source =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT", false);
+    options.deferred_source_release =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false);
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         std::string inline_value;
@@ -286,6 +307,10 @@ Options parse_options(int argc, char** argv)
             options.encode_prewarm_bytes = parse_u64(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--prewarm-peer-copy") {
             options.encode_prewarm_peer_copy = true;
+        } else if (arg == "--direct-input-source") {
+            options.direct_input_source = true;
+        } else if (arg == "--deferred-source-release") {
+            options.deferred_source_release = true;
         } else if (arg == "--fps") {
             options.fps = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--codec") {
@@ -747,6 +772,15 @@ bool write_all(int fd, const std::string& data)
     return true;
 }
 
+bool write_protocol_line(int fd, std::mutex* mutex, const std::string& line)
+{
+    if (mutex) {
+        std::lock_guard<std::mutex> lock(*mutex);
+        return write_all(fd, line);
+    }
+    return write_all(fd, line);
+}
+
 bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
 {
     if (!desc) {
@@ -925,6 +959,8 @@ struct EncodeSummary {
     std::string routing_policy = "single_shard";
     uint64_t frames_encoded = 0;
     uint64_t frames_dropped = 0;
+    uint64_t source_releases_sent = 0;
+    uint64_t source_release_failures = 0;
     uint64_t returned_packets = 0;
     uint64_t returned_bytes = 0;
     uint64_t raw_packets = 0;
@@ -1021,6 +1057,8 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
     for (const EncodeSummary& summary : summaries) {
         out.frames_encoded += summary.frames_encoded;
         out.frames_dropped += summary.frames_dropped;
+        out.source_releases_sent += summary.source_releases_sent;
+        out.source_release_failures += summary.source_release_failures;
         out.returned_packets += summary.returned_packets;
         out.returned_bytes += summary.returned_bytes;
         out.raw_packets += summary.raw_packets;
@@ -1712,6 +1750,13 @@ struct EncodeWorkItem {
     std::chrono::steady_clock::time_point enqueued_at;
 };
 
+struct DirectSourceWorkItem {
+    uint64_t source_frame_index = 0;
+    FrameDescriptor desc;
+    void* source_ptr = nullptr;
+    std::chrono::steady_clock::time_point enqueued_at;
+};
+
 class ExternalEncodeWorker {
 public:
     explicit ExternalEncodeWorker(Options options, MergedGopOutput* merged_output = nullptr)
@@ -1731,6 +1776,23 @@ public:
         }
         running_ = true;
         worker_ = std::thread(&ExternalEncodeWorker::run, this);
+    }
+
+    void set_protocol_writer(int fd, std::mutex* mutex)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        protocol_fd_ = fd;
+        protocol_write_mutex_ = mutex;
+    }
+
+    bool uses_deferred_source_release() const
+    {
+        return options_.direct_input_source && options_.deferred_source_release;
+    }
+
+    void notify_deferred_ack_sent()
+    {
+        cv_.notify_one();
     }
 
     void stop()
@@ -1774,6 +1836,13 @@ public:
                             uint64_t source_frame_index,
                             Sample* sample)
     {
+        if (options_.direct_input_source) {
+            if (options_.deferred_source_release) {
+                return enqueue_direct_source(desc, imported_ptr, source_frame_index, sample);
+            }
+            return submit_direct_input(desc, imported_ptr, source_frame_index, sample);
+        }
+
         check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external detach shard)");
         ensure_copy_stream();
         const size_t slot_index = acquire_free_slot(desc.bytes);
@@ -1838,6 +1907,10 @@ public:
         out.routing_policy = options_.routing_policy;
         out.frames_encoded = frames_encoded();
         out.frames_dropped = frames_dropped();
+        out.source_releases_sent =
+            source_releases_sent_.load(std::memory_order_relaxed);
+        out.source_release_failures =
+            source_release_failures_.load(std::memory_order_relaxed);
         out.returned_packets = returned_packets_;
         out.returned_bytes = returned_bytes_;
         out.raw_packets = raw_packets_;
@@ -1874,6 +1947,9 @@ public:
 
     void prewarm_detach_slots(uint64_t bytes, const void* peer_source_ptr)
     {
+        if (options_.direct_input_source) {
+            return;
+        }
         if (options_.encode_prewarm_slots == 0) {
             return;
         }
@@ -2013,17 +2089,30 @@ private:
     uint64_t queue_depth() const
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (options_.direct_input_source && options_.deferred_source_release) {
+            return direct_source_queue_.size();
+        }
         return queue_.size();
+    }
+
+    bool stopping_requested() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return stopping_;
     }
 
     void release_slots()
     {
-        if (!slots_.empty() || copy_stream_) {
+        if (!slots_.empty() || copy_stream_ || direct_input_ready_event_) {
             cudaSetDevice(options_.gpu_id);
         }
         if (copy_stream_) {
             cudaStreamDestroy(copy_stream_);
             copy_stream_ = nullptr;
+        }
+        if (direct_input_ready_event_) {
+            cudaEventDestroy(direct_input_ready_event_);
+            direct_input_ready_event_ = nullptr;
         }
         for (auto& slot : slots_) {
             if (slot.ptr) {
@@ -2160,10 +2249,21 @@ private:
     void prepare_input_frame(const EncodeWorkItem& item,
                              const NvEncInputFrame& frame)
     {
-        auto* base = static_cast<uint8_t*>(frame.inputPtr);
         const auto* source = static_cast<const uint8_t*>(slots_[item.slot_index].ptr);
-        const int width = item.desc.width;
-        const int height = item.desc.height;
+        prepare_input_frame_from_source(item.desc, source, frame);
+    }
+
+    void prepare_input_frame_from_source(const FrameDescriptor& desc,
+                                         const void* source_ptr,
+                                         const NvEncInputFrame& frame)
+    {
+        auto* base = static_cast<uint8_t*>(frame.inputPtr);
+        const auto* source = static_cast<const uint8_t*>(source_ptr);
+        if (!source) {
+            throw std::runtime_error("External recorder source pointer is null");
+        }
+        const int width = desc.width;
+        const int height = desc.height;
 
         check_cuda(
             cudaMemcpy2DAsync(
@@ -2203,6 +2303,190 @@ private:
         check_cuda(
             cudaEventSynchronize(slot.slot_reusable_event),
             "cudaEventSynchronize(external slot reusable)");
+    }
+
+    void ensure_direct_input_ready_event()
+    {
+        if (direct_input_ready_event_) {
+            return;
+        }
+        check_cuda(
+            cudaEventCreateWithFlags(&direct_input_ready_event_, cudaEventDisableTiming),
+            "cudaEventCreateWithFlags(external direct input ready)");
+    }
+
+    bool send_source_release(const FrameDescriptor& desc)
+    {
+        if (!options_.deferred_source_release) {
+            return true;
+        }
+        int fd = -1;
+        std::mutex* write_mutex = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fd = protocol_fd_;
+            write_mutex = protocol_write_mutex_;
+        }
+        if (fd < 0) {
+            source_release_failures_.fetch_add(1, std::memory_order_relaxed);
+            failed_.store(true, std::memory_order_release);
+            return false;
+        }
+        const std::string line =
+            "RELEASE " + std::to_string(desc.recording_frame_id) + " " +
+            std::to_string(desc.assigned_gpu_id) + " " +
+            std::to_string(desc.assigned_shard_id) + "\n";
+        if (!write_protocol_line(fd, write_mutex, line)) {
+            source_release_failures_.fetch_add(1, std::memory_order_relaxed);
+            failed_.store(true, std::memory_order_release);
+            return false;
+        }
+        source_releases_sent_.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+
+    bool enqueue_direct_source(const FrameDescriptor& desc,
+                               void* imported_ptr,
+                               uint64_t source_frame_index,
+                               Sample* sample)
+    {
+        if (!imported_ptr) {
+            frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+            if (sample) {
+                sample->encode_dropped = true;
+                sample->detach_copied = false;
+                sample->encode_queue_depth = queue_depth();
+            }
+            return false;
+        }
+        if (stopping_requested() || failed()) {
+            frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+            if (sample) {
+                sample->encode_dropped = true;
+                sample->detach_copied = false;
+                sample->encode_queue_depth = queue_depth();
+            }
+            return false;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (direct_source_queue_.size() >= options_.encode_queue_depth) {
+                frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                if (sample) {
+                    sample->encode_dropped = true;
+                    sample->detach_copied = false;
+                    sample->encode_queue_depth = direct_source_queue_.size();
+                }
+                return false;
+            }
+            direct_source_queue_.push_back(DirectSourceWorkItem{
+                source_frame_index,
+                desc,
+                imported_ptr,
+                std::chrono::steady_clock::now()});
+            if (sample) {
+                sample->encode_enqueued = true;
+                sample->encode_queue_depth = direct_source_queue_.size();
+            }
+        }
+        return true;
+    }
+
+    bool submit_direct_input(const FrameDescriptor& desc,
+                             void* imported_ptr,
+                             uint64_t source_frame_index,
+                             Sample* sample)
+    {
+        check_cuda(cudaSetDevice(options_.gpu_id), "cudaSetDevice(external direct input shard)");
+        initialize_encoder(desc);
+        ensure_direct_input_ready_event();
+
+        EncodeSample encode_sample;
+        encode_sample.encode_index = frames_encoded_.load(std::memory_order_relaxed);
+        encode_sample.source_frame_index = source_frame_index;
+        encode_sample.camera_serial = desc.camera_serial;
+        encode_sample.session_id = desc.session_id;
+        encode_sample.stream_id = desc.stream_id;
+        encode_sample.recording_frame_id = desc.recording_frame_id;
+        encode_sample.local_frame_id = desc.local_frame_id;
+        encode_sample.gop_index = desc.gop_index;
+        encode_sample.frame_index_within_gop = desc.frame_index_within_gop;
+        encode_sample.source_gpu_id = desc.source_gpu_id;
+        encode_sample.assigned_gpu_id = desc.assigned_gpu_id;
+        encode_sample.assigned_shard_id = desc.assigned_shard_id;
+        encode_sample.routing_policy = desc.routing_policy;
+        encode_sample.bytes = desc.bytes;
+
+        const auto prepare_start = std::chrono::steady_clock::now();
+        while (!encoder_->WaitForNextInputFrameAvailable(100)) {
+            if (stopping_requested() || failed()) {
+                frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+                if (sample) {
+                    sample->encode_dropped = true;
+                    sample->detach_copied = false;
+                    sample->encode_queue_depth = queue_depth();
+                }
+                return false;
+            }
+        }
+
+        const NvEncInputFrame* input_frame = encoder_->GetNextInputFrame();
+        if (!input_frame || !input_frame->inputPtr) {
+            throw std::runtime_error("NvEncoder returned no direct input frame");
+        }
+        prepare_input_frame_from_source(desc, imported_ptr, *input_frame);
+        check_cuda(
+            cudaEventRecord(direct_input_ready_event_, stream_),
+            "cudaEventRecord(external direct input ready)");
+        check_cuda(
+            cudaEventSynchronize(direct_input_ready_event_),
+            "cudaEventSynchronize(external direct input ready)");
+        encode_sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+
+        if (merged_output_) {
+            merged_output_->note_submitted(desc);
+        }
+
+        NV_ENC_PIC_PARAMS pic_params = {NV_ENC_PIC_PARAMS_VER};
+        pic_params.frameIdx = static_cast<uint32_t>(encode_sample.encode_index & 0xffffffffu);
+        pic_params.inputTimeStamp = desc.recording_frame_id;
+        pic_params.inputDuration = 1;
+
+        NvEncoderEncodeFrameTiming timing;
+        const auto submit_start = std::chrono::steady_clock::now();
+        encoder_->SubmitFrameOnly(&pic_params, &timing);
+        encode_sample.encode_total_ms = ns_to_ms(elapsed_ns(submit_start));
+        encode_sample.encode_picture_ms = ns_to_ms(timing.encode_picture_ns);
+        encode_sample.completion_wait_ms = ns_to_ms(timing.completion_wait_ns);
+        encode_sample.lock_bitstream_ms = ns_to_ms(timing.lock_bitstream_ns);
+        encode_sample.bitstream_copy_ms = ns_to_ms(timing.bitstream_copy_ns);
+        encode_sample.unlock_bitstream_ms = ns_to_ms(timing.unlock_bitstream_ns);
+        encode_sample.unmap_input_resource_ms = ns_to_ms(timing.unmap_input_resource_ns);
+        encode_sample.bitstream_fetch_ms = ns_to_ms(timing.bitstream_fetch_ns);
+        encode_sample.output_packets = timing.output_packets;
+        encode_sample.output_bytes = timing.output_bytes;
+
+        if (encode_csv_) {
+            write_encode_csv_row(encode_csv_, encode_sample);
+            if ((encode_sample.encode_index % 60) == 0) {
+                encode_csv_.flush();
+            }
+        }
+        record_encode_sample(encode_sample);
+        frames_encoded_.fetch_add(1, std::memory_order_relaxed);
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            last_desc_ = desc;
+            has_last_desc_ = true;
+            direct_harvest_wake_ = true;
+            if (sample) {
+                sample->encode_enqueued = true;
+                sample->encode_queue_depth = queue_.size();
+            }
+        }
+        cv_.notify_one();
+        return true;
     }
 
     void push_packet_to_outputs(const std::vector<uint8_t>& packet, bool flush_packet)
@@ -2257,6 +2541,140 @@ private:
         mp4_peak_queued_packets_ = mp4_writer_->peak_queued_packets();
         mp4_peak_queued_bytes_ = mp4_writer_->peak_queued_bytes();
         mp4_writer_.reset();
+    }
+
+    void encode_one_direct_source(const DirectSourceWorkItem& item)
+    {
+        initialize_encoder(item.desc);
+        last_desc_ = item.desc;
+        has_last_desc_ = true;
+        ensure_direct_input_ready_event();
+
+        EncodeSample sample;
+        sample.encode_index = frames_encoded_.load(std::memory_order_relaxed);
+        sample.source_frame_index = item.source_frame_index;
+        sample.camera_serial = item.desc.camera_serial;
+        sample.session_id = item.desc.session_id;
+        sample.stream_id = item.desc.stream_id;
+        sample.recording_frame_id = item.desc.recording_frame_id;
+        sample.local_frame_id = item.desc.local_frame_id;
+        sample.gop_index = item.desc.gop_index;
+        sample.frame_index_within_gop = item.desc.frame_index_within_gop;
+        sample.source_gpu_id = item.desc.source_gpu_id;
+        sample.assigned_gpu_id = item.desc.assigned_gpu_id;
+        sample.assigned_shard_id = item.desc.assigned_shard_id;
+        sample.routing_policy = item.desc.routing_policy;
+        sample.bytes = item.desc.bytes;
+        sample.enqueue_age_ms = elapsed_ms(item.enqueued_at);
+
+        const auto prepare_start = std::chrono::steady_clock::now();
+        const NvEncInputFrame* input_frame = encoder_->GetNextInputFrame();
+        if (!input_frame || !input_frame->inputPtr) {
+            throw std::runtime_error("NvEncoder returned no direct source input frame");
+        }
+        prepare_input_frame_from_source(item.desc, item.source_ptr, *input_frame);
+        check_cuda(
+            cudaEventRecord(direct_input_ready_event_, stream_),
+            "cudaEventRecord(external direct source copied)");
+        check_cuda(
+            cudaEventSynchronize(direct_input_ready_event_),
+            "cudaEventSynchronize(external direct source copied)");
+        sample.prepare_ms = ns_to_ms(elapsed_ns(prepare_start));
+
+        if (!send_source_release(item.desc)) {
+            throw std::runtime_error("failed to send external source RELEASE");
+        }
+        if (merged_output_) {
+            merged_output_->note_submitted(item.desc);
+        }
+
+        NV_ENC_PIC_PARAMS pic_params = {NV_ENC_PIC_PARAMS_VER};
+        pic_params.frameIdx = static_cast<uint32_t>(sample.encode_index & 0xffffffffu);
+        pic_params.inputTimeStamp = item.desc.recording_frame_id;
+        pic_params.inputDuration = 1;
+
+        std::vector<std::vector<uint8_t>> packets;
+        std::vector<uint64_t> output_timestamps;
+        NvEncoderEncodeFrameTiming timing;
+        uint64_t fetch_ns = 0;
+        const auto encode_start = std::chrono::steady_clock::now();
+        encoder_->EncodeFrame(
+            packets,
+            &pic_params,
+            nullptr,
+            &output_timestamps,
+            &fetch_ns,
+            &timing);
+        sample.encode_total_ms = ns_to_ms(elapsed_ns(encode_start));
+        sample.encode_picture_ms = ns_to_ms(timing.encode_picture_ns);
+        sample.completion_wait_ms = ns_to_ms(timing.completion_wait_ns);
+        sample.lock_bitstream_ms = ns_to_ms(timing.lock_bitstream_ns);
+        sample.bitstream_copy_ms = ns_to_ms(timing.bitstream_copy_ns);
+        sample.unlock_bitstream_ms = ns_to_ms(timing.unlock_bitstream_ns);
+        sample.unmap_input_resource_ms = ns_to_ms(timing.unmap_input_resource_ns);
+        sample.bitstream_fetch_ms = ns_to_ms(fetch_ns > 0 ? fetch_ns : timing.bitstream_fetch_ns);
+        sample.output_packets = timing.output_packets;
+        sample.output_bytes = timing.output_bytes;
+        sample.returned_packets = static_cast<uint32_t>(packets.size());
+        if (merged_output_) {
+            merged_output_->submit_packets(packets, output_timestamps, item.desc);
+        }
+        for (const auto& packet : packets) {
+            sample.returned_bytes += packet.size();
+            push_packet_to_outputs(packet, false);
+        }
+        if (bitstream_out_ && !bitstream_out_) {
+            throw std::runtime_error("Failed while writing bitstream output");
+        }
+        if (encode_csv_) {
+            write_encode_csv_row(encode_csv_, sample);
+            if ((sample.encode_index % 60) == 0) {
+                encode_csv_.flush();
+            }
+        }
+        record_encode_sample(sample);
+        frames_encoded_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool harvest_direct_packets(bool output_delay)
+    {
+        if (!encoder_) {
+            return false;
+        }
+        std::vector<std::vector<uint8_t>> packets;
+        std::vector<uint64_t> output_timestamps;
+        NvEncoderEncodeFrameTiming timing;
+        uint64_t fetch_ns = 0;
+        encoder_->HarvestEncodedPackets(
+            packets,
+            output_delay,
+            nullptr,
+            &output_timestamps,
+            &fetch_ns,
+            &timing);
+        if (packets.empty()) {
+            return false;
+        }
+
+        FrameDescriptor fallback_desc;
+        bool has_fallback_desc = false;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            fallback_desc = last_desc_;
+            has_fallback_desc = has_last_desc_;
+        }
+        if (merged_output_ && has_fallback_desc) {
+            merged_output_->submit_packets(packets, output_timestamps, fallback_desc);
+        }
+        for (const auto& packet : packets) {
+            returned_bytes_ += packet.size();
+            push_packet_to_outputs(packet, false);
+        }
+        returned_packets_ += packets.size();
+        lock_bitstream_samples_.push_back(ns_to_ms(timing.lock_bitstream_ns));
+        bitstream_fetch_samples_.push_back(
+            ns_to_ms(fetch_ns > 0 ? fetch_ns : timing.bitstream_fetch_ns));
+        return true;
     }
 
     void encode_one(const EncodeWorkItem& item)
@@ -2377,8 +2795,86 @@ private:
         finish_mp4_writer();
     }
 
+    void run_direct_source()
+    {
+        try {
+            while (true) {
+                DirectSourceWorkItem item;
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [&]() {
+                        return stopping_ || !direct_source_queue_.empty();
+                    });
+                    if (direct_source_queue_.empty()) {
+                        if (stopping_) {
+                            break;
+                        }
+                        continue;
+                    }
+                    item = direct_source_queue_.front();
+                    direct_source_queue_.pop_front();
+                }
+                try {
+                    encode_one_direct_source(item);
+                } catch (...) {
+                    (void)send_source_release(item.desc);
+                    throw;
+                }
+            }
+            flush_encoder();
+            std::cout << "external_recorder_ipc_probe direct-source encoder complete"
+                      << " encoded=" << frames_encoded()
+                      << " dropped=" << frames_dropped()
+                      << std::endl;
+        } catch (const std::exception& ex) {
+            failed_.store(true, std::memory_order_release);
+            std::cerr << "external_recorder_ipc_probe direct-source encoder failed: "
+                      << ex.what() << std::endl;
+        }
+    }
+
+    void run_direct_harvest()
+    {
+        try {
+            while (true) {
+                {
+                    std::unique_lock<std::mutex> lock(mutex_);
+                    cv_.wait(lock, [&]() {
+                        return stopping_ || direct_harvest_wake_;
+                    });
+                    const bool stop_requested = stopping_;
+                    direct_harvest_wake_ = false;
+                    if (stop_requested) {
+                        break;
+                    }
+                }
+                while (harvest_direct_packets(true)) {
+                }
+            }
+            while (harvest_direct_packets(true)) {
+            }
+            flush_encoder();
+            std::cout << "external_recorder_ipc_probe direct-input encoder complete"
+                      << " encoded=" << frames_encoded()
+                      << " dropped=" << frames_dropped()
+                      << std::endl;
+        } catch (const std::exception& ex) {
+            failed_.store(true, std::memory_order_release);
+            std::cerr << "external_recorder_ipc_probe direct-input encoder failed: "
+                      << ex.what() << std::endl;
+        }
+    }
+
     void run()
     {
+        if (options_.direct_input_source && options_.deferred_source_release) {
+            run_direct_source();
+            return;
+        }
+        if (options_.direct_input_source) {
+            run_direct_harvest();
+            return;
+        }
         try {
             while (true) {
                 EncodeWorkItem item;
@@ -2417,6 +2913,7 @@ private:
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<EncodeWorkItem> queue_;
+    std::deque<DirectSourceWorkItem> direct_source_queue_;
     std::vector<DeviceSlot> slots_;
     std::vector<size_t> free_slots_;
     bool have_next_encode_time_ = false;
@@ -2424,6 +2921,7 @@ private:
     CUcontext cu_context_ = nullptr;
     cudaStream_t stream_ = nullptr;
     cudaStream_t copy_stream_ = nullptr;
+    cudaEvent_t direct_input_ready_event_ = nullptr;
     std::unique_ptr<NvEncoderCuda> encoder_;
     std::unique_ptr<FFmpegWriter> mp4_writer_;
     std::ofstream bitstream_out_;
@@ -2455,8 +2953,13 @@ private:
     double prewarm_ms_ = 0.0;
     bool prewarm_peer_copy_ = false;
     size_t peer_warm_slot_index_ = kInvalidSlot;
+    bool direct_harvest_wake_ = false;
+    int protocol_fd_ = -1;
+    std::mutex* protocol_write_mutex_ = nullptr;
     std::atomic<uint64_t> frames_encoded_{0};
     std::atomic<uint64_t> frames_dropped_{0};
+    std::atomic<uint64_t> source_releases_sent_{0};
+    std::atomic<uint64_t> source_release_failures_{0};
     std::atomic<bool> failed_{false};
     FrameDescriptor last_desc_;
     bool has_last_desc_ = false;
@@ -2544,6 +3047,10 @@ void write_summary_json(const Options& options,
     out << "  \"routing_policy\": \"" << json_escape(options.routing_policy) << "\",\n";
     out << "  \"shard_count\": " << shard_summaries.size() << ",\n";
     out << "  \"encode\": " << (options.encode ? "true" : "false") << ",\n";
+    out << "  \"direct_input_source\": "
+        << (options.direct_input_source ? "true" : "false") << ",\n";
+    out << "  \"deferred_source_release\": "
+        << (options.deferred_source_release ? "true" : "false") << ",\n";
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
     out << "  \"preset\": \"" << json_escape(options.preset) << "\",\n";
     out << "  \"tuning\": \"" << json_escape(options.tuning) << "\",\n";
@@ -2583,6 +3090,8 @@ void write_summary_json(const Options& options,
     out << "  \"worker_failed\": " << ((enc.failed || merged.failed) ? "true" : "false") << ",\n";
     out << "  \"external_encode\": {\n";
     out << "    \"frames_dropped\": " << enc.frames_dropped << ",\n";
+    out << "    \"source_releases_sent\": " << enc.source_releases_sent << ",\n";
+    out << "    \"source_release_failures\": " << enc.source_release_failures << ",\n";
     out << "    \"returned_packets\": " << enc.returned_packets << ",\n";
     out << "    \"returned_bytes\": " << enc.returned_bytes << ",\n";
     out << "    \"raw_packets\": " << enc.raw_packets << ",\n";
@@ -2619,6 +3128,8 @@ void write_summary_json(const Options& options,
         out << "      \"routing_policy\": \"" << json_escape(shard.routing_policy) << "\",\n";
         out << "      \"frames_encoded\": " << shard.frames_encoded << ",\n";
         out << "      \"frames_dropped\": " << shard.frames_dropped << ",\n";
+        out << "      \"source_releases_sent\": " << shard.source_releases_sent << ",\n";
+        out << "      \"source_release_failures\": " << shard.source_release_failures << ",\n";
         out << "      \"returned_packets\": " << shard.returned_packets << ",\n";
         out << "      \"returned_bytes\": " << shard.returned_bytes << ",\n";
         out << "      \"mp4_packets\": " << shard.mp4_packets << ",\n";
@@ -2740,6 +3251,7 @@ int main(int argc, char** argv)
 
         std::vector<std::unique_ptr<ExternalEncodeWorker>> encode_workers;
         std::unique_ptr<MergedGopOutput> merged_output;
+        std::mutex protocol_write_mutex;
         bool encode_workers_prewarmed = false;
         bool encode_workers_peer_prewarmed = false;
         if (options.encode) {
@@ -2787,6 +3299,11 @@ int main(int argc, char** argv)
             throw std::runtime_error("accept() failed: " + std::string(std::strerror(errno)));
         }
         std::cout << "external_recorder_ipc_probe connected" << std::endl;
+        for (auto& worker : encode_workers) {
+            if (worker) {
+                worker->set_protocol_writer(client_fd, &protocol_write_mutex);
+            }
+        }
 
         std::ofstream csv;
         if (!options.csv_path.empty()) {
@@ -2882,6 +3399,7 @@ int main(int argc, char** argv)
             const auto total_start = std::chrono::steady_clock::now();
             const bool should_detach_copy =
                 !target_encode_worker || target_encode_worker->should_encode(total_start);
+            bool release_deferred_by_worker = false;
 
             if (should_detach_copy) {
                 auto handle_it = imported_handles.find(desc.handle_hex);
@@ -2922,11 +3440,17 @@ int main(int argc, char** argv)
 
                 const auto copy_start = std::chrono::steady_clock::now();
                 if (target_encode_worker) {
-                    target_encode_worker->detach_and_enqueue(
+                    const bool worker_accepted = target_encode_worker->detach_and_enqueue(
                         desc,
                         handle_it->second.ptr,
                         frame_count,
                         &sample);
+                    release_deferred_by_worker =
+                        options.deferred_source_release &&
+                        target_encode_worker->uses_deferred_source_release() &&
+                        worker_accepted &&
+                        sample.encode_enqueued &&
+                        !sample.encode_dropped;
                 } else {
                     if (desc.bytes > owned_device_buffer_bytes) {
                         if (owned_device_buffer) {
@@ -2954,11 +3478,28 @@ int main(int argc, char** argv)
             }
             sample.total_ms = elapsed_ms(total_start);
 
-            if (!write_all(client_fd,
-                           "ACK " + std::to_string(desc.recording_frame_id) + " " +
-                               std::to_string(desc.assigned_gpu_id) + " " +
-                               std::to_string(desc.assigned_shard_id) + "\n")) {
+            if (!write_protocol_line(
+                    client_fd,
+                    &protocol_write_mutex,
+                    "ACK " + std::to_string(desc.recording_frame_id) + " " +
+                        std::to_string(desc.assigned_gpu_id) + " " +
+                        std::to_string(desc.assigned_shard_id) +
+                        (options.deferred_source_release ? " deferred_release" : "") +
+                        "\n")) {
                 break;
+            }
+            if (release_deferred_by_worker && target_encode_worker) {
+                target_encode_worker->notify_deferred_ack_sent();
+            }
+            if (options.deferred_source_release && !release_deferred_by_worker) {
+                if (!write_protocol_line(
+                        client_fd,
+                        &protocol_write_mutex,
+                        "RELEASE " + std::to_string(desc.recording_frame_id) + " " +
+                            std::to_string(desc.assigned_gpu_id) + " " +
+                            std::to_string(desc.assigned_shard_id) + "\n")) {
+                    break;
+                }
             }
             ++ack_count;
             if (sample.detach_copied) {
