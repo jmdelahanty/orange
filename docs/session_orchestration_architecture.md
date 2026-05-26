@@ -227,26 +227,24 @@ Start lifting shared lifecycle helpers out of GUI-specific assumptions:
 - stop/drain/finalize semantics
 
 At this point `recording_session.*` becomes the first draft of the shared
-session core. The GUI external-recorder fail-fast path is intentionally a small
-step in this direction: it already uses the same
+session core. The GUI external-recorder path now uses the same
 `orange.external_recorder.contract` and supervisor-plan contract as headless,
-but it still refuses to run until process supervision is owned by the session
-layer rather than by an entrypoint.
+and has a first supervised single-clip lifecycle slice for `external_ipc`.
 
 The first concrete helper extracted for this is
 `src/external_recorder_contract_utils.*`. It owns contract extraction,
-per-camera materialization, supervisor-plan artifact writing, and the
-metadata-only fail-fast `recording_session.json` shape used by the GUI
-external-recorder path. The helper is linked into both `orange` and
-`orange_client` so later headless/session consolidation can reuse the same
-materialization rules instead of copying GUI-local JSON construction.
+per-camera materialization, supervisor-plan artifact writing, and shared
+external-recorder artifact shapes used by both GUI/session and headless paths.
+The helper is linked into both `orange` and `orange_client` so later
+headless/session consolidation can reuse the same materialization rules instead
+of copying entrypoint-local JSON construction.
 
 The second extracted helper is `src/external_recorder_lifecycle.*`, which moves
 supervised recorder process start/stop, socket/session environment handoff,
 runtime artifact writing, and verifier-handoff writing behind a shared call
-boundary. Headless now uses it and the 2026-05-07 two-camera supervised PTP
-validation passed through that path. GUI can adopt it later when
-external-recorder process supervision becomes a GUI/session responsibility.
+boundary. Headless uses it, the 2026-05-07 two-camera supervised PTP validation
+passed through that path, and GUI/session external IPC now uses it for record
+start, drain/finalization, and recorder summary collection.
 
 ### Phase 3
 

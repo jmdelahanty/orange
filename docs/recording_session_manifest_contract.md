@@ -21,10 +21,13 @@ Current implementation rule:
   `recording_session.json`.
 - GUI in-process recordings now write the same single-clip
   `recording_session.json` contract after the recording drain completes.
-- GUI/session rolling supervision is still future work. GUI fail-fast manifests
-  carry `recording_control` and `rollover` metadata, but the GUI path refuses
-  external recorder supervision until lifecycle, drain, and finalization state
-  are wired through the session UI.
+- GUI external IPC single-clip supervision is implemented for the diagnostic
+  recorder path: the GUI launches supervised recorder processes on record
+  start, drains/finalizes them, and writes an
+  `orange_gui_external_ipc` single-clip `recording_session.json`.
+- GUI/session rolling supervision remains future work. GUI manifests carry
+  `recording_control` and `rollover` metadata, but rolling clip control is not
+  yet wired through the session UI.
 
 The current headless rolling implementation keeps acquisition and recording
 active during clip rollover:
@@ -70,6 +73,14 @@ This remains the compatibility layout for existing Orange, Citrus, and analysis
 consumers. Headless `recording_control.record_for_seconds` with
 `clip_seconds = 0` writes `recording_session.json` with
 `mode = "single_clip"`.
+
+Single-clip manifests now also emit `recording_outputs[serial].full` as the
+canonical output descriptor for the ingest-authoritative full-frame MP4 and its
+metadata/keyframe sidecars. The legacy `camera_artifacts` and
+`clips[].artifacts` maps remain compatibility aliases and should match the
+descriptor paths and counts. Optional crop videos are represented as
+`recording_outputs[serial].crop` with `role = "sidecar"` when crop writing is
+enabled.
 
 ## Rolling-Clip Layout
 
@@ -155,6 +166,11 @@ and `packet_count_source`. Native in-process clips use
 `packet_count_source = "ffprobe_nb_read_packets"`. Supervised external IPC
 clips use `external_recorder_summary.packets_written` as the packet count
 source.
+
+Each clip manifest and top-level `clips[]` entry also carries
+`recording_outputs[serial].full` for the clip-local full-frame output. For
+rolling sessions, these descriptors are clip-scoped because there is no single
+session-wide MP4 per camera.
 
 ## Rolling Session Manifest
 

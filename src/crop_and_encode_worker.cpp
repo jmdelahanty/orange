@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <sstream>
 
 namespace {
 constexpr int kDisplayGpuId = 0;
@@ -56,6 +57,35 @@ size_t encoded_packet_bytes(const std::vector<std::vector<uint8_t>>& packets)
         total += packet.size();
     }
     return total;
+}
+
+std::vector<std::pair<std::string, std::string>> build_crop_metadata_tags(
+    const CameraParams* camera_params,
+    const int crop_width,
+    const int crop_height)
+{
+    std::vector<std::pair<std::string, std::string>> tags;
+    const std::string camera_serial =
+        camera_params ? camera_params->camera_serial : std::string();
+    tags.emplace_back("title", "Cam" + camera_serial + " crop");
+
+    std::ostringstream comment;
+    comment << "nvenc codec=hevc"
+            << "; preset=p7"
+            << "; tuning=lossless"
+            << "; res=" << crop_width << "x" << crop_height
+            << "; fps=" << (camera_params ? camera_params->frame_rate : 0)
+            << "; color=0"
+            << "; gop=1"
+            << "; output_kind=crop"
+            << "; role=sidecar"
+            << "; input_format=nv12"
+            << "; source_format=mono8"
+            << "; coordinate_space=full_frame_pixels"
+            << "; selection_policy=largest_detection_by_confidence"
+            << "; blank_frame_policy=encode_black_frame_when_no_detection";
+    tags.emplace_back("comment", comment.str());
+    return tags;
 }
 }
 
@@ -359,6 +389,10 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
         writer_.keyframe_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.json";
         writer_.metadata_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
         crop_perf_file_ = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_perf.csv";
+        const auto metadata_tags = build_crop_metadata_tags(
+            camera_params_,
+            crop_width_,
+            crop_height_);
 
         writer_.video = new FFmpegWriter(
             AV_CODEC_ID_HEVC,
@@ -366,7 +400,8 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
             crop_height_,
             camera_params_->frame_rate,
             writer_.video_file.c_str(),
-            writer_.keyframe_file.c_str());
+            writer_.keyframe_file.c_str(),
+            metadata_tags);
         writer_.video->create_thread();
 
         writer_.metadata = new std::ofstream();

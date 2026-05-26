@@ -8,9 +8,9 @@ moving split-GOP full-frame recording across the analytics process boundary.
 ## Bottom Line
 
 The external recorder should become a recorder supervisor plus encoder shards.
-The analytics process should only publish frame descriptors and wait for a
-detach ACK. It should not call NVENC, harvest bitstreams, mux video, or manage
-split-GOP encode scheduling.
+The analytics process should only publish frame descriptors and wait for the
+recorder's source-safe boundary. It should not call NVENC, harvest bitstreams,
+mux video, or manage split-GOP encode scheduling.
 
 Production still needs split-GOP / multi-GPU recording. The external
 single-camera `60 fps` tests proved that process isolation removes the
@@ -21,10 +21,15 @@ of the analytics process.
 
 ## Non-Negotiable Contracts
 
-- Detach ACK means the recorder owns a safe copy of the frame.
-- Detach ACK does not mean encode, bitstream harvest, mux, or disk write is
+- In detached-copy mode, detach ACK means the recorder owns a safe copy of the
+  frame.
+- In deferred-release mode, `ACK ... deferred_release` only means the recorder
+  accepted the frame; `RELEASE` means the source frame has been consumed and
+  Orange may recycle it.
+- ACK and RELEASE do not mean encode, bitstream harvest, mux, or disk write is
   complete.
-- The analytics process may recycle the ingress/source lease only after ACK.
+- The analytics process may recycle the ingress/source lease only after the
+  mode-specific source-safe boundary.
 - Full-frame NVENC and FFmpeg calls stay out of the analytics process.
 - Production full-frame recording must not silently drop frames.
 - Diagnostic frame selection is allowed only when the config and artifacts make
@@ -41,7 +46,7 @@ analytics process
   acquisition
   YOLO / crop / pose
   descriptor publisher
-  detach ACK wait
+  ACK / RELEASE source-lifetime wait
 
 external recorder supervisor process
   per-camera ingress sockets
@@ -76,6 +81,7 @@ Message types:
   profile, and expected frame geometry.
 - `FRAME`: one source-frame descriptor.
 - `ACK`: per-frame detach result.
+- `RELEASE`: per-frame source-safe notification for deferred-release mode.
 - `DRAIN`: stop accepting frames and finish all accepted work.
 - `STOP`: stop accepting frames and shut down cleanly.
 - `FINAL`: final recorder status and summary path.
@@ -122,10 +128,25 @@ Message types:
 - `ack_done_ns`
 - `error_code`
 - `error_message`
+- `source_release_mode`, such as `ack` or `deferred_release`
 
-The ACK path must stay short: import or reuse IPC mapping, copy to a
-recorder-owned slot, record slot metadata, send ACK. Encoding work is queued
-after the copy is safe.
+`RELEASE` fields:
+
+- `session_id`
+- `camera_serial`
+- `recording_frame_id`
+- `assigned_gpu_id`
+- `assigned_shard_id`
+- `release_done_ns`
+- `error_code`
+- `error_message`
+
+The detached-copy ACK path must stay short: import or reuse IPC mapping, copy
+to a recorder-owned slot, record slot metadata, send ACK. Encoding work is
+queued after the copy is safe. When a direct-input path avoids the up-front
+detach copy, the recorder must advertise deferred release in ACK and send a
+separate RELEASE only after every recorder-side operation that can read the
+source frame has completed.
 
 ## Routing Policy
 
@@ -217,6 +238,8 @@ Production semantics:
 
 - If the recorder cannot ACK before the source lease deadline, fail the
   recording visibly.
+- If the recorder ACKs with deferred release but cannot send RELEASE before the
+  source lease deadline, fail the recording visibly.
 - If the recorder ACKs but later cannot encode or write the frame, mark the
   recording unhealthy and report final failure.
 - Do not silently skip full-rate production frames.
@@ -238,14 +261,18 @@ Failure before ACK:
 
 Failure after ACK:
 
-- Recorder owns the only safe recording copy.
-- Recorder must mark the session unhealthy.
+- In detached-copy mode, the recorder owns the only safe recording copy.
+- In deferred-release mode, the recorder must either send RELEASE after source
+  consumption or fail visibly before Orange recycles the source.
+- If the source-safe boundary has passed, recorder failure must mark the
+  session unhealthy.
 - The final summary must identify missing frame ids, failed GOPs, and any
   incomplete output files.
 
 Shutdown:
 
-- `DRAIN` means finish all ACKed frames and finalize outputs.
+- `DRAIN` means finish all ACKed frames, send any required RELEASE messages,
+  and finalize outputs.
 - `STOP` means stop accepting new descriptors and then follow drain semantics
   unless a fatal error prevents it.
 - `FINAL` must include final counters and artifact paths.

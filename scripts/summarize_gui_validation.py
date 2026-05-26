@@ -12,6 +12,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from recording_output_validation import build_recording_output_summary
+
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 
@@ -440,6 +442,7 @@ def summarize_videos(recording_folder: Path, ffprobe: str) -> dict[str, Any]:
 def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> dict[str, Any]:
     recording_folder = resolve_recording_folder(recording_folder)
     snapshot = read_json(recording_folder / "recording_snapshot.json")
+    manifest = read_json(recording_folder / "recording_session.json")
     return {
         "recording_folder": str(recording_folder),
         "recording_id": snapshot.get("recording_id"),
@@ -450,6 +453,7 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
         "yolo": summarize_yolo(recording_folder, steady_after_frame),
         "pipeline": summarize_pipeline(recording_folder),
         "videos": summarize_videos(recording_folder, ffprobe),
+        "outputs": build_recording_output_summary(recording_folder, manifest, snapshot),
         "pose_events": summarize_pose_events(recording_folder),
         "spatial_calibrations": summarize_spatial_calibrations(snapshot),
     }
@@ -530,6 +534,21 @@ def print_human(summary: dict[str, Any]) -> None:
             )
     else:
         print("  no Cam*_pipeline_perf.csv files found")
+
+    print("\nRecording Outputs")
+    if summary["outputs"]:
+        for serial, outputs in sorted(summary["outputs"].items()):
+            parts = []
+            for output_kind, output in sorted(outputs.items()):
+                parts.append(
+                    f"{output_kind}:role={output.get('role', 'unknown')} "
+                    f"backend={output.get('backend', 'unknown')} "
+                    f"status={output.get('status', 'unknown')} "
+                    f"frames={fmt_int(output.get('frame_count'))}"
+                )
+            print(f"  Cam{serial}: {'; '.join(parts)}")
+    else:
+        print("  no recording outputs found")
 
     print("\nMain Videos")
     if summary["videos"]:

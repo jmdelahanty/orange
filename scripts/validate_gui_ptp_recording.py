@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import summarize_gui_validation as gui_summary
+from recording_output_validation import recording_output_contract_errors
 
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
@@ -338,6 +339,18 @@ def check_recording_session_manifest(
 
     camera_artifacts = manifest.get("camera_artifacts")
     camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
+    output_errors = recording_output_contract_errors(
+        recording_folder,
+        manifest,
+        snapshot,
+        cameras,
+    )
+    if output_errors:
+        for error in output_errors:
+            reporter.fail(error)
+    else:
+        reporter.pass_("schema-v2 recording_outputs contract valid")
+
     for serial in cameras:
         artifact = camera_artifacts.get(serial)
         artifact = artifact if isinstance(artifact, dict) else {}
@@ -834,12 +847,14 @@ def compact_camera_summary(summary: dict[str, Any], cameras: list[str], video_sa
         ptp_done = metric(summary, serial, "acquisition_to_ptp_done_ms")
         pipeline = nested_dict(summary, "pipeline", serial).get("final", {})
         video = nested_dict(summary, "videos", serial)
+        outputs = nested_dict(summary, "outputs", serial)
         out[serial] = {
             "detect_steady_p95_ms": detect.get("steady_p95"),
             "detect_p95_ms": detect.get("p95"),
             "queue_p95_ms": queue.get("p95"),
             "ptp_done_p95_ms": ptp_done.get("p95"),
             "pipeline_final": pipeline,
+            "outputs": outputs,
             "video": {
                 "status": video.get("status"),
                 "frames": video.get("frames"),
@@ -857,10 +872,13 @@ def print_camera_summary(camera_summary: dict[str, Any]) -> None:
     print("\nSummary")
     for serial, item in sorted(camera_summary.items()):
         video = item.get("video", {})
+        outputs = item.get("outputs") or {}
+        output_text = ",".join(sorted(outputs.keys())) if isinstance(outputs, dict) and outputs else "none"
         print(
             f"  Cam{serial}: detect_steady_p95={item.get('detect_steady_p95_ms')} ms "
             f"queue_p95={item.get('queue_p95_ms')} ms "
             f"ptp_done_p95={item.get('ptp_done_p95_ms')} ms "
+            f"outputs={output_text} "
             f"video_frames={video.get('frames')} "
             f"bitrate_mbps={video.get('bitrate_mbps')}"
         )

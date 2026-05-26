@@ -51,21 +51,33 @@ assigned_gpu_id = 5
 
 The actual image pixels are not sent through the socket. They remain in GPU
 memory. The `cuda_ipc_handle` is a temporary cross-process handle that lets the
-recorder import the source GPU allocation and copy the frame into
-recorder-owned GPU memory.
+recorder import the source GPU allocation.
 
-The per-frame lifecycle is:
+There are two source-lifetime modes:
 
-1. Orange acquires a frame into GPU memory.
-2. Orange sends a descriptor over the Unix domain socket.
-3. The recorder imports the CUDA IPC handle.
-4. The recorder copies the pixels into recorder-owned GPU memory.
-5. The recorder sends an ACK back over the socket.
-6. Orange can safely recycle the source frame buffer.
-7. The recorder later encodes the detached copy.
+1. Detached-copy mode:
+   - Orange acquires a frame into GPU memory.
+   - Orange sends a descriptor over the Unix domain socket.
+   - The recorder imports the CUDA IPC handle.
+   - The recorder copies the pixels into recorder-owned GPU memory.
+   - The recorder sends an ACK back over the socket.
+   - Orange can safely recycle the source frame buffer.
+   - The recorder later encodes the detached copy.
+2. Direct-input deferred-release mode:
+   - Orange acquires a frame into GPU memory.
+   - Orange sends a descriptor over the Unix domain socket.
+   - The recorder imports the CUDA IPC handle and accepts the frame.
+   - The recorder sends `ACK ... deferred_release`.
+   - Orange keeps the source frame buffer leased.
+   - The recorder sends `RELEASE` after the source frame has been consumed by
+     the recorder-side encode path.
+   - Orange can safely recycle the source frame buffer only after `RELEASE`.
 
-The ACK matters because Orange must not reuse a source frame buffer before the
-recorder has made its own copy.
+The ACK matters because Orange must know whether the recorder accepted the
+frame. In detached-copy mode, ACK is also the source-safe boundary. In
+deferred-release mode, ACK is not source-safe; `RELEASE` is the source-safe
+boundary. Orange must not reuse a source frame buffer before the relevant
+source-safe boundary for that mode.
 
 This socket is different from a WebSocket:
 
@@ -205,16 +217,19 @@ Current semantics:
 
 - `mode = "diagnostic_ipc_v1"` means `external_recorder_ipc_probe`, not the
   future production recorder supervisor.
-- `supervise_processes = false` preserves the current smoke-runner behavior
-  where a shell script launches the recorder. Set it to `true` only for specs
-  where `orange_client` should own recorder startup, socket readiness, and
-  shutdown.
+- `supervise_processes = false` preserves the smoke-runner behavior where a
+  shell script launches the recorder. Set it to `true` for specs where
+  `orange_client` should own recorder startup, socket readiness, shutdown, and
+  finalization checks.
 - Orange parses this block, fails fast on malformed specs, preserves it in
   `experiment_spec.json`, and exposes per-camera expected artifact paths in
   `runs.json` / `runs.csv`.
-- The analytics process does not validate external recorder files directly.
-  Those files are finalized after Orange exits, so validation is performed by
-  `scripts/verify_external_recorder_session.py`.
+- Shell-launched diagnostic runs validate external recorder files after Orange
+  exits through `scripts/verify_external_recorder_session.py`.
+- Supervised headless and GUI/session runs finalize the recorder lifecycle from
+  Orange, then use recorder summaries to write shared recording-session
+  metadata. Supervised headless also records verifier/finalization status in
+  the external-recorder lifecycle artifacts.
 - `require_merged_mp4` only applies to multi-shard runs. Single-shard runs use
   the shard output as the final MP4.
 - `expected_shard_gpu_ids` is ordered by shard id. For GOP modulo routing,
@@ -227,13 +242,13 @@ Current semantics:
   headless spec places the control at `fixed.recording_control`, the supervisor
   and verifier treat it as the contract-level default unless a stream overrides
   it.
-- `rollover.requested = true` is supported for the supervised headless
-  diagnostic IPC recorder when `clip_seconds > 0`. The recorder owns
-  GOP-boundary writer rotation and reports
+- `rollover.requested = true` is supported for the supervised diagnostic IPC
+  recorder when `clip_seconds > 0`. The recorder owns GOP-boundary writer
+  rotation and reports
   `rollover.implementation = "external_recorder_gop_boundary_writer_rotation"`.
   It writes the merged session MP4 plus per-clip outputs under
   `clips/clip_%06d/`.
-- After supervised headless recorder finalization, Orange mirrors the external
+- After supervised external recorder finalization, Orange mirrors the external
   clip list into the analytics `recording_session.json` using the shared
   `orange.recording_session` contract. The manifest records
   `recording_backend.mode = "external_ipc"` and per-camera clip video,
@@ -260,10 +275,10 @@ Current semantics:
   shard routing. A single same-GPU external encoder lane can drop frames at
   this rate; the validated smoke uses `expected_shard_gpu_ids = [5, 6]` and
   `routing_policy = "gop_modulo"`.
-- GUI/session supervision for external IPC remains separate future work; the
-  GUI path can recognize the backend contract but still refuses to run the
-  external recorder until GUI lifecycle, drain, and finalization reporting are
-  implemented.
+- GUI/session external IPC has a first supervised lifecycle slice: record start
+  launches recorder processes, finalization drains handoff queues, stops the
+  recorders, reads summaries, and writes an `orange_gui_external_ipc`
+  single-clip `recording_session.json`.
 
 ## Supervisor Plan Dry Run
 
@@ -313,7 +328,7 @@ The provisional `external_recorder_session.json`,
 `external_recorder_verifier_handoff.json`, and
 `external_recorder_finalization.json` artifact shapes are written or built
 through `src/external_recorder_contract_utils.*`, the same helper used by the
-GUI metadata-only fail-fast path. The headless parser also uses the shared
+GUI external IPC path. The headless parser also uses the shared
 contract extraction rule, so a wrapper object with `external_recorder_contract`
 resolves the same way in both paths.
 
@@ -321,9 +336,9 @@ Headless supervised process startup/shutdown now goes through
 `src/external_recorder_lifecycle.*`. That helper builds the supervisor plan,
 writes the initial session/plan artifacts, starts recorder processes, exports
 the per-camera socket/session environment variables, stops the recorder
-processes, and publishes runtime plus verifier-handoff artifacts. GUI does not
-call this lifecycle helper yet, but this is the intended shared entry point for
-future GUI supervision.
+processes, and publishes runtime plus verifier-handoff artifacts. GUI/session
+external IPC also uses this shared lifecycle entry point for its first
+supervised recorder slice.
 
 Latest validated supervised headless contract:
 
@@ -395,6 +410,8 @@ Recorder summary schema:
   "stream_id": "2010095",
   "routing_policy": "gop_modulo",
   "shard_count": 2,
+  "direct_input_source": false,
+  "deferred_source_release": false,
   "frames_received": 100,
   "acks_sent": 100,
   "encode_enqueued": 100,
@@ -402,6 +419,10 @@ Recorder summary schema:
   "encode_dropped": 0,
   "frames_encoded": 100,
   "worker_failed": false,
+  "external_encode": {
+    "source_releases_sent": 0,
+    "source_release_failures": 0
+  },
   "external_encode_shards": [],
   "merged_output": {},
   "outputs": {}
@@ -417,7 +438,9 @@ Verifier checks:
 - recorder summary schema and stream identity match the contract
 - `acks_sent == frames_received`
 - `encode_enqueued + encode_skipped + encode_dropped == frames_received`
-- `detach_copied == encode_enqueued`
+- `detach_copied == encode_enqueued` for the current verifier contract; use
+  `direct_input_source` and `deferred_source_release` to interpret whether that
+  count represents a detached recorder-owned copy or direct-input acceptance
 - no encode drops and no worker failures
 - expected shard GPU ids and routing policy match
 - merged output is finalized for multi-shard runs
@@ -430,6 +453,8 @@ Verifier checks:
 - for rolling runs, analytics `recording_clip_index.json`,
   `recording_clip_index.csv`, and `recording_snapshot.json` index pointers
   match the verified external summaries
+- for deferred-release diagnostics, `source_release_failures` should be `0`
+  and `source_releases_sent` should match the accepted frame count
 
 Smoke runners:
 

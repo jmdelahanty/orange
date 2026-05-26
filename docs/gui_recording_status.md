@@ -433,11 +433,11 @@ GUI dual-camera split-GOP was also exercised with:
 - `2010096`
 - their disjoint PIX pairs
 
-The current GUI result is:
+That historical in-process GUI result was:
 
 - multi-camera GUI recording is structurally working
-- `2 x 100 fps` GUI recording is not yet revalidated after the recabled
-  headless receive/requeue fix
+- `2 x 100 fps` in-process GUI split-GOP recording was not yet revalidated in
+  that artifact after the recabled headless receive/requeue fix
 
 Relevant GUI artifact:
 
@@ -456,11 +456,12 @@ split-GOP backlog overflow:
 - `2010095`: `peak_backlog_gops = 4`, `overflow_events = 53`
 - `2010096`: `peak_backlog_gops = 5`, `overflow_events = 83`
 
-So the current GUI conclusion is:
+So the conclusion for that historical in-process artifact is:
 
 - multi-camera split-GOP works structurally
 - this historical GUI artifact failed via split-GOP backlog overflow
-- the newer clean `2 x 100 fps` validation is headless-only so far
+- the newer clean `2 x 100 fps` GUI validation uses external IPC and is
+  documented below; in-process split-GOP remains a separate baseline if needed
 
 ### External Recorder / Detect-Latency Status
 

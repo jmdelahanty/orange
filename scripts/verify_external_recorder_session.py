@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from recording_output_validation import recording_clip_output_contract_errors
+
 
 CONTRACT_SCHEMA_ID = "orange.external_recorder.contract"
 SUMMARY_SCHEMA_ID = "orange.external_recorder.summary"
@@ -712,6 +714,15 @@ def verify_analytics_recording_session_manifests(
                 require(isinstance(camera_artifacts, dict), f"recording_session clip {clip_index} missing camera_artifacts")
                 camera_artifact = camera_artifacts.get(serial)
                 require(isinstance(camera_artifact, dict), f"recording_session clip {clip_index} missing camera {serial}")
+                output_errors = recording_clip_output_contract_errors(
+                    recording_folder,
+                    manifest_clip,
+                    [serial],
+                )
+                require(
+                    not output_errors,
+                    "recording output descriptor contract failed: " + "; ".join(output_errors),
+                )
                 require(
                     as_int(camera_artifact.get("first_recording_frame_id"), "camera first_recording_frame_id") ==
                     as_int(expected.get("first_recording_frame_id"), "expected first_recording_frame_id"),

@@ -4,6 +4,7 @@
 #include "external_recorder_lifecycle.h"
 #include "project.h"
 #include "recording_config_state.h"
+#include "recording_output_descriptor.h"
 #include "video_capture.h"
 #include "json.hpp"
 
@@ -44,19 +45,6 @@ struct RecordingControlConfig {
     }
 };
 
-struct RecordingSessionCameraArtifact {
-    std::string camera_serial;
-    std::string video_path;
-    std::string metadata_path;
-    std::string keyframe_path;
-    uint64_t frame_count = 0;
-    uint64_t first_recording_frame_id = 0;
-    uint64_t last_recording_frame_id = 0;
-    uint64_t recording_frame_id_gaps = 0;
-    uint64_t packet_count = 0;
-    std::string packet_count_source;
-};
-
 struct SingleClipRecordingSessionManifestOptions {
     std::string producer = "orange";
     std::string session_id;
@@ -86,6 +74,7 @@ struct SingleClipRecordingSessionManifestOptions {
     bool timed_stop_hit = false;
     nlohmann::json recording_backend = nlohmann::json::object();
     std::vector<RecordingSessionCameraArtifact> cameras;
+    std::vector<RecordingOutputDescriptor> recording_outputs;
 };
 
 struct RollingClipManifestOptions {
@@ -116,6 +105,7 @@ struct RollingClipManifestOptions {
     bool final_clip = false;
     bool drain_completed = false;
     std::vector<RecordingSessionCameraArtifact> cameras;
+    std::vector<RecordingOutputDescriptor> recording_outputs;
 };
 
 struct RollingRecordingSessionManifestOptions {
@@ -175,6 +165,13 @@ std::vector<RecordingSessionCameraArtifact> build_recording_camera_artifacts(
     const std::vector<std::string>& camera_serials,
     const std::string& recording_folder,
     bool relative_paths);
+RecordingOutputDescriptor build_crop_recording_output_descriptor(
+    const std::string& camera_serial,
+    const std::string& recording_folder,
+    bool relative_paths,
+    int crop_size_px,
+    int frame_rate,
+    const std::string& status);
 bool write_recording_session_manifest(const std::string& path,
                                       const nlohmann::json& manifest,
                                       std::string* error_out = nullptr);

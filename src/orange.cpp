@@ -216,7 +216,8 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                                              CameraControl* camera_control,
                                              const CameraParams* cameras_params,
                                              const CameraEachSelect* cameras_select,
-                                             const int num_cameras)
+                                             const int num_cameras,
+                                             const int crop_size_px)
 {
     if (!run || !run->active || !run->finalizing || run->recording_folder.empty()) {
         return false;
@@ -504,6 +505,27 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     manifest_options.timed_stop_hit = false;
     manifest_options.recording_backend = recording_backend;
     manifest_options.cameras = std::move(camera_artifacts);
+    if (cameras_params && cameras_select) {
+        const int resolved_crop_size =
+            CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
+        for (int i = 0; i < num_cameras; ++i) {
+            if (!cameras_select[i].crop_and_encode) {
+                continue;
+            }
+            std::string camera_serial = cameras_params[i].camera_serial;
+            if (camera_serial.empty()) {
+                camera_serial = std::to_string(cameras_params[i].camera_id);
+            }
+            manifest_options.recording_outputs.push_back(
+                orange::session::build_crop_recording_output_descriptor(
+                    camera_serial,
+                    run->recording_folder,
+                    true,
+                    resolved_crop_size,
+                    cameras_params[i].frame_rate,
+                    manifest_options.status));
+        }
+    }
 
     const nlohmann::json manifest =
         orange::session::build_single_clip_recording_session_manifest(manifest_options);
@@ -560,6 +582,15 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             run->recording_folder,
             snapshot_update)) {
         std::cerr << "[GUI][recording] Failed to update recording_snapshot.json session pointers."
+                  << std::endl;
+        return false;
+    }
+    if (manifest.contains("recording_outputs") &&
+        manifest["recording_outputs"].is_object() &&
+        !update_recording_snapshot_recording_outputs(
+            run->recording_folder,
+            manifest["recording_outputs"])) {
+        std::cerr << "[GUI][recording] Failed to update recording_snapshot.json recording outputs."
                   << std::endl;
         return false;
     }
@@ -4390,7 +4421,8 @@ int main(int argc, char **args) {
                                 camera_control,
                                 cameras_params,
                                 cameras_select,
-                                num_cameras)) {
+                                num_cameras,
+                                crop_size_px)) {
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                                       << std::endl;
                         }
@@ -4569,7 +4601,8 @@ int main(int argc, char **args) {
                     camera_control,
                     cameras_params,
                     cameras_select,
-                    num_cameras)) {
+                    num_cameras,
+                    crop_size_px)) {
                 gui_mark_recording_finished(&gui_session_timing);
             }
 

@@ -572,6 +572,17 @@ nlohmann::json build_rolling_clip_entry_json(
     nlohmann::json camera_serials;
     nlohmann::json artifacts =
         build_clip_artifacts_json(clip.cameras, &camera_artifacts, &camera_serials);
+    std::vector<RecordingOutputDescriptor> recording_outputs =
+        build_full_recording_output_descriptors(
+            clip.cameras,
+            "in_process",
+            clip.status);
+    recording_outputs.insert(
+        recording_outputs.end(),
+        clip.recording_outputs.begin(),
+        clip.recording_outputs.end());
+    const nlohmann::json recording_outputs_json =
+        build_recording_outputs_json(recording_outputs);
 
     nlohmann::json out = {
         {"producer", clip.producer},
@@ -605,6 +616,7 @@ nlohmann::json build_rolling_clip_entry_json(
         {"drain_completed", clip.drain_completed},
         {"cameras", camera_serials},
         {"camera_artifacts", camera_artifacts},
+        {"recording_outputs", recording_outputs_json},
         {"artifacts", artifacts}
     };
     if (include_schema_fields) {
@@ -615,6 +627,71 @@ nlohmann::json build_rolling_clip_entry_json(
 }
 
 }  // namespace
+
+RecordingOutputDescriptor build_crop_recording_output_descriptor(
+    const std::string& camera_serial,
+    const std::string& recording_folder,
+    const bool relative_paths,
+    const int crop_size_px,
+    const int frame_rate,
+    const std::string& status)
+{
+    RecordingOutputDescriptor output;
+    output.camera_serial = camera_serial;
+    output.output_kind = "crop";
+    output.role = "sidecar";
+    output.backend = "in_process";
+    output.status = status.empty() ? "finalized" : status;
+    output.width = crop_size_px;
+    output.height = crop_size_px;
+    output.frame_rate = frame_rate;
+    output.codec = "hevc";
+    output.container = "mp4";
+    output.tuning = "lossless";
+    output.pixel_source_format = "mono8";
+    output.encoded_format = "nv12";
+    output.coordinate_space = "full_frame_pixels";
+    output.details = {
+        {"selection_policy", "largest_detection_by_confidence"},
+        {"blank_frame_policy", "encode_black_frame_when_no_detection"}
+    };
+
+    if (camera_serial.empty() || recording_folder.empty()) {
+        return output;
+    }
+
+    const std::filesystem::path folder(recording_folder);
+    const std::string prefix = "Cam" + camera_serial + "_crop";
+    const std::string video_name = prefix + ".mp4";
+    const std::string metadata_name = prefix + "_meta.csv";
+    const std::string keyframe_name = prefix + "_keyframe.json";
+    const std::string perf_name = prefix + "_perf.csv";
+    const std::string sidecar_perf_name = prefix + "_sidecar_perf.csv";
+    const std::filesystem::path video_path = folder / video_name;
+    const std::filesystem::path metadata_path = folder / metadata_name;
+
+    output.video_path = artifact_path_string(folder, video_name, relative_paths);
+    output.metadata_path = artifact_path_string(folder, metadata_name, relative_paths);
+    output.keyframe_path = artifact_path_string(folder, keyframe_name, relative_paths);
+    output.perf_path = artifact_path_string(folder, perf_name, relative_paths);
+    output.sidecar_perf_path = artifact_path_string(folder, sidecar_perf_name, relative_paths);
+
+    const MetadataFrameStats frame_stats = read_metadata_frame_stats(metadata_path);
+    output.frame_count = frame_stats.frame_count;
+    output.first_recording_frame_id = frame_stats.first_recording_frame_id;
+    output.last_recording_frame_id = frame_stats.last_recording_frame_id;
+    output.recording_frame_id_gaps = frame_stats.recording_frame_id_gaps;
+
+    uint64_t packet_count = 0;
+    if (count_video_packets(video_path, &packet_count)) {
+        output.packet_count = packet_count;
+        output.packet_count_source = "ffprobe_nb_read_packets";
+    } else {
+        output.packet_count = 0;
+        output.packet_count_source = "unavailable";
+    }
+    return output;
+}
 
 nlohmann::json build_single_clip_recording_session_manifest(
     const SingleClipRecordingSessionManifestOptions& options)
@@ -636,6 +713,25 @@ nlohmann::json build_single_clip_recording_session_manifest(
         camera_artifacts[camera.camera_serial] = build_camera_artifact_json(camera);
     }
 
+    std::string output_backend = "in_process";
+    if (options.recording_backend.is_object() &&
+        options.recording_backend.contains("mode") &&
+        options.recording_backend["mode"].is_string() &&
+        !options.recording_backend["mode"].get<std::string>().empty()) {
+        output_backend = options.recording_backend["mode"].get<std::string>();
+    }
+    std::vector<RecordingOutputDescriptor> recording_outputs =
+        build_full_recording_output_descriptors(
+            options.cameras,
+            output_backend,
+            options.status);
+    recording_outputs.insert(
+        recording_outputs.end(),
+        options.recording_outputs.begin(),
+        options.recording_outputs.end());
+    const nlohmann::json recording_outputs_json =
+        build_recording_outputs_json(recording_outputs);
+
     nlohmann::json manifest = {
         {"schema_id", "orange.recording_session"},
         {"schema_version", 1},
@@ -648,6 +744,7 @@ nlohmann::json build_single_clip_recording_session_manifest(
         {"status", options.status},
         {"cameras", cameras},
         {"camera_artifacts", camera_artifacts},
+        {"recording_outputs", recording_outputs_json},
         {"stream",
          {
              {"requested_duration_seconds", options.requested_stream_duration_seconds},
@@ -693,7 +790,8 @@ nlohmann::json build_single_clip_recording_session_manifest(
                       {"videos", video_artifacts},
                       {"metadata", metadata_artifacts},
                       {"keyframes", keyframe_artifacts}
-                  }}
+                  }},
+                 {"recording_outputs", recording_outputs_json}
              }})}
     };
     if (options.recording_backend.is_object() && !options.recording_backend.empty()) {

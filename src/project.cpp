@@ -95,6 +95,143 @@ std::string trim_ascii_copy(std::string value)
     return value;
 }
 
+std::string normalize_snapshot_recording_sink_mode(std::string value)
+{
+    value = trim_ascii_copy(value);
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value.empty() ? "real" : value;
+}
+
+bool snapshot_sink_writes_full_output(const std::string& sink_mode)
+{
+    return sink_mode == "real" || sink_mode == "external_ipc";
+}
+
+std::string snapshot_recording_output_backend(const std::string& sink_mode)
+{
+    if (sink_mode == "external_ipc") {
+        return "external_ipc";
+    }
+    if (sink_mode == "real") {
+        return "in_process";
+    }
+    return sink_mode.empty() ? "unknown" : sink_mode;
+}
+
+std::string snapshot_camera_serial(const CameraParams& params)
+{
+    if (!params.camera_serial.empty()) {
+        return params.camera_serial;
+    }
+    return std::to_string(params.camera_id);
+}
+
+nlohmann::json build_initial_recording_outputs_snapshot(
+    const CameraParams* cameras_params,
+    const int num_cameras,
+    const std::string& recording_sink_mode)
+{
+    nlohmann::json outputs = nlohmann::json::object();
+    const std::string sink_mode = normalize_snapshot_recording_sink_mode(recording_sink_mode);
+    const bool writes_full_output = snapshot_sink_writes_full_output(sink_mode);
+    const std::string backend = snapshot_recording_output_backend(sink_mode);
+
+    for (int i = 0; i < num_cameras; ++i) {
+        const CameraParams& params = cameras_params[i];
+        const std::string camera_serial = snapshot_camera_serial(params);
+        if (camera_serial.empty()) {
+            continue;
+        }
+
+        nlohmann::json full_output = {
+            {"schema_version", 1},
+            {"camera_serial", camera_serial},
+            {"output_kind", "full"},
+            {"role", "ingest_authoritative"},
+            {"backend", backend},
+            {"status", writes_full_output ? "pending" : "disabled"},
+            {"width", params.width},
+            {"height", params.height},
+            {"frame_rate", params.frame_rate},
+            {"container", writes_full_output ? "mp4" : "none"},
+            {"coordinate_space", "full_frame_pixels"}
+        };
+        if (sink_mode == "real") {
+            const std::string prefix = "Cam" + camera_serial;
+            full_output["video"] = prefix + ".mp4";
+            full_output["metadata"] = prefix + "_meta.csv";
+            full_output["keyframes"] = prefix + "_keyframe.json";
+        } else if (sink_mode == "external_ipc") {
+            full_output["details"] = {
+                {"path_resolution", "finalized_recording_session_manifest"},
+                {"note", "external recorder paths are finalized after recorder shutdown"}
+            };
+        }
+
+        outputs[camera_serial] = {{"full", full_output}};
+    }
+    return outputs;
+}
+
+nlohmann::json build_crop_recording_output_from_snapshot(
+    const std::string& camera_serial,
+    const nlohmann::json& crop_output_info)
+{
+    if (camera_serial.empty() ||
+        !crop_output_info.is_object() ||
+        !crop_output_info.value("enabled", false)) {
+        return nullptr;
+    }
+
+    const nlohmann::json runtime =
+        crop_output_info.value("runtime", nlohmann::json::object());
+    const nlohmann::json files =
+        runtime.value("files", nlohmann::json::object());
+
+    nlohmann::json output = {
+        {"schema_version", 1},
+        {"camera_serial", camera_serial},
+        {"output_kind", "crop"},
+        {"role", "sidecar"},
+        {"backend", "in_process"},
+        {"status", "pending"},
+        {"width", runtime.value("width", 0)},
+        {"height", runtime.value("height", 0)},
+        {"frame_rate", runtime.value("frame_rate", 0)},
+        {"codec", runtime.value("codec", std::string("hevc"))},
+        {"container", runtime.value("container", std::string("mp4"))},
+        {"tuning", runtime.value("tuning", std::string("lossless"))},
+        {"pixel_source_format", "mono8"},
+        {"encoded_format", "nv12"},
+        {"coordinate_space", runtime.value("coordinate_space", std::string("full_frame_pixels"))},
+        {"details",
+         {
+             {"mode", crop_output_info.value("mode", std::string("yolo_centered_square"))},
+             {"selection_policy",
+              runtime.value("selection_policy", std::string("largest_detection_by_confidence"))},
+             {"blank_frame_policy",
+              runtime.value("blank_frame_policy", std::string("encode_black_frame_when_no_detection"))}
+         }}
+    };
+    if (files.is_object()) {
+        const std::map<std::string, const char*> file_keys = {
+            {"video", "video"},
+            {"metadata", "metadata"},
+            {"keyframes", "keyframes"},
+            {"perf", "perf"},
+            {"sidecar_perf", "sidecar_perf"}
+        };
+        for (const auto& item : file_keys) {
+            if (files.contains(item.first) && files[item.first].is_string()) {
+                output[item.second] = files[item.first].get<std::string>();
+            }
+        }
+    }
+    return output;
+}
+
 bool app_config_schema_version_supported(int schema_version)
 {
     return schema_version == kAppConfigSchemaVersion;
@@ -2888,6 +3025,7 @@ bool write_recording_snapshot(const std::string& recording_folder,
     nlohmann::json snapshot;
     std::string resolved_recording_id = recording_id.empty() ? get_current_date_time() : recording_id;
     std::string timestamp_utc = get_current_utc_timestamp();
+    snapshot["schema_version"] = 2;
     snapshot["recording_id"] = resolved_recording_id;
     snapshot["timestamp_utc"] = timestamp_utc;
     snapshot["producer_version"] = "unknown";
@@ -2944,6 +3082,10 @@ bool write_recording_snapshot(const std::string& recording_folder,
 
     snapshot["cameras"] = cameras;
     snapshot["camera_runtime"] = camera_runtime;
+    snapshot["recording_outputs"] = build_initial_recording_outputs_snapshot(
+        cameras_params,
+        num_cameras,
+        recording_sink_mode);
     snapshot["sync"] = build_recording_sync_snapshot(sync_camera_enabled, ptp_params, num_cameras);
 
     nlohmann::json gpu_inventory = nlohmann::json::object();
@@ -3083,7 +3225,46 @@ bool update_recording_snapshot_encoder(const std::string& recording_folder,
         snapshot["encoders"] = nlohmann::json::object();
     }
 
+    snapshot["schema_version"] = 2;
     snapshot["encoders"][camera_serial] = encoder_info;
+    if (snapshot.contains("recording_outputs") &&
+        snapshot["recording_outputs"].is_object() &&
+        snapshot["recording_outputs"].contains(camera_serial) &&
+        snapshot["recording_outputs"][camera_serial].is_object() &&
+        snapshot["recording_outputs"][camera_serial].contains("full") &&
+        snapshot["recording_outputs"][camera_serial]["full"].is_object()) {
+        nlohmann::json& full_output = snapshot["recording_outputs"][camera_serial]["full"];
+        if (encoder_info.contains("codec") && encoder_info["codec"].is_string()) {
+            full_output["codec"] = encoder_info["codec"];
+        }
+        if (encoder_info.contains("tuning") && encoder_info["tuning"].is_string()) {
+            full_output["tuning"] = encoder_info["tuning"];
+        }
+        if (encoder_info.contains("path") && encoder_info["path"].is_string()) {
+            full_output["video"] = encoder_info["path"];
+        }
+        if (encoder_info.contains("resolution") && encoder_info["resolution"].is_object()) {
+            const nlohmann::json& resolution = encoder_info["resolution"];
+            if (resolution.contains("width")) {
+                full_output["width"] = resolution["width"];
+            }
+            if (resolution.contains("height")) {
+                full_output["height"] = resolution["height"];
+            }
+        }
+    }
+    if (snapshot.contains("recording_outputs") &&
+        snapshot["recording_outputs"].is_object() &&
+        snapshot["recording_outputs"].contains(camera_serial) &&
+        snapshot["recording_outputs"][camera_serial].is_object() &&
+        snapshot["recording_outputs"][camera_serial].contains("full")) {
+        if (!snapshot["encoders"][camera_serial].contains("outputs") ||
+            !snapshot["encoders"][camera_serial]["outputs"].is_object()) {
+            snapshot["encoders"][camera_serial]["outputs"] = nlohmann::json::object();
+        }
+        snapshot["encoders"][camera_serial]["outputs"]["full"] =
+            snapshot["recording_outputs"][camera_serial]["full"];
+    }
 
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;
@@ -3221,6 +3402,82 @@ bool update_recording_snapshot_session_artifacts(const std::string& recording_fo
         "recording snapshot");
 }
 
+bool update_recording_snapshot_recording_outputs(const std::string& recording_folder,
+                                                 const nlohmann::json& recording_outputs) {
+    if (recording_folder.empty() || !recording_outputs.is_object()) {
+        return false;
+    }
+
+    const std::filesystem::path snapshot_path =
+        std::filesystem::path(recording_folder) / "recording_snapshot.json";
+
+    std::lock_guard<std::mutex> lock(recording_snapshot_mutex());
+
+    nlohmann::json snapshot;
+    if (!read_recording_snapshot_locked(snapshot_path, &snapshot)) {
+        return false;
+    }
+
+    snapshot["schema_version"] = 2;
+    nlohmann::json merged_outputs =
+        snapshot.value("recording_outputs", nlohmann::json::object());
+    if (!merged_outputs.is_object()) {
+        merged_outputs = nlohmann::json::object();
+    }
+    for (auto camera_it = recording_outputs.begin(); camera_it != recording_outputs.end(); ++camera_it) {
+        if (!camera_it.value().is_object()) {
+            continue;
+        }
+        if (!merged_outputs.contains(camera_it.key()) ||
+            !merged_outputs[camera_it.key()].is_object()) {
+            merged_outputs[camera_it.key()] = nlohmann::json::object();
+        }
+        for (auto output_it = camera_it.value().begin();
+             output_it != camera_it.value().end();
+             ++output_it) {
+            nlohmann::json merged_output =
+                merged_outputs[camera_it.key()].value(output_it.key(), nlohmann::json::object());
+            if (!merged_output.is_object()) {
+                merged_output = nlohmann::json::object();
+            }
+            if (output_it.value().is_object()) {
+                for (auto field_it = output_it.value().begin();
+                     field_it != output_it.value().end();
+                     ++field_it) {
+                    merged_output[field_it.key()] = field_it.value();
+                }
+            } else {
+                merged_output = output_it.value();
+            }
+            merged_outputs[camera_it.key()][output_it.key()] = merged_output;
+        }
+    }
+    snapshot["recording_outputs"] = merged_outputs;
+    snapshot["recording_outputs_updated_at_utc"] = get_current_utc_timestamp();
+    if (!snapshot.contains("encoders") || !snapshot["encoders"].is_object()) {
+        snapshot["encoders"] = nlohmann::json::object();
+    }
+    for (auto camera_it = merged_outputs.begin(); camera_it != merged_outputs.end(); ++camera_it) {
+        if (!camera_it.value().is_object()) {
+            continue;
+        }
+        if (!snapshot["encoders"].contains(camera_it.key()) ||
+            !snapshot["encoders"][camera_it.key()].is_object()) {
+            snapshot["encoders"][camera_it.key()] = nlohmann::json::object();
+        }
+        snapshot["encoders"][camera_it.key()]["outputs"] = camera_it.value();
+    }
+
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    return write_json_atomic(
+        snapshot_path,
+        snapshot,
+        std::filesystem::perms::unknown,
+        false,
+        "recording snapshot");
+}
+
 bool update_recording_snapshot_model(const std::string& recording_folder,
                                      const std::string& camera_serial,
                                      const std::string& model_kind,
@@ -3279,7 +3536,33 @@ bool update_recording_snapshot_crop_output(const std::string& recording_folder,
         snapshot["crop_outputs"] = nlohmann::json::object();
     }
 
+    snapshot["schema_version"] = 2;
     snapshot["crop_outputs"][camera_serial] = crop_output_info;
+    const nlohmann::json crop_descriptor =
+        build_crop_recording_output_from_snapshot(camera_serial, crop_output_info);
+    if (crop_descriptor.is_object()) {
+        if (!snapshot.contains("recording_outputs") ||
+            !snapshot["recording_outputs"].is_object()) {
+            snapshot["recording_outputs"] = nlohmann::json::object();
+        }
+        if (!snapshot["recording_outputs"].contains(camera_serial) ||
+            !snapshot["recording_outputs"][camera_serial].is_object()) {
+            snapshot["recording_outputs"][camera_serial] = nlohmann::json::object();
+        }
+        snapshot["recording_outputs"][camera_serial]["crop"] = crop_descriptor;
+        if (!snapshot.contains("encoders") || !snapshot["encoders"].is_object()) {
+            snapshot["encoders"] = nlohmann::json::object();
+        }
+        if (!snapshot["encoders"].contains(camera_serial) ||
+            !snapshot["encoders"][camera_serial].is_object()) {
+            snapshot["encoders"][camera_serial] = nlohmann::json::object();
+        }
+        if (!snapshot["encoders"][camera_serial].contains("outputs") ||
+            !snapshot["encoders"][camera_serial]["outputs"].is_object()) {
+            snapshot["encoders"][camera_serial]["outputs"] = nlohmann::json::object();
+        }
+        snapshot["encoders"][camera_serial]["outputs"]["crop"] = crop_descriptor;
+    }
 
     orange::ScopedFsuid fsuid_guard;
     (void)fsuid_guard;

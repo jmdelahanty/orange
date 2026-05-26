@@ -230,6 +230,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/enet_thread.cpp"
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/recording_validation.cpp"
+    "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
@@ -278,6 +279,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
+    "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -356,6 +358,14 @@ if(BUILD_TESTING)
     target_include_directories(recording_validation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_validation_tests PRIVATE cxx_std_17)
     add_test(NAME recording_validation_tests COMMAND recording_validation_tests)
+
+    add_executable(recording_output_descriptor_tests
+        "tools/recording_output_descriptor_tests.cpp"
+        "${SRC_DIR}/recording_output_descriptor.cpp"
+    )
+    target_include_directories(recording_output_descriptor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
+    add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
 
     add_executable(yolo_event_log_validation_tests
         "tools/yolo_event_log_validation_tests.cpp"

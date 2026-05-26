@@ -108,6 +108,8 @@ bool update_recording_snapshot_gpu_monitoring(const std::string& recording_folde
                                               const nlohmann::json& monitor_info);
 bool update_recording_snapshot_session_artifacts(const std::string& recording_folder,
                                                  const nlohmann::json& session_info);
+bool update_recording_snapshot_recording_outputs(const std::string& recording_folder,
+                                                 const nlohmann::json& recording_outputs);
 bool update_recording_snapshot_model(const std::string& recording_folder,
                                      const std::string& camera_serial,
                                      const std::string& model_kind,

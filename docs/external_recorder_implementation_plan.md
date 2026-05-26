@@ -17,13 +17,13 @@ Orange analytics process
   acquisition
   YOLO / crop / pose
   fast frame descriptor publication
-  source lease held only until detach ACK
+  source lease held until the recorder's source-safe boundary
   no full-frame NVENC APIs
 
 External recorder process
   CUDA IPC import
-  recorder-owned detach copy
-  detach ACK
+  recorder-owned detach copy or direct input
+  ACK, plus RELEASE when source release is deferred
   NVENC preprocess / encode / harvest
   mux / output / metadata
 ```
@@ -61,21 +61,24 @@ mean one helper GPU can encode the whole stream at production rate.
 
 ## Non-Negotiable Boundary
 
-Detach ACK is the critical contract.
+The source-safe boundary is the critical contract.
 
 ```text
-Before ACK:
+Before the source-safe boundary:
   Orange must keep the source frame lease alive.
 
-After ACK:
+After the source-safe boundary:
   Orange may recycle the source frame.
-  External recorder owns a copy and may encode/harvest/write independently.
+  External recorder has consumed or copied the source pixels.
 ```
 
-ACK must mean "the recorder owns a safe copy", not "encoding finished".
+In detached-copy mode, ACK is the source-safe boundary and means "the recorder
+owns a safe copy", not "encoding finished". In direct-input deferred-release
+mode, `ACK ... deferred_release` only means "the recorder accepted the frame";
+Orange must keep the source frame leased until the recorder sends `RELEASE`.
 
 `nvEncEncodePicture`, `nvEncLockBitstream`, muxing, and disk output must stay
-behind the process boundary and after the detach ACK. If ACK waits for encode
+behind the process boundary and after frame acceptance. If ACK waits for encode
 completion, the design recreates the latency coupling we are trying to remove.
 
 ## Current Prototype
@@ -86,7 +89,12 @@ Implemented:
 - Unix-domain socket frame descriptors.
 - CUDA IPC memory handle export/import.
 - Recorder-owned device detach copy.
-- ACK-gated source lease recycle.
+- ACK-gated source lease recycle for detached-copy mode.
+- Deferred source release for direct-input experiments:
+  - recorder sends `ACK ... deferred_release` after accepting work
+  - Orange keeps the source frame leased
+  - recorder sends `RELEASE` after source consumption
+  - summaries report `source_releases_sent` and `source_release_failures`
 - External-process optional NVENC encode with:
   - `--encode`
   - `--encode-max-fps`
@@ -134,11 +142,13 @@ Limitations:
 - The descriptor has useful routing/session fields, but there is not yet a
   versioned production protocol with explicit `STOP` / `DRAIN` / `FINALIZE`,
   heartbeat, or health messages.
-- External split-GOP/multi-GPU routing exists in the diagnostic probe, but GUI
-  session supervision does not yet start, monitor, drain, or finalize external
-  recorder processes.
-- No production GUI backend selection has been added yet; in-process recording
-  remains the GUI fallback/default path.
+- External split-GOP/multi-GPU routing exists in the diagnostic probe, and GUI
+  session supervision now starts, drains, finalizes, and summarizes external
+  recorder processes for single-clip `external_ipc` runs. User-visible
+  heartbeat/failure reporting remains follow-up work.
+- No production GUI UI selection has been added yet; in-process recording
+  remains the GUI fallback/default path unless `external_ipc` is selected by
+  config or environment.
 
 ## Current MP4 Smoke Result
 
@@ -478,11 +488,11 @@ Current contract-hardening status:
   routing before any camera/GUI work is required.
 - `src/external_recorder_contract_utils.*` now owns shared contract extraction,
   per-camera materialization, supervisor-plan artifact generation, and the
-  metadata-only fail-fast `recording_session.json` shape. The helper also
-  annotates contracts with `recording_control` and current `rollover` intent so
-  GUI/session and headless supervised paths describe the same backend contract.
-  The GUI external recorder path uses this helper, and it is linked into
-  `orange_client` for the next headless/session consolidation slice.
+  shared external-recorder `recording_session.json` artifact shapes. The helper
+  also annotates contracts with `recording_control` and current `rollover`
+  intent so GUI/session and headless supervised paths describe the same backend
+  contract. The GUI external recorder path uses this helper, and it is linked
+  into `orange_client` for the supervised headless path.
 - The supervised headless path now also uses that helper for the provisional
   `external_recorder_session.json` and `external_recorder_supervisor_plan.json`
   writes, and its parser uses the same wrapper-object extraction rule as the
@@ -659,6 +669,21 @@ Latest GUI/session external IPC validation:
 - `scripts/validate_gui_ptp_recording.py --latest-complete` now passes after
   the validator was updated to use `recording_session.json` external video
   paths instead of requiring root-level `Cam*.mp4` files
+
+Latest source-lifetime hardening:
+
+- The direct-input deferred-release path was added after a visual jitter test
+  showed behavior consistent with source-buffer reuse before recorder-side
+  source consumption had completed.
+- In this mode, the recorder ACKs accepted work with `deferred_release`, then
+  sends `RELEASE` only after the source frame is safe to recycle.
+- Latest one-camera hardware smoke:
+  `/tmp/orange_external_recorder_2010096_20260522_194514`.
+- The run received, ACKed, encoded, and source-released `401/401` frames with
+  `0` release failures, passed decoded video sanity, and measured
+  `detach_copy_p95_ms = 0.002735`.
+- YOLO post-frame-50 `acquisition_to_detect_done_ms p95` stayed in the good
+  external-recorder range at about `4.383 ms`.
 
 Next production slice: add GUI-visible recorder health/heartbeat and failure
 reporting around the supervised lifecycle, and add a GUI PTP stack

@@ -6088,6 +6088,16 @@ bool write_supervised_external_recorder_recording_session_manifest(
         }
         return false;
     }
+    if (manifest.contains("recording_outputs") &&
+        manifest["recording_outputs"].is_object() &&
+        !update_recording_snapshot_recording_outputs(
+            run.recording_folder,
+            manifest["recording_outputs"])) {
+        if (error_out) {
+            *error_out = "failed to update recording_snapshot.json with external IPC recording outputs";
+        }
+        return false;
+    }
 
     if (bridge_out) {
         *bridge_out = {
@@ -8807,6 +8817,18 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
                 clear_headless_frame_ipc_managers(frame_ipc_managers);
                 return 1;
             }
+        }
+        if (manifest.contains("recording_outputs") &&
+            manifest["recording_outputs"].is_object() &&
+            !update_recording_snapshot_recording_outputs(
+                active_record_folder,
+                manifest["recording_outputs"])) {
+            std::cerr << "Failed to update recording snapshot with recording outputs."
+                      << std::endl;
+            stop_headless_frame_ipc_managers(frame_ipc_managers);
+            stop_headless_frame_ipc_runtime(&frame_ipc_runtime);
+            clear_headless_frame_ipc_managers(frame_ipc_managers);
+            return 1;
         }
     }
 

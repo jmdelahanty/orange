@@ -346,8 +346,12 @@ multi-GPU split-GOP throughput.
   CUDA IPC frames at about `99.85 fps`, with no camera drops/frame-id gaps and
   YOLO `cpu_preprocess_ms p95 = 0.0119 ms`.
 - The external IPC probe now also has a first NVENC encode slice behind
-  `--encode`. It ACKs after detach copy, then encodes from recorder-owned
-  device slots on a dedicated external-process encoder thread.
+  `--encode`. In the normal detached-copy path it ACKs after the recorder owns
+  a safe copy, then encodes from recorder-owned device slots on a dedicated
+  external-process encoder thread. The newer direct-input/deferred-release
+  path ACKs accepted work with `deferred_release` and sends `RELEASE` after the
+  source frame has been consumed, so Orange does not recycle the source buffer
+  too early.
 - First same-GPU encode smoke on `2010096` capped external HEVC encode at
   `60 fps`: `601` frames received, `501` post-warmup ACKs for `500` submitted
   frames, `0` IPC failures/timeouts, `360` externally encoded frames, and

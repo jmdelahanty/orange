@@ -13,6 +13,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from recording_output_validation import (
+    recording_clip_output_contract_errors,
+    recording_output_contract_errors,
+)
+
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 ACCEPTED_SCHEMA_IDS = {"orange.headless.recording_session", "orange.recording_session"}
@@ -332,6 +337,11 @@ def verify_clip_artifact_coherence(run_folder: Path, manifest: dict[str, Any], c
                     row.get(key) == value,
                     f"camera_artifacts.{camera}.{key} does not match clip artifacts",
                 )
+    output_errors = recording_clip_output_contract_errors(run_folder, clip, cameras)
+    require(
+        not output_errors,
+        "clip recording output descriptor contract failed: " + "; ".join(output_errors),
+    )
 
 
 def verify_run_row(
@@ -626,6 +636,18 @@ def verify_single_clip(
 
     cameras = [camera for camera in cameras if not args.camera or camera == args.camera]
     verify_clip_artifact_coherence(run_folder, manifest, clip, cameras)
+    snapshot_path = run_folder / "recording_snapshot.json"
+    snapshot = read_json(snapshot_path) if snapshot_path.exists() else {}
+    output_errors = recording_output_contract_errors(
+        run_folder,
+        manifest,
+        snapshot,
+        cameras,
+    )
+    require(
+        not output_errors,
+        "recording output descriptor contract failed: " + "; ".join(output_errors),
+    )
 
     ffprobe_durations: dict[str, float] = {}
     for camera in cameras:

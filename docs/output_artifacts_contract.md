@@ -113,10 +113,13 @@ Path:
 - `<recording_folder>/recording_snapshot.json`
 
 Current emitted top-level fields:
+- `schema_version: integer` (`2` for snapshots with unified output descriptors)
 - `recording_id: string`
 - `timestamp_utc: string` (UTC ISO8601)
 - `producer_version: string` (currently `"unknown"`)
 - `session: object` (optional in older artifacts)
+- `recording_outputs: object` (schema-2 output descriptors keyed by camera
+  serial, then output kind)
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
 - `camera_runtime: object` (resolved per-recording camera config keyed by camera id/serial)
@@ -129,6 +132,27 @@ Current emitted top-level fields:
 - `recording_sink_mode: string` (`real`, `immediate_recycle`,
   `preprocess_only`, `threaded_handoff_only`, or `external_ipc`)
 - `full_frame_video_enabled: boolean`
+
+`recording_outputs` object:
+- Key: camera identifier string (serial or camera_id string).
+- Value: object keyed by output kind:
+  - `full`: ingest-authoritative full-frame output descriptor.
+  - `crop`: optional YOLO crop sidecar descriptor.
+- Each descriptor carries:
+  - `schema_version: integer`
+  - `camera_serial: string`
+  - `output_kind: string`
+  - `role: string` (`ingest_authoritative` or `sidecar`)
+  - `backend: string` (`in_process`, `external_ipc`, or diagnostic sink mode)
+  - `status: string` (`pending`, `completed`, `incomplete`, or `disabled`)
+  - Optional artifact paths: `video`, `metadata`, `keyframes`, `perf`,
+    `sidecar_perf`, `summary`
+  - Optional counts: `frame_count`, `first_recording_frame_id`,
+    `last_recording_frame_id`, `recording_frame_id_gaps`, `packet_count`,
+    `packet_count_source`
+  - Optional media details: `width`, `height`, `frame_rate`, `codec`,
+    `container`, `tuning`, `pixel_source_format`, `encoded_format`,
+    `coordinate_space`
 
 `cameras` object:
 - Keys are camera identifiers (usually serial strings, fallback may use camera
@@ -285,8 +309,11 @@ Camera config schema 4 promotes `recording.encode.aq` and
       - `artifacts.raw_dump|index|metadata: string`
 
 Important:
-- Current runtime snapshot shape is legacy/single-level encoder info.
-- Do not assume `encoders[serial].outputs` or `models` exists.
+- Schema-2 snapshots mirror unified output descriptors into
+  `encoders[serial].outputs`. Keep using legacy `encoders[serial]` fields for
+  detailed full-frame encoder settings.
+- Older artifacts may not have `encoders[serial].outputs`, `recording_outputs`,
+  or `models`.
 
 `gpu_monitoring` object (current headless shape):
 - Key: monitor name string (currently `nvidia_smi_dmon`)

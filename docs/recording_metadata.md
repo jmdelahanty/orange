@@ -92,9 +92,11 @@ Top-level fields:
 
 ```
 {
+  "schema_version": 2,
   "recording_id": "...",
   "timestamp_utc": "...",
   "producer_version": "...",
+  "recording_outputs": { ... },
   "sync": { ... },
   "cameras": { ... },
   "camera_runtime": { ... },
@@ -109,6 +111,13 @@ Top-level fields:
 
 `cameras` is a dictionary keyed by camera serial number (as a string), where each
 value is the original camera config JSON loaded at recording start (or `null` if missing).
+
+`recording_outputs` is a schema-2 dictionary keyed by camera serial, then output
+kind. `full` describes the ingest-authoritative full-frame MP4 path and sidecars;
+`crop` describes optional YOLO crop sidecar videos. Legacy locations such as
+`encoders[serial]`, `camera_artifacts`, and `crop_outputs[serial]` are still
+emitted for compatibility, but schema-2 consumers should prefer
+`recording_outputs` when it is present.
 
 `camera_runtime` is an optional dictionary keyed by camera serial number (as a
 string). It records the resolved runtime camera config actually used for that
@@ -690,6 +699,26 @@ Current schema:
       "packet_count_source": "ffprobe_nb_read_packets"
     }
   },
+  "recording_outputs": {
+    "2010096": {
+      "full": {
+        "schema_version": 1,
+        "camera_serial": "2010096",
+        "output_kind": "full",
+        "role": "ingest_authoritative",
+        "backend": "in_process",
+        "status": "completed",
+        "video": "Cam2010096.mp4",
+        "metadata": "Cam2010096_meta.csv",
+        "keyframes": "Cam2010096_keyframe.json",
+        "container": "mp4",
+        "coordinate_space": "full_frame_pixels",
+        "frame_count": 600,
+        "packet_count": 600,
+        "packet_count_source": "ffprobe_nb_read_packets"
+      }
+    }
+  },
   "stream": {
     "requested_duration_seconds": 20,
     "actual_elapsed_s": 20.1
@@ -722,6 +751,13 @@ Current schema:
         },
         "keyframes": {
           "2010096": "Cam2010096_keyframe.json"
+        }
+      },
+      "recording_outputs": {
+        "2010096": {
+          "full": {
+            "...": "same descriptor shape as session-level recording_outputs"
+          }
         }
       }
     }
@@ -964,8 +1000,10 @@ Validation note:
 - Current GUI crop recordings also write `crop_outputs[serial]` with crop
   enablement, effective geometry, codec/container, selection/blank-frame policy,
   and expected crop artifact file names. Consumers should use this block as the
-  crop-output contract and cross-check it against the crop video, crop metadata
-  CSV, and crop perf CSV.
+  legacy crop-output contract and cross-check it against the crop video, crop
+  metadata CSV, and crop perf CSV. Newer schema-2 snapshots also mirror the same
+  crop output under `recording_outputs[serial].crop` and
+  `encoders[serial].outputs.crop`.
 - The GUI YOLO + crop observability smoke artifact
   `/home/jeremy/orange_data/exp/unsorted/2026_04_22_22_53_43` confirmed
   `crop_outputs[2010096]` matched the emitted crop artifacts, including
