@@ -528,6 +528,18 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             }
             return fallback;
         };
+    auto json_double_or =
+        [](const nlohmann::json& object,
+           const char* key,
+           const double fallback) -> double {
+            if (object.is_object()) {
+                const auto it = object.find(key);
+                if (it != object.end() && it->is_number()) {
+                    return it->get<double>();
+                }
+            }
+            return fallback;
+        };
 
     // Crop recorder env overrides are stacked after full-frame recorder
     // overrides. Stop crop first so scoped environment restoration unwinds in
@@ -782,6 +794,14 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         nlohmann::json crop_mp4_paths = nlohmann::json::object();
         nlohmann::json crop_keyframe_paths = nlohmann::json::object();
         nlohmann::json crop_gop_routing_paths = nlohmann::json::object();
+        nlohmann::json crop_stream_config = nlohmann::json::object();
+        nlohmann::json crop_frames_received = nlohmann::json::object();
+        nlohmann::json crop_frames_encoded = nlohmann::json::object();
+        nlohmann::json crop_encode_dropped = nlohmann::json::object();
+        nlohmann::json crop_external_frames_dropped = nlohmann::json::object();
+        nlohmann::json crop_encode_queue_depth = nlohmann::json::object();
+        nlohmann::json crop_encode_queue_high_water = nlohmann::json::object();
+        nlohmann::json crop_enqueue_age_p95_ms = nlohmann::json::object();
 
         auto append_external_crop_output =
             [&](const auto& stream,
@@ -825,6 +845,11 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     {"stream_id", stream.stream_id},
                     {"video_backend", "external_ipc"},
                     {"metadata_backend", "orange_gui"},
+                    {"analytics_gpu_id", stream.analytics_gpu_id},
+                    {"recorder_gpu_id", stream.recorder_gpu_id},
+                    {"encode_queue_depth", stream.encode_queue_depth},
+                    {"socket_path", stream.socket_path},
+                    {"summary_json", stream.summary_json},
                     {"selection_policy", "largest_detection_by_confidence"},
                     {"blank_frame_policy", "encode_black_frame_when_no_detection"}
                 };
@@ -837,6 +862,18 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 crop_mp4_paths[serial] = mp4;
                 crop_keyframe_paths[serial] = keyframes;
                 crop_gop_routing_paths[serial] = stream.gop_routing_csv;
+                crop_stream_config[serial] = {
+                    {"stream_id", stream.stream_id},
+                    {"analytics_gpu_id", stream.analytics_gpu_id},
+                    {"recorder_gpu_id", stream.recorder_gpu_id},
+                    {"encode_queue_depth", stream.encode_queue_depth},
+                    {"socket_path", stream.socket_path},
+                    {"encode_fps", stream.encode_fps},
+                    {"encode_max_fps", stream.encode_max_fps},
+                    {"gop", stream.gop},
+                    {"codec", stream.codec},
+                    {"tuning", stream.tuning}
+                };
             };
 
         for (const auto& stream : recording_session->external_crop_recorder_lifecycle.plan.streams) {
@@ -886,6 +923,21 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 summary.value("frames_received", 0ULL);
             const uint64_t frames_encoded =
                 summary.value("frames_encoded", frames_received);
+            const uint64_t summary_encode_dropped =
+                json_u64_or(summary, "encode_dropped", 0ULL);
+            const uint64_t summary_external_frames_dropped =
+                json_u64_or(external_encode, "frames_dropped", 0ULL);
+            const uint64_t summary_encode_queue_depth =
+                json_u64_or(
+                    summary,
+                    "encode_queue_depth",
+                    stream.encode_queue_depth > 0
+                        ? static_cast<uint64_t>(stream.encode_queue_depth)
+                        : 0ULL);
+            const uint64_t summary_encode_queue_high_water =
+                json_u64_or(summary, "encode_queue_high_water", 0ULL);
+            const double summary_enqueue_age_p95_ms =
+                json_double_or(external_encode, "enqueue_age_p95_ms", -1.0);
             const uint64_t external_packets =
                 json_u64_or(external_encode, "mp4_packets", 0ULL);
             const uint64_t packets_written = merged_enabled
@@ -925,6 +977,16 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 packets_written,
                 stream_ok,
                 stream_error);
+
+            crop_frames_received[serial] = frames_received;
+            crop_frames_encoded[serial] = frames_encoded;
+            crop_encode_dropped[serial] = summary_encode_dropped;
+            crop_external_frames_dropped[serial] = summary_external_frames_dropped;
+            crop_encode_queue_depth[serial] = summary_encode_queue_depth;
+            crop_encode_queue_high_water[serial] = summary_encode_queue_high_water;
+            if (summary_enqueue_age_p95_ms >= 0.0) {
+                crop_enqueue_age_p95_ms[serial] = summary_enqueue_age_p95_ms;
+            }
         }
 
         if (!recording_backend.is_object() || recording_backend.empty()) {
@@ -942,6 +1004,14 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             {"merged_mp4", crop_mp4_paths},
             {"keyframes", crop_keyframe_paths},
             {"gop_routing_csv", crop_gop_routing_paths},
+            {"stream_config", crop_stream_config},
+            {"frames_received", crop_frames_received},
+            {"frames_encoded", crop_frames_encoded},
+            {"encode_dropped", crop_encode_dropped},
+            {"external_frames_dropped", crop_external_frames_dropped},
+            {"encode_queue_depth", crop_encode_queue_depth},
+            {"encode_queue_high_water", crop_encode_queue_high_water},
+            {"enqueue_age_p95_ms", crop_enqueue_age_p95_ms},
             {"external_crop_recorder_contract_path", recording_session->external_crop_recorder_contract_path},
             {"external_crop_recorder_supervisor_plan_path",
              recording_session->external_crop_recorder_supervisor_plan_path},

@@ -94,14 +94,11 @@ recording sink:
   four cameras: full-frame external IPC videos validate, YOLO rows are healthy,
   crop metadata/perf/keyframe rows align at `1465`, external crop
   `frames_received`/`frames_encoded` both match crop metadata rows, and
-  external crop drops are `0`.
-- The experimental external-crop encode queue depth of `256` is intentionally
-  high as a diagnostic shock absorber. At `100 fps` it can buffer about
-  `2.56 s` per camera, which is useful for proving whether the recorder can
-  drain without losing artifacts but is too much latency headroom for the
-  production target. After a current-build GUI run records queue high-water and
-  enqueue-age telemetry, tune this back toward `32-64` if there is margin.
-  Override it with `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=<N>`.
+  external crop drops are `0`. A current validator rerun also showed external
+  crop queue high-water `23-41` and enqueue-age p95 under `67 ms`, so the
+  default external crop encode queue depth was lowered from diagnostic `256`
+  to `64`. Override it with `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=256` only
+  when intentionally using the larger diagnostic shock absorber.
 - That same run did not improve GUI display FPS: hidden crop preview still had
   `p05 = 10.7 fps`, `p50 = 25.2 fps`, and `mean = 24.9 fps`. Treat this as
   evidence that external crop encode alone is not sufficient for GUI pacing.
@@ -634,7 +631,8 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-crop-preview-disabled 0 \
   --expect-crop-preview-display-enabled 1 \
   --min-crop-frame-pool-size 32 \
-  --expect-external-crop-encode-queue-depth 256 \
+  --expect-external-crop-encode-queue-depth 64 \
+  --require-external-crop-backend-metadata \
   --expect-gui-stream-downsample 4 \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
@@ -654,7 +652,8 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-crop-preview-disabled 0 \
   --expect-crop-preview-display-enabled 0 \
   --min-crop-frame-pool-size 32 \
-  --expect-external-crop-encode-queue-depth 256 \
+  --expect-external-crop-encode-queue-depth 64 \
+  --require-external-crop-backend-metadata \
   --expect-gui-stream-downsample 4 \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
@@ -672,7 +671,8 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-crop-preview-max-fps 15 \
   --expect-crop-preview-disabled 1 \
   --min-crop-frame-pool-size 32 \
-  --expect-external-crop-encode-queue-depth 256 \
+  --expect-external-crop-encode-queue-depth 64 \
+  --require-external-crop-backend-metadata \
   --expect-gui-stream-downsample 4 \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
@@ -694,13 +694,17 @@ scripts/compare_gui_crop_preview_validation.py \
   --require-hidden-samples \
   --require-matching-cameras \
   --require-matching-display-config \
+  --require-matching-crop-config \
   --min-gui-visible-p05-fps 45 \
   --min-gui-hidden-p05-fps 45
 ```
 
 Add `--max-external-crop-queue-high-water <N>` and
 `--max-external-crop-enqueue-age-p95-ms <ms>` when queue-pressure targets have
-been chosen.
+been chosen. The crop-config gate keeps visible/hidden comparisons from passing
+when they used different crop backends, external crop queue depths, external
+crop GPU placement, preview FPS caps, preview-disable settings, or crop frame
+pool sizes.
 
 - [ ] Inspect crop perf:
   - crop row count,

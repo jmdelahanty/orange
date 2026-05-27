@@ -293,6 +293,27 @@ def int_value(value: Any) -> int | None:
         return None
 
 
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def nested_dict(value: Any, *keys: str) -> dict[str, Any]:
+    current = value
+    for key in keys:
+        if not isinstance(current, dict):
+            return {}
+        current = current.get(key)
+    return current if isinstance(current, dict) else {}
+
+
+def serial_map_value(container: dict[str, Any], map_name: str, serial: str) -> Any:
+    mapping = nested_dict(container, map_name)
+    return mapping.get(serial) if mapping else None
+
+
 def summarize_gui_timing_diagnosis(gui_display_frame_rate: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(gui_display_frame_rate, dict):
         return {}
@@ -451,8 +472,10 @@ def output_path(recording_folder: Path, output: dict[str, Any], key: str, defaul
 def summarize_crop_recording(
     recording_folder: Path,
     outputs: dict[str, dict[str, Any]],
+    manifest: dict[str, Any],
 ) -> dict[str, Any]:
     summaries: dict[str, Any] = {}
+    crop_recording_backend = nested_dict(manifest, "recording_backend", "crop_recording")
     serials: set[str] = {
         str(serial)
         for serial, camera_outputs in outputs.items()
@@ -506,6 +529,37 @@ def summarize_crop_recording(
         queue_high_water = external_summary.get("encode_queue_high_water")
         if queue_high_water is None and summary_path.exists():
             queue_high_water = external_detach_queue_high_water(summary_path)
+        stream_config = serial_map_value(crop_recording_backend, "stream_config", serial)
+        stream_config = stream_config if isinstance(stream_config, dict) else {}
+        external_frames_received = int_value(first_present(
+            external_summary.get("frames_received"),
+            serial_map_value(crop_recording_backend, "frames_received", serial),
+        ))
+        external_frames_encoded = int_value(first_present(
+            external_summary.get("frames_encoded"),
+            serial_map_value(crop_recording_backend, "frames_encoded", serial),
+        ))
+        external_encode_dropped = int_value(first_present(
+            external_summary.get("encode_dropped"),
+            serial_map_value(crop_recording_backend, "encode_dropped", serial),
+        ))
+        external_frames_dropped = int_value(first_present(
+            external_encode.get("frames_dropped"),
+            serial_map_value(crop_recording_backend, "external_frames_dropped", serial),
+        ))
+        external_encode_queue_depth = int_value(first_present(
+            external_summary.get("encode_queue_depth"),
+            serial_map_value(crop_recording_backend, "encode_queue_depth", serial),
+            stream_config.get("encode_queue_depth"),
+        ))
+        external_encode_queue_high_water = int_value(first_present(
+            queue_high_water,
+            serial_map_value(crop_recording_backend, "encode_queue_high_water", serial),
+        ))
+        external_enqueue_age_p95_ms = number_value(first_present(
+            external_encode.get("enqueue_age_p95_ms"),
+            serial_map_value(crop_recording_backend, "enqueue_age_p95_ms", serial),
+        ))
 
         summaries[serial] = {
             "backend": crop_output.get("backend"),
@@ -575,13 +629,14 @@ def summarize_crop_recording(
                 "producer_pose_crop_frame_dropped",
             ),
             "external_summary_path": str(summary_path),
-            "external_frames_received": external_summary.get("frames_received"),
-            "external_frames_encoded": external_summary.get("frames_encoded"),
-            "external_encode_dropped": external_summary.get("encode_dropped"),
-            "external_frames_dropped": external_encode.get("frames_dropped"),
-            "external_encode_queue_depth": external_summary.get("encode_queue_depth"),
-            "external_encode_queue_high_water": queue_high_water,
-            "external_enqueue_age_p95_ms": external_encode.get("enqueue_age_p95_ms"),
+            "external_stream_config": stream_config,
+            "external_frames_received": external_frames_received,
+            "external_frames_encoded": external_frames_encoded,
+            "external_encode_dropped": external_encode_dropped,
+            "external_frames_dropped": external_frames_dropped,
+            "external_encode_queue_depth": external_encode_queue_depth,
+            "external_encode_queue_high_water": external_encode_queue_high_water,
+            "external_enqueue_age_p95_ms": external_enqueue_age_p95_ms,
             "external_encode_total_p95_ms": external_encode.get("encode_total_p95_ms"),
             "external_lock_bitstream_p95_ms": external_encode.get("lock_bitstream_p95_ms"),
         }
@@ -829,7 +884,7 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
         "pipeline": summarize_pipeline(recording_folder),
         "videos": summarize_videos(recording_folder, ffprobe),
         "outputs": outputs,
-        "crop": summarize_crop_recording(recording_folder, outputs),
+        "crop": summarize_crop_recording(recording_folder, outputs, manifest),
         "pose_events": summarize_pose_events(recording_folder),
         "spatial_calibrations": summarize_spatial_calibrations(snapshot),
     }
@@ -1028,6 +1083,8 @@ def print_human(summary: dict[str, Any]) -> None:
                 f"preview={fanout_text(crop, 'preview')} "
                 f"pose={fanout_text(crop, 'pose')}"
             )
+            stream_config = crop.get("external_stream_config")
+            stream_config = stream_config if isinstance(stream_config, dict) else {}
             if crop.get("external_frames_received") is not None:
                 print(
                     f"    external: received={fmt_int(crop.get('external_frames_received'))} "
@@ -1039,6 +1096,13 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"enqueue_age_p95={fmt_float_unit(crop.get('external_enqueue_age_p95_ms'), 2, 'ms')} "
                     f"encode_total_p95={fmt_float_unit(crop.get('external_encode_total_p95_ms'), 2, 'ms')} "
                     f"lock_p95={fmt_float_unit(crop.get('external_lock_bitstream_p95_ms'), 2, 'ms')}"
+                )
+            if stream_config:
+                print(
+                    f"    external_config: stream={stream_config.get('stream_id') or 'n/a'} "
+                    f"analytics_gpu={fmt_int(stream_config.get('analytics_gpu_id'))} "
+                    f"recorder_gpu={fmt_int(stream_config.get('recorder_gpu_id'))} "
+                    f"socket={stream_config.get('socket_path') or 'n/a'}"
                 )
     else:
         print("  no crop recording artifacts found")

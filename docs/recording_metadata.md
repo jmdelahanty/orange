@@ -786,6 +786,13 @@ Notes:
   JSON instead of a per-frame `Cam*_meta.csv`. Consumers should compare
   `camera_artifacts.<serial>.frame_count` to external summary fields such as
   `frames_received`, `acks_sent`, and `frames_encoded`.
+- GUI external crop recordings add `recording_backend.crop_recording` and keep
+  the crop output under `recording_outputs[serial].crop`. The crop backend
+  block includes per-camera maps for recorder `stream_config`,
+  `frames_received`, `frames_encoded`, `encode_dropped`,
+  `external_frames_dropped`, `encode_queue_depth`, `encode_queue_high_water`,
+  and `enqueue_age_p95_ms`, copied from the supervised external crop recorder
+  plan and summaries.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

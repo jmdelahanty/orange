@@ -100,6 +100,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-matching-crop-config",
+        action="store_true",
+        help=(
+            "Exit nonzero unless all compared runs have the same crop backend, "
+            "external crop queue depth, external crop GPU placement, preview max FPS, "
+            "preview-disabled setting, and crop frame pool size."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-queue-high-water",
         type=nonnegative_int,
         help="Exit nonzero if any compared run exceeds this external crop encode queue high-water.",
@@ -258,12 +267,27 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
     crop_dropped_rows_total = 0
     crop_video_frames_total = 0
     external_crop_dropped_total = 0
+    crop_backend_values: set[str] = set()
     external_crop_queue_depth_values: set[int] = set()
     external_crop_queue_high_water_values: list[int] = []
     external_crop_enqueue_age_p95_values: list[float] = []
-    for item in crop_recording.values():
+    external_crop_gpu_mapping_values: set[str] = set()
+    for serial, item in crop_recording.items():
         if not isinstance(item, dict):
             continue
+        backend = item.get("backend")
+        if isinstance(backend, str) and backend:
+            crop_backend_values.add(backend)
+        elif any(
+            item.get(field) is not None
+            for field in (
+                "external_frames_received",
+                "external_frames_encoded",
+                "external_encode_queue_depth",
+                "external_encode_queue_high_water",
+            )
+        ):
+            crop_backend_values.add("external_ipc")
         crop_rows_total += finite_int(item.get("metadata_rows"))
         crop_dropped_rows_total += finite_int(item.get("dropped_rows"))
         crop_video_frames_total += finite_int(item.get("video_frames"))
@@ -278,6 +302,12 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         enqueue_age = finite_float(item.get("external_enqueue_age_p95_ms"))
         if enqueue_age is not None:
             external_crop_enqueue_age_p95_values.append(enqueue_age)
+        analytics_gpu_id = item.get("external_analytics_gpu_id")
+        recorder_gpu_id = item.get("external_recorder_gpu_id")
+        if analytics_gpu_id is not None and recorder_gpu_id is not None:
+            external_crop_gpu_mapping_values.add(
+                f"{serial}:{finite_int(analytics_gpu_id)}->{finite_int(recorder_gpu_id)}"
+            )
 
     preview_offered_total = 0
     preview_updated_total = 0
@@ -370,7 +400,9 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "crop_dropped_rows_total": crop_dropped_rows_total,
         "crop_video_frames_total": crop_video_frames_total,
         "external_crop_dropped_total": external_crop_dropped_total,
+        "crop_backend_values": sorted(crop_backend_values),
         "external_crop_queue_depth_values": sorted(external_crop_queue_depth_values),
+        "external_crop_gpu_mapping_values": sorted(external_crop_gpu_mapping_values),
         "external_crop_queue_high_water_max": max_or_none(external_crop_queue_high_water_values),
         "external_crop_enqueue_age_p95_max_ms": max_or_none(external_crop_enqueue_age_p95_values),
         "preview_offered_total": preview_offered_total,
@@ -574,8 +606,10 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("crop uploads", lambda item: fmt_optional_int(item.get("gui_crop_texture_upload_count"))),
         ("crop rows", lambda item: fmt_int(item.get("crop_rows_total"))),
         ("crop drops", lambda item: fmt_int(item.get("crop_dropped_rows_total"))),
+        ("crop backend", lambda item: fmt_list(item.get("crop_backend_values"))),
         ("ext drops", lambda item: fmt_int(item.get("external_crop_dropped_total"))),
         ("ext q depth", lambda item: fmt_list(item.get("external_crop_queue_depth_values"))),
+        ("ext gpus", lambda item: fmt_list(item.get("external_crop_gpu_mapping_values"))),
         ("ext q high", lambda item: fmt_optional_int(item.get("external_crop_queue_high_water_max"))),
         ("ext q age p95", lambda item: fmt_float(item.get("external_crop_enqueue_age_p95_max_ms"), 2)),
         ("detect rows", lambda item: fmt_int(item.get("crop_metadata_detection_rows_total"))),
@@ -691,6 +725,23 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
                 failures.append(
                     f"{item.get('label')}: display config {current_display} "
                     f"does not match {summaries[0].get('label')} {expected_display}"
+                )
+    if args.require_matching_crop_config and summaries:
+        crop_config_fields = [
+            "crop_backend_values",
+            "external_crop_queue_depth_values",
+            "external_crop_gpu_mapping_values",
+            "preview_max_fps_values",
+            "preview_disabled_values",
+            "crop_frame_pool_size_values",
+        ]
+        expected_crop_config = {field: summaries[0].get(field) for field in crop_config_fields}
+        for item in summaries[1:]:
+            current_crop_config = {field: item.get(field) for field in crop_config_fields}
+            if current_crop_config != expected_crop_config:
+                failures.append(
+                    f"{item.get('label')}: crop config {current_crop_config} "
+                    f"does not match {summaries[0].get('label')} {expected_crop_config}"
                 )
 
     fps_thresholds = [

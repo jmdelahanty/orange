@@ -258,6 +258,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-crop-backend-metadata",
+        action="store_true",
+        help=(
+            "For crop outputs using backend=external_ipc, require "
+            "recording_session.json recording_backend.crop_recording mode, "
+            "stream_config, and per-camera telemetry maps."
+        ),
+    )
+    parser.add_argument(
         "--require-crop-preview-counters",
         action="store_true",
         help="Fail if crop sidecar preview counters are missing for crop-enabled cameras.",
@@ -451,6 +460,147 @@ def external_detach_queue_high_water(summary_path: Path) -> int | None:
         if value is not None
     ]
     return max(values) if values else None
+
+
+def check_optional_backend_int_map(
+    reporter: Reporter,
+    backend: dict[str, Any],
+    serial: str,
+    map_name: str,
+    expected: int | None,
+    label: str,
+) -> None:
+    if expected is None:
+        return
+    values = backend.get(map_name)
+    if not isinstance(values, dict) or serial not in values:
+        return
+    actual = integer(values.get(serial))
+    reporter.check(
+        actual == expected,
+        f"Cam{serial} recording_backend.crop_recording.{map_name} matches {label} ({actual})",
+        (
+            f"Cam{serial} recording_backend.crop_recording.{map_name} "
+            f"({actual}) != {label} ({expected})"
+        ),
+    )
+
+
+def check_optional_backend_float_map(
+    reporter: Reporter,
+    backend: dict[str, Any],
+    serial: str,
+    map_name: str,
+    expected: float | None,
+    label: str,
+) -> None:
+    if expected is None:
+        return
+    values = backend.get(map_name)
+    if not isinstance(values, dict) or serial not in values:
+        return
+    actual = number(values.get(serial))
+    reporter.check(
+        actual is not None and math.isclose(actual, expected, rel_tol=1e-9, abs_tol=1e-6),
+        f"Cam{serial} recording_backend.crop_recording.{map_name} matches {label} ({actual})",
+        (
+            f"Cam{serial} recording_backend.crop_recording.{map_name} "
+            f"({actual}) != {label} ({expected})"
+        ),
+    )
+
+
+def require_backend_map_key(
+    reporter: Reporter,
+    backend: dict[str, Any],
+    serial: str,
+    map_name: str,
+) -> bool:
+    values = backend.get(map_name)
+    ok = isinstance(values, dict) and serial in values
+    reporter.check(
+        ok,
+        f"Cam{serial} recording_backend.crop_recording.{map_name} present",
+        f"Cam{serial} recording_backend.crop_recording.{map_name} missing serial",
+    )
+    return ok
+
+
+def require_stream_config_string(
+    reporter: Reporter,
+    serial: str,
+    stream_config: dict[str, Any],
+    key: str,
+) -> str | None:
+    value = stream_config.get(key)
+    ok = isinstance(value, str) and bool(value)
+    reporter.check(
+        ok,
+        f"Cam{serial} recording_backend.crop_recording.stream_config.{key} present",
+        f"Cam{serial} recording_backend.crop_recording.stream_config.{key} missing",
+    )
+    return value if ok else None
+
+
+def require_stream_config_int(
+    reporter: Reporter,
+    serial: str,
+    stream_config: dict[str, Any],
+    key: str,
+    *,
+    minimum: int = 0,
+) -> int | None:
+    value = integer(stream_config.get(key))
+    ok = value is not None and value >= minimum
+    reporter.check(
+        ok,
+        f"Cam{serial} recording_backend.crop_recording.stream_config.{key}={value}",
+        (
+            f"Cam{serial} recording_backend.crop_recording.stream_config.{key} "
+            f"missing or below {minimum}: {stream_config.get(key)}"
+        ),
+    )
+    return value if ok else None
+
+
+def check_descriptor_detail_matches_string(
+    reporter: Reporter,
+    serial: str,
+    details: dict[str, Any],
+    key: str,
+    expected: str | None,
+) -> None:
+    if expected is None:
+        return
+    actual = details.get(key)
+    reporter.check(
+        actual == expected,
+        f"Cam{serial} recording_outputs.crop.details.{key} matches ({actual})",
+        (
+            f"Cam{serial} recording_outputs.crop.details.{key} "
+            f"({actual}) != expected ({expected})"
+        ),
+    )
+
+
+def check_descriptor_detail_matches_int(
+    reporter: Reporter,
+    serial: str,
+    details: dict[str, Any],
+    key: str,
+    expected: int | None,
+) -> None:
+    if expected is None:
+        return
+    actual = integer(details.get(key))
+    reporter.check(
+        actual == expected,
+        f"Cam{serial} recording_outputs.crop.details.{key} matches ({actual})",
+        (
+            f"Cam{serial} recording_outputs.crop.details.{key} "
+            f"({actual}) != expected ({expected})"
+        ),
+    )
 
 
 def check_recording_session_manifest(
@@ -1617,6 +1767,7 @@ def check_crop_recording_artifacts(
     expected_external_queue_depth: int | None = None,
     max_external_queue_high_water: int | None = None,
     max_external_enqueue_age_p95_ms: float | None = None,
+    require_external_crop_backend_metadata: bool = False,
 ) -> dict[str, Any]:
     crop_summary: dict[str, Any] = {}
     if not require_crop_artifacts:
@@ -1626,6 +1777,12 @@ def check_crop_recording_artifacts(
     if not target_cameras:
         reporter.fail("crop recording artifacts required but no crop-enabled cameras were found")
         return crop_summary
+    recording_session_manifest = read_json(recording_folder / "recording_session.json")
+    crop_recording_backend = nested_dict(
+        recording_session_manifest,
+        "recording_backend",
+        "crop_recording",
+    )
 
     for serial in target_cameras:
         crop_output = crop_output_for(snapshot, serial)
@@ -1760,7 +1917,22 @@ def check_crop_recording_artifacts(
         external_encode_queue_depth: int | None = None
         external_encode_queue_high_water: int | None = None
         external_enqueue_age_p95_ms: float | None = None
+        external_stream_config: dict[str, Any] = {}
+        external_stream_id: str | None = None
+        external_analytics_gpu_id: int | None = None
+        external_recorder_gpu_id: int | None = None
+        external_socket_path: str | None = None
         if descriptor_backend == "external_ipc":
+            if require_external_crop_backend_metadata:
+                backend_mode = str(crop_recording_backend.get("mode", ""))
+                reporter.check(
+                    backend_mode == "external_ipc",
+                    "recording_backend.crop_recording mode is external_ipc",
+                    (
+                        "recording_backend.crop_recording.mode "
+                        f"({backend_mode or 'missing'}) != external_ipc"
+                    ),
+                )
             reporter.check(
                 summary_path is not None and summary_path.exists(),
                 f"Cam{serial} external crop summary present",
@@ -1818,6 +1990,19 @@ def check_crop_recording_artifacts(
                         f"({external_encode_queue_depth}) != {expected_external_queue_depth}"
                     ),
                 )
+            if external_encode_queue_depth is not None and external_encode_queue_high_water is not None:
+                reporter.check(
+                    external_encode_queue_high_water <= external_encode_queue_depth,
+                    (
+                        f"Cam{serial} external crop encode queue high-water "
+                        f"{external_encode_queue_high_water} <= depth {external_encode_queue_depth}"
+                    ),
+                    (
+                        f"Cam{serial} external crop encode_queue_high_water "
+                        f"({external_encode_queue_high_water}) exceeds encode_queue_depth "
+                        f"({external_encode_queue_depth})"
+                    ),
+                )
             if max_external_queue_high_water is not None:
                 reporter.check(
                     external_encode_queue_high_water is not None and
@@ -1843,6 +2028,189 @@ def check_crop_recording_artifacts(
                     (
                         f"Cam{serial} external crop enqueue_age_p95_ms "
                         f"({external_enqueue_age_p95_ms}) > {max_external_enqueue_age_p95_ms:.3f} ms"
+                    ),
+                )
+            check_optional_backend_int_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "frames_received",
+                external_frames_received,
+                "external crop frames_received",
+            )
+            check_optional_backend_int_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "frames_encoded",
+                external_frames_encoded,
+                "external crop frames_encoded",
+            )
+            check_optional_backend_int_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "encode_dropped",
+                external_encode_dropped,
+                "external crop encode_dropped",
+            )
+            check_optional_backend_int_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "external_frames_dropped",
+                external_frames_dropped,
+                "external crop external_encode.frames_dropped",
+            )
+            check_optional_backend_int_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "encode_queue_depth",
+                external_encode_queue_depth,
+                "external crop encode_queue_depth",
+            )
+            check_optional_backend_int_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "encode_queue_high_water",
+                external_encode_queue_high_water,
+                "external crop encode_queue_high_water",
+            )
+            check_optional_backend_float_map(
+                reporter,
+                crop_recording_backend,
+                serial,
+                "enqueue_age_p95_ms",
+                external_enqueue_age_p95_ms,
+                "external crop external_encode.enqueue_age_p95_ms",
+            )
+            stream_config = nested_dict(crop_recording_backend, "stream_config").get(serial)
+            external_stream_config = stream_config if isinstance(stream_config, dict) else {}
+            stream_id_value = external_stream_config.get("stream_id")
+            external_stream_id = stream_id_value if isinstance(stream_id_value, str) and stream_id_value else None
+            external_analytics_gpu_id = integer(external_stream_config.get("analytics_gpu_id"))
+            external_recorder_gpu_id = integer(external_stream_config.get("recorder_gpu_id"))
+            socket_path_value = external_stream_config.get("socket_path")
+            external_socket_path = (
+                socket_path_value if isinstance(socket_path_value, str) and socket_path_value else None
+            )
+            if require_external_crop_backend_metadata:
+                reporter.check(
+                    bool(external_stream_config),
+                    f"Cam{serial} recording_backend.crop_recording.stream_config present",
+                    f"Cam{serial} recording_backend.crop_recording.stream_config missing",
+                )
+                stream_id = require_stream_config_string(
+                    reporter,
+                    serial,
+                    external_stream_config,
+                    "stream_id",
+                )
+                analytics_gpu_id = require_stream_config_int(
+                    reporter,
+                    serial,
+                    external_stream_config,
+                    "analytics_gpu_id",
+                    minimum=0,
+                )
+                recorder_gpu_id = require_stream_config_int(
+                    reporter,
+                    serial,
+                    external_stream_config,
+                    "recorder_gpu_id",
+                    minimum=0,
+                )
+                socket_path = require_stream_config_string(
+                    reporter,
+                    serial,
+                    external_stream_config,
+                    "socket_path",
+                )
+                for map_name in (
+                    "frames_received",
+                    "frames_encoded",
+                    "encode_dropped",
+                    "external_frames_dropped",
+                    "encode_queue_depth",
+                    "encode_queue_high_water",
+                ):
+                    require_backend_map_key(
+                        reporter,
+                        crop_recording_backend,
+                        serial,
+                        map_name,
+                    )
+                if external_enqueue_age_p95_ms is not None:
+                    require_backend_map_key(
+                        reporter,
+                        crop_recording_backend,
+                        serial,
+                        "enqueue_age_p95_ms",
+                    )
+                details = nested_dict(crop_descriptor, "details")
+                reporter.check(
+                    bool(details),
+                    f"Cam{serial} recording_outputs.crop.details present",
+                    f"Cam{serial} recording_outputs.crop.details missing",
+                )
+                if details:
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "stream_id",
+                        stream_id,
+                    )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "socket_path",
+                        socket_path,
+                    )
+                    check_descriptor_detail_matches_int(
+                        reporter,
+                        serial,
+                        details,
+                        "analytics_gpu_id",
+                        analytics_gpu_id,
+                    )
+                    check_descriptor_detail_matches_int(
+                        reporter,
+                        serial,
+                        details,
+                        "recorder_gpu_id",
+                        recorder_gpu_id,
+                    )
+                    check_descriptor_detail_matches_int(
+                        reporter,
+                        serial,
+                        details,
+                        "encode_queue_depth",
+                        external_encode_queue_depth,
+                    )
+                    if summary_path is not None:
+                        check_descriptor_detail_matches_string(
+                            reporter,
+                            serial,
+                            details,
+                            "summary_json",
+                            str(summary_path),
+                        )
+            if external_stream_config and external_encode_queue_depth is not None:
+                stream_config_queue_depth = integer(external_stream_config.get("encode_queue_depth"))
+                reporter.check(
+                    stream_config_queue_depth == external_encode_queue_depth,
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config "
+                        f"encode_queue_depth matches summary ({stream_config_queue_depth})"
+                    ),
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config "
+                        f"encode_queue_depth ({stream_config_queue_depth}) != "
+                        f"external crop encode_queue_depth ({external_encode_queue_depth})"
                     ),
                 )
 
@@ -1909,6 +2277,7 @@ def check_crop_recording_artifacts(
             )
 
         crop_summary[serial] = {
+            "backend": descriptor_backend or None,
             "video": str(video_path),
             "metadata": str(metadata_path),
             "keyframes": str(keyframes_path),
@@ -1929,6 +2298,11 @@ def check_crop_recording_artifacts(
             "external_encode_queue_depth": external_encode_queue_depth,
             "external_encode_queue_high_water": external_encode_queue_high_water,
             "external_enqueue_age_p95_ms": external_enqueue_age_p95_ms,
+            "external_stream_id": external_stream_id,
+            "external_analytics_gpu_id": external_analytics_gpu_id,
+            "external_recorder_gpu_id": external_recorder_gpu_id,
+            "external_socket_path": external_socket_path,
+            "external_stream_config": external_stream_config or None,
         }
 
     return crop_summary
@@ -2018,7 +2392,8 @@ def print_crop_recording_summary(crop_recording: dict[str, Any]) -> None:
     print("\nCrop Recording")
     for serial, item in sorted(crop_recording.items()):
         print(
-            f"  Cam{serial}: rows={item.get('metadata_rows')} "
+            f"  Cam{serial}: backend={item.get('backend') or 'unknown'} "
+            f"rows={item.get('metadata_rows')} "
             f"perf_rows={item.get('perf_rows')} "
             f"keyframes={item.get('keyframe_total_frames')} "
             f"video_frames={item.get('video_frames')} "
@@ -2175,6 +2550,7 @@ def main() -> int:
             expected_external_queue_depth=args.expect_external_crop_encode_queue_depth,
             max_external_queue_high_water=args.max_external_crop_encode_queue_high_water,
             max_external_enqueue_age_p95_ms=args.max_external_crop_enqueue_age_p95_ms,
+            require_external_crop_backend_metadata=args.require_external_crop_backend_metadata,
         )
         gui_display_frame_rate_summary = check_gui_display_frame_rate(
             reporter,

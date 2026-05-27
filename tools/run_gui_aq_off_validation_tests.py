@@ -118,8 +118,8 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show the default speed graph setting",
         )
         require(
-            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=256" in result.stdout,
-            "launcher output should show the diagnostic external crop queue depth",
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
+            "launcher output should show the default external crop queue depth",
         )
         require(
             "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<not set>" in result.stdout,
@@ -134,8 +134,12 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should include the compact latest-complete summary command",
         )
         require(
-            "--expect-external-crop-encode-queue-depth 256" in result.stdout,
+            "--expect-external-crop-encode-queue-depth 64" in result.stdout,
             "launcher validation commands should check the external crop queue depth",
+        )
+        require(
+            "--require-external-crop-backend-metadata" not in result.stdout,
+            "launcher should only require external crop backend metadata for external crop runs",
         )
         require(
             "--min-gui-visible-p05-fps 45" in result.stdout,
@@ -158,6 +162,10 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher comparison command should require matching display config",
         )
         require(
+            "--require-matching-crop-config" in result.stdout,
+            "launcher comparison command should require matching crop config",
+        )
+        require(
             "--min-gui-hidden-p05-fps 45" in result.stdout,
             "launcher comparison command should enforce hidden GUI FPS when samples exist",
         )
@@ -176,6 +184,7 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
             config_dir,
             detect_engine,
             extra_env={
+                "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
                 "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
                 "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "48",
                 "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "80",
@@ -194,6 +203,10 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
         require(
             "--expect-external-crop-encode-queue-depth 64" in result.stdout,
             "launcher validation commands should use the selected external crop queue depth",
+        )
+        require(
+            "--require-external-crop-backend-metadata" in result.stdout,
+            "external crop validation commands should require backend metadata",
         )
         require(
             "--max-external-crop-encode-queue-high-water 48" in result.stdout,

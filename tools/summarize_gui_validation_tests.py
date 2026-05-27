@@ -60,7 +60,22 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
                 }
             },
         }
-        session = {"recording_outputs": snapshot["recording_outputs"]}
+        session = {
+            "recording_outputs": snapshot["recording_outputs"],
+            "recording_backend": {
+                "crop_recording": {
+                    "stream_config": {
+                        serial: {
+                            "stream_id": f"{serial}_crop",
+                            "analytics_gpu_id": 5,
+                            "recorder_gpu_id": 6,
+                            "socket_path": f"/tmp/orange_external_crop_recorder_{serial}.sock",
+                            "encode_queue_depth": 64,
+                        }
+                    }
+                }
+            },
+        }
         write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
         write_text(root / "recording_session.json", json.dumps(session) + "\n")
         write_text(
@@ -155,6 +170,10 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
         require(crop["external_enqueue_age_p95_ms"] == 1.75, "external enqueue age p95 should parse")
         require(crop["external_encode_total_p95_ms"] == 1.25, "external encode p95 should parse")
         require(crop["external_lock_bitstream_p95_ms"] == 0.5, "external lock p95 should parse")
+        require(
+            crop["external_stream_config"]["recorder_gpu_id"] == 6,
+            "external stream config should be copied from recording_backend",
+        )
         diagnosis = summary["gui_display_diagnosis"]
         require(
             diagnosis["dominant_timing_bucket"] == "camera_window_draw_ms",
@@ -168,6 +187,69 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
         require(
             "sidecar_perf" in output.get("paths", {}),
             "recording output summary should include sidecar_perf path",
+        )
+
+
+def test_crop_summary_uses_recording_backend_external_fallbacks() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010094"
+        snapshot = {
+            "schema_version": 2,
+            "recording_outputs": {
+                serial: {
+                    "crop": {
+                        "output_kind": "crop",
+                        "role": "sidecar",
+                        "backend": "external_ipc",
+                        "status": "completed",
+                        "metadata": f"Cam{serial}_crop_meta.csv",
+                        "perf": f"Cam{serial}_crop_perf.csv",
+                        "sidecar_perf": f"Cam{serial}_crop_sidecar_perf.csv",
+                    }
+                }
+            },
+        }
+        session = {
+            "recording_outputs": snapshot["recording_outputs"],
+            "recording_backend": {
+                "crop_recording": {
+                    "stream_config": {
+                        serial: {
+                            "stream_id": f"{serial}_crop",
+                            "analytics_gpu_id": 7,
+                            "recorder_gpu_id": 8,
+                            "socket_path": f"/tmp/orange_external_crop_recorder_{serial}.sock",
+                            "encode_queue_depth": 64,
+                        }
+                    },
+                    "frames_received": {serial: 11},
+                    "frames_encoded": {serial: 11},
+                    "encode_dropped": {serial: 0},
+                    "external_frames_dropped": {serial: 0},
+                    "encode_queue_high_water": {serial: 9},
+                    "enqueue_age_p95_ms": {serial: 3.5},
+                }
+            },
+        }
+        write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
+        write_text(root / "recording_session.json", json.dumps(session) + "\n")
+        write_text(root / f"Cam{serial}_crop_meta.csv", "recording_frame_id,has_detection\n1,1\n")
+        write_text(root / f"Cam{serial}_crop_perf.csv", "recording_frame_id,dropped\n1,0\n")
+        write_text(root / f"Cam{serial}_crop_sidecar_perf.csv", "crop_frame_pool_size\n32\n")
+
+        summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
+        crop = summary["crop"][serial]
+        require(crop["external_frames_received"] == 11, "backend received fallback should parse")
+        require(crop["external_frames_encoded"] == 11, "backend encoded fallback should parse")
+        require(crop["external_encode_dropped"] == 0, "backend encode dropped fallback should parse")
+        require(crop["external_frames_dropped"] == 0, "backend frame dropped fallback should parse")
+        require(crop["external_encode_queue_depth"] == 64, "stream config queue depth fallback should parse")
+        require(crop["external_encode_queue_high_water"] == 9, "backend high-water fallback should parse")
+        require(crop["external_enqueue_age_p95_ms"] == 3.5, "backend enqueue p95 fallback should parse")
+        require(
+            crop["external_stream_config"]["recorder_gpu_id"] == 8,
+            "backend stream config should remain visible",
         )
 
 
@@ -212,6 +294,7 @@ def test_latest_complete_accepts_external_camera_artifact_video() -> None:
 
 def main() -> int:
     test_crop_summary_reads_rows_preview_and_fanout()
+    test_crop_summary_uses_recording_backend_external_fallbacks()
     test_latest_complete_selects_newest_complete_recording()
     test_latest_complete_accepts_external_camera_artifact_video()
     print("summarize_gui_validation_tests passed")

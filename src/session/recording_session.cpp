@@ -275,7 +275,7 @@ std::string resolve_gui_crop_recording_sink_mode()
 
 int resolve_external_crop_encode_queue_depth()
 {
-    constexpr int kDefaultQueueDepth = 256;
+    constexpr int kDefaultQueueDepth = 64;
     constexpr int kMaxQueueDepth = 4096;
     const int depth = resolve_positive_int_env(
         "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH",

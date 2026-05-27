@@ -84,6 +84,7 @@ def sample_payload(
         },
         "crop_recording": {
             "2010095": {
+                "backend": "external_ipc",
                 "metadata_rows": 100,
                 "video_frames": 100,
                 "dropped_rows": drops,
@@ -91,8 +92,22 @@ def sample_payload(
                 "external_encode_queue_depth": 64,
                 "external_encode_queue_high_water": 12,
                 "external_enqueue_age_p95_ms": 2.5,
+                "external_stream_id": "2010095_crop",
+                "external_analytics_gpu_id": 5,
+                "external_recorder_gpu_id": 5,
+                "external_socket_path": "/tmp/orange_external_recorder_2010095_crop.sock",
             },
-            "2010096": {"metadata_rows": 80, "video_frames": 80, "dropped_rows": 0},
+            "2010096": {
+                "backend": "external_ipc",
+                "metadata_rows": 80,
+                "video_frames": 80,
+                "dropped_rows": 0,
+                "external_encode_queue_depth": 64,
+                "external_stream_id": "2010096_crop",
+                "external_analytics_gpu_id": 7,
+                "external_recorder_gpu_id": 7,
+                "external_socket_path": "/tmp/orange_external_recorder_2010096_crop.sock",
+            },
         },
         "gui_display_frame_rate": {
             "stream_downsample": 4,
@@ -122,7 +137,12 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
     require(summary["crop_rows_total"] == 180, "crop metadata rows should aggregate")
     require(summary["crop_dropped_rows_total"] == 0, "crop drops should aggregate")
     require(summary["external_crop_dropped_total"] == 0, "external crop drops should aggregate")
+    require(summary["crop_backend_values"] == ["external_ipc"], "crop backend values should aggregate")
     require(summary["external_crop_queue_depth_values"] == [64], "external queue depths should aggregate")
+    require(
+        summary["external_crop_gpu_mapping_values"] == ["2010095:5->5", "2010096:7->7"],
+        "external crop GPU placement should aggregate by camera",
+    )
     require(summary["external_crop_queue_high_water_max"] == 12, "external queue high-water should aggregate")
     require(summary["external_crop_enqueue_age_p95_max_ms"] == 2.5, "external enqueue age should aggregate")
     require(summary["preview_offered_total"] == 180, "preview offered should aggregate")
@@ -205,6 +225,7 @@ def test_threshold_failures_cover_fps_and_external_queue_pressure() -> None:
         require_hidden_samples=True,
         require_matching_cameras=False,
         require_matching_display_config=False,
+        require_matching_crop_config=False,
         min_gui_overall_p05_fps=45.0,
         min_gui_visible_p05_fps=45.0,
         min_gui_hidden_p05_fps=45.0,
@@ -238,6 +259,8 @@ def test_threshold_failures_cover_mismatched_camera_and_display_config() -> None
     baseline = compare.summarize_validation("baseline", sample_payload())
     changed_payload = sample_payload()
     del changed_payload["summary"]["2010096"]
+    del changed_payload["crop_preview"]["2010096"]
+    del changed_payload["crop_recording"]["2010096"]
     changed_payload["gui_display_frame_rate"]["display_preview_max_fps"] = 15
     changed = compare.summarize_validation("changed", changed_payload)
     args = SimpleNamespace(
@@ -247,6 +270,7 @@ def test_threshold_failures_cover_mismatched_camera_and_display_config() -> None
         require_hidden_samples=False,
         require_matching_cameras=True,
         require_matching_display_config=True,
+        require_matching_crop_config=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -262,6 +286,66 @@ def test_threshold_failures_cover_mismatched_camera_and_display_config() -> None
     require(
         any("display config" in failure and "does not match" in failure for failure in failures),
         "mismatched display config should fail",
+    )
+
+
+def test_threshold_failures_cover_mismatched_crop_config() -> None:
+    baseline = compare.summarize_validation("baseline", sample_payload())
+    changed_payload = sample_payload()
+    changed_payload["crop_recording"]["2010095"]["backend"] = "in_process"
+    changed_payload["crop_recording"]["2010095"]["external_encode_queue_depth"] = 32
+    changed = compare.summarize_validation("changed", changed_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    failures = compare.threshold_failures(args, [baseline, changed])
+    require(
+        any("crop config" in failure and "does not match" in failure for failure in failures),
+        "mismatched crop backend or queue depth should fail",
+    )
+
+
+def test_threshold_failures_cover_mismatched_external_crop_gpu_mapping() -> None:
+    baseline = compare.summarize_validation("baseline", sample_payload())
+    changed_payload = sample_payload()
+    changed_payload["crop_recording"]["2010096"]["external_recorder_gpu_id"] = 8
+    changed = compare.summarize_validation("changed", changed_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    failures = compare.threshold_failures(args, [baseline, changed])
+    require(
+        any(
+            "crop config" in failure
+            and "external_crop_gpu_mapping_values" in failure
+            and "does not match" in failure
+            for failure in failures
+        ),
+        "mismatched external crop GPU placement should fail matched crop config",
     )
 
 
@@ -288,8 +372,12 @@ def test_table_contains_expected_columns_and_values() -> None:
     require("dom share" in table, "table should include dominant timing share column")
     require("main uploads" in table, "table should include main upload count column")
     require("crop uploads" in table, "table should include crop upload count column")
+    require("crop backend" in table, "table should include crop backend column")
+    require("external_ipc" in table, "table should include crop backend value")
     require("ext drops" in table, "table should include external crop drop column")
     require("ext q depth" in table, "table should include external queue depth column")
+    require("ext gpus" in table, "table should include external crop GPU placement column")
+    require("2010096:7->7" in table, "table should include external crop GPU placement values")
     require("ext q high" in table, "table should include external queue high-water column")
     require("ext q age p95" in table, "table should include external enqueue-age column")
 
@@ -358,6 +446,7 @@ def test_cli_thresholds_fail_with_clear_stderr() -> None:
                 "--require-visible-samples",
                 "--require-matching-cameras",
                 "--require-matching-display-config",
+                "--require-matching-crop-config",
                 "--min-gui-visible-p05-fps",
                 "45",
                 "--max-external-crop-queue-high-water",
@@ -498,6 +587,9 @@ def main() -> int:
         test_compare_adds_deltas_against_first_run,
         test_require_zero_crop_drops_would_fail_for_drops,
         test_threshold_failures_cover_fps_and_external_queue_pressure,
+        test_threshold_failures_cover_mismatched_camera_and_display_config,
+        test_threshold_failures_cover_mismatched_crop_config,
+        test_threshold_failures_cover_mismatched_external_crop_gpu_mapping,
         test_table_contains_expected_columns_and_values,
         test_uses_validator_timing_diagnosis_when_present,
         test_table_marks_absent_fanout_as_unavailable,

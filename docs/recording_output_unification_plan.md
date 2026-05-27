@@ -475,14 +475,16 @@ Acceptance:
 - [x] Missing or failed external crop recorder marks only the crop sidecar
       output failed, not the full-frame ingest output.
 - [x] Re-run four-camera GUI external crop after the path-indexing fallback and
-      256-deep crop encode queue patch. The first run at
+      diagnostic 256-deep crop encode queue patch. The first run at
       `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_34_46` launched
       external crop recorders but failed validation because disabled
       `merged_output` paths masked the external MP4/keyframe paths and the
       32-deep crop encode queues dropped frames. The latest checked rerun at
       `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_55_05` validates
       cleanly for recording artifacts when the separate GUI-FPS threshold is
-      omitted.
+      omitted. Follow-up validator telemetry showed queue high-water below 64,
+      so the default has been lowered to 64 while retaining the env override
+      for diagnostic 256-deep runs.
 
 ### Phase 4: Lifecycle Adapter
 

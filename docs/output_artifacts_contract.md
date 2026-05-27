@@ -98,11 +98,11 @@ Diagnostic note:
   `recording_backend.crop_recording.status = "incomplete"` without changing the
   full-frame `recording_outputs[serial].full` status.
 - `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=<N>` overrides the experimental
-  external crop recorder encode queue depth. The default is currently `256`
-  as a diagnostic shock absorber for four-camera validation, but that is high:
-  at `100 fps` it permits about `2.56 s` of crop encode backlog per camera.
-  Use lower values such as `32-64` once queue high-water and enqueue-age
-  telemetry show enough margin.
+  external crop recorder encode queue depth. The default is currently `64`.
+  At `100 fps`, a 64-deep queue permits about `0.64 s` of crop encode backlog
+  per camera. Use `256` only as a diagnostic shock absorber; it permits about
+  `2.56 s` of backlog per camera and can hide latency that should be visible
+  in production validation.
 - `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<N>` and
   `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=<ms>` are launcher validation
   helpers. They do not change runtime behavior; `scripts/run_gui_aq_off_validation.sh`
@@ -208,6 +208,22 @@ Current emitted top-level fields:
   - Optional media details: `width`, `height`, `frame_rate`, `codec`,
     `container`, `tuning`, `pixel_source_format`, `encoded_format`,
     `coordinate_space`
+  - Optional `details` object for backend-specific metadata. For GUI external
+    crop outputs, `details` includes static recorder routing/config fields such
+    as `stream_id`, `analytics_gpu_id`, `recorder_gpu_id`,
+    `encode_queue_depth`, `socket_path`, and `summary_json`.
+
+For GUI external crop recording, `recording_session.json`
+`recording_backend.crop_recording` also carries per-camera maps keyed by serial:
+
+- `stream_config`: static recorder config copied from the supervised recorder
+  plan, including `stream_id`, GPU ids, `encode_queue_depth`, socket path, FPS,
+  GOP, codec, and tuning.
+- `frames_received`, `frames_encoded`, `encode_dropped`,
+  `external_frames_dropped`: count telemetry copied from each external crop
+  recorder summary.
+- `encode_queue_depth`, `encode_queue_high_water`, `enqueue_age_p95_ms`:
+  queue-pressure telemetry copied from each external crop recorder summary.
 
 `cameras` object:
 - Keys are camera identifiers (usually serial strings, fallback may use camera
@@ -907,8 +923,24 @@ checks `recording_outputs[serial].crop.summary` and requires
 Use `--expect-external-crop-encode-queue-depth <N>` to confirm the intended
 external crop queue depth reached the recorder summary. Use
 `--max-external-crop-encode-queue-high-water <N>` and
-`--max-external-crop-enqueue-age-p95-ms <ms>` when tuning the diagnostic queue
-down from `256` toward `32-64`.
+`--max-external-crop-enqueue-age-p95-ms <ms>` when tuning or validating the
+external crop queue so backlog stays bounded.
+The validator always treats `encode_queue_high_water > encode_queue_depth` as
+an invalid recorder summary when both fields are present.
+For newer GUI external crop artifacts, the validator also cross-checks the
+optional `recording_backend.crop_recording` per-camera telemetry maps against
+the external crop recorder summaries when those maps are present.
+Use `--require-external-crop-backend-metadata` for current-build external crop
+GUI runs; it requires the `recording_backend.crop_recording` mode, per-camera
+`stream_config`, routing fields (`stream_id`, analytics GPU, recorder GPU,
+socket path, and queue depth), descriptor `details` consistency, and telemetry
+maps to be present instead of treating them as optional compatibility fields.
+`scripts/summarize_gui_validation.py` reports the same external crop queue and
+drop telemetry, and also displays the external crop `stream_config` GPU/socket
+placement from `recording_backend.crop_recording` when available. If a future
+artifact has the manifest telemetry but lacks a readable external crop summary
+file, the summarizer falls back to the manifest maps so operators can still see
+the recorder-side counts and queue pressure that Orange indexed.
 `--require-crop-preview-sampling` is for visible bounded-preview runs; it fails
 unless the sidecar shows cadence skips and fewer preview updates than offers.
 GUI runs also write `recording_snapshot.json`
@@ -940,8 +972,9 @@ as a persisted Orange snapshot schema field.
 
 To compare visible-preview and hidden-preview validation JSON files, use
 `scripts/compare_gui_crop_preview_validation.py`. It summarizes GUI FPS, crop
-recording rows/drops, fanout counters, external crop queue pressure, and the
-dominant GUI timing p95 bucket side by side. It can also fail the comparison
+recording rows/drops, fanout counters, external crop queue pressure, external
+crop analytics-GPU-to-recorder-GPU placement, and the dominant GUI timing p95
+bucket side by side. It can also fail the comparison
 with:
 
 - `--require-pass`
@@ -953,6 +986,7 @@ with:
 - `--require-hidden-samples`
 - `--require-matching-cameras`
 - `--require-matching-display-config`
+- `--require-matching-crop-config`
 - `--max-external-crop-queue-high-water <N>`
 - `--max-external-crop-enqueue-age-p95-ms <ms>`
 
@@ -966,7 +1000,9 @@ using both thresholds. Add the sample-presence flags when the comparison is
 expected to include at least one visible-preview run and at least one
 hidden-preview run.
 Use the matching flags for A/B validation so visible and hidden results cannot
-be accidentally compared across different camera sets or display settings.
+be accidentally compared across different camera sets, display settings, crop
+backends, external crop queue depths, external crop GPU placement, preview FPS
+caps, preview-disable settings, or crop frame pool sizes.
 
 ### Crop Perf CSV (`Cam<serial>_crop_perf.csv`)
 
