@@ -17,6 +17,14 @@ from recording_output_validation import build_recording_output_summary
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 DEFAULT_GUI_RECORDING_ROOT = Path("/home/jeremy/orange_data/exp/unsorted")
+GUI_TIMING_BREAKDOWN_BUCKETS = [
+    ("main_texture_upload_ms", "main-texture-upload"),
+    ("crop_texture_upload_ms", "crop-texture-upload"),
+    ("camera_window_draw_ms", "camera-window-draw"),
+    ("crop_window_draw_ms", "crop-window-draw"),
+    ("speed_graph_draw_ms", "speed-graph-draw"),
+    ("render_present_ms", "render-present"),
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -265,6 +273,70 @@ def int_field(row: dict[str, str], field: str) -> int | None:
         return int(float(value))
     except ValueError:
         return None
+
+
+def number_value(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def int_value(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def summarize_gui_timing_diagnosis(gui_display_frame_rate: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(gui_display_frame_rate, dict):
+        return {}
+    timings = gui_display_frame_rate.get("timings")
+    timings = timings if isinstance(timings, dict) else {}
+    if not timings:
+        return {}
+
+    def timing_bucket(bucket_name: str) -> dict[str, Any]:
+        bucket = timings.get(bucket_name)
+        return bucket if isinstance(bucket, dict) else {}
+
+    frame_total_bucket = timing_bucket("frame_total_ms")
+    frame_total_p95_ms = number_value(frame_total_bucket.get("p95_ms"))
+    ranked: list[dict[str, Any]] = []
+    for bucket_name, label in GUI_TIMING_BREAKDOWN_BUCKETS:
+        bucket = timing_bucket(bucket_name)
+        p95_ms = number_value(bucket.get("p95_ms"))
+        if p95_ms is None:
+            continue
+        ranked.append(
+            {
+                "bucket": bucket_name,
+                "label": label,
+                "p95_ms": p95_ms,
+                "sample_count": int_value(bucket.get("sample_count")),
+            }
+        )
+    ranked.sort(key=lambda item: item["p95_ms"], reverse=True)
+
+    out: dict[str, Any] = {}
+    if frame_total_p95_ms is not None:
+        out["frame_total_p95_ms"] = frame_total_p95_ms
+    if ranked:
+        dominant = ranked[0]
+        out["dominant_timing_bucket"] = dominant["bucket"]
+        out["dominant_timing_label"] = dominant["label"]
+        out["dominant_timing_p95_ms"] = dominant["p95_ms"]
+        if frame_total_p95_ms and frame_total_p95_ms > 0.0:
+            out["dominant_timing_fraction_of_frame_total_p95"] = (
+                dominant["p95_ms"] / frame_total_p95_ms
+            )
+        out["timing_p95_ranked"] = ranked
+    return out
 
 
 def percentile(values: list[float], pct: float) -> float | None:
@@ -738,17 +810,19 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
     snapshot = read_json(recording_folder / "recording_snapshot.json")
     manifest = read_json(recording_folder / "recording_session.json")
     outputs = build_recording_output_summary(recording_folder, manifest, snapshot)
+    gui_display_frame_rate = (
+        snapshot.get("session", {}).get("gui_display_frame_rate")
+        if isinstance(snapshot.get("session"), dict)
+        and isinstance(snapshot.get("session", {}).get("gui_display_frame_rate"), dict)
+        else {}
+    )
     return {
         "recording_folder": str(recording_folder),
         "recording_id": snapshot.get("recording_id"),
         "timestamp_utc": snapshot.get("timestamp_utc"),
         "sync": snapshot.get("sync") if isinstance(snapshot.get("sync"), dict) else {},
-        "gui_display_frame_rate": (
-            snapshot.get("session", {}).get("gui_display_frame_rate")
-            if isinstance(snapshot.get("session"), dict)
-            and isinstance(snapshot.get("session", {}).get("gui_display_frame_rate"), dict)
-            else {}
-        ),
+        "gui_display_frame_rate": gui_display_frame_rate,
+        "gui_display_diagnosis": summarize_gui_timing_diagnosis(gui_display_frame_rate),
         "models": summarize_models(snapshot),
         "ptp": summarize_ptp(recording_folder),
         "yolo": summarize_yolo(recording_folder, steady_after_frame),
@@ -779,6 +853,10 @@ def fmt_int(value: Any) -> str:
 
 def fmt_float_unit(value: Any, digits: int, unit: str) -> str:
     return "n/a" if value is None else f"{float(value):.{digits}f}{unit}"
+
+
+def fmt_percent(value: Any, digits: int = 0) -> str:
+    return "n/a" if value is None else f"{float(value) * 100.0:.{digits}f}%"
 
 
 def print_human(summary: dict[str, Any]) -> None:
@@ -876,6 +954,8 @@ def print_human(summary: dict[str, Any]) -> None:
         print(f"  fps crop-preview-visible: {fps_bucket_text('crop_preview_visible')}")
         print(f"  fps crop-preview-hidden: {fps_bucket_text('crop_preview_hidden')}")
         if timings:
+            diagnosis = summary.get("gui_display_diagnosis")
+            diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
             print("  timings:")
             print(f"    frame-total: {timing_text('frame_total_ms')}")
             print(f"    main-texture-upload: {timing_text('main_texture_upload_ms')}")
@@ -884,6 +964,14 @@ def print_human(summary: dict[str, Any]) -> None:
             print(f"    crop-window-draw: {timing_text('crop_window_draw_ms')}")
             print(f"    speed-graph-draw: {timing_text('speed_graph_draw_ms')}")
             print(f"    render-present: {timing_text('render_present_ms')}")
+            if diagnosis:
+                print(
+                    "    dominant-p95: "
+                    f"{diagnosis.get('dominant_timing_label', 'n/a')}="
+                    f"{fmt_float_unit(diagnosis.get('dominant_timing_p95_ms'), 2, 'ms')} "
+                    f"frame-total={fmt_float_unit(diagnosis.get('frame_total_p95_ms'), 2, 'ms')} "
+                    f"share={fmt_percent(diagnosis.get('dominant_timing_fraction_of_frame_total_p95'))}"
+                )
             print(
                 f"    upload-counts: main={fmt_int(timings.get('main_texture_upload_count'))} "
                 f"crop={fmt_int(timings.get('crop_texture_upload_count'))}"

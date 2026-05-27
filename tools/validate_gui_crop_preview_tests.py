@@ -696,6 +696,15 @@ def test_gui_display_frame_rate_threshold_passes() -> None:
     require(summary["crop_preview_visible"]["p05_fps"] == 55.0, "visible p05 should be summarized")
     require(summary["yolo_speed_graphs_enabled"] is False, "speed graph state should be summarized")
     require(summary["timings"]["frame_total_ms"]["sample_count"] == 100, "timing samples should be summarized")
+    diagnosis = summary["timing_diagnosis"]
+    require(
+        diagnosis["dominant_timing_bucket"] == "render_present_ms",
+        "render/present should be the dominant GUI timing bucket in the fixture",
+    )
+    require(
+        round(diagnosis["dominant_timing_fraction_of_frame_total_p95"], 3) == round(5.0 / 18.0, 3),
+        "dominant GUI timing share should be computed from p95 frame total",
+    )
 
 
 def test_gui_display_frame_rate_threshold_fails() -> None:

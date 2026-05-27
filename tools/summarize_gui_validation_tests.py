@@ -31,6 +31,19 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
         serial = "2010093"
         snapshot = {
             "schema_version": 2,
+            "session": {
+                "gui_display_frame_rate": {
+                    "timings": {
+                        "frame_total_ms": {"sample_count": 10, "p95_ms": 20.0},
+                        "main_texture_upload_ms": {"sample_count": 10, "p95_ms": 2.0},
+                        "crop_texture_upload_ms": {"sample_count": 10, "p95_ms": 0.5},
+                        "camera_window_draw_ms": {"sample_count": 10, "p95_ms": 7.0},
+                        "crop_window_draw_ms": {"sample_count": 10, "p95_ms": 1.0},
+                        "speed_graph_draw_ms": {"sample_count": 10, "p95_ms": 0.0},
+                        "render_present_ms": {"sample_count": 10, "p95_ms": 5.0},
+                    }
+                }
+            },
             "recording_outputs": {
                 serial: {
                     "crop": {
@@ -142,6 +155,15 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
         require(crop["external_enqueue_age_p95_ms"] == 1.75, "external enqueue age p95 should parse")
         require(crop["external_encode_total_p95_ms"] == 1.25, "external encode p95 should parse")
         require(crop["external_lock_bitstream_p95_ms"] == 0.5, "external lock p95 should parse")
+        diagnosis = summary["gui_display_diagnosis"]
+        require(
+            diagnosis["dominant_timing_bucket"] == "camera_window_draw_ms",
+            "GUI timing diagnosis should identify the largest p95 bucket",
+        )
+        require(
+            diagnosis["dominant_timing_fraction_of_frame_total_p95"] == 7.0 / 20.0,
+            "GUI timing diagnosis should compute dominant p95 share",
+        )
         output = summary["outputs"][serial]["crop"]
         require(
             "sidecar_perf" in output.get("paths", {}),

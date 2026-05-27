@@ -10,6 +10,26 @@ from pathlib import Path
 from typing import Any
 
 
+def nonnegative_float(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if number < 0.0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
+
+
+def nonnegative_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError("must be >= 0")
+    return number
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -40,6 +60,54 @@ def parse_args() -> argparse.Namespace:
         "--require-zero-crop-drops",
         action="store_true",
         help="Exit nonzero if any compared run reports crop dropped rows.",
+    )
+    parser.add_argument(
+        "--min-gui-overall-p05-fps",
+        type=nonnegative_float,
+        help="Exit nonzero if any compared run reports overall GUI p05 FPS below this value.",
+    )
+    parser.add_argument(
+        "--min-gui-visible-p05-fps",
+        type=nonnegative_float,
+        help="Exit nonzero if any compared run reports visible crop-preview GUI p05 FPS below this value.",
+    )
+    parser.add_argument(
+        "--min-gui-hidden-p05-fps",
+        type=nonnegative_float,
+        help="Exit nonzero if any compared run reports hidden crop-preview GUI p05 FPS below this value.",
+    )
+    parser.add_argument(
+        "--require-visible-samples",
+        action="store_true",
+        help="Exit nonzero unless at least one compared run has visible crop-preview GUI FPS samples.",
+    )
+    parser.add_argument(
+        "--require-hidden-samples",
+        action="store_true",
+        help="Exit nonzero unless at least one compared run has hidden crop-preview GUI FPS samples.",
+    )
+    parser.add_argument(
+        "--require-matching-cameras",
+        action="store_true",
+        help="Exit nonzero unless all compared runs have the same camera set.",
+    )
+    parser.add_argument(
+        "--require-matching-display-config",
+        action="store_true",
+        help=(
+            "Exit nonzero unless all compared runs have the same stream downsample, "
+            "display preview FPS cap, and YOLO speed-graph setting."
+        ),
+    )
+    parser.add_argument(
+        "--max-external-crop-queue-high-water",
+        type=nonnegative_int,
+        help="Exit nonzero if any compared run exceeds this external crop encode queue high-water.",
+    )
+    parser.add_argument(
+        "--max-external-crop-enqueue-age-p95-ms",
+        type=nonnegative_float,
+        help="Exit nonzero if any compared run exceeds this external crop enqueue-age p95.",
     )
     return parser.parse_args()
 
@@ -115,6 +183,48 @@ def nested_float(payload: dict[str, Any], *keys: str) -> float | None:
             return None
         item = item.get(key)
     return finite_float(item)
+
+
+GUI_TIMING_BREAKDOWN_BUCKETS = [
+    ("main_texture_upload_ms", "main-texture-upload"),
+    ("crop_texture_upload_ms", "crop-texture-upload"),
+    ("camera_window_draw_ms", "camera-window-draw"),
+    ("crop_window_draw_ms", "crop-window-draw"),
+    ("speed_graph_draw_ms", "speed-graph-draw"),
+    ("render_present_ms", "render-present"),
+]
+
+
+def gui_timing_diagnosis(gui_fps: dict[str, Any]) -> dict[str, Any]:
+    diagnosis = nested_dict(gui_fps, "timing_diagnosis")
+    if diagnosis:
+        return diagnosis
+
+    frame_total_p95_ms = nested_float(gui_fps, "timings", "frame_total_ms", "p95_ms")
+    ranked: list[dict[str, Any]] = []
+    for bucket_name, label in GUI_TIMING_BREAKDOWN_BUCKETS:
+        p95_ms = nested_float(gui_fps, "timings", bucket_name, "p95_ms")
+        if p95_ms is None:
+            continue
+        ranked.append({"bucket": bucket_name, "label": label, "p95_ms": p95_ms})
+    if not ranked:
+        return {}
+
+    ranked.sort(key=lambda item: item["p95_ms"], reverse=True)
+    dominant = ranked[0]
+    out: dict[str, Any] = {
+        "dominant_timing_bucket": dominant["bucket"],
+        "dominant_timing_label": dominant["label"],
+        "dominant_timing_p95_ms": dominant["p95_ms"],
+        "timing_p95_ranked": ranked,
+    }
+    if frame_total_p95_ms is not None:
+        out["frame_total_p95_ms"] = frame_total_p95_ms
+        if frame_total_p95_ms > 0.0:
+            out["dominant_timing_fraction_of_frame_total_p95"] = (
+                dominant["p95_ms"] / frame_total_p95_ms
+            )
+    return out
 
 
 def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +352,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     gui_fps = payload.get("gui_display_frame_rate")
     gui_fps = gui_fps if isinstance(gui_fps, dict) else {}
+    timing_diagnosis = gui_timing_diagnosis(gui_fps)
 
     summary = {
         "label": label,
@@ -353,6 +464,14 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
             "render_present_ms",
             "p95_ms",
         ),
+        "gui_dominant_timing_bucket": timing_diagnosis.get("dominant_timing_bucket"),
+        "gui_dominant_timing_label": timing_diagnosis.get("dominant_timing_label"),
+        "gui_dominant_timing_p95_ms": finite_float(
+            timing_diagnosis.get("dominant_timing_p95_ms")
+        ),
+        "gui_dominant_timing_share": finite_float(
+            timing_diagnosis.get("dominant_timing_fraction_of_frame_total_p95")
+        ),
         "gui_main_texture_upload_count": finite_optional_int(
             nested_dict(gui_fps, "timings").get("main_texture_upload_count")
         ),
@@ -376,6 +495,7 @@ def add_deltas(summaries: list[dict[str, Any]]) -> None:
         "gui_hidden_p05_fps",
         "detect_steady_p95_avg_ms",
         "queue_p95_avg_ms",
+        "gui_dominant_timing_p95_ms",
     ]
     for item in summaries:
         deltas: dict[str, float | None] = {}
@@ -411,6 +531,13 @@ def fmt_list(values: Any) -> str:
     return ",".join(str(value) for value in values)
 
 
+def fmt_percent(value: Any) -> str:
+    number = finite_float(value)
+    if number is None:
+        return "-"
+    return f"{number * 100.0:.0f}%"
+
+
 def render_table(summaries: list[dict[str, Any]]) -> str:
     def fmt_ratio(accepted: Any, offered: Any) -> str:
         if accepted is None or offered is None:
@@ -434,6 +561,15 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("crop draw p95", lambda item: fmt_float(item.get("gui_crop_window_draw_p95_ms"), 2)),
         ("speed graph p95", lambda item: fmt_float(item.get("gui_speed_graph_draw_p95_ms"), 2)),
         ("present p95", lambda item: fmt_float(item.get("gui_render_present_p95_ms"), 2)),
+        ("dominant p95", lambda item: (
+            "-"
+            if item.get("gui_dominant_timing_label") is None
+            else (
+                f"{item.get('gui_dominant_timing_label')} "
+                f"{fmt_float(item.get('gui_dominant_timing_p95_ms'), 2)}"
+            )
+        )),
+        ("dom share", lambda item: fmt_percent(item.get("gui_dominant_timing_share"))),
         ("main uploads", lambda item: fmt_optional_int(item.get("gui_main_texture_upload_count"))),
         ("crop uploads", lambda item: fmt_optional_int(item.get("gui_crop_texture_upload_count"))),
         ("crop rows", lambda item: fmt_int(item.get("crop_rows_total"))),
@@ -509,6 +645,88 @@ def compare(paths: list[str]) -> list[dict[str, Any]]:
     return summaries
 
 
+def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]) -> list[str]:
+    failures: list[str] = []
+    if args.require_pass:
+        failures.extend(
+            f"{item.get('label')}: status={item.get('status')}"
+            for item in summaries
+            if item.get("status") != "pass"
+        )
+    if args.require_zero_crop_drops:
+        for item in summaries:
+            crop_drops = finite_int(item.get("crop_dropped_rows_total"))
+            external_drops = finite_int(item.get("external_crop_dropped_total"))
+            if crop_drops != 0 or external_drops != 0:
+                failures.append(
+                    f"{item.get('label')}: crop_drops={crop_drops} external_crop_drops={external_drops}"
+                )
+
+    if args.require_visible_samples and all(
+        finite_int(item.get("gui_visible_samples")) <= 0 for item in summaries
+    ):
+        failures.append("no compared run has visible crop-preview GUI FPS samples")
+    if args.require_hidden_samples and all(
+        finite_int(item.get("gui_hidden_samples")) <= 0 for item in summaries
+    ):
+        failures.append("no compared run has hidden crop-preview GUI FPS samples")
+    if args.require_matching_cameras and summaries:
+        expected_cameras = summaries[0].get("cameras")
+        for item in summaries[1:]:
+            if item.get("cameras") != expected_cameras:
+                failures.append(
+                    f"{item.get('label')}: camera set {item.get('cameras')} "
+                    f"does not match {summaries[0].get('label')} {expected_cameras}"
+                )
+    if args.require_matching_display_config and summaries:
+        display_fields = [
+            "gui_stream_downsample",
+            "display_preview_max_fps",
+            "yolo_speed_graphs_enabled",
+        ]
+        expected_display = {field: summaries[0].get(field) for field in display_fields}
+        for item in summaries[1:]:
+            current_display = {field: item.get(field) for field in display_fields}
+            if current_display != expected_display:
+                failures.append(
+                    f"{item.get('label')}: display config {current_display} "
+                    f"does not match {summaries[0].get('label')} {expected_display}"
+                )
+
+    fps_thresholds = [
+        ("gui_overall_p05_fps", args.min_gui_overall_p05_fps, "overall GUI p05 FPS", "gui_overall_samples"),
+        ("gui_visible_p05_fps", args.min_gui_visible_p05_fps, "visible GUI p05 FPS", "gui_visible_samples"),
+        ("gui_hidden_p05_fps", args.min_gui_hidden_p05_fps, "hidden GUI p05 FPS", "gui_hidden_samples"),
+    ]
+    for field, threshold, label, sample_field in fps_thresholds:
+        if threshold is None:
+            continue
+        for item in summaries:
+            if finite_int(item.get(sample_field)) <= 0:
+                continue
+            value = finite_float(item.get(field))
+            if value is None or value < threshold:
+                failures.append(f"{item.get('label')}: {label}={value} below {threshold:.1f}")
+
+    if args.max_external_crop_queue_high_water is not None:
+        for item in summaries:
+            value = finite_float(item.get("external_crop_queue_high_water_max"))
+            if value is None or value > args.max_external_crop_queue_high_water:
+                failures.append(
+                    f"{item.get('label')}: external crop queue high-water={value} "
+                    f"> {args.max_external_crop_queue_high_water}"
+                )
+    if args.max_external_crop_enqueue_age_p95_ms is not None:
+        for item in summaries:
+            value = finite_float(item.get("external_crop_enqueue_age_p95_max_ms"))
+            if value is None or value > args.max_external_crop_enqueue_age_p95_ms:
+                failures.append(
+                    f"{item.get('label')}: external crop enqueue-age p95={value} ms "
+                    f"> {args.max_external_crop_enqueue_age_p95_ms:.3f} ms"
+                )
+    return failures
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -517,21 +735,24 @@ def main() -> int:
         print(f"compare_gui_crop_preview_validation.py: {exc}", file=sys.stderr)
         return 2
 
+    failures = threshold_failures(args, summaries)
     if args.json:
-        print(json.dumps({"schema_version": 1, "runs": summaries}, indent=2, sort_keys=True))
+        print(json.dumps(
+            {
+                "schema_version": 1,
+                "status": "fail" if failures else "pass",
+                "threshold_failures": failures,
+                "runs": summaries,
+            },
+            indent=2,
+            sort_keys=True,
+        ))
     else:
         print(render_table(summaries))
 
-    failed = False
-    if args.require_pass:
-        failed = any(item.get("status") != "pass" for item in summaries)
-    if args.require_zero_crop_drops:
-        failed = failed or any(
-            finite_int(item.get("crop_dropped_rows_total")) != 0 or
-            finite_int(item.get("external_crop_dropped_total")) != 0
-            for item in summaries
-        )
-    return 1 if failed else 0
+    for failure in failures:
+        print(f"[FAIL] {failure}", file=sys.stderr)
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

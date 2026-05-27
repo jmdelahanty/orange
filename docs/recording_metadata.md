@@ -792,7 +792,13 @@ Notes:
   `crop_preview_visible`, and `crop_preview_hidden` buckets with
   `sample_count`, `min_fps`, `p05_fps`, `p50_fps`, `p95_fps`, `max_fps`, and
   `mean_fps`. It is intended to prove whether crop preview windows affected UI
-  refresh during a recording; it is not camera acquisition FPS.
+  refresh during a recording; it is not camera acquisition FPS. Newer snapshots
+  also include `session.gui_display_frame_rate.timings` for frame-total,
+  texture-upload, camera/crop-window draw, speed-graph draw, and render/present
+  timing buckets. `scripts/validate_gui_ptp_recording.py --json-out` and
+  `scripts/summarize_gui_validation.py --json` derive a dominant-p95 GUI timing
+  diagnosis from those buckets; that diagnosis is script output, not a persisted
+  snapshot field.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as

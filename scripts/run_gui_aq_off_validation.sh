@@ -16,9 +16,26 @@ GUI_SHOW_SPEED_GRAPHS="${ORANGE_GUI_SHOW_SPEED_GRAPHS:-0}"
 CROP_PREVIEW_VALIDATION_MAX_FPS="${ORANGE_CROP_PREVIEW_MAX_FPS:-15}"
 CROP_RECORDING_SINK_MODE="${ORANGE_CROP_RECORDING_SINK_MODE:-in_process}"
 CROP_EXTERNAL_ENCODE_QUEUE_DEPTH="${ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH:-256}"
+CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER="${ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-}"
+CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS="${ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-}"
 DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine"
 DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
 APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}"
+
+EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS="--expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
+if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
+  EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --max-external-crop-encode-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
+fi
+if [[ -n "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" ]]; then
+  EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --max-external-crop-enqueue-age-p95-ms ${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}"
+fi
+COMPARE_VALIDATION_FLAGS="--require-pass --require-zero-crop-drops --require-visible-samples --require-hidden-samples --require-matching-cameras --require-matching-display-config --min-gui-visible-p05-fps 45 --min-gui-hidden-p05-fps 45"
+if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
+  COMPARE_VALIDATION_FLAGS+=" --max-external-crop-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
+fi
+if [[ -n "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" ]]; then
+  COMPARE_VALIDATION_FLAGS+=" --max-external-crop-enqueue-age-p95-ms ${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}"
+fi
 
 if [[ ! -x "${ORANGE_BIN}" ]]; then
   echo "Missing executable: ${ORANGE_BIN}" >&2
@@ -26,7 +43,17 @@ if [[ ! -x "${ORANGE_BIN}" ]]; then
   exit 1
 fi
 
-python3 - "${CONFIG_DIR}" "${EXPECT_SYNC_MODE}" "${EXPECT_PTP_ENABLED}" "${PTP_REGISTER_READ_DECIMATE}" "${DETECT_ENGINE}" "${APP_CONFIG_PATH}" "${EXPECT_CAMERAS}" <<'PY'
+python3 - \
+  "${CONFIG_DIR}" \
+  "${EXPECT_SYNC_MODE}" \
+  "${EXPECT_PTP_ENABLED}" \
+  "${PTP_REGISTER_READ_DECIMATE}" \
+  "${DETECT_ENGINE}" \
+  "${APP_CONFIG_PATH}" \
+  "${EXPECT_CAMERAS}" \
+  "${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}" \
+  "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" \
+  "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -38,6 +65,9 @@ ptp_register_read_decimate_raw = sys.argv[4]
 detect_engine = sys.argv[5]
 app_config_path = Path(sys.argv[6]).expanduser()
 expect_cameras_raw = sys.argv[7]
+crop_external_queue_depth_raw = sys.argv[8]
+crop_external_max_queue_high_water_raw = sys.argv[9]
+crop_external_max_enqueue_age_p95_ms_raw = sys.argv[10]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -61,6 +91,39 @@ try:
         errors.append("ORANGE_PTP_REGISTER_READ_DECIMATE must be >= 1")
 except ValueError:
     errors.append("ORANGE_PTP_REGISTER_READ_DECIMATE must be an integer")
+
+crop_external_queue_depth = None
+try:
+    crop_external_queue_depth = int(crop_external_queue_depth_raw)
+    if crop_external_queue_depth < 1:
+        errors.append("ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH must be >= 1")
+except ValueError:
+    errors.append("ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH must be an integer")
+
+if crop_external_max_queue_high_water_raw:
+    try:
+        crop_external_max_queue_high_water = int(crop_external_max_queue_high_water_raw)
+        if crop_external_max_queue_high_water < 0:
+            errors.append("ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER must be >= 0")
+        if (
+            crop_external_queue_depth is not None
+            and crop_external_max_queue_high_water > crop_external_queue_depth
+        ):
+            notes.append(
+                "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER is higher than "
+                "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH; the validation gate "
+                "will not constrain queue occupancy"
+            )
+    except ValueError:
+        errors.append("ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER must be an integer")
+
+if crop_external_max_enqueue_age_p95_ms_raw:
+    try:
+        crop_external_max_enqueue_age_p95_ms = float(crop_external_max_enqueue_age_p95_ms_raw)
+        if crop_external_max_enqueue_age_p95_ms < 0.0:
+            errors.append("ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be >= 0")
+    except ValueError:
+        errors.append("ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be a number")
 
 if detect_engine:
     detect_engine_path = Path(detect_engine).expanduser()
@@ -157,6 +220,8 @@ Validation environment:
   ORANGE_CROP_FRAME_POOL_SIZE=${ORANGE_CROP_FRAME_POOL_SIZE:-<orange default>}
   ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}
   ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}
+  ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-<not set>}
+  ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-<not set>}
 
 After recording, validate the artifact with:
   scripts/validate_gui_ptp_recording.py <recording_folder>
@@ -168,13 +233,13 @@ For a compact artifact health, crop fanout, and GUI timing summary, use:
   scripts/summarize_gui_validation.py --latest-complete
 
 For crop-recording plus crop-preview validation, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size 32 --expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size 32 ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
 For a run where crop preview windows were hidden at finalization, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size 32 --expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size 32 ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
 For a run with ORANGE_CROP_PREVIEW_DISABLE=1, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size 32 --expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size 32 ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
 Then compare visible and hidden runs with:
-  scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json --require-pass --require-zero-crop-drops
+  scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json ${COMPARE_VALIDATION_FLAGS}
 EOF
 
 if [[ "${ORANGE_GUI_VALIDATE_ONLY:-0}" == "1" ]]; then

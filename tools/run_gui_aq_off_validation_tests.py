@@ -122,12 +122,128 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show the diagnostic external crop queue depth",
         )
         require(
+            "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<not set>" in result.stdout,
+            "launcher output should show queue high-water validation is unset by default",
+        )
+        require(
+            "--max-external-crop-encode-queue-high-water" not in result.stdout,
+            "launcher validation commands should not add a queue high-water limit by default",
+        )
+        require(
             "scripts/summarize_gui_validation.py --latest-complete" in result.stdout,
             "launcher output should include the compact latest-complete summary command",
         )
         require(
             "--expect-external-crop-encode-queue-depth 256" in result.stdout,
             "launcher validation commands should check the external crop queue depth",
+        )
+        require(
+            "--min-gui-visible-p05-fps 45" in result.stdout,
+            "launcher comparison command should enforce visible GUI FPS when samples exist",
+        )
+        require(
+            "--require-visible-samples" in result.stdout,
+            "launcher comparison command should require at least one visible-sample run",
+        )
+        require(
+            "--require-hidden-samples" in result.stdout,
+            "launcher comparison command should require at least one hidden-sample run",
+        )
+        require(
+            "--require-matching-cameras" in result.stdout,
+            "launcher comparison command should require matching camera sets",
+        )
+        require(
+            "--require-matching-display-config" in result.stdout,
+            "launcher comparison command should require matching display config",
+        )
+        require(
+            "--min-gui-hidden-p05-fps 45" in result.stdout,
+            "launcher comparison command should enforce hidden GUI FPS when samples exist",
+        )
+
+
+def test_external_crop_queue_validation_limits_are_printed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
+                "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "48",
+                "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "80",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=48" in result.stdout,
+            "launcher output should show the selected external crop queue high-water limit",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=80" in result.stdout,
+            "launcher output should show the selected external crop enqueue-age limit",
+        )
+        require(
+            "--expect-external-crop-encode-queue-depth 64" in result.stdout,
+            "launcher validation commands should use the selected external crop queue depth",
+        )
+        require(
+            "--max-external-crop-encode-queue-high-water 48" in result.stdout,
+            "launcher validation commands should include the selected queue high-water limit",
+        )
+        require(
+            "--max-external-crop-enqueue-age-p95-ms 80" in result.stdout,
+            "launcher validation commands should include the selected enqueue-age limit",
+        )
+        require(
+            "--max-external-crop-queue-high-water 48" in result.stdout,
+            "launcher comparison command should include the selected queue high-water limit",
+        )
+        require(
+            "--max-external-crop-enqueue-age-p95-ms 80" in result.stdout,
+            "launcher comparison command should include the selected enqueue-age limit",
+        )
+
+
+def test_external_crop_queue_validation_rejects_bad_values() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "0",
+                "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "many",
+                "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "-1",
+            },
+        )
+
+        require(result.returncode != 0, "bad external crop queue validation values should fail preflight")
+        require(
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH must be >= 1" in result.stderr,
+            "queue depth error should explain the minimum",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER must be an integer" in result.stderr,
+            "queue high-water error should explain the integer requirement",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be >= 0" in result.stderr,
+            "enqueue-age error should explain the nonnegative requirement",
         )
 
 
@@ -264,6 +380,8 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
 def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
+        test_external_crop_queue_validation_limits_are_printed,
+        test_external_crop_queue_validation_rejects_bad_values,
         test_expected_camera_gate_fails_when_missing,
         test_expected_camera_subset_validates_only_requested_files,
         test_bad_config_fails_preflight,

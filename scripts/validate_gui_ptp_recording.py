@@ -1597,7 +1597,11 @@ def check_gui_display_frame_rate(
     check_bucket("overall", "recording", min_overall_p05)
     check_bucket("crop_preview_visible", "crop-preview-visible", min_visible_p05)
     check_bucket("crop_preview_hidden", "crop-preview-hidden", min_hidden_p05)
-    return metrics
+    out = dict(metrics)
+    diagnosis = gui_summary.summarize_gui_timing_diagnosis(metrics)
+    if diagnosis:
+        out["timing_diagnosis"] = diagnosis
+    return out
 
 
 def check_crop_recording_artifacts(
@@ -2055,6 +2059,9 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
             f"mean={fmt_float(bucket.get('mean_ms'), 3)}ms"
         )
 
+    def percent_text(value: Any) -> str:
+        return "n/a" if value is None else f"{float(value) * 100.0:.0f}%"
+
     print("\nGUI FPS")
     if "yolo_speed_graphs_enabled" in gui_fps:
         print(f"  yolo-speed-graphs-enabled: {gui_fps.get('yolo_speed_graphs_enabled')}")
@@ -2063,6 +2070,8 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
     print(f"  crop-preview-hidden: {bucket_text('crop_preview_hidden')}")
     if isinstance(gui_fps.get("timings"), dict):
         timings = gui_fps["timings"]
+        diagnosis = gui_fps.get("timing_diagnosis")
+        diagnosis = diagnosis if isinstance(diagnosis, dict) else gui_summary.summarize_gui_timing_diagnosis(gui_fps)
         print("  timings:")
         print(f"    frame-total: {timing_text('frame_total_ms')}")
         print(f"    main-texture-upload: {timing_text('main_texture_upload_ms')}")
@@ -2071,6 +2080,14 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
         print(f"    crop-window-draw: {timing_text('crop_window_draw_ms')}")
         print(f"    speed-graph-draw: {timing_text('speed_graph_draw_ms')}")
         print(f"    render-present: {timing_text('render_present_ms')}")
+        if diagnosis:
+            print(
+                "    dominant-p95: "
+                f"{diagnosis.get('dominant_timing_label', 'n/a')}="
+                f"{fmt_float(diagnosis.get('dominant_timing_p95_ms'), 3)}ms "
+                f"frame-total={fmt_float(diagnosis.get('frame_total_p95_ms'), 3)}ms "
+                f"share={percent_text(diagnosis.get('dominant_timing_fraction_of_frame_total_p95'))}"
+            )
         print(
             f"    upload-counts: main={timings.get('main_texture_upload_count')} "
             f"crop={timings.get('crop_texture_upload_count')}"

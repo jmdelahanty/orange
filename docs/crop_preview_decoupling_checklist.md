@@ -378,6 +378,12 @@ Acceptance:
   - Summarizes GUI FPS p05, crop rows/drops, preview update/offered counts,
     preview skip percentage, GUI timing buckets, texture upload counts, and
     YOLO detect p95 side by side.
+  - It now also shows the dominant GUI timing p95 bucket from validator
+    `timing_diagnosis`, or computes the same value from raw timing buckets for
+    older validation JSON.
+  - The per-run validator JSON now also includes
+    `gui_display_frame_rate.timing_diagnosis`, a derived dominant-p95 timing
+    bucket summary for quick triage.
 - [x] Add crop-frame-pool telemetry to the crop sidecar and validator.
   - `Cam<serial>_crop_sidecar_perf.csv` records `crop_frame_pool_size`.
   - `scripts/validate_gui_ptp_recording.py --min-crop-frame-pool-size 32`
@@ -416,6 +422,12 @@ Acceptance:
     render/present timing buckets.
   - This is needed because the hidden-preview, speed-graph-disabled run still
     showed GUI p05 near `10.65 fps` and p50 near `25 fps`.
+- [x] Add derived timing diagnosis to post-run summaries.
+  - `scripts/validate_gui_ptp_recording.py --json-out` reports
+    `gui_display_frame_rate.timing_diagnosis`.
+  - `scripts/summarize_gui_validation.py --json` reports
+    `gui_display_diagnosis`.
+  - Human output prints the dominant p95 bucket, frame-total p95, and share.
 
 Acceptance:
 
@@ -610,7 +622,10 @@ For each run:
   `external_enqueue_age_p95_ms` should stay low enough that the queue is acting
   as burst absorption rather than hiding a sustained backlog. Use
   `--max-external-crop-encode-queue-high-water <N>` and
-  `--max-external-crop-enqueue-age-p95-ms <ms>` once a target is chosen.
+  `--max-external-crop-enqueue-age-p95-ms <ms>` once a target is chosen. The
+  GUI validation launcher can print those gates automatically when
+  `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER` and
+  `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS` are set.
 - [ ] Validate latest artifact:
 
 ```bash
@@ -674,8 +689,18 @@ scripts/compare_gui_crop_preview_validation.py \
   visible=/tmp/orange_gui_crop_visible_validation.json \
   hidden=/tmp/orange_gui_crop_hidden_validation.json \
   --require-pass \
-  --require-zero-crop-drops
+  --require-zero-crop-drops \
+  --require-visible-samples \
+  --require-hidden-samples \
+  --require-matching-cameras \
+  --require-matching-display-config \
+  --min-gui-visible-p05-fps 45 \
+  --min-gui-hidden-p05-fps 45
 ```
+
+Add `--max-external-crop-queue-high-water <N>` and
+`--max-external-crop-enqueue-age-p95-ms <ms>` when queue-pressure targets have
+been chosen.
 
 - [ ] Inspect crop perf:
   - crop row count,

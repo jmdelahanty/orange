@@ -103,6 +103,11 @@ Diagnostic note:
   at `100 fps` it permits about `2.56 s` of crop encode backlog per camera.
   Use lower values such as `32-64` once queue high-water and enqueue-age
   telemetry show enough margin.
+- `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<N>` and
+  `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=<ms>` are launcher validation
+  helpers. They do not change runtime behavior; `scripts/run_gui_aq_off_validation.sh`
+  uses them only to print matching `validate_gui_ptp_recording.py` queue-pressure
+  gates for external crop recorder runs.
 
 Note: still-image save path is currently not a stable output contract (writer
 handoff fields are underspecified at present).
@@ -177,6 +182,11 @@ Current emitted top-level fields:
       `p95_ms`, `max_ms`, and `mean_ms`.
     - `main_texture_upload_count` and `crop_texture_upload_count` count total
       texture uploads sampled during active recording.
+  - `timing_diagnosis` is not persisted in `recording_snapshot.json`. It is a
+    derived field produced by `scripts/validate_gui_ptp_recording.py --json-out`
+    and `scripts/summarize_gui_validation.py` from the timing buckets. It names
+    the largest non-total p95 timing bucket and reports its share of
+    `frame_total_ms.p95_ms`.
 
 `recording_outputs` object:
 - Key: camera identifier string (serial or camera_id string).
@@ -916,7 +926,47 @@ specifically needs live speed plots.
 Newer GUI runs also include `session.gui_display_frame_rate.timings` so slow
 GUI refresh can be attributed to texture upload, camera/crop window drawing,
 speed-graph drawing, or render/present. Use `--require-gui-timing-telemetry`
-when a run is intended to diagnose GUI refresh performance.
+when a run is intended to diagnose GUI refresh performance. The validation and
+summary scripts additionally derive a dominant-p95 diagnosis from those timing
+buckets:
+
+- `scripts/validate_gui_ptp_recording.py --json-out` writes it under
+  `gui_display_frame_rate.timing_diagnosis`.
+- `scripts/summarize_gui_validation.py --json` writes it under
+  `gui_display_diagnosis`.
+
+This derived diagnosis is intentionally script-owned. It should not be treated
+as a persisted Orange snapshot schema field.
+
+To compare visible-preview and hidden-preview validation JSON files, use
+`scripts/compare_gui_crop_preview_validation.py`. It summarizes GUI FPS, crop
+recording rows/drops, fanout counters, external crop queue pressure, and the
+dominant GUI timing p95 bucket side by side. It can also fail the comparison
+with:
+
+- `--require-pass`
+- `--require-zero-crop-drops`
+- `--min-gui-overall-p05-fps <fps>`
+- `--min-gui-visible-p05-fps <fps>`
+- `--min-gui-hidden-p05-fps <fps>`
+- `--require-visible-samples`
+- `--require-hidden-samples`
+- `--require-matching-cameras`
+- `--require-matching-display-config`
+- `--max-external-crop-queue-high-water <N>`
+- `--max-external-crop-enqueue-age-p95-ms <ms>`
+
+All numeric compare gate values must be nonnegative. With `--json`, the compare
+helper writes `status`, `threshold_failures`, and `runs` so automation can
+consume both the comparison table data and the gate result without scraping
+stderr.
+The visible/hidden FPS compare thresholds only apply to runs with samples in
+that bucket, so a visible-preview run can be compared with a hidden-preview run
+using both thresholds. Add the sample-presence flags when the comparison is
+expected to include at least one visible-preview run and at least one
+hidden-preview run.
+Use the matching flags for A/B validation so visible and hidden results cannot
+be accidentally compared across different camera sets or display settings.
 
 ### Crop Perf CSV (`Cam<serial>_crop_perf.csv`)
 
