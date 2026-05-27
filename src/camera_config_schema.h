@@ -3,6 +3,7 @@
 
 #include "camera.h"
 #include "json.hpp"
+#include <limits>
 
 namespace orange::camera_config {
 
@@ -27,6 +28,30 @@ inline bool try_get_nonnegative_int(const nlohmann::json& object,
     }
 
     *out_value = static_cast<int>(parsed);
+    return true;
+}
+
+inline bool try_get_int(const nlohmann::json& object,
+                        const char* key,
+                        int* out_value)
+{
+    if (!out_value || !object.contains(key)) {
+        return false;
+    }
+
+    const nlohmann::json& value = object[key];
+    if (!value.is_number_integer() && !value.is_number_unsigned()) {
+        return false;
+    }
+
+    const long long parsed = value.get<long long>();
+    if (parsed > static_cast<long long>(std::numeric_limits<int>::max())) {
+        *out_value = std::numeric_limits<int>::max();
+    } else if (parsed < static_cast<long long>(std::numeric_limits<int>::min())) {
+        *out_value = std::numeric_limits<int>::min();
+    } else {
+        *out_value = static_cast<int>(parsed);
+    }
     return true;
 }
 
@@ -64,12 +89,20 @@ inline void parse_crop_pipeline_config(const nlohmann::json& camera_config,
 
     camera_params->crop_pipeline.crop_size_px =
         sanitize_camera_crop_size_px(crop_size_px);
+
+    int preview_max_fps = camera_params->crop_pipeline.preview_max_fps;
+    if (detail::try_get_int(crop_pipeline, "preview_max_fps", &preview_max_fps)) {
+        camera_params->crop_pipeline.preview_max_fps =
+            sanitize_camera_crop_preview_max_fps(preview_max_fps);
+    }
 }
 
 inline nlohmann::json build_crop_pipeline_config(const CameraParams& camera_params)
 {
     return {
-        {"crop_size_px", sanitize_camera_crop_size_px(camera_params.crop_pipeline.crop_size_px)}
+        {"crop_size_px", sanitize_camera_crop_size_px(camera_params.crop_pipeline.crop_size_px)},
+        {"preview_max_fps", sanitize_camera_crop_preview_max_fps(
+            camera_params.crop_pipeline.preview_max_fps)}
     };
 }
 

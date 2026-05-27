@@ -52,8 +52,8 @@ gaps are:
   pose mode,
 - pose JSONL exists, but currently records backend-ready noop rows rather than
   keypoints,
-- GUI crop preview is not yet an independent droppable/rate-limited
-  `CropFrame` consumer,
+- GUI crop preview now has a first independent droppable/rate-limited
+  `CropFrame` consumer; four-camera GUI validation is still pending,
 - crop/pose aggregate counters still need to be promoted into runtime/pipeline
   status,
 - longer crop-enabled stress validation is still needed.
@@ -203,9 +203,10 @@ Implementation note (2026-04-23):
 
 - `CropProducer` now owns the crop frame pool, source-release event pool,
   staged-source detach path, ROI copy path, and crop-ready event recording.
-- `CropAndEncodeWorker` now acts as a consumer of producer-owned `CropFrame`
-  payloads for preview and lossless crop encode, instead of also owning the
-  crop pool and source-release lifecycle directly.
+- `CropAndEncodeWorker` now acts as a crop-video consumer of producer-owned
+  `CropFrame` payloads, while `CropPreviewWorker` handles live preview as a
+  separate best-effort consumer. Neither worker owns the crop pool or
+  source-release lifecycle directly.
 - Current validation status for the extraction:
   - `cmake --build targets/release -j 8`
   - `recording_validation_tests`
@@ -641,9 +642,10 @@ Historical first split slice:
 - The current code has moved beyond that transitional shape:
   `CropProducerWorker` / `CropProducer` own the crop pool, readiness events,
   leases, and source-release path, while `CropAndEncodeWorker` is a downstream
-  crop-video/preview consumer.
-- GUI preview still runs inside the crop encode worker and should become an
-  independent droppable/rate-limited consumer later.
+  crop-video consumer.
+- GUI preview now runs through `CropPreviewWorker` as an independent
+  droppable/rate-limited consumer. `CropAndEncodeWorker` no longer carries
+  non-recording live preview work.
 
 Target ownership model:
 
@@ -708,8 +710,9 @@ Next artifact validation checklist:
 Current implementation note (updated 2026-05-04):
 
 - The crop-producer split is now implemented with `CropProducerWorker` and
-  `CropProducer`. `CropAndEncodeWorker` is a downstream consumer for preview
-  and crop-video encode.
+  `CropProducer`. `CropAndEncodeWorker` is a downstream consumer for crop-video
+  encode, and `CropPreviewWorker` is a downstream consumer for sampled live
+  preview.
 - Detected frames now copy the source ROI once into a bounded crop-owned Mono8
   GPU buffer on a dedicated producer CUDA stream, record a `crop_ready_event`,
   then release the source `WORKER_ENTRY` from a CUDA source-safe event after
@@ -729,9 +732,19 @@ Current implementation note (updated 2026-05-04):
   `ORANGE_CROP_STAGE_SOURCE=1`, which copies the full source frame into
   ordinary device memory before crop extraction. That isolates GPUDirect-source
   access costs from the ROI crop path.
-- Remaining architectural work is to make GUI crop preview an independent
-  droppable/rate-limited `CropFrame` consumer and to replace the noop pose
-  worker with real TensorRT/model output/IPC behavior.
+- Remaining architectural work is to validate the independent GUI crop preview
+  consumer under the four-camera workload and to replace the noop pose worker
+  with real TensorRT/model output/IPC behavior.
+- Detailed implementation checklist for crop preview decoupling:
+  `docs/crop_preview_decoupling_checklist.md`.
+- Update 2026-05-27: crop preview now has a persisted
+  `crop_pipeline.preview_max_fps` setting plus `ORANGE_CROP_PREVIEW_MAX_FPS`
+  override, cadence-gated preview PBO updates, GUI upload-on-preview-serial
+  behavior, an independent GUI crop-preview visibility control, and crop
+  sidecar preview counters. A later 2026-05-27 slice moved live crop preview
+  into `CropPreviewWorker`, with explicit preview fanout counters in the crop
+  sidecar. Crop recording remains at YOLO cadence while recording is active,
+  and non-recording preview no longer routes through `CropAndEncodeWorker`.
 
 Validation update (2026-04-23):
 
@@ -895,9 +908,9 @@ Step 3: Convert crop video into a consumer.
 
 Step 4: Convert crop preview into a consumer.
 
-- [x] Move preview copy/sync out of the source-frame lifetime. It still runs
-      inside the same worker and should become an independent consumer later.
-- [ ] Make preview droppable/rate-limited so GUI display cannot hold crop
+- [x] Move preview copy/sync out of the source-frame lifetime and into
+      `CropPreviewWorker`.
+- [x] Make preview droppable/rate-limited so GUI display cannot hold crop
       buffers or source frames.
 - [x] Keep the preview cross-GPU host-staging path observable because it is a
       likely source of timing spikes.

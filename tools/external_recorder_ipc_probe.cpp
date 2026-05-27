@@ -3003,6 +3003,7 @@ void write_summary_json(const Options& options,
                         uint64_t encode_enqueued,
                         uint64_t encode_skipped,
                         uint64_t encode_dropped,
+                        uint64_t encode_queue_high_water,
                         const std::vector<double>& detach_total_samples,
                         const std::vector<double>& detach_open_samples,
                         const std::vector<double>& detach_copy_samples,
@@ -3086,6 +3087,7 @@ void write_summary_json(const Options& options,
     out << "  \"encode_enqueued\": " << encode_enqueued << ",\n";
     out << "  \"encode_skipped\": " << encode_skipped << ",\n";
     out << "  \"encode_dropped\": " << encode_dropped << ",\n";
+    out << "  \"encode_queue_high_water\": " << encode_queue_high_water << ",\n";
     out << "  \"frames_encoded\": " << enc.frames_encoded << ",\n";
     out << "  \"worker_failed\": " << ((enc.failed || merged.failed) ? "true" : "false") << ",\n";
     out << "  \"external_encode\": {\n";
@@ -3343,6 +3345,7 @@ int main(int argc, char** argv)
         uint64_t encode_enqueued_count = 0;
         uint64_t encode_skipped_count = 0;
         uint64_t encode_dropped_count = 0;
+        uint64_t encode_queue_high_water = 0;
         std::string observed_session_id = options.session_id;
         std::string observed_stream_id = options.stream_id;
         std::vector<double> detach_total_samples;
@@ -3517,6 +3520,8 @@ int main(int argc, char** argv)
             if (sample.encode_dropped) {
                 ++encode_dropped_count;
             }
+            encode_queue_high_water =
+                std::max<uint64_t>(encode_queue_high_water, sample.encode_queue_depth);
             detach_total_samples.push_back(sample.total_ms);
             detach_open_samples.push_back(sample.open_handle_ms);
             detach_copy_samples.push_back(sample.copy_ms);
@@ -3570,6 +3575,7 @@ int main(int argc, char** argv)
             encode_enqueued_count,
             encode_skipped_count,
             encode_dropped_count,
+            encode_queue_high_water,
             detach_total_samples,
             detach_open_samples,
             detach_copy_samples,

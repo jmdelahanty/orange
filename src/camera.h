@@ -32,8 +32,11 @@ struct CameraCropPipelineConfig {
     static constexpr int kDefaultCropSizePx = 256;
     static constexpr int kMinCropSizePx = 32;
     static constexpr int kMaxCropSizePx = 2048;
+    static constexpr int kDefaultPreviewMaxFps = 15;
+    static constexpr int kMaxPreviewMaxFps = 240;
 
     int crop_size_px = kDefaultCropSizePx;
+    int preview_max_fps = kDefaultPreviewMaxFps;
 };
 
 inline int sanitize_camera_crop_size_px(int requested_size_px)
@@ -49,6 +52,17 @@ inline int sanitize_camera_crop_size_px(int requested_size_px)
         --size;
     }
     return std::max(size, CameraCropPipelineConfig::kMinCropSizePx);
+}
+
+inline int sanitize_camera_crop_preview_max_fps(int requested_max_fps)
+{
+    if (requested_max_fps <= 0) {
+        return 0;
+    }
+    return std::clamp(
+        requested_max_fps,
+        1,
+        CameraCropPipelineConfig::kMaxPreviewMaxFps);
 }
 
 struct CameraParams{

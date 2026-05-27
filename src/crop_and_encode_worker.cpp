@@ -1,38 +1,63 @@
 // src/crop_and_encode_worker.cpp
 
 #include "crop_and_encode_worker.h"
+#include "crop_preview_worker.h"
 #include "crop_producer_worker.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include "project.h" // Add this include
 #include "fsuid_guard.h"
+#include "video_encode_profile.h"
 #include <nppi.h>
 #include <npp.h>
 #include <nppi_color_conversion.h>
 #include <nppi_geometry_transforms.h>
 #include <algorithm> // For std::max_element
+#include <cerrno>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <iomanip>
+#include <limits>
 #include <memory>
 #include <sstream>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <unordered_map>
 
 namespace {
-constexpr int kDisplayGpuId = 0;
-constexpr const char* kCropPreviewDisableEnv = "ORANGE_CROP_PREVIEW_DISABLE";
+constexpr const char* kCropRecordingSinkModeEnv = "ORANGE_CROP_RECORDING_SINK_MODE";
 
-bool env_flag_enabled(const char* name)
+std::string normalize_crop_recording_sink_mode(std::string value)
 {
-    const char* value = std::getenv(name);
-    if (!value || !*value) {
-        return false;
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (value.empty() || value == "real" || value == "in_process") {
+        return "in_process";
     }
-    return std::strcmp(value, "0") != 0 &&
-           std::strcmp(value, "false") != 0 &&
-           std::strcmp(value, "FALSE") != 0 &&
-           std::strcmp(value, "off") != 0 &&
-           std::strcmp(value, "OFF") != 0 &&
-           std::strcmp(value, "no") != 0 &&
-           std::strcmp(value, "NO") != 0;
+    if (value == "external_ipc") {
+        return value;
+    }
+    return {};
+}
+
+std::string resolve_crop_recording_sink_mode(const char* worker_name)
+{
+    const char* env_value = std::getenv(kCropRecordingSinkModeEnv);
+    const std::string normalized =
+        normalize_crop_recording_sink_mode(env_value ? env_value : "");
+    if (normalized.empty()) {
+        std::cerr << "[CropAndEncodeWorker] Ignoring invalid "
+                  << kCropRecordingSinkModeEnv << "='"
+                  << (env_value ? env_value : "")
+                  << "' for " << (worker_name ? worker_name : "unknown")
+                  << "; using in_process" << std::endl;
+        return "in_process";
+    }
+    return normalized;
 }
 
 uint64_t steady_now_ns()
@@ -59,34 +84,6 @@ size_t encoded_packet_bytes(const std::vector<std::vector<uint8_t>>& packets)
     return total;
 }
 
-std::vector<std::pair<std::string, std::string>> build_crop_metadata_tags(
-    const CameraParams* camera_params,
-    const int crop_width,
-    const int crop_height)
-{
-    std::vector<std::pair<std::string, std::string>> tags;
-    const std::string camera_serial =
-        camera_params ? camera_params->camera_serial : std::string();
-    tags.emplace_back("title", "Cam" + camera_serial + " crop");
-
-    std::ostringstream comment;
-    comment << "nvenc codec=hevc"
-            << "; preset=p7"
-            << "; tuning=lossless"
-            << "; res=" << crop_width << "x" << crop_height
-            << "; fps=" << (camera_params ? camera_params->frame_rate : 0)
-            << "; color=0"
-            << "; gop=1"
-            << "; output_kind=crop"
-            << "; role=sidecar"
-            << "; input_format=nv12"
-            << "; source_format=mono8"
-            << "; coordinate_space=full_frame_pixels"
-            << "; selection_policy=largest_detection_by_confidence"
-            << "; blank_frame_policy=encode_black_frame_when_no_detection";
-    tags.emplace_back("comment", comment.str());
-    return tags;
-}
 }
 
 int CropAndEncodeWorker::SanitizeCropSize(int requested_size_px)
@@ -94,12 +91,330 @@ int CropAndEncodeWorker::SanitizeCropSize(int requested_size_px)
     return sanitize_camera_crop_size_px(requested_size_px);
 }
 
+class CropAndEncodeWorker::ExternalCropIpcClient {
+public:
+    ExternalCropIpcClient(std::string camera_serial,
+                          int source_gpu_id,
+                          int crop_width,
+                          int crop_height,
+                          int gop_length)
+        : camera_serial_(std::move(camera_serial)),
+          source_gpu_id_(source_gpu_id),
+          crop_width_(crop_width),
+          crop_height_(crop_height),
+          gop_length_(std::max(1, gop_length))
+    {
+    }
+
+    ~ExternalCropIpcClient()
+    {
+        close_socket();
+    }
+
+    void Close()
+    {
+        close_socket();
+    }
+
+    bool Submit(const CropFrameSnapshot& frame,
+                unsigned char* d_crop_mono,
+                uint64_t bytes,
+                const std::string& recording_folder)
+    {
+        if (!d_crop_mono || bytes == 0) {
+            log_limited("missing crop buffer for frame " +
+                        std::to_string(frame.recording_frame_id));
+            return false;
+        }
+        refresh_session_from_environment(recording_folder);
+        if (source_gpu_id_ >= 0) {
+            cudaSetDevice(source_gpu_id_);
+        }
+
+        std::string handle_hex;
+        auto cached = handle_cache_.find(d_crop_mono);
+        if (cached == handle_cache_.end()) {
+            cudaIpcMemHandle_t handle{};
+            const cudaError_t status =
+                cudaIpcGetMemHandle(&handle, static_cast<void*>(d_crop_mono));
+            if (status != cudaSuccess) {
+                log_limited(std::string("cudaIpcGetMemHandle failed: ") +
+                            cudaGetErrorString(status));
+                return false;
+            }
+            handle_hex = handle_to_hex(handle);
+            handle_cache_.emplace(d_crop_mono, handle_hex);
+        } else {
+            handle_hex = cached->second;
+        }
+
+        if (!ensure_connected()) {
+            return false;
+        }
+
+        const uint64_t zero_based_frame =
+            frame.recording_frame_id > 0 ? frame.recording_frame_id - 1 : 0;
+        const uint64_t gop_index =
+            zero_based_frame / static_cast<uint64_t>(gop_length_);
+        const uint32_t frame_index_within_gop = static_cast<uint32_t>(
+            zero_based_frame % static_cast<uint64_t>(gop_length_));
+
+        std::ostringstream msg;
+        msg << "FRAME "
+            << camera_serial_ << " "
+            << frame.recording_frame_id << " "
+            << frame.local_frame_id << " "
+            << source_gpu_id_ << " "
+            << crop_width_ << " "
+            << crop_height_ << " "
+            << 0 << " "
+            << bytes << " "
+            << frame.timestamp << " "
+            << frame.timestamp_sys << " "
+            << handle_hex << " "
+            << session_id_ << " "
+            << stream_id_ << " "
+            << gop_index << " "
+            << frame_index_within_gop << " "
+            << source_gpu_id_ << " "
+            << 0 << " "
+            << "single_shard"
+            << "\n";
+
+        if (!send_all(msg.str())) {
+            log_limited("send crop frame descriptor failed: " +
+                        std::string(std::strerror(errno)));
+            close_socket();
+            return false;
+        }
+        if (!read_ack(frame.recording_frame_id)) {
+            log_limited("crop detach ack failed for frame " +
+                        std::to_string(frame.recording_frame_id));
+            close_socket();
+            return false;
+        }
+        return true;
+    }
+
+private:
+    static std::string handle_to_hex(const cudaIpcMemHandle_t& handle)
+    {
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&handle);
+        std::ostringstream out;
+        out << std::hex << std::setfill('0');
+        for (size_t i = 0; i < sizeof(cudaIpcMemHandle_t); ++i) {
+            out << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+        }
+        return out.str();
+    }
+
+    std::string resolve_session_id(const std::string& recording_folder) const
+    {
+        const std::string per_camera =
+            "ORANGE_EXTERNAL_CROP_RECORDER_SESSION_ID_CAM_" + camera_serial_;
+        if (const char* value = std::getenv(per_camera.c_str()); value && *value) {
+            return value;
+        }
+        if (const char* value = std::getenv("ORANGE_EXTERNAL_CROP_RECORDER_SESSION_ID");
+            value && *value) {
+            return value;
+        }
+        const std::string full_per_camera =
+            "ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" + camera_serial_;
+        if (const char* value = std::getenv(full_per_camera.c_str()); value && *value) {
+            return value;
+        }
+        if (const char* value = std::getenv("ORANGE_EXTERNAL_RECORDER_SESSION_ID");
+            value && *value) {
+            return value;
+        }
+        if (!recording_folder.empty()) {
+            return std::filesystem::path(recording_folder).filename().string();
+        }
+        return "external_crop_ipc_" + camera_serial_;
+    }
+
+    std::string resolve_socket_path() const
+    {
+        const std::string per_camera =
+            "ORANGE_EXTERNAL_CROP_RECORDER_SOCKET_CAM_" + camera_serial_;
+        if (const char* value = std::getenv(per_camera.c_str()); value && *value) {
+            return value;
+        }
+        if (const char* value = std::getenv("ORANGE_EXTERNAL_CROP_RECORDER_SOCKET");
+            value && *value) {
+            return value;
+        }
+        const std::string supervised_crop =
+            "ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_" + camera_serial_ + "_crop";
+        if (const char* value = std::getenv(supervised_crop.c_str()); value && *value) {
+            return value;
+        }
+        return "/tmp/orange_external_recorder_" + camera_serial_ + "_crop.sock";
+    }
+
+    void refresh_session_from_environment(const std::string& recording_folder)
+    {
+        const std::string next_session = resolve_session_id(recording_folder);
+        const std::string next_socket = resolve_socket_path();
+        const std::string next_stream = camera_serial_ + "_crop";
+        if (next_session == session_id_ &&
+            next_socket == socket_path_ &&
+            next_stream == stream_id_) {
+            return;
+        }
+        close_socket();
+        session_id_ = next_session;
+        socket_path_ = next_socket;
+        stream_id_ = next_stream;
+    }
+
+    bool ensure_connected()
+    {
+        if (socket_fd_ >= 0) {
+            return true;
+        }
+        socket_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (socket_fd_ < 0) {
+            log_limited("socket() failed: " + std::string(std::strerror(errno)));
+            return false;
+        }
+
+        timeval timeout{};
+        timeout.tv_sec = 1;
+        timeout.tv_usec = 0;
+        setsockopt(socket_fd_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        setsockopt(socket_fd_, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+        sockaddr_un addr{};
+        addr.sun_family = AF_UNIX;
+        if (socket_path_.size() >= sizeof(addr.sun_path)) {
+            log_limited("socket path too long: " + socket_path_);
+            close_socket();
+            return false;
+        }
+        std::strncpy(addr.sun_path, socket_path_.c_str(), sizeof(addr.sun_path) - 1);
+        if (connect(socket_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            log_limited("connect(" + socket_path_ + ") failed: " +
+                        std::string(std::strerror(errno)));
+            close_socket();
+            return false;
+        }
+        std::cout << "[ExternalCropIpcRecorder] Connected crop stream "
+                  << camera_serial_ << " to " << socket_path_ << std::endl;
+        return true;
+    }
+
+    bool send_all(const std::string& data)
+    {
+        const char* cursor = data.data();
+        size_t remaining = data.size();
+        while (remaining > 0) {
+            const ssize_t written = send(socket_fd_, cursor, remaining, MSG_NOSIGNAL);
+            if (written <= 0) {
+                return false;
+            }
+            cursor += written;
+            remaining -= static_cast<size_t>(written);
+        }
+        return true;
+    }
+
+    bool read_protocol_line(std::string* line)
+    {
+        while (receive_buffer_.find('\n') == std::string::npos) {
+            char ch = '\0';
+            const ssize_t n = recv(socket_fd_, &ch, 1, 0);
+            if (n <= 0) {
+                return false;
+            }
+            receive_buffer_.push_back(ch);
+            if (receive_buffer_.size() > 4096) {
+                return false;
+            }
+        }
+        const size_t newline = receive_buffer_.find('\n');
+        if (line) {
+            *line = receive_buffer_.substr(0, newline);
+        }
+        receive_buffer_.erase(0, newline + 1);
+        return true;
+    }
+
+    bool read_ack(uint64_t recording_frame_id)
+    {
+        std::string line;
+        if (!read_protocol_line(&line)) {
+            return false;
+        }
+        std::istringstream in(line);
+        std::string kind;
+        uint64_t frame_id = 0;
+        in >> kind >> frame_id;
+        if (kind != "ACK" || frame_id != recording_frame_id) {
+            return false;
+        }
+
+        std::string token;
+        bool deferred_release = false;
+        while (in >> token) {
+            if (token == "deferred_release") {
+                deferred_release = true;
+                break;
+            }
+        }
+        if (!deferred_release) {
+            return true;
+        }
+
+        if (!read_protocol_line(&line)) {
+            return false;
+        }
+        std::istringstream release_in(line);
+        kind.clear();
+        frame_id = 0;
+        release_in >> kind >> frame_id;
+        return kind == "RELEASE" && frame_id == recording_frame_id;
+    }
+
+    void close_socket()
+    {
+        if (socket_fd_ >= 0) {
+            close(socket_fd_);
+            socket_fd_ = -1;
+        }
+        receive_buffer_.clear();
+    }
+
+    void log_limited(const std::string& message)
+    {
+        const uint64_t count = failures_logged_++;
+        if (count < 10 || (count % 100) == 0) {
+            std::cerr << "[ExternalCropIpcRecorder] camera=" << camera_serial_
+                      << " " << message << std::endl;
+        }
+    }
+
+    std::string camera_serial_;
+    int source_gpu_id_ = -1;
+    int crop_width_ = 0;
+    int crop_height_ = 0;
+    int gop_length_ = 1;
+    std::string session_id_;
+    std::string stream_id_;
+    std::string socket_path_;
+    int socket_fd_ = -1;
+    std::string receive_buffer_;
+    std::unordered_map<unsigned char*, std::string> handle_cache_;
+    uint64_t failures_logged_ = 0;
+};
+
 CropAndEncodeWorker::CropAndEncodeWorker(
     const char* name,
     CameraParams* camera_params,
     const std::string& folder_name,
     SafeQueue<WORKER_ENTRY*>& recycle_queue,
-    unsigned char* display_buffer_pbo,
+    unsigned char* /*display_buffer_pbo*/,
     CameraControl* camera_control,
     int crop_size_px
 ):CThreadWorker(name),
@@ -108,34 +423,36 @@ base_folder_name_(folder_name),
 crop_width_(SanitizeCropSize(crop_size_px)),
 crop_height_(SanitizeCropSize(crop_size_px)),
 m_recycle_queue(recycle_queue),
-d_display_buffer_pbo_(display_buffer_pbo),
-camera_control_(camera_control),
-d_cropped_rgba_(nullptr)
+camera_control_(camera_control)
 {
 
     std::cout << "[CropAndEncodeWorker] Initializing " << name << " on GPU " << camera_params_->gpu_id << std::endl;
 
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreateWithFlags(&m_stream, cudaStreamNonBlocking));
+    crop_recording_sink_mode_ = resolve_crop_recording_sink_mode(name);
+    std::cout << "[CropAndEncodeWorker] Crop recording sink mode for "
+              << name << ": " << crop_recording_sink_mode_ << std::endl;
 
-    if (env_flag_enabled(kCropPreviewDisableEnv)) {
-        display_preview_disabled_ = true;
-        d_display_buffer_pbo_ = nullptr;
-        std::cout << "[CropAndEncodeWorker] Crop live preview CUDA path disabled for "
-                  << name << " via " << kCropPreviewDisableEnv << std::endl;
-    }
-
-    if (d_display_buffer_pbo_) {
-        ck(cudaMalloc(&d_cropped_rgba_, crop_preview_bytes()));
-    }
-
-    if (d_display_buffer_pbo_ && camera_params_->gpu_id != kDisplayGpuId) {
-        // OpenGL PBOs are mapped on the display GPU. For cross-GPU cameras,
-        // stage only the small preview crop through host memory.
-        ck(cudaHostAlloc(&h_display_crop_, crop_preview_bytes(), cudaHostAllocDefault));
-        ck(cudaSetDevice(kDisplayGpuId));
-        ck(cudaStreamCreateWithFlags(&m_display_stream, cudaStreamNonBlocking));
-        ck(cudaSetDevice(camera_params_->gpu_id));
+    if (external_crop_recording_enabled()) {
+        const int gop_length = camera_params_->recording.encode.gop_length > 0
+            ? camera_params_->recording.encode.gop_length
+            : static_cast<int>(std::max(1u, camera_params_->frame_rate));
+        external_crop_ipc_ = std::make_unique<ExternalCropIpcClient>(
+            camera_params_->camera_serial,
+            camera_params_->gpu_id,
+            crop_width_,
+            crop_height_,
+            gop_length);
+        ck(cudaMalloc(
+            &d_blank_frame_,
+            static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_)));
+        ck(cudaMemsetAsync(
+            d_blank_frame_,
+            0,
+            static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_),
+            m_stream));
+        return;
     }
 
     try {
@@ -148,20 +465,24 @@ d_cropped_rgba_(nullptr)
         NV_ENC_CONFIG encodeConfig = { NV_ENC_CONFIG_VER };
         initializeParams.encodeConfig = &encodeConfig;
 
-        GUID codecGuid = NV_ENC_CODEC_HEVC_GUID;
-        GUID presetGuid = NV_ENC_PRESET_P7_GUID;
-        NV_ENC_TUNING_INFO tuningInfo = NV_ENC_TUNING_INFO_LOSSLESS;
+        VideoEncodeProfile encode_profile =
+            build_crop_video_encode_profile(*camera_params_, crop_width_, crop_height_);
+        const VideoEncodeProfileNvencGuids nvenc_guids =
+            resolve_video_encode_profile_nvenc_guids(encode_profile);
 
-        std::cout << "[CropAndEncodeWorker] CONFIGURING FOR LOSSLESS (HEVC), HIGH-QUALITY RECORDING." << std::endl;
-
-        encoder_->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
-
-        encodeConfig.gopLength = 1; // Keyframe every frame for lossless
-        encodeConfig.frameIntervalP = 1;
-        initializeParams.frameRateNum = camera_params_->frame_rate;
-        initializeParams.frameRateDen = 1;
-        initializeParams.enablePTD = 1;
-        encodeConfig.rcParams.constQP = { 0, 0, 0 };
+        encoder_->CreateDefaultEncoderParams(
+            &initializeParams,
+            nvenc_guids.codec_guid,
+            nvenc_guids.preset_guid,
+            nvenc_guids.tuning_info);
+        apply_video_encode_profile_to_nvenc_config(
+            encode_profile,
+            &initializeParams,
+            &encodeConfig);
+        std::cout << "[CropAndEncodeWorker] Resolved video encode profile for "
+                  << name << ": "
+                  << video_encode_profile_summary(encode_profile)
+                  << std::endl;
 
         encoder_->CreateEncoder(&initializeParams);
         encoder_->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
@@ -213,33 +534,19 @@ CropAndEncodeWorker::~CropAndEncodeWorker() {
         encoder_ = nullptr;
     }
 
-    if (d_cropped_rgba_) {
-        cudaFree(d_cropped_rgba_);
-        d_cropped_rgba_ = nullptr;
-    }
     if (d_blank_frame_) {
         cudaFree(d_blank_frame_);
         d_blank_frame_ = nullptr;
     }
-    if (h_display_crop_) {
-        cudaFreeHost(h_display_crop_);
-        h_display_crop_ = nullptr;
-    }
     if (m_stream) {
         cudaStreamDestroy(m_stream);
         m_stream = nullptr;
-    }
-    if (m_display_stream) {
-        cudaSetDevice(kDisplayGpuId);
-        cudaStreamDestroy(m_display_stream);
-        m_display_stream = nullptr;
     }
 
     std::cout << "[CropAndEncodeWorker] Summary for " << threadName
               << " jobs_enqueued=" << jobs_enqueued_.load(std::memory_order_relaxed)
               << " queue_full_drops=" << queue_full_drops_.load(std::memory_order_relaxed)
               << " queue_high_water=" << queue_high_water_.load(std::memory_order_relaxed)
-              << " preview_frames=" << preview_frames_
               << " encoded_frames=" << encoded_frames_
               << " blank_frames=" << blank_frames_encoded_
               << " dropped_frames=" << dropped_frames_
@@ -290,6 +597,57 @@ bool CropAndEncodeWorker::TryEnqueueJob(CropEncodeJob* job)
     return true;
 }
 
+bool CropAndEncodeWorker::external_crop_recording_enabled() const
+{
+    return crop_recording_sink_mode_ == "external_ipc";
+}
+
+bool CropAndEncodeWorker::submit_external_crop_frame(const CropFrameSnapshot& frame,
+                                                     unsigned char* d_crop_mono,
+                                                     CropEncodePerfSample* perf)
+{
+    if (!external_crop_ipc_) {
+        if (perf) {
+            perf->dropped = true;
+            perf->drop_reason = "external_crop_ipc_not_initialized";
+        }
+        return false;
+    }
+
+    const uint64_t submit_start_ns = steady_now_ns();
+    const cudaError_t sync_status = cudaStreamSynchronize(m_stream);
+    if (sync_status != cudaSuccess) {
+        std::cerr << "[CropAndEncodeWorker] External crop IPC source sync failed for "
+                  << threadName << " frame " << frame.recording_frame_id
+                  << ": " << cudaGetErrorString(sync_status) << std::endl;
+        if (perf) {
+            perf->dropped = true;
+            perf->drop_reason = "external_crop_ipc_source_sync_failed";
+            perf->stream_sync_ms += elapsed_ms(submit_start_ns, steady_now_ns());
+        }
+        cudaGetLastError();
+        return false;
+    }
+    if (perf) {
+        perf->stream_sync_ms += elapsed_ms(submit_start_ns, steady_now_ns());
+    }
+
+    const uint64_t ipc_start_ns = steady_now_ns();
+    const bool ok = external_crop_ipc_->Submit(
+        frame,
+        d_crop_mono,
+        static_cast<uint64_t>(crop_width_) * static_cast<uint64_t>(crop_height_),
+        frame.recording_folder);
+    if (perf) {
+        perf->encode_submit_cpu_ms = elapsed_ms(ipc_start_ns, steady_now_ns());
+        if (!ok) {
+            perf->dropped = true;
+            perf->drop_reason = "external_crop_ipc_submit_failed";
+        }
+    }
+    return ok;
+}
+
 void CropAndEncodeWorker::RotateRecordingFolder(const std::string& recording_folder)
 {
     if (recording_folder.empty()) {
@@ -302,9 +660,9 @@ void CropAndEncodeWorker::RotateRecordingFolder(const std::string& recording_fol
 
     if (!current_sidecar_recording_folder_.empty()) {
         write_sidecar_summary();
-        reset_recording_counters();
     }
 
+    reset_recording_counters();
     current_sidecar_recording_folder_ = recording_folder;
 
     crop_sidecar_perf_file_ =
@@ -324,7 +682,22 @@ void CropAndEncodeWorker::RotateRecordingFolder(const std::string& recording_fol
         << "producer_jobs_offered,producer_jobs_enqueued,producer_queue_full_drops,"
         << "producer_blank_jobs_offered,producer_blank_jobs_enqueued,"
         << "producer_dropped_jobs_offered,producer_dropped_jobs_enqueued,"
-        << "consumer_jobs_enqueued,consumer_queue_full_drops,consumer_queue_high_water\n";
+        << "consumer_jobs_enqueued,consumer_queue_full_drops,consumer_queue_high_water,"
+        << "crop_frame_pool_size,"
+        << "producer_recording_crop_frame_offered,producer_recording_crop_frame_accepted,"
+        << "producer_recording_crop_frame_dropped,"
+        << "producer_preview_crop_frame_offered,producer_preview_crop_frame_accepted,"
+        << "producer_preview_crop_frame_dropped,"
+        << "producer_pose_crop_frame_offered,producer_pose_crop_frame_accepted,"
+        << "producer_pose_crop_frame_dropped,"
+        << "producer_frames_produced_total,producer_frames_recycled_total,"
+        << "producer_crop_frame_release_total,producer_crop_frame_pool_misses_total,"
+        << "producer_source_release_event_misses_total,"
+        << "producer_pending_source_releases,producer_pending_crop_frame_recycles,"
+        << "preview_max_fps,preview_disabled,preview_display_enabled_final,preview_frames_offered,"
+        << "preview_frames_updated,preview_frames_skipped_by_cadence,"
+        << "preview_clears_updated,preview_queue_full_drops,preview_queue_high_water,"
+        << "preview_serial_final\n";
 }
 
 void CropAndEncodeWorker::write_sidecar_summary()
@@ -346,6 +719,15 @@ void CropAndEncodeWorker::write_sidecar_summary()
     if (crop_producer_worker_) {
         producer_counters = crop_producer_worker_->GetRecordingCounters();
     }
+    CropPreviewWorker::Summary preview_summary;
+    if (crop_preview_worker_) {
+        crop_preview_worker_->WaitUntilIdle(2000);
+        preview_summary = crop_preview_worker_->GetSummary();
+    }
+    CropProducer::FanoutCounters fanout_counters;
+    if (crop_producer_) {
+        fanout_counters = crop_producer_->GetFanoutCounters();
+    }
 
     sidecar_perf
         << camera_params_->camera_serial << ','
@@ -361,7 +743,34 @@ void CropAndEncodeWorker::write_sidecar_summary()
         << producer_counters.dropped_jobs_enqueued << ','
         << run_jobs_enqueued_ << ','
         << run_queue_full_drops_ << ','
-        << run_queue_high_water_ << '\n';
+        << run_queue_high_water_ << ','
+        << (crop_producer_ ? crop_producer_->crop_frame_pool_size() : 0) << ','
+        << fanout_counters.recording_crop_frame_offered << ','
+        << fanout_counters.recording_crop_frame_accepted << ','
+        << fanout_counters.recording_crop_frame_dropped << ','
+        << fanout_counters.preview_crop_frame_offered << ','
+        << fanout_counters.preview_crop_frame_accepted << ','
+        << fanout_counters.preview_crop_frame_dropped << ','
+        << fanout_counters.pose_crop_frame_offered << ','
+        << fanout_counters.pose_crop_frame_accepted << ','
+        << fanout_counters.pose_crop_frame_dropped << ','
+        << fanout_counters.frames_produced_total << ','
+        << fanout_counters.frames_recycled_total << ','
+        << fanout_counters.crop_frame_release_total << ','
+        << fanout_counters.crop_frame_pool_misses_total << ','
+        << fanout_counters.source_release_event_misses_total << ','
+        << fanout_counters.pending_source_releases << ','
+        << fanout_counters.pending_crop_frame_recycles << ','
+        << preview_summary.max_fps << ','
+        << (preview_summary.available ? 0 : 1) << ','
+        << (preview_summary.display_enabled ? 1 : 0) << ','
+        << preview_summary.frames_offered << ','
+        << preview_summary.frames_updated << ','
+        << preview_summary.frames_skipped_by_cadence << ','
+        << preview_summary.clears_updated << ','
+        << preview_summary.queue_full_drops << ','
+        << preview_summary.queue_high_water << ','
+        << preview_summary.serial << '\n';
 }
 
 bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_folder) {
@@ -389,20 +798,20 @@ bool CropAndEncodeWorker::ensure_recording_started(const std::string& recording_
         writer_.keyframe_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_keyframe.json";
         writer_.metadata_file = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_meta.csv";
         crop_perf_file_ = recording_folder + "/Cam" + camera_params_->camera_serial + "_crop_perf.csv";
-        const auto metadata_tags = build_crop_metadata_tags(
-            camera_params_,
-            crop_width_,
-            crop_height_);
+        if (!external_crop_recording_enabled()) {
+            const auto metadata_tags = build_video_encode_metadata_tags(
+                build_crop_video_encode_profile(*camera_params_, crop_width_, crop_height_));
 
-        writer_.video = new FFmpegWriter(
-            AV_CODEC_ID_HEVC,
-            crop_width_,
-            crop_height_,
-            camera_params_->frame_rate,
-            writer_.video_file.c_str(),
-            writer_.keyframe_file.c_str(),
-            metadata_tags);
-        writer_.video->create_thread();
+            writer_.video = new FFmpegWriter(
+                AV_CODEC_ID_HEVC,
+                crop_width_,
+                crop_height_,
+                camera_params_->frame_rate,
+                writer_.video_file.c_str(),
+                writer_.keyframe_file.c_str(),
+                metadata_tags);
+            writer_.video->create_thread();
+        }
 
         writer_.metadata = new std::ofstream();
         writer_.metadata->open(writer_.metadata_file.c_str());
@@ -537,133 +946,12 @@ void CropAndEncodeWorker::write_perf_row(const CropFrameSnapshot& frame, const C
                << sample.total_ms << '\n';
 }
 
-size_t CropAndEncodeWorker::crop_preview_bytes() const
-{
-    return static_cast<size_t>(crop_width_) * static_cast<size_t>(crop_height_) * 4;
-}
-
-bool CropAndEncodeWorker::display_cuda_ok(cudaError_t status, const char* operation)
-{
-    if (status == cudaSuccess) {
-        return true;
-    }
-
-    if (!display_preview_disabled_) {
-        std::cerr << "[CropAndEncodeWorker] Disabling crop preview for "
-                  << threadName << ": " << operation << " failed: "
-                  << cudaGetErrorString(status) << std::endl;
-    }
-
-    display_preview_disabled_ = true;
-    d_display_buffer_pbo_ = nullptr;
-    if (camera_params_) {
-        cudaSetDevice(camera_params_->gpu_id);
-    }
-    return false;
-}
-
-void CropAndEncodeWorker::copy_crop_to_display_preview()
-{
-    if (!d_display_buffer_pbo_ || display_preview_disabled_) {
-        return;
-    }
-
-    if (camera_params_->gpu_id == kDisplayGpuId) {
-        display_cuda_ok(
-            cudaMemcpyAsync(
-                d_display_buffer_pbo_,
-                d_cropped_rgba_,
-                crop_preview_bytes(),
-                cudaMemcpyDeviceToDevice,
-                m_stream),
-            "cudaMemcpyAsync(crop preview same GPU)");
-        return;
-    }
-
-    if (!h_display_crop_ || !m_display_stream) {
-        display_cuda_ok(cudaErrorInvalidResourceHandle, "crop preview cross-GPU staging");
-        return;
-    }
-
-    if (!display_cuda_ok(
-            cudaMemcpyAsync(
-                h_display_crop_,
-                d_cropped_rgba_,
-                crop_preview_bytes(),
-                cudaMemcpyDeviceToHost,
-                m_stream),
-            "cudaMemcpyAsync(crop preview device-to-host)")) {
-        return;
-    }
-    if (!display_cuda_ok(cudaStreamSynchronize(m_stream), "cudaStreamSynchronize(crop preview camera stream)")) {
-        return;
-    }
-    if (!display_cuda_ok(cudaSetDevice(kDisplayGpuId), "cudaSetDevice(crop preview display GPU)")) {
-        return;
-    }
-    display_cuda_ok(
-        cudaMemcpyAsync(
-            d_display_buffer_pbo_,
-            h_display_crop_,
-            crop_preview_bytes(),
-            cudaMemcpyHostToDevice,
-            m_display_stream),
-        "cudaMemcpyAsync(crop preview host-to-display)");
-    cudaSetDevice(camera_params_->gpu_id);
-}
-
-void CropAndEncodeWorker::clear_display_preview()
-{
-    if (!d_display_buffer_pbo_ || display_preview_disabled_) {
-        return;
-    }
-
-    if (camera_params_->gpu_id == kDisplayGpuId) {
-        display_cuda_ok(
-            cudaMemsetAsync(d_display_buffer_pbo_, 0, crop_preview_bytes(), m_stream),
-            "cudaMemsetAsync(crop preview same GPU)");
-        return;
-    }
-
-    if (!m_display_stream) {
-        display_cuda_ok(cudaErrorInvalidResourceHandle, "crop preview display stream");
-        return;
-    }
-
-    if (!display_cuda_ok(cudaSetDevice(kDisplayGpuId), "cudaSetDevice(crop preview clear display GPU)")) {
-        return;
-    }
-    display_cuda_ok(
-        cudaMemsetAsync(d_display_buffer_pbo_, 0, crop_preview_bytes(), m_display_stream),
-        "cudaMemsetAsync(crop preview display GPU)");
-    cudaSetDevice(camera_params_->gpu_id);
-}
-
-void CropAndEncodeWorker::synchronize_display_preview()
-{
-    if (!d_display_buffer_pbo_ || display_preview_disabled_) {
-        return;
-    }
-
-    if (camera_params_->gpu_id == kDisplayGpuId) {
-        display_cuda_ok(cudaStreamSynchronize(m_stream), "cudaStreamSynchronize(crop preview same GPU)");
-        return;
-    }
-
-    if (!m_display_stream) {
-        display_cuda_ok(cudaErrorInvalidResourceHandle, "crop preview display stream synchronize");
-        return;
-    }
-
-    if (!display_cuda_ok(cudaSetDevice(kDisplayGpuId), "cudaSetDevice(crop preview synchronize display GPU)")) {
-        return;
-    }
-    display_cuda_ok(cudaStreamSynchronize(m_display_stream), "cudaStreamSynchronize(crop preview display stream)");
-    cudaSetDevice(camera_params_->gpu_id);
-}
-
 void CropAndEncodeWorker::flush_and_close() {
     std::cout << "[CropAndEncodeWorker] Flushing and closing for " << threadName << std::endl;
+
+    if (external_crop_ipc_) {
+        external_crop_ipc_->Close();
+    }
 
     if (encoder_ && writer_.video && !encoder_flushed_) {
         std::vector<std::vector<uint8_t>> packets;
@@ -791,17 +1079,16 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
             if (active_crop_frame) {
                 ck(cudaStreamWaitEvent(m_stream, active_crop_frame->crop_ready_event, 0));
             }
-
-            if (d_display_buffer_pbo_ && active_crop_frame) {
-                const uint64_t preview_start_ns = steady_now_ns();
-                pose::Rect crop_rect = {0.0f, 0.0f, (float)CROP_W, (float)CROP_H};
-                gpu_crop_and_resize_rgba(active_crop_frame->d_crop_mono, d_cropped_rgba_, CROP_W, CROP_H,
-                                         crop_rect, CROP_W, CROP_H, m_stream);
-                perf.crop_preview_cpu_ms = elapsed_ms(preview_start_ns, steady_now_ns());
-                preview_frames_++;
-            }
             
-            if (encode_this_frame && active_crop_frame) {
+            if (encode_this_frame && active_crop_frame && external_crop_recording_enabled()) {
+                encode_prepared = submit_external_crop_frame(frame, active_crop_frame->d_crop_mono, &perf);
+                if (encode_prepared) {
+                    encoded_frames_++;
+                    const uint64_t metadata_start_ns = steady_now_ns();
+                    write_metadata_row(frame);
+                    perf.metadata_cpu_ms = elapsed_ms(metadata_start_ns, steady_now_ns());
+                }
+            } else if (encode_this_frame && active_crop_frame) {
                 encIn = encoder_->GetNextInputFrame();
                 unsigned char* d_nv12_dst = static_cast<unsigned char*>(encIn->inputPtr);
                 pic_params.frameIdx = static_cast<uint32_t>(zero_based_recording_frame & 0xffffffffu);
@@ -822,19 +1109,8 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                 active_crop_frame = nullptr;
             }
 
-            // --- LIVE PREVIEW LOGIC (ALWAYS RUNS) ---
-            if (d_display_buffer_pbo_) {
-                copy_crop_to_display_preview();
-                const uint64_t display_sync_start_ns = steady_now_ns();
-                synchronize_display_preview();
-                perf.display_sync_ms = elapsed_ms(display_sync_start_ns, steady_now_ns());
-                if (crop_producer_) {
-                    crop_producer_->DrainPending(false);
-                }
-            }
-
             // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
-            if (encode_prepared) {
+            if (encode_prepared && !external_crop_recording_enabled()) {
                 const uint64_t encode_start_ns = steady_now_ns();
 
                 // Encode and write the frame to file
@@ -854,15 +1130,18 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
             }
         } else {
             // --- NO DETECTION ---
-            // Always show a blank screen for the preview if no detection
-            if (d_display_buffer_pbo_) {
-                const uint64_t preview_start_ns = steady_now_ns();
-                clear_display_preview();
-                perf.crop_preview_cpu_ms = elapsed_ms(preview_start_ns, steady_now_ns());
-            }
-            
             // Only encode a blank frame if recording is active
-            if (encode_this_frame) {
+            if (encode_this_frame && external_crop_recording_enabled()) {
+                perf.blank_frame = true;
+                frame.blank_frame = true;
+                if (submit_external_crop_frame(frame, d_blank_frame_, &perf)) {
+                    encoded_frames_++;
+                    blank_frames_encoded_++;
+                    const uint64_t metadata_start_ns = steady_now_ns();
+                    write_metadata_row(frame);
+                    perf.metadata_cpu_ms = elapsed_ms(metadata_start_ns, steady_now_ns());
+                }
+            } else if (encode_this_frame) {
                 perf.blank_frame = true;
                 frame.blank_frame = true;
                 const uint64_t encode_start_ns = steady_now_ns();

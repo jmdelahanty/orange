@@ -13,8 +13,6 @@
 
 namespace {
 constexpr int kCropSourceReleaseEventPoolSize = 256;
-constexpr int kCropFramePoolSize = 8;
-
 uint64_t steady_now_ns()
 {
     return static_cast<uint64_t>(
@@ -90,7 +88,11 @@ CropProducer::CropProducer(
     crop_source_stage_enabled_ = env_flag_enabled("ORANGE_CROP_STAGE_SOURCE", false);
     crop_early_owned_frame_enabled_ = env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false);
     crop_frame_pool_size_ =
-        env_int_or_default("ORANGE_CROP_FRAME_POOL_SIZE", kCropFramePoolSize, 1, 512);
+        env_int_or_default(
+            "ORANGE_CROP_FRAME_POOL_SIZE",
+            kDefaultCropFramePoolSize,
+            kMinCropFramePoolSize,
+            kMaxCropFramePoolSize);
 
     std::cout << "[CropProducer] Crop copy mode "
               << (crop_copy_kernel_enabled_ ? "kernel" : "memcpy2d")
@@ -176,6 +178,12 @@ CropProducer::~CropProducer()
               << " produced=" << frames_produced_.load(std::memory_order_relaxed)
               << " recycled=" << frames_recycled_.load(std::memory_order_relaxed)
               << " lease_releases=" << crop_frame_release_count_.load(std::memory_order_relaxed)
+              << " recording_offered=" << recording_frames_offered_.load(std::memory_order_relaxed)
+              << " recording_accepted=" << recording_frames_accepted_.load(std::memory_order_relaxed)
+              << " recording_dropped=" << recording_frames_dropped_.load(std::memory_order_relaxed)
+              << " preview_offered=" << preview_frames_offered_.load(std::memory_order_relaxed)
+              << " preview_accepted=" << preview_frames_accepted_.load(std::memory_order_relaxed)
+              << " preview_dropped=" << preview_frames_dropped_.load(std::memory_order_relaxed)
               << " pose_offered=" << pose_frames_offered_.load(std::memory_order_relaxed)
               << " pose_accepted=" << pose_frames_accepted_.load(std::memory_order_relaxed)
               << " pose_dropped=" << pose_frames_dropped_.load(std::memory_order_relaxed)
@@ -210,6 +218,110 @@ void CropProducer::ReleaseSourceEntry(WORKER_ENTRY*& entry)
 void CropProducer::SetPoseWorker(PoseWorker* pose_worker)
 {
     pose_worker_ = pose_worker;
+}
+
+void CropProducer::ResetRunFanoutCounters()
+{
+    pose_frames_offered_.store(0, std::memory_order_relaxed);
+    pose_frames_accepted_.store(0, std::memory_order_relaxed);
+    pose_frames_dropped_.store(0, std::memory_order_relaxed);
+    preview_frames_offered_.store(0, std::memory_order_relaxed);
+    preview_frames_accepted_.store(0, std::memory_order_relaxed);
+    preview_frames_dropped_.store(0, std::memory_order_relaxed);
+    recording_frames_offered_.store(0, std::memory_order_relaxed);
+    recording_frames_accepted_.store(0, std::memory_order_relaxed);
+    recording_frames_dropped_.store(0, std::memory_order_relaxed);
+}
+
+void CropProducer::NoteConsumerOffered(Consumer consumer)
+{
+    switch (consumer) {
+    case Consumer::kRecording:
+        recording_frames_offered_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case Consumer::kPreview:
+        preview_frames_offered_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case Consumer::kPose:
+        pose_frames_offered_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
+}
+
+void CropProducer::NoteConsumerAccepted(Consumer consumer)
+{
+    switch (consumer) {
+    case Consumer::kRecording:
+        recording_frames_accepted_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case Consumer::kPreview:
+        preview_frames_accepted_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case Consumer::kPose:
+        pose_frames_accepted_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
+}
+
+void CropProducer::NoteConsumerDropped(Consumer consumer)
+{
+    switch (consumer) {
+    case Consumer::kRecording:
+        recording_frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case Consumer::kPreview:
+        preview_frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    case Consumer::kPose:
+        pose_frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+        break;
+    }
+}
+
+CropProducer::FanoutCounters CropProducer::GetFanoutCounters() const
+{
+    FanoutCounters counters;
+    counters.recording_crop_frame_offered =
+        recording_frames_offered_.load(std::memory_order_relaxed);
+    counters.recording_crop_frame_accepted =
+        recording_frames_accepted_.load(std::memory_order_relaxed);
+    counters.recording_crop_frame_dropped =
+        recording_frames_dropped_.load(std::memory_order_relaxed);
+    counters.preview_crop_frame_offered =
+        preview_frames_offered_.load(std::memory_order_relaxed);
+    counters.preview_crop_frame_accepted =
+        preview_frames_accepted_.load(std::memory_order_relaxed);
+    counters.preview_crop_frame_dropped =
+        preview_frames_dropped_.load(std::memory_order_relaxed);
+    counters.pose_crop_frame_offered =
+        pose_frames_offered_.load(std::memory_order_relaxed);
+    counters.pose_crop_frame_accepted =
+        pose_frames_accepted_.load(std::memory_order_relaxed);
+    counters.pose_crop_frame_dropped =
+        pose_frames_dropped_.load(std::memory_order_relaxed);
+    counters.frames_produced_total =
+        frames_produced_.load(std::memory_order_relaxed);
+    counters.frames_recycled_total =
+        frames_recycled_.load(std::memory_order_relaxed);
+    counters.crop_frame_release_total =
+        crop_frame_release_count_.load(std::memory_order_relaxed);
+    counters.crop_frame_pool_misses_total =
+        crop_frame_pool_misses_.load(std::memory_order_relaxed);
+    counters.source_release_event_misses_total =
+        source_release_event_misses_.load(std::memory_order_relaxed);
+    counters.pending_source_releases =
+        pending_source_release_count_.load(std::memory_order_relaxed);
+    counters.pending_crop_frame_recycles =
+        pending_crop_frame_recycle_count_.load(std::memory_order_relaxed);
+    return counters;
+}
+
+void CropProducer::RetainLease(CropFrame* crop_frame)
+{
+    if (!crop_frame) {
+        return;
+    }
+    crop_frame->active_leases.fetch_add(1, std::memory_order_acq_rel);
 }
 
 cudaEvent_t* CropProducer::acquire_source_release_event()
@@ -595,13 +707,13 @@ CropProducer::ProduceResult CropProducer::Produce(
     active_crop_frame->frame.crop_ready_host_ns = steady_now_ns();
 
     if (pose_worker_) {
-        pose_frames_offered_.fetch_add(1, std::memory_order_relaxed);
+        NoteConsumerOffered(Consumer::kPose);
         active_crop_frame->active_leases.fetch_add(1, std::memory_order_acq_rel);
         if (pose_worker_->TryEnqueueCrop(active_crop_frame)) {
-            pose_frames_accepted_.fetch_add(1, std::memory_order_relaxed);
+            NoteConsumerAccepted(Consumer::kPose);
         } else {
-            active_crop_frame->active_leases.fetch_sub(1, std::memory_order_acq_rel);
-            pose_frames_dropped_.fetch_add(1, std::memory_order_relaxed);
+            release_crop_frame_lease(active_crop_frame);
+            NoteConsumerDropped(Consumer::kPose);
         }
     }
 

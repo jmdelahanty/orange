@@ -351,6 +351,15 @@ Crop recording currently emits optional sidecar outputs per camera:
 - `Cam<serial>_crop_sidecar_perf.csv` when sidecar timing is enabled
 - legacy snapshot metadata under `recording_snapshot.crop_outputs[serial]`
 
+Experimental crop external IPC output keeps the same Orange-side crop metadata
+and perf files, but moves crop video encode/write to an external recorder
+process. That mode is selected with
+`ORANGE_CROP_RECORDING_SINK_MODE=external_ipc` and is diagnostic until live
+validation is complete. The first GUI/session supervision slice now launches
+crop-suffixed recorder processes, keeps their sockets/artifacts separate from
+full-frame external recorders, and indexes external crop MP4s under
+`recording_outputs[serial].crop`.
+
 Schema-2 artifacts keep these existing filenames and add
 `recording_outputs[serial].full` and, when crop writing is active,
 `recording_outputs[serial].crop`. The descriptor is an index over existing
@@ -403,19 +412,22 @@ Acceptance:
 
 ### Phase 2: Encode Profile Extraction
 
-- [ ] Add `VideoEncodeProfile` and helpers that produce NVENC init params.
-- [ ] Express current full-frame profile through the helper without changing
+- [x] Add `VideoEncodeProfile` and helpers that produce NVENC init params.
+- [x] Express current full-frame profile through the helper without changing
       behavior.
-- [ ] Express current crop HEVC lossless GOP-1 profile through the helper
+- [x] Express current crop HEVC lossless GOP-1 profile through the helper
       without changing behavior.
-- [ ] Log the resolved profile for full and crop outputs.
-- [ ] Add tests for profile normalization and invalid values.
+- [x] Log the resolved profile for full and crop outputs.
+- [x] Add tests for profile normalization and invalid values.
 
 Acceptance:
 
-- [ ] Full-frame `real` recording produces the same codec/fps/GOP behavior.
-- [ ] Crop video remains HEVC, crop-sized, GOP-1/lossless as before.
-- [ ] No new runtime config surface is required for the first slice.
+- [x] Full-frame `real` recording produces the same codec/fps/GOP behavior:
+      `/tmp/orange_video_encode_profile_smoke/2010096_headless_recording_outputs_schema_v2_profile_smoke_a16_gpu5`
+      validated with `codec=hevc`, `fps=100`, and `gop_length=25`.
+- [x] Crop video remains HEVC, crop-sized, GOP-1/lossless as before:
+      covered by `video_encode_profile_tests`.
+- [x] No new runtime config surface is required for the first slice.
 
 ### Phase 3: Simple Crop MP4 Sink
 
@@ -431,6 +443,46 @@ Acceptance:
       compatible with current validators.
 - [ ] Crop output closes cleanly when recording stops while streaming remains on.
 - [ ] Crop queue/drop counters remain visible.
+
+### Phase 3b: Experimental External Crop Video Sink
+
+- [x] Add an opt-in crop sink selector:
+      `ORANGE_CROP_RECORDING_SINK_MODE=external_ipc`.
+- [x] Keep the existing in-process crop writer as the default.
+- [x] Send crop-owned Mono8 CUDA buffers over the existing external recorder
+      IPC protocol.
+- [x] Keep Orange-side crop metadata and perf CSVs in the recording folder.
+- [x] Supervise external crop recorder processes from the GUI/session layer.
+- [x] Merge external crop recorder summaries into
+      `recording_outputs[serial].crop`.
+- [x] Teach validators to follow external crop descriptor paths for MP4 and
+      keyframe validation while preserving Orange-written metadata/perf row
+      alignment checks.
+- [x] Keep external crop failures scoped to
+      `recording_outputs[serial].crop` and
+      `recording_backend.crop_recording`, without downgrading full-frame
+      ingest outputs.
+
+Acceptance:
+
+- [ ] Four-camera GUI run with external full-frame IPC and external crop IPC
+      keeps camera acquisition, YOLO, full-frame recording, crop rows, and GUI
+      FPS healthy.
+- [x] External crop MP4s validate with frame counts matching crop metadata.
+      Latest checked artifact:
+      `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_55_05`, with
+      `1465` crop rows/frames on all four cameras and `0` external crop drops.
+- [x] Missing or failed external crop recorder marks only the crop sidecar
+      output failed, not the full-frame ingest output.
+- [x] Re-run four-camera GUI external crop after the path-indexing fallback and
+      256-deep crop encode queue patch. The first run at
+      `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_34_46` launched
+      external crop recorders but failed validation because disabled
+      `merged_output` paths masked the external MP4/keyframe paths and the
+      32-deep crop encode queues dropped frames. The latest checked rerun at
+      `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_55_05` validates
+      cleanly for recording artifacts when the separate GUI-FPS threshold is
+      omitted.
 
 ### Phase 4: Lifecycle Adapter
 
@@ -468,19 +520,14 @@ Acceptance:
 
 ### Crop Externalization
 
-Only consider routing crop encode out of process after the shared descriptors,
-profiles, sinks, and lifecycle are stable.
+Crop externalization is now an experimental opt-in path, not the default. It
+uses crop-owned buffers, not original full camera frames, so full-frame source
+lifetime remains governed by `CropProducer` rather than by crop video output.
+The remaining open question is performance value: live runs must show whether
+moving crop NVENC/MP4 writing out of process improves GUI frame pacing enough to
+justify the extra process and IPC lifecycle.
 
-Questions to answer first:
-
-- Is crop encode measurably hurting YOLO, pose, or full-frame recording?
-- Does crop encode need a different GPU than pose/YOLO?
-- Are crop frames frequent enough that process isolation is worth the IPC
-  complexity?
-- Should external crop encode receive crop-owned buffers, not original full
-  frames?
-
-Preferred future shape if needed:
+Current experimental shape:
 
 ```text
 CropProducer

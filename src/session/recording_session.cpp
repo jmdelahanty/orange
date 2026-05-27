@@ -53,6 +53,30 @@ std::string trim_ascii_copy(std::string value)
     return value;
 }
 
+int resolve_positive_int_env(const char* name, const int fallback, const int max_value)
+{
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return fallback;
+    }
+    std::string text = trim_ascii_copy(raw);
+    if (text.empty()) {
+        return fallback;
+    }
+
+    char* end = nullptr;
+    const long value = std::strtol(text.c_str(), &end, 10);
+    while (end && *end && std::isspace(static_cast<unsigned char>(*end)) != 0) {
+        ++end;
+    }
+    if (end == text.c_str() || (end && *end) || value < 1 || value > max_value) {
+        std::cerr << "[recording_session] Ignoring invalid " << name << "='"
+                  << raw << "'; using " << fallback << std::endl;
+        return fallback;
+    }
+    return static_cast<int>(value);
+}
+
 std::string shell_single_quote(const std::string& value)
 {
     std::string out;
@@ -214,6 +238,141 @@ std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_
                   << " (full-frame video disabled for non-real sink modes)" << std::endl;
     }
     return normalized;
+}
+
+std::string normalize_crop_recording_sink_mode(std::string requested)
+{
+    requested = trim_ascii_copy(std::move(requested));
+    std::transform(requested.begin(), requested.end(), requested.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (requested.empty() || requested == "real" || requested == "in_process") {
+        return "in_process";
+    }
+    if (requested == "external_ipc") {
+        return requested;
+    }
+    return {};
+}
+
+std::string resolve_gui_crop_recording_sink_mode()
+{
+    const char* env = std::getenv("ORANGE_CROP_RECORDING_SINK_MODE");
+    const std::string normalized =
+        normalize_crop_recording_sink_mode(env ? env : "");
+    if (normalized.empty()) {
+        std::cerr << "[recording_session] Unsupported crop recording sink mode '"
+                  << (env ? env : "")
+                  << "'; using in_process crop recording." << std::endl;
+        return "in_process";
+    }
+    if (normalized != "in_process") {
+        std::cout << "[recording_session] Crop recording sink mode: "
+                  << normalized << std::endl;
+    }
+    return normalized;
+}
+
+int resolve_external_crop_encode_queue_depth()
+{
+    constexpr int kDefaultQueueDepth = 256;
+    constexpr int kMaxQueueDepth = 4096;
+    const int depth = resolve_positive_int_env(
+        "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH",
+        kDefaultQueueDepth,
+        kMaxQueueDepth);
+    if (depth != kDefaultQueueDepth || std::getenv("ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH")) {
+        std::cout << "[recording_session] External crop encode queue depth: "
+                  << depth << std::endl;
+    }
+    return depth;
+}
+
+nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
+    const std::string& recording_folder,
+    const std::string& recording_id,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras)
+{
+    nlohmann::json contract = {
+        {"schema_id", "orange.external_recorder.contract"},
+        {"schema_version", 1},
+        {"mode", "diagnostic_ipc_v1"},
+        {"supervise_processes", true},
+        {"session_id", recording_id},
+        {"artifact_root", (std::filesystem::path(recording_folder) / "external_crop_recorder").string()},
+        {"require_summary", true},
+        {"require_video_sanity", false},
+        {"require_merged_mp4", true},
+        {"require_gop_routing", true},
+        {"streams", nlohmann::json::object()}
+    };
+
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return contract;
+    }
+
+    const std::string artifact_root = contract["artifact_root"].get<std::string>();
+    const int external_crop_encode_queue_depth = resolve_external_crop_encode_queue_depth();
+    for (int i = 0; i < num_cameras; ++i) {
+        if (!cameras_select[i].crop_and_encode) {
+            continue;
+        }
+        const CameraParams& camera = cameras_params[i];
+        const std::string serial =
+            !camera.camera_serial.empty()
+                ? camera.camera_serial
+                : std::to_string(camera.camera_id);
+        if (serial.empty()) {
+            continue;
+        }
+        const std::string stream_id = serial + "_crop";
+        const std::string stream_key = stream_id;
+        const int crop_size =
+            sanitize_camera_crop_size_px(camera.crop_pipeline.crop_size_px);
+        const int frame_rate =
+            std::max(1, static_cast<int>(camera.frame_rate));
+        const int recorder_gpu_id =
+            camera.gpu_id >= 0 ? camera.gpu_id : 0;
+        const std::string prefix =
+            (std::filesystem::path(artifact_root) /
+             ("Cam" + serial + "_crop_external")).string();
+
+        contract["streams"][stream_key] = {
+            {"stream_id", stream_id},
+            // Use a crop-suffixed process key so the supervisor's environment
+            // variables cannot overwrite full-frame external-recorder sockets.
+            {"camera_serial", stream_id},
+            {"analytics_gpu_id", recorder_gpu_id},
+            {"recorder_gpu_id", recorder_gpu_id},
+            {"expected_shard_gpu_ids", nlohmann::json::array({recorder_gpu_id})},
+            {"routing_policy", "single_shard"},
+            {"summary_json", prefix + "_summary.json"},
+            {"video_sanity_json", prefix + "_video_sanity.json"},
+            {"mp4", prefix + ".mp4"},
+            {"mp4_keyframe", prefix + "_keyframe.json"},
+            {"detach_csv", prefix + "_detach.csv"},
+            {"encode_csv", prefix + "_encode.csv"},
+            {"gop_routing_csv", prefix + "_gop_routing.csv"},
+            {"recorder_log", prefix + "_recorder.log"},
+            {"socket_path", "/tmp/orange_external_recorder_" + serial + "_crop.sock"},
+            {"encode_fps", frame_rate},
+            {"encode_max_fps", 0},
+            {"encode_queue_depth", external_crop_encode_queue_depth},
+            {"prewarm_slots", 4},
+            {"prewarm_bytes", static_cast<uint64_t>(crop_size) * static_cast<uint64_t>(crop_size)},
+            {"prewarm_peer_copy", true},
+            {"codec", "hevc"},
+            {"preset", "p7"},
+            {"tuning", "lossless"},
+            {"gop", 1},
+            {"bitrate_bps", 150000000},
+            {"max_bitrate_bps", 150000000},
+            {"vbv_buffer_size", 150000000}
+        };
+    }
+    return contract;
 }
 
 nlohmann::json resolve_gui_external_recorder_contract_config(
@@ -1146,6 +1305,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
     state->recording_sink_mode = resolve_gui_recording_sink_mode(app_storage_config);
+    state->crop_recording_sink_mode = resolve_gui_crop_recording_sink_mode();
     state->external_recorder_contract_config =
         resolve_gui_external_recorder_contract_config(
             app_storage_config,
@@ -1274,6 +1434,19 @@ RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
         camera_control->record_video = false;
         camera_control->recording_draining = false;
         camera_control->stop_record = false;
+        if (state) {
+            std::string ignored_error;
+            if (state->external_crop_recorder_lifecycle.started) {
+                (void)orange::external_recorder::StopSupervisedRecorderLifecycle(
+                    &state->external_crop_recorder_lifecycle,
+                    &ignored_error);
+            }
+            if (state->external_recorder_lifecycle.started) {
+                (void)orange::external_recorder::StopSupervisedRecorderLifecycle(
+                    &state->external_recorder_lifecycle,
+                    &ignored_error);
+            }
+        }
     };
 
     make_folder(recording_folder);
@@ -1396,6 +1569,90 @@ RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
             std::cerr << "[recording_session] Failed to refresh latest-recording pointer for GUI external recorder run."
                       << std::endl;
         }
+    }
+
+    if (state &&
+        state->crop_recording_sink_mode == "external_ipc" &&
+        cameras_select &&
+        std::any_of(
+            cameras_select,
+            cameras_select + num_cameras,
+            [](const CameraEachSelect& selected) {
+                return selected.crop_and_encode;
+            })) {
+        if (state->external_crop_recorder_lifecycle.started) {
+            std::string stop_error;
+            (void)orange::external_recorder::StopSupervisedRecorderLifecycle(
+                &state->external_crop_recorder_lifecycle,
+                &stop_error);
+        }
+
+        const nlohmann::json crop_contract =
+            materialize_external_crop_recorder_contract_for_cameras(
+                recording_folder,
+                recording_id,
+                cameras_params,
+                cameras_select,
+                num_cameras);
+        state->active_external_crop_recorder_contract = crop_contract;
+        state->external_crop_recorder_last_error.clear();
+
+        const std::filesystem::path crop_contract_path =
+            std::filesystem::path(recording_folder) / "external_crop_recorder_contract.json";
+        std::string artifact_error;
+        if (!write_json_file(crop_contract_path, crop_contract, &artifact_error)) {
+            result.recording_folder = recording_folder;
+            result.recording_sink_mode = normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode;
+            result.error_message = artifact_error;
+            state->external_crop_recorder_last_error = artifact_error;
+            cleanup_failed_start();
+            return result;
+        }
+        state->external_crop_recorder_contract_path = crop_contract_path.string();
+
+        orange::external_recorder::SupervisedRecorderLifecycleOptions crop_lifecycle_options;
+        crop_lifecycle_options.contract = crop_contract;
+        crop_lifecycle_options.default_session_id = recording_id;
+        crop_lifecycle_options.analytics_root = recording_folder;
+        crop_lifecycle_options.verifier_path = "scripts/verify_external_recorder_session.py";
+        std::string crop_supervisor_error;
+        if (!orange::external_recorder::StartSupervisedRecorderLifecycle(
+                crop_lifecycle_options,
+                &state->external_crop_recorder_lifecycle,
+                &crop_supervisor_error)) {
+            result.recording_folder = recording_folder;
+            result.recording_sink_mode = normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode;
+            result.error_message = crop_supervisor_error.empty()
+                ? "failed to start GUI external crop recorder supervisor"
+                : crop_supervisor_error;
+            state->external_crop_recorder_last_error = result.error_message;
+            if (!state->external_crop_recorder_lifecycle.last_artifact_error.empty()) {
+                state->external_crop_recorder_last_error += "; " +
+                    state->external_crop_recorder_lifecycle.last_artifact_error;
+            }
+            std::cerr << "[recording_session] "
+                      << state->external_crop_recorder_last_error << std::endl;
+            cleanup_failed_start();
+            return result;
+        }
+
+        const std::filesystem::path crop_plan_path =
+            std::filesystem::path(recording_folder) / "external_crop_recorder_supervisor_plan.json";
+        if (write_json_file(
+                crop_plan_path,
+                orange::external_recorder::SupervisorPlanToJson(
+                    state->external_crop_recorder_lifecycle.plan),
+                &artifact_error)) {
+            state->external_crop_recorder_supervisor_plan_path = crop_plan_path.string();
+        } else {
+            std::cerr << "[recording_session] Failed to write GUI external crop recorder supervisor plan: "
+                      << artifact_error << std::endl;
+        }
+
+        std::cout << "[recording_session] GUI external crop recorder supervisor started."
+                  << " streams=" << state->external_crop_recorder_lifecycle.plan.streams.size()
+                  << " artifact_root=" << state->external_crop_recorder_lifecycle.plan.artifact_root
+                  << std::endl;
     }
 
     camera_control->record_video = true;

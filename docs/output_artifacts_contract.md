@@ -78,6 +78,31 @@ Diagnostic note:
   Full-frame `Cam<serial>.mp4`, crop `Cam<serial>_crop.mp4`, crop metadata,
   YOLO, pose, crop sidecar, pipeline, and acquisition diagnostics remain
   expected when their normal producers are active.
+- `ORANGE_CROP_PREVIEW_MAX_FPS=<N>` overrides the persisted
+  `crop_pipeline.preview_max_fps` setting for live crop preview only. `N=0`
+  restores unlimited preview updates for diagnostics. Crop MP4s and crop
+  metadata remain at crop/YOLO cadence.
+- `ORANGE_CROP_RECORDING_SINK_MODE=external_ipc` is an experimental crop-video
+  output sink. In that mode Orange keeps crop metadata/perf row writing in the
+  recording folder but sends crop Mono8 CUDA buffers to an external recorder
+  process for video encoding. The default remains in-process crop encoding
+  (`real` and `in_process` are accepted aliases for the default). Treat this
+  mode as diagnostic until live validation is complete. GUI supervision for
+  this mode writes `external_crop_recorder_contract.json`,
+  `external_crop_recorder_supervisor_plan.json`, and an
+  `external_crop_recorder/` artifact root. The final
+  `recording_outputs[serial].crop.video` path points at the external crop MP4,
+  while crop metadata/perf paths remain Orange-written files in the recording
+  folder. External crop recorder failures are sidecar failures: they should set
+  `recording_outputs[serial].crop.status = "incomplete"` and
+  `recording_backend.crop_recording.status = "incomplete"` without changing the
+  full-frame `recording_outputs[serial].full` status.
+- `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=<N>` overrides the experimental
+  external crop recorder encode queue depth. The default is currently `256`
+  as a diagnostic shock absorber for four-camera validation, but that is high:
+  at `100 fps` it permits about `2.56 s` of crop encode backlog per camera.
+  Use lower values such as `32-64` once queue high-water and enqueue-age
+  telemetry show enough margin.
 
 Note: still-image save path is currently not a stable output contract (writer
 handoff fields are underspecified at present).
@@ -132,6 +157,26 @@ Current emitted top-level fields:
 - `recording_sink_mode: string` (`real`, `immediate_recycle`,
   `preprocess_only`, `threaded_handoff_only`, or `external_ipc`)
 - `full_frame_video_enabled: boolean`
+- `gui_display_frame_rate: object` (optional, GUI recordings after
+  finalization)
+  - `schema_version: integer`
+  - `source: string` (currently `imgui_io_delta_time`)
+  - `stream_downsample: integer` (GUI display preview downsample)
+  - `display_preview_max_fps: integer` (main display preview cadence cap)
+  - `yolo_speed_graphs_enabled: boolean` (whether per-camera ImPlot speed
+    graphs were enabled at finalization)
+  - `saw_crop_preview_enabled|hidden|visible: boolean`
+  - `overall|crop_preview_hidden|crop_preview_visible: object`
+    - `sample_count`, `min_fps`, `p05_fps`, `p50_fps`, `p95_fps`, `max_fps`,
+      and `mean_fps`
+  - `timings: object` (optional, GUI recordings with phase telemetry)
+    - `frame_total_ms`, `main_texture_upload_ms`, `crop_texture_upload_ms`,
+      `camera_window_draw_ms`, `crop_window_draw_ms`, `speed_graph_draw_ms`,
+      `render_present_ms`
+    - Each timing bucket reports `sample_count`, `min_ms`, `p05_ms`, `p50_ms`,
+      `p95_ms`, `max_ms`, and `mean_ms`.
+    - `main_texture_upload_count` and `crop_texture_upload_count` count total
+      texture uploads sampled during active recording.
 
 `recording_outputs` object:
 - Key: camera identifier string (serial or camera_id string).
@@ -771,7 +816,9 @@ Validation note, `2026-04-22` GUI YOLO + crop observability smoke:
 - `recording_snapshot.json` included `crop_outputs[2010096]` with
   `enabled=true`, `mode=yolo_centered_square`, `crop_size_px=256`, and expected
   file names for `Cam2010096_crop.mp4`, `Cam2010096_crop_meta.csv`,
-  `Cam2010096_crop_keyframe.json`, and `Cam2010096_crop_perf.csv`.
+  `Cam2010096_crop_keyframe.json`, and `Cam2010096_crop_perf.csv`. Newer
+  snapshots also include the effective crop preview cap as
+  `runtime.preview_max_fps`.
 - `Cam2010096.mp4` and `Cam2010096_meta.csv` both represented `366` recorded
   frames.
 - `Cam2010096_crop.mp4` was `256x256` and had `366` frames.
@@ -790,6 +837,8 @@ Artifact checker behavior:
 - When crop artifacts are present, `recording_snapshot.json` should contain
   `crop_outputs[serial]` with enabled state, geometry, and expected artifact
   file names.
+- `crop_outputs[serial].runtime.preview_max_fps` is live-preview telemetry
+  configuration only and must not be used as the crop-video frame rate.
 - `crop_outputs[serial].runtime.files.keyframes` should name the emitted
   `Cam<serial>_crop_keyframe.json` sidecar.
 - When crop artifacts are present, `ffprobe` crop video dimensions should match
@@ -816,12 +865,65 @@ metadata, crop keyframe JSON sidecar presence, crop metadata row count, crop
 geometry, crop perf row alignment, and current full-rate YOLO event alignment.
 Use `--allow-yolo-decimation` for future intentionally decimated YOLO/crop runs.
 
+For GUI PTP validation runs that specifically need to prove crop recording
+stayed active while crop preview was sampled or hidden, use:
+
+```bash
+scripts/validate_gui_ptp_recording.py --latest-complete \
+  --require-crop-recording-artifacts \
+  --require-crop-preview-counters \
+  --require-crop-preview-sampling \
+  --expect-crop-preview-max-fps 15 \
+  --expect-crop-preview-disabled 0 \
+  --expect-crop-preview-display-enabled 1 \
+  --min-crop-frame-pool-size 32 \
+  --expect-gui-stream-downsample 4 \
+  --expect-display-preview-max-fps 15 \
+  --expect-yolo-speed-graphs-enabled 0 \
+  --require-gui-timing-telemetry \
+  --min-gui-crop-preview-visible-fps-p05 45
+```
+
+Set `--expect-crop-preview-display-enabled 0` for a hidden-preview validation
+run. Hidden-preview validation should also use
+`--min-gui-crop-preview-hidden-fps-p05`.
+`--require-crop-recording-artifacts` validates the crop MP4, metadata, keyframe
+`total_frames`, crop perf row alignment, matching `recording_frame_id`
+sequences, zero crop-worker drops, and crop/Yolo row count alignment when YOLO
+rows are present. For experimental external crop recording, the validator also
+checks `recording_outputs[serial].crop.summary` and requires
+`frames_received == frames_encoded == crop metadata rows`, with
+`external_encode.frames_dropped = 0` and `encode_dropped = 0`.
+Use `--expect-external-crop-encode-queue-depth <N>` to confirm the intended
+external crop queue depth reached the recorder summary. Use
+`--max-external-crop-encode-queue-high-water <N>` and
+`--max-external-crop-enqueue-age-p95-ms <ms>` when tuning the diagnostic queue
+down from `256` toward `32-64`.
+`--require-crop-preview-sampling` is for visible bounded-preview runs; it fails
+unless the sidecar shows cadence skips and fewer preview updates than offers.
+GUI runs also write `recording_snapshot.json`
+`session.gui_display_frame_rate`, with overall, crop-preview-visible, and
+crop-preview-hidden ImGui delta-time FPS buckets plus
+`stream_downsample`, `display_preview_max_fps`, and
+`yolo_speed_graphs_enabled`. The `--min-gui-*fps-p05`,
+`--expect-gui-stream-downsample`, and `--expect-display-preview-max-fps`
+validator thresholds use those fields to reject UI-refresh collapses and stale
+display configuration. Use `--expect-yolo-speed-graphs-enabled 0` to prove the
+recording-time ImPlot speed graphs were disabled. Keep
+`ORANGE_GUI_SHOW_SPEED_GRAPHS=0` for performance validation unless the run
+specifically needs live speed plots.
+
+Newer GUI runs also include `session.gui_display_frame_rate.timings` so slow
+GUI refresh can be attributed to texture upload, camera/crop window drawing,
+speed-graph drawing, or render/present. Use `--require-gui-timing-telemetry`
+when a run is intended to diagnose GUI refresh performance.
+
 ### Crop Perf CSV (`Cam<serial>_crop_perf.csv`)
 
 Header (exact order):
 
 ```text
-recording_frame_id,local_frame_id,camera_frame_id,worker_start_steady_ns,queue_depth_start,encode_active,has_detection,blank_frame,dropped,drop_reason,crop_x,crop_y,crop_w,crop_h,packet_count,encoded_bytes,event_wait_cpu_ms,crop_pool_wait_ms,crop_producer_cpu_ms,crop_source_wait_enqueue_cpu_ms,source_stage_enqueue_cpu_ms,crop_copy_start_event_record_cpu_ms,crop_roi_copy_enqueue_cpu_ms,crop_ready_event_record_cpu_ms,source_release_event_record_cpu_ms,crop_copy_gpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms
+recording_frame_id,local_frame_id,camera_frame_id,worker_start_steady_ns,queue_depth_start,encode_active,has_detection,blank_frame,dropped,drop_reason,crop_x,crop_y,crop_w,crop_h,packet_count,encoded_bytes,event_wait_cpu_ms,crop_pool_wait_ms,crop_producer_cpu_ms,crop_source_wait_enqueue_cpu_ms,analytics_owned_wait_cpu_ms,source_stage_enqueue_cpu_ms,crop_copy_start_event_record_cpu_ms,crop_roi_copy_enqueue_cpu_ms,crop_ready_event_record_cpu_ms,source_release_event_record_cpu_ms,crop_copy_gpu_ms,crop_preview_cpu_ms,encode_submit_cpu_ms,metadata_cpu_ms,stream_sync_ms,display_sync_ms,total_ms
 ```
 
 Field semantics:
@@ -839,7 +941,9 @@ Field semantics:
 - `crop_x,crop_y,crop_w,crop_h`: full-frame pixel crop rectangle used for the
   encoded crop frame. Blank frames use zero geometry.
 - `packet_count`, `encoded_bytes`: immediate NVENC packet output returned for
-  the frame.
+  the frame. In experimental external crop recording mode these can be `0`
+  because the external recorder owns packet production and Orange only records
+  IPC submit/ACK timing in this CSV.
 - `event_wait_cpu_ms`: CPU time spent enqueuing the wait on source-frame GPU
   readiness. This does not mean the GPU wait itself completed.
 - `crop_pool_wait_ms`: CPU-side time spent acquiring a crop-owned GPU buffer.
@@ -850,6 +954,9 @@ Field semantics:
   after crop preview or crop-video encoding.
 - `crop_source_wait_enqueue_cpu_ms`: CPU-side time to enqueue the wait on the
   source-frame readiness event on the crop producer stream.
+- `analytics_owned_wait_cpu_ms`: CPU-side time spent waiting for the
+  analytics-owned frame to become available when the crop path uses detached
+  analytics input.
 - `source_stage_enqueue_cpu_ms`: CPU-side time to stage the full source frame
   into ordinary device memory when `ORANGE_CROP_STAGE_SOURCE=1`. This is `0`
   when staged-source mode is disabled.
@@ -871,16 +978,49 @@ Field semantics:
 - `ORANGE_CROP_STAGE_SOURCE=1` stages the GPUDirect source frame into ordinary
   device memory before crop extraction so the ROI path can be compared against
   the direct GPUDirect-backed source path.
-- `crop_preview_cpu_ms`: CPU-side time for preview conversion/copy submission.
-  On cross-GPU preview this can include the transitional host staging sync.
+- `crop_preview_cpu_ms`: legacy in-worker preview timing. New GUI builds move
+  live crop preview into `CropPreviewWorker`, so this is expected to remain `0`
+  for decoupled-preview runs.
 - `encode_submit_cpu_ms`: CPU-side time for NVENC input copy/submission and
-  packet handoff.
+  packet handoff. In experimental external crop recording mode this measures
+  CUDA stream source synchronization plus descriptor submit/ACK time, not local
+  NVENC packet production.
 - `metadata_cpu_ms`: CPU time to append the crop metadata row.
 - `stream_sync_ms`: fallback synchronization time if the crop source-release
   event pool is exhausted. This should normally be `0`.
-- `display_sync_ms`: transitional GUI preview synchronization time. Crop source
-  release is now guarded separately by a CUDA source-safe event.
+- `display_sync_ms`: legacy in-worker GUI preview synchronization time. New
+  decoupled-preview runs are expected to leave this at `0`.
 - `total_ms`: total crop worker service time for this frame.
+
+### Crop Sidecar Perf CSV (`Cam<serial>_crop_sidecar_perf.csv`)
+
+Header (exact order):
+
+```text
+camera_serial,gpu_id,worker,queue_size,producer_jobs_offered,producer_jobs_enqueued,producer_queue_full_drops,producer_blank_jobs_offered,producer_blank_jobs_enqueued,producer_dropped_jobs_offered,producer_dropped_jobs_enqueued,consumer_jobs_enqueued,consumer_queue_full_drops,consumer_queue_high_water,crop_frame_pool_size,producer_recording_crop_frame_offered,producer_recording_crop_frame_accepted,producer_recording_crop_frame_dropped,producer_preview_crop_frame_offered,producer_preview_crop_frame_accepted,producer_preview_crop_frame_dropped,producer_pose_crop_frame_offered,producer_pose_crop_frame_accepted,producer_pose_crop_frame_dropped,producer_frames_produced_total,producer_frames_recycled_total,producer_crop_frame_release_total,producer_crop_frame_pool_misses_total,producer_source_release_event_misses_total,producer_pending_source_releases,producer_pending_crop_frame_recycles,preview_max_fps,preview_disabled,preview_display_enabled_final,preview_frames_offered,preview_frames_updated,preview_frames_skipped_by_cadence,preview_clears_updated,preview_queue_full_drops,preview_queue_high_water,preview_serial_final
+```
+
+Preview fields are GUI display telemetry. `preview_frames_skipped_by_cadence`
+does not indicate crop recording loss; crop recording drops remain reported by
+`Cam<serial>_crop_perf.csv` `dropped` and `drop_reason`.
+`preview_disabled` means the preview CUDA/PBO path was unavailable or explicitly
+disabled. `preview_display_enabled_final` records whether the GUI crop preview
+windows were enabled at summary time.
+Newer sidecars include `crop_frame_pool_size` between
+`consumer_queue_high_water` and `preview_max_fps`; validators should use this
+to confirm the effective crop-frame pool used for a run.
+Newer sidecars also include explicit crop-frame fanout counters. The
+`producer_recording_crop_frame_*`, `producer_preview_crop_frame_*`, and
+`producer_pose_crop_frame_*` fields count owned `CropFrame` leases offered to
+each downstream consumer. These are not the same as crop metadata row counts
+because no-detection rows can produce blank crop output without allocating a
+detected-object crop frame.
+For current GUI validation, `producer_recording_crop_frame_accepted` is expected
+to match the number of `Cam<serial>_crop_meta.csv` rows with `has_detection=1`,
+while total crop metadata rows can be larger because blank/no-detection rows do
+not use a crop-frame lease.
+`preview_queue_full_drops` and `preview_queue_high_water` describe only the
+best-effort live crop preview worker; they do not indicate crop recording loss.
 
 ### Pipeline Perf CSV (`Cam<serial>_pipeline_perf.csv`)
 

@@ -283,7 +283,8 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         ImGui::TextWrapped("Device serial: %s", cameras_params[selected_camera].camera_serial.c_str());
         ImGui::TextDisabled("Sync/GPIO/crop changes are saved to config and applied the next time the camera is opened.");
         ImGui::Text("Crop pipeline crop_size_px: %d", cameras_params[selected_camera].crop_pipeline.crop_size_px);
-        ImGui::TextDisabled("Edit crop size in the main Orange panel; Save to config persists it for this camera.");
+        ImGui::Text("Crop preview max FPS: %d", cameras_params[selected_camera].crop_pipeline.preview_max_fps);
+        ImGui::TextDisabled("Edit crop settings in the main Orange panel; Save to config persists them for this camera.");
 
         ImGui::Separator();
         ImGui::Checkbox("Focus UART Bootstrap", &cameras_params[selected_camera].focus_uart_bootstrap);

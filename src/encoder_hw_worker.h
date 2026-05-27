@@ -20,24 +20,9 @@
 #include "json.hpp"
 #include "pre_encoder_reference_writer.h"
 #include "shared_recording_output.h"
+#include "video_encode_profile.h"
 
 class EncoderPreprocessWorker; // Forward declaration
-
-struct RecordingBitrateEstimate {
-    uint32_t average_bitrate = 0;
-    uint32_t max_bitrate = 0;
-    double target_bpp = 0.0;
-    bool average_clamped_to_min = false;
-    bool average_clamped_to_max = false;
-    bool max_clamped_to_max = false;
-};
-
-RecordingBitrateEstimate estimate_recording_bitrate(const CameraParams& camera_params,
-                                                    const RecordingOutputConfig& recording_output_config);
-int sanitize_recording_gop_length(int requested_gop_length);
-uint32_t resolve_recording_gop_length(const CameraParams& camera_params,
-                                      const std::string& tuning,
-                                      int requested_gop_length);
 
 class EncoderHwWorker : public CThreadWorker<ENCODER_WORKER_ENTRY>
 {

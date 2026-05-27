@@ -1,6 +1,7 @@
 #include "crop_producer_worker.h"
 
 #include "crop_and_encode_worker.h"
+#include "crop_preview_worker.h"
 #include "pose_worker.h"
 
 #include <algorithm>
@@ -73,6 +74,11 @@ void CropProducerWorker::SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker
     crop_worker_ = crop_worker;
 }
 
+void CropProducerWorker::SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker)
+{
+    crop_preview_worker_ = crop_preview_worker;
+}
+
 void CropProducerWorker::SetPoseWorker(PoseWorker* pose_worker)
 {
     pose_worker_ = pose_worker;
@@ -88,10 +94,7 @@ void CropProducerWorker::RotateRecordingFolder(const std::string& recording_fold
         return;
     }
 
-    if (!current_recording_folder_.empty()) {
-        ResetRecordingCounters();
-    }
-
+    ResetRecordingCounters();
     current_recording_folder_ = recording_folder;
 }
 
@@ -102,7 +105,6 @@ void CropProducerWorker::CloseRecording()
     }
 
     current_recording_folder_.clear();
-    ResetRecordingCounters();
 }
 
 void CropProducerWorker::ResetRecordingCounters()
@@ -114,6 +116,9 @@ void CropProducerWorker::ResetRecordingCounters()
     run_blank_jobs_enqueued_.store(0, std::memory_order_relaxed);
     run_dropped_jobs_offered_.store(0, std::memory_order_relaxed);
     run_dropped_jobs_enqueued_.store(0, std::memory_order_relaxed);
+    if (crop_producer_) {
+        crop_producer_->ResetRunFanoutCounters();
+    }
 }
 
 CropProducerWorker::RecordingCounters CropProducerWorker::GetRecordingCounters() const
@@ -157,6 +162,9 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
             if (crop_worker_) {
                 crop_worker_->PutObjectToQueueIn(nullptr);
             }
+            if (crop_preview_worker_) {
+                crop_preview_worker_->PutObjectToQueueIn(nullptr);
+            }
             if (pose_worker_) {
                 pose_worker_->PutObjectToQueueIn(nullptr);
             }
@@ -187,10 +195,22 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
     const bool frame_should_encode =
         entry->recording_frame_id > 0 && !entry->recording_folder.empty();
     perf.encode_active = frame_should_encode;
+    CropFrame* producer_handoff_crop_frame = nullptr;
+    auto release_producer_handoff_lease = [&]() {
+        if (producer_handoff_crop_frame && crop_producer_) {
+            crop_producer_->RecycleNow(producer_handoff_crop_frame);
+            producer_handoff_crop_frame = nullptr;
+        }
+    };
 
     auto enqueue_job = [&](std::unique_ptr<CropEncodeJob> ready_job) {
         if (!crop_worker_ || !ready_job) {
             return false;
+        }
+        const bool has_crop_frame = ready_job->crop_frame != nullptr;
+        if (has_crop_frame && crop_producer_) {
+            crop_producer_->NoteConsumerOffered(CropProducer::Consumer::kRecording);
+            crop_producer_->RetainLease(ready_job->crop_frame);
         }
         const bool record_active =
             ready_job->frame.recording_frame_id > 0 && !ready_job->frame.recording_folder.empty();
@@ -212,6 +232,9 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         }
         if (!crop_worker_->TryEnqueueJob(ready_job.get())) {
             queue_full_drops_++;
+            if (has_crop_frame && crop_producer_) {
+                crop_producer_->NoteConsumerDropped(CropProducer::Consumer::kRecording);
+            }
             if (record_active) {
                 run_queue_full_drops_.fetch_add(1, std::memory_order_relaxed);
             }
@@ -220,6 +243,9 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                 ready_job->crop_frame = nullptr;
             }
             return false;
+        }
+        if (has_crop_frame && crop_producer_) {
+            crop_producer_->NoteConsumerAccepted(CropProducer::Consumer::kRecording);
         }
         jobs_enqueued_++;
         if (record_active) {
@@ -238,6 +264,31 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
             }
         }
         ready_job.release();
+        return true;
+    };
+
+    auto enqueue_preview_job = [&](CropPreviewJob* preview_job) {
+        if (!crop_preview_worker_ || !preview_job) {
+            if (preview_job && preview_job->crop_frame && crop_producer_) {
+                crop_producer_->RecycleNow(preview_job->crop_frame);
+                preview_job->crop_frame = nullptr;
+            }
+            delete preview_job;
+            return false;
+        }
+        const bool has_crop_frame = preview_job->crop_frame != nullptr;
+        if (has_crop_frame && crop_producer_) {
+            crop_producer_->NoteConsumerOffered(CropProducer::Consumer::kPreview);
+        }
+        if (!crop_preview_worker_->TryEnqueuePreview(preview_job)) {
+            if (has_crop_frame && crop_producer_) {
+                crop_producer_->NoteConsumerDropped(CropProducer::Consumer::kPreview);
+            }
+            return false;
+        }
+        if (has_crop_frame && crop_producer_) {
+            crop_producer_->NoteConsumerAccepted(CropProducer::Consumer::kPreview);
+        }
         return true;
     };
 
@@ -292,7 +343,14 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
             frame.detection_w = best_detection.rect.width;
             frame.detection_h = best_detection.rect.height;
 
-            const bool needs_crop_frame = crop_worker_ || pose_enabled_;
+            CropPreviewCadence::Decision preview_decision;
+            if (crop_preview_worker_) {
+                preview_decision = crop_preview_worker_->EvaluateOffer(false);
+            }
+            const bool preview_needs_crop_frame = preview_decision.update;
+            const bool recording_needs_crop_frame = crop_worker_ && frame_should_encode;
+            const bool needs_crop_frame =
+                recording_needs_crop_frame || pose_enabled_ || preview_needs_crop_frame;
             if (needs_crop_frame) {
                 CropProducer::ProduceResult produce_result = crop_producer_->Produce(
                     entry,
@@ -303,6 +361,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                     &perf,
                     release_source_entry);
                 job->crop_frame = produce_result.crop_frame;
+                producer_handoff_crop_frame = produce_result.crop_frame;
                 if (produce_result.dropped) {
                     perf.dropped = true;
                     perf.drop_reason = produce_result.drop_reason;
@@ -313,6 +372,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                     if (crop_producer_) {
                         crop_producer_->DrainPending(false);
                     }
+                    release_producer_handoff_lease();
                     return false;
                 }
             } else {
@@ -320,15 +380,43 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                     crop_producer_->ReleaseSourceEntry(entry);
                 }
             }
+
+            if (preview_needs_crop_frame && job->crop_frame && crop_producer_) {
+                crop_producer_->RetainLease(job->crop_frame);
+                CropPreviewJob* preview_job = new CropPreviewJob();
+                preview_job->frame = frame;
+                preview_job->crop_frame = job->crop_frame;
+                preview_job->blank_preview = false;
+                (void)enqueue_preview_job(preview_job);
+            }
         } else {
             frame.blank_frame = true;
             perf.blank_frame = true;
+            if (crop_preview_worker_) {
+                const CropPreviewCadence::Decision preview_decision =
+                    crop_preview_worker_->EvaluateOffer(true);
+                if (preview_decision.update) {
+                    CropPreviewJob* preview_job = new CropPreviewJob();
+                    preview_job->frame = frame;
+                    preview_job->blank_preview = true;
+                    (void)enqueue_preview_job(preview_job);
+                }
+            }
             if (release_source_entry) {
                 crop_producer_->ReleaseSourceEntry(entry);
             }
         }
 
-        if (job->crop_frame && crop_worker_) {
+        if (job->crop_frame && crop_worker_ && frame_should_encode) {
+            (void)enqueue_job(std::move(job));
+            release_producer_handoff_lease();
+            if (crop_producer_) {
+                crop_producer_->DrainPending(false);
+            }
+            return false;
+        }
+
+        if (!has_detection && crop_worker_ && frame_should_encode) {
             (void)enqueue_job(std::move(job));
             if (crop_producer_) {
                 crop_producer_->DrainPending(false);
@@ -336,16 +424,8 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
             return false;
         }
 
-        if (!has_detection && crop_worker_) {
-            (void)enqueue_job(std::move(job));
-            if (crop_producer_) {
-                crop_producer_->DrainPending(false);
-            }
-            return false;
-        }
-
-        if (job->crop_frame && crop_producer_) {
-            crop_producer_->RecycleNow(job->crop_frame);
+        if (job->crop_frame) {
+            release_producer_handoff_lease();
             job->crop_frame = nullptr;
         }
     } catch (const std::exception& e) {
@@ -360,6 +440,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         if (crop_producer_) {
             crop_producer_->DrainPending(false);
         }
+        release_producer_handoff_lease();
     }
 
     if (entry && crop_producer_ && release_source_entry) {

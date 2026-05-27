@@ -786,6 +786,13 @@ Notes:
   JSON instead of a per-frame `Cam*_meta.csv`. Consumers should compare
   `camera_artifacts.<serial>.frame_count` to external summary fields such as
   `frames_received`, `acks_sent`, and `frames_encoded`.
+- GUI recordings also update `recording_snapshot.json`
+  `session.gui_display_frame_rate` after finalization. This is GUI display
+  telemetry from ImGui delta time, split into `overall`,
+  `crop_preview_visible`, and `crop_preview_hidden` buckets with
+  `sample_count`, `min_fps`, `p05_fps`, `p50_fps`, `p95_fps`, `max_fps`, and
+  `mean_fps`. It is intended to prove whether crop preview windows affected UI
+  refresh during a recording; it is not camera acquisition FPS.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as
@@ -1028,6 +1035,8 @@ Crop output snapshot shape:
         "worker": "CropAndEncodeWorker",
         "source_gpu_id": 5,
         "crop_size_px": 328,
+        "preview_max_fps": 15,
+        "crop_frame_pool_size": 32,
         "width": 328,
         "height": 328,
         "coordinate_space": "full_frame_pixels",
@@ -1041,7 +1050,8 @@ Crop output snapshot shape:
           "video": "Cam02010093_crop.mp4",
           "metadata": "Cam02010093_crop_meta.csv",
           "keyframes": "Cam02010093_crop_keyframe.json",
-          "perf": "Cam02010093_crop_perf.csv"
+          "perf": "Cam02010093_crop_perf.csv",
+          "sidecar_perf": "Cam02010093_crop_sidecar_perf.csv"
         }
       }
     }

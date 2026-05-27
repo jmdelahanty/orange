@@ -95,6 +95,38 @@ void test_crop_output_descriptor_serialization()
     require(json.contains("details") && json["details"].is_object(), "crop details object");
 }
 
+void test_full_and_crop_statuses_are_independent()
+{
+    orange::session::RecordingOutputDescriptor full;
+    full.camera_serial = "2010096";
+    full.output_kind = "full";
+    full.role = "ingest_authoritative";
+    full.backend = "external_ipc";
+    full.status = "completed";
+    full.video_path = "Cam2010096.mp4";
+
+    orange::session::RecordingOutputDescriptor crop;
+    crop.camera_serial = "2010096";
+    crop.output_kind = "crop";
+    crop.role = "sidecar";
+    crop.backend = "external_ipc";
+    crop.status = "incomplete";
+    crop.metadata_path = "Cam2010096_crop_meta.csv";
+    crop.perf_path = "Cam2010096_crop_perf.csv";
+    crop.details = {
+        {"status_reason", "external crop recorder output incomplete"}
+    };
+
+    const auto grouped = orange::session::build_recording_outputs_json({full, crop});
+    require(grouped["2010096"]["full"].value("status", std::string()) == "completed",
+            "full output status should remain completed");
+    require(grouped["2010096"]["crop"].value("status", std::string()) == "incomplete",
+            "crop sidecar status should be independently incomplete");
+    require(grouped["2010096"]["crop"]["details"].value("status_reason", std::string()) ==
+                "external crop recorder output incomplete",
+            "crop sidecar status reason should be preserved");
+}
+
 void test_default_fallback_values()
 {
     orange::session::RecordingOutputDescriptor descriptor;
@@ -125,6 +157,7 @@ int main()
     const TestCase tests[] = {
         {"full_output_descriptor_from_camera_artifact", test_full_output_descriptor_from_camera_artifact},
         {"crop_output_descriptor_serialization", test_crop_output_descriptor_serialization},
+        {"full_and_crop_statuses_are_independent", test_full_and_crop_statuses_are_independent},
         {"default_fallback_values", test_default_fallback_values},
     };
 

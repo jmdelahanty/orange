@@ -231,6 +231,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
+    "${SRC_DIR}/video_encode_profile.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
@@ -245,6 +246,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/usaf_resolution_calibration.cpp"
     "${SRC_DIR}/usaf_resolution_ui.cpp"
     "${SRC_DIR}/crop_and_encode_worker.cpp"
+    "${SRC_DIR}/crop_preview_worker.cpp"
     "${SRC_DIR}/crop_producer.cpp"
     "${SRC_DIR}/crop_producer_worker.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
@@ -280,6 +282,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
+    "${SRC_DIR}/video_encode_profile.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -298,6 +301,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/pose_event_log_validation.cpp"
     "${SRC_DIR}/recording_validation.cpp"
     "${SRC_DIR}/crop_and_encode_worker.cpp"
+    "${SRC_DIR}/crop_preview_worker.cpp"
     "${SRC_DIR}/crop_producer.cpp"
     "${SRC_DIR}/crop_producer_worker.cpp"
     "${SRC_DIR}/pose_event_log.cpp"
@@ -366,6 +370,52 @@ if(BUILD_TESTING)
     target_include_directories(recording_output_descriptor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
+
+    add_executable(video_encode_profile_tests
+        "tools/video_encode_profile_tests.cpp"
+        "${SRC_DIR}/video_encode_profile.cpp"
+    )
+    target_include_directories(video_encode_profile_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(video_encode_profile_tests PRIVATE cxx_std_17)
+    add_test(NAME video_encode_profile_tests COMMAND video_encode_profile_tests)
+
+    add_executable(crop_preview_cadence_tests
+        "tools/crop_preview_cadence_tests.cpp"
+    )
+    target_include_directories(crop_preview_cadence_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(crop_preview_cadence_tests PRIVATE cxx_std_17)
+    add_test(NAME crop_preview_cadence_tests COMMAND crop_preview_cadence_tests)
+
+    add_executable(gui_display_frame_rate_tests
+        "tools/gui_display_frame_rate_tests.cpp"
+    )
+    target_include_directories(gui_display_frame_rate_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(gui_display_frame_rate_tests PRIVATE cxx_std_17)
+    add_test(NAME gui_display_frame_rate_tests COMMAND gui_display_frame_rate_tests)
+
+    add_test(
+        NAME validate_gui_crop_preview_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_crop_preview_tests.py")
+
+    add_test(
+        NAME compare_gui_crop_preview_validation_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/compare_gui_crop_preview_validation_tests.py")
+
+    add_test(
+        NAME summarize_gui_validation_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/summarize_gui_validation_tests.py")
+
+    add_test(
+        NAME run_gui_aq_off_validation_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/run_gui_aq_off_validation_tests.py")
+
+    add_test(
+        NAME verify_external_recorder_session_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/verify_external_recorder_session_tests.py")
+
+    add_test(
+        NAME external_recorder_smoke_runner_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/external_recorder_smoke_runner_tests.py")
 
     add_executable(yolo_event_log_validation_tests
         "tools/yolo_event_log_validation_tests.cpp"

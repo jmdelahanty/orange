@@ -1,37 +1,95 @@
-# Display Pipeline Notes (Current Behavior)
+# Display Pipeline Notes
 
-This document summarizes the current display path and where stalls can occur,
-based on code inspection.
+Last updated: 2026-05-27.
+
+This document summarizes the current GUI display path and where stalls can
+still occur, based on code inspection and four-camera GUI validation runs.
+After the 2026-05-27 downsample/preview work and external crop-recorder slice,
+crop artifacts are healthy with crop preview hidden, but the GUI can still run
+near `25 fps` while recording four cameras. The remaining suspect area is GUI
+render work during recording, especially per-camera YOLO speed graphs and
+cross-GPU display preview updates.
 
 ## UI/render loop
 
 - Main UI loop is in `src/orange.cpp`:
   - `while (!glfwWindowShouldClose(...)) { create_new_frame(); ... render_a_frame(); }`
   - Per‑camera display runs under `if (camera_control->subscribe)`:
-    - Uploads PBO → texture with `upload_texture_from_pbo(...)` (see `src/gui.h`).
-    - Draws via `ImPlot::PlotImage(...)` in `src/orange.cpp`.
+    - Uploads PBO to texture with `upload_texture_from_pbo(...)` only when the
+      display worker publishes a new preview serial.
+    - Draws main camera textures with `ImGui::Image(...)`.
+    - Draws crop preview textures with `ImGui::Image(...)`.
+
+The main display no longer uses `ImPlot::PlotImage`. The display is an image
+preview, not a plot, so avoiding ImPlot removes unnecessary plot setup and
+interaction work.
+
+## Display Resolution And Cadence
+
+- GUI stream downsample defaults to `4` in `src/orange.cpp`.
+- `ORANGE_GUI_STREAM_DOWNSAMPLE=<1|2|4|8|16>` overrides the default for the
+  GUI display preview. `ORANGE_DISPLAY_DOWNSAMPLE` is accepted as a legacy
+  alias.
+- The `downsample streaming` combo controls display preview size only. It does
+  not change acquisition, YOLO input, full-frame recording, or crop recording.
+- The downsample value is fixed while streaming because GL textures and display
+  worker buffers are allocated when streaming starts.
+- `CameraEachSelect.display_preview_max_fps` still defaults to `60`, but the
+  four-camera validation launcher sets `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15` by
+  default after the `30 fps` preview cap still left the GUI near `25 fps`.
+  `ORANGE_DISPLAY_MAX_FPS` remains a legacy alias.
+- `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the four-camera launcher default. Set it
+  to `1` only when live per-camera ImPlot speed graphs are needed during
+  recording.
+- Display preview cadence is enforced before a frame is offered to the display
+  worker. Skipped display frames are preview skips, not acquisition or
+  recording drops.
 
 ## Display worker thread
 
 - Per‑camera display worker: `COpenGLDisplay::WorkerFunction` in `src/opengldisplay.cpp`.
 - Worker consumes frames from a queue, keeps only the latest frame, and drops older ones.
+- Worker increments `PreviewSerial()` only after the CUDA work that updates the
+  PBO has completed. The GUI uses that serial to avoid redundant PBO uploads.
 
 ## GPU/CPU data flow
 
-### Normal (same GPU)
+### Fast mono/no-overlay path
+
+Most current production cameras are Mono8. When the camera is mono and there is
+no detection overlay to draw:
+
+- Acquisition writes frames to GPU memory.
+- Display worker copies the source mono frame to the display GPU staging frame.
+- If display downsample is greater than `1`, NPP resizes the mono frame first.
+- A small CUDA kernel converts the downsampled mono frame directly to RGBA in
+  the mapped OpenGL PBO.
+- The worker synchronizes the display stream, then publishes a new preview
+  serial.
+
+This avoids expanding the full `4512x4512` frame to full-resolution RGBA when
+the GUI only needs a downsampled preview.
+
+### Overlay/color fallback path
+
+When the source is color, or YOLO detection overlays are enabled and available:
+
 - Acquisition writes frames to GPU memory.
 - Display worker copies `latest_frame->d_image` → `frame_original_gpu_.d_orig` (device→device).
 - Debayer/duplicate on GPU into RGBA.
 - Optional GPU overlay draw (`gpu_draw_box` in `src/kernel.cu`).
 - Optional GPU downsample via NPP.
 - Final GPU→GPU copy into mapped PBO (`display_buffer_pbo_cuda_ptr_`).
-- UI thread uploads PBO to texture (OpenGL `glTexSubImage2D`).
+- Worker synchronizes the display stream, then publishes a new preview serial.
+- UI thread uploads PBO to texture only when that serial changes.
 
 ### Cross‑GPU (acquire GPU != display GPU)
 - Display worker uses host‑pinned staging:
   - `cudaMemcpyDeviceToHost` (acquire GPU → CPU pinned)
   - `cudaMemcpyHostToDevice` (CPU pinned → display GPU)
-- This round‑trip is a likely stutter source at high resolution / high FPS.
+- This round‑trip is still a likely stutter source at high resolution / high
+  FPS. The mono fast path reduces RGBA expansion and texture upload size, but
+  it does not yet eliminate the full mono source transfer to the display GPU.
 
 ## Potential stalls / sync points
 
@@ -40,6 +98,11 @@ based on code inspection.
 - Busy‑wait on CPU for `latest_frame->detections_ready` when YOLO overlays are enabled.
 - `cudaStreamSynchronize(m_stream)` in display worker after the PBO write.
 - Cross‑GPU CPU round‑trip when `camera_params->gpu_id != display_gpu_id`.
+- OpenGL presentation/compositor pressure, especially when the desktop output
+  resolution is high.
+- Per-camera ImPlot speed graphs in the recording branch. These are now opt-in
+  because they only appear once recording starts and can make the measured GUI
+  frame rate look like a crop/recording problem even when artifacts are clean.
 
 ## CPU display path
 
@@ -52,28 +115,46 @@ based on code inspection.
 - Display worker: `src/opengldisplay.cpp`
 - PBO/texture helpers: `src/gui.h`, `src/gx_helper.h`
 - GPU overlay kernels: `src/kernel.cu`
+- Display frame-rate telemetry: `src/gui_display_frame_rate.h`
+- Acquisition-side display cadence: `src/acquire_frames.cpp`
+- GUI phase timing telemetry is written under
+  `recording_snapshot.json session.gui_display_frame_rate.timings` and includes
+  frame total, main/crop texture upload, camera/crop window draw, speed graph
+  draw, and render/present buckets.
 
 ## Optimization ideas (incremental)
 
-- Cap UI draw rate (e.g., render at 30 Hz) and always display the latest frame.
+- Keep `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` for performance validation. Re-enable
+  with `ORANGE_GUI_SHOW_SPEED_GRAPHS=1` only for operator diagnostics that need
+  the graphs.
+- Raise `ORANGE_DISPLAY_PREVIEW_MAX_FPS` only when a smoother live preview is
+  more important than GUI control responsiveness.
 - Skip YOLO overlay wait when display latency matters:
   - Use `ORANGE_DISPLAY_SKIP_YOLO_WAIT=1` to avoid CPU busy‑wait.
 - Avoid cross‑GPU display if possible:
   - Prefer running the display on the same GPU as acquisition (or consolidate cameras by GPU).
 - Replace CPU busy‑wait with an event/condition variable to avoid burning a core.
 - Reduce per‑frame work:
-  - Lower display resolution (downsample).
+  - Raise GUI display downsample from `4` to `8`.
   - Disable overlays for non‑focused cameras.
 - Drop frames aggressively:
   - Keep only the newest frame in the display queue (already done), and cap queue size.
-- Consider PBO upload throttling:
-  - Only call `upload_texture_from_pbo` when a new display frame is available.
+- Move display preprocessing to the acquisition GPU and transfer only the
+  downsampled preview to display GPU. This is the next likely high-yield slice
+  if the current cross-GPU transfer remains expensive.
 - Avoid full‑frame `cudaStreamSynchronize` in the display worker:
   - Use async GL sync or a fence and only sync when needed for the next frame.
 
 ## Profiling checklist
 
 - Measure UI FPS (`ImGui::GetIO().Framerate`) and streaming FPS simultaneously.
+- Confirm `recording_snapshot.json` `session.gui_display_frame_rate` reports
+  the intended `stream_downsample` and `display_preview_max_fps`.
+- Inspect `session.gui_display_frame_rate.timings` first:
+  - high `main_texture_upload_ms` points at PBO upload/texture transfer,
+  - high `camera_window_draw_ms` points at ImGui image/window drawing,
+  - high `render_present_ms` points at OpenGL render, swap, vsync, or compositor
+    pressure.
 - Inspect cross‑GPU transfers:
   - Log `display_same_gpu_frames_` vs `display_cross_gpu_frames_` in `COpenGLDisplay`.
 - Check for display thread stalls:

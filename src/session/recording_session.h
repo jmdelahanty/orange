@@ -25,6 +25,12 @@ struct RecordingSessionState {
     std::string external_recorder_contract_path;
     std::string external_recorder_supervisor_plan_path;
     std::string external_recorder_last_error;
+    std::string crop_recording_sink_mode = "in_process";
+    nlohmann::json active_external_crop_recorder_contract = nlohmann::json::object();
+    orange::external_recorder::SupervisedRecorderLifecycleState external_crop_recorder_lifecycle;
+    std::string external_crop_recorder_contract_path;
+    std::string external_crop_recorder_supervisor_plan_path;
+    std::string external_crop_recorder_last_error;
 };
 
 struct RecordingRunStartResult {

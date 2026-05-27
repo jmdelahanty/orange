@@ -214,7 +214,8 @@ Runtime behavior:
 
 ```json
 "crop_pipeline": {
-  "crop_size_px": 256
+  "crop_size_px": 256,
+  "preview_max_fps": 15
 }
 ```
 
@@ -228,6 +229,12 @@ Notes:
   NVENC dimensions are allocated at stream start. If multiple open cameras have
   different configured crop sizes, the GUI uses the first open camera value for
   the session and marks the in-memory open camera configs with that value.
+- `preview_max_fps` limits only the live GUI crop-preview PBO update path. It
+  does not reduce crop recording cadence, crop metadata row count, YOLO cadence,
+  or pose crop delivery. Default is `15`; `0` means unlimited diagnostic mode.
+- `ORANGE_CROP_PREVIEW_MAX_FPS` overrides `crop_pipeline.preview_max_fps` for
+  the current process. `ORANGE_CROP_PREVIEW_DISABLE=1` bypasses crop preview
+  entirely.
 - Use `Save to config` from the camera properties panel to persist the currently
   selected session crop size back to a camera JSON.
 

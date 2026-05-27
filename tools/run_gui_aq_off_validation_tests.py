@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""Focused tests for the GUI AQ-off validation launcher preflight."""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = REPO_ROOT / "scripts" / "run_gui_aq_off_validation.sh"
+
+
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise AssertionError(message)
+
+
+def write_camera_config(
+    config_dir: Path,
+    serial: str,
+    *,
+    schema_version: int = 4,
+    sync_mode: str = "ptp_gate",
+    ptp_enabled: bool = True,
+    aq: str = "off",
+    temporal_aq: str = "off",
+) -> None:
+    payload = {
+        "schema_version": schema_version,
+        "camera_serial": serial,
+        "sync_mode": sync_mode,
+        "ptp": {
+            "enabled": ptp_enabled,
+            "mode": "TwoStep",
+        },
+        "recording": {
+            "encode": {
+                "aq": aq,
+                "temporal_aq": temporal_aq,
+            }
+        },
+    }
+    (config_dir / f"{serial}.json").write_text(
+        json.dumps(payload, indent=2) + "\n",
+        encoding="utf-8")
+
+
+def run_launcher(
+    config_dir: Path,
+    detect_engine: Path,
+    *,
+    expect_cameras: str = "",
+    validate_only: bool = True,
+    print_exec_env: bool = False,
+    extra_env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    env = os.environ.copy()
+    env.update(
+        {
+            "ORANGE_BIN": "/bin/true",
+            "ORANGE_GUI_VALIDATE_ONLY": "1" if validate_only else "0",
+            "ORANGE_GUI_CONFIG_DIR": str(config_dir),
+            "ORANGE_GUI_DETECT_ENGINE": str(detect_engine),
+            "ORANGE_GUI_APP_CONFIG_PATH": str(config_dir / "missing_app_config.json"),
+            "ORANGE_GUI_EXPECT_CAMERAS": expect_cameras,
+            "ORANGE_GUI_PRINT_EXEC_ENV_ONLY": "1" if print_exec_env else "0",
+        }
+    )
+    if extra_env:
+        env.update(extra_env)
+    return subprocess.run(
+        [str(SCRIPT)],
+        cwd=REPO_ROOT,
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+
+def test_discovers_all_camera_json_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        for serial in ["2010096", "2010093", "2010095", "2010094"]:
+            write_camera_config(config_dir, serial)
+
+        result = run_launcher(config_dir, detect_engine)
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "validated camera configs: 2010093, 2010094, 2010095, 2010096" in result.stdout,
+            "launcher should validate all camera JSON files in sorted order",
+        )
+        require(
+            "ORANGE_GUI_EXPECT_CAMERAS=<all JSON files in config folder>" in result.stdout,
+            "launcher output should describe the default camera discovery mode",
+        )
+        require(
+            "ORANGE_GUI_STREAM_DOWNSAMPLE=4" in result.stdout,
+            "launcher output should show the default GUI display downsample",
+        )
+        require(
+            "ORANGE_DISPLAY_PREVIEW_MAX_FPS=15" in result.stdout,
+            "launcher output should show the default display preview FPS cap",
+        )
+        require(
+            "ORANGE_GUI_SHOW_SPEED_GRAPHS=0" in result.stdout,
+            "launcher output should show the default speed graph setting",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=256" in result.stdout,
+            "launcher output should show the diagnostic external crop queue depth",
+        )
+        require(
+            "scripts/summarize_gui_validation.py --latest-complete" in result.stdout,
+            "launcher output should include the compact latest-complete summary command",
+        )
+        require(
+            "--expect-external-crop-encode-queue-depth 256" in result.stdout,
+            "launcher validation commands should check the external crop queue depth",
+        )
+
+
+def test_expected_camera_gate_fails_when_missing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(config_dir, detect_engine, expect_cameras="2010095,2010096")
+
+        require(result.returncode != 0, "missing expected camera should fail preflight")
+        require("missing config:" in result.stderr, "failure should explain missing camera config")
+        require("2010096.json" in result.stderr, "failure should name the missing config")
+
+
+def test_expected_camera_subset_validates_only_requested_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        write_camera_config(config_dir, "2010096", aq="on")
+
+        result = run_launcher(config_dir, detect_engine, expect_cameras="2010095")
+
+        require(result.returncode == 0, f"launcher should ignore unrequested configs: {result.stderr}")
+        require(
+            "validated camera configs: 2010095" in result.stdout,
+            "launcher should report only explicitly requested configs",
+        )
+
+
+def test_bad_config_fails_preflight() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095", temporal_aq="on")
+
+        result = run_launcher(config_dir, detect_engine)
+
+        require(result.returncode != 0, "invalid recording defaults should fail preflight")
+        require(
+            "recording.encode.temporal_aq is not 'off'" in result.stderr,
+            "failure should explain the stale recording default",
+        )
+
+
+def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "ORANGE_CROP_PREVIEW_MAX_FPS": "30",
+                "ORANGE_CROP_PREVIEW_DISABLE": "1",
+                "ORANGE_CROP_FRAME_POOL_SIZE": "64",
+                "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_CROP_PREVIEW_MAX_FPS=30" in result.stdout,
+            "crop preview max FPS should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_CROP_PREVIEW_DISABLE=1" in result.stdout,
+            "crop preview disable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_CROP_FRAME_POOL_SIZE=64" in result.stdout,
+            "crop frame pool size should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
+            "external crop encode queue depth should be forwarded through sudo env",
+        )
+
+
+def test_display_env_controls_are_forwarded_to_exec_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "ORANGE_GUI_STREAM_DOWNSAMPLE": "8",
+                "ORANGE_DISPLAY_PREVIEW_MAX_FPS": "20",
+                "ORANGE_GUI_SHOW_SPEED_GRAPHS": "1",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_GUI_STREAM_DOWNSAMPLE=8" in result.stdout,
+            "GUI stream downsample should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_DISPLAY_PREVIEW_MAX_FPS=20" in result.stdout,
+            "display preview FPS cap should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_SHOW_SPEED_GRAPHS=1" in result.stdout,
+            "YOLO speed graph toggle should be forwarded through sudo env",
+        )
+
+
+def main() -> int:
+    tests = [
+        test_discovers_all_camera_json_files,
+        test_expected_camera_gate_fails_when_missing,
+        test_expected_camera_subset_validates_only_requested_files,
+        test_bad_config_fails_preflight,
+        test_crop_preview_env_controls_are_forwarded_to_exec_env,
+        test_display_env_controls_are_forwarded_to_exec_env,
+    ]
+    for test in tests:
+        test()
+    print("run_gui_aq_off_validation_tests passed")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

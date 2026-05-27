@@ -111,10 +111,39 @@ struct CropProducerPerfSample {
 
 class CropProducer {
 public:
+    static constexpr int kDefaultCropFramePoolSize = 32;
+    static constexpr int kMinCropFramePoolSize = 1;
+    static constexpr int kMaxCropFramePoolSize = 512;
+
     struct ProduceResult {
         CropFrame* crop_frame = nullptr;
         bool dropped = false;
         const char* drop_reason = "";
+    };
+
+    enum class Consumer {
+        kRecording,
+        kPreview,
+        kPose
+    };
+
+    struct FanoutCounters {
+        uint64_t recording_crop_frame_offered = 0;
+        uint64_t recording_crop_frame_accepted = 0;
+        uint64_t recording_crop_frame_dropped = 0;
+        uint64_t preview_crop_frame_offered = 0;
+        uint64_t preview_crop_frame_accepted = 0;
+        uint64_t preview_crop_frame_dropped = 0;
+        uint64_t pose_crop_frame_offered = 0;
+        uint64_t pose_crop_frame_accepted = 0;
+        uint64_t pose_crop_frame_dropped = 0;
+        uint64_t frames_produced_total = 0;
+        uint64_t frames_recycled_total = 0;
+        uint64_t crop_frame_release_total = 0;
+        uint64_t crop_frame_pool_misses_total = 0;
+        uint64_t source_release_event_misses_total = 0;
+        int pending_source_releases = 0;
+        int pending_crop_frame_recycles = 0;
     };
 
     CropProducer(
@@ -126,6 +155,7 @@ public:
 
     CropProducer(const CropProducer&) = delete;
     CropProducer& operator=(const CropProducer&) = delete;
+    int crop_frame_pool_size() const { return crop_frame_pool_size_; }
 
     ProduceResult Produce(
         WORKER_ENTRY*& entry,
@@ -138,6 +168,12 @@ public:
 
     void ReleaseSourceEntry(WORKER_ENTRY*& entry);
     void SetPoseWorker(PoseWorker* pose_worker);
+    void ResetRunFanoutCounters();
+    void NoteConsumerOffered(Consumer consumer);
+    void NoteConsumerAccepted(Consumer consumer);
+    void NoteConsumerDropped(Consumer consumer);
+    FanoutCounters GetFanoutCounters() const;
+    void RetainLease(CropFrame* crop_frame);
     void RecycleAfterConsumerStream(CropFrame* crop_frame, cudaStream_t consumer_stream);
     void RecycleNow(CropFrame* crop_frame);
     void QueryCopyTiming(CropFrame* crop_frame, CropProducerPerfSample* perf);
@@ -198,6 +234,12 @@ private:
     std::atomic<uint64_t> pose_frames_offered_{0};
     std::atomic<uint64_t> pose_frames_accepted_{0};
     std::atomic<uint64_t> pose_frames_dropped_{0};
+    std::atomic<uint64_t> preview_frames_offered_{0};
+    std::atomic<uint64_t> preview_frames_accepted_{0};
+    std::atomic<uint64_t> preview_frames_dropped_{0};
+    std::atomic<uint64_t> recording_frames_offered_{0};
+    std::atomic<uint64_t> recording_frames_accepted_{0};
+    std::atomic<uint64_t> recording_frames_dropped_{0};
 };
 
 #endif // ORANGE_CROP_PRODUCER_H

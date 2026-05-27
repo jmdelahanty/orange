@@ -7,8 +7,15 @@ CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_c
 CONFIG_NAME="${ORANGE_GUI_CONFIG_NAME:-$(basename "${CONFIG_DIR}")}"
 EXPECT_SYNC_MODE="${ORANGE_GUI_EXPECT_SYNC_MODE:-ptp_gate}"
 EXPECT_PTP_ENABLED="${ORANGE_GUI_EXPECT_PTP_ENABLED:-1}"
+EXPECT_CAMERAS="${ORANGE_GUI_EXPECT_CAMERAS:-}"
 PTP_REGISTER_READ_DECIMATE="${ORANGE_PTP_REGISTER_READ_DECIMATE:-100}"
 YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
+GUI_STREAM_DOWNSAMPLE="${ORANGE_GUI_STREAM_DOWNSAMPLE:-4}"
+DISPLAY_PREVIEW_MAX_FPS="${ORANGE_DISPLAY_PREVIEW_MAX_FPS:-15}"
+GUI_SHOW_SPEED_GRAPHS="${ORANGE_GUI_SHOW_SPEED_GRAPHS:-0}"
+CROP_PREVIEW_VALIDATION_MAX_FPS="${ORANGE_CROP_PREVIEW_MAX_FPS:-15}"
+CROP_RECORDING_SINK_MODE="${ORANGE_CROP_RECORDING_SINK_MODE:-in_process}"
+CROP_EXTERNAL_ENCODE_QUEUE_DEPTH="${ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH:-256}"
 DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine"
 DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
 APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}"
@@ -19,7 +26,7 @@ if [[ ! -x "${ORANGE_BIN}" ]]; then
   exit 1
 fi
 
-python3 - "${CONFIG_DIR}" "${EXPECT_SYNC_MODE}" "${EXPECT_PTP_ENABLED}" "${PTP_REGISTER_READ_DECIMATE}" "${DETECT_ENGINE}" "${APP_CONFIG_PATH}" <<'PY'
+python3 - "${CONFIG_DIR}" "${EXPECT_SYNC_MODE}" "${EXPECT_PTP_ENABLED}" "${PTP_REGISTER_READ_DECIMATE}" "${DETECT_ENGINE}" "${APP_CONFIG_PATH}" "${EXPECT_CAMERAS}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -30,12 +37,23 @@ expect_ptp_enabled_raw = sys.argv[3]
 ptp_register_read_decimate_raw = sys.argv[4]
 detect_engine = sys.argv[5]
 app_config_path = Path(sys.argv[6]).expanduser()
+expect_cameras_raw = sys.argv[7]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
-expected = ["2010095.json", "2010096.json"]
 errors = []
 notes = []
+
+def expected_config_names(config_dir: Path, raw: str) -> list[str]:
+    if raw.strip():
+        names = []
+        for item in raw.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            names.append(item if item.endswith(".json") else f"{item}.json")
+        return sorted(set(names))
+    return sorted(path.name for path in config_dir.glob("*.json"))
 
 try:
     ptp_register_read_decimate = int(ptp_register_read_decimate_raw)
@@ -72,6 +90,9 @@ else:
 if not config_dir.is_dir():
     errors.append(f"config folder does not exist: {config_dir}")
 else:
+    expected = expected_config_names(config_dir, expect_cameras_raw)
+    if not expected:
+        errors.append(f"no camera JSON files found in config folder: {config_dir}")
     for name in expected:
         path = config_dir / name
         if not path.exists():
@@ -95,6 +116,11 @@ else:
             ptp_enabled = bool(data.get("ptp", {}).get("enabled", False))
             if ptp_enabled != expect_ptp_enabled:
                 errors.append(f"{path}: ptp.enabled is not {expect_ptp_enabled}")
+    if expected:
+        notes.append(
+            "validated camera configs: "
+            + ", ".join(path.removesuffix(".json") for path in expected)
+        )
 
 if errors:
     for error in errors:
@@ -112,16 +138,25 @@ Before opening cameras in the GUI:
   2. Open cameras.
   3. Confirm recording defaults show: AQ off, temporal AQ off.
   4. Confirm sync mode is PTP gate if the GUI displays it.
-  5. Run the normal two-camera recording test.
+  5. Run the normal recording test for the selected cameras.
 
 Validated config folder:
   ${CONFIG_DIR}
 
 Validation environment:
+  ORANGE_GUI_EXPECT_CAMERAS=${EXPECT_CAMERAS:-<all JSON files in config folder>}
   ORANGE_PTP_REGISTER_READ_DECIMATE=${PTP_REGISTER_READ_DECIMATE}
   ORANGE_YOLO_DETACH_INPUT=${YOLO_DETACH_INPUT}
   ORANGE_DEFAULT_DETECT_ENGINE=${DETECT_ENGINE}
   ORANGE_GUI_RECORDING_SINK_MODE=${ORANGE_GUI_RECORDING_SINK_MODE:-<app config/default>}
+  ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}
+  ORANGE_DISPLAY_PREVIEW_MAX_FPS=${DISPLAY_PREVIEW_MAX_FPS}
+  ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}
+  ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS:-<camera config/default>}
+  ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE:-0}
+  ORANGE_CROP_FRAME_POOL_SIZE=${ORANGE_CROP_FRAME_POOL_SIZE:-<orange default>}
+  ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}
+  ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}
 
 After recording, validate the artifact with:
   scripts/validate_gui_ptp_recording.py <recording_folder>
@@ -129,6 +164,17 @@ Or validate the newest artifact with:
   scripts/validate_gui_ptp_recording.py --latest
 Or validate the newest real recording artifact with:
   scripts/validate_gui_ptp_recording.py --latest-complete
+For a compact artifact health, crop fanout, and GUI timing summary, use:
+  scripts/summarize_gui_validation.py --latest-complete
+
+For crop-recording plus crop-preview validation, use:
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size 32 --expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
+For a run where crop preview windows were hidden at finalization, use:
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size 32 --expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
+For a run with ORANGE_CROP_PREVIEW_DISABLE=1, use:
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size 32 --expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
+Then compare visible and hidden runs with:
+  scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json --require-pass --require-zero-crop-drops
 EOF
 
 if [[ "${ORANGE_GUI_VALIDATE_ONLY:-0}" == "1" ]]; then
@@ -150,6 +196,11 @@ ENV_ARGS=(
   "ORANGE_YOLO_READY_EVENT_FASTPATH=${ORANGE_YOLO_READY_EVENT_FASTPATH:-1}"
   "ORANGE_PTP_REGISTER_READ_DECIMATE=${PTP_REGISTER_READ_DECIMATE}"
   "ORANGE_DEFAULT_DETECT_ENGINE=${DETECT_ENGINE}"
+  "ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}"
+  "ORANGE_DISPLAY_PREVIEW_MAX_FPS=${DISPLAY_PREVIEW_MAX_FPS}"
+  "ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}"
+  "ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}"
+  "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
 )
 if [[ -n "${ORANGE_GUI_RECORDING_SINK_MODE:-}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_RECORDING_SINK_MODE=${ORANGE_GUI_RECORDING_SINK_MODE}")
@@ -159,6 +210,20 @@ if [[ -n "${ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT:-}" ]]; then
 fi
 if [[ -n "${ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT_PATH:-}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT_PATH=${ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT_PATH}")
+fi
+if [[ -n "${ORANGE_CROP_PREVIEW_MAX_FPS:-}" ]]; then
+  ENV_ARGS+=("ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS}")
+fi
+if [[ -n "${ORANGE_CROP_PREVIEW_DISABLE:-}" ]]; then
+  ENV_ARGS+=("ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE}")
+fi
+if [[ -n "${ORANGE_CROP_FRAME_POOL_SIZE:-}" ]]; then
+  ENV_ARGS+=("ORANGE_CROP_FRAME_POOL_SIZE=${ORANGE_CROP_FRAME_POOL_SIZE}")
+fi
+
+if [[ "${ORANGE_GUI_PRINT_EXEC_ENV_ONLY:-0}" == "1" ]]; then
+  printf '%s\n' "${ENV_ARGS[@]}"
+  exit 0
 fi
 
 exec sudo env "${ENV_ARGS[@]}" "${ORANGE_BIN}"

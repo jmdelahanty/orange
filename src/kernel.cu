@@ -407,6 +407,31 @@ void launch_mono_to_rgb_kernel(unsigned char* dst_rgb, const unsigned char* src_
     mono_to_rgb_kernel<<<num_blocks, threads_per_block, 0, stream>>>(dst_rgb, src_mono, width, height);
 }
 
+__global__ void mono_to_rgba_kernel(unsigned char* dst_rgba, const unsigned char* src_mono, int width, int height)
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (x < width && y < height) {
+        int mono_idx = y * width + x;
+        int rgba_idx = (y * width + x) * 4;
+
+        unsigned char pixel_value = src_mono[mono_idx];
+        dst_rgba[rgba_idx + 0] = pixel_value;
+        dst_rgba[rgba_idx + 1] = pixel_value;
+        dst_rgba[rgba_idx + 2] = pixel_value;
+        dst_rgba[rgba_idx + 3] = 255;
+    }
+}
+
+void launch_mono_to_rgba_kernel(unsigned char* dst_rgba, const unsigned char* src_mono, int width, int height, cudaStream_t stream)
+{
+    dim3 threads_per_block(32, 32);
+    dim3 num_blocks((width + threads_per_block.x - 1) / threads_per_block.x,
+                   (height + threads_per_block.y - 1) / threads_per_block.y);
+    mono_to_rgba_kernel<<<num_blocks, threads_per_block, 0, stream>>>(dst_rgba, src_mono, width, height);
+}
+
 __global__ void interleave_uv_planes_kernel(
     const unsigned char* u_plane, 
     const unsigned char* v_plane,

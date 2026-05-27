@@ -13,6 +13,7 @@
 #include "global.h"
 #include <npp.h> // For NPP APIs
 #include "yolo_worker.h"
+#include <algorithm>
 #include <cstring>
 
 #define display_gpu_id 0 
@@ -30,6 +31,11 @@ bool SkipDisplayYoloWait()
     }();
     return enabled;
 }
+
+int display_downsample_factor(const CameraEachSelect* camera_select)
+{
+    return std::max(1, camera_select ? camera_select->downsample : 1);
+}
 }  // namespace
 
 COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, CameraEachSelect *camera_select, unsigned char *display_buffer_cuda_pbo, INDIGOSignalBuilder* indigo_signal_builder, SafeQueue<WORKER_ENTRY*>& recycle_queue)
@@ -41,6 +47,7 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
       h_p2p_copy_buffer_(nullptr),
       d_detections_for_drawing_(nullptr), // Changed from d_points_for_drawing_
       d_skeleton_for_drawing_(nullptr),
+      d_display_mono_resize_buffer_(nullptr),
       d_display_resize_buffer_(nullptr),
       m_stream(nullptr),
       m_recycle_queue(recycle_queue),
@@ -57,6 +64,31 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
     ck(cudaMalloc(&d_detections_for_drawing_, sizeof(pose::Object) * shaman::MAX_OBJECTS));
     
     ck(cudaMalloc(&d_skeleton_for_drawing_, sizeof(unsigned int) * 4 * 2));
+    const int display_downsample = display_downsample_factor(camera_select);
+    output_display_size_.width = std::max(1, static_cast<int>(camera_params->width) / display_downsample);
+    output_display_size_.height = std::max(1, static_cast<int>(camera_params->height) / display_downsample);
+    mono_resize_source_size_ = {
+        static_cast<int>(camera_params->width),
+        static_cast<int>(camera_params->height)
+    };
+    mono_resize_source_roi_ = {
+        0,
+        0,
+        static_cast<int>(camera_params->width),
+        static_cast<int>(camera_params->height)
+    };
+    mono_resize_output_size_ = output_display_size_;
+    mono_resize_output_roi_ = {
+        0,
+        0,
+        output_display_size_.width,
+        output_display_size_.height
+    };
+
+    ck(cudaMalloc(
+        &d_display_mono_resize_buffer_,
+        static_cast<size_t>(output_display_size_.width) *
+            static_cast<size_t>(output_display_size_.height)));
     ck(cudaMalloc(&d_display_resize_buffer_, (size_t)camera_params->width * camera_params->height * 4));
 
     size_t staging_buffer_size = (size_t)camera_params->width * camera_params->height * 4;
@@ -76,6 +108,7 @@ COpenGLDisplay::~COpenGLDisplay()
     if (debayer_gpu_.d_debayer) cudaFree(debayer_gpu_.d_debayer);
     if (d_detections_for_drawing_) cudaFree(d_detections_for_drawing_);
     if (d_skeleton_for_drawing_) cudaFree(d_skeleton_for_drawing_);
+    if (d_display_mono_resize_buffer_) cudaFree(d_display_mono_resize_buffer_);
     if (d_display_resize_buffer_) cudaFree(d_display_resize_buffer_);
 }
 
@@ -139,6 +172,68 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
         display_same_gpu_frames_++;
     }
 
+    if (!camera_params->color && (!allow_overlay || latest_frame->detections.empty())) {
+        const int downsample = display_downsample_factor(camera_select);
+        unsigned char* display_mono_source = frame_original_gpu_.d_orig;
+        int display_width = static_cast<int>(camera_params->width);
+        int display_height = static_cast<int>(camera_params->height);
+
+        if (downsample > 1) {
+            const NppStatus resize_status = nppiResize_8u_C1R(
+                frame_original_gpu_.d_orig,
+                static_cast<int>(camera_params->width),
+                mono_resize_source_size_,
+                mono_resize_source_roi_,
+                d_display_mono_resize_buffer_,
+                mono_resize_output_size_.width,
+                mono_resize_output_size_,
+                mono_resize_output_roi_,
+                NPPI_INTER_SUPER);
+            if (resize_status != NPP_SUCCESS) {
+                std::cout << "[OPENGL_DISPLAY] Mono preview resize NPP error "
+                          << resize_status << " for " << camera_params->camera_serial
+                          << std::endl;
+            } else {
+                display_mono_source = d_display_mono_resize_buffer_;
+                display_width = mono_resize_output_size_.width;
+                display_height = mono_resize_output_size_.height;
+            }
+        }
+
+        launch_mono_to_rgba_kernel(
+            display_buffer_pbo_cuda_ptr_,
+            display_mono_source,
+            display_width,
+            display_height,
+            m_stream);
+        ck(cudaStreamSynchronize(m_stream));
+        preview_serial_.fetch_add(1, std::memory_order_acq_rel);
+
+        auto now = std::chrono::steady_clock::now();
+        std::chrono::duration<double> log_elapsed = now - last_display_log_time_;
+        if (log_elapsed.count() >= 1.0) {
+            std::cout << "[DISPLAY] Cam " << camera_params->camera_serial
+                      << " GPU " << camera_params->gpu_id
+                      << " display_gpu " << display_gpu_id
+                      << " same_gpu=" << display_same_gpu_frames_
+                      << " cross_gpu=" << display_cross_gpu_frames_
+                      << " fast_mono=1"
+                      << " downsample=" << downsample
+                      << std::endl;
+            display_same_gpu_frames_ = 0;
+            display_cross_gpu_frames_ = 0;
+            last_display_log_time_ = now;
+        }
+
+        if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            if (latest_frame->gpu_direct_mode && latest_frame->camera_instance && latest_frame->camera_frame_struct) {
+                EVT_CameraQueueFrame(latest_frame->camera_instance, latest_frame->camera_frame_struct);
+            }
+            m_recycle_queue.push(latest_frame);
+        }
+        return true;
+    }
+
     // Debayer or duplicate mono channel to get a 4-channel RGBA image in debayer_gpu_.d_debayer
     if (camera_params->color){
         debayer_frame_gpu(camera_params, &frame_original_gpu_, &debayer_gpu_);
@@ -195,6 +290,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     
     // Synchronize this worker's stream to ensure the copy is complete before OpenGL uses it
     ck(cudaStreamSynchronize(m_stream));
+    preview_serial_.fetch_add(1, std::memory_order_acq_rel);
 
     auto now = std::chrono::steady_clock::now();
     std::chrono::duration<double> log_elapsed = now - last_display_log_time_;

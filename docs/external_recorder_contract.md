@@ -417,9 +417,13 @@ Recorder summary schema:
   "encode_enqueued": 100,
   "encode_skipped": 0,
   "encode_dropped": 0,
+  "encode_queue_depth": 32,
+  "encode_queue_high_water": 4,
   "frames_encoded": 100,
   "worker_failed": false,
   "external_encode": {
+    "frames_dropped": 0,
+    "enqueue_age_p95_ms": 0.25,
     "source_releases_sent": 0,
     "source_release_failures": 0
   },
@@ -441,6 +445,10 @@ Verifier checks:
 - `detach_copied == encode_enqueued` for the current verifier contract; use
   `direct_input_source` and `deferred_source_release` to interpret whether that
   count represents a detached recorder-owned copy or direct-input acceptance
+- optional queue-pressure gates can assert `encode_queue_depth`, maximum
+  `encode_queue_high_water`, and maximum `external_encode.enqueue_age_p95_ms`
+  via `--expect-encode-queue-depth`,
+  `--max-encode-queue-high-water`, and `--max-enqueue-age-p95-ms`
 - no encode drops and no worker failures
 - expected shard GPU ids and routing policy match
 - merged output is finalized for multi-shard runs

@@ -11,6 +11,7 @@
 #include <string>
 
 class CropAndEncodeWorker;
+class CropPreviewWorker;
 class PoseWorker;
 
 class CropProducerWorker : public CThreadWorker<WORKER_ENTRY> {
@@ -40,6 +41,7 @@ public:
     ~CropProducerWorker() override;
 
     void SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker);
+    void SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker);
     void SetPoseWorker(PoseWorker* pose_worker);
     CropProducer* GetCropProducer() const { return crop_producer_.get(); }
     void RotateRecordingFolder(const std::string& recording_folder);
@@ -61,6 +63,7 @@ private:
     int crop_height_ = kDefaultCropSize;
     std::unique_ptr<CropProducer> crop_producer_;
     CropAndEncodeWorker* crop_worker_ = nullptr;
+    CropPreviewWorker* crop_preview_worker_ = nullptr;
     PoseWorker* pose_worker_ = nullptr;
     bool pose_enabled_ = false;
     uint64_t jobs_offered_ = 0;

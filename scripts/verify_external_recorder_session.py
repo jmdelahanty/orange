@@ -61,6 +61,28 @@ def parse_args() -> argparse.Namespace:
         default=default_ffprobe,
         help="ffprobe executable path for a basic MP4 fallback check.",
     )
+    parser.add_argument(
+        "--expect-encode-queue-depth",
+        type=int,
+        default=None,
+        help="Optional expected recorder summary encode_queue_depth for each selected stream.",
+    )
+    parser.add_argument(
+        "--max-encode-queue-high-water",
+        type=int,
+        default=None,
+        help=(
+            "Optional maximum recorder encode queue high-water. Uses "
+            "summary encode_queue_high_water when present and falls back to "
+            "the detach CSV encode_queue_depth column for older summaries."
+        ),
+    )
+    parser.add_argument(
+        "--max-enqueue-age-p95-ms",
+        type=float,
+        default=None,
+        help="Optional maximum recorder external_encode.enqueue_age_p95_ms for each selected stream.",
+    )
     return parser.parse_args()
 
 
@@ -87,6 +109,21 @@ def as_int(value: Any, field: str) -> int:
         return int(value)
     except (TypeError, ValueError) as exc:
         raise VerificationError(f"invalid integer {field}={value!r}") from exc
+
+
+def optional_int(value: Any, field: str) -> int | None:
+    if value is None:
+        return None
+    return as_int(value, field)
+
+
+def optional_float(value: Any, field: str) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise VerificationError(f"invalid float {field}={value!r}") from exc
 
 
 def recording_control_for(contract: dict[str, Any], stream: dict[str, Any]) -> dict[str, Any]:
@@ -236,6 +273,40 @@ def read_csv_rows(path: Path) -> tuple[list[str], list[dict[str, str]]]:
             return list(reader.fieldnames or []), rows
     except FileNotFoundError as exc:
         raise VerificationError(f"missing CSV file: {path}") from exc
+
+
+def csv_int(row: dict[str, str], field: str, path: Path, row_index: int) -> int | None:
+    value = row.get(field)
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise VerificationError(f"invalid integer {field} row {row_index} in {path}: {value!r}") from exc
+
+
+def detach_queue_high_water(summary: dict[str, Any], summary_path: Path, artifact_root: Path) -> int | None:
+    outputs = summary.get("outputs")
+    outputs = outputs if isinstance(outputs, dict) else {}
+    detach_csv = outputs.get("detach_csv")
+    if isinstance(detach_csv, str) and detach_csv:
+        detach_path = path_from(detach_csv, artifact_root)
+    elif summary_path.name.endswith("_summary.json"):
+        detach_path = summary_path.with_name(
+            summary_path.name[: -len("_summary.json")] + "_detach.csv"
+        )
+    else:
+        return None
+    if not detach_path.exists():
+        return None
+    _, rows = read_csv_rows(detach_path)
+    values = [
+        value
+        for index, row in enumerate(rows, start=2)
+        for value in [csv_int(row, "encode_queue_depth", detach_path, index)]
+        if value is not None
+    ]
+    return max(values) if values else None
 
 
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
@@ -411,6 +482,9 @@ def verify_summary(
     contract: dict[str, Any],
     ffprobe: str,
     allow_missing_video_sanity: bool,
+    expected_encode_queue_depth: int | None,
+    max_encode_queue_high_water: int | None,
+    max_enqueue_age_p95_ms: float | None,
 ) -> dict[str, Any]:
     summary_path = path_from(
         stream.get("summary_json") or artifact_root / f"Cam{serial}_external_summary.json",
@@ -434,6 +508,16 @@ def verify_summary(
     encode_enqueued = as_int(summary.get("encode_enqueued"), "encode_enqueued")
     encode_skipped = as_int(summary.get("encode_skipped"), "encode_skipped")
     encode_dropped = as_int(summary.get("encode_dropped"), "encode_dropped")
+    encode_queue_depth = optional_int(summary.get("encode_queue_depth"), "encode_queue_depth")
+    encode_queue_high_water = optional_int(summary.get("encode_queue_high_water"), "encode_queue_high_water")
+    if encode_queue_high_water is None:
+        encode_queue_high_water = detach_queue_high_water(summary, summary_path, artifact_root)
+    external_encode = summary.get("external_encode")
+    external_encode = external_encode if isinstance(external_encode, dict) else {}
+    enqueue_age_p95_ms = optional_float(
+        external_encode.get("enqueue_age_p95_ms"),
+        "external_encode.enqueue_age_p95_ms",
+    )
     frames_encoded = as_int(summary.get("frames_encoded"), "frames_encoded")
     require(frames_received > 0, f"no frames received in {summary_path}")
     require(acks_sent == frames_received, f"acks_sent != frames_received in {summary_path}")
@@ -445,6 +529,39 @@ def verify_summary(
     require(encode_dropped == 0, f"encode_dropped is nonzero in {summary_path}")
     require(frames_encoded == encode_enqueued, f"frames_encoded != encode_enqueued in {summary_path}")
     require(frames_encoded > 0, f"no frames encoded in {summary_path}")
+    if encode_queue_depth is not None and encode_queue_high_water is not None:
+        require(
+            encode_queue_high_water <= encode_queue_depth,
+            (
+                f"encode_queue_high_water exceeds encode_queue_depth in {summary_path}: "
+                f"{encode_queue_high_water} > {encode_queue_depth}"
+            ),
+        )
+    if expected_encode_queue_depth is not None:
+        require(
+            encode_queue_depth == expected_encode_queue_depth,
+            (
+                f"encode_queue_depth mismatch in {summary_path}: "
+                f"{encode_queue_depth} != {expected_encode_queue_depth}"
+            ),
+        )
+    if max_encode_queue_high_water is not None:
+        require(
+            encode_queue_high_water is not None and
+            encode_queue_high_water <= max_encode_queue_high_water,
+            (
+                f"encode_queue_high_water too high in {summary_path}: "
+                f"{encode_queue_high_water} > {max_encode_queue_high_water}"
+            ),
+        )
+    if max_enqueue_age_p95_ms is not None:
+        require(
+            enqueue_age_p95_ms is not None and enqueue_age_p95_ms <= max_enqueue_age_p95_ms,
+            (
+                f"enqueue_age_p95_ms too high in {summary_path}: "
+                f"{enqueue_age_p95_ms} > {max_enqueue_age_p95_ms}"
+            ),
+        )
 
     expected_routing_policy = stream.get("routing_policy")
     if expected_routing_policy:
@@ -511,6 +628,9 @@ def verify_summary(
         "mp4_path": str(mp4_path),
         "frames_received": frames_received,
         "frames_encoded": frames_encoded,
+        "encode_queue_depth": encode_queue_depth,
+        "encode_queue_high_water": encode_queue_high_water,
+        "enqueue_age_p95_ms": enqueue_age_p95_ms,
         "shard_count": len(shards),
         "routing_policy": summary.get("routing_policy"),
         "video_sanity": sanity_status,
@@ -769,6 +889,9 @@ def verify(args: argparse.Namespace) -> None:
             contract,
             args.ffprobe,
             args.allow_missing_video_sanity,
+            args.expect_encode_queue_depth,
+            args.max_encode_queue_high_water,
+            args.max_enqueue_age_p95_ms,
         )
         for serial, stream in streams.items()
     ]
@@ -790,6 +913,9 @@ def verify(args: argparse.Namespace) -> None:
             "  "
             f"camera={item['serial']} frames={item['frames_received']} "
             f"encoded={item['frames_encoded']} shards={item['shard_count']} "
+            f"queue_depth={item['encode_queue_depth']} "
+            f"queue_high_water={item['encode_queue_high_water']} "
+            f"enqueue_age_p95_ms={item['enqueue_age_p95_ms']} "
             f"routing={item['routing_policy']} video_sanity={item['video_sanity']} "
             f"rolling_clips={item['rolling_clip_count']}"
         )

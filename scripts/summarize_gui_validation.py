@@ -16,6 +16,7 @@ from recording_output_validation import build_recording_output_summary
 
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
+DEFAULT_GUI_RECORDING_ROOT = Path("/home/jeremy/orange_data/exp/unsorted")
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,7 +27,34 @@ def parse_args() -> argparse.Namespace:
             "health counters, spatial calibrations, and main MP4 sanity."
         )
     )
-    parser.add_argument("recording_folder", help="Recording folder or parent containing one run folder")
+    parser.add_argument(
+        "recording_folder",
+        nargs="?",
+        help="Recording folder or parent containing one run folder.",
+    )
+    parser.add_argument(
+        "--latest",
+        nargs="?",
+        const=str(DEFAULT_GUI_RECORDING_ROOT),
+        metavar="ROOT",
+        help=(
+            "Summarize the newest direct child of ROOT containing "
+            "recording_snapshot.json. With no ROOT, uses "
+            f"{DEFAULT_GUI_RECORDING_ROOT}."
+        ),
+    )
+    parser.add_argument(
+        "--latest-complete",
+        nargs="?",
+        const=str(DEFAULT_GUI_RECORDING_ROOT),
+        metavar="ROOT",
+        help=(
+            "Summarize the newest direct child of ROOT that looks like a real "
+            "recording: recording_snapshot.json plus matching main MP4, "
+            "pipeline perf CSV, and YOLO perf CSV for at least one camera. "
+            f"With no ROOT, uses {DEFAULT_GUI_RECORDING_ROOT}."
+        ),
+    )
     parser.add_argument(
         "--steady-after-frame",
         type=int,
@@ -64,6 +92,21 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return []
 
 
+def external_detach_queue_high_water(summary_path: Path) -> int | None:
+    name = summary_path.name
+    if not name.endswith("_summary.json"):
+        return None
+    detach_path = summary_path.with_name(name[: -len("_summary.json")] + "_detach.csv")
+    rows = read_csv_rows(detach_path)
+    values = [
+        value
+        for row in rows
+        for value in [int_field(row, "encode_queue_depth")]
+        if value is not None
+    ]
+    return max(values) if values else None
+
+
 def resolve_recording_folder(path: Path) -> Path:
     path = path.expanduser().resolve()
     if (path / "recording_snapshot.json").exists():
@@ -74,6 +117,92 @@ def resolve_recording_folder(path: Path) -> Path:
     if len(candidates) == 1:
         return candidates[0]
     return path
+
+
+def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
+    videos = {
+        serial
+        for path in recording_folder.glob("Cam*.mp4")
+        if path.stat().st_size > 0
+        for serial in [camera_serial_from_video(path)]
+        if serial is not None
+    }
+    manifest = read_json(recording_folder / "recording_session.json")
+    camera_artifacts = manifest.get("camera_artifacts")
+    camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
+    for serial, artifact in camera_artifacts.items():
+        artifact = artifact if isinstance(artifact, dict) else {}
+        video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+        if video_path.exists() and video_path.stat().st_size > 0:
+            videos.add(str(serial))
+    pipeline = {
+        serial
+        for path in recording_folder.glob("Cam*_pipeline_perf.csv")
+        if path.stat().st_size > 0
+        for serial in [camera_serial_from_pipeline_perf(path)]
+        if serial is not None
+    }
+    yolo = {
+        serial
+        for path in recording_folder.glob("Cam*_yolo_perf.csv")
+        if path.stat().st_size > 0
+        for serial in [camera_serial_from_yolo_perf(path)]
+        if serial is not None
+    }
+    return videos & pipeline & yolo
+
+
+def is_complete_recording_candidate(recording_folder: Path) -> bool:
+    return (
+        (recording_folder / "recording_snapshot.json").exists()
+        and bool(camera_serials_with_complete_artifacts(recording_folder))
+    )
+
+
+def resolve_latest_recording_folder(root: Path, *, require_complete: bool = False) -> Path:
+    root = root.expanduser().resolve()
+    if (root / "recording_snapshot.json").exists():
+        if require_complete and not is_complete_recording_candidate(root):
+            raise SystemExit(f"--latest-complete root is not a complete recording folder: {root}")
+        return root
+    if not root.is_dir():
+        option = "--latest-complete" if require_complete else "--latest"
+        raise SystemExit(f"{option} root is not a directory: {root}")
+
+    candidates: list[tuple[float, Path]] = []
+    for snapshot_path in root.glob("*/recording_snapshot.json"):
+        recording_folder = snapshot_path.parent
+        if require_complete and not is_complete_recording_candidate(recording_folder):
+            continue
+        try:
+            mtime = snapshot_path.stat().st_mtime
+        except OSError:
+            continue
+        candidates.append((mtime, recording_folder))
+    if not candidates:
+        if require_complete:
+            raise SystemExit(
+                "--latest-complete found no direct child with recording_snapshot.json, "
+                f"main MP4, pipeline perf CSV, and YOLO perf CSV under {root}"
+            )
+        raise SystemExit(f"--latest found no recording_snapshot.json under direct children of {root}")
+    candidates.sort(key=lambda item: (item[0], str(item[1])))
+    return candidates[-1][1]
+
+
+def resolve_requested_recording_folder(args: argparse.Namespace) -> Path:
+    latest_modes = [args.latest is not None, args.latest_complete is not None]
+    if sum(latest_modes) > 1:
+        raise SystemExit("pass only one of --latest or --latest-complete")
+    if any(latest_modes) and args.recording_folder:
+        raise SystemExit("pass either recording_folder or a latest-mode option, not both")
+    if args.latest is not None:
+        return resolve_latest_recording_folder(Path(args.latest))
+    if args.latest_complete is not None:
+        return resolve_latest_recording_folder(Path(args.latest_complete), require_complete=True)
+    if not args.recording_folder:
+        raise SystemExit("recording_folder is required unless --latest or --latest-complete is used")
+    return resolve_recording_folder(Path(args.recording_folder))
 
 
 def camera_serial_from_yolo_perf(path: Path) -> str | None:
@@ -109,6 +238,13 @@ def camera_serial_from_pose_events(path: Path) -> str | None:
     if not name.startswith("Cam") or not name.endswith("_pose_events.jsonl"):
         return None
     return name[len("Cam") : -len("_pose_events.jsonl")]
+
+
+def camera_serial_from_crop_artifact(path: Path, suffix: str) -> str | None:
+    name = path.name
+    if not name.startswith("Cam") or not name.endswith(suffix):
+        return None
+    return name[len("Cam") : -len(suffix)]
 
 
 def float_field(row: dict[str, str], field: str) -> float | None:
@@ -204,6 +340,11 @@ def summarize_pipeline(recording_folder: Path) -> dict[str, Any]:
         "external_ipc_frames_acked",
         "external_ipc_failures",
         "external_ipc_ack_timeouts",
+        "display_q",
+        "display_preview_max_fps",
+        "display_preview_eligible",
+        "display_preview_selected",
+        "display_preview_skipped",
         "gpu_direct",
         "gpu_ring",
         "gpu_copy",
@@ -218,6 +359,159 @@ def summarize_pipeline(recording_folder: Path) -> dict[str, Any]:
             "path": str(path),
             "rows": len(rows),
             "final": {field: int_field(final, field) for field in fields if field in final},
+        }
+    return summaries
+
+
+def output_path(recording_folder: Path, output: dict[str, Any], key: str, default_name: str) -> Path:
+    paths = output.get("paths")
+    paths = paths if isinstance(paths, dict) else {}
+    path_status = paths.get(key)
+    path_status = path_status if isinstance(path_status, dict) else {}
+    if path_status.get("path"):
+        return Path(str(path_status["path"]))
+    value = output.get(key)
+    if value:
+        return path_from_recording_folder(recording_folder, value)
+    return recording_folder / default_name
+
+
+def summarize_crop_recording(
+    recording_folder: Path,
+    outputs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    summaries: dict[str, Any] = {}
+    serials: set[str] = {
+        str(serial)
+        for serial, camera_outputs in outputs.items()
+        if isinstance(camera_outputs, dict) and isinstance(camera_outputs.get("crop"), dict)
+    }
+    for path, suffix in (
+        (recording_folder.glob("Cam*_crop_meta.csv"), "_crop_meta.csv"),
+        (recording_folder.glob("Cam*_crop_perf.csv"), "_crop_perf.csv"),
+        (recording_folder.glob("Cam*_crop_sidecar_perf.csv"), "_crop_sidecar_perf.csv"),
+    ):
+        for item in path:
+            serial = camera_serial_from_crop_artifact(item, suffix)
+            if serial is not None:
+                serials.add(serial)
+
+    for serial in sorted(serials):
+        crop_output = outputs.get(serial, {}).get("crop")
+        crop_output = crop_output if isinstance(crop_output, dict) else {}
+        metadata_path = output_path(
+            recording_folder,
+            crop_output,
+            "metadata",
+            f"Cam{serial}_crop_meta.csv",
+        )
+        perf_path = output_path(
+            recording_folder,
+            crop_output,
+            "perf",
+            f"Cam{serial}_crop_perf.csv",
+        )
+        sidecar_path = output_path(
+            recording_folder,
+            crop_output,
+            "sidecar_perf",
+            f"Cam{serial}_crop_sidecar_perf.csv",
+        )
+
+        metadata_rows = read_csv_rows(metadata_path)
+        perf_rows = read_csv_rows(perf_path)
+        sidecar_rows = read_csv_rows(sidecar_path)
+        sidecar_final = sidecar_rows[-1] if sidecar_rows else {}
+        summary_path = output_path(
+            recording_folder,
+            crop_output,
+            "summary",
+            f"Cam{serial}_crop_external_summary.json",
+        )
+        external_summary = read_json(summary_path) if summary_path.exists() else {}
+        external_encode = external_summary.get("external_encode")
+        external_encode = external_encode if isinstance(external_encode, dict) else {}
+        queue_high_water = external_summary.get("encode_queue_high_water")
+        if queue_high_water is None and summary_path.exists():
+            queue_high_water = external_detach_queue_high_water(summary_path)
+
+        summaries[serial] = {
+            "backend": crop_output.get("backend"),
+            "status": crop_output.get("status"),
+            "frame_count": crop_output.get("frame_count"),
+            "metadata_path": str(metadata_path),
+            "metadata_rows": len(metadata_rows) if metadata_path.exists() else None,
+            "metadata_detection_rows": (
+                sum(1 for row in metadata_rows if int_field(row, "has_detection") == 1)
+                if metadata_path.exists()
+                else None
+            ),
+            "perf_path": str(perf_path),
+            "perf_rows": len(perf_rows) if perf_path.exists() else None,
+            "perf_dropped_rows": (
+                sum(1 for row in perf_rows if int_field(row, "dropped") == 1)
+                if perf_path.exists()
+                else None
+            ),
+            "sidecar_path": str(sidecar_path),
+            "sidecar_rows": len(sidecar_rows) if sidecar_path.exists() else None,
+            "crop_frame_pool_size": int_field(sidecar_final, "crop_frame_pool_size"),
+            "preview_max_fps": int_field(sidecar_final, "preview_max_fps"),
+            "preview_disabled": int_field(sidecar_final, "preview_disabled"),
+            "preview_display_enabled_final": int_field(sidecar_final, "preview_display_enabled_final"),
+            "preview_frames_offered": int_field(sidecar_final, "preview_frames_offered"),
+            "preview_frames_updated": int_field(sidecar_final, "preview_frames_updated"),
+            "preview_frames_skipped_by_cadence": int_field(
+                sidecar_final,
+                "preview_frames_skipped_by_cadence",
+            ),
+            "preview_queue_full_drops": int_field(sidecar_final, "preview_queue_full_drops"),
+            "producer_recording_crop_frame_offered": int_field(
+                sidecar_final,
+                "producer_recording_crop_frame_offered",
+            ),
+            "producer_recording_crop_frame_accepted": int_field(
+                sidecar_final,
+                "producer_recording_crop_frame_accepted",
+            ),
+            "producer_recording_crop_frame_dropped": int_field(
+                sidecar_final,
+                "producer_recording_crop_frame_dropped",
+            ),
+            "producer_preview_crop_frame_offered": int_field(
+                sidecar_final,
+                "producer_preview_crop_frame_offered",
+            ),
+            "producer_preview_crop_frame_accepted": int_field(
+                sidecar_final,
+                "producer_preview_crop_frame_accepted",
+            ),
+            "producer_preview_crop_frame_dropped": int_field(
+                sidecar_final,
+                "producer_preview_crop_frame_dropped",
+            ),
+            "producer_pose_crop_frame_offered": int_field(
+                sidecar_final,
+                "producer_pose_crop_frame_offered",
+            ),
+            "producer_pose_crop_frame_accepted": int_field(
+                sidecar_final,
+                "producer_pose_crop_frame_accepted",
+            ),
+            "producer_pose_crop_frame_dropped": int_field(
+                sidecar_final,
+                "producer_pose_crop_frame_dropped",
+            ),
+            "external_summary_path": str(summary_path),
+            "external_frames_received": external_summary.get("frames_received"),
+            "external_frames_encoded": external_summary.get("frames_encoded"),
+            "external_encode_dropped": external_summary.get("encode_dropped"),
+            "external_frames_dropped": external_encode.get("frames_dropped"),
+            "external_encode_queue_depth": external_summary.get("encode_queue_depth"),
+            "external_encode_queue_high_water": queue_high_water,
+            "external_enqueue_age_p95_ms": external_encode.get("enqueue_age_p95_ms"),
+            "external_encode_total_p95_ms": external_encode.get("encode_total_p95_ms"),
+            "external_lock_bitstream_p95_ms": external_encode.get("lock_bitstream_p95_ms"),
         }
     return summaries
 
@@ -443,17 +737,25 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
     recording_folder = resolve_recording_folder(recording_folder)
     snapshot = read_json(recording_folder / "recording_snapshot.json")
     manifest = read_json(recording_folder / "recording_session.json")
+    outputs = build_recording_output_summary(recording_folder, manifest, snapshot)
     return {
         "recording_folder": str(recording_folder),
         "recording_id": snapshot.get("recording_id"),
         "timestamp_utc": snapshot.get("timestamp_utc"),
         "sync": snapshot.get("sync") if isinstance(snapshot.get("sync"), dict) else {},
+        "gui_display_frame_rate": (
+            snapshot.get("session", {}).get("gui_display_frame_rate")
+            if isinstance(snapshot.get("session"), dict)
+            and isinstance(snapshot.get("session", {}).get("gui_display_frame_rate"), dict)
+            else {}
+        ),
         "models": summarize_models(snapshot),
         "ptp": summarize_ptp(recording_folder),
         "yolo": summarize_yolo(recording_folder, steady_after_frame),
         "pipeline": summarize_pipeline(recording_folder),
         "videos": summarize_videos(recording_folder, ffprobe),
-        "outputs": build_recording_output_summary(recording_folder, manifest, snapshot),
+        "outputs": outputs,
+        "crop": summarize_crop_recording(recording_folder, outputs),
         "pose_events": summarize_pose_events(recording_folder),
         "spatial_calibrations": summarize_spatial_calibrations(snapshot),
     }
@@ -473,6 +775,10 @@ def fmt_s_unit(value: Any) -> str:
 
 def fmt_int(value: Any) -> str:
     return "n/a" if value is None else str(value)
+
+
+def fmt_float_unit(value: Any, digits: int, unit: str) -> str:
+    return "n/a" if value is None else f"{float(value):.{digits}f}{unit}"
 
 
 def print_human(summary: dict[str, Any]) -> None:
@@ -535,6 +841,54 @@ def print_human(summary: dict[str, Any]) -> None:
     else:
         print("  no Cam*_pipeline_perf.csv files found")
 
+    gui_fps = summary.get("gui_display_frame_rate")
+    gui_fps = gui_fps if isinstance(gui_fps, dict) else {}
+    if gui_fps:
+        timings = gui_fps.get("timings")
+        timings = timings if isinstance(timings, dict) else {}
+
+        def fps_bucket_text(name: str) -> str:
+            bucket = gui_fps.get(name)
+            bucket = bucket if isinstance(bucket, dict) else {}
+            return (
+                f"samples={fmt_int(bucket.get('sample_count'))} "
+                f"p05={fmt_float_unit(bucket.get('p05_fps'), 1, '')} "
+                f"p50={fmt_float_unit(bucket.get('p50_fps'), 1, '')} "
+                f"mean={fmt_float_unit(bucket.get('mean_fps'), 1, '')}"
+            )
+
+        def timing_text(name: str) -> str:
+            bucket = timings.get(name)
+            bucket = bucket if isinstance(bucket, dict) else {}
+            return (
+                f"p50={fmt_float_unit(bucket.get('p50_ms'), 2, 'ms')} "
+                f"p95={fmt_float_unit(bucket.get('p95_ms'), 2, 'ms')} "
+                f"samples={fmt_int(bucket.get('sample_count'))}"
+            )
+
+        print("\nGUI Display")
+        print(
+            f"  stream_downsample={fmt_int(gui_fps.get('stream_downsample'))} "
+            f"display_preview_max_fps={fmt_int(gui_fps.get('display_preview_max_fps'))} "
+            f"speed_graphs={gui_fps.get('yolo_speed_graphs_enabled', 'n/a')}"
+        )
+        print(f"  fps overall: {fps_bucket_text('overall')}")
+        print(f"  fps crop-preview-visible: {fps_bucket_text('crop_preview_visible')}")
+        print(f"  fps crop-preview-hidden: {fps_bucket_text('crop_preview_hidden')}")
+        if timings:
+            print("  timings:")
+            print(f"    frame-total: {timing_text('frame_total_ms')}")
+            print(f"    main-texture-upload: {timing_text('main_texture_upload_ms')}")
+            print(f"    crop-texture-upload: {timing_text('crop_texture_upload_ms')}")
+            print(f"    camera-window-draw: {timing_text('camera_window_draw_ms')}")
+            print(f"    crop-window-draw: {timing_text('crop_window_draw_ms')}")
+            print(f"    speed-graph-draw: {timing_text('speed_graph_draw_ms')}")
+            print(f"    render-present: {timing_text('render_present_ms')}")
+            print(
+                f"    upload-counts: main={fmt_int(timings.get('main_texture_upload_count'))} "
+                f"crop={fmt_int(timings.get('crop_texture_upload_count'))}"
+            )
+
     print("\nRecording Outputs")
     if summary["outputs"]:
         for serial, outputs in sorted(summary["outputs"].items()):
@@ -549,6 +903,57 @@ def print_human(summary: dict[str, Any]) -> None:
             print(f"  Cam{serial}: {'; '.join(parts)}")
     else:
         print("  no recording outputs found")
+
+    print("\nCrop Recording")
+    if summary.get("crop"):
+        def fanout_text(crop: dict[str, Any], prefix: str) -> str:
+            accepted = crop.get(f"producer_{prefix}_crop_frame_accepted")
+            offered = crop.get(f"producer_{prefix}_crop_frame_offered")
+            dropped = crop.get(f"producer_{prefix}_crop_frame_dropped")
+            if accepted is None and offered is None and dropped is None:
+                return "n/a"
+            return f"{fmt_int(accepted)}/{fmt_int(offered)} dropped={fmt_int(dropped)}"
+
+        for serial, crop in sorted(summary["crop"].items()):
+            preview_updated = crop.get("preview_frames_updated")
+            preview_offered = crop.get("preview_frames_offered")
+            print(
+                f"  Cam{serial}: backend={crop.get('backend') or 'unknown'} "
+                f"status={crop.get('status') or 'unknown'} "
+                f"frames={fmt_int(crop.get('frame_count'))} "
+                f"meta_rows={fmt_int(crop.get('metadata_rows'))} "
+                f"detection_rows={fmt_int(crop.get('metadata_detection_rows'))} "
+                f"perf_rows={fmt_int(crop.get('perf_rows'))} "
+                f"perf_dropped={fmt_int(crop.get('perf_dropped_rows'))}"
+            )
+            print(
+                f"    preview: max_fps={fmt_int(crop.get('preview_max_fps'))} "
+                f"display_enabled={fmt_int(crop.get('preview_display_enabled_final'))} "
+                f"disabled={fmt_int(crop.get('preview_disabled'))} "
+                f"updated/offered={fmt_int(preview_updated)}/{fmt_int(preview_offered)} "
+                f"skipped={fmt_int(crop.get('preview_frames_skipped_by_cadence'))} "
+                f"queue_drops={fmt_int(crop.get('preview_queue_full_drops'))} "
+                f"pool={fmt_int(crop.get('crop_frame_pool_size'))}"
+            )
+            print(
+                f"    fanout: recording={fanout_text(crop, 'recording')} "
+                f"preview={fanout_text(crop, 'preview')} "
+                f"pose={fanout_text(crop, 'pose')}"
+            )
+            if crop.get("external_frames_received") is not None:
+                print(
+                    f"    external: received={fmt_int(crop.get('external_frames_received'))} "
+                    f"encoded={fmt_int(crop.get('external_frames_encoded'))} "
+                    f"dropped={fmt_int(crop.get('external_frames_dropped'))} "
+                    f"encode_dropped={fmt_int(crop.get('external_encode_dropped'))} "
+                    f"queue_depth={fmt_int(crop.get('external_encode_queue_depth'))} "
+                    f"queue_high_water={fmt_int(crop.get('external_encode_queue_high_water'))} "
+                    f"enqueue_age_p95={fmt_float_unit(crop.get('external_enqueue_age_p95_ms'), 2, 'ms')} "
+                    f"encode_total_p95={fmt_float_unit(crop.get('external_encode_total_p95_ms'), 2, 'ms')} "
+                    f"lock_p95={fmt_float_unit(crop.get('external_lock_bitstream_p95_ms'), 2, 'ms')}"
+                )
+    else:
+        print("  no crop recording artifacts found")
 
     print("\nMain Videos")
     if summary["videos"]:
@@ -597,7 +1002,7 @@ def print_human(summary: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
-    summary = summarize(Path(args.recording_folder), args.steady_after_frame, args.ffprobe)
+    summary = summarize(resolve_requested_recording_folder(args), args.steady_after_frame, args.ffprobe)
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     else:

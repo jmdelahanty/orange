@@ -102,7 +102,10 @@ def _append_crop_output_errors(
     if crop_output and crop_output.get("enabled") is True:
         runtime = _as_dict(crop_output.get("runtime"))
         files = _as_dict(runtime.get("files"))
+        external_crop_video = output.get("backend") == "external_ipc"
         for key in ("video", "metadata", "keyframes", "perf"):
+            if external_crop_video and key in {"video", "keyframes"}:
+                continue
             if files.get(key) and output.get(key) != files.get(key):
                 errors.append(
                     f"{source_name} recording_outputs.{serial}.crop.{key} "
@@ -266,7 +269,7 @@ def _summarize_output_descriptor(
             summary[key] = descriptor.get(key)
 
     paths: dict[str, Any] = {}
-    for key in ("video", "metadata", "keyframes", "perf", "summary"):
+    for key in ("video", "metadata", "keyframes", "perf", "summary", "sidecar_perf"):
         if descriptor.get(key):
             summary[key] = descriptor.get(key)
             paths[key] = _path_status(recording_folder, descriptor.get(key))

@@ -26,6 +26,7 @@
 #include "image_writer_worker.h"
 #include "yolov8_det.h"
 #include "crop_and_encode_worker.h"
+#include "crop_preview_worker.h"
 #include "crop_producer_worker.h"
 #include "pose_worker.h"
 #include "frame_ipc_manager.h"
@@ -38,6 +39,7 @@
 #include "gui/frame_ipc_panel.h"
 #include "gui/host_ptp_panel.h"
 #include "gui/recording_panel.h"
+#include "gui_display_frame_rate.h"
 #include "image_canvas.h"
 #include "recording_output_utils.h"
 #include "recording_validation.h"
@@ -61,6 +63,12 @@ ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
 std::vector<SpeedTrackingData> speed_tracking_data;
 
 namespace {
+
+using orange::gui::GuiDisplayFrameRateStats;
+using orange::gui::GuiFrameTimingSample;
+using orange::gui::gui_display_frame_rate_json;
+using orange::gui::gui_sample_display_frame_rate;
+using orange::gui::gui_sample_frame_timings;
 
 enum class RulerAlignmentOrientation {
     kHorizontal = 0,
@@ -86,6 +94,12 @@ struct FovCaptureSnapshot {
     std::vector<unsigned char> rgb;
     RulerAlignmentMetrics metrics;
 };
+
+double gui_elapsed_ms(const std::chrono::steady_clock::time_point start,
+                      const std::chrono::steady_clock::time_point end)
+{
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 struct LiveFovPreviewState {
     bool available = false;
@@ -132,6 +146,215 @@ struct GuiRecordingRunState {
     std::chrono::steady_clock::time_point recording_stop_requested_at{};
     std::chrono::steady_clock::time_point recording_drained_at{};
 };
+
+ImVec2 fit_square_image_size(const ImVec2 available, const float fallback_size)
+{
+    const float usable_width = std::max(1.0f, available.x);
+    const float usable_height = std::max(1.0f, available.y);
+    const float side = std::min(usable_width, usable_height);
+    if (side > 1.0f) {
+        return ImVec2(side, side);
+    }
+    return ImVec2(fallback_size, fallback_size);
+}
+
+ImVec2 fit_image_size(const ImVec2 available,
+                      const float image_width,
+                      const float image_height,
+                      const float fallback_width,
+                      const float fallback_height)
+{
+    const float usable_width = std::max(1.0f, available.x);
+    const float usable_height = std::max(1.0f, available.y);
+    const float source_width = image_width > 0.0f ? image_width : fallback_width;
+    const float source_height = image_height > 0.0f ? image_height : fallback_height;
+    if (source_width <= 0.0f || source_height <= 0.0f) {
+        return ImVec2(usable_width, usable_height);
+    }
+
+    const float scale = std::min(usable_width / source_width, usable_height / source_height);
+    if (scale <= 0.0f) {
+        return ImVec2(fallback_width, fallback_height);
+    }
+    return ImVec2(std::max(1.0f, source_width * scale),
+                  std::max(1.0f, source_height * scale));
+}
+
+void render_texture_image_centered(GLuint texture,
+                                   const ImVec2 available_size,
+                                   const float image_width,
+                                   const float image_height)
+{
+    const ImVec2 image_size =
+        fit_image_size(available_size, image_width, image_height, image_width, image_height);
+    const float x_offset = std::max(0.0f, (available_size.x - image_size.x) * 0.5f);
+    if (x_offset > 0.0f) {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + x_offset);
+    }
+    ImGui::Image(
+        (ImTextureID)(intptr_t)texture,
+        image_size,
+        ImVec2(0, 0),
+        ImVec2(1, 1));
+}
+
+int sanitize_gui_stream_downsample(const int requested)
+{
+    static constexpr std::array<int, 5> kAllowed = {1, 2, 4, 8, 16};
+    for (const int value : kAllowed) {
+        if (requested == value) {
+            return requested;
+        }
+    }
+    if (requested <= 1) {
+        return 1;
+    }
+    int best = kAllowed.back();
+    for (const int value : kAllowed) {
+        if (requested <= value) {
+            best = value;
+            break;
+        }
+    }
+    return best;
+}
+
+int gui_stream_downsample_index(const int downsample)
+{
+    static constexpr std::array<int, 5> kAllowed = {1, 2, 4, 8, 16};
+    const int sanitized = sanitize_gui_stream_downsample(downsample);
+    for (std::size_t i = 0; i < kAllowed.size(); ++i) {
+        if (kAllowed[i] == sanitized) {
+            return static_cast<int>(i);
+        }
+    }
+    return 0;
+}
+
+int resolve_gui_stream_downsample(const int default_value)
+{
+    const char* env = std::getenv("ORANGE_GUI_STREAM_DOWNSAMPLE");
+    if (!env || !*env) {
+        env = std::getenv("ORANGE_DISPLAY_DOWNSAMPLE");
+    }
+    if (!env || !*env) {
+        return sanitize_gui_stream_downsample(default_value);
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0') {
+        std::cerr << "[GUI][display] Ignoring invalid stream downsample '"
+                  << env << "'" << std::endl;
+        return sanitize_gui_stream_downsample(default_value);
+    }
+    const int sanitized = sanitize_gui_stream_downsample(static_cast<int>(parsed));
+    if (sanitized != parsed) {
+        std::cout << "[GUI][display] Stream downsample " << parsed
+                  << " adjusted to " << sanitized << std::endl;
+    }
+    return sanitized;
+}
+
+int sanitize_gui_display_preview_max_fps(const int requested)
+{
+    if (requested < 0) {
+        return 0;
+    }
+    if (requested > 10000) {
+        return 10000;
+    }
+    return requested;
+}
+
+int resolve_gui_display_preview_max_fps_snapshot(const CameraEachSelect* cameras_select,
+                                                 const int num_cameras)
+{
+    int resolved = 60;
+    if (cameras_select && num_cameras > 0) {
+        resolved = cameras_select[0].display_preview_max_fps;
+    }
+    const char* env = std::getenv("ORANGE_DISPLAY_PREVIEW_MAX_FPS");
+    if (!env || !*env) {
+        env = std::getenv("ORANGE_DISPLAY_MAX_FPS");
+    }
+    if (env && *env) {
+        char* end = nullptr;
+        const long parsed = std::strtol(env, &end, 10);
+        if (end != env && *end == '\0') {
+            resolved = static_cast<int>(parsed);
+        }
+    }
+    return sanitize_gui_display_preview_max_fps(resolved);
+}
+
+bool resolve_gui_yolo_speed_graphs_enabled()
+{
+    const char* env = std::getenv("ORANGE_GUI_SHOW_SPEED_GRAPHS");
+    if (!env || !*env) {
+        return false;
+    }
+    return std::strcmp(env, "0") != 0 &&
+           std::strcmp(env, "false") != 0 &&
+           std::strcmp(env, "False") != 0 &&
+           std::strcmp(env, "no") != 0 &&
+           std::strcmp(env, "No") != 0;
+}
+
+bool gui_any_crop_recording_enabled(const CameraEachSelect* cameras_select, const int num_cameras)
+{
+    if (!cameras_select || num_cameras <= 0) {
+        return false;
+    }
+    for (int i = 0; i < num_cameras; ++i) {
+        if (cameras_select[i].crop_and_encode) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string gui_crop_stream_camera_serial(const orange::external_recorder::RecorderStreamPlan& stream)
+{
+    std::string serial = stream.stream_id;
+    const std::string suffix = "_crop";
+    if (serial.size() > suffix.size() &&
+        serial.compare(serial.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        serial.resize(serial.size() - suffix.size());
+        return serial;
+    }
+    serial = stream.camera_serial;
+    if (serial.size() > suffix.size() &&
+        serial.compare(serial.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        serial.resize(serial.size() - suffix.size());
+    }
+    return serial;
+}
+
+bool gui_read_json_file(const std::string& path, nlohmann::json* out, std::string* error_out)
+{
+    if (!out) {
+        if (error_out) {
+            *error_out = "internal error: null JSON destination";
+        }
+        return false;
+    }
+    std::ifstream input(path);
+    if (!input) {
+        if (error_out) {
+            *error_out = "missing JSON file: " + path;
+        }
+        return false;
+    }
+    try {
+        input >> *out;
+        return true;
+    } catch (const std::exception& ex) {
+        if (error_out) {
+            *error_out = "invalid JSON file " + path + ": " + ex.what();
+        }
+        return false;
+    }
+}
 
 bool has_gui_timepoint(const std::chrono::steady_clock::time_point& timepoint)
 {
@@ -217,7 +440,8 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                                              const CameraParams* cameras_params,
                                              const CameraEachSelect* cameras_select,
                                              const int num_cameras,
-                                             const int crop_size_px)
+                                             const int crop_size_px,
+                                             const nlohmann::json& gui_display_frame_rate)
 {
     if (!run || !run->active || !run->finalizing || run->recording_folder.empty()) {
         return false;
@@ -225,6 +449,12 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     const bool external_ipc = run->recording_sink_mode == "external_ipc";
     if (external_ipc) {
         if (camera_control && camera_control->record_video) {
+            return false;
+        }
+        if (camera_control &&
+            camera_control->active_recorders.load(std::memory_order_relaxed) > 0) {
+            camera_control->recording_draining = true;
+            camera_control->stop_record = true;
             return false;
         }
         if (recording_session &&
@@ -259,6 +489,62 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     nlohmann::json recording_backend = nlohmann::json::object();
     bool external_recorder_ok = true;
     std::string external_recorder_error;
+    std::vector<orange::session::RecordingOutputDescriptor> external_crop_outputs;
+    bool crop_external_recorder_active =
+        recording_session &&
+        recording_session->crop_recording_sink_mode == "external_ipc" &&
+        !recording_session->external_crop_recorder_lifecycle.plan.streams.empty();
+    bool crop_external_recorder_lifecycle_ok = true;
+    bool crop_external_recorder_ok = true;
+    std::string crop_external_recorder_error;
+    auto json_string_or =
+        [](const nlohmann::json& object,
+           const char* key,
+           const std::string& fallback) -> std::string {
+            if (object.is_object()) {
+                const auto it = object.find(key);
+                if (it != object.end() && it->is_string()) {
+                    const std::string value = it->get<std::string>();
+                    if (!value.empty()) {
+                        return value;
+                    }
+                }
+            }
+            return fallback;
+        };
+    auto json_u64_or =
+        [](const nlohmann::json& object,
+           const char* key,
+           const uint64_t fallback) -> uint64_t {
+            if (object.is_object()) {
+                const auto it = object.find(key);
+                if (it != object.end() && it->is_number_unsigned()) {
+                    return it->get<uint64_t>();
+                }
+                if (it != object.end() && it->is_number_integer()) {
+                    const int64_t value = it->get<int64_t>();
+                    return value > 0 ? static_cast<uint64_t>(value) : 0;
+                }
+            }
+            return fallback;
+        };
+
+    // Crop recorder env overrides are stacked after full-frame recorder
+    // overrides. Stop crop first so scoped environment restoration unwinds in
+    // the reverse order of startup.
+    if (crop_external_recorder_active &&
+        recording_session->external_crop_recorder_lifecycle.started) {
+        std::string stop_error;
+        if (!orange::external_recorder::StopSupervisedRecorderLifecycle(
+                &recording_session->external_crop_recorder_lifecycle,
+                &stop_error)) {
+            crop_external_recorder_ok = false;
+            crop_external_recorder_lifecycle_ok = false;
+            crop_external_recorder_error = stop_error.empty()
+                ? "external crop recorder supervisor shutdown failed"
+                : stop_error;
+        }
+    }
 
     if (external_ipc) {
         if (!recording_session) {
@@ -386,27 +672,33 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 const nlohmann::json external_encode =
                     summary.value("external_encode", nlohmann::json::object());
                 const bool worker_failed = summary.value("worker_failed", false);
+                const bool merged_enabled =
+                    merged.is_object() && merged.value("enabled", false);
                 const bool merged_failed =
-                    merged.is_object() && merged.value("failed", false);
+                    merged_enabled && merged.value("failed", false);
                 const uint64_t frames_received =
                     summary.value("frames_received", 0ULL);
                 const uint64_t frames_encoded =
                     summary.value("frames_encoded", frames_received);
-                const uint64_t packets_written =
-                    merged.is_object()
-                        ? merged.value("packets_written", external_encode.value("mp4_packets", 0ULL))
-                        : external_encode.value("mp4_packets", 0ULL);
-                const std::string mp4 =
-                    merged.is_object()
-                        ? merged.value("mp4", outputs.value("mp4", stream.mp4))
-                        : outputs.value("mp4", stream.mp4);
-                const std::string keyframes =
-                    merged.is_object()
-                        ? merged.value("mp4_keyframe", outputs.value("mp4_keyframe", stream.mp4_keyframe))
-                        : outputs.value("mp4_keyframe", stream.mp4_keyframe);
+                const uint64_t external_packets =
+                    json_u64_or(external_encode, "mp4_packets", 0ULL);
+                const uint64_t packets_written = merged_enabled
+                    ? json_u64_or(merged, "packets_written", external_packets)
+                    : external_packets;
+                const std::string output_mp4 =
+                    json_string_or(outputs, "mp4", stream.mp4);
+                const std::string output_keyframes =
+                    json_string_or(outputs, "mp4_keyframe", stream.mp4_keyframe);
+                const std::string mp4 = merged_enabled
+                    ? json_string_or(merged, "mp4", output_mp4)
+                    : output_mp4;
+                const std::string keyframes = merged_enabled
+                    ? json_string_or(merged, "mp4_keyframe", output_keyframes)
+                    : output_keyframes;
 
                 if (worker_failed || merged_failed || frames_received == 0 ||
-                    frames_encoded == 0 || packets_written == 0 || mp4.empty() ||
+                    frames_encoded == 0 || frames_encoded != frames_received ||
+                    packets_written == 0 || mp4.empty() ||
                     !std::filesystem::exists(mp4)) {
                     external_recorder_ok = false;
                     if (!external_recorder_error.empty()) {
@@ -474,6 +766,197 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 true);
     }
 
+    if (crop_external_recorder_active) {
+        if (!recording_session->external_crop_recorder_lifecycle.last_artifact_error.empty()) {
+            if (!crop_external_recorder_error.empty()) {
+                crop_external_recorder_error += "; ";
+            }
+            crop_external_recorder_error +=
+                recording_session->external_crop_recorder_lifecycle.last_artifact_error;
+            recording_session->external_crop_recorder_lifecycle.last_artifact_error.clear();
+            crop_external_recorder_ok = false;
+            crop_external_recorder_lifecycle_ok = false;
+        }
+
+        nlohmann::json crop_summary_paths = nlohmann::json::object();
+        nlohmann::json crop_mp4_paths = nlohmann::json::object();
+        nlohmann::json crop_keyframe_paths = nlohmann::json::object();
+        nlohmann::json crop_gop_routing_paths = nlohmann::json::object();
+
+        auto append_external_crop_output =
+            [&](const auto& stream,
+                const std::string& serial,
+                const std::string& mp4,
+                const std::string& keyframes,
+                const uint64_t frames_encoded,
+                const uint64_t packets_written,
+                const bool stream_ok,
+                const std::string& stream_error) {
+                orange::session::RecordingOutputDescriptor output;
+                output.camera_serial = serial;
+                output.output_kind = "crop";
+                output.role = "sidecar";
+                output.backend = "external_ipc";
+                output.status = stream_ok ? "completed" : "incomplete";
+                output.video_path = mp4;
+                output.metadata_path = "Cam" + serial + "_crop_meta.csv";
+                output.keyframe_path = keyframes;
+                output.perf_path = "Cam" + serial + "_crop_perf.csv";
+                output.sidecar_perf_path = "Cam" + serial + "_crop_sidecar_perf.csv";
+                output.summary_path = stream.summary_json;
+                output.frame_count = frames_encoded;
+                output.first_recording_frame_id = frames_encoded > 0 ? 1 : 0;
+                output.last_recording_frame_id = frames_encoded;
+                output.recording_frame_id_gaps = 0;
+                output.packet_count = packets_written;
+                output.packet_count_source = "external_crop_recorder_summary.packets_written";
+                const int resolved_crop_size =
+                    CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
+                output.width = resolved_crop_size;
+                output.height = resolved_crop_size;
+                output.frame_rate = stream.encode_fps;
+                output.codec = stream.codec;
+                output.container = "mp4";
+                output.tuning = stream.tuning;
+                output.pixel_source_format = "mono8";
+                output.encoded_format = "nv12";
+                output.coordinate_space = "full_frame_pixels";
+                output.details = {
+                    {"stream_id", stream.stream_id},
+                    {"video_backend", "external_ipc"},
+                    {"metadata_backend", "orange_gui"},
+                    {"selection_policy", "largest_detection_by_confidence"},
+                    {"blank_frame_policy", "encode_black_frame_when_no_detection"}
+                };
+                if (!stream_ok && !stream_error.empty()) {
+                    output.details["status_reason"] = stream_error;
+                }
+                external_crop_outputs.push_back(std::move(output));
+
+                crop_summary_paths[serial] = stream.summary_json;
+                crop_mp4_paths[serial] = mp4;
+                crop_keyframe_paths[serial] = keyframes;
+                crop_gop_routing_paths[serial] = stream.gop_routing_csv;
+            };
+
+        for (const auto& stream : recording_session->external_crop_recorder_lifecycle.plan.streams) {
+            const std::string serial = gui_crop_stream_camera_serial(stream);
+            if (serial.empty()) {
+                continue;
+            }
+
+            bool stream_ok = crop_external_recorder_lifecycle_ok;
+            std::string stream_error;
+            nlohmann::json summary;
+            std::string summary_error;
+            if (!gui_read_json_file(stream.summary_json, &summary, &summary_error)) {
+                stream_ok = false;
+                crop_external_recorder_ok = false;
+                stream_error =
+                    "external crop recorder summary unavailable for camera " +
+                    serial + ": " + summary_error;
+                if (!crop_external_recorder_error.empty()) {
+                    crop_external_recorder_error += "; ";
+                }
+                crop_external_recorder_error += stream_error;
+                append_external_crop_output(
+                    stream,
+                    serial,
+                    stream.mp4,
+                    stream.mp4_keyframe,
+                    0,
+                    0,
+                    false,
+                    stream_error);
+                continue;
+            }
+
+            const nlohmann::json merged =
+                summary.value("merged_output", nlohmann::json::object());
+            const nlohmann::json outputs =
+                summary.value("outputs", nlohmann::json::object());
+            const nlohmann::json external_encode =
+                summary.value("external_encode", nlohmann::json::object());
+            const bool worker_failed = summary.value("worker_failed", false);
+            const bool merged_enabled =
+                merged.is_object() && merged.value("enabled", false);
+            const bool merged_failed =
+                merged_enabled && merged.value("failed", false);
+            const uint64_t frames_received =
+                summary.value("frames_received", 0ULL);
+            const uint64_t frames_encoded =
+                summary.value("frames_encoded", frames_received);
+            const uint64_t external_packets =
+                json_u64_or(external_encode, "mp4_packets", 0ULL);
+            const uint64_t packets_written = merged_enabled
+                ? json_u64_or(merged, "packets_written", external_packets)
+                : external_packets;
+            const std::string output_mp4 =
+                json_string_or(outputs, "mp4", stream.mp4);
+            const std::string output_keyframes =
+                json_string_or(outputs, "mp4_keyframe", stream.mp4_keyframe);
+            const std::string mp4 = merged_enabled
+                ? json_string_or(merged, "mp4", output_mp4)
+                : output_mp4;
+            const std::string keyframes = merged_enabled
+                ? json_string_or(merged, "mp4_keyframe", output_keyframes)
+                : output_keyframes;
+
+            if (worker_failed || merged_failed || frames_received == 0 ||
+                frames_encoded == 0 || frames_encoded != frames_received ||
+                packets_written == 0 || mp4.empty() ||
+                !std::filesystem::exists(mp4)) {
+                stream_ok = false;
+                crop_external_recorder_ok = false;
+                stream_error =
+                    "external crop recorder output incomplete for camera " + serial;
+                if (!crop_external_recorder_error.empty()) {
+                    crop_external_recorder_error += "; ";
+                }
+                crop_external_recorder_error += stream_error;
+            }
+
+            append_external_crop_output(
+                stream,
+                serial,
+                mp4,
+                keyframes,
+                frames_encoded,
+                packets_written,
+                stream_ok,
+                stream_error);
+        }
+
+        if (!recording_backend.is_object() || recording_backend.empty()) {
+            recording_backend = {
+                {"mode", "real"},
+                {"status", "completed"}
+            };
+        }
+        recording_backend["crop_recording"] = {
+            {"mode", "external_ipc"},
+            {"status", crop_external_recorder_ok ? "completed" : "incomplete"},
+            {"artifact_root", recording_session->external_crop_recorder_lifecycle.plan.artifact_root},
+            {"source", "external_crop_recorder_summary"},
+            {"summary_json", crop_summary_paths},
+            {"merged_mp4", crop_mp4_paths},
+            {"keyframes", crop_keyframe_paths},
+            {"gop_routing_csv", crop_gop_routing_paths},
+            {"external_crop_recorder_contract_path", recording_session->external_crop_recorder_contract_path},
+            {"external_crop_recorder_supervisor_plan_path",
+             recording_session->external_crop_recorder_supervisor_plan_path},
+            {"external_crop_recorder_session_json",
+             (std::filesystem::path(recording_session->external_crop_recorder_lifecycle.plan.artifact_root) /
+              "external_recorder_session.json").string()},
+            {"external_crop_recorder_finalization_json",
+             (std::filesystem::path(recording_session->external_crop_recorder_lifecycle.plan.artifact_root) /
+              "external_recorder_finalization.json").string()}
+        };
+        if (!crop_external_recorder_error.empty()) {
+            recording_backend["crop_recording"]["error"] = crop_external_recorder_error;
+        }
+    }
+
     orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
     manifest_options.producer = external_ipc ? "orange_gui_external_ipc" : "orange_gui";
     manifest_options.session_id =
@@ -516,14 +999,61 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             if (camera_serial.empty()) {
                 camera_serial = std::to_string(cameras_params[i].camera_id);
             }
-            manifest_options.recording_outputs.push_back(
-                orange::session::build_crop_recording_output_descriptor(
-                    camera_serial,
-                    run->recording_folder,
-                    true,
-                    resolved_crop_size,
-                    cameras_params[i].frame_rate,
-                    manifest_options.status));
+            auto external_crop_it = std::find_if(
+                external_crop_outputs.begin(),
+                external_crop_outputs.end(),
+                [&](const orange::session::RecordingOutputDescriptor& output) {
+                    return output.camera_serial == camera_serial;
+                });
+            if (external_crop_it != external_crop_outputs.end()) {
+                manifest_options.recording_outputs.push_back(*external_crop_it);
+            } else if (crop_external_recorder_active) {
+                const std::filesystem::path external_crop_root =
+                    recording_session
+                        ? std::filesystem::path(
+                              recording_session->external_crop_recorder_lifecycle.plan.artifact_root)
+                        : std::filesystem::path(run->recording_folder) / "external_crop_recorder";
+                const std::string external_crop_prefix =
+                    (external_crop_root / ("Cam" + camera_serial + "_crop_external")).string();
+                orange::session::RecordingOutputDescriptor output;
+                output.camera_serial = camera_serial;
+                output.output_kind = "crop";
+                output.role = "sidecar";
+                output.backend = "external_ipc";
+                output.status = "incomplete";
+                output.video_path = external_crop_prefix + ".mp4";
+                output.metadata_path = "Cam" + camera_serial + "_crop_meta.csv";
+                output.keyframe_path = external_crop_prefix + "_keyframe.json";
+                output.perf_path = "Cam" + camera_serial + "_crop_perf.csv";
+                output.sidecar_perf_path =
+                    "Cam" + camera_serial + "_crop_sidecar_perf.csv";
+                output.width = resolved_crop_size;
+                output.height = resolved_crop_size;
+                output.frame_rate = cameras_params[i].frame_rate;
+                output.codec = "hevc";
+                output.container = "mp4";
+                output.tuning = "lossless";
+                output.pixel_source_format = "mono8";
+                output.encoded_format = "nv12";
+                output.coordinate_space = "full_frame_pixels";
+                output.details = {
+                    {"video_backend", "external_ipc"},
+                    {"metadata_backend", "orange_gui"},
+                    {"status_reason", "external crop recorder output missing from supervisor plan"},
+                    {"selection_policy", "largest_detection_by_confidence"},
+                    {"blank_frame_policy", "encode_black_frame_when_no_detection"}
+                };
+                manifest_options.recording_outputs.push_back(std::move(output));
+            } else {
+                manifest_options.recording_outputs.push_back(
+                    orange::session::build_crop_recording_output_descriptor(
+                        camera_serial,
+                        run->recording_folder,
+                        true,
+                        resolved_crop_size,
+                        cameras_params[i].frame_rate,
+                        manifest_options.status));
+            }
         }
     }
 
@@ -571,12 +1101,44 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                       << finalization_write.error_message << std::endl;
         }
     }
+    if (crop_external_recorder_active && recording_session) {
+        orange::external_recorder::FinalizationManifestOptions finalization_options;
+        finalization_options.experiment_root = run->recording_folder;
+        finalization_options.artifact_root =
+            recording_session->external_crop_recorder_lifecycle.plan.artifact_root;
+        finalization_options.run_id =
+            std::filesystem::path(run->recording_folder).filename().string();
+        finalization_options.status = crop_external_recorder_ok ? "pass" : "fail";
+        finalization_options.started_at_utc = run->recording_started_at_utc;
+        finalization_options.finished_at_utc = run->recording_drained_at_utc;
+        finalization_options.error = crop_external_recorder_error;
+        nlohmann::json finalization =
+            orange::external_recorder::BuildExternalRecorderFinalizationManifest(
+                finalization_options);
+        finalization["recording_session_manifest"] = {
+            {"pass", crop_external_recorder_ok},
+            {"path", manifest_path.string()},
+            {"mode", "single_clip"},
+            {"producer", manifest_options.producer},
+            {"output_kind", "crop"},
+            {"camera_count", external_crop_outputs.size()}
+        };
+        const orange::external_recorder::ArtifactWriteResult finalization_write =
+            orange::external_recorder::WriteExternalRecorderFinalizationArtifact(
+                recording_session->external_crop_recorder_lifecycle.plan.artifact_root,
+                finalization);
+        if (!finalization_write.ok) {
+            std::cerr << "[GUI][recording] Failed to write external crop recorder finalization: "
+                      << finalization_write.error_message << std::endl;
+        }
+    }
 
     const nlohmann::json snapshot_update = {
         {"recording_mode", "single_clip"},
         {"recording_session_manifest_path", manifest_path.string()},
         {"recording_session_status", external_recorder_ok ? "completed" : "incomplete"},
-        {"recording_session_camera_count", camera_serials.size()}
+        {"recording_session_camera_count", camera_serials.size()},
+        {"gui_display_frame_rate", gui_display_frame_rate}
     };
     if (!update_recording_snapshot_session_artifacts(
             run->recording_folder,
@@ -612,6 +1174,12 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         recording_session->external_recorder_contract_path.clear();
         recording_session->external_recorder_supervisor_plan_path.clear();
         recording_session->external_recorder_last_error = external_recorder_error;
+    }
+    if (crop_external_recorder_active && recording_session) {
+        recording_session->active_external_crop_recorder_contract = nlohmann::json::object();
+        recording_session->external_crop_recorder_contract_path.clear();
+        recording_session->external_crop_recorder_supervisor_plan_path.clear();
+        recording_session->external_crop_recorder_last_error = crop_external_recorder_error;
     }
     *run = GuiRecordingRunState{};
     return true;
@@ -1009,6 +1577,37 @@ int resolve_gui_crop_size_from_camera_configs(const CameraParams* cameras_params
     return resolved_crop_size;
 }
 
+int resolve_gui_crop_preview_max_fps_from_camera_configs(const CameraParams* cameras_params,
+                                                         const int num_cameras,
+                                                         const int fallback_preview_max_fps,
+                                                         bool* mixed_values_out)
+{
+    if (mixed_values_out) {
+        *mixed_values_out = false;
+    }
+
+    if (!cameras_params || num_cameras <= 0) {
+        return sanitize_camera_crop_preview_max_fps(fallback_preview_max_fps);
+    }
+
+    const int resolved_preview_max_fps =
+        sanitize_camera_crop_preview_max_fps(cameras_params[0].crop_pipeline.preview_max_fps);
+    bool mixed_values = false;
+    for (int i = 1; i < num_cameras; ++i) {
+        const int camera_preview_max_fps =
+            sanitize_camera_crop_preview_max_fps(cameras_params[i].crop_pipeline.preview_max_fps);
+        if (camera_preview_max_fps != resolved_preview_max_fps) {
+            mixed_values = true;
+            break;
+        }
+    }
+
+    if (mixed_values_out) {
+        *mixed_values_out = mixed_values;
+    }
+    return resolved_preview_max_fps;
+}
+
 void apply_gui_crop_size_to_camera_configs(CameraParams* cameras_params,
                                            const int num_cameras,
                                            const int crop_size_px)
@@ -1021,6 +1620,41 @@ void apply_gui_crop_size_to_camera_configs(CameraParams* cameras_params,
     for (int i = 0; i < num_cameras; ++i) {
         cameras_params[i].crop_pipeline.crop_size_px = resolved_crop_size;
     }
+}
+
+void apply_gui_crop_preview_max_fps_to_camera_configs(CameraParams* cameras_params,
+                                                      const int num_cameras,
+                                                      const int preview_max_fps)
+{
+    if (!cameras_params || num_cameras <= 0) {
+        return;
+    }
+
+    const int resolved_preview_max_fps =
+        sanitize_camera_crop_preview_max_fps(preview_max_fps);
+    for (int i = 0; i < num_cameras; ++i) {
+        cameras_params[i].crop_pipeline.preview_max_fps = resolved_preview_max_fps;
+    }
+}
+
+int resolve_effective_crop_preview_max_fps(const CameraParams& camera_params)
+{
+    int resolved = camera_params.crop_pipeline.preview_max_fps;
+    const char* env_value = std::getenv("ORANGE_CROP_PREVIEW_MAX_FPS");
+    if (env_value && *env_value) {
+        char* end = nullptr;
+        const long parsed = std::strtol(env_value, &end, 10);
+        if (end != env_value && end && *end == '\0') {
+            if (parsed > std::numeric_limits<int>::max()) {
+                resolved = std::numeric_limits<int>::max();
+            } else if (parsed < std::numeric_limits<int>::min()) {
+                resolved = std::numeric_limits<int>::min();
+            } else {
+                resolved = static_cast<int>(parsed);
+            }
+        }
+    }
+    return sanitize_camera_crop_preview_max_fps(resolved);
 }
 
 YoloWorker* gui_yolo_worker_at(const int camera_index)
@@ -2827,6 +3461,8 @@ nlohmann::json build_gui_crop_output_snapshot(const CameraParams& camera_params,
             {"worker", "CropAndEncodeWorker"},
             {"source_gpu_id", camera_params.gpu_id},
             {"crop_size_px", resolved_crop_size},
+            {"crop_frame_pool_size", CropProducer::kDefaultCropFramePoolSize},
+            {"preview_max_fps", resolve_effective_crop_preview_max_fps(camera_params)},
             {"width", enabled ? resolved_crop_size : 0},
             {"height", enabled ? resolved_crop_size : 0},
             {"coordinate_space", "full_frame_pixels"},
@@ -3140,10 +3776,15 @@ int main(int argc, char **args) {
     GL_Texture *tex = nullptr;
     GL_Texture* crop_tex = nullptr;
     int num_cameras = 0;
-    int stream_downsample = 1;
+    int stream_downsample = resolve_gui_stream_downsample(4);
     int crop_size_px = CropAndEncodeWorker::kDefaultCropSize;
     std::string crop_size_config_status;
     bool crop_size_config_status_warning = false;
+    int crop_preview_max_fps = CameraCropPipelineConfig::kDefaultPreviewMaxFps;
+    bool show_crop_preview_windows = true;
+    bool show_yolo_speed_graphs = resolve_gui_yolo_speed_graphs_enabled();
+    std::string crop_preview_config_status;
+    bool crop_preview_config_status_warning = false;
     CameraControl *camera_control = new CameraControl();
 
     int evt_buffer_size{100};
@@ -3151,6 +3792,9 @@ int main(int argc, char **args) {
     COpenGLDisplay** openGLDisplayWorkers = nullptr;
     CropProducerWorker** cropProducerWorkers = nullptr;
     CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
+    CropPreviewWorker** cropPreviewWorkers = nullptr;
+    std::vector<uint64_t> display_uploaded_serials;
+    std::vector<uint64_t> crop_preview_uploaded_serials;
     PoseWorker** poseWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
@@ -3159,6 +3803,7 @@ int main(int argc, char **args) {
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
     GuiRecordingRunState gui_recording_run;
+    GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
@@ -3257,6 +3902,7 @@ int main(int argc, char **args) {
     };
 
     while (!glfwWindowShouldClose(window->render_target)) {
+        const auto gui_frame_start = std::chrono::steady_clock::now();
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         join_aperture_worker_if_finished(&aperture_ui_state);
         join_alignment_worker_if_finished(&aperture_ui_state);
@@ -3366,12 +4012,17 @@ int main(int argc, char **args) {
             {
                 const char *items[] = {"1", "2", "4", "8", "16"};
                 static const int item_numbers[] = {1, 2, 4, 8, 16};
-                static int downsample_current = 0;
+                int downsample_current = gui_stream_downsample_index(stream_downsample);
+                ImGui::BeginDisabled(camera_control->subscribe);
                 if(ImGui::Combo("downsample streaming", &downsample_current, items, IM_ARRAYSIZE(items))) {
+                    stream_downsample = item_numbers[downsample_current];
                     for (int i = 0; i < num_cameras; i++) {
-                        cameras_select[i].downsample = item_numbers[downsample_current];
+                        cameras_select[i].downsample = stream_downsample;
                     }
                 }
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                ImGui::TextDisabled("display only; fixed while streaming");
             }
             int fps_temp = streaming_target_fps.load(); // get the current atomic value
 
@@ -3407,6 +4058,46 @@ int main(int argc, char **args) {
                     "%s",
                     crop_size_config_status.c_str());
             }
+
+            ImGui::BeginDisabled(camera_control->subscribe);
+            int crop_preview_max_fps_input = crop_preview_max_fps;
+            if (ImGui::InputInt("crop preview max fps", &crop_preview_max_fps_input, 1, 15)) {
+                crop_preview_max_fps =
+                    sanitize_camera_crop_preview_max_fps(crop_preview_max_fps_input);
+                apply_gui_crop_preview_max_fps_to_camera_configs(
+                    cameras_params,
+                    num_cameras,
+                    crop_preview_max_fps);
+                if (camera_control->open) {
+                    crop_preview_config_status =
+                        "Crop preview max FPS updated in open camera configs; use Save to config to persist.";
+                    crop_preview_config_status_warning = false;
+                }
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::TextDisabled(
+                "0=unlimited, default %d; fixed at stream start",
+                CameraCropPipelineConfig::kDefaultPreviewMaxFps);
+            if (!crop_preview_config_status.empty()) {
+                ImGui::TextColored(
+                    crop_preview_config_status_warning
+                        ? ImVec4(0.95f, 0.75f, 0.2f, 1.0f)
+                        : ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                    "%s",
+                    crop_preview_config_status.c_str());
+            }
+            if (ImGui::Checkbox("show crop previews", &show_crop_preview_windows)) {
+                if (cropPreviewWorkers) {
+                    for (int i = 0; i < num_cameras; ++i) {
+                        if (cropPreviewWorkers[i]) {
+                            cropPreviewWorkers[i]->SetPreviewDisplayEnabled(
+                                show_crop_preview_windows);
+                        }
+                    }
+                }
+            }
+            ImGui::Checkbox("show YOLO speed graphs", &show_yolo_speed_graphs);
             
    
             if (camera_control->record_video) {
@@ -3907,6 +4598,9 @@ int main(int argc, char **args) {
                         camera_control->open = true;
                         cameras_params = new CameraParams[num_cameras];
                         cameras_select = new CameraEachSelect[num_cameras];
+                        for (int i = 0; i < num_cameras; ++i) {
+                            cameras_select[i].downsample = stream_downsample;
+                        }
 
                         std::vector<int> selected_cameras;
                         for (int i = 0; i < cam_count; i++) {
@@ -4001,6 +4695,29 @@ int main(int argc, char **args) {
                                 crop_size_config_status_warning = false;
                             }
                         }
+                        {
+                            bool mixed_preview_max_fps = false;
+                            crop_preview_max_fps =
+                                resolve_gui_crop_preview_max_fps_from_camera_configs(
+                                    cameras_params,
+                                    num_cameras,
+                                    crop_preview_max_fps,
+                                    &mixed_preview_max_fps);
+                            if (mixed_preview_max_fps) {
+                                crop_preview_config_status =
+                                    "Mixed crop preview FPS caps loaded; using first open camera value for this GUI session.";
+                                crop_preview_config_status_warning = true;
+                                apply_gui_crop_preview_max_fps_to_camera_configs(
+                                    cameras_params,
+                                    num_cameras,
+                                    crop_preview_max_fps);
+                            } else {
+                                crop_preview_config_status =
+                                    "Loaded crop preview max FPS from camera config: " +
+                                    std::to_string(crop_preview_max_fps) + ".";
+                                crop_preview_config_status_warning = false;
+                            }
+                        }
                         realtime_plot_data = new ScrollingBuffer[num_cameras];
 
                     }
@@ -4010,6 +4727,8 @@ int main(int argc, char **args) {
                     recording_config_defaults_status_warning = false;
                     crop_size_config_status.clear();
                     crop_size_config_status_warning = false;
+                    crop_preview_config_status.clear();
+                    crop_preview_config_status_warning = false;
                     ptp_stream_sync = false;
                     for (int i = 0; i < num_cameras; i++) {
                         close_camera(&ecams[i].camera, &cameras_params[i]);
@@ -4105,15 +4824,23 @@ int main(int argc, char **args) {
                             openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
                             cropProducerWorkers = new CropProducerWorker*[num_cameras]();
                             cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
+                            cropPreviewWorkers = new CropPreviewWorker*[num_cameras]();
                             poseWorkers = new PoseWorker*[num_cameras]();
                             tex = new GL_Texture[num_cameras];
                             crop_tex = new GL_Texture[num_cameras];
+                            display_uploaded_serials.assign(
+                                num_cameras,
+                                std::numeric_limits<uint64_t>::max());
+                            crop_preview_uploaded_serials.assign(
+                                num_cameras,
+                                std::numeric_limits<uint64_t>::max());
                             yolo_workers.assign(num_cameras, nullptr);
                             // Initialize all worker pointers to nullptr
                             for(int i = 0; i < num_cameras; ++i) {
                                 openGLDisplayWorkers[i] = nullptr;
                                 cropProducerWorkers[i] = nullptr;
                                 cropAndEncodeWorkers[i] = nullptr;
+                                cropPreviewWorkers[i] = nullptr;
                                 poseWorkers[i] = nullptr;
                             }
                             cudaSetDevice(display_gpu_id);
@@ -4182,10 +4909,23 @@ int main(int argc, char **args) {
                                         crop_size_px
                                     );
                                     if (cropProducerWorkers[i]) {
+                                        std::string preview_name = "CropPreview_Cam_" + cameras_params[i].camera_serial;
+                                        cropPreviewWorkers[i] = new CropPreviewWorker(
+                                            preview_name.c_str(),
+                                            &cameras_params[i],
+                                            crop_tex[i].cuda_buffer,
+                                            cropProducerWorkers[i]->GetCropProducer(),
+                                            crop_size_px);
+                                        cropPreviewWorkers[i]->SetPreviewDisplayEnabled(
+                                            show_crop_preview_windows);
                                         cropAndEncodeWorkers[i]->SetCropProducer(
                                             cropProducerWorkers[i]->GetCropProducer());
                                         cropAndEncodeWorkers[i]->SetCropProducerWorker(
                                             cropProducerWorkers[i]);
+                                        cropAndEncodeWorkers[i]->SetCropPreviewWorker(
+                                            cropPreviewWorkers[i]);
+                                        cropProducerWorkers[i]->SetCropPreviewWorker(
+                                            cropPreviewWorkers[i]);
                                         cropProducerWorkers[i]->SetCropAndEncodeWorker(cropAndEncodeWorkers[i]);
                                     }
                                 }
@@ -4219,6 +4959,11 @@ int main(int argc, char **args) {
                                 if (cropAndEncodeWorkers[i]) {
                                     cropAndEncodeWorkers[i]->SetMaxQueueSize(240);
                                     cropAndEncodeWorkers[i]->StartThread();
+                                }
+                                if (cropPreviewWorkers[i]) {
+                                    cropPreviewWorkers[i]->SetMaxQueueSize(
+                                        CropPreviewWorker::kDefaultQueueSize);
+                                    cropPreviewWorkers[i]->StartThread();
                                 }
                                 if (poseWorkers[i]) {
                                     poseWorkers[i]->SetMaxQueueSize(32);
@@ -4324,6 +5069,7 @@ int main(int argc, char **args) {
                             if (yolo_workers[i]) yolo_workers[i]->StopThread();
                             if (openGLDisplayWorkers[i]) openGLDisplayWorkers[i]->StopThread();
                             if (cropProducerWorkers[i]) cropProducerWorkers[i]->StopThread();
+                            if (cropPreviewWorkers[i]) cropPreviewWorkers[i]->StopThread();
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
                             if (poseWorkers[i]) poseWorkers[i]->StopThread();
                             orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
@@ -4343,6 +5089,11 @@ int main(int argc, char **args) {
                                 cropAndEncodeWorkers[i]->finalize_recording();
                                 delete cropAndEncodeWorkers[i];
                                 cropAndEncodeWorkers[i] = nullptr;
+                            }
+
+                            if (cropPreviewWorkers[i]) {
+                                delete cropPreviewWorkers[i];
+                                cropPreviewWorkers[i] = nullptr;
                             }
 
                             if (poseWorkers[i]) {
@@ -4373,6 +5124,7 @@ int main(int argc, char **args) {
                         if(openGLDisplayWorkers) { delete[] openGLDisplayWorkers; openGLDisplayWorkers = nullptr; }
                         if(cropProducerWorkers) { delete[] cropProducerWorkers; cropProducerWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
+                        if(cropPreviewWorkers) { delete[] cropPreviewWorkers; cropPreviewWorkers = nullptr; }
                         if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
                         frame_ipc_managers.clear();
@@ -4409,6 +5161,8 @@ int main(int argc, char **args) {
                         tex = nullptr;
                         if(crop_tex) delete[] crop_tex;
                         crop_tex = nullptr;
+                        display_uploaded_serials.clear();
+                        crop_preview_uploaded_serials.clear();
 
                         for(int i = 0; i < num_cameras; ++i) {
                             camera_resources[i].cleanup();
@@ -4422,7 +5176,15 @@ int main(int argc, char **args) {
                                 cameras_params,
                                 cameras_select,
                                 num_cameras,
-                                crop_size_px)) {
+                                crop_size_px,
+                                gui_display_frame_rate_json(
+                                    gui_display_frame_rate_stats,
+                                    stream_downsample,
+                                    resolve_gui_display_preview_max_fps_snapshot(
+                                        cameras_select,
+                                        num_cameras),
+                                    show_yolo_speed_graphs))) {
+                            gui_display_frame_rate_stats.Finish();
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                                       << std::endl;
                         }
@@ -4519,6 +5281,9 @@ int main(int argc, char **args) {
                                             cropAndEncodeWorkers[i]->RotateRecordingFolder(
                                                 resolved_recording_folder);
                                         }
+                                        if (cropPreviewWorkers[i]) {
+                                            cropPreviewWorkers[i]->ResetRunCounters();
+                                        }
                                         if (poseWorkers[i]) {
                                             poseWorkers[i]->RotateRecordingFolder(
                                                 resolved_recording_folder);
@@ -4542,6 +5307,7 @@ int main(int argc, char **args) {
                                 // START RECORDING
                                 try_start_timer();
                                 gui_mark_recording_started(&gui_session_timing);
+                                gui_display_frame_rate_stats.Reset();
                                 gui_note_recording_started(
                                     &gui_recording_run,
                                     camera_control,
@@ -4562,11 +5328,6 @@ int main(int argc, char **args) {
                                     "manual_stop");
                                 orange::session::request_drain_recording_run(&recording_session, camera_control);
                                 gui_mark_recording_finalizing(&gui_session_timing);
-                                for (int i = 0; i < num_cameras; ++i) {
-                                    if (cropProducerWorkers && cropProducerWorkers[i]) {
-                                        cropProducerWorkers[i]->PutObjectToQueueIn(nullptr);
-                                    }
-                                }
                                 try_stop_timer();
                                 if (!camera_control->recording_draining) {
                                     gui_mark_recording_finished(&gui_session_timing);
@@ -4602,7 +5363,15 @@ int main(int argc, char **args) {
                     cameras_params,
                     cameras_select,
                     num_cameras,
-                    crop_size_px)) {
+                    crop_size_px,
+                    gui_display_frame_rate_json(
+                        gui_display_frame_rate_stats,
+                        stream_downsample,
+                        resolve_gui_display_preview_max_fps_snapshot(
+                            cameras_select,
+                            num_cameras),
+                        show_yolo_speed_graphs))) {
+                gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);
             }
 
@@ -4621,22 +5390,68 @@ int main(int argc, char **args) {
         ImGui::End();
 
 
+        GuiFrameTimingSample gui_frame_timing;
         if (camera_control->subscribe) {
             // Upload the texture data from the PBOs to the GPU textures
             for (int i = 0; i < num_cameras; i++) {
                 if (cameras_select[i].stream_on) {
-                    int camera_width = int(cameras_params[i].width / cameras_select[i].downsample);
-                    int camera_height = int(cameras_params[i].height / cameras_select[i].downsample);
-                    upload_texture_from_pbo(tex[i], camera_width, camera_height);
+                    if (static_cast<int>(display_uploaded_serials.size()) < num_cameras) {
+                        display_uploaded_serials.resize(
+                            num_cameras,
+                            std::numeric_limits<uint64_t>::max());
+                    }
+                    bool should_upload_display = true;
+                    if (openGLDisplayWorkers && openGLDisplayWorkers[i]) {
+                        const uint64_t preview_serial =
+                            openGLDisplayWorkers[i]->PreviewSerial();
+                        should_upload_display =
+                            display_uploaded_serials[i] != preview_serial;
+                        if (should_upload_display) {
+                            display_uploaded_serials[i] = preview_serial;
+                        }
+                    }
+                    if (should_upload_display) {
+                        int camera_width = int(cameras_params[i].width / cameras_select[i].downsample);
+                        int camera_height = int(cameras_params[i].height / cameras_select[i].downsample);
+                        const auto upload_start = std::chrono::steady_clock::now();
+                        upload_texture_from_pbo(tex[i], camera_width, camera_height);
+                        gui_frame_timing.main_texture_upload_ms += gui_elapsed_ms(
+                            upload_start,
+                            std::chrono::steady_clock::now());
+                        gui_frame_timing.main_texture_upload_count++;
+                    }
                 }
-                if (cameras_select[i].crop_and_encode) {
-                    upload_texture_from_pbo(
-                        crop_tex[i],
-                        crop_size_px,
-                        crop_size_px);
+                if (show_crop_preview_windows && cameras_select[i].crop_and_encode) {
+                    if (static_cast<int>(crop_preview_uploaded_serials.size()) < num_cameras) {
+                        crop_preview_uploaded_serials.resize(
+                            num_cameras,
+                            std::numeric_limits<uint64_t>::max());
+                    }
+                    bool should_upload_crop_preview = true;
+                    if (cropPreviewWorkers && cropPreviewWorkers[i]) {
+                        const uint64_t preview_serial =
+                            cropPreviewWorkers[i]->PreviewSerial();
+                        should_upload_crop_preview =
+                            crop_preview_uploaded_serials[i] != preview_serial;
+                        if (should_upload_crop_preview) {
+                            crop_preview_uploaded_serials[i] = preview_serial;
+                        }
+                    }
+                    if (should_upload_crop_preview) {
+                        const auto upload_start = std::chrono::steady_clock::now();
+                        upload_texture_from_pbo(
+                            crop_tex[i],
+                            crop_size_px,
+                            crop_size_px);
+                        gui_frame_timing.crop_texture_upload_ms += gui_elapsed_ms(
+                            upload_start,
+                            std::chrono::steady_clock::now());
+                        gui_frame_timing.crop_texture_upload_count++;
+                    }
                 }
             }
             // Draw main camera views
+            const auto camera_draw_start = std::chrono::steady_clock::now();
             const GuiSessionTimingSnapshot timing =
                 gui_session_timing_snapshot(&gui_session_timing, camera_control);
             if (camera_control->record_video) {
@@ -4659,36 +5474,22 @@ int main(int argc, char **args) {
             
                         ImVec2 avail_size = ImGui::GetContentRegionAvail();
                         avail_size.y *= 0.5f;
-    
-                        static ImVec2 bmin(0, 0);
-                        static ImVec2 uv0(0, 0);
-                        static ImVec2 uv1(1, 1);
-                        static ImVec4 tint(1, 1, 1, 1);
-    
-                        // ImGui::Image((void*)(intptr_t)texture[i], avail_size);
-                        ImPlotAxisFlags axisFlags = ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks |
-                                                    ImPlotAxisFlags_NoGridLines;
-                        if (ImPlot::BeginPlot("##no_plot_name", avail_size, ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
-                            
-                            // Calculate the correct display dimensions based on the downsample factor.
-                            const float display_width = static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
-                            const float display_height = static_cast<float>(cameras_params[i].height / cameras_select[i].downsample);
+                        const float display_width =
+                            static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
+                        const float display_height =
+                            static_cast<float>(cameras_params[i].height / cameras_select[i].downsample);
+                        render_texture_image_centered(
+                            tex[i].texture,
+                            avail_size,
+                            display_width,
+                            display_height);
 
-                            // Set the plot axes to match the dimensions of the image being displayed.
-                            ImPlot::SetupAxesLimits(0, display_width, 0, display_height);
-                            ImPlot::SetupAxis(ImAxis_X1, nullptr, axisFlags); 
-                            ImPlot::SetupAxis(ImAxis_Y1, nullptr, axisFlags);
-
-                            // Tell ImPlot to draw the image using these correct dimensions.
-                            ImPlot::PlotImage("##no_image_name", (void *) (intptr_t) tex[i].texture, ImVec2(0, 0),
-                                              ImVec2(display_width, display_height));
-                                              
-
-                            ImPlot::EndPlot();
-                        }
-
-                        if (cameras_select[i].yolo && yolo_worker) {
+                        if (show_yolo_speed_graphs && cameras_select[i].yolo && yolo_worker) {
+                            const auto speed_graph_start = std::chrono::steady_clock::now();
                             RenderSpeedGraph(i, yolo_worker, speed_tracking_data[i]);
+                            gui_frame_timing.speed_graph_draw_ms += gui_elapsed_ms(
+                                speed_graph_start,
+                                std::chrono::steady_clock::now());
                         }
                         ImGui::End();
                     }
@@ -4704,49 +5505,49 @@ int main(int argc, char **args) {
                             timing,
                             streaming_fps.load(),
                             cameras_select[i].yolo ? yolo_worker : nullptr);
-                        ImVec2 avail_size = ImGui::GetContentRegionAvail();
-    
-                        static ImVec2 bmin(0, 0);
-                        static ImVec2 uv0(0, 0);
-                        static ImVec2 uv1(1, 1);
-                        static ImVec4 tint(1, 1, 1, 1);
-    
-                        // ImGui::Image((void*)(intptr_t)texture[i], avail_size);
-                        ImPlotAxisFlags axisFlags = ImPlotAxisFlags_NoTickLabels | ImPlotAxisFlags_NoTickMarks |
-                                                    ImPlotAxisFlags_NoGridLines;
-                        if (ImPlot::BeginPlot("##no_plot_name", avail_size, ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
-                            ImPlot::SetupAxesLimits(0, cameras_params[i].width, 0, cameras_params[i].height);
-                            ImPlot::SetupAxis(ImAxis_X1, nullptr, axisFlags); // X-axis
-                            ImPlot::SetupAxis(ImAxis_Y1, nullptr, axisFlags); // Y-axis
-                            ImPlot::PlotImage("##no_image_name", (void *) (intptr_t) tex[i].texture, ImVec2(0, 0),
-                                                ImVec2(cameras_params[i].width, cameras_params[i].height));
-                        
-                            ImPlot::EndPlot();
-                            
-                        }
+                        const ImVec2 avail_size = ImGui::GetContentRegionAvail();
+                        const float display_width =
+                            static_cast<float>(cameras_params[i].width / cameras_select[i].downsample);
+                        const float display_height =
+                            static_cast<float>(cameras_params[i].height / cameras_select[i].downsample);
+                        render_texture_image_centered(
+                            tex[i].texture,
+                            avail_size,
+                            display_width,
+                            display_height);
                         ImGui::End();
                     }
                 }
             }
+            gui_frame_timing.camera_window_draw_ms = gui_elapsed_ms(
+                camera_draw_start,
+                std::chrono::steady_clock::now());
+
+            const auto crop_draw_start = std::chrono::steady_clock::now();
             for (int i = 0; i < num_cameras; i++) {
                     // Check if the crop and encode feature is enabled for this camera
-                    if (cameras_select[i].crop_and_encode) {
+                    if (show_crop_preview_windows && cameras_select[i].crop_and_encode) {
                         // Create a unique name for the new window
                         std::string window_name = cameras_params[i].camera_name + " Crop";
                         ImGui::Begin(window_name.c_str());
-
-                        // Use ImPlot to display the texture, just like the main view
-                        if (ImPlot::BeginPlot("##crop_plot", ImGui::GetContentRegionAvail(), ImPlotFlags_Equal | ImPlotAxisFlags_AutoFit)) {
-                            ImPlot::PlotImage(
-                                "##crop_image",
-                                (void*)(intptr_t)crop_tex[i].texture,
-                                ImVec2(0, 0),
-                                ImVec2(crop_size_px, crop_size_px));
-                            ImPlot::EndPlot();
+                        const ImVec2 available_size = ImGui::GetContentRegionAvail();
+                        const ImVec2 image_size =
+                            fit_square_image_size(available_size, static_cast<float>(crop_size_px));
+                        const float x_offset = std::max(0.0f, (available_size.x - image_size.x) * 0.5f);
+                        if (x_offset > 0.0f) {
+                            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + x_offset);
                         }
+                        ImGui::Image(
+                            (ImTextureID)(intptr_t)crop_tex[i].texture,
+                            image_size,
+                            ImVec2(0, 0),
+                            ImVec2(1, 1));
                         ImGui::End();
-                    }
-                }
+	                    }
+	                }
+            gui_frame_timing.crop_window_draw_ms = gui_elapsed_ms(
+                crop_draw_start,
+                std::chrono::steady_clock::now());
         }
 
         if (camera_control->open && show_realtime_plot) {
@@ -4782,7 +5583,23 @@ int main(int argc, char **args) {
             }
         }
 
+        const auto render_start = std::chrono::steady_clock::now();
         render_a_frame(window);
+        const auto render_end = std::chrono::steady_clock::now();
+        gui_frame_timing.render_present_ms = gui_elapsed_ms(render_start, render_end);
+        gui_frame_timing.frame_total_ms = gui_elapsed_ms(gui_frame_start, render_end);
+
+        gui_sample_display_frame_rate(
+            &gui_display_frame_rate_stats,
+            ImGui::GetIO().DeltaTime,
+            camera_control->record_video,
+            camera_control->record_video &&
+                gui_any_crop_recording_enabled(cameras_select, num_cameras),
+            show_crop_preview_windows);
+        gui_sample_frame_timings(
+            &gui_display_frame_rate_stats,
+            camera_control->record_video,
+            gui_frame_timing);
     }
 
     if (aperture_ui_state.worker.joinable()) {

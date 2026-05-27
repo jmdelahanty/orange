@@ -35,6 +35,10 @@ Options:
   --config-folder <path>           Camera config folder. Default local/100_cam4_ptp.
   --output-dir <path>              External recorder artifact root. Default /tmp.
   --skip-video-sanity              Do not decode/check external MP4 content.
+  --max-encode-queue-high-water <int>
+                                   Verifier threshold for recorder encode queue high-water.
+  --max-enqueue-age-p95-ms <float>
+                                   Verifier threshold for recorder enqueue-age p95.
   --keep-temp-spec                 Keep generated temp spec in output dir.
   --help
 EOF
@@ -67,6 +71,8 @@ CONFIG_FOLDER="/home/jeremy/orange_data/config/local/100_cam4_ptp"
 OUTPUT_DIR="/tmp"
 SKIP_VIDEO_SANITY=0
 KEEP_TEMP_SPEC=0
+VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER=""
+VERIFY_MAX_ENQUEUE_AGE_P95_MS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -190,6 +196,18 @@ while [[ $# -gt 0 ]]; do
       SKIP_VIDEO_SANITY=1
       shift
       ;;
+    --max-encode-queue-high-water)
+      shift
+      [[ $# -gt 0 ]] || { echo "--max-encode-queue-high-water requires a value." >&2; exit 2; }
+      VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER="$1"
+      shift
+      ;;
+    --max-enqueue-age-p95-ms)
+      shift
+      [[ $# -gt 0 ]] || { echo "--max-enqueue-age-p95-ms requires a value." >&2; exit 2; }
+      VERIFY_MAX_ENQUEUE_AGE_P95_MS="$1"
+      shift
+      ;;
     --keep-temp-spec)
       KEEP_TEMP_SPEC=1
       shift
@@ -212,6 +230,18 @@ if [[ "$PTP_REGISTER_READ_DECIMATE" -lt 1 ]]; then
 fi
 if [[ "$PREWARM_BYTES" != "auto" ]]; then
   [[ "$PREWARM_BYTES" =~ ^[0-9]+$ ]] || { echo "PREWARM_BYTES must be auto or a non-negative integer." >&2; exit 2; }
+fi
+if [[ -n "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" ]]; then
+  [[ "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" =~ ^[0-9]+$ ]] || {
+    echo "VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER must be a non-negative integer." >&2
+    exit 2
+  }
+fi
+if [[ -n "$VERIFY_MAX_ENQUEUE_AGE_P95_MS" ]]; then
+  [[ "$VERIFY_MAX_ENQUEUE_AGE_P95_MS" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+    echo "VERIFY_MAX_ENQUEUE_AGE_P95_MS must be a non-negative number." >&2
+    exit 2
+  }
 fi
 
 IFS=',' read -r -a CAMERAS <<<"$CAMERA_SERIALS"
@@ -823,6 +853,15 @@ for serial, camera in summary["cameras"].items():
     )
 PY
 
-"$REPO_ROOT/scripts/verify_external_recorder_session.py" \
-  "$RUN_DIR" \
+VERIFY_ARGS=(
+  "$RUN_DIR"
   --analytics-root "$ANALYTICS_ROOT"
+  --expect-encode-queue-depth "$QUEUE_DEPTH"
+)
+if [[ -n "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" ]]; then
+  VERIFY_ARGS+=(--max-encode-queue-high-water "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER")
+fi
+if [[ -n "$VERIFY_MAX_ENQUEUE_AGE_P95_MS" ]]; then
+  VERIFY_ARGS+=(--max-enqueue-age-p95-ms "$VERIFY_MAX_ENQUEUE_AGE_P95_MS")
+fi
+"$REPO_ROOT/scripts/verify_external_recorder_session.py" "${VERIFY_ARGS[@]}"

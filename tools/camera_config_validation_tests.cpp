@@ -31,6 +31,10 @@ void test_build_emits_canonical_crop_size()
     require(crop_pipeline.contains("crop_size_px"), "crop pipeline should emit crop_size_px");
     require(crop_pipeline["crop_size_px"].get<int>() == 328,
             "crop pipeline should preserve an even configured crop size");
+    require(crop_pipeline.contains("preview_max_fps"), "crop pipeline should emit preview_max_fps");
+    require(crop_pipeline["preview_max_fps"].get<int>() ==
+                CameraCropPipelineConfig::kDefaultPreviewMaxFps,
+            "crop pipeline should emit the default preview max FPS");
 }
 
 void test_build_sanitizes_odd_crop_size()
@@ -55,6 +59,9 @@ void test_parse_round_trips_canonical_crop_size()
 
     require(loaded_params.crop_pipeline.crop_size_px == 328,
             "crop pipeline should round-trip crop_size_px");
+    require(loaded_params.crop_pipeline.preview_max_fps ==
+                CameraCropPipelineConfig::kDefaultPreviewMaxFps,
+            "crop pipeline should preserve default preview_max_fps when absent");
 }
 
 void test_parse_missing_crop_pipeline_uses_default()
@@ -64,6 +71,8 @@ void test_parse_missing_crop_pipeline_uses_default()
 
     require(params.crop_pipeline.crop_size_px == CameraCropPipelineConfig::kDefaultCropSizePx,
             "missing crop_pipeline should reset to the default crop size");
+    require(params.crop_pipeline.preview_max_fps == CameraCropPipelineConfig::kDefaultPreviewMaxFps,
+            "missing crop_pipeline should reset to the default preview max FPS");
 }
 
 void test_parse_clamps_too_small_crop_size()
@@ -118,6 +127,58 @@ void test_parse_legacy_square_dimensions()
             "legacy square width/height should load as crop_size_px");
 }
 
+void test_parse_preview_max_fps()
+{
+    const nlohmann::json camera_config = {
+        {"crop_pipeline", {{"crop_size_px", 256}, {"preview_max_fps", 30}}}
+    };
+
+    CameraParams params{};
+    orange::camera_config::parse_crop_pipeline_config(camera_config, &params);
+
+    require(params.crop_pipeline.preview_max_fps == 30,
+            "preview_max_fps should load from crop_pipeline");
+}
+
+void test_parse_preview_max_fps_zero_unlimited()
+{
+    const nlohmann::json camera_config = {
+        {"crop_pipeline", {{"crop_size_px", 256}, {"preview_max_fps", 0}}}
+    };
+
+    CameraParams params{};
+    orange::camera_config::parse_crop_pipeline_config(camera_config, &params);
+
+    require(params.crop_pipeline.preview_max_fps == 0,
+            "preview_max_fps=0 should be preserved as unlimited mode");
+}
+
+void test_parse_preview_max_fps_negative_unlimited()
+{
+    const nlohmann::json camera_config = {
+        {"crop_pipeline", {{"crop_size_px", 256}, {"preview_max_fps", -1}}}
+    };
+
+    CameraParams params{};
+    orange::camera_config::parse_crop_pipeline_config(camera_config, &params);
+
+    require(params.crop_pipeline.preview_max_fps == 0,
+            "negative preview_max_fps should sanitize to unlimited mode");
+}
+
+void test_parse_preview_max_fps_clamps_too_large()
+{
+    const nlohmann::json camera_config = {
+        {"crop_pipeline", {{"crop_size_px", 256}, {"preview_max_fps", 999999}}}
+    };
+
+    CameraParams params{};
+    orange::camera_config::parse_crop_pipeline_config(camera_config, &params);
+
+    require(params.crop_pipeline.preview_max_fps == CameraCropPipelineConfig::kMaxPreviewMaxFps,
+            "too-large preview_max_fps should clamp to the maximum");
+}
+
 }  // namespace
 
 int main()
@@ -136,6 +197,10 @@ int main()
         {"parse_clamps_too_large_crop_size", &test_parse_clamps_too_large_crop_size},
         {"parse_legacy_size_px_alias", &test_parse_legacy_size_px_alias},
         {"parse_legacy_square_dimensions", &test_parse_legacy_square_dimensions},
+        {"parse_preview_max_fps", &test_parse_preview_max_fps},
+        {"parse_preview_max_fps_zero_unlimited", &test_parse_preview_max_fps_zero_unlimited},
+        {"parse_preview_max_fps_negative_unlimited", &test_parse_preview_max_fps_negative_unlimited},
+        {"parse_preview_max_fps_clamps_too_large", &test_parse_preview_max_fps_clamps_too_large},
     };
 
     for (const auto& test : tests) {

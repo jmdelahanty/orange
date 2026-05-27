@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import shutil
@@ -149,6 +150,134 @@ def parse_args() -> argparse.Namespace:
         default=5.0,
         help="Fail decoded video sanity if sampled frames are flatter than this stddev.",
     )
+    parser.add_argument(
+        "--min-gui-recording-fps-p05",
+        type=float,
+        default=None,
+        help="Optional minimum recording-window GUI FPS p05 from recording_snapshot session telemetry.",
+    )
+    parser.add_argument(
+        "--min-gui-crop-preview-visible-fps-p05",
+        type=float,
+        default=None,
+        help="Optional minimum GUI FPS p05 while crop preview windows were visible.",
+    )
+    parser.add_argument(
+        "--min-gui-crop-preview-hidden-fps-p05",
+        type=float,
+        default=None,
+        help="Optional minimum GUI FPS p05 while crop preview windows were hidden.",
+    )
+    parser.add_argument(
+        "--expect-gui-stream-downsample",
+        type=int,
+        default=None,
+        help="Optional expected recording_snapshot session.gui_display_frame_rate.stream_downsample value.",
+    )
+    parser.add_argument(
+        "--expect-display-preview-max-fps",
+        type=int,
+        default=None,
+        help="Optional expected main-camera display preview FPS cap from snapshot and pipeline perf.",
+    )
+    parser.add_argument(
+        "--expect-yolo-speed-graphs-enabled",
+        type=int,
+        choices=[0, 1],
+        default=None,
+        help=(
+            "Optional expected recording_snapshot "
+            "session.gui_display_frame_rate.yolo_speed_graphs_enabled value."
+        ),
+    )
+    parser.add_argument(
+        "--require-gui-timing-telemetry",
+        action="store_true",
+        help=(
+            "Require recording_snapshot session.gui_display_frame_rate.timings "
+            "phase timing buckets to be present and sampled."
+        ),
+    )
+    parser.add_argument(
+        "--expect-crop-preview-max-fps",
+        type=int,
+        default=None,
+        help="Optional expected Cam*_crop_sidecar_perf.csv preview_max_fps value.",
+    )
+    parser.add_argument(
+        "--expect-crop-preview-display-enabled",
+        type=int,
+        choices=(0, 1),
+        default=None,
+        help=(
+            "Optional expected Cam*_crop_sidecar_perf.csv "
+            "preview_display_enabled_final value for crop-enabled cameras."
+        ),
+    )
+    parser.add_argument(
+        "--expect-crop-preview-disabled",
+        type=int,
+        choices=(0, 1),
+        default=None,
+        help=(
+            "Optional expected Cam*_crop_sidecar_perf.csv preview_disabled "
+            "value for crop-enabled cameras."
+        ),
+    )
+    parser.add_argument(
+        "--min-crop-frame-pool-size",
+        type=int,
+        default=None,
+        help="Optional minimum Cam*_crop_sidecar_perf.csv crop_frame_pool_size value.",
+    )
+    parser.add_argument(
+        "--expect-external-crop-encode-queue-depth",
+        type=int,
+        default=None,
+        help=(
+            "Optional expected external crop recorder summary encode_queue_depth "
+            "for crop outputs using backend=external_ipc."
+        ),
+    )
+    parser.add_argument(
+        "--max-external-crop-encode-queue-high-water",
+        type=int,
+        default=None,
+        help=(
+            "Optional maximum external crop recorder summary encode_queue_high_water "
+            "for crop outputs using backend=external_ipc."
+        ),
+    )
+    parser.add_argument(
+        "--max-external-crop-enqueue-age-p95-ms",
+        type=float,
+        default=None,
+        help=(
+            "Optional maximum external crop recorder summary "
+            "external_encode.enqueue_age_p95_ms for crop outputs using backend=external_ipc."
+        ),
+    )
+    parser.add_argument(
+        "--require-crop-preview-counters",
+        action="store_true",
+        help="Fail if crop sidecar preview counters are missing for crop-enabled cameras.",
+    )
+    parser.add_argument(
+        "--require-crop-preview-sampling",
+        action="store_true",
+        help=(
+            "Fail unless crop preview counters prove a visible bounded preview "
+            "run skipped at least one offered frame by cadence."
+        ),
+    )
+    parser.add_argument(
+        "--require-crop-recording-artifacts",
+        action="store_true",
+        help=(
+            "Fail unless crop-enabled cameras have aligned crop MP4, metadata, "
+            "keyframe, and perf artifacts with zero crop drops."
+        ),
+    )
     parser.add_argument("--skip-video-content-check", action="store_true")
     parser.add_argument("--ffprobe", default=default_tool(DEFAULT_FFPROBE, "ffprobe"))
     parser.add_argument("--ffmpeg", default=default_tool(DEFAULT_FFMPEG, "ffmpeg"))
@@ -164,6 +293,15 @@ def read_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
+
+
+def json_file_parses_as_object(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(payload, dict)
 
 
 def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
@@ -290,6 +428,29 @@ def count_csv_data_rows(path: Path) -> int | None:
             return max(0, sum(1 for _ in handle) - 1)
     except OSError:
         return None
+
+
+def read_csv_rows(path: Path) -> list[dict[str, str]]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            return list(csv.DictReader(handle))
+    except OSError:
+        return []
+
+
+def external_detach_queue_high_water(summary_path: Path) -> int | None:
+    name = summary_path.name
+    if not name.endswith("_summary.json"):
+        return None
+    detach_path = summary_path.with_name(name[: -len("_summary.json")] + "_detach.csv")
+    rows = read_csv_rows(detach_path)
+    values = [
+        value
+        for row in rows
+        for value in [int_csv_field(row, "encode_queue_depth")]
+        if value is not None
+    ]
+    return max(values) if values else None
 
 
 def check_recording_session_manifest(
@@ -453,6 +614,156 @@ def integer(value: Any) -> int | None:
         return None
 
 
+def int_csv_field(row: dict[str, str], field: str) -> int | None:
+    value = row.get(field)
+    try:
+        return int(value) if value is not None and value != "" else None
+    except ValueError:
+        return None
+
+
+def crop_enabled_cameras(snapshot: dict[str, Any], cameras: list[str]) -> list[str]:
+    crop_outputs = snapshot.get("crop_outputs")
+    crop_outputs = crop_outputs if isinstance(crop_outputs, dict) else {}
+    return [
+        serial
+        for serial in cameras
+        if isinstance(crop_outputs.get(serial), dict)
+        and crop_outputs[serial].get("enabled") is True
+    ]
+
+
+def crop_output_for(snapshot: dict[str, Any], serial: str) -> dict[str, Any]:
+    crop_outputs = snapshot.get("crop_outputs")
+    crop_outputs = crop_outputs if isinstance(crop_outputs, dict) else {}
+    crop_output = crop_outputs.get(serial)
+    return crop_output if isinstance(crop_output, dict) else {}
+
+
+def crop_runtime_for(crop_output: dict[str, Any]) -> dict[str, Any]:
+    runtime = crop_output.get("runtime")
+    return runtime if isinstance(runtime, dict) else {}
+
+
+def crop_size_from_snapshot(snapshot: dict[str, Any], serial: str) -> int | None:
+    crop_output = crop_output_for(snapshot, serial)
+    runtime = crop_runtime_for(crop_output)
+    for field in ("crop_size_px", "width", "height"):
+        value = integer(runtime.get(field))
+        if value is not None and value > 0:
+            return value
+
+    camera_runtime = nested_dict(snapshot, "camera_runtime", serial, "runtime")
+    crop_pipeline = camera_runtime.get("crop_pipeline")
+    crop_pipeline = crop_pipeline if isinstance(crop_pipeline, dict) else {}
+    value = integer(crop_pipeline.get("crop_size_px"))
+    if value is not None and value > 0:
+        return value
+
+    camera_config = nested_dict(snapshot, "cameras", serial)
+    crop_pipeline = camera_config.get("crop_pipeline")
+    crop_pipeline = crop_pipeline if isinstance(crop_pipeline, dict) else {}
+    value = integer(crop_pipeline.get("crop_size_px"))
+    return value if value is not None and value > 0 else None
+
+
+def crop_artifact_path(
+    recording_folder: Path,
+    crop_output: dict[str, Any],
+    key: str,
+    default_name: str,
+) -> Path:
+    runtime = crop_runtime_for(crop_output)
+    files = runtime.get("files")
+    files = files if isinstance(files, dict) else {}
+    return path_from_recording_folder(recording_folder, files.get(key) or default_name)
+
+
+def crop_recording_output_descriptor(snapshot: dict[str, Any], serial: str) -> dict[str, Any]:
+    recording_outputs = snapshot.get("recording_outputs")
+    recording_outputs = recording_outputs if isinstance(recording_outputs, dict) else {}
+    camera_outputs = recording_outputs.get(serial)
+    camera_outputs = camera_outputs if isinstance(camera_outputs, dict) else {}
+    crop_output = camera_outputs.get("crop")
+    return crop_output if isinstance(crop_output, dict) else {}
+
+
+def crop_descriptor_artifact_path(
+    recording_folder: Path,
+    crop_descriptor: dict[str, Any],
+    key: str,
+) -> Path | None:
+    value = crop_descriptor.get(key)
+    if not isinstance(value, str) or not value:
+        return None
+    return path_from_recording_folder(recording_folder, value)
+
+
+def resolve_crop_artifact_path(
+    recording_folder: Path,
+    crop_output: dict[str, Any],
+    crop_descriptor: dict[str, Any],
+    key: str,
+    default_name: str,
+) -> Path:
+    descriptor_path = crop_descriptor_artifact_path(recording_folder, crop_descriptor, key)
+    if descriptor_path is not None:
+        return descriptor_path
+    return crop_artifact_path(recording_folder, crop_output, key, default_name)
+
+
+def crop_metadata_row_count(recording_folder: Path, snapshot: dict[str, Any], serial: str) -> int | None:
+    crop_output = crop_output_for(snapshot, serial)
+    crop_descriptor = crop_recording_output_descriptor(snapshot, serial)
+    metadata_path = resolve_crop_artifact_path(
+        recording_folder,
+        crop_output,
+        crop_descriptor,
+        "metadata",
+        f"Cam{serial}_crop_meta.csv",
+    )
+    return count_csv_data_rows(metadata_path)
+
+
+def crop_metadata_detection_row_count(recording_folder: Path, snapshot: dict[str, Any], serial: str) -> int | None:
+    crop_output = crop_output_for(snapshot, serial)
+    crop_descriptor = crop_recording_output_descriptor(snapshot, serial)
+    metadata_path = resolve_crop_artifact_path(
+        recording_folder,
+        crop_output,
+        crop_descriptor,
+        "metadata",
+        f"Cam{serial}_crop_meta.csv",
+    )
+    try:
+        with metadata_path.open("r", encoding="utf-8", newline="") as handle:
+            return sum(
+                1
+                for row in csv.DictReader(handle)
+                if int_csv_field(row, "has_detection") == 1
+            )
+    except OSError:
+        return None
+
+
+def recording_frame_ids_from_rows(rows: list[dict[str, str]]) -> tuple[list[int], int]:
+    ids: list[int] = []
+    missing = 0
+    for row in rows:
+        value = int_csv_field(row, "recording_frame_id")
+        if value is None:
+            missing += 1
+        else:
+            ids.append(value)
+    return ids, missing
+
+
+def ids_are_positive_strictly_increasing(ids: list[int]) -> bool:
+    return all(value > 0 for value in ids) and all(
+        ids[index] < ids[index + 1] for index in range(len(ids) - 1)
+    )
+
+
 def fmt_float(value: Any, precision: int = 3) -> str:
     parsed = number(value)
     return "n/a" if parsed is None else f"{parsed:.{precision}f}"
@@ -557,7 +868,12 @@ def check_ptp_counters(
             )
 
 
-def check_pipeline(reporter: Reporter, summary: dict[str, Any], cameras: list[str]) -> None:
+def check_pipeline(
+    reporter: Reporter,
+    summary: dict[str, Any],
+    cameras: list[str],
+    expected_display_preview_max_fps: int | None = None,
+) -> None:
     for serial in cameras:
         pipeline = nested_dict(summary, "pipeline", serial)
         if not pipeline:
@@ -581,6 +897,16 @@ def check_pipeline(reporter: Reporter, summary: dict[str, Any], cameras: list[st
         enc_slow = integer(final.get("enc_slow"))
         if enc_slow is not None:
             reporter.pass_(f"Cam{serial} enc_slow={enc_slow} (reported, not a failure)")
+        if expected_display_preview_max_fps is not None:
+            display_preview_max_fps = integer(final.get("display_preview_max_fps"))
+            reporter.check(
+                display_preview_max_fps == expected_display_preview_max_fps,
+                f"Cam{serial} display preview max FPS={display_preview_max_fps}",
+                (
+                    f"Cam{serial} display preview max FPS={display_preview_max_fps}, "
+                    f"expected {expected_display_preview_max_fps}"
+                ),
+            )
 
 
 def video_content_sanity(
@@ -839,6 +1165,771 @@ def check_yolo(
             reporter.pass_(f"Cam{serial} acquisition_to_ptp_done p95={ptp_done_p95:.3f} ms")
 
 
+def check_crop_preview_counters(
+    reporter: Reporter,
+    recording_folder: Path,
+    snapshot: dict[str, Any],
+    cameras: list[str],
+    expected_preview_max_fps: int | None,
+    expected_preview_display_enabled: int | None,
+    expected_preview_disabled: int | None,
+    min_crop_frame_pool_size: int | None,
+    require_sampling: bool,
+    require_counters: bool,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    if (
+        expected_preview_max_fps is None
+        and expected_preview_display_enabled is None
+        and expected_preview_disabled is None
+        and min_crop_frame_pool_size is None
+        and not require_sampling
+        and not require_counters
+    ):
+        return summary
+
+    crop_outputs = snapshot.get("crop_outputs")
+    crop_outputs = crop_outputs if isinstance(crop_outputs, dict) else {}
+    if crop_outputs:
+        target_cameras = crop_enabled_cameras(snapshot, cameras)
+    else:
+        target_cameras = cameras
+
+    if (require_counters or require_sampling) and not target_cameras:
+        reporter.fail("crop preview counters required but no crop-enabled cameras were found")
+
+    for serial in target_cameras:
+        path = recording_folder / f"Cam{serial}_crop_sidecar_perf.csv"
+        rows = read_csv_rows(path)
+        if not rows:
+            if require_counters or require_sampling:
+                reporter.fail(f"Cam{serial} crop sidecar preview counters missing at {path}")
+            else:
+                reporter.warn(f"Cam{serial} crop sidecar preview counters absent")
+            continue
+
+        row = rows[-1]
+        preview_max_fps = int_csv_field(row, "preview_max_fps")
+        preview_disabled = int_csv_field(row, "preview_disabled")
+        preview_display_enabled = int_csv_field(row, "preview_display_enabled_final")
+        crop_frame_pool_size = int_csv_field(row, "crop_frame_pool_size")
+        producer_recording_crop_frame_offered = int_csv_field(
+            row, "producer_recording_crop_frame_offered")
+        producer_recording_crop_frame_accepted = int_csv_field(
+            row, "producer_recording_crop_frame_accepted")
+        producer_recording_crop_frame_dropped = int_csv_field(
+            row, "producer_recording_crop_frame_dropped")
+        producer_preview_crop_frame_offered = int_csv_field(
+            row, "producer_preview_crop_frame_offered")
+        producer_preview_crop_frame_accepted = int_csv_field(
+            row, "producer_preview_crop_frame_accepted")
+        producer_preview_crop_frame_dropped = int_csv_field(
+            row, "producer_preview_crop_frame_dropped")
+        producer_pose_crop_frame_offered = int_csv_field(
+            row, "producer_pose_crop_frame_offered")
+        producer_pose_crop_frame_accepted = int_csv_field(
+            row, "producer_pose_crop_frame_accepted")
+        producer_pose_crop_frame_dropped = int_csv_field(
+            row, "producer_pose_crop_frame_dropped")
+        producer_crop_frame_pool_misses_total = int_csv_field(
+            row, "producer_crop_frame_pool_misses_total")
+        offered = int_csv_field(row, "preview_frames_offered")
+        updated = int_csv_field(row, "preview_frames_updated")
+        skipped = int_csv_field(row, "preview_frames_skipped_by_cadence")
+        clears = int_csv_field(row, "preview_clears_updated")
+        preview_queue_full_drops = int_csv_field(row, "preview_queue_full_drops")
+        preview_queue_high_water = int_csv_field(row, "preview_queue_high_water")
+        serial_final = int_csv_field(row, "preview_serial_final")
+        crop_metadata_rows = crop_metadata_row_count(recording_folder, snapshot, serial)
+        crop_metadata_detection_rows = crop_metadata_detection_row_count(
+            recording_folder,
+            snapshot,
+            serial,
+        )
+
+        summary[serial] = {
+            "preview_max_fps": preview_max_fps,
+            "preview_disabled": preview_disabled,
+            "preview_display_enabled_final": preview_display_enabled,
+            "crop_frame_pool_size": crop_frame_pool_size,
+            "producer_recording_crop_frame_offered": producer_recording_crop_frame_offered,
+            "producer_recording_crop_frame_accepted": producer_recording_crop_frame_accepted,
+            "producer_recording_crop_frame_dropped": producer_recording_crop_frame_dropped,
+            "producer_preview_crop_frame_offered": producer_preview_crop_frame_offered,
+            "producer_preview_crop_frame_accepted": producer_preview_crop_frame_accepted,
+            "producer_preview_crop_frame_dropped": producer_preview_crop_frame_dropped,
+            "producer_pose_crop_frame_offered": producer_pose_crop_frame_offered,
+            "producer_pose_crop_frame_accepted": producer_pose_crop_frame_accepted,
+            "producer_pose_crop_frame_dropped": producer_pose_crop_frame_dropped,
+            "producer_crop_frame_pool_misses_total": producer_crop_frame_pool_misses_total,
+            "preview_frames_offered": offered,
+            "preview_frames_updated": updated,
+            "preview_frames_skipped_by_cadence": skipped,
+            "preview_clears_updated": clears,
+            "preview_queue_full_drops": preview_queue_full_drops,
+            "preview_queue_high_water": preview_queue_high_water,
+            "preview_serial_final": serial_final,
+            "crop_metadata_rows": crop_metadata_rows,
+            "crop_metadata_detection_rows": crop_metadata_detection_rows,
+        }
+
+        required_fields_present = all(
+            value is not None
+            for value in (
+                preview_max_fps,
+                preview_disabled,
+                preview_display_enabled,
+                offered,
+                updated,
+                skipped,
+                clears,
+                serial_final,
+            )
+        )
+        reporter.check(
+            required_fields_present,
+            f"Cam{serial} crop preview counters present",
+            f"Cam{serial} crop preview counters incomplete in {path}",
+        )
+        if expected_preview_max_fps is not None:
+            reporter.check(
+                preview_max_fps == expected_preview_max_fps,
+                f"Cam{serial} crop preview max FPS={preview_max_fps}",
+                (
+                    f"Cam{serial} crop preview max FPS={preview_max_fps}, "
+                    f"expected {expected_preview_max_fps}"
+                ),
+            )
+        if expected_preview_display_enabled is not None:
+            reporter.check(
+                preview_display_enabled == expected_preview_display_enabled,
+                f"Cam{serial} crop preview display_enabled_final={preview_display_enabled}",
+                (
+                    f"Cam{serial} crop preview display_enabled_final={preview_display_enabled}, "
+                    f"expected {expected_preview_display_enabled}"
+                ),
+            )
+        if expected_preview_disabled is not None:
+            reporter.check(
+                preview_disabled == expected_preview_disabled,
+                f"Cam{serial} crop preview disabled={preview_disabled}",
+                (
+                    f"Cam{serial} crop preview disabled={preview_disabled}, "
+                    f"expected {expected_preview_disabled}"
+                ),
+            )
+        if min_crop_frame_pool_size is not None:
+            reporter.check(
+                crop_frame_pool_size is not None and crop_frame_pool_size >= min_crop_frame_pool_size,
+                f"Cam{serial} crop frame pool size={crop_frame_pool_size}",
+                (
+                    f"Cam{serial} crop frame pool size={crop_frame_pool_size}, "
+                    f"expected >= {min_crop_frame_pool_size}"
+                ),
+            )
+        if offered is not None and updated is not None:
+            reporter.check(
+                updated <= offered,
+                f"Cam{serial} crop preview updated/offered={updated}/{offered}",
+                f"Cam{serial} crop preview updated frames {updated} exceed offered {offered}",
+            )
+        for label, fanout_offered, fanout_accepted, fanout_dropped in (
+            (
+                "recording",
+                producer_recording_crop_frame_offered,
+                producer_recording_crop_frame_accepted,
+                producer_recording_crop_frame_dropped,
+            ),
+            (
+                "preview",
+                producer_preview_crop_frame_offered,
+                producer_preview_crop_frame_accepted,
+                producer_preview_crop_frame_dropped,
+            ),
+            (
+                "pose",
+                producer_pose_crop_frame_offered,
+                producer_pose_crop_frame_accepted,
+                producer_pose_crop_frame_dropped,
+            ),
+        ):
+            if (
+                fanout_offered is not None
+                and fanout_accepted is not None
+                and fanout_dropped is not None
+            ):
+                reporter.check(
+                    fanout_accepted + fanout_dropped == fanout_offered,
+                    (
+                        f"Cam{serial} crop-frame {label} fanout "
+                        f"{fanout_accepted}/{fanout_offered} accepted, "
+                        f"dropped={fanout_dropped}"
+                    ),
+                    (
+                        f"Cam{serial} crop-frame {label} fanout counters do not balance: "
+                        f"accepted={fanout_accepted}, dropped={fanout_dropped}, "
+                        f"offered={fanout_offered}"
+                    ),
+                )
+        if (
+            producer_recording_crop_frame_accepted is not None
+            and crop_metadata_detection_rows is not None
+        ):
+            reporter.check(
+                producer_recording_crop_frame_accepted == crop_metadata_detection_rows,
+                (
+                    f"Cam{serial} recording crop-frame fanout matches detection crop rows "
+                    f"({producer_recording_crop_frame_accepted})"
+                ),
+                (
+                    f"Cam{serial} recording crop-frame accepted "
+                    f"({producer_recording_crop_frame_accepted}) != crop metadata "
+                    f"has_detection rows ({crop_metadata_detection_rows})"
+                ),
+            )
+        if producer_recording_crop_frame_dropped is not None:
+            reporter.check(
+                producer_recording_crop_frame_dropped == 0,
+                f"Cam{serial} recording crop-frame fanout drops=0",
+                (
+                    f"Cam{serial} recording crop-frame fanout drops="
+                    f"{producer_recording_crop_frame_dropped}"
+                ),
+            )
+        if (
+            producer_preview_crop_frame_accepted is not None
+            and updated is not None
+        ):
+            reporter.check(
+                producer_preview_crop_frame_accepted <= updated,
+                (
+                    f"Cam{serial} preview crop-frame accepted <= preview updates "
+                    f"({producer_preview_crop_frame_accepted}/{updated})"
+                ),
+                (
+                    f"Cam{serial} preview crop-frame accepted "
+                    f"({producer_preview_crop_frame_accepted}) exceeds preview updates "
+                    f"({updated})"
+                ),
+            )
+        if (
+            producer_preview_crop_frame_offered is not None
+            and offered is not None
+        ):
+            reporter.check(
+                producer_preview_crop_frame_offered <= offered,
+                (
+                    f"Cam{serial} preview crop-frame offered <= preview offered "
+                    f"({producer_preview_crop_frame_offered}/{offered})"
+                ),
+                (
+                    f"Cam{serial} preview crop-frame offered "
+                    f"({producer_preview_crop_frame_offered}) exceeds preview offered "
+                    f"({offered})"
+                ),
+            )
+        if offered and skipped is not None:
+            reporter.pass_(f"Cam{serial} crop preview skipped_by_cadence={skipped}")
+        if require_sampling:
+            reporter.check(
+                preview_disabled == 0,
+                f"Cam{serial} crop preview sampling: preview enabled",
+                f"Cam{serial} crop preview sampling cannot be proven with preview_disabled={preview_disabled}",
+            )
+            reporter.check(
+                preview_display_enabled == 1,
+                f"Cam{serial} crop preview sampling: display enabled at finalization",
+                (
+                    f"Cam{serial} crop preview sampling cannot be proven with "
+                    f"preview_display_enabled_final={preview_display_enabled}"
+                ),
+            )
+            reporter.check(
+                preview_max_fps is not None and preview_max_fps > 0,
+                f"Cam{serial} crop preview sampling: bounded max FPS={preview_max_fps}",
+                (
+                    f"Cam{serial} crop preview sampling requires bounded preview_max_fps; "
+                    f"got {preview_max_fps}"
+                ),
+            )
+            reporter.check(
+                crop_metadata_rows is not None and crop_metadata_rows > 1,
+                f"Cam{serial} crop preview sampling: crop rows={crop_metadata_rows}",
+                (
+                    f"Cam{serial} crop preview sampling needs more than one crop row; "
+                    f"got {crop_metadata_rows}"
+                ),
+            )
+            reporter.check(
+                offered is not None and offered > 1,
+                f"Cam{serial} crop preview sampling: offered preview frames={offered}",
+                f"Cam{serial} crop preview sampling needs more than one offered frame; got {offered}",
+            )
+            reporter.check(
+                skipped is not None and skipped > 0,
+                f"Cam{serial} crop preview sampling skipped frames by cadence ({skipped})",
+                f"Cam{serial} crop preview sampling did not skip any offered frames by cadence ({skipped})",
+            )
+            reporter.check(
+                offered is not None and updated is not None and updated < offered,
+                f"Cam{serial} crop preview sampling updated fewer frames than offered ({updated}/{offered})",
+                f"Cam{serial} crop preview sampling updated/offered={updated}/{offered}",
+            )
+
+    return summary
+
+
+def check_gui_display_frame_rate(
+    reporter: Reporter,
+    snapshot: dict[str, Any],
+    min_overall_p05: float | None,
+    min_visible_p05: float | None,
+    min_hidden_p05: float | None,
+    expected_stream_downsample: int | None,
+    expected_display_preview_max_fps: int | None,
+    expected_yolo_speed_graphs_enabled: int | None,
+    require_timing_telemetry: bool,
+) -> dict[str, Any]:
+    if (
+        min_overall_p05 is None
+        and min_visible_p05 is None
+        and min_hidden_p05 is None
+        and expected_stream_downsample is None
+        and expected_display_preview_max_fps is None
+        and expected_yolo_speed_graphs_enabled is None
+        and not require_timing_telemetry
+    ):
+        return {}
+
+    metrics = nested_dict(snapshot, "session", "gui_display_frame_rate")
+    reporter.check(
+        bool(metrics),
+        "GUI display frame-rate telemetry present",
+        "GUI display frame-rate telemetry missing from recording_snapshot session",
+    )
+    if not metrics:
+        return {}
+
+    if expected_stream_downsample is not None:
+        stream_downsample = integer(metrics.get("stream_downsample"))
+        reporter.check(
+            stream_downsample == expected_stream_downsample,
+            f"GUI stream downsample={stream_downsample}",
+            f"GUI stream downsample={stream_downsample}, expected {expected_stream_downsample}",
+        )
+    if expected_display_preview_max_fps is not None:
+        display_preview_max_fps = integer(metrics.get("display_preview_max_fps"))
+        reporter.check(
+            display_preview_max_fps == expected_display_preview_max_fps,
+            f"GUI display preview max FPS={display_preview_max_fps}",
+            (
+                f"GUI display preview max FPS={display_preview_max_fps}, "
+                f"expected {expected_display_preview_max_fps}"
+            ),
+        )
+    if expected_yolo_speed_graphs_enabled is not None:
+        yolo_speed_graphs_enabled = integer(metrics.get("yolo_speed_graphs_enabled"))
+        reporter.check(
+            yolo_speed_graphs_enabled == expected_yolo_speed_graphs_enabled,
+            f"GUI YOLO speed graphs enabled={yolo_speed_graphs_enabled}",
+            (
+                f"GUI YOLO speed graphs enabled={yolo_speed_graphs_enabled}, "
+                f"expected {expected_yolo_speed_graphs_enabled}"
+            ),
+        )
+    if require_timing_telemetry:
+        timings = metrics.get("timings")
+        timings = timings if isinstance(timings, dict) else {}
+        reporter.check(
+            bool(timings),
+            "GUI timing telemetry present",
+            "GUI timing telemetry missing from session.gui_display_frame_rate.timings",
+        )
+        required_timing_buckets = [
+            "frame_total_ms",
+            "main_texture_upload_ms",
+            "crop_texture_upload_ms",
+            "camera_window_draw_ms",
+            "crop_window_draw_ms",
+            "speed_graph_draw_ms",
+            "render_present_ms",
+        ]
+        for bucket_name in required_timing_buckets:
+            bucket = timings.get(bucket_name)
+            bucket = bucket if isinstance(bucket, dict) else {}
+            sample_count = integer(bucket.get("sample_count"))
+            reporter.check(
+                sample_count is not None and sample_count > 0,
+                f"GUI timing {bucket_name} samples={sample_count}",
+                f"GUI timing {bucket_name} samples missing or zero ({sample_count})",
+            )
+        main_upload_count = integer(timings.get("main_texture_upload_count"))
+        crop_upload_count = integer(timings.get("crop_texture_upload_count"))
+        reporter.check(
+            main_upload_count is not None,
+            f"GUI timing main texture upload count={main_upload_count}",
+            "GUI timing main_texture_upload_count missing",
+        )
+        reporter.check(
+            crop_upload_count is not None,
+            f"GUI timing crop texture upload count={crop_upload_count}",
+            "GUI timing crop_texture_upload_count missing",
+        )
+
+    def check_bucket(bucket_name: str, label: str, threshold: float | None) -> None:
+        if threshold is None:
+            return
+        bucket = metrics.get(bucket_name)
+        bucket = bucket if isinstance(bucket, dict) else {}
+        sample_count = integer(bucket.get("sample_count"))
+        p05_fps = number(bucket.get("p05_fps"))
+        reporter.check(
+            sample_count is not None and sample_count > 0,
+            f"GUI {label} FPS samples={sample_count}",
+            f"GUI {label} FPS samples missing or zero ({sample_count})",
+        )
+        reporter.check(
+            p05_fps is not None and p05_fps >= threshold,
+            f"GUI {label} FPS p05={fmt_float(p05_fps, 1)} >= {threshold:.1f}",
+            f"GUI {label} FPS p05={p05_fps} below {threshold:.1f}",
+        )
+
+    check_bucket("overall", "recording", min_overall_p05)
+    check_bucket("crop_preview_visible", "crop-preview-visible", min_visible_p05)
+    check_bucket("crop_preview_hidden", "crop-preview-hidden", min_hidden_p05)
+    return metrics
+
+
+def check_crop_recording_artifacts(
+    reporter: Reporter,
+    recording_folder: Path,
+    snapshot: dict[str, Any],
+    summary: dict[str, Any],
+    cameras: list[str],
+    require_crop_artifacts: bool,
+    ffprobe: str,
+    *,
+    probe_video: bool = True,
+    expected_external_queue_depth: int | None = None,
+    max_external_queue_high_water: int | None = None,
+    max_external_enqueue_age_p95_ms: float | None = None,
+) -> dict[str, Any]:
+    crop_summary: dict[str, Any] = {}
+    if not require_crop_artifacts:
+        return crop_summary
+
+    target_cameras = crop_enabled_cameras(snapshot, cameras)
+    if not target_cameras:
+        reporter.fail("crop recording artifacts required but no crop-enabled cameras were found")
+        return crop_summary
+
+    for serial in target_cameras:
+        crop_output = crop_output_for(snapshot, serial)
+        crop_descriptor = crop_recording_output_descriptor(snapshot, serial)
+        crop_size = crop_size_from_snapshot(snapshot, serial)
+        video_path = resolve_crop_artifact_path(
+            recording_folder, crop_output, crop_descriptor, "video", f"Cam{serial}_crop.mp4"
+        )
+        metadata_path = resolve_crop_artifact_path(
+            recording_folder, crop_output, crop_descriptor, "metadata", f"Cam{serial}_crop_meta.csv"
+        )
+        keyframes_path = resolve_crop_artifact_path(
+            recording_folder, crop_output, crop_descriptor, "keyframes", f"Cam{serial}_crop_keyframe.json"
+        )
+        perf_path = resolve_crop_artifact_path(
+            recording_folder, crop_output, crop_descriptor, "perf", f"Cam{serial}_crop_perf.csv"
+        )
+        descriptor_backend = str(crop_descriptor.get("backend", ""))
+        summary_path = crop_descriptor_artifact_path(
+            recording_folder, crop_descriptor, "summary"
+        )
+
+        video_exists = video_path.exists() and video_path.stat().st_size > 0
+        reporter.check(
+            video_exists,
+            f"Cam{serial} crop MP4 present",
+            f"Cam{serial} crop MP4 missing or empty: {video_path}",
+        )
+        reporter.check(
+            metadata_path.exists(),
+            f"Cam{serial} crop metadata present",
+            f"Cam{serial} crop metadata missing: {metadata_path}",
+        )
+        reporter.check(
+            keyframes_path.exists(),
+            f"Cam{serial} crop keyframe sidecar present",
+            f"Cam{serial} crop keyframe sidecar missing: {keyframes_path}",
+        )
+        reporter.check(
+            perf_path.exists(),
+            f"Cam{serial} crop perf present",
+            f"Cam{serial} crop perf missing: {perf_path}",
+        )
+
+        keyframes_valid = json_file_parses_as_object(keyframes_path)
+        keyframes = read_json(keyframes_path) if keyframes_valid else {}
+        keyframe_total_frames = integer(keyframes.get("total_frames"))
+        reporter.check(
+            keyframes_valid,
+            f"Cam{serial} crop keyframe sidecar parses as JSON",
+            f"Cam{serial} crop keyframe sidecar missing or invalid JSON: {keyframes_path}",
+        )
+
+        crop_rows = read_csv_rows(metadata_path)
+        crop_perf_rows = read_csv_rows(perf_path)
+        reporter.check(
+            bool(crop_rows),
+            f"Cam{serial} crop metadata rows={len(crop_rows)}",
+            f"Cam{serial} crop metadata has no data rows",
+        )
+        reporter.check(
+            bool(crop_perf_rows),
+            f"Cam{serial} crop perf rows={len(crop_perf_rows)}",
+            f"Cam{serial} crop perf has no data rows",
+        )
+        reporter.check(
+            len(crop_perf_rows) == len(crop_rows),
+            f"Cam{serial} crop perf rows match crop metadata rows ({len(crop_perf_rows)})",
+            (
+                f"Cam{serial} crop perf rows ({len(crop_perf_rows)}) != "
+                f"crop metadata rows ({len(crop_rows)})"
+            ),
+        )
+        reporter.check(
+            keyframe_total_frames == len(crop_rows),
+            f"Cam{serial} crop keyframe total_frames matches crop metadata rows ({keyframe_total_frames})",
+            (
+                f"Cam{serial} crop keyframe total_frames ({keyframe_total_frames}) != "
+                f"crop metadata rows ({len(crop_rows)})"
+            ),
+        )
+
+        crop_ids, missing_crop_ids = recording_frame_ids_from_rows(crop_rows)
+        perf_ids, missing_perf_ids = recording_frame_ids_from_rows(crop_perf_rows)
+        reporter.check(
+            missing_crop_ids == 0 and ids_are_positive_strictly_increasing(crop_ids),
+            f"Cam{serial} crop metadata recording_frame_id values are positive and strictly increasing",
+            (
+                f"Cam{serial} crop metadata recording_frame_id values are invalid "
+                f"(missing={missing_crop_ids})"
+            ),
+        )
+        reporter.check(
+            missing_perf_ids == 0 and ids_are_positive_strictly_increasing(perf_ids),
+            f"Cam{serial} crop perf recording_frame_id values are positive and strictly increasing",
+            (
+                f"Cam{serial} crop perf recording_frame_id values are invalid "
+                f"(missing={missing_perf_ids})"
+            ),
+        )
+        reporter.check(
+            crop_ids == perf_ids,
+            f"Cam{serial} crop perf and metadata recording_frame_id sequences match",
+            f"Cam{serial} crop perf and metadata recording_frame_id sequences differ",
+        )
+
+        dropped_rows = [
+            index
+            for index, row in enumerate(crop_perf_rows, start=2)
+            if int_csv_field(row, "dropped") not in (0, None)
+        ]
+        missing_dropped_rows = [
+            index
+            for index, row in enumerate(crop_perf_rows, start=2)
+            if int_csv_field(row, "dropped") is None
+        ]
+        reporter.check(
+            not missing_dropped_rows,
+            f"Cam{serial} crop perf dropped column present",
+            f"Cam{serial} crop perf missing dropped value on {len(missing_dropped_rows)} row(s)",
+        )
+        reporter.check(
+            not dropped_rows,
+            f"Cam{serial} crop perf reports no dropped crop frames",
+            f"Cam{serial} crop perf reports {len(dropped_rows)} dropped crop frame(s)",
+        )
+
+        external_frames_received: int | None = None
+        external_frames_encoded: int | None = None
+        external_frames_dropped: int | None = None
+        external_encode_dropped: int | None = None
+        external_encode_queue_depth: int | None = None
+        external_encode_queue_high_water: int | None = None
+        external_enqueue_age_p95_ms: float | None = None
+        if descriptor_backend == "external_ipc":
+            reporter.check(
+                summary_path is not None and summary_path.exists(),
+                f"Cam{serial} external crop summary present",
+                f"Cam{serial} external crop summary missing: {summary_path}",
+            )
+            external_summary = read_json(summary_path) if summary_path and summary_path.exists() else {}
+            external_encode = external_summary.get("external_encode")
+            external_encode = external_encode if isinstance(external_encode, dict) else {}
+            external_frames_received = integer(external_summary.get("frames_received"))
+            external_frames_encoded = integer(external_summary.get("frames_encoded"))
+            external_frames_dropped = integer(external_encode.get("frames_dropped"))
+            external_encode_dropped = integer(external_summary.get("encode_dropped"))
+            external_encode_queue_depth = integer(external_summary.get("encode_queue_depth"))
+            external_encode_queue_high_water = integer(external_summary.get("encode_queue_high_water"))
+            if external_encode_queue_high_water is None and summary_path and summary_path.exists():
+                external_encode_queue_high_water = external_detach_queue_high_water(summary_path)
+            external_enqueue_age_p95_ms = number(external_encode.get("enqueue_age_p95_ms"))
+            reporter.check(
+                external_frames_received == len(crop_rows),
+                (
+                    f"Cam{serial} external crop received count matches crop metadata rows "
+                    f"({external_frames_received})"
+                ),
+                (
+                    f"Cam{serial} external crop frames_received ({external_frames_received}) != "
+                    f"crop metadata rows ({len(crop_rows)})"
+                ),
+            )
+            reporter.check(
+                external_frames_encoded == len(crop_rows),
+                (
+                    f"Cam{serial} external crop encoded count matches crop metadata rows "
+                    f"({external_frames_encoded})"
+                ),
+                (
+                    f"Cam{serial} external crop frames_encoded ({external_frames_encoded}) != "
+                    f"crop metadata rows ({len(crop_rows)})"
+                ),
+            )
+            reporter.check(
+                (external_frames_dropped or 0) == 0 and (external_encode_dropped or 0) == 0,
+                f"Cam{serial} external crop recorder reports no dropped frames",
+                (
+                    f"Cam{serial} external crop recorder dropped frames: "
+                    f"external_encode.frames_dropped={external_frames_dropped}, "
+                    f"encode_dropped={external_encode_dropped}"
+                ),
+            )
+            if expected_external_queue_depth is not None:
+                reporter.check(
+                    external_encode_queue_depth == expected_external_queue_depth,
+                    f"Cam{serial} external crop encode queue depth={expected_external_queue_depth}",
+                    (
+                        f"Cam{serial} external crop encode_queue_depth "
+                        f"({external_encode_queue_depth}) != {expected_external_queue_depth}"
+                    ),
+                )
+            if max_external_queue_high_water is not None:
+                reporter.check(
+                    external_encode_queue_high_water is not None and
+                    external_encode_queue_high_water <= max_external_queue_high_water,
+                    (
+                        f"Cam{serial} external crop encode queue high-water "
+                        f"{external_encode_queue_high_water} <= {max_external_queue_high_water}"
+                    ),
+                    (
+                        f"Cam{serial} external crop encode_queue_high_water "
+                        f"({external_encode_queue_high_water}) > {max_external_queue_high_water}"
+                    ),
+                )
+            if max_external_enqueue_age_p95_ms is not None:
+                reporter.check(
+                    external_enqueue_age_p95_ms is not None and
+                    external_enqueue_age_p95_ms <= max_external_enqueue_age_p95_ms,
+                    (
+                        f"Cam{serial} external crop enqueue age p95 "
+                        f"{fmt_float(external_enqueue_age_p95_ms)} ms <= "
+                        f"{max_external_enqueue_age_p95_ms:.3f} ms"
+                    ),
+                    (
+                        f"Cam{serial} external crop enqueue_age_p95_ms "
+                        f"({external_enqueue_age_p95_ms}) > {max_external_enqueue_age_p95_ms:.3f} ms"
+                    ),
+                )
+
+        if crop_size is None:
+            reporter.fail(f"Cam{serial} crop size missing from recording_snapshot")
+        else:
+            bad_geometry_rows = []
+            for index, row in enumerate(crop_rows, start=2):
+                crop_w = int_csv_field(row, "crop_w")
+                crop_h = int_csv_field(row, "crop_h")
+                blank_frame = int_csv_field(row, "blank_frame") == 1
+                has_detection = int_csv_field(row, "has_detection") == 1
+                if blank_frame and not has_detection:
+                    if crop_w != 0 or crop_h != 0:
+                        bad_geometry_rows.append(index)
+                elif crop_w != crop_size or crop_h != crop_size:
+                    bad_geometry_rows.append(index)
+            reporter.check(
+                not bad_geometry_rows,
+                f"Cam{serial} crop metadata geometry matches crop_size_px={crop_size}",
+                (
+                    f"Cam{serial} crop metadata has {len(bad_geometry_rows)} row(s) "
+                    f"with geometry inconsistent with crop_size_px={crop_size}"
+                ),
+            )
+
+        video_frames: int | None = None
+        video_width: int | None = None
+        video_height: int | None = None
+        if video_exists and probe_video:
+            video = gui_summary.ffprobe_video(video_path, ffprobe)
+            video_frames = integer(video.get("frames"))
+            video_width = integer(video.get("width"))
+            video_height = integer(video.get("height"))
+            reporter.check(
+                video.get("status") == "ok",
+                f"Cam{serial} crop MP4 ffprobe status=ok",
+                f"Cam{serial} crop MP4 ffprobe status={video.get('status')!r}",
+            )
+            reporter.check(
+                video_frames == len(crop_rows),
+                f"Cam{serial} crop MP4 frame count matches crop metadata rows ({video_frames})",
+                (
+                    f"Cam{serial} crop MP4 frames ({video_frames}) != "
+                    f"crop metadata rows ({len(crop_rows)})"
+                ),
+            )
+            if crop_size is not None:
+                reporter.check(
+                    video_width == crop_size and video_height == crop_size,
+                    f"Cam{serial} crop MP4 dimensions match crop_size_px ({crop_size})",
+                    (
+                        f"Cam{serial} crop MP4 dimensions {video_width}x{video_height} "
+                        f"!= crop_size_px {crop_size}"
+                    ),
+                )
+
+        yolo_rows = integer(nested_dict(summary, "yolo", serial).get("rows"))
+        if yolo_rows is not None and yolo_rows > 0:
+            reporter.check(
+                len(crop_rows) == yolo_rows,
+                f"Cam{serial} crop metadata rows match YOLO rows ({len(crop_rows)})",
+                f"Cam{serial} crop metadata rows ({len(crop_rows)}) != YOLO rows ({yolo_rows})",
+            )
+
+        crop_summary[serial] = {
+            "video": str(video_path),
+            "metadata": str(metadata_path),
+            "keyframes": str(keyframes_path),
+            "perf": str(perf_path),
+            "crop_size_px": crop_size,
+            "video_frames": video_frames,
+            "video_width": video_width,
+            "video_height": video_height,
+            "keyframe_total_frames": keyframe_total_frames,
+            "metadata_rows": len(crop_rows),
+            "perf_rows": len(crop_perf_rows),
+            "dropped_rows": len(dropped_rows),
+            "yolo_rows": yolo_rows,
+            "external_frames_received": external_frames_received,
+            "external_frames_encoded": external_frames_encoded,
+            "external_frames_dropped": external_frames_dropped,
+            "external_encode_dropped": external_encode_dropped,
+            "external_encode_queue_depth": external_encode_queue_depth,
+            "external_encode_queue_high_water": external_encode_queue_high_water,
+            "external_enqueue_age_p95_ms": external_enqueue_age_p95_ms,
+        }
+
+    return crop_summary
+
+
 def compact_camera_summary(summary: dict[str, Any], cameras: list[str], video_sanity: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for serial in cameras:
@@ -884,6 +1975,108 @@ def print_camera_summary(camera_summary: dict[str, Any]) -> None:
         )
 
 
+def print_crop_preview_summary(crop_preview: dict[str, Any]) -> None:
+    if not crop_preview:
+        return
+    print("\nCrop Preview")
+    for serial, item in sorted(crop_preview.items()):
+        print(
+            f"  Cam{serial}: max_fps={item.get('preview_max_fps')} "
+            f"disabled={item.get('preview_disabled')} "
+            f"display_enabled_final={item.get('preview_display_enabled_final')} "
+            f"pool={item.get('crop_frame_pool_size')} "
+            f"updated/offered={item.get('preview_frames_updated')}/"
+            f"{item.get('preview_frames_offered')} "
+            f"skipped={item.get('preview_frames_skipped_by_cadence')} "
+            f"queue_drops={item.get('preview_queue_full_drops')} "
+            f"crop_rows={item.get('crop_metadata_rows')} "
+            f"detection_rows={item.get('crop_metadata_detection_rows')}"
+        )
+        if item.get("producer_recording_crop_frame_offered") is not None:
+            print(
+                f"    crop-frame fanout: "
+                f"recording={item.get('producer_recording_crop_frame_accepted')}/"
+                f"{item.get('producer_recording_crop_frame_offered')} "
+                f"dropped={item.get('producer_recording_crop_frame_dropped')} "
+                f"preview={item.get('producer_preview_crop_frame_accepted')}/"
+                f"{item.get('producer_preview_crop_frame_offered')} "
+                f"dropped={item.get('producer_preview_crop_frame_dropped')} "
+                f"pose={item.get('producer_pose_crop_frame_accepted')}/"
+                f"{item.get('producer_pose_crop_frame_offered')} "
+                f"dropped={item.get('producer_pose_crop_frame_dropped')} "
+                f"pool_misses_total={item.get('producer_crop_frame_pool_misses_total')}"
+            )
+
+
+def print_crop_recording_summary(crop_recording: dict[str, Any]) -> None:
+    if not crop_recording:
+        return
+    print("\nCrop Recording")
+    for serial, item in sorted(crop_recording.items()):
+        print(
+            f"  Cam{serial}: rows={item.get('metadata_rows')} "
+            f"perf_rows={item.get('perf_rows')} "
+            f"keyframes={item.get('keyframe_total_frames')} "
+            f"video_frames={item.get('video_frames')} "
+            f"dropped_rows={item.get('dropped_rows')} "
+            f"external_received={item.get('external_frames_received')} "
+            f"external_encoded={item.get('external_frames_encoded')} "
+            f"external_dropped={item.get('external_frames_dropped')} "
+            f"external_queue={item.get('external_encode_queue_depth')} "
+            f"external_q_high={item.get('external_encode_queue_high_water')} "
+            f"external_enqueue_p95={item.get('external_enqueue_age_p95_ms')} "
+            f"yolo_rows={item.get('yolo_rows')}"
+        )
+
+
+def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
+    if not gui_fps:
+        return
+
+    def bucket_text(bucket_name: str) -> str:
+        bucket = gui_fps.get(bucket_name)
+        bucket = bucket if isinstance(bucket, dict) else {}
+        return (
+            f"samples={bucket.get('sample_count')} "
+            f"p05={fmt_float(bucket.get('p05_fps'), 1)} "
+            f"p50={fmt_float(bucket.get('p50_fps'), 1)} "
+            f"mean={fmt_float(bucket.get('mean_fps'), 1)}"
+        )
+
+    def timing_text(bucket_name: str) -> str:
+        timings = gui_fps.get("timings")
+        timings = timings if isinstance(timings, dict) else {}
+        bucket = timings.get(bucket_name)
+        bucket = bucket if isinstance(bucket, dict) else {}
+        return (
+            f"samples={bucket.get('sample_count')} "
+            f"p50={fmt_float(bucket.get('p50_ms'), 3)}ms "
+            f"p95={fmt_float(bucket.get('p95_ms'), 3)}ms "
+            f"mean={fmt_float(bucket.get('mean_ms'), 3)}ms"
+        )
+
+    print("\nGUI FPS")
+    if "yolo_speed_graphs_enabled" in gui_fps:
+        print(f"  yolo-speed-graphs-enabled: {gui_fps.get('yolo_speed_graphs_enabled')}")
+    print(f"  overall: {bucket_text('overall')}")
+    print(f"  crop-preview-visible: {bucket_text('crop_preview_visible')}")
+    print(f"  crop-preview-hidden: {bucket_text('crop_preview_hidden')}")
+    if isinstance(gui_fps.get("timings"), dict):
+        timings = gui_fps["timings"]
+        print("  timings:")
+        print(f"    frame-total: {timing_text('frame_total_ms')}")
+        print(f"    main-texture-upload: {timing_text('main_texture_upload_ms')}")
+        print(f"    crop-texture-upload: {timing_text('crop_texture_upload_ms')}")
+        print(f"    camera-window-draw: {timing_text('camera_window_draw_ms')}")
+        print(f"    crop-window-draw: {timing_text('crop_window_draw_ms')}")
+        print(f"    speed-graph-draw: {timing_text('speed_graph_draw_ms')}")
+        print(f"    render-present: {timing_text('render_present_ms')}")
+        print(
+            f"    upload-counts: main={timings.get('main_texture_upload_count')} "
+            f"crop={timings.get('crop_texture_upload_count')}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     recording_folder = resolve_requested_recording_folder(args)
@@ -917,7 +2110,12 @@ def main() -> int:
             args.skip_ptp_register_decimate_check,
         )
         check_recording_session_manifest(reporter, recording_folder, snapshot, cameras)
-        check_pipeline(reporter, summary, cameras)
+        check_pipeline(
+            reporter,
+            summary,
+            cameras,
+            args.expect_display_preview_max_fps,
+        )
         video_sanity = check_videos(
             reporter,
             summary,
@@ -937,8 +2135,46 @@ def main() -> int:
             args.max_yolo_steady_p95_ms,
             args.max_ptp_done_p95_ms,
         )
+        crop_preview_summary = check_crop_preview_counters(
+            reporter,
+            recording_folder,
+            snapshot,
+            cameras,
+            args.expect_crop_preview_max_fps,
+            args.expect_crop_preview_display_enabled,
+            args.expect_crop_preview_disabled,
+            args.min_crop_frame_pool_size,
+            args.require_crop_preview_sampling,
+            args.require_crop_preview_counters,
+        )
+        crop_recording_summary = check_crop_recording_artifacts(
+            reporter,
+            recording_folder,
+            snapshot,
+            summary,
+            cameras,
+            args.require_crop_recording_artifacts,
+            args.ffprobe,
+            expected_external_queue_depth=args.expect_external_crop_encode_queue_depth,
+            max_external_queue_high_water=args.max_external_crop_encode_queue_high_water,
+            max_external_enqueue_age_p95_ms=args.max_external_crop_enqueue_age_p95_ms,
+        )
+        gui_display_frame_rate_summary = check_gui_display_frame_rate(
+            reporter,
+            snapshot,
+            args.min_gui_recording_fps_p05,
+            args.min_gui_crop_preview_visible_fps_p05,
+            args.min_gui_crop_preview_hidden_fps_p05,
+            args.expect_gui_stream_downsample,
+            args.expect_display_preview_max_fps,
+            args.expect_yolo_speed_graphs_enabled,
+            args.require_gui_timing_telemetry,
+        )
     if not cameras:
         video_sanity = {}
+        crop_preview_summary = {}
+        crop_recording_summary = {}
+        gui_display_frame_rate_summary = {}
 
     camera_summary = compact_camera_summary(summary, cameras, video_sanity)
     result = {
@@ -949,6 +2185,9 @@ def main() -> int:
         "warnings": reporter.warnings,
         "failures": reporter.failures,
         "summary": camera_summary,
+        "crop_preview": crop_preview_summary,
+        "crop_recording": crop_recording_summary,
+        "gui_display_frame_rate": gui_display_frame_rate_summary,
     }
 
     if args.json_out:
@@ -959,6 +2198,9 @@ def main() -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print_camera_summary(camera_summary)
+        print_crop_preview_summary(crop_preview_summary)
+        print_crop_recording_summary(crop_recording_summary)
+        print_gui_display_frame_rate_summary(gui_display_frame_rate_summary)
         if reporter.failures:
             print(f"\nResult: FAIL ({len(reporter.failures)} failures, {len(reporter.warnings)} warnings)")
         else:

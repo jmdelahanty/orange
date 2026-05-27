@@ -36,6 +36,10 @@ Options:
   --output-dir <path>        External recorder artifact root. Default /tmp.
   --bitstream-out <path>     Optional raw elementary stream output.
   --skip-video-sanity        Do not decode/check external MP4 content.
+  --max-encode-queue-high-water <int>
+                             Verifier threshold for recorder encode queue high-water.
+  --max-enqueue-age-p95-ms <float>
+                             Verifier threshold for recorder enqueue-age p95.
   --keep-temp-spec           Keep generated temp spec in output dir.
   --help
 EOF
@@ -71,6 +75,8 @@ OUTPUT_DIR="/tmp"
 BITSTREAM_OUT=""
 SKIP_VIDEO_SANITY=0
 KEEP_TEMP_SPEC=0
+VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER=""
+VERIFY_MAX_ENQUEUE_AGE_P95_MS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -208,6 +214,18 @@ while [[ $# -gt 0 ]]; do
       SKIP_VIDEO_SANITY=1
       shift
       ;;
+    --max-encode-queue-high-water)
+      shift
+      [[ $# -gt 0 ]] || { echo "--max-encode-queue-high-water requires a value." >&2; exit 2; }
+      VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER="$1"
+      shift
+      ;;
+    --max-enqueue-age-p95-ms)
+      shift
+      [[ $# -gt 0 ]] || { echo "--max-enqueue-age-p95-ms requires a value." >&2; exit 2; }
+      VERIFY_MAX_ENQUEUE_AGE_P95_MS="$1"
+      shift
+      ;;
     --keep-temp-spec)
       KEEP_TEMP_SPEC=1
       shift
@@ -239,6 +257,18 @@ fi
 if [[ -n "$SHARD_GPU_IDS" ]]; then
   [[ "$SHARD_GPU_IDS" =~ ^[0-9]+(,[0-9]+)+$ ]] || {
     echo "SHARD_GPU_IDS must be a comma-separated list of at least two GPU ids." >&2
+    exit 2
+  }
+fi
+if [[ -n "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" ]]; then
+  [[ "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" =~ ^[0-9]+$ ]] || {
+    echo "VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER must be a non-negative integer." >&2
+    exit 2
+  }
+fi
+if [[ -n "$VERIFY_MAX_ENQUEUE_AGE_P95_MS" ]]; then
+  [[ "$VERIFY_MAX_ENQUEUE_AGE_P95_MS" =~ ^[0-9]+([.][0-9]+)?$ ]] || {
+    echo "VERIFY_MAX_ENQUEUE_AGE_P95_MS must be a non-negative number." >&2
     exit 2
   }
 fi
@@ -730,6 +760,15 @@ if not content_valid:
 PY
 fi
 
-"$REPO_ROOT/scripts/verify_external_recorder_session.py" \
-  "$RUN_DIR" \
+VERIFY_ARGS=(
+  "$RUN_DIR"
   --analytics-root "$ANALYTICS_ROOT"
+  --expect-encode-queue-depth "$QUEUE_DEPTH"
+)
+if [[ -n "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER" ]]; then
+  VERIFY_ARGS+=(--max-encode-queue-high-water "$VERIFY_MAX_ENCODE_QUEUE_HIGH_WATER")
+fi
+if [[ -n "$VERIFY_MAX_ENQUEUE_AGE_P95_MS" ]]; then
+  VERIFY_ARGS+=(--max-enqueue-age-p95-ms "$VERIFY_MAX_ENQUEUE_AGE_P95_MS")
+fi
+"$REPO_ROOT/scripts/verify_external_recorder_session.py" "${VERIFY_ARGS[@]}"

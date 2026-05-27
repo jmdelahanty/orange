@@ -12,7 +12,6 @@
 #include "cuda_context_debug.h"
 #include "nvtx_profiling.h"
 #include "project.h"
-#include <iomanip>
 #include <sstream>
 #include <algorithm>
 #include <chrono>
@@ -24,14 +23,6 @@
 #include <thread>
 
 namespace {
-constexpr uint64_t kMinQualityBitrate = 10000000ULL;
-constexpr uint64_t kMaxQualityBitrate = 150000000ULL;
-constexpr double kColorTargetBpp = 0.15;
-constexpr double kMonoTargetBpp = 0.10;
-constexpr int kDefaultQualityValue = 20;
-constexpr int kMinQualityValue = 1;
-constexpr int kMaxQualityValue = 51;
-constexpr int kMaxLookaheadDepth = 32;
 constexpr size_t kPreEncoderReferenceCaptureRingSize = 3;
 constexpr int8_t kStaticRoiInsideDelta = -3;
 constexpr int8_t kStaticRoiOutsideDelta = 3;
@@ -55,65 +46,8 @@ bool env_flag_enabled(const char* name)
            std::strcmp(value, "OFF") != 0;
 }
 
-uint32_t clamp_bitrate(uint64_t value) {
-    if (value < kMinQualityBitrate) {
-        return static_cast<uint32_t>(kMinQualityBitrate);
-    }
-    if (value > kMaxQualityBitrate) {
-        return static_cast<uint32_t>(kMaxQualityBitrate);
-    }
-    return static_cast<uint32_t>(value);
-}
-
 bool guid_equals(const GUID& lhs, const GUID& rhs) {
     return std::memcmp(&lhs, &rhs, sizeof(GUID)) == 0;
-}
-
-uint32_t calculate_quality_bitrate(bool color, int width, int height, int frame_rate) {
-    const double target_bpp = color ? kColorTargetBpp : kMonoTargetBpp;
-    const double bits_per_sec =
-        static_cast<double>(width) *
-        static_cast<double>(height) *
-        static_cast<double>(frame_rate) *
-        target_bpp;
-    return clamp_bitrate(static_cast<uint64_t>(bits_per_sec));
-}
-
-bool is_low_latency_tuning(const std::string& tuning) {
-    return tuning == "ll" || tuning == "ull";
-}
-
-bool is_lossless_tuning(const std::string& tuning) {
-    return tuning == "lossless";
-}
-
-bool is_vbr_cq_rate_control(const std::string& rate_control_mode) {
-    return rate_control_mode == "vbr_cq";
-}
-
-bool is_cbr_rate_control(const std::string& rate_control_mode) {
-    return rate_control_mode == "cbr";
-}
-
-bool is_cqp_rate_control(const std::string& rate_control_mode) {
-    return rate_control_mode == "cqp";
-}
-
-int clamp_quality_value(int value) {
-    if (value < kMinQualityValue) {
-        return kDefaultQualityValue;
-    }
-    if (value > kMaxQualityValue) {
-        return kMaxQualityValue;
-    }
-    return value;
-}
-
-uint32_t saturate_positive_u32(int value) {
-    if (value <= 0) {
-        return 0;
-    }
-    return static_cast<uint32_t>(value);
 }
 
 nlohmann::json latency_stats_to_json(const LatencyAggregateStats& stats) {
@@ -322,25 +256,6 @@ std::string qp_map_mode_to_string(NV_ENC_QP_MAP_MODE mode) {
     }
 }
 
-std::string resolve_rate_control_strategy(
-    const std::string& tuning,
-    const std::string& rate_control_mode
-) {
-    if (is_lossless_tuning(tuning)) {
-        return "lossless";
-    }
-    if (is_cqp_rate_control(rate_control_mode)) {
-        return "cqp";
-    }
-    if (is_cbr_rate_control(rate_control_mode)) {
-        return "cbr";
-    }
-    if (is_vbr_cq_rate_control(rate_control_mode)) {
-        return "vbr_cq";
-    }
-    return "vbr";
-}
-
 const char* rc_mode_to_string(NV_ENC_PARAMS_RC_MODE mode) {
     switch (mode) {
         case NV_ENC_PARAMS_RC_CONSTQP: return "constqp";
@@ -484,269 +399,7 @@ nlohmann::json build_resolved_encoder_config_json(const NV_ENC_INITIALIZE_PARAMS
     return info;
 }
 
-std::vector<std::pair<std::string, std::string>> build_metadata_tags(
-    const CameraParams* camera_params,
-    const RecordingOutputConfig& recording_output_config,
-    const std::string& codec,
-    const std::string& preset,
-    const std::string& tuning,
-    const std::string& rate_control_mode,
-    int quality_value,
-    int gop_length,
-    const EncoderControlOverrides& encoder_control_overrides,
-    const ImportanceMapConfig& importance_map_config
-) {
-    std::vector<std::pair<std::string, std::string>> tags;
-    tags.emplace_back("title", "Cam" + camera_params->camera_serial);
-
-    std::ostringstream comment;
-    const std::string rc_strategy = resolve_rate_control_strategy(tuning, rate_control_mode);
-    const uint32_t resolved_gop_length = resolve_recording_gop_length(*camera_params, tuning, gop_length);
-    comment << "nvenc codec=" << codec
-            << "; preset=" << preset
-            << "; tuning=" << tuning
-            << "; res=" << recording_output_config.resolved_width << "x" << recording_output_config.resolved_height
-            << "; fps=" << camera_params->frame_rate
-            << "; color=" << (camera_params->color ? 1 : 0)
-            << "; gop=" << resolved_gop_length
-            << "; output_mode=" << recording_output_config.mode;
-
-    if (recording_output_config.resize_enabled) {
-        comment << "; source_res=" << camera_params->width << "x" << camera_params->height;
-    }
-
-    if (rc_strategy == "lossless") {
-        comment << "; rc=constqp; qp=0";
-    } else if (rc_strategy == "cqp") {
-        comment << "; rc=constqp; qp=" << clamp_quality_value(quality_value);
-    } else if (rc_strategy == "cbr") {
-        const uint32_t target_bps = encoder_control_overrides.target_bitrate_bps > 0
-            ? saturate_positive_u32(encoder_control_overrides.target_bitrate_bps)
-            : calculate_quality_bitrate(
-            camera_params->color,
-            recording_output_config.resolved_width,
-            recording_output_config.resolved_height,
-            camera_params->frame_rate);
-        const double actual_bpp = static_cast<double>(target_bps) /
-                                  (static_cast<double>(recording_output_config.resolved_width) *
-                                   static_cast<double>(recording_output_config.resolved_height) *
-                                   static_cast<double>(camera_params->frame_rate));
-        comment << "; rc=cbr; bpp=" << std::fixed << std::setprecision(3) << actual_bpp
-                << "; target_bps=" << target_bps;
-    } else if (rc_strategy == "vbr_cq") {
-        const uint32_t target_bps = encoder_control_overrides.target_bitrate_bps > 0
-            ? saturate_positive_u32(encoder_control_overrides.target_bitrate_bps)
-            : calculate_quality_bitrate(
-            camera_params->color,
-            recording_output_config.resolved_width,
-            recording_output_config.resolved_height,
-            camera_params->frame_rate);
-        const double actual_bpp = static_cast<double>(target_bps) /
-                                  (static_cast<double>(recording_output_config.resolved_width) *
-                                   static_cast<double>(recording_output_config.resolved_height) *
-                                   static_cast<double>(camera_params->frame_rate));
-        comment << "; rc=vbr; cq=" << clamp_quality_value(quality_value)
-                << "; bpp_cap=" << std::fixed << std::setprecision(3) << actual_bpp
-                << "; target_bps=" << target_bps;
-    } else {
-        const uint32_t target_bps = encoder_control_overrides.target_bitrate_bps > 0
-            ? saturate_positive_u32(encoder_control_overrides.target_bitrate_bps)
-            : calculate_quality_bitrate(
-            camera_params->color,
-            recording_output_config.resolved_width,
-            recording_output_config.resolved_height,
-            camera_params->frame_rate);
-        const double actual_bpp = static_cast<double>(target_bps) /
-                                  (static_cast<double>(recording_output_config.resolved_width) *
-                                   static_cast<double>(recording_output_config.resolved_height) *
-                                   static_cast<double>(camera_params->frame_rate));
-        comment << "; rc=vbr; bpp=" << std::fixed << std::setprecision(3) << actual_bpp
-                << "; target_bps=" << target_bps;
-    }
-
-    if (encoder_control_overrides.max_bitrate_bps > 0) {
-        comment << "; max_bps=" << encoder_control_overrides.max_bitrate_bps;
-    }
-    if (encoder_control_overrides.vbv_buffer_size > 0) {
-        comment << "; vbv=" << encoder_control_overrides.vbv_buffer_size;
-    }
-    if (importance_map_mode_enabled(importance_map_config.mode)) {
-        comment << "; importance_map=" << normalize_importance_map_mode(importance_map_config.mode)
-                << "; importance_map_roi_size_px="
-                << normalize_importance_map_roi_size_px(importance_map_config.roi_size_px);
-    }
-
-    if (recording_output_config.mode == "factor") {
-        comment << "; factor=" << recording_output_config.downsample_factor;
-    } else {
-        comment << "; requested_res=" << recording_output_config.requested_width
-                << "x" << recording_output_config.requested_height;
-    }
-
-    tags.emplace_back("comment", comment.str());
-    return tags;
-}
-
-void apply_quality_recording_profile(
-    NV_ENC_CONFIG& encodeConfig,
-    const CameraParams* camera_params,
-    const RecordingOutputConfig& recording_output_config,
-    bool low_latency
-) {
-    const RecordingBitrateEstimate estimate =
-        estimate_recording_bitrate(*camera_params, recording_output_config);
-    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
-    encodeConfig.rcParams.averageBitRate = estimate.average_bitrate;
-    encodeConfig.rcParams.maxBitRate = estimate.max_bitrate;
-    encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.maxBitRate;
-
-    encodeConfig.rcParams.enableAQ = 1;
-    encodeConfig.rcParams.enableTemporalAQ = 1;
-    encodeConfig.rcParams.enableLookahead = low_latency ? 0 : 1;
-    encodeConfig.rcParams.lowDelayKeyFrameScale = low_latency ? 1 : 0;
-}
-
-void apply_vbr_cq_recording_profile(
-    NV_ENC_CONFIG& encodeConfig,
-    const CameraParams* camera_params,
-    const RecordingOutputConfig& recording_output_config,
-    bool low_latency,
-    int quality_value
-) {
-    apply_quality_recording_profile(encodeConfig, camera_params, recording_output_config, low_latency);
-    encodeConfig.rcParams.targetQuality = static_cast<uint8_t>(clamp_quality_value(quality_value));
-    encodeConfig.rcParams.targetQualityLSB = 0;
-}
-
-void apply_cbr_recording_profile(
-    NV_ENC_CONFIG& encodeConfig,
-    const CameraParams* camera_params,
-    const RecordingOutputConfig& recording_output_config,
-    bool low_latency
-) {
-    const RecordingBitrateEstimate estimate =
-        estimate_recording_bitrate(*camera_params, recording_output_config);
-    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CBR;
-    encodeConfig.rcParams.averageBitRate = estimate.average_bitrate;
-    encodeConfig.rcParams.maxBitRate = estimate.average_bitrate;
-    encodeConfig.rcParams.vbvBufferSize = estimate.average_bitrate;
-
-    encodeConfig.rcParams.enableAQ = 1;
-    encodeConfig.rcParams.enableTemporalAQ = 1;
-    encodeConfig.rcParams.enableLookahead = low_latency ? 0 : 1;
-    encodeConfig.rcParams.lowDelayKeyFrameScale = low_latency ? 1 : 0;
-}
-
-void apply_cqp_recording_profile(
-    NV_ENC_CONFIG& encodeConfig,
-    int quality_value
-) {
-    const uint8_t qp = static_cast<uint8_t>(clamp_quality_value(quality_value));
-    encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-    encodeConfig.rcParams.constQP = {qp, qp, qp};
-    encodeConfig.rcParams.averageBitRate = 0;
-    encodeConfig.rcParams.maxBitRate = 0;
-    encodeConfig.rcParams.vbvBufferSize = 0;
-    encodeConfig.rcParams.targetQuality = 0;
-    encodeConfig.rcParams.targetQualityLSB = 0;
-    encodeConfig.rcParams.enableAQ = 0;
-    encodeConfig.rcParams.enableTemporalAQ = 0;
-    encodeConfig.rcParams.enableLookahead = 0;
-    encodeConfig.rcParams.lowDelayKeyFrameScale = 0;
-}
-
-void apply_encoder_control_overrides(
-    NV_ENC_CONFIG& encodeConfig,
-    const EncoderControlOverrides& overrides
-) {
-    const bool explicit_target_bitrate = overrides.target_bitrate_bps > 0;
-    const bool explicit_max_bitrate = overrides.max_bitrate_bps > 0;
-    const bool explicit_vbv = overrides.vbv_buffer_size > 0;
-
-    if (overrides.aq >= 0) {
-        encodeConfig.rcParams.enableAQ = overrides.aq ? 1U : 0U;
-    }
-    if (overrides.temporal_aq >= 0) {
-        encodeConfig.rcParams.enableTemporalAQ = overrides.temporal_aq ? 1U : 0U;
-    }
-    if (overrides.lookahead >= 0) {
-        encodeConfig.rcParams.enableLookahead = overrides.lookahead ? 1U : 0U;
-        if (!overrides.lookahead) {
-            encodeConfig.rcParams.lookaheadDepth = 0;
-        }
-    }
-    if (overrides.lookahead_depth >= 0) {
-        encodeConfig.rcParams.lookaheadDepth = static_cast<uint16_t>(
-            std::clamp(overrides.lookahead_depth, 0, kMaxLookaheadDepth));
-        if (overrides.lookahead_depth > 0 && overrides.lookahead != 0) {
-            encodeConfig.rcParams.enableLookahead = 1;
-        }
-    }
-    if (explicit_target_bitrate) {
-        encodeConfig.rcParams.averageBitRate = saturate_positive_u32(overrides.target_bitrate_bps);
-    }
-    if (explicit_max_bitrate) {
-        encodeConfig.rcParams.maxBitRate = saturate_positive_u32(overrides.max_bitrate_bps);
-    }
-    if (explicit_vbv) {
-        encodeConfig.rcParams.vbvBufferSize = saturate_positive_u32(overrides.vbv_buffer_size);
-    }
-    if (encodeConfig.rcParams.rateControlMode == NV_ENC_PARAMS_RC_CBR && explicit_target_bitrate) {
-        if (!explicit_max_bitrate) {
-            encodeConfig.rcParams.maxBitRate = encodeConfig.rcParams.averageBitRate;
-        }
-        if (!explicit_vbv) {
-            encodeConfig.rcParams.vbvBufferSize = encodeConfig.rcParams.averageBitRate;
-        }
-    }
-}
 } // namespace
-
-RecordingBitrateEstimate estimate_recording_bitrate(const CameraParams& camera_params,
-                                                    const RecordingOutputConfig& recording_output_config)
-{
-    RecordingBitrateEstimate estimate;
-    estimate.target_bpp = camera_params.color ? kColorTargetBpp : kMonoTargetBpp;
-
-    const double unclamped_bits_per_sec =
-        static_cast<double>(recording_output_config.resolved_width) *
-        static_cast<double>(recording_output_config.resolved_height) *
-        static_cast<double>(camera_params.frame_rate) *
-        estimate.target_bpp;
-    const uint64_t unclamped_average_bitrate = static_cast<uint64_t>(unclamped_bits_per_sec);
-    estimate.average_clamped_to_min = unclamped_average_bitrate < kMinQualityBitrate;
-    estimate.average_clamped_to_max = unclamped_average_bitrate > kMaxQualityBitrate;
-    estimate.average_bitrate = clamp_bitrate(unclamped_average_bitrate);
-
-    uint64_t unclamped_max_bitrate = static_cast<uint64_t>(estimate.average_bitrate) * 3 / 2;
-    if (unclamped_max_bitrate < estimate.average_bitrate) {
-        unclamped_max_bitrate = estimate.average_bitrate;
-    }
-    estimate.max_clamped_to_max = unclamped_max_bitrate > kMaxQualityBitrate;
-    estimate.max_bitrate = clamp_bitrate(unclamped_max_bitrate);
-    return estimate;
-}
-
-int sanitize_recording_gop_length(int requested_gop_length)
-{
-    return std::max(0, requested_gop_length);
-}
-
-uint32_t resolve_recording_gop_length(const CameraParams& camera_params,
-                                      const std::string& tuning,
-                                      int requested_gop_length)
-{
-    if (is_lossless_tuning(tuning)) {
-        return 1;
-    }
-
-    const int sanitized_gop_length = sanitize_recording_gop_length(requested_gop_length);
-    if (sanitized_gop_length > 0) {
-        return static_cast<uint32_t>(sanitized_gop_length);
-    }
-
-    return std::max<uint32_t>(1u, camera_params.frame_rate);
-}
 
 // Helper to initialize the FFmpeg-based file writer
 static inline void initialize_writer_hw(
@@ -822,19 +475,18 @@ EncoderHwWorker::EncoderHwWorker(
   resolved_recording_config_(resolved_recording_config),
   recording_output_config_(resolved_recording_config.output),
   base_folder_name_(base_folder_name),
-  codec_(resolved_recording_config.encode.codec),
-  preset_(resolved_recording_config.encode.preset),
-  tuning_(resolved_recording_config.encode.tuning),
-  rate_control_mode_(resolved_recording_config.encode.rate_control_mode.empty()
-                         ? "vbr"
-                         : resolved_recording_config.encode.rate_control_mode),
+  codec_(normalize_video_encode_codec(resolved_recording_config.encode.codec)),
+  preset_(normalize_video_encode_preset(resolved_recording_config.encode.preset)),
+  tuning_(normalize_video_encode_tuning(resolved_recording_config.encode.tuning)),
+  rate_control_mode_(normalize_video_encode_rate_control_mode(
+      resolved_recording_config.encode.rate_control_mode)),
   encoder_control_overrides_(resolved_recording_config.encoder_control_overrides),
   importance_map_config_(resolved_recording_config.importance_map),
   pre_encoder_reference_capture_config_(resolved_recording_config.pre_encoder_reference_capture),
   direct_input_enabled_(resolved_recording_config.encode.nvenc_direct_input),
   nvenc_extra_output_delay_(resolve_nvenc_extra_output_delay(camera_params)),
   nvenc_harvest_delay_us_(resolve_nvenc_harvest_delay_us(camera_params)),
-  quality_value_(clamp_quality_value(resolved_recording_config.encode.quality_value)),
+  quality_value_(clamp_video_encode_quality_value(resolved_recording_config.encode.quality_value)),
   gop_length_(sanitize_recording_gop_length(resolved_recording_config.encode.gop_length)),
   recording_strategy_config_(resolved_recording_config.strategy),
   shared_output_(std::move(shared_output)),
@@ -897,65 +549,37 @@ EncoderHwWorker::EncoderHwWorker(
     NV_ENC_CONFIG encodeConfig = {NV_ENC_CONFIG_VER};
     initializeParams.encodeConfig = &encodeConfig;
 
-    GUID codecGuid = (codec_ == "hevc") ? NV_ENC_CODEC_HEVC_GUID : NV_ENC_CODEC_H264_GUID;
-    GUID presetGuid = (preset_ == "p1") ? NV_ENC_PRESET_P1_GUID : (preset_ == "p5") ? NV_ENC_PRESET_P5_GUID : (preset_ == "p7") ? NV_ENC_PRESET_P7_GUID : NV_ENC_PRESET_P3_GUID;
-    NV_ENC_TUNING_INFO tuningInfo = (tuning_ == "ll") ? NV_ENC_TUNING_INFO_LOW_LATENCY : (tuning_ == "ull") ? NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY : (tuning_ == "lossless") ? NV_ENC_TUNING_INFO_LOSSLESS : NV_ENC_TUNING_INFO_HIGH_QUALITY;
+    VideoEncodeProfile encode_profile = build_full_frame_video_encode_profile(
+        *camera_params_,
+        encode_gpu_id_,
+        resolved_recording_config_);
+    encode_profile.codec = codec_;
+    encode_profile.preset = preset_;
+    encode_profile.tuning = tuning_;
+    encode_profile.rate_control_mode = rate_control_mode_;
+    encode_profile.quality_value = quality_value_;
+    encode_profile.requested_gop_length = gop_length_;
+    encode_profile.resolved_gop_length =
+        resolve_recording_gop_length(*camera_params_, tuning_, gop_length_);
+    encode_profile.encoder_control_overrides = encoder_control_overrides_;
+    encode_profile.importance_map = importance_map_config_;
 
+    const VideoEncodeProfileNvencGuids nvenc_guids =
+        resolve_video_encode_profile_nvenc_guids(encode_profile);
+    encoder_.pEnc->CreateDefaultEncoderParams(
+        &initializeParams,
+        nvenc_guids.codec_guid,
+        nvenc_guids.preset_guid,
+        nvenc_guids.tuning_info);
+    apply_video_encode_profile_to_nvenc_config(
+        encode_profile,
+        &initializeParams,
+        &encodeConfig);
+    std::cout << "[EncoderHwWorker] Resolved video encode profile for "
+              << threadName << ": "
+              << video_encode_profile_summary(encode_profile)
+              << std::endl;
 
-    encoder_.pEnc->CreateDefaultEncoderParams(&initializeParams, codecGuid, presetGuid, tuningInfo);
-
-    const bool low_latency = is_low_latency_tuning(tuning_);
-    const bool lossless = is_lossless_tuning(tuning_);
-
-    initializeParams.frameRateNum = camera_params_->frame_rate;
-    initializeParams.frameRateDen = 1;
-    initializeParams.enablePTD = 1;
-    initializeParams.encodeWidth = recording_output_config_.resolved_width;
-    initializeParams.encodeHeight = recording_output_config_.resolved_height;
-    initializeParams.darWidth = recording_output_config_.resolved_width;
-    initializeParams.darHeight = recording_output_config_.resolved_height;
-
-    encodeConfig.gopLength = resolve_recording_gop_length(*camera_params_, tuning_, gop_length_);
-    encodeConfig.frameIntervalP = 1;
-
-    if (lossless) {
-        encodeConfig.rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
-        encodeConfig.rcParams.constQP = {0, 0, 0};
-        encodeConfig.rcParams.averageBitRate = 0;
-        encodeConfig.rcParams.maxBitRate = 0;
-        encodeConfig.rcParams.vbvBufferSize = 0;
-        encodeConfig.rcParams.targetQuality = 0;
-        encodeConfig.rcParams.targetQualityLSB = 0;
-        encodeConfig.rcParams.enableAQ = 0;
-        encodeConfig.rcParams.enableTemporalAQ = 0;
-        encodeConfig.rcParams.enableLookahead = 0;
-        encodeConfig.rcParams.lowDelayKeyFrameScale = 0;
-        encodeConfig.gopLength = 1;
-        encodeConfig.frameIntervalP = 1;
-    } else if (is_cqp_rate_control(rate_control_mode_)) {
-        apply_cqp_recording_profile(encodeConfig, quality_value_);
-    } else if (is_cbr_rate_control(rate_control_mode_)) {
-        apply_cbr_recording_profile(
-            encodeConfig,
-            camera_params_,
-            recording_output_config_,
-            low_latency);
-    } else if (is_vbr_cq_rate_control(rate_control_mode_)) {
-        apply_vbr_cq_recording_profile(
-            encodeConfig,
-            camera_params_,
-            recording_output_config_,
-            low_latency,
-            quality_value_);
-    } else {
-        apply_quality_recording_profile(encodeConfig, camera_params_, recording_output_config_, low_latency);
-    }
-
-    encodeConfig.rcParams.enableMinQP = 0;
-    encodeConfig.rcParams.enableMaxQP = 0;
-    encodeConfig.rcParams.strictGOPTarget = 0;
-    encodeConfig.rcParams.enableNonRefP = 0;
-    apply_encoder_control_overrides(encodeConfig, encoder_control_overrides_);
     importance_map_config_.mode = normalize_importance_map_mode(importance_map_config_.mode);
     importance_map_config_.roi_size_px =
         normalize_importance_map_roi_size_px(importance_map_config_.roi_size_px);
@@ -971,34 +595,6 @@ EncoderHwWorker::EncoderHwWorker(
     }
     initializeParams.enableWeightedPrediction = 0;
 
-    if (codec_ == "hevc") {
-        auto& hevcConfig = encodeConfig.encodeCodecConfig.hevcConfig;
-        hevcConfig.pixelBitDepthMinus8 = 0;
-        hevcConfig.idrPeriod = encodeConfig.gopLength;
-        hevcConfig.sliceMode = 0;
-        hevcConfig.sliceModeData = 0;
-        hevcConfig.maxNumRefFramesInDPB = 1;
-        hevcConfig.repeatSPSPPS = 1;
-        hevcConfig.outputBufferingPeriodSEI = 0;
-        hevcConfig.outputPictureTimingSEI = 0;
-        hevcConfig.outputAUD = 0;
-        hevcConfig.enableLTR = 0;
-    } else {
-        auto& h264Config = encodeConfig.encodeCodecConfig.h264Config;
-        h264Config.idrPeriod = encodeConfig.gopLength;
-        h264Config.sliceMode = 0;
-        h264Config.sliceModeData = 0;
-        h264Config.repeatSPSPPS = 1;
-        h264Config.maxNumRefFrames = 1;
-        h264Config.adaptiveTransformMode = NV_ENC_H264_ADAPTIVE_TRANSFORM_DISABLE;
-        h264Config.bdirectMode = NV_ENC_H264_BDIRECT_MODE_DISABLE;
-        h264Config.entropyCodingMode = NV_ENC_H264_ENTROPY_CODING_MODE_CAVLC;
-    }
-
-    if (!camera_params_->color) {
-        encodeConfig.monoChromeEncoding = 1;
-    }
-    
     encoder_.pEnc->CreateEncoder(&initializeParams);
     encoder_.pEnc->SetIOCudaStreams((NV_ENC_CUSTREAM_PTR)&m_stream, (NV_ENC_CUSTREAM_PTR)&m_stream);
     encoder_buffer_count_ = static_cast<int>(encoder_.pEnc->GetEncoderBufferCount());
@@ -1026,7 +622,8 @@ EncoderHwWorker::EncoderHwWorker(
         encoder_snapshot_.codec = codec_;
         encoder_snapshot_.preset = preset_;
         encoder_snapshot_.tuning = tuning_;
-        encoder_snapshot_.rc_strategy = resolve_rate_control_strategy(tuning_, rate_control_mode_);
+        encoder_snapshot_.rc_strategy =
+            resolve_video_encode_rate_control_strategy(tuning_, rate_control_mode_);
         encoder_snapshot_.output_mode = recording_output_config_.mode;
         encoder_snapshot_.width = resolved_params.encodeWidth;
         encoder_snapshot_.height = resolved_params.encodeHeight;
@@ -1687,17 +1284,20 @@ void EncoderHwWorker::reset_pending_gop_state()
 SharedRecordingOutputOpenParams EncoderHwWorker::build_shared_output_open_params(
     const std::string& folder_name) const
 {
-    const auto metadata_tags = build_metadata_tags(
-        camera_params_,
-        recording_output_config_,
-        codec_,
-        preset_,
-        tuning_,
-        rate_control_mode_,
-        quality_value_,
-        gop_length_,
-        encoder_control_overrides_,
-        importance_map_config_);
+    VideoEncodeProfile metadata_profile = build_full_frame_video_encode_profile(
+        *camera_params_,
+        encode_gpu_id_,
+        resolved_recording_config_);
+    metadata_profile.codec = codec_;
+    metadata_profile.preset = preset_;
+    metadata_profile.tuning = tuning_;
+    metadata_profile.rate_control_mode = rate_control_mode_;
+    metadata_profile.quality_value = quality_value_;
+    metadata_profile.requested_gop_length = gop_length_;
+    metadata_profile.resolved_gop_length = recording_gop_length_;
+    metadata_profile.encoder_control_overrides = encoder_control_overrides_;
+    metadata_profile.importance_map = importance_map_config_;
+    const auto metadata_tags = build_video_encode_metadata_tags(metadata_profile);
     FFmpegWriterQueueConfig queue_config;
     if (recording_strategy_config_.split_gop_enabled()) {
         queue_config.max_queued_packets =
@@ -2676,18 +2276,20 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
             reset_pending_gop_state();
             force_next_idr_ = true;
 
-            const auto metadata_tags = build_metadata_tags(
-                camera_params_,
-                recording_output_config_,
-                codec_,
-                preset_,
-                tuning_,
-                rate_control_mode_,
-                quality_value_,
-                gop_length_,
-                encoder_control_overrides_,
-                importance_map_config_
-            );
+            VideoEncodeProfile metadata_profile = build_full_frame_video_encode_profile(
+                *camera_params_,
+                encode_gpu_id_,
+                resolved_recording_config_);
+            metadata_profile.codec = codec_;
+            metadata_profile.preset = preset_;
+            metadata_profile.tuning = tuning_;
+            metadata_profile.rate_control_mode = rate_control_mode_;
+            metadata_profile.quality_value = quality_value_;
+            metadata_profile.requested_gop_length = gop_length_;
+            metadata_profile.resolved_gop_length = recording_gop_length_;
+            metadata_profile.encoder_control_overrides = encoder_control_overrides_;
+            metadata_profile.importance_map = importance_map_config_;
+            const auto metadata_tags = build_video_encode_metadata_tags(metadata_profile);
             FFmpegWriterQueueConfig queue_config;
             if (recording_strategy_config_.split_gop_enabled()) {
                 queue_config.max_queued_packets =
