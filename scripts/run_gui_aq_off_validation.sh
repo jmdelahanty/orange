@@ -73,6 +73,7 @@ python3 - \
   "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" \
   "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -142,6 +143,23 @@ if crop_external_max_enqueue_age_p95_ms_raw:
             errors.append("ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be >= 0")
     except ValueError:
         errors.append("ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be a number")
+
+def validate_optional_gpu_env(name: str) -> None:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return
+    try:
+        value = int(raw)
+    except ValueError:
+        errors.append(f"{name} must be an integer")
+        return
+    if value < 0:
+        errors.append(f"{name} must be >= 0")
+
+validate_optional_gpu_env("ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID")
+for name in sorted(os.environ):
+    if name.startswith("ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_"):
+        validate_optional_gpu_env(name)
 
 if detect_engine:
     detect_engine_path = Path(detect_engine).expanduser()

@@ -274,6 +274,35 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
         )
 
 
+def test_external_crop_recorder_gpu_validation_rejects_bad_values() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID": "gpu8",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "-1",
+            },
+        )
+
+        require(result.returncode != 0, "bad external crop GPU overrides should fail preflight")
+        require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID must be an integer" in result.stderr,
+            "global crop GPU override error should explain integer requirement",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095 must be >= 0" in result.stderr,
+            "per-camera crop GPU override error should explain nonnegative requirement",
+        )
+
+
 def test_expected_camera_gate_fails_when_missing() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -419,6 +448,7 @@ def main() -> int:
         test_discovers_all_camera_json_files,
         test_external_crop_queue_validation_limits_are_printed,
         test_external_crop_queue_validation_rejects_bad_values,
+        test_external_crop_recorder_gpu_validation_rejects_bad_values,
         test_expected_camera_gate_fails_when_missing,
         test_expected_camera_subset_validates_only_requested_files,
         test_bad_config_fails_preflight,

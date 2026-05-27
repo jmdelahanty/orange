@@ -109,7 +109,8 @@ Diagnostic note:
   Defaults keep each crop recorder on that camera's analytics/source GPU.
   Use these only for placement diagnostics or deliberate NVENC load routing,
   and confirm the resulting `analytics_gpu_id -> recorder_gpu_id` mapping in
-  validation JSON before comparing runs.
+  validation JSON before comparing runs. The GUI validation launcher rejects
+  non-integer or negative placement values before starting Orange.
 - `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<N>` and
   `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=<ms>` are launcher validation
   helpers. They do not change runtime behavior; `scripts/run_gui_aq_off_validation.sh`
