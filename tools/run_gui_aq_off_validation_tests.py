@@ -190,6 +190,8 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
             extra_env={
                 "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
                 "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID": "8",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
                 "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "48",
                 "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "80",
             },
@@ -211,6 +213,14 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
         require(
             "--require-external-crop-backend-metadata" in result.stdout,
             "external crop validation commands should require backend metadata",
+        )
+        require(
+            "--expect-external-crop-recorder-gpu-id 8" in result.stdout,
+            "launcher validation commands should include the global crop recorder GPU expectation",
+        )
+        require(
+            "--expect-external-crop-recorder-gpu 2010095=6" in result.stdout,
+            "launcher validation commands should include the per-camera crop recorder GPU expectation",
         )
         require(
             "--max-external-crop-encode-queue-high-water 48" in result.stdout,

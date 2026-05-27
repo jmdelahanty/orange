@@ -931,6 +931,10 @@ checks `recording_outputs[serial].crop.summary` and requires
 `external_encode.frames_dropped = 0` and `encode_dropped = 0`.
 Use `--expect-external-crop-encode-queue-depth <N>` to confirm the intended
 external crop queue depth reached the recorder summary. Use
+`--expect-external-crop-recorder-gpu-id <N>` to assert one recorder GPU for all
+external crop streams, or repeat
+`--expect-external-crop-recorder-gpu <serial>=<N>` for per-camera placement.
+Use
 `--max-external-crop-encode-queue-high-water <N>` and
 `--max-external-crop-enqueue-age-p95-ms <ms>` when tuning or validating the
 external crop queue so backlog stays bounded.

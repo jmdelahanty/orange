@@ -542,6 +542,8 @@ def check_crop_recording(
     *,
     yolo_rows: int | None = None,
     expected_external_queue_depth: int | None = None,
+    expected_external_recorder_gpu_id: int | None = None,
+    expected_external_recorder_gpu_by_serial: dict[str, int] | None = None,
     max_external_queue_high_water: int | None = None,
     max_external_enqueue_age_p95_ms: float | None = None,
     require_external_crop_backend_metadata: bool = False,
@@ -560,6 +562,8 @@ def check_crop_recording(
         "ffprobe",
         probe_video=False,
         expected_external_queue_depth=expected_external_queue_depth,
+        expected_external_recorder_gpu_id=expected_external_recorder_gpu_id,
+        expected_external_recorder_gpu_by_serial=expected_external_recorder_gpu_by_serial,
         max_external_queue_high_water=max_external_queue_high_water,
         max_external_enqueue_age_p95_ms=max_external_enqueue_age_p95_ms,
         require_external_crop_backend_metadata=require_external_crop_backend_metadata,
@@ -1220,6 +1224,88 @@ def test_crop_recording_artifacts_external_backend_manifest_matches_summary() ->
         )
 
 
+def test_crop_recording_artifacts_external_recorder_gpu_expectations() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_crop_recording_artifacts(root, serial, rows=3)
+        (root / f"Cam{serial}_crop.mp4").unlink()
+        (root / f"Cam{serial}_crop_keyframe.json").unlink()
+
+        external_root = root / "external_crop_recorder"
+        external_root.mkdir()
+        external_video = external_root / f"Cam{serial}_crop_external.mp4"
+        external_keyframes = external_root / f"Cam{serial}_crop_external_keyframe.json"
+        external_summary = external_root / f"Cam{serial}_crop_external_summary.json"
+        external_video.write_bytes(b"external-crop-mp4")
+        external_keyframes.write_text(json.dumps({"total_frames": 3}) + "\n", encoding="utf-8")
+        write_external_crop_summary(
+            external_summary,
+            3,
+            queue_depth=64,
+            queue_high_water=12,
+            enqueue_age_p95_ms=2.25,
+        )
+        write_external_crop_recording_session_manifest(root, serial, recorder_gpu_id=6)
+
+        snapshot = crop_snapshot(serial)
+        snapshot["recording_outputs"] = {
+            serial: {
+                "crop": {
+                    "backend": "external_ipc",
+                    "video": str(external_video),
+                    "metadata": f"Cam{serial}_crop_meta.csv",
+                    "keyframes": str(external_keyframes),
+                    "perf": f"Cam{serial}_crop_perf.csv",
+                    "summary": str(external_summary),
+                    "details": {
+                        "stream_id": f"{serial}_crop",
+                        "analytics_gpu_id": 5,
+                        "recorder_gpu_id": 6,
+                        "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
+                        "encode_queue_depth": 64,
+                        "summary_json": str(external_summary),
+                    },
+                }
+            }
+        }
+
+        reporter, _ = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=3,
+            expected_external_recorder_gpu_id=6,
+            require_external_crop_backend_metadata=True,
+        )
+        require(not reporter.failures, f"unexpected failures: {reporter.failures}")
+
+        reporter, _ = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=3,
+            expected_external_recorder_gpu_id=8,
+        )
+        require(
+            any("external crop recorder_gpu_id" in failure for failure in reporter.failures),
+            "wrong global external crop recorder GPU expectation should fail",
+        )
+
+        reporter, _ = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=3,
+            expected_external_recorder_gpu_id=8,
+            expected_external_recorder_gpu_by_serial={serial: 6},
+        )
+        require(
+            not reporter.failures,
+            "per-camera external crop recorder GPU expectation should override global expectation",
+        )
+
+
 def test_crop_recording_artifacts_external_queue_high_water_falls_back_to_detach_csv() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1639,6 +1725,7 @@ def main() -> int:
         test_crop_recording_artifacts_external_queue_high_water_cannot_exceed_depth,
         test_crop_recording_artifacts_require_external_backend_metadata,
         test_crop_recording_artifacts_external_backend_manifest_matches_summary,
+        test_crop_recording_artifacts_external_recorder_gpu_expectations,
         test_crop_recording_artifacts_external_queue_high_water_falls_back_to_detach_csv,
         test_crop_recording_artifacts_use_incomplete_external_descriptor_paths,
         test_crop_recording_artifacts_fail_on_external_crop_drops,

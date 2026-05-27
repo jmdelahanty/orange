@@ -565,7 +565,9 @@ GPU. For placement diagnostics, set
 The validator JSON and comparison helper report the resulting
 `analytics_gpu_id -> recorder_gpu_id` mapping, and
 `--require-matching-crop-config` prevents visible/hidden A/B comparisons from
-quietly mixing different crop recorder placements.
+quietly mixing different crop recorder placements. When these env vars are
+set, `scripts/run_gui_aq_off_validation.sh` also prints validation commands
+with matching `--expect-external-crop-recorder-gpu*` gates.
 
 - [ ] Baseline with crop preview disabled:
 

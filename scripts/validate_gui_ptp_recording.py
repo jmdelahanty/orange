@@ -240,6 +240,25 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--expect-external-crop-recorder-gpu-id",
+        type=int,
+        default=None,
+        help=(
+            "Optional expected recorder_gpu_id for every external crop stream. "
+            "Per-camera --expect-external-crop-recorder-gpu values override this."
+        ),
+    )
+    parser.add_argument(
+        "--expect-external-crop-recorder-gpu",
+        action="append",
+        default=[],
+        metavar="SERIAL=GPU",
+        help=(
+            "Optional per-camera expected recorder_gpu_id for an external crop stream. "
+            "May be provided more than once."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-encode-queue-high-water",
         type=int,
         default=None,
@@ -401,6 +420,26 @@ def resolve_requested_recording_folder(args: argparse.Namespace) -> Path:
 
 def parse_expected_cameras(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def parse_expected_serial_int_map(values: list[str], option_name: str) -> dict[str, int]:
+    parsed: dict[str, int] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise SystemExit(f"{option_name} must use SERIAL=VALUE, got {raw!r}")
+        serial, value_text = raw.split("=", 1)
+        serial = serial.strip()
+        value_text = value_text.strip()
+        if not serial:
+            raise SystemExit(f"{option_name} has an empty serial in {raw!r}")
+        try:
+            value = int(value_text)
+        except ValueError as exc:
+            raise SystemExit(f"{option_name} value must be an integer, got {raw!r}") from exc
+        if value < 0:
+            raise SystemExit(f"{option_name} value must be >= 0, got {raw!r}")
+        parsed[serial] = value
+    return parsed
 
 
 def artifact_cameras(summary: dict[str, Any], snapshot: dict[str, Any], expected: list[str]) -> list[str]:
@@ -1765,6 +1804,8 @@ def check_crop_recording_artifacts(
     *,
     probe_video: bool = True,
     expected_external_queue_depth: int | None = None,
+    expected_external_recorder_gpu_id: int | None = None,
+    expected_external_recorder_gpu_by_serial: dict[str, int] | None = None,
     max_external_queue_high_water: int | None = None,
     max_external_enqueue_age_p95_ms: float | None = None,
     require_external_crop_backend_metadata: bool = False,
@@ -2096,6 +2137,23 @@ def check_crop_recording_artifacts(
             external_socket_path = (
                 socket_path_value if isinstance(socket_path_value, str) and socket_path_value else None
             )
+            expected_recorder_gpu = (
+                expected_external_recorder_gpu_by_serial.get(serial)
+                if (
+                    expected_external_recorder_gpu_by_serial
+                    and serial in expected_external_recorder_gpu_by_serial
+                )
+                else expected_external_recorder_gpu_id
+            )
+            if expected_recorder_gpu is not None:
+                reporter.check(
+                    external_recorder_gpu_id == expected_recorder_gpu,
+                    f"Cam{serial} external crop recorder_gpu_id={expected_recorder_gpu}",
+                    (
+                        f"Cam{serial} external crop recorder_gpu_id "
+                        f"({external_recorder_gpu_id}) != {expected_recorder_gpu}"
+                    ),
+                )
             if require_external_crop_backend_metadata:
                 reporter.check(
                     bool(external_stream_config),
@@ -2471,6 +2529,15 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
 
 def main() -> int:
     args = parse_args()
+    if (
+        args.expect_external_crop_recorder_gpu_id is not None
+        and args.expect_external_crop_recorder_gpu_id < 0
+    ):
+        raise SystemExit("--expect-external-crop-recorder-gpu-id must be >= 0")
+    expected_external_recorder_gpu_by_serial = parse_expected_serial_int_map(
+        args.expect_external_crop_recorder_gpu,
+        "--expect-external-crop-recorder-gpu",
+    )
     recording_folder = resolve_requested_recording_folder(args)
     summary = gui_summary.summarize(recording_folder, args.steady_after_frame, args.ffprobe)
     snapshot = read_json(recording_folder / "recording_snapshot.json")
@@ -2548,6 +2615,8 @@ def main() -> int:
             args.require_crop_recording_artifacts,
             args.ffprobe,
             expected_external_queue_depth=args.expect_external_crop_encode_queue_depth,
+            expected_external_recorder_gpu_id=args.expect_external_crop_recorder_gpu_id,
+            expected_external_recorder_gpu_by_serial=expected_external_recorder_gpu_by_serial,
             max_external_queue_high_water=args.max_external_crop_encode_queue_high_water,
             max_external_enqueue_age_p95_ms=args.max_external_crop_enqueue_age_p95_ms,
             require_external_crop_backend_metadata=args.require_external_crop_backend_metadata,

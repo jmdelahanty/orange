@@ -22,10 +22,25 @@ DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v00
 DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
 APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}"
 
+is_nonnegative_integer() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
 EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS="--expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
 if [[ "${CROP_RECORDING_SINK_MODE}" == "external_ipc" ]]; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --require-external-crop-backend-metadata"
 fi
+if [[ -n "${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID:-}" ]] && is_nonnegative_integer "${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID}"; then
+  EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --expect-external-crop-recorder-gpu-id ${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID}"
+fi
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  var_value="${!var_name}"
+  if is_nonnegative_integer "${var_value}"; then
+    serial="${var_name#ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_}"
+    EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --expect-external-crop-recorder-gpu ${serial}=${var_value}"
+  fi
+done < <(compgen -e ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_ | sort)
 if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --max-external-crop-encode-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
 fi
