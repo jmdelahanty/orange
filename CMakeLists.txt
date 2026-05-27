@@ -255,6 +255,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/external_recorder_contract_utils.cpp"
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
+    "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -280,6 +281,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_contract_utils.cpp"
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
+    "${SRC_DIR}/session/external_crop_recorder_config.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -392,6 +394,14 @@ if(BUILD_TESTING)
     target_include_directories(gui_display_frame_rate_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(gui_display_frame_rate_tests PRIVATE cxx_std_17)
     add_test(NAME gui_display_frame_rate_tests COMMAND gui_display_frame_rate_tests)
+
+    add_executable(external_crop_recorder_config_tests
+        "tools/external_crop_recorder_config_tests.cpp"
+        "${SRC_DIR}/session/external_crop_recorder_config.cpp"
+    )
+    target_include_directories(external_crop_recorder_config_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(external_crop_recorder_config_tests PRIVATE cxx_std_17)
+    add_test(NAME external_crop_recorder_config_tests COMMAND external_crop_recorder_config_tests)
 
     add_test(
         NAME validate_gui_crop_preview_tests

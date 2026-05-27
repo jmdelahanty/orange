@@ -6,6 +6,7 @@
 #include "project.h"
 #include "recording_ingress.h"
 #include "recording_output_utils.h"
+#include "session/external_crop_recorder_config.h"
 
 #include <algorithm>
 #include <array>
@@ -333,8 +334,10 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             sanitize_camera_crop_size_px(camera.crop_pipeline.crop_size_px);
         const int frame_rate =
             std::max(1, static_cast<int>(camera.frame_rate));
-        const int recorder_gpu_id =
+        const int analytics_gpu_id =
             camera.gpu_id >= 0 ? camera.gpu_id : 0;
+        const int recorder_gpu_id =
+            resolve_external_crop_recorder_gpu_id_from_env(serial, analytics_gpu_id);
         const std::string prefix =
             (std::filesystem::path(artifact_root) /
              ("Cam" + serial + "_crop_external")).string();
@@ -344,7 +347,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             // Use a crop-suffixed process key so the supervisor's environment
             // variables cannot overwrite full-frame external-recorder sockets.
             {"camera_serial", stream_id},
-            {"analytics_gpu_id", recorder_gpu_id},
+            {"analytics_gpu_id", analytics_gpu_id},
             {"recorder_gpu_id", recorder_gpu_id},
             {"expected_shard_gpu_ids", nlohmann::json::array({recorder_gpu_id})},
             {"routing_policy", "single_shard"},

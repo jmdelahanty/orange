@@ -122,6 +122,10 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show the default external crop queue depth",
         )
         require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=<camera GPU/default>" in result.stdout,
+            "launcher output should describe the default external crop recorder GPU placement",
+        )
+        require(
             "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<not set>" in result.stdout,
             "launcher output should show queue high-water validation is unset by default",
         )
@@ -332,6 +336,8 @@ def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_CROP_PREVIEW_DISABLE": "1",
                 "ORANGE_CROP_FRAME_POOL_SIZE": "64",
                 "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID": "8",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
             },
         )
 
@@ -351,6 +357,14 @@ def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
             "external crop encode queue depth should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=8" in result.stdout,
+            "global external crop recorder GPU override should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=6" in result.stdout,
+            "per-camera external crop recorder GPU override should be forwarded through sudo env",
         )
 
 

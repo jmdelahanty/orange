@@ -792,7 +792,10 @@ Notes:
   `frames_received`, `frames_encoded`, `encode_dropped`,
   `external_frames_dropped`, `encode_queue_depth`, `encode_queue_high_water`,
   and `enqueue_age_p95_ms`, copied from the supervised external crop recorder
-  plan and summaries.
+  plan and summaries. In `stream_config`, `analytics_gpu_id` is the
+  source/crop-production GPU and `recorder_gpu_id` is the external process
+  encode GPU; they can differ when crop recorder GPU placement is intentionally
+  overridden for NVENC load-routing diagnostics.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

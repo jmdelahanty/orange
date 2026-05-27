@@ -558,6 +558,15 @@ ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
 ./scripts/run_gui_aq_off_validation.sh
 ```
 
+By default, each external crop recorder uses that camera's analytics/source
+GPU. For placement diagnostics, set
+`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=<gpu>` for all crop streams or
+`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>=<gpu>` for a single camera.
+The validator JSON and comparison helper report the resulting
+`analytics_gpu_id -> recorder_gpu_id` mapping, and
+`--require-matching-crop-config` prevents visible/hidden A/B comparisons from
+quietly mixing different crop recorder placements.
+
 - [ ] Baseline with crop preview disabled:
 
 ```bash

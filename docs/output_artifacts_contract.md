@@ -103,6 +103,13 @@ Diagnostic note:
   per camera. Use `256` only as a diagnostic shock absorber; it permits about
   `2.56 s` of backlog per camera and can hide latency that should be visible
   in production validation.
+- `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=<N>` overrides the external crop
+  recorder GPU for every crop stream. Per-camera overrides such as
+  `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=<N>` take precedence.
+  Defaults keep each crop recorder on that camera's analytics/source GPU.
+  Use these only for placement diagnostics or deliberate NVENC load routing,
+  and confirm the resulting `analytics_gpu_id -> recorder_gpu_id` mapping in
+  validation JSON before comparing runs.
 - `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<N>` and
   `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=<ms>` are launcher validation
   helpers. They do not change runtime behavior; `scripts/run_gui_aq_off_validation.sh`
@@ -217,8 +224,10 @@ For GUI external crop recording, `recording_session.json`
 `recording_backend.crop_recording` also carries per-camera maps keyed by serial:
 
 - `stream_config`: static recorder config copied from the supervised recorder
-  plan, including `stream_id`, GPU ids, `encode_queue_depth`, socket path, FPS,
-  GOP, codec, and tuning.
+  plan, including `stream_id`, `analytics_gpu_id`, `recorder_gpu_id`,
+  `encode_queue_depth`, socket path, FPS, GOP, codec, and tuning. The
+  `analytics_gpu_id` is the source/crop-production GPU; `recorder_gpu_id` is
+  the external process encode GPU.
 - `frames_received`, `frames_encoded`, `encode_dropped`,
   `external_frames_dropped`: count telemetry copied from each external crop
   recorder summary.
