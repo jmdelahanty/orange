@@ -544,6 +544,10 @@ if(BUILD_TESTING)
     target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)
     target_link_libraries(orange_local_control_tests PRIVATE Threads::Threads)
     add_test(NAME orange_local_control_tests COMMAND orange_local_control_tests)
+
+    add_test(
+        NAME orange_local_control_client_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/orange_local_control_client_tests.py")
 endif()
 
 function(orange_configure_target target_name)

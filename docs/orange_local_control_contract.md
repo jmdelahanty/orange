@@ -41,6 +41,26 @@ sudo wrapper forward these variables when they point under `/tmp`,
 The diagnostic endpoint acknowledges `status` and `citrus_completion`. It does
 not start or stop recording yet.
 
+Use the client utility to inspect or send requests:
+
+```bash
+scripts/orange_local_control_client.py \
+  --socket /tmp/orange_local_control.sock \
+  status
+
+scripts/orange_local_control_client.py \
+  --socket /tmp/orange_local_control.sock \
+  citrus-completion \
+  --experiment-id citrus-exp-42 \
+  --terminal-state completed \
+  --reason protocol_finished \
+  --grace-seconds 10
+```
+
+`start-recording` and `stop-recording` subcommands already render/send the v1
+schema, but the current diagnostic Orange endpoint rejects them with
+`unsupported_in_diagnostic_mode`.
+
 ## Request
 
 Each request is one JSON object, written as one line or as one EOF-terminated

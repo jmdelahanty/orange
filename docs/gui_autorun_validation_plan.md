@@ -361,6 +361,14 @@ JSON socket, logs/ACKs completion requests, and deliberately does not start or
 stop recording yet. Future stop wiring must translate an accepted request into
 the same safe GUI/operator stop path used by the recording button.
 
+During a live GUI run, query the diagnostic endpoint with:
+
+```bash
+scripts/orange_local_control_client.py \
+  --socket /tmp/orange_local_control.sock \
+  status
+```
+
 ## Implementation Sketch
 
 1. Resolve and select `ORANGE_GUI_CONFIG_DIR` during startup.
