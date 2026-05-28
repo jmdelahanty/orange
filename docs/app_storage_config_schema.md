@@ -89,6 +89,14 @@ Missing-file behavior should remain non-fatal:
     },
     "external_recorder_contract_path": ""
   },
+  "gui": {
+    "display": {
+      "profile": "default",
+      "display_preview_max_fps": null,
+      "swap_interval": null,
+      "frame_max_fps": null
+    }
+  },
   "storage": {
     "default_recording_root": "/home/jeremy/orange_data/exp/unsorted",
     "latest_recording": {
@@ -125,6 +133,39 @@ valid host-local path here.
 Example:
 
 - `/home/jeremy/orange_data/detect/my_detector.engine`
+
+### `gui.display`
+
+Type:
+
+- object
+
+Meaning:
+
+- optional GUI display pacing defaults for direct Orange launches
+
+Fields:
+
+- `profile`: one of `default`, `fast`, or `citrus_safe`
+- `display_preview_max_fps`: integer in `[0,10000]` or `null`
+- `swap_interval`: integer in `[0,4]` or `null`
+- `frame_max_fps`: integer in `[0,1000]` or `null`
+
+Profile defaults:
+
+- `default`: leaves Orange's built-in direct-launch defaults in effect
+- `fast`: `display_preview_max_fps = 15`, `swap_interval = 0`,
+  `frame_max_fps = 60`
+- `citrus_safe`: `display_preview_max_fps = 10`, `swap_interval = 1`,
+  `frame_max_fps = 30`
+
+Explicit integer fields override the selected profile. Runtime environment and
+validation launcher values still take precedence over app config. For the
+current Orange/Citrus co-run workstation default:
+
+```bash
+scripts/update_app_config_display_profile.py --profile citrus_safe
+```
 
 ### `storage.default_recording_root`
 
@@ -407,6 +448,9 @@ Current implementation status:
   explicitly
 - `storage.latest_recording.*` now controls the local, canonical, and `/run`
   pointer writes emitted by the recording snapshot path
+- `gui.display` controls direct GUI display pacing defaults, and
+  `scripts/update_app_config_display_profile.py` can update those fields
+  without hand-editing JSON
 
 The pointer outputs should then use the resolved base folder plus the configured
 metadata roots.

@@ -449,6 +449,10 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/run_gui_aq_off_validation_tests.py")
 
     add_test(
+        NAME update_app_config_display_profile_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/update_app_config_display_profile_tests.py")
+
+    add_test(
         NAME verify_external_recorder_session_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/verify_external_recorder_session_tests.py")
 

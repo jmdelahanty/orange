@@ -57,7 +57,9 @@ interaction work.
   profiles are `default`, `fast`, and `citrus_safe`; explicit
   `display_preview_max_fps`, `swap_interval`, and `frame_max_fps` values
   override the profile. Runtime env/launcher values still take precedence over
-  app config for one-off validation runs.
+  app config for one-off validation runs. Use
+  `scripts/update_app_config_display_profile.py --profile citrus_safe` to apply
+  the current Orange/Citrus co-run default.
 - `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the four-camera launcher default. Set it
   to `1` only when live per-camera ImPlot speed graphs are needed during
   recording.
