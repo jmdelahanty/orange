@@ -103,9 +103,12 @@ mirrors external `rolling_output.clips[]` summaries into the GUI
 `recording_session.json`, per-clip `clip_manifest.json`, session
 `recording_clip_index.json/csv`, and `recording_snapshot.json` session
 pointers. GUI full-frame app/env recording-control plumbing and in-memory
-Recording panel controls now exist for external IPC. The remaining GUI
-full-frame work is live validation/soak coverage; the normal GUI validator now
-supports full-frame rolling manifest discovery and per-clip continuity checks.
+Recording panel controls now exist for external IPC. The GUI also surfaces live
+rolling recorder status: current clip, next rollover frame, and last completed
+clip outcome. The normal GUI validator now supports full-frame rolling manifest
+discovery, per-clip continuity checks, and rolling status sidecar/runtime
+consistency checks when external summaries report rolling output. The remaining
+GUI full-frame work is live validation/soak coverage.
 
 ## Implementation Plan
 
@@ -211,7 +214,7 @@ Refs:
   - segment duration minutes with production defaults
   - align-to-wall-clock
   - “rollover now” debug button.
-- [ ] Show runtime status:
+- [x] Show runtime status:
   - current segment index
   - next rollover ETA
   - last rollover outcome.

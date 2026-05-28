@@ -96,7 +96,10 @@ continuity. For a rolling-specific GUI gate, add
 `--expect-recording-mode rolling_clips`, `--expect-record-for-seconds <N>`, and
 `--expect-clip-seconds <N>` so validation fails if the run silently falls back
 to single-clip recording or uses the wrong control values. Use the external
-recorder verifier as the stricter recorder-summary contract check.
+recorder verifier as the stricter recorder-summary contract check. Both
+validators now check rolling recorder status sidecars against final recorder
+summaries when rolling output is present, including current clip, next rollover
+frame, completed clip count, and last rollover outcome.
 
 ## Host PTP Stack Readiness
 
