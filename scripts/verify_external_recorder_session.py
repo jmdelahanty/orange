@@ -162,6 +162,19 @@ def recording_control_for(contract: dict[str, Any], stream: dict[str, Any]) -> d
     return value if isinstance(value, dict) else {}
 
 
+def recording_control_from_summary(summary: dict[str, Any]) -> dict[str, Any]:
+    value = summary.get("recording_control")
+    if isinstance(value, dict):
+        return value
+    rolling = summary.get("rolling_output")
+    if isinstance(rolling, dict) and rolling.get("enabled") is True:
+        return {
+            "record_for_seconds": rolling.get("record_for_seconds", 0),
+            "clip_seconds": rolling.get("clip_seconds", 0),
+        }
+    return {}
+
+
 def path_from(value: Any, base: Path) -> Path:
     path = Path(str(value))
     return path if path.is_absolute() else base / path
@@ -440,6 +453,11 @@ def verify_rolling_output(
     ffprobe: str,
 ) -> list[dict[str, Any]]:
     recording_control = recording_control_for(contract, stream)
+    summary_recording_control = recording_control_from_summary(summary)
+    if summary_recording_control:
+        merged_recording_control = dict(summary_recording_control)
+        merged_recording_control.update(recording_control)
+        recording_control = merged_recording_control
     clip_seconds = as_int(recording_control.get("clip_seconds", 0), "recording_control.clip_seconds")
     record_for_seconds = as_int(
         recording_control.get("record_for_seconds", 0),

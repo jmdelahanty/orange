@@ -88,9 +88,15 @@ Refs:
 The headless in-process full-frame encoder path now satisfies the first
 "without intentional drops between clips" requirement in one-camera smokes and
 a short two-camera PTP real-YOLO smoke. Supervised headless external IPC rolling
-also writes verified clip manifests, parent indexes, and packet counts.
-Remaining production gaps are live GUI validation, broader failure policy, and
-long soak testing. GUI external crop IPC now follows the full-frame external
+also writes verified clip manifests, parent indexes, and packet counts. A short
+four-camera live GUI external IPC rolling run on 2026-05-28 passed strict
+validation at
+`/home/jeremy/orange_data/exp/unsorted/2026_05_28_16_08_46`: full-frame and
+crop external recorders each wrote `605/605` frames per camera, three clips per
+camera (`1-200`, `201-400`, `401-605`), with no camera gaps, recorder drops,
+crop drops, or hidden-FPS regression. Remaining production gaps are broader
+failure policy, positive-detection crop coverage, and long soak testing. GUI
+external crop IPC now follows the full-frame external
 IPC rolling control when that path is active: generated crop contracts and
 `recording_backend.crop_recording` carry the same `recording_control`, declare
 `external_recorder_gop_boundary_writer_rotation`, use crop GOP size `1`, and
@@ -100,8 +106,8 @@ crop metadata/perf CSVs into per-clip sidecars by continuous
 `recording_frame_id` ranges and publishes them under
 `recording_backend.crop_recording.rolling_clips` and per-clip crop
 `recording_outputs`. The offline GUI validator checks those per-clip crop
-artifacts, but this path still needs a real GUI rolling artifact before it is
-production-proven.
+artifacts, and the short live GUI rolling artifact above validates the no-drop
+recording path without positive detections.
 GUI full-frame external-recorder contract materialization now preserves a
 configured `recording_control`/`rollover` object instead of silently overwriting
 it with `clip_seconds = 0`. GUI full-frame external-recorder finalization now
@@ -114,7 +120,7 @@ rolling recorder status: current clip, next rollover frame, and last completed
 clip outcome. The normal GUI validator now supports full-frame rolling manifest
 discovery, per-clip continuity checks, and rolling status sidecar/runtime
 consistency checks when external summaries report rolling output. The remaining
-GUI full-frame work is live validation/soak coverage.
+GUI full-frame work is positive-detection coverage and longer soak validation.
 
 ## Implementation Plan
 
@@ -164,12 +170,13 @@ GUI full-frame work is live validation/soak coverage.
   after a clip boundary does not create a standalone 1-frame final clip.
 - [ ] Apply rollover implementation consistently to:
   - `EncoderHwWorker` main recording path (headless full-frame path is now
-    implemented; GUI/session validation still needed),
+    implemented; GUI external IPC path validated in a short live rolling run),
   - external recorder production/GUI supervision path (headless diagnostic
-    external IPC and GUI finalization bridge are now implemented; live GUI
-    rolling validation still needed),
+    external IPC and GUI finalization bridge are now implemented and short
+    live GUI rolling validation passed),
   - `CropAndEncodeWorker` crop recording path (first prerequisite helper and
-    GOP descriptor alignment exist; finalization/index wiring still needed),
+    GOP descriptor alignment exist; GUI external crop IPC finalization/index
+    wiring passed a short no-positive-detection rolling run),
   - `GPUVideoEncoder` path (headless / legacy path where used).
 - [x] Keep headless full-frame `recording_frame_id` continuity across segments.
 

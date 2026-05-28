@@ -82,6 +82,35 @@ def write_summary(
         },
     }
     if rolling:
+        first_clip_dir = root / "clips" / "clip_000000"
+        second_clip_dir = root / "clips" / "clip_000001"
+        first_clip_dir.mkdir(parents=True, exist_ok=True)
+        second_clip_dir.mkdir(parents=True, exist_ok=True)
+        first_clip_mp4 = first_clip_dir / f"Cam{serial}_external.mp4"
+        first_clip_metadata = first_clip_dir / f"Cam{serial}_external_meta.csv"
+        first_clip_keyframes = first_clip_dir / f"Cam{serial}_external_keyframe.json"
+        second_clip_mp4 = second_clip_dir / f"Cam{serial}_external.mp4"
+        second_clip_metadata = second_clip_dir / f"Cam{serial}_external_meta.csv"
+        second_clip_keyframes = second_clip_dir / f"Cam{serial}_external_keyframe.json"
+        first_clip_mp4.write_bytes(b"rolling-clip-0")
+        second_clip_mp4.write_bytes(b"rolling-clip-1")
+        first_clip_metadata.write_text(
+            "recording_frame_id,timestamp,timestamp_sys\n"
+            "1,100,1000\n"
+            "2,200,2000\n",
+            encoding="utf-8",
+        )
+        second_clip_metadata.write_text(
+            "recording_frame_id,timestamp,timestamp_sys\n"
+            "3,300,3000\n",
+            encoding="utf-8",
+        )
+        first_clip_keyframes.write_text('{"total_frames":2}\n', encoding="utf-8")
+        second_clip_keyframes.write_text('{"total_frames":1}\n', encoding="utf-8")
+        summary["recording_control"] = {
+            "record_for_seconds": 6,
+            "clip_seconds": 2,
+        }
         summary["rolling_output"] = {
             "enabled": True,
             "implementation": "external_recorder_gop_boundary_writer_rotation",
@@ -102,9 +131,9 @@ def write_summary(
                     "frame_count": 2,
                     "packets_written": 2,
                     "failed": False,
-                    "mp4": str(root / "clips" / "clip_000000" / f"Cam{serial}_external.mp4"),
-                    "metadata": str(root / "clips" / "clip_000000" / f"Cam{serial}_external_meta.csv"),
-                    "keyframes": str(root / "clips" / "clip_000000" / f"Cam{serial}_external_keyframe.json"),
+                    "mp4": str(first_clip_mp4),
+                    "metadata": str(first_clip_metadata),
+                    "keyframes": str(first_clip_keyframes),
                 },
                 {
                     "clip_index": 1,
@@ -114,9 +143,9 @@ def write_summary(
                     "frame_count": 1,
                     "packets_written": 1,
                     "failed": False,
-                    "mp4": str(root / "clips" / "clip_000001" / f"Cam{serial}_external.mp4"),
-                    "metadata": str(root / "clips" / "clip_000001" / f"Cam{serial}_external_meta.csv"),
-                    "keyframes": str(root / "clips" / "clip_000001" / f"Cam{serial}_external_keyframe.json"),
+                    "mp4": str(second_clip_mp4),
+                    "metadata": str(second_clip_metadata),
+                    "keyframes": str(second_clip_keyframes),
                 },
             ],
         }
@@ -319,6 +348,22 @@ def test_queue_high_water_falls_back_to_detach_csv() -> None:
         require(result["encode_queue_high_water"] == 9, "queue high-water should fall back to detach CSV")
 
 
+def test_rolling_output_uses_summary_recording_control() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
+        result = verify_one(root, summary_path, mp4_path)
+        require(result["rolling_clip_count"] == 2, "rolling clips should be verified")
+        require(
+            result["rolling_clips"][0]["first_recording_frame_id"] == 1,
+            "first rolling clip should start at recording frame 1",
+        )
+        require(
+            result["rolling_clips"][1]["last_recording_frame_id"] == 3,
+            "second rolling clip should end at recording frame 3",
+        )
+
+
 def test_status_sidecar_passes_and_summarizes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -337,6 +382,7 @@ def test_status_sidecar_checks_rolling_progress() -> None:
         write_status(root, "2010096", heartbeat_sequence=8, rolling=True)
         result = verify_one(root, summary_path, mp4_path, require_status=True)
         recorder_status = result["recorder_status"]
+        require(result["rolling_clip_count"] == 2, "rolling clips should be verified with status")
         require(
             recorder_status["rolling_completed_clip_count"] == 2,
             "rolling completed clip count should be summarized",
@@ -461,6 +507,7 @@ def main() -> int:
         test_queue_thresholds_pass_and_summarize,
         test_queue_threshold_failures,
         test_queue_high_water_falls_back_to_detach_csv,
+        test_rolling_output_uses_summary_recording_control,
         test_status_sidecar_passes_and_summarizes,
         test_status_sidecar_checks_rolling_progress,
         test_status_sidecar_failures,

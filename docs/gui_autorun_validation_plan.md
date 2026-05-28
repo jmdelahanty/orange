@@ -406,14 +406,21 @@ Latest hardware validation, 2026-05-28:
   `2010093->4`, `2010094->2`, `2010095->8`, `2010096->6`, PTP register-read
   decimation `100`, `ORANGE_GUI_SWAP_INTERVAL=0`, and
   `ORANGE_GUI_FRAME_MAX_FPS=60`.
-- Artifact:
-  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`.
+- Latest single-clip artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
+- Latest rolling-clip artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_16_08_46`.
 - The launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128`.
-- Full validator passed with `0` warnings using the hidden-crop-preview command
-  printed by the launcher, with `--min-crop-frame-pool-size 128`.
-- All four cameras recorded `1016` full-frame external IPC frames and `1016`
-  crop frames/metadata rows; crop perf rows, keyframe sidecars, MP4 frame
-  counts, and YOLO rows all matched.
-- External crop recorders received/encoded `1016/1016` frames per camera with
-  `0` drops. Crop fanout matched detection rows, and
-  `producer_crop_frame_pool_misses_total = 0` for every camera.
+- `Cam2010093` had no lens attached for the latest single-clip and rolling
+  runs, so those validations used
+  `--allow-main-video-content-failure 2010093`; the only warnings were the
+  expected low-bitrate/black main-video content warnings for that camera.
+- The single-clip run recorded `1005/1005` full-frame and crop external IPC
+  frames per camera, with `0` camera gaps, `0` recorder drops, `0` crop drops,
+  GUI hidden-preview FPS p05 `58.7`, and YOLO steady p95
+  `3.882-3.972 ms`.
+- The rolling run used `--record-seconds 6 --warmup-seconds 2 --clip-seconds 2`
+  and recorded `605/605` full-frame and crop external IPC frames per camera,
+  three clips per camera (`1-200`, `201-400`, `401-605`), with `0` camera
+  gaps, `0` recorder drops, `0` crop drops, GUI hidden-preview FPS p05 `51.7`,
+  and YOLO steady p95 `3.773-3.971 ms`.

@@ -9,15 +9,17 @@ work on `exp/gop-split-a16`.
   real X11 display.
 - The current production-like profile is:
   `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview`.
-- The latest hardware artifact is:
+- The latest single-clip hardware artifact is:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
-- `Cam2010093` had no lens attached for that run. Validation now supports an
+- The latest rolling-clip hardware artifact is:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_16_08_46`.
+- `Cam2010093` had no lens attached for those runs. Validation now supports an
   explicit opt-in for this case:
   `--allow-main-video-content-failure 2010093`.
-- With that opt-in, strict validation passed with two warnings, both for the
-  expected `Cam2010093` low-bitrate/black main-video content.
+- With that opt-in, both strict validations passed with two warnings, both for
+  the expected `Cam2010093` low-bitrate/black main-video content.
 
-Healthy metrics from that run:
+Healthy metrics from the single-clip run:
 
 - Full external recorders: `1005/1005` frames received, ACKed, and encoded for
   each camera.
@@ -32,6 +34,25 @@ Healthy metrics from that run:
   `2010095->10`, and `2010096->12`.
 - Kernel isolation telemetry recorded and validated for
   `6,8,10,12,38,40,42,44` in `isolcpus`, `nohz_full`, and `rcu_nocbs`.
+
+Healthy metrics from the rolling run:
+
+- Command:
+  `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --record-seconds 6 --warmup-seconds 2 --clip-seconds 2 --allow-main-video-content-failure 2010093`.
+- `recording_session.json` mode is `rolling_clips`.
+- Three full-frame clips were written per camera:
+  `1-200`, `201-400`, and `401-605`.
+- Full external recorders: `605/605` frames received, ACKed, and encoded for
+  every camera.
+- Crop external recorders: `605/605` frames received and encoded for every
+  camera; per-camera crop rolling clip counts are `3`.
+- Camera health: `0` frame-id gaps, `0` GetFrame errors, `0` encode failures,
+  `0` IPC failures, and `0` ACK timeouts for every camera.
+- GUI hidden-preview FPS: p05 `51.7`, p50 `59.8`, mean `61.2`.
+- YOLO steady p95: `3.773`, `3.951`, `3.966`, and `3.971 ms`.
+- YOLO queue p95: `0.014-0.019 ms`.
+- Strict validator result:
+  `PASS (2 warnings)`, both expected `Cam2010093` no-lens warnings.
 
 ## Implemented Code Areas
 
@@ -96,10 +117,14 @@ DISPLAY=:1 \
     --allow-main-video-content-failure 2010093
 ```
 
-Strict validation command for the current no-lens artifact:
+Strict validation command for the current rolling no-lens artifact:
 
 ```bash
-scripts/validate_gui_ptp_recording.py --latest-complete \
+scripts/validate_gui_ptp_recording.py \
+  /home/jeremy/orange_data/exp/unsorted/2026_05_28_16_08_46 \
+  --expect-recording-mode rolling_clips \
+  --expect-record-for-seconds 6 \
+  --expect-clip-seconds 2 \
   --allow-main-video-content-failure 2010093 \
   --require-crop-recording-artifacts \
   --require-crop-preview-counters \
@@ -117,7 +142,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --require-external-recorder-status \
   --require-source-version \
   --expect-source-git-command-user-mode sudo_invoking_user \
-  --expect-source-dirty-tracked 1 \
+  --expect-source-dirty-tracked 0 \
   --expect-yolo-affinity 2010093=6 \
   --expect-yolo-affinity 2010094=8 \
   --expect-yolo-affinity 2010095=10 \
@@ -135,9 +160,10 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --min-gui-crop-preview-hidden-fps-p05 45
 ```
 
-## Implemented But Not Yet Live-Proven
+## Rolling Implementation Notes
 
-GUI external IPC rolling has code and offline validator support, including:
+GUI external IPC rolling is now live-proven on the short four-camera hardware
+run above. The implemented surface includes:
 
 - app/env recording control plumbing for `record_for_seconds` and
   `clip_seconds`,
@@ -151,8 +177,8 @@ GUI external IPC rolling has code and offline validator support, including:
 - session-aggregate crop descriptors plus clip-scoped crop descriptors,
 - validator coverage for external crop rolling clip artifacts.
 
-The four-camera profile now has `--clip-seconds <seconds>` as a convenience
-switch. The next high-signal run is:
+The four-camera profile has `--clip-seconds <seconds>` as a convenience switch.
+To repeat the short rolling gate:
 
 ```bash
 DISPLAY=:1 \
@@ -167,7 +193,7 @@ DISPLAY=:1 \
     --allow-main-video-content-failure 2010093
 ```
 
-Expected validation shape for that run:
+Expected validation shape:
 
 - `recording_session.json` mode is `rolling_clips`.
 - Full-frame external recorder summaries publish rolling clips.
@@ -183,7 +209,5 @@ Expected validation shape for that run:
   with blank crop recording rows, not fish/positive detection crops.
 - `Cam2010093` needs a lens before production video-content validation can be
   strict for all four cameras again.
-- GUI external IPC rolling still needs a live artifact before the TODO can move
-  from implemented/offline-validated to production-proven.
 - Long soak coverage is still open. The current validation is a short hardware
   discriminator, not a 24-hour stability proof.
