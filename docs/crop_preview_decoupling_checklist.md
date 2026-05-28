@@ -396,8 +396,9 @@ Acceptance:
     bucket summary for quick triage.
 - [x] Add crop-frame-pool telemetry to the crop sidecar and validator.
   - `Cam<serial>_crop_sidecar_perf.csv` records `crop_frame_pool_size`.
-  - `scripts/validate_gui_ptp_recording.py --min-crop-frame-pool-size 32`
-    confirms the effective pool used by a live run.
+  - `scripts/validate_gui_ptp_recording.py --min-crop-frame-pool-size <N>`
+    confirms the effective pool used by a live run. The current four-camera
+    external IPC profile auto-forwards `ORANGE_CROP_FRAME_POOL_SIZE=128`.
 - [x] Update GUI validation launcher instructions.
   - The launcher now validates all camera JSON files present in the selected
     config folder, instead of hardcoding the two-camera folder contents.
@@ -691,7 +692,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-crop-preview-max-fps 15 \
   --expect-crop-preview-disabled 0 \
   --expect-crop-preview-display-enabled 1 \
-  --min-crop-frame-pool-size 32 \
+  --min-crop-frame-pool-size 128 \
   --expect-external-crop-encode-queue-depth 64 \
   --require-external-crop-backend-metadata \
   --require-external-crop-recorder-gpu-separate-from-analytics \
@@ -717,7 +718,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-crop-preview-max-fps 15 \
   --expect-crop-preview-disabled 0 \
   --expect-crop-preview-display-enabled 0 \
-  --min-crop-frame-pool-size 32 \
+  --min-crop-frame-pool-size 128 \
   --expect-external-crop-encode-queue-depth 64 \
   --require-external-crop-backend-metadata \
   --require-external-crop-recorder-gpu-separate-from-analytics \
@@ -741,7 +742,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
 scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-crop-preview-max-fps 15 \
   --expect-crop-preview-disabled 1 \
-  --min-crop-frame-pool-size 32 \
+  --min-crop-frame-pool-size 128 \
   --expect-external-crop-encode-queue-depth 64 \
   --require-external-crop-backend-metadata \
   --require-external-crop-recorder-gpu-separate-from-analytics \

@@ -532,10 +532,15 @@ Current GUI implication:
 - The main GUI refresh fix was not crop preview rendering: the recording panel
   had been running advanced split-GOP topology validation every frame. That
   work is now behind the `Advanced Recording Validation` tree expansion.
-- Remaining GUI external-recorder gaps are user-visible recorder
-  heartbeat/failure reporting. The PTP stack guard exists in the validation
-  launcher/wrapper path, but manual GUI operation still depends on the Host PTP
-  Stack panel or an operator shell command before streaming PTP-gated cameras.
+- The GUI now polls supervised recorder child processes while recording or
+  draining and shows full-frame/crop recorder process and socket readiness in
+  the status area. Unexpected nonzero or signal exits are carried into final
+  `recording_session.json`/finalization failure reporting.
+- Remaining GUI external-recorder gaps are protocol-level heartbeat/failure
+  messages from the recorder process itself. The PTP stack guard exists in the
+  validation launcher/wrapper path, but manual GUI operation still depends on
+  the Host PTP Stack panel or an operator shell command before streaming
+  PTP-gated cameras.
 
 Earlier GUI external-recorder fail-fast artifact:
 

@@ -109,12 +109,21 @@ void capture_wait_status(RecorderProcessState* process, const int wait_status)
         return;
     }
     process->active = false;
+    process->error.clear();
     if (WIFEXITED(wait_status)) {
         process->exit_code = WEXITSTATUS(wait_status);
         process->status = process->exit_code == 0 ? "exited" : "exited_with_error";
+        if (process->exit_code != 0 && process->exit_code != 143) {
+            process->error =
+                "external recorder exited with code " + std::to_string(process->exit_code);
+        }
     } else if (WIFSIGNALED(wait_status)) {
         process->term_signal = WTERMSIG(wait_status);
         process->status = process->term_signal == SIGKILL ? "killed" : "stopped_with_signal";
+        if (!process->termination_requested || process->term_signal == SIGKILL) {
+            process->error =
+                "external recorder stopped by signal " + std::to_string(process->term_signal);
+        }
     } else {
         process->status = "stopped";
     }
@@ -1098,7 +1107,9 @@ bool StopSupervisorProcesses(SupervisorRuntimeState* runtime,
                 capture_wait_status(&process, wait_status);
             }
         }
-        if (process.exit_code > 0 && process.exit_code != 143) {
+        if (!process.error.empty()) {
+            ok = false;
+        } else if (process.exit_code > 0 && process.exit_code != 143) {
             ok = false;
             if (process.error.empty()) {
                 process.error = "external recorder exited nonzero";
@@ -1118,6 +1129,32 @@ bool StopSupervisorProcesses(SupervisorRuntimeState* runtime,
         }
     }
     return ok;
+}
+
+bool PollSupervisorProcesses(SupervisorRuntimeState* runtime,
+                             std::string* error_out)
+{
+    if (!runtime) {
+        return set_error(error_out, "internal error: null supervisor runtime");
+    }
+
+    std::string wait_error;
+    for (RecorderProcessState& process : runtime->processes) {
+        poll_process_exit(&process, &wait_error);
+    }
+
+    for (const RecorderProcessState& process : runtime->processes) {
+        if (!process.error.empty()) {
+            return set_error(error_out, process.error);
+        }
+    }
+    if (!wait_error.empty()) {
+        return set_error(error_out, wait_error);
+    }
+    if (error_out) {
+        error_out->clear();
+    }
+    return true;
 }
 
 nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtime)

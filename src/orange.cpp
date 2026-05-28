@@ -933,6 +933,19 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             }
             return fallback;
         };
+    auto append_error_message =
+        [](std::string& target, const std::string& message) {
+            if (message.empty()) {
+                return;
+            }
+            if (target.find(message) != std::string::npos) {
+                return;
+            }
+            if (!target.empty()) {
+                target += "; ";
+            }
+            target += message;
+        };
 
     // Crop recorder env overrides are stacked after full-frame recorder
     // overrides. Stop crop first so scoped environment restoration unwinds in
@@ -945,9 +958,11 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 &stop_error)) {
             crop_external_recorder_ok = false;
             crop_external_recorder_lifecycle_ok = false;
-            crop_external_recorder_error = stop_error.empty()
-                ? "external crop recorder supervisor shutdown failed"
-                : stop_error;
+            append_error_message(
+                crop_external_recorder_error,
+                stop_error.empty()
+                    ? "external crop recorder supervisor shutdown failed"
+                    : stop_error);
         }
     }
 
@@ -962,17 +977,30 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     &recording_session->external_recorder_lifecycle,
                     &stop_error)) {
                 external_recorder_ok = false;
-                external_recorder_error = stop_error.empty()
-                    ? "external recorder supervisor shutdown failed"
-                    : stop_error;
+                append_error_message(
+                    external_recorder_error,
+                    stop_error.empty()
+                        ? "external recorder supervisor shutdown failed"
+                        : stop_error);
             }
             if (!recording_session->external_recorder_lifecycle.last_artifact_error.empty()) {
-                if (!external_recorder_error.empty()) {
-                    external_recorder_error += "; ";
-                }
-                external_recorder_error +=
-                    recording_session->external_recorder_lifecycle.last_artifact_error;
+                append_error_message(
+                    external_recorder_error,
+                    recording_session->external_recorder_lifecycle.last_artifact_error);
                 recording_session->external_recorder_lifecycle.last_artifact_error.clear();
+                external_recorder_ok = false;
+            }
+            if (!recording_session->external_recorder_lifecycle.last_runtime_error.empty()) {
+                append_error_message(
+                    external_recorder_error,
+                    recording_session->external_recorder_lifecycle.last_runtime_error);
+                recording_session->external_recorder_lifecycle.last_runtime_error.clear();
+                external_recorder_ok = false;
+            }
+            if (!recording_session->external_recorder_last_error.empty()) {
+                append_error_message(
+                    external_recorder_error,
+                    recording_session->external_recorder_last_error);
                 external_recorder_ok = false;
             }
 
@@ -1173,12 +1201,25 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
 
     if (crop_external_recorder_active) {
         if (!recording_session->external_crop_recorder_lifecycle.last_artifact_error.empty()) {
-            if (!crop_external_recorder_error.empty()) {
-                crop_external_recorder_error += "; ";
-            }
-            crop_external_recorder_error +=
-                recording_session->external_crop_recorder_lifecycle.last_artifact_error;
+            append_error_message(
+                crop_external_recorder_error,
+                recording_session->external_crop_recorder_lifecycle.last_artifact_error);
             recording_session->external_crop_recorder_lifecycle.last_artifact_error.clear();
+            crop_external_recorder_ok = false;
+            crop_external_recorder_lifecycle_ok = false;
+        }
+        if (!recording_session->external_crop_recorder_lifecycle.last_runtime_error.empty()) {
+            append_error_message(
+                crop_external_recorder_error,
+                recording_session->external_crop_recorder_lifecycle.last_runtime_error);
+            recording_session->external_crop_recorder_lifecycle.last_runtime_error.clear();
+            crop_external_recorder_ok = false;
+            crop_external_recorder_lifecycle_ok = false;
+        }
+        if (!recording_session->external_crop_recorder_last_error.empty()) {
+            append_error_message(
+                crop_external_recorder_error,
+                recording_session->external_crop_recorder_last_error);
             crop_external_recorder_ok = false;
             crop_external_recorder_lifecycle_ok = false;
         }
@@ -1807,6 +1848,161 @@ void render_gui_session_timing_status(
             "YOLO FPS: %.1f",
             yolo_worker->get_fps());
     }
+}
+
+struct GuiExternalRecorderStatusLine {
+    bool visible = false;
+    std::string label;
+    std::string status = "idle";
+    std::string error;
+    int process_count = 0;
+    int active_count = 0;
+    int socket_ready_count = 0;
+    int error_count = 0;
+};
+
+GuiExternalRecorderStatusLine gui_external_recorder_status_line(
+    const char* label,
+    const orange::external_recorder::SupervisedRecorderLifecycleState& state,
+    const std::string& last_error)
+{
+    GuiExternalRecorderStatusLine line;
+    line.label = label ? label : "External recorder";
+
+    for (const orange::external_recorder::RecorderProcessState& process :
+         state.runtime.processes) {
+        ++line.process_count;
+        if (process.active) {
+            ++line.active_count;
+        }
+        if (process.socket_ready) {
+            ++line.socket_ready_count;
+        }
+        if (!process.error.empty()) {
+            ++line.error_count;
+            if (line.error.empty()) {
+                line.error = process.camera_serial.empty()
+                    ? process.error
+                    : ("Cam" + process.camera_serial + ": " + process.error);
+            }
+        }
+    }
+
+    if (line.error.empty() && !state.last_artifact_error.empty()) {
+        line.error = state.last_artifact_error;
+        line.error_count = std::max(line.error_count, 1);
+    }
+    if (line.error.empty() && !state.last_runtime_error.empty()) {
+        line.error = state.last_runtime_error;
+        line.error_count = std::max(line.error_count, 1);
+    }
+    if (line.error.empty() && !last_error.empty()) {
+        line.error = last_error;
+        line.error_count = std::max(line.error_count, 1);
+    }
+
+    line.visible = state.started || !line.error.empty();
+    if (!line.visible) {
+        return line;
+    }
+
+    if (!line.error.empty() || line.error_count > 0) {
+        line.status = "error";
+    } else if (state.started &&
+               line.process_count > 0 &&
+               line.active_count == line.process_count &&
+               line.socket_ready_count == line.process_count) {
+        line.status = "running";
+    } else if (state.started) {
+        line.status = "degraded";
+    } else {
+        line.status = "stopped";
+    }
+    return line;
+}
+
+void render_gui_external_recorder_status_line(
+    const GuiExternalRecorderStatusLine& line)
+{
+    if (!line.visible) {
+        return;
+    }
+
+    ImVec4 color{0.7f, 0.7f, 0.7f, 1.0f};
+    if (line.status == "running") {
+        color = ImVec4{0.25f, 0.85f, 0.35f, 1.0f};
+    } else if (line.status == "degraded") {
+        color = ImVec4{1.0f, 0.78f, 0.15f, 1.0f};
+    } else if (line.status == "error") {
+        color = ImVec4{1.0f, 0.25f, 0.20f, 1.0f};
+    }
+
+    ImGui::TextColored(
+        color,
+        "%s: %s (%d/%d running, %d/%d sockets)",
+        line.label.c_str(),
+        line.status.c_str(),
+        line.active_count,
+        line.process_count,
+        line.socket_ready_count,
+        line.process_count);
+    if (!line.error.empty()) {
+        ImGui::TextWrapped("%s", line.error.c_str());
+    }
+}
+
+void render_gui_external_recorder_status(
+    const orange::session::RecordingSessionState& recording_session)
+{
+    render_gui_external_recorder_status_line(
+        gui_external_recorder_status_line(
+            "External recorder",
+            recording_session.external_recorder_lifecycle,
+            recording_session.external_recorder_last_error));
+    render_gui_external_recorder_status_line(
+        gui_external_recorder_status_line(
+            "Crop recorder",
+            recording_session.external_crop_recorder_lifecycle,
+            recording_session.external_crop_recorder_last_error));
+}
+
+void gui_refresh_external_recorder_lifecycle(
+    orange::external_recorder::SupervisedRecorderLifecycleState* lifecycle,
+    std::string* last_error)
+{
+    if (!lifecycle || !lifecycle->started) {
+        return;
+    }
+
+    std::string error;
+    if (!orange::external_recorder::RefreshSupervisedRecorderLifecycle(
+            lifecycle,
+            &error)) {
+        if (last_error && last_error->empty()) {
+            *last_error = error.empty()
+                ? "external recorder supervisor process health check failed"
+                : error;
+        }
+    }
+}
+
+void gui_refresh_external_recorder_lifecycles(
+    orange::session::RecordingSessionState* recording_session,
+    const CameraControl* camera_control)
+{
+    if (!recording_session || !camera_control) {
+        return;
+    }
+    if (!camera_control->record_video && !camera_control->recording_draining) {
+        return;
+    }
+
+    gui_refresh_external_recorder_lifecycle(
+        &recording_session->external_recorder_lifecycle,
+        &recording_session->external_recorder_last_error);
+    gui_refresh_external_recorder_lifecycle(
+        &recording_session->external_crop_recorder_lifecycle,
+        &recording_session->external_crop_recorder_last_error);
 }
 
 struct ApertureCharacterizationUiState {
@@ -4401,6 +4597,7 @@ int main(int argc, char **args) {
         previous_gui_frame_start = gui_frame_start;
         GuiFrameTimingSample gui_frame_timing;
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
+        gui_refresh_external_recorder_lifecycles(&recording_session, camera_control);
         join_aperture_worker_if_finished(&aperture_ui_state);
         join_alignment_worker_if_finished(&aperture_ui_state);
         join_usaf_worker_if_finished(&usaf_ui_state);
@@ -5923,6 +6120,7 @@ int main(int argc, char **args) {
                     timing,
                     streaming_fps.load(),
                     nullptr);
+                render_gui_external_recorder_status(recording_session);
             }
 
             ImGui::PopStyleColor(1);

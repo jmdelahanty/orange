@@ -4,12 +4,14 @@
 #include "json.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
 #include <signal.h>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -18,6 +20,7 @@ namespace {
 using orange::external_recorder::BuildRecorderCommand;
 using orange::external_recorder::BuildSupervisorPlanFromContract;
 using orange::external_recorder::BuildSupervisorPlanFromExperimentSpec;
+using orange::external_recorder::PollSupervisorProcesses;
 using orange::external_recorder::StartSupervisedRecorderLifecycle;
 using orange::external_recorder::StartSupervisorProcesses;
 using orange::external_recorder::StopSupervisedRecorderLifecycle;
@@ -282,6 +285,71 @@ void test_process_lifecycle_waits_socket_and_stops()
             "runtime summary should preserve socket readiness");
 }
 
+void test_process_poll_detects_unexpected_signal_exit()
+{
+    const std::filesystem::path stub_path =
+        g_binary_dir / "external_recorder_supervisor_socket_stub";
+    require(std::filesystem::exists(stub_path), "socket stub helper is missing");
+
+    SupervisorPlanOptions options;
+    options.recorder_tool_path = stub_path.string();
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(
+                make_contract({5}, "single_shard"), options, &plan, &error),
+            "contract should build for poll test: " + error);
+
+    const std::string suffix = std::to_string(static_cast<long long>(getpid())) + "_poll";
+    plan.streams[0].socket_path =
+        "/tmp/orange_external_recorder_supervisor_lifecycle_" + suffix + ".sock";
+    plan.streams[0].recorder_log =
+        "/tmp/orange_external_recorder_supervisor_lifecycle_" + suffix + ".log";
+
+    SupervisorRuntimeState runtime;
+    SupervisorProcessOptions process_options;
+    process_options.socket_ready_timeout_ms = 2000;
+    process_options.graceful_shutdown_timeout_ms = 20;
+    process_options.terminate_timeout_ms = 2000;
+    process_options.allow_regular_file_socket_ready_for_tests = true;
+
+    require(StartSupervisorProcesses(plan, process_options, &runtime, &error),
+            "supervisor should launch stub for poll test: " + error);
+    require(runtime.processes.size() == 1, "runtime should contain one process");
+    require(runtime.processes[0].active, "stub should start active");
+
+    require(kill(runtime.processes[0].pid, SIGKILL) == 0,
+            "test should be able to kill stub process");
+
+    bool observed_failure = false;
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        error.clear();
+        if (!PollSupervisorProcesses(&runtime, &error)) {
+            observed_failure = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    require(observed_failure, "poll should report unexpected recorder death");
+    require(!runtime.processes[0].active, "poll should mark killed process inactive");
+    require(runtime.processes[0].term_signal == SIGKILL,
+            "poll should capture SIGKILL");
+    require(runtime.processes[0].status == "killed",
+            "poll should report killed status");
+    require(error.find("signal") != std::string::npos,
+            "poll error should explain signal death");
+
+    error.clear();
+    require(!StopSupervisorProcesses(&runtime, process_options, &error),
+            "stop should preserve unexpected process death as a failure");
+    require(error.find("signal") != std::string::npos,
+            "stop error should preserve signal death");
+
+    std::filesystem::remove(plan.streams[0].socket_path);
+    std::filesystem::remove(plan.streams[0].recorder_log);
+}
+
 void test_supervised_lifecycle_writes_artifacts_and_env()
 {
     const std::filesystem::path stub_path =
@@ -392,6 +460,7 @@ int main(int argc, char** argv)
         {"spec_recording_control_flows_to_command", test_spec_recording_control_flows_to_command},
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},
         {"process_lifecycle_waits_socket_and_stops", test_process_lifecycle_waits_socket_and_stops},
+        {"process_poll_detects_unexpected_signal_exit", test_process_poll_detects_unexpected_signal_exit},
         {"supervised_lifecycle_writes_artifacts_and_env", test_supervised_lifecycle_writes_artifacts_and_env},
     };
 

@@ -35,6 +35,7 @@ struct SupervisedRecorderLifecycleState {
     std::string analytics_root;
     std::string verifier_path;
     std::string last_artifact_error;
+    std::string last_runtime_error;
     bool started = false;
     std::vector<std::unique_ptr<ScopedExternalRecorderEnvOverride>> env_overrides;
 };
@@ -47,5 +48,8 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
 
 bool StopSupervisedRecorderLifecycle(SupervisedRecorderLifecycleState* state,
                                      std::string* error_out);
+
+bool RefreshSupervisedRecorderLifecycle(SupervisedRecorderLifecycleState* state,
+                                        std::string* error_out);
 
 }  // namespace orange::external_recorder

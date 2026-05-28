@@ -133,6 +133,9 @@ bool StopSupervisorProcesses(SupervisorRuntimeState* runtime,
                              const SupervisorProcessOptions& options,
                              std::string* error_out);
 
+bool PollSupervisorProcesses(SupervisorRuntimeState* runtime,
+                             std::string* error_out);
+
 nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtime);
 
 }  // namespace orange::external_recorder

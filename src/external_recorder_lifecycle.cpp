@@ -208,4 +208,21 @@ bool StopSupervisedRecorderLifecycle(SupervisedRecorderLifecycleState* state,
     return stopped;
 }
 
+bool RefreshSupervisedRecorderLifecycle(SupervisedRecorderLifecycleState* state,
+                                        std::string* error_out)
+{
+    if (!state || !state->started) {
+        if (error_out) {
+            error_out->clear();
+        }
+        return true;
+    }
+
+    const bool ok = PollSupervisorProcesses(&state->runtime, error_out);
+    if (!ok && error_out && !error_out->empty()) {
+        state->last_runtime_error = *error_out;
+    }
+    return ok;
+}
+
 }  // namespace orange::external_recorder

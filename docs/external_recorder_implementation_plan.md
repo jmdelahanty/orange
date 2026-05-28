@@ -710,10 +710,16 @@ Latest source-lifetime hardening:
 - YOLO post-frame-50 `acquisition_to_detect_done_ms p95` stayed in the good
   external-recorder range at about `4.383 ms`.
 
-Next production slice: add GUI-visible recorder health/heartbeat and failure
-reporting around the supervised lifecycle. The first GUI PTP-stack guard now
-exists in the validation launcher/wrapper path: `ORANGE_GUI_PTP_STACK_MODE`
-maps to `orange-gui-validation --ptp-stack-mode off|require|auto`, and autorun
+Next production slice: turn the diagnostic descriptor/routing contract into a
+versioned production recorder protocol with an explicit protocol heartbeat. The
+first GUI-visible recorder-health slice now exists: the supervised lifecycle
+polls child recorder processes with `waitpid(..., WNOHANG)` while recording or
+draining, marks unexpected nonzero/signal exits as runtime errors, and renders
+full-frame and crop recorder process/socket health in the GUI. This is process
+supervision, not yet a recorder-protocol heartbeat. The first GUI PTP-stack
+guard also exists in the validation launcher/wrapper path:
+`ORANGE_GUI_PTP_STACK_MODE` maps to
+`orange-gui-validation --ptp-stack-mode off|require|auto`, and autorun
 PTP-gated validation defaults to `auto` so `ptp4l`/`phc2sys` are started and
 rechecked before Orange opens cameras.
 
