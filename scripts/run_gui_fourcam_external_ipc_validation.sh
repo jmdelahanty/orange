@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREVIEW_MODE="${ORANGE_GUI_FOURCAM_PREVIEW_MODE:-hidden}"
+DISPLAY_PROFILE="${ORANGE_GUI_FOURCAM_DISPLAY_PROFILE:-fast}"
 
 usage() {
   cat <<'EOF'
@@ -14,12 +15,14 @@ Runs the local four-camera GUI validation profile:
   - full-frame recording sink: external_ipc
   - crop recording sink: external_ipc
   - crop recorder GPUs: 2010093->4, 2010094->2, 2010095->8, 2010096->6
-  - GUI frame pacing: swap_interval=0, frame_max_fps=60
+  - GUI display profile: fast (swap_interval=0, frame_max_fps=60, preview=15)
 
 Options:
   --hidden-crop-preview       Hide crop preview windows during autorun (default).
   --visible-crop-preview      Leave crop preview windows visible during autorun.
   --disable-crop-preview      Disable crop preview generation.
+  --fast-display              Use fast validation display pacing (default).
+  --citrus-display-safe       Reduce Orange display pressure for Citrus stimulus runs.
   --record-seconds <seconds>  Override autorun recording duration.
   --warmup-seconds <seconds>  Override autorun stream warmup duration.
   --validate-only             Run launcher preflight only.
@@ -51,6 +54,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --disable-crop-preview)
       PREVIEW_MODE="disabled"
+      shift
+      ;;
+    --fast-display)
+      DISPLAY_PROFILE="fast"
+      shift
+      ;;
+    --citrus-display-safe)
+      DISPLAY_PROFILE="citrus_safe"
       shift
       ;;
     --record-seconds)
@@ -106,6 +117,23 @@ case "${PREVIEW_MODE}" in
     ;;
 esac
 
+case "${DISPLAY_PROFILE}" in
+  fast)
+    export ORANGE_DISPLAY_PREVIEW_MAX_FPS="${ORANGE_DISPLAY_PREVIEW_MAX_FPS:-15}"
+    export ORANGE_GUI_SWAP_INTERVAL="${ORANGE_GUI_SWAP_INTERVAL:-0}"
+    export ORANGE_GUI_FRAME_MAX_FPS="${ORANGE_GUI_FRAME_MAX_FPS:-60}"
+    ;;
+  citrus_safe)
+    export ORANGE_DISPLAY_PREVIEW_MAX_FPS="${ORANGE_DISPLAY_PREVIEW_MAX_FPS:-10}"
+    export ORANGE_GUI_SWAP_INTERVAL="${ORANGE_GUI_SWAP_INTERVAL:-1}"
+    export ORANGE_GUI_FRAME_MAX_FPS="${ORANGE_GUI_FRAME_MAX_FPS:-30}"
+    ;;
+  *)
+    echo "ORANGE_GUI_FOURCAM_DISPLAY_PROFILE must be fast or citrus_safe" >&2
+    exit 2
+    ;;
+esac
+
 export ORANGE_GUI_CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam}"
 export ORANGE_GUI_EXPECT_CAMERAS="${ORANGE_GUI_EXPECT_CAMERAS:-2010093,2010094,2010095,2010096}"
 export ORANGE_GUI_RECORDING_SINK_MODE="${ORANGE_GUI_RECORDING_SINK_MODE:-external_ipc}"
@@ -120,8 +148,6 @@ export ORANGE_GUI_AUTORUN="${ORANGE_GUI_AUTORUN:-1}"
 export ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS="${ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS:-2}"
 export ORANGE_GUI_AUTORUN_RECORD_SECONDS="${ORANGE_GUI_AUTORUN_RECORD_SECONDS:-10}"
 export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE="${ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE:-1}"
-export ORANGE_GUI_SWAP_INTERVAL="${ORANGE_GUI_SWAP_INTERVAL:-0}"
-export ORANGE_GUI_FRAME_MAX_FPS="${ORANGE_GUI_FRAME_MAX_FPS:-60}"
 export ORANGE_GUI_SHOW_SPEED_GRAPHS="${ORANGE_GUI_SHOW_SPEED_GRAPHS:-0}"
 
 exec "${REPO_ROOT}/scripts/run_gui_aq_off_validation.sh"

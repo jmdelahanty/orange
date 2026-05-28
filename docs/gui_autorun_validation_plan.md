@@ -178,12 +178,22 @@ cd /home/jeremy/orange-gop-split-a16
 sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
 ```
 
-The current validation display defaults are `ORANGE_GUI_SWAP_INTERVAL=0` and
-`ORANGE_GUI_FRAME_MAX_FPS=60`. This removes the vblank wait that made
+The current four-camera validation display default is the fast profile:
+`ORANGE_GUI_SWAP_INTERVAL=0`, `ORANGE_GUI_FRAME_MAX_FPS=60`, and
+`ORANGE_DISPLAY_PREVIEW_MAX_FPS=15`. This removes the vblank wait that made
 `render_present_ms` dominate earlier four-camera runs, while still capping the
-GUI loop so it does not consume unbounded display-GPU time. When Citrus
-stimulus generation is active on the same display GPU, keep the cap in place,
-lower it, or use `ORANGE_GUI_SWAP_INTERVAL=1` for the Orange GUI run.
+GUI loop so it does not consume unbounded display-GPU time.
+
+When Citrus stimulus generation is active on the same display GPU, use the
+Citrus-safe profile:
+
+```bash
+./scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe
+```
+
+That profile defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
+`ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
+Environment variables can still override those values for a specific run.
 
 ## Automation Research
 

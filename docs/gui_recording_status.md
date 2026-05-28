@@ -583,11 +583,14 @@ Current GUI validation tooling:
   `recording_session.json`.
 - For GUI refresh checks, use the printed validator commands with
   `--require-gui-timing-telemetry`, `--expect-gui-swap-interval`, and
-  `--expect-gui-frame-max-fps`. The validation launcher defaults to
-  `ORANGE_GUI_SWAP_INTERVAL=0` and `ORANGE_GUI_FRAME_MAX_FPS=60`. If Citrus is
-  actively using the same display GPU for `120 Hz` stimulus generation, do not
-  run unbounded no-vsync Orange GUI validation; keep the cap, lower it, or use
-  `ORANGE_GUI_SWAP_INTERVAL=1`.
+  `--expect-gui-frame-max-fps`. The four-camera validation launcher defaults
+  to its fast display profile, `ORANGE_GUI_SWAP_INTERVAL=0`,
+  `ORANGE_GUI_FRAME_MAX_FPS=60`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15`. If
+  Citrus is actively using the same display GPU for `120 Hz` stimulus
+  generation, use
+  `scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`,
+  which defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
+  `ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
 - The next GUI run should also visually confirm the new status timers:
   stream elapsed while streaming, active recording elapsed while recording, and
   finalizing elapsed during drain after the recording button is paused/stopped.

@@ -147,7 +147,8 @@ Limitations:
   session supervision now starts, drains, finalizes, and summarizes external
   recorder processes for single-clip `external_ipc` runs. The diagnostic
   recorder now writes a stream-level `orange.external_recorder.status` sidecar,
-  but GUI consumption of that sidecar remains follow-up work.
+  and supervised Orange runs parse it into the runtime artifact and GUI status
+  line.
 - No production GUI UI selection has been added yet; in-process recording
   remains the GUI fallback/default path unless `external_ipc` is selected by
   config or environment.

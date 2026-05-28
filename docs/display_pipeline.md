@@ -45,12 +45,13 @@ interaction work.
   `ORANGE_DISPLAY_MAX_FPS` remains a legacy alias.
 - Direct Orange launches default to `ORANGE_GUI_SWAP_INTERVAL=1` and
   `ORANGE_GUI_FRAME_MAX_FPS=0` unless overridden. The validation launcher
-  defaults to `ORANGE_GUI_SWAP_INTERVAL=0` and
-  `ORANGE_GUI_FRAME_MAX_FPS=60`; this avoids vblank stalls without spinning the
-  GUI loop at hundreds of FPS. If Citrus is using the same display GPU for
-  `120 Hz` stimulus generation, prefer the capped mode, lower
-  `ORANGE_GUI_FRAME_MAX_FPS`, or restore `ORANGE_GUI_SWAP_INTERVAL=1` while
-  stimulus timing is critical.
+  defaults to the fast profile: `ORANGE_GUI_SWAP_INTERVAL=0`,
+  `ORANGE_GUI_FRAME_MAX_FPS=60`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15`; this
+  avoids vblank stalls without spinning the GUI loop at hundreds of FPS. If
+  Citrus is using the same display GPU for `120 Hz` stimulus generation, use
+  `scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`.
+  That profile defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
+  `ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
 - `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the four-camera launcher default. Set it
   to `1` only when live per-camera ImPlot speed graphs are needed during
   recording.

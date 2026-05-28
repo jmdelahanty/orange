@@ -104,6 +104,10 @@ def test_default_hidden_profile_validate_only() -> None:
     require("ORANGE_GUI_SWAP_INTERVAL=0" in result.stdout, "profile should disable vsync")
     require("ORANGE_GUI_FRAME_MAX_FPS=60" in result.stdout, "profile should cap GUI frame rate")
     require(
+        "ORANGE_DISPLAY_PREVIEW_MAX_FPS=15" in result.stdout,
+        "fast profile should keep the default display preview cap",
+    )
+    require(
         "--expect-gui-frame-max-fps 60" in result.stdout,
         "printed validator command should assert frame cap telemetry",
     )
@@ -123,6 +127,35 @@ def test_visible_profile_validate_only() -> None:
     require(
         "ORANGE_CROP_PREVIEW_DISABLE=0" in result.stdout,
         "visible profile should keep crop preview generation enabled",
+    )
+
+
+def test_citrus_display_safe_profile_validate_only() -> None:
+    result = run_profile(["--citrus-display-safe", "--validate-only"])
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    require(
+        "ORANGE_DISPLAY_PREVIEW_MAX_FPS=10" in result.stdout,
+        "citrus-safe profile should lower display preview cadence",
+    )
+    require(
+        "ORANGE_GUI_SWAP_INTERVAL=1" in result.stdout,
+        "citrus-safe profile should restore vsync",
+    )
+    require(
+        "ORANGE_GUI_FRAME_MAX_FPS=30" in result.stdout,
+        "citrus-safe profile should lower GUI frame cap",
+    )
+    require(
+        "--expect-display-preview-max-fps 10" in result.stdout,
+        "printed validator command should assert citrus-safe preview cap",
+    )
+    require(
+        "--expect-gui-swap-interval 1" in result.stdout,
+        "printed validator command should assert citrus-safe swap interval",
+    )
+    require(
+        "--expect-gui-frame-max-fps 30" in result.stdout,
+        "printed validator command should assert citrus-safe frame cap",
     )
 
 
@@ -181,6 +214,7 @@ def main() -> int:
     tests = [
         test_default_hidden_profile_validate_only,
         test_visible_profile_validate_only,
+        test_citrus_display_safe_profile_validate_only,
         test_disabled_preview_profile_validate_only,
         test_print_exec_env_only_contains_profile_env,
         test_overrides_are_preserved,

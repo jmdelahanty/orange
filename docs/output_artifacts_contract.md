@@ -979,10 +979,15 @@ thresholds use those fields to reject UI-refresh collapses and stale display
 configuration. Use `--expect-yolo-speed-graphs-enabled 0` to prove the
 recording-time ImPlot speed graphs were disabled. Keep
 `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` for performance validation unless the run
-specifically needs live speed plots. The GUI validation launcher currently
-defaults to `ORANGE_GUI_SWAP_INTERVAL=0` plus `ORANGE_GUI_FRAME_MAX_FPS=60`:
-that avoids vblank/compositor stalls without letting the GUI loop run
-unbounded on the display GPU.
+specifically needs live speed plots. The GUI validation launcher's fast display
+profile currently defaults to `ORANGE_GUI_SWAP_INTERVAL=0`,
+`ORANGE_GUI_FRAME_MAX_FPS=60`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15`: that
+avoids vblank/compositor stalls without letting the GUI loop run unbounded on
+the display GPU. Use
+`scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`
+when Citrus is sharing the display GPU; that profile defaults to
+`ORANGE_GUI_SWAP_INTERVAL=1`, `ORANGE_GUI_FRAME_MAX_FPS=30`, and
+`ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
 
 Newer GUI runs also include `session.gui_display_frame_rate.timings` so slow
 GUI refresh can be attributed to texture upload, camera/crop window drawing,

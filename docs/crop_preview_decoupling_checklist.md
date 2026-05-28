@@ -451,9 +451,13 @@ Acceptance:
   - `ORANGE_GUI_SWAP_INTERVAL` controls GLFW swap interval.
   - `ORANGE_GUI_FRAME_MAX_FPS` caps the GUI loop when no-vsync validation is
     used.
-  - The validation launcher defaults to `swap_interval=0` and
-    `frame_max_fps=60`, avoiding vblank stalls without unbounded display-GPU
-    usage.
+  - The validation launcher fast profile defaults to `swap_interval=0`,
+    `frame_max_fps=60`, and `display_preview_max_fps=15`, avoiding vblank
+    stalls without unbounded display-GPU usage.
+  - When Citrus is using the same display GPU for `120 Hz` stimulus, run
+    `scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`
+    to default Orange to `swap_interval=1`, `frame_max_fps=30`, and
+    `display_preview_max_fps=10`.
 
 Acceptance:
 
