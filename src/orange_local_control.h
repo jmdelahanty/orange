@@ -44,6 +44,18 @@ struct LocalControlRecordingStopSnapshot {
     std::string last_event_at_utc;
 };
 
+struct LocalControlRecordingStartSnapshot {
+    bool enabled = false;
+    bool pending = false;
+    std::string request_id;
+    std::string operation_id;
+    std::string source;
+    std::string reason;
+    std::string received_at_utc;
+    std::string last_event;
+    std::string last_event_at_utc;
+};
+
 struct LocalControlStatusSnapshot {
     std::string process = "orange_gui";
     std::string updated_at_utc;
@@ -63,6 +75,7 @@ struct LocalControlStatusSnapshot {
     std::vector<std::string> crop_selected_camera_serials;
     RecorderReadinessSnapshot full_frame_recorder;
     RecorderReadinessSnapshot crop_recorder;
+    LocalControlRecordingStartSnapshot local_control_recording_start;
     LocalControlRecordingStopSnapshot local_control_recording_stop;
 };
 
@@ -72,6 +85,8 @@ struct LocalControlServerOptions {
     int socket_mode = 0666;
     std::size_t max_request_bytes = 64 * 1024;
     bool allow_gui_lifecycle_commands = false;
+    bool allow_gui_start_recording_commands = false;
+    bool allow_gui_stop_recording_commands = false;
 };
 
 struct ParsedLocalControlRequest {

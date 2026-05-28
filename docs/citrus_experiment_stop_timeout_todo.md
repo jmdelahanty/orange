@@ -134,8 +134,11 @@ Candidate hook points:
 
 - [x] Add default-on diagnostic Orange GUI local-control socket with env disable.
 - [x] Accept, validate, log, and ACK `status` and `citrus_completion`.
-- [x] Keep `start_recording` / `stop_recording` unsupported in diagnostic mode.
+- [x] Keep `start_recording` / `stop_recording` unsupported in default
+      diagnostic mode.
 - [x] Accept opt-in `stop_recording` when local-control recording stop is
+      explicitly enabled.
+- [x] Accept opt-in `start_recording` when local-control recording start is
       explicitly enabled.
 - [x] Do not mutate `CameraControl` directly from socket-reader context.
 - [x] Introduce a thread-safe pending command bridge consumed by the main/UI

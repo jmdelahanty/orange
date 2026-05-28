@@ -169,9 +169,36 @@ nlohmann::json recording_stop_to_json(
     };
 }
 
+nlohmann::json recording_start_to_json(
+    const LocalControlRecordingStartSnapshot& snapshot)
+{
+    return {
+        {"enabled", snapshot.enabled},
+        {"pending", snapshot.pending},
+        {"request_id", snapshot.request_id},
+        {"operation_id", snapshot.operation_id},
+        {"source", snapshot.source},
+        {"reason", snapshot.reason},
+        {"received_at_utc", snapshot.received_at_utc},
+        {"last_event", snapshot.last_event},
+        {"last_event_at_utc", snapshot.last_event_at_utc},
+    };
+}
+
 std::string operation_dedupe_key(const ParsedLocalControlRequest& parsed)
 {
     return parsed.method + "\n" + parsed.operation_id;
+}
+
+bool allow_gui_start_recording(const LocalControlServerOptions& options)
+{
+    return options.allow_gui_start_recording_commands;
+}
+
+bool allow_gui_stop_recording(const LocalControlServerOptions& options)
+{
+    return options.allow_gui_stop_recording_commands ||
+           options.allow_gui_lifecycle_commands;
 }
 
 }  // namespace
@@ -296,6 +323,8 @@ nlohmann::json LocalControlStatusSnapshotToJson(
          }},
         {"local_control",
          {
+             {"recording_start",
+              recording_start_to_json(snapshot.local_control_recording_start)},
              {"recording_stop",
               recording_stop_to_json(snapshot.local_control_recording_stop)},
              {"citrus_completion_stop",
@@ -659,6 +688,8 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
     const std::string received_at_utc = utc_now();
     bool duplicate = false;
     bool queued_for_gui_thread = false;
+    const bool start_recording_allowed = allow_gui_start_recording(options_);
+    const bool stop_recording_allowed = allow_gui_stop_recording(options_);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         const auto inserted = accepted_request_ids_.insert(parsed.request_id);
@@ -672,8 +703,10 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
         duplicate = duplicate_request_id || duplicate_operation_id;
         const bool supports_gui_thread_queue =
             parsed.method == "citrus_completion" ||
+            (parsed.method == "start_recording" &&
+             start_recording_allowed) ||
             (parsed.method == "stop_recording" &&
-             options_.allow_gui_lifecycle_commands);
+             stop_recording_allowed);
         if (supports_gui_thread_queue && !duplicate) {
             PendingLocalControlCommand command;
             command.method = parsed.method;
@@ -694,7 +727,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             {"ok", true},
             {"accepted", true},
             {"duplicate", duplicate},
-            {"diagnostic_only", !options_.allow_gui_lifecycle_commands},
+            {"diagnostic_only", !stop_recording_allowed},
             {"queued_for_gui_thread", queued_for_gui_thread},
             {"request_id", parsed.request_id},
             {"operation_id", parsed.operation_id},
@@ -715,7 +748,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
     }
 
     if (parsed.method == "stop_recording" &&
-        options_.allow_gui_lifecycle_commands) {
+        stop_recording_allowed) {
         nlohmann::json response = {
             {"schema_id", kLocalControlResponseSchemaId},
             {"schema_version", kLocalControlSchemaVersion},
@@ -733,6 +766,34 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
              {
                  {"gui_lifecycle_command_deferred", queued_for_gui_thread},
                  {"recording_stop_requested", false},
+                 {"recording_lifecycle_mutated", false},
+             }},
+        };
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
+    }
+
+    if (parsed.method == "start_recording" &&
+        start_recording_allowed) {
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", true},
+            {"accepted", true},
+            {"duplicate", duplicate},
+            {"diagnostic_only", false},
+            {"queued_for_gui_thread", queued_for_gui_thread},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+            {"effect",
+             {
+                 {"gui_lifecycle_command_deferred", queued_for_gui_thread},
+                 {"recording_start_requested", false},
                  {"recording_lifecycle_mutated", false},
              }},
         };
@@ -760,7 +821,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
              {"message",
               parsed.method == "stop_recording"
                   ? "stop_recording requires ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1 or ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1"
-                  : "start_recording is contract-defined but not wired to Orange recording lifecycle yet"},
+                  : "start_recording requires ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1"},
          }},
         {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
     };

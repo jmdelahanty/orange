@@ -174,6 +174,18 @@ struct GuiLocalControlStopSchedulerState {
     std::chrono::steady_clock::time_point deadline{};
 };
 
+struct GuiLocalControlStartRequestState {
+    bool enabled = false;
+    bool pending = false;
+    std::string request_id;
+    std::string operation_id;
+    std::string source;
+    std::string reason;
+    std::string received_at_utc;
+    std::string last_event;
+    std::string last_event_at_utc;
+};
+
 enum class GuiAutorunStage {
     kDisabled = 0,
     kSelectConfig,
@@ -274,6 +286,12 @@ bool gui_local_control_recording_stop_enabled()
            gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP", false) ||
            gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP", false) ||
            gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP", false);
+}
+
+bool gui_local_control_recording_start_enabled()
+{
+    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START", false) ||
+           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START", false);
 }
 
 std::string gui_local_control_socket_path()
@@ -3482,6 +3500,22 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     return snapshot;
 }
 
+orange::control::LocalControlRecordingStartSnapshot gui_control_start_snapshot(
+    const GuiLocalControlStartRequestState& start_request)
+{
+    orange::control::LocalControlRecordingStartSnapshot snapshot;
+    snapshot.enabled = start_request.enabled;
+    snapshot.pending = start_request.pending;
+    snapshot.request_id = start_request.request_id;
+    snapshot.operation_id = start_request.operation_id;
+    snapshot.source = start_request.source;
+    snapshot.reason = start_request.reason;
+    snapshot.received_at_utc = start_request.received_at_utc;
+    snapshot.last_event = start_request.last_event;
+    snapshot.last_event_at_utc = start_request.last_event_at_utc;
+    return snapshot;
+}
+
 void gui_note_local_control_stop_event(
     GuiLocalControlStopSchedulerState* scheduler,
     const std::string& event)
@@ -3515,6 +3549,17 @@ void gui_reset_local_control_stop_scheduler_for_recording_start(
     gui_note_local_control_stop_event(scheduler, "recording_started");
 }
 
+void gui_note_local_control_start_event(
+    GuiLocalControlStartRequestState* start_request,
+    const std::string& event)
+{
+    if (!start_request) {
+        return;
+    }
+    start_request->last_event = event;
+    start_request->last_event_at_utc = get_current_utc_timestamp();
+}
+
 orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     CameraControl* camera_control,
     const CameraParams* cameras_params,
@@ -3523,6 +3568,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     const orange::session::RecordingSessionState& recording_session,
     const GuiRecordingRunState& recording_run,
     const GuiAutorunState& autorun_state,
+    const GuiLocalControlStartRequestState& local_control_start_request,
     const GuiLocalControlStopSchedulerState& local_control_stop_scheduler)
 {
     orange::control::LocalControlStatusSnapshot snapshot;
@@ -3566,6 +3612,8 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     snapshot.crop_recorder = gui_control_recorder_readiness(
         recording_session.external_crop_recorder_lifecycle,
         recording_session.crop_recording_sink_mode == "external_ipc");
+    snapshot.local_control_recording_start =
+        gui_control_start_snapshot(local_control_start_request);
     snapshot.local_control_recording_stop =
         gui_control_stop_snapshot(local_control_stop_scheduler);
     return snapshot;
@@ -3573,6 +3621,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
 
 void gui_drain_local_control_commands(
     orange::control::LocalControlServer* local_control_server,
+    GuiLocalControlStartRequestState* start_request,
     GuiLocalControlStopSchedulerState* stop_scheduler,
     CameraControl* camera_control)
 {
@@ -3591,7 +3640,46 @@ void gui_drain_local_control_commands(
         }
         std::cout << " stop_enabled="
                   << (stop_scheduler && stop_scheduler->enabled ? 1 : 0)
+                  << " start_enabled="
+                  << (start_request && start_request->enabled ? 1 : 0)
                   << std::endl;
+
+        if (command.method == "start_recording") {
+            if (!start_request || !start_request->enabled) {
+                if (start_request) {
+                    gui_note_local_control_start_event(start_request, "ignored_disabled");
+                }
+                std::cout << "[GUI][local_control] recording start ignored"
+                          << " request_id=" << command.request_id
+                          << " reason=start_control_disabled" << std::endl;
+                continue;
+            }
+            if (start_request->pending) {
+                gui_note_local_control_start_event(start_request, "ignored_pending_start");
+                std::cout << "[GUI][local_control] recording start ignored"
+                          << " request_id=" << command.request_id
+                          << " reason=start_already_pending"
+                          << " pending_request_id=" << start_request->request_id
+                          << std::endl;
+                continue;
+            }
+            start_request->pending = true;
+            start_request->request_id = command.request_id;
+            start_request->operation_id = command.operation_id;
+            start_request->source = command.source;
+            start_request->reason = gui_json_string_or_empty(command.params, "reason");
+            if (start_request->reason.empty()) {
+                start_request->reason = "local_control_start";
+            }
+            start_request->received_at_utc = command.received_at_utc;
+            gui_note_local_control_start_event(start_request, "queued");
+            std::cout << "[GUI][local_control] queued recording start"
+                      << " request_id=" << start_request->request_id
+                      << " operation_id=" << start_request->operation_id
+                      << " reason=" << start_request->reason
+                      << std::endl;
+            continue;
+        }
 
         const bool stop_command =
             command.method == "citrus_completion" ||
@@ -6020,6 +6108,252 @@ void update_gui_spatial_calibration_snapshots(const std::string& recording_folde
     }
 }
 
+bool gui_request_recording_start_through_operator_path(
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    GuiRecordingRunState* recording_run,
+    GuiSessionTimingState* timing,
+    orange::gui::GuiDisplayFrameRateStats* display_frame_rate_stats,
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    CameraParams* cameras_params,
+    CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const std::string& yolo_model,
+    const int crop_size_px,
+    EncoderConfig* encoder_config,
+    const std::string& input_folder,
+    PTPParams* ptp_params,
+    CropProducerWorker** crop_producer_workers,
+    CropPreviewWorker** crop_preview_workers,
+    CropAndEncodeWorker** crop_and_encode_workers,
+    PoseWorker** pose_workers,
+    std::vector<std::string>* recording_preflight_errors,
+    const std::string& context)
+{
+    if (!recording_session || !camera_control || !recording_run || !timing) {
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {
+                "Orange GUI recording start request is missing runtime state."};
+        }
+        std::cerr << "[GUI][recording] Start rejected: missing runtime state"
+                  << " context=" << context << std::endl;
+        return false;
+    }
+
+    const RecordingPreflightResult preflight =
+        run_gui_recording_preflight(
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            yolo_model,
+            crop_size_px);
+    if (!preflight.ok) {
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = preflight.errors;
+        }
+        log_recording_preflight_failure(context.c_str(), preflight);
+        return false;
+    }
+
+    if (recording_preflight_errors) {
+        recording_preflight_errors->clear();
+    }
+    const std::string output_root =
+        encoder_config && !encoder_config->folder_name.empty()
+            ? encoder_config->folder_name
+            : input_folder;
+    const orange::session::RecordingRunStartResult start_result =
+        orange::session::begin_recording_run(
+            recording_session,
+            camera_control,
+            cameras_params,
+            cameras_select,
+            num_cameras,
+            output_root,
+            ptp_params,
+            recording_session->recording_sink_mode,
+            &recording_session->external_recorder_contract_config);
+
+    if (!start_result.ok) {
+        if (recording_preflight_errors) {
+            *recording_preflight_errors = {
+                start_result.error_message.empty()
+                    ? "Failed to start recording run."
+                    : start_result.error_message};
+        }
+        if (!start_result.error_message.empty()) {
+            std::cerr << "[GUI][recording] " << start_result.error_message << std::endl;
+        }
+        if (!start_result.external_recorder_contract_path.empty()) {
+            std::cerr << "[GUI][recording] external recorder contract: "
+                      << start_result.external_recorder_contract_path
+                      << std::endl;
+        }
+        return false;
+    }
+
+    const std::string& resolved_recording_folder = start_result.recording_folder;
+    const std::string& resolved_recording_sink_mode = start_result.recording_sink_mode;
+    for (int i = 0; i < num_cameras; ++i) {
+        if (crop_producer_workers && crop_producer_workers[i]) {
+            crop_producer_workers[i]->RotateRecordingFolder(
+                resolved_recording_folder);
+        }
+        if (crop_preview_workers && crop_preview_workers[i]) {
+            crop_preview_workers[i]->ResetRunCounters();
+        }
+    }
+    update_gui_detect_model_snapshots(
+        resolved_recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        yolo_model);
+    update_gui_crop_output_snapshots(
+        resolved_recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        crop_size_px);
+    update_gui_pose_model_snapshots(
+        resolved_recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+    update_gui_spatial_calibration_snapshots(
+        resolved_recording_folder,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+    for (int i = 0; i < num_cameras; ++i) {
+        if (crop_and_encode_workers && crop_and_encode_workers[i]) {
+            crop_and_encode_workers[i]->RotateRecordingFolder(
+                resolved_recording_folder);
+        }
+        if (pose_workers && pose_workers[i]) {
+            pose_workers[i]->RotateRecordingFolder(
+                resolved_recording_folder);
+        }
+    }
+
+    try_start_timer();
+    gui_mark_recording_started(timing);
+    if (display_frame_rate_stats) {
+        display_frame_rate_stats->Reset();
+    }
+    gui_note_recording_started(
+        recording_run,
+        camera_control,
+        resolved_recording_folder,
+        resolved_recording_sink_mode);
+    gui_reset_local_control_stop_scheduler_for_recording_start(stop_scheduler);
+    std::cout << "[GUI][recording] Recording started"
+              << " context=" << context
+              << " sink_mode=" << resolved_recording_sink_mode
+              << std::endl;
+    if (resolved_recording_sink_mode != "real") {
+        std::cout << "Full-frame video disabled by GUI recording sink mode: "
+                  << resolved_recording_sink_mode << std::endl;
+    }
+    if (!resolved_recording_folder.empty()) {
+        std::cout << "Recording folder: " << resolved_recording_folder << std::endl;
+    }
+    return true;
+}
+
+bool gui_poll_local_control_start_request(
+    GuiLocalControlStartRequestState* start_request,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    GuiRecordingRunState* recording_run,
+    GuiSessionTimingState* timing,
+    orange::gui::GuiDisplayFrameRateStats* display_frame_rate_stats,
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    CameraParams* cameras_params,
+    CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const std::string& yolo_model,
+    const int crop_size_px,
+    EncoderConfig* encoder_config,
+    const std::string& input_folder,
+    PTPParams* ptp_params,
+    CropProducerWorker** crop_producer_workers,
+    CropPreviewWorker** crop_preview_workers,
+    CropAndEncodeWorker** crop_and_encode_workers,
+    PoseWorker** pose_workers,
+    std::vector<std::string>* recording_preflight_errors)
+{
+    if (!start_request || !start_request->pending) {
+        return false;
+    }
+
+    const std::string request_id = start_request->request_id;
+    const std::string operation_id = start_request->operation_id;
+    start_request->pending = false;
+
+    auto reject_start = [&](const std::string& event, const std::string& reason) {
+        gui_note_local_control_start_event(start_request, event);
+        std::cout << "[GUI][local_control] recording start ignored"
+                  << " request_id=" << request_id
+                  << " operation_id=" << operation_id
+                  << " reason=" << reason
+                  << std::endl;
+    };
+
+    if (!start_request->enabled) {
+        reject_start("ignored_disabled", "start_control_disabled");
+        return false;
+    }
+    if (!camera_control || !camera_control->open) {
+        reject_start("ignored_cameras_not_open", "cameras_not_open");
+        return false;
+    }
+    if (!camera_control->subscribe) {
+        reject_start("ignored_not_streaming", "streaming_inactive");
+        return false;
+    }
+    if (camera_control->record_video) {
+        reject_start("ignored_already_recording", "already_recording");
+        return false;
+    }
+    if (camera_control->recording_draining ||
+        (recording_run && recording_run->finalizing)) {
+        reject_start("ignored_recording_finalizing", "recording_finalizing");
+        return false;
+    }
+
+    const bool started = gui_request_recording_start_through_operator_path(
+        recording_session,
+        camera_control,
+        recording_run,
+        timing,
+        display_frame_rate_stats,
+        stop_scheduler,
+        cameras_params,
+        cameras_select,
+        num_cameras,
+        yolo_model,
+        crop_size_px,
+        encoder_config,
+        input_folder,
+        ptp_params,
+        crop_producer_workers,
+        crop_preview_workers,
+        crop_and_encode_workers,
+        pose_workers,
+        recording_preflight_errors,
+        "local_control_start_recording");
+    gui_note_local_control_start_event(
+        start_request,
+        started ? "start_triggered" : "start_failed");
+    std::cout << "[GUI][local_control] recording start "
+              << (started ? "triggered" : "failed")
+              << " request_id=" << request_id
+              << " operation_id=" << operation_id
+              << std::endl;
+    return started;
+}
+
 void RenderSpeedGraph(int camera_id, YoloWorker* yolo_worker, SpeedTrackingData& speed_data) {
     if (!yolo_worker) return;
     
@@ -6211,6 +6545,9 @@ int main(int argc, char **args) {
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
     GuiRecordingRunState gui_recording_run;
+    GuiLocalControlStartRequestState gui_local_control_start_request;
+    gui_local_control_start_request.enabled =
+        gui_local_control_recording_start_enabled();
     GuiLocalControlStopSchedulerState gui_local_control_stop_scheduler;
     gui_local_control_stop_scheduler.enabled =
         gui_local_control_recording_stop_enabled();
@@ -6222,6 +6559,10 @@ int main(int argc, char **args) {
         control_options.event_log_path =
             gui_local_control_log_path(control_options.socket_path);
         control_options.allow_gui_lifecycle_commands =
+            gui_local_control_stop_scheduler.enabled;
+        control_options.allow_gui_start_recording_commands =
+            gui_local_control_start_request.enabled;
+        control_options.allow_gui_stop_recording_commands =
             gui_local_control_stop_scheduler.enabled;
         std::string control_error;
         if (!gui_local_control_server.Start(control_options, &control_error)) {
@@ -6358,7 +6699,7 @@ int main(int argc, char **args) {
         const bool usaf_preview_running = usaf_ui_state.preview_running.load(std::memory_order_acquire);
         const bool usaf_tool_busy = usaf_job_running || usaf_preview_running;
         const bool calibration_tool_busy = aperture_tool_busy || usaf_tool_busy;
-        const GuiAutorunRequests gui_autorun_requests = gui_autorun_update(
+        GuiAutorunRequests gui_autorun_requests = gui_autorun_update(
             &gui_autorun_state,
             gui_autorun_config,
             local_config_folders,
@@ -6376,11 +6717,38 @@ int main(int argc, char **args) {
                     recording_session,
                     gui_recording_run,
                     gui_autorun_state,
+                    gui_local_control_start_request,
                     gui_local_control_stop_scheduler));
             gui_drain_local_control_commands(
                 &gui_local_control_server,
+                &gui_local_control_start_request,
                 &gui_local_control_stop_scheduler,
                 camera_control);
+            const bool local_control_start_triggered =
+                gui_poll_local_control_start_request(
+                    &gui_local_control_start_request,
+                    &recording_session,
+                    camera_control,
+                    &gui_recording_run,
+                    &gui_session_timing,
+                    &gui_display_frame_rate_stats,
+                    &gui_local_control_stop_scheduler,
+                    cameras_params,
+                    cameras_select,
+                    num_cameras,
+                    yolo_model,
+                    crop_size_px,
+                    encoder_config,
+                    input_folder,
+                    ptp_params,
+                    cropProducerWorkers,
+                    cropPreviewWorkers,
+                    cropAndEncodeWorkers,
+                    poseWorkers,
+                    &recording_preflight_errors);
+            if (local_control_start_triggered) {
+                gui_autorun_requests.toggle_recording = false;
+            }
             gui_poll_local_control_stop_scheduler(
                 &gui_local_control_stop_scheduler,
                 &recording_session,
@@ -7721,127 +8089,44 @@ int main(int argc, char **args) {
                     if (!camera_control->record_video && camera_control->recording_draining) {
                         std::cout << "Recording is still draining. Please wait..." << std::endl;
                     } else {
-                        bool next_record_state = !camera_control->record_video;
-                        std::string resolved_recording_folder;
-                        std::string resolved_recording_sink_mode = recording_session.recording_sink_mode;
-                        bool allow_transition = true;
-
+                        const bool next_record_state = !camera_control->record_video;
                         if (next_record_state) {
-                            const RecordingPreflightResult preflight =
-                                run_gui_recording_preflight(
-                                    cameras_params,
-                                    cameras_select,
-                                    num_cameras,
-                                    yolo_model,
-                                    crop_size_px);
-                            if (!preflight.ok) {
-                                recording_preflight_errors = preflight.errors;
-                                log_recording_preflight_failure("gui_start_recording", preflight);
-                                allow_transition = false;
-                            } else {
-                                recording_preflight_errors.clear();
-                                const orange::session::RecordingRunStartResult start_result =
-                                    orange::session::begin_recording_run(
-                                        &recording_session,
-                                        camera_control,
-                                        cameras_params,
-                                        cameras_select,
-                                        num_cameras,
-                                        encoder_config->folder_name.empty() ? input_folder : encoder_config->folder_name,
-                                        ptp_params,
-                                        recording_session.recording_sink_mode,
-                                        &recording_session.external_recorder_contract_config);
-                                allow_transition = start_result.ok;
-                                resolved_recording_folder = start_result.recording_folder;
-                                resolved_recording_sink_mode = start_result.recording_sink_mode;
-                                if (start_result.ok) {
-                                    for (int i = 0; i < num_cameras; ++i) {
-                                        if (cropProducerWorkers[i]) {
-                                            cropProducerWorkers[i]->RotateRecordingFolder(
-                                                resolved_recording_folder);
-                                        }
-                                        if (cropPreviewWorkers[i]) {
-                                            cropPreviewWorkers[i]->ResetRunCounters();
-                                        }
-                                    }
-                                    update_gui_detect_model_snapshots(
-                                        resolved_recording_folder,
-                                        cameras_params,
-                                        cameras_select,
-                                        num_cameras,
-                                        yolo_model);
-                                    update_gui_crop_output_snapshots(
-                                        resolved_recording_folder,
-                                        cameras_params,
-                                        cameras_select,
-                                        num_cameras,
-                                        crop_size_px);
-                                    update_gui_pose_model_snapshots(
-                                        resolved_recording_folder,
-                                        cameras_params,
-                                        cameras_select,
-                                        num_cameras);
-                                    update_gui_spatial_calibration_snapshots(
-                                        resolved_recording_folder,
-                                        cameras_params,
-                                        cameras_select,
-                                        num_cameras);
-                                    for (int i = 0; i < num_cameras; ++i) {
-                                        if (cropAndEncodeWorkers[i]) {
-                                            cropAndEncodeWorkers[i]->RotateRecordingFolder(
-                                                resolved_recording_folder);
-                                        }
-                                        if (poseWorkers[i]) {
-                                            poseWorkers[i]->RotateRecordingFolder(
-                                                resolved_recording_folder);
-                                        }
-                                    }
-                                } else if (!start_result.error_message.empty()) {
-                                    recording_preflight_errors = {start_result.error_message};
-                                    std::cerr << "[GUI][recording] "
-                                              << start_result.error_message << std::endl;
-                                    if (!start_result.external_recorder_contract_path.empty()) {
-                                        std::cerr << "[GUI][recording] external recorder contract: "
-                                                  << start_result.external_recorder_contract_path
-                                                  << std::endl;
-                                    }
-                                }
-                            }
-                        }
-
-                        if (allow_transition) {
-                            if (next_record_state) {
-                                // START RECORDING
-                                try_start_timer();
-                                gui_mark_recording_started(&gui_session_timing);
-                                gui_display_frame_rate_stats.Reset();
-                                gui_note_recording_started(
-                                    &gui_recording_run,
-                                    camera_control,
-                                    resolved_recording_folder,
-                                    resolved_recording_sink_mode);
-                                gui_reset_local_control_stop_scheduler_for_recording_start(
-                                    &gui_local_control_stop_scheduler);
-                                std::cout << "Recording toggled ON." << std::endl;
-                                if (resolved_recording_sink_mode != "real") {
-                                    std::cout << "Full-frame video disabled by GUI recording sink mode: "
-                                              << resolved_recording_sink_mode << std::endl;
-                                }
-                                if (!resolved_recording_folder.empty()) {
-                                    std::cout << "Recording folder: " << resolved_recording_folder << std::endl;
-                                }
-                            } else {
-                                // STOP RECORDING
-                                gui_request_recording_stop_through_operator_path(
+                            if (gui_request_recording_start_through_operator_path(
                                     &recording_session,
                                     camera_control,
                                     &gui_recording_run,
                                     &gui_session_timing,
+                                    &gui_display_frame_rate_stats,
+                                    &gui_local_control_stop_scheduler,
+                                    cameras_params,
+                                    cameras_select,
+                                    num_cameras,
+                                    yolo_model,
+                                    crop_size_px,
+                                    encoder_config,
+                                    input_folder,
+                                    ptp_params,
+                                    cropProducerWorkers,
+                                    cropPreviewWorkers,
+                                    cropAndEncodeWorkers,
+                                    poseWorkers,
+                                    &recording_preflight_errors,
                                     gui_autorun_requests.toggle_recording
-                                        ? "autorun_stop"
-                                        : "manual_stop");
-                                std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
+                                        ? "autorun_start_recording"
+                                        : "gui_start_recording")) {
+                                std::cout << "Recording toggled ON." << std::endl;
                             }
+                        } else {
+                            // STOP RECORDING
+                            gui_request_recording_stop_through_operator_path(
+                                &recording_session,
+                                camera_control,
+                                &gui_recording_run,
+                                &gui_session_timing,
+                                gui_autorun_requests.toggle_recording
+                                    ? "autorun_stop"
+                                    : "manual_stop");
+                            std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
                         }
                     }
                 }

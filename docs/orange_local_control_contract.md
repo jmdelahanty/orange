@@ -1,7 +1,7 @@
 # Orange Local Control Contract
 
-Status: v1 contract, Orange GUI endpoint, and first opt-in Citrus completion
-stop slice.
+Status: v1 contract, Orange GUI endpoint, and opt-in recording start/stop
+control slices.
 Last updated: 2026-05-28.
 
 ## Purpose
@@ -28,7 +28,7 @@ directly to external recorder sockets from Citrus or the orchestrator; those are
 Orange-owned recorder implementation details.
 
 The current Orange GUI endpoint is created by default. Lifecycle effects are
-disabled unless an explicit recording-stop gate is enabled:
+disabled unless an explicit recording-start or recording-stop gate is enabled:
 
 ```bash
 ./scripts/run_gui_fourcam_external_ipc_validation.sh ...
@@ -51,18 +51,24 @@ or `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`. The older Citrus-specific
 aliases `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` and
 `ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` also enable the same recording-stop
 gate.
+Local-control recording start is disabled by default; enable it only for
+orchestrator tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1` or
+`ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START=1`.
 
 The GUI validation launcher and installed sudo wrapper forward these variables
 when paths point under `/tmp`, `/run/user/1000`, or
 `/home/jeremy/orange_data`.
 
-The endpoint acknowledges `status`, `citrus_completion`, and opt-in
-`stop_recording`. Accepted mutating requests are deduplicated by both
-`request_id` and `method + operation_id`, queued onto a thread-safe bridge, and
-drained by the GUI thread. With the recording-stop gate disabled, Citrus
+The endpoint acknowledges `status`, `citrus_completion`, opt-in
+`start_recording`, and opt-in `stop_recording`. Accepted mutating requests are
+deduplicated by both `request_id` and `method + operation_id`, queued onto a
+thread-safe bridge, and drained by the GUI thread. With the recording-stop gate disabled, Citrus
 completion requests are logged only and `stop_recording` is rejected. With the
 gate enabled and Orange actively recording, both `citrus_completion` and
 `stop_recording` schedule a delayed stop using `params.grace_seconds`.
+With the recording-start gate enabled, when Orange is streaming but not already
+recording or finalizing, `start_recording` goes through the same GUI-thread
+recording preflight and operator start path as the record button.
 
 Use the client utility to inspect or send requests:
 
@@ -80,9 +86,9 @@ scripts/orange_local_control_client.py \
   --grace-seconds 10
 ```
 
-`start-recording` and `stop-recording` subcommands already render/send the v1
-schema. `stop-recording` requires the recording-stop gate above. `start-recording`
-is still schema-defined but rejected with `unsupported_in_diagnostic_mode`.
+`start-recording` and `stop-recording` subcommands render/send the v1 schema.
+`start-recording` requires the recording-start gate above; `stop-recording`
+requires the recording-stop gate above.
 
 ## Request
 
@@ -116,10 +122,9 @@ Supported methods:
 
 `request_id` is required for all requests. Mutating methods also require
 `operation_id`; duplicate `request_id` values and duplicate
-`method + operation_id` values are idempotent. In the current slice,
-`stop_recording` is accepted only when local-control recording stop is enabled.
-`start_recording` is schema-defined but still returns
-`unsupported_in_diagnostic_mode`.
+`method + operation_id` values are idempotent. `start_recording` is accepted
+only when local-control recording start is enabled. `stop_recording` is accepted
+only when local-control recording stop is enabled.
 
 ## Status Semantics
 
@@ -140,6 +145,9 @@ Orange readiness means more than process started. Status reports:
 - selected record/YOLO/crop camera serials
 - full-frame external recorder lifecycle readiness
 - crop external recorder lifecycle readiness
+- `local_control.recording_start`: whether local-control recording start is
+  enabled, whether a start request is pending, the current request/operation
+  ids, source/reason, and the latest GUI-thread event
 - `local_control.recording_stop`: whether local-control recording stop is
   enabled, whether a stop is scheduled, whether one has triggered, the current
   method/request/operation/experiment ids, terminal state/reason, remaining
@@ -181,15 +189,16 @@ Every response is one JSON object:
 ```
 
 For `citrus_completion`, Orange validates, logs, queues the request for
-GUI-thread handling, and acknowledges it. For `stop_recording`, Orange does the
-same when local-control recording stop is enabled; otherwise it rejects the
-request. Duplicate `request_id` values and duplicate `method + operation_id`
-values are acknowledged but are not queued a second time for accepted methods.
+GUI-thread handling, and acknowledges it. For `start_recording` and
+`stop_recording`, Orange does the same when the corresponding opt-in gate is
+enabled; otherwise it rejects the request. Duplicate `request_id` values and
+duplicate `method + operation_id` values are acknowledged but are not queued a
+second time for accepted methods.
 
 The immediate socket response reports only immediate socket-thread effects:
 `recording_lifecycle_mutated` is false because the socket thread never mutates
-recording state. If local-control recording stop is enabled, the GUI thread may
-later schedule and trigger the stop.
+recording state. If local-control recording start or stop is enabled, the GUI
+thread may later start, schedule, or trigger the lifecycle action.
 
 The current repeated-request policy while a countdown is active is
 earliest-deadline-wins. A later distinct completion request cannot extend an
@@ -204,6 +213,14 @@ path:
 - wait for `gui_finalize_recording_session_if_ready(...)`
 - validate `recording_session.json`, `recording_snapshot.json`, and external
   recorder finalization artifacts
+
+When start triggers, it routes through the same GUI/operator start path:
+
+- run the GUI recording preflight
+- call `begin_recording_run(...)`
+- rotate crop/pose/recording worker output folders
+- update detect/crop/pose/spatial snapshots
+- reset GUI recording timing and display frame-rate telemetry
 
 ## Citrus GUI Control Slice
 
@@ -253,7 +270,13 @@ Citrus status schema is `citrus.gui_runtime.status` v1.
 Citrus status includes process/display identity, stimulus monitor geometry and
 refresh, local-control socket/log info, selected rig/canvas/protocols,
 per-arena runtime fields, latest stimulus/camera frame ids, output directory
-after experiment start, `terminal_state`, and `last_operation_id`.
+after experiment start, `terminal_state`, and `last_operation_id`. It also
+reports `output.perf_jsonl_enabled`, `output.perf_jsonl_path`, and
+`output.perf_jsonl_path_known`. The orchestrator should treat
+`perf_jsonl_enabled=true` as a readiness/config check, and
+`perf_jsonl_path_known=true` as an artifact-collection check only after Citrus
+has actually started/configured the experiment. Use the exact
+`perf_jsonl_path` from status instead of globbing Citrus output directories.
 
 Current Citrus validation: Citrus builds, its unit suite passes with 84 tests,
 and a real-display smoke on `DISPLAY=:1` answered `status` on DP-3 at

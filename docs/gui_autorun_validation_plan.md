@@ -356,9 +356,11 @@ Current GUI support starts by default at
 ./scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe
 ```
 
-The endpoint accepts `status`, `citrus_completion`, and opt-in `stop_recording`
-requests over a Unix-domain JSON socket. By default, completion requests are
-logged/ACKed but do not stop recording, and `stop_recording` is rejected. For
+The endpoint accepts `status`, `citrus_completion`, opt-in `start_recording`,
+and opt-in `stop_recording` requests over a Unix-domain JSON socket. By
+default, completion requests are logged/ACKed but do not stop recording, and
+`start_recording` / `stop_recording` are rejected. For orchestrated start
+tests, enable `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1`. For
 integrated stop tests, enable
 `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1` or the Citrus-specific alias
 `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`; then accepted
@@ -371,6 +373,12 @@ Citrus can opt into sending Orange completion notifications with
 `CITRUS_ORANGE_COMPLETION_NOTIFY=1`,
 `CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`, and
 `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`.
+
+Citrus status also reports the exact performance JSONL artifact fields under
+`status.output`: `perf_jsonl_enabled`, `perf_jsonl_path`, and
+`perf_jsonl_path_known`. An orchestrator should use `perf_jsonl_enabled` as a
+configuration/readiness check and wait for `perf_jsonl_path_known=true` after
+experiment start before collecting the path.
 
 During a live GUI run, query the endpoint with:
 

@@ -190,6 +190,18 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show GUI clip rollover disabled by default",
         )
         require(
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0" in result.stdout,
+            "launcher output should show local-control recording start disabled by default",
+        )
+        require(
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=0" in result.stdout,
+            "launcher output should show local-control recording stop disabled by default",
+        )
+        require(
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=0" in result.stdout,
+            "launcher output should show Citrus completion stop disabled by default",
+        )
+        require(
             "ORANGE_GUI_PTP_STACK_MODE=off" in result.stdout,
             "launcher output should show host PTP preflight off by default for manual runs",
         )
@@ -993,6 +1005,7 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_LOCAL_CONTROL_SOCKET": "/tmp/orange_test_control.sock",
                 "ORANGE_GUI_LOCAL_CONTROL_LOG": "/tmp/orange_test_control.jsonl",
                 "ORANGE_GUI_LOCAL_CONTROL_DISABLE": "0",
+                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP": "1",
             },
@@ -1078,6 +1091,10 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_LOCAL_CONTROL_DISABLE=0" in result.stdout,
             "GUI local control disable flag should be forwarded through sudo env when set",
+        )
+        require(
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1" in result.stdout,
+            "GUI local control recording start flag should be forwarded through sudo env when set",
         )
         require(
             "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1" in result.stdout,
@@ -1435,6 +1452,8 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
             "--env",
             "ORANGE_GUI_CLIP_SECONDS=2",
             "--env",
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1",
+            "--env",
             "ORANGE_YOLO_AFFINITY_CAM_2010093=6",
             "--env",
             "ORANGE_YOLO_RT_PRIORITY=10",
@@ -1460,6 +1479,10 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
     require(
         "ORANGE_GUI_CLIP_SECONDS=2" in result.stdout,
         "wrapper dry-run should include GUI clip_seconds env",
+    )
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1" in result.stdout,
+        "wrapper dry-run should include local-control recording start env",
     )
     require(
         "ORANGE_YOLO_AFFINITY_CAM_2010093=6" in result.stdout,

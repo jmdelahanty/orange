@@ -134,7 +134,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
     start = subparsers.add_parser(
         "start-recording",
-        help="Send a start_recording request. Diagnostic endpoint currently rejects this.",
+        help="Send a start_recording request. Requires Orange recording-start control to be enabled.",
     )
     add_request_id_arg(start)
     add_operation_id_arg(
