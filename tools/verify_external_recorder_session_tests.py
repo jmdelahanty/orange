@@ -66,6 +66,8 @@ def ipc_protocol_payload() -> dict:
         "client_drain_first_frame_count": 3,
         "client_finalize_frame_count": 3,
         "client_control_state": "finalize_requested",
+        "descriptor_intake_end_reason": "client_finalize",
+        "descriptor_intake_completed_cleanly": True,
     }
 
 
@@ -299,6 +301,8 @@ def write_runtime(
         "client_drain_first_frame_count": 3,
         "client_finalize_frame_count": 3,
         "client_control_state": "finalize_requested",
+        "descriptor_intake_end_reason": "client_finalize",
+        "descriptor_intake_completed_cleanly": True,
     }
     if rolling:
         recorder_status.update(

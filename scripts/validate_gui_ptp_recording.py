@@ -2069,6 +2069,10 @@ def check_ipc_protocol_payload(
         "client_drain_received": protocol.get("client_drain_received"),
         "client_finalize_received": protocol.get("client_finalize_received"),
         "client_control_state": protocol.get("client_control_state"),
+        "descriptor_intake_end_reason": protocol.get("descriptor_intake_end_reason"),
+        "descriptor_intake_completed_cleanly": protocol.get(
+            "descriptor_intake_completed_cleanly"
+        ),
         "client_drain_first_frame_count": integer(
             protocol.get("client_drain_first_frame_count")
         ),
@@ -2141,6 +2145,24 @@ def check_ipc_protocol_payload(
             protocol.get("client_control_state") == "finalize_requested",
             f"{prefix} client control state reached finalize_requested",
             f"{prefix} client_control_state={protocol.get('client_control_state')!r}",
+        )
+    if "descriptor_intake_completed_cleanly" in protocol:
+        reporter.check(
+            protocol.get("descriptor_intake_completed_cleanly") is True,
+            f"{prefix} descriptor intake completed cleanly",
+            (
+                f"{prefix} descriptor_intake_completed_cleanly="
+                f"{protocol.get('descriptor_intake_completed_cleanly')!r}"
+            ),
+        )
+    if "descriptor_intake_end_reason" in protocol:
+        reporter.check(
+            protocol.get("descriptor_intake_end_reason") == "client_finalize",
+            f"{prefix} descriptor intake ended by client finalize",
+            (
+                f"{prefix} descriptor_intake_end_reason="
+                f"{protocol.get('descriptor_intake_end_reason')!r}"
+            ),
         )
     drain_frame_count = integer(protocol.get("client_drain_first_frame_count"))
     finalize_frame_count = integer(protocol.get("client_finalize_frame_count"))
@@ -2535,6 +2557,25 @@ def check_external_recorder_status_contract(
                     (
                         f"{prefix} runtime client_control_state="
                         f"{runtime_status.get('client_control_state')!r}"
+                    ),
+                )
+            if "descriptor_intake_completed_cleanly" in runtime_status:
+                reporter.check(
+                    runtime_status.get("descriptor_intake_completed_cleanly") is True,
+                    f"{prefix} runtime descriptor intake completed cleanly",
+                    (
+                        f"{prefix} runtime descriptor_intake_completed_cleanly="
+                        f"{runtime_status.get('descriptor_intake_completed_cleanly')!r}"
+                    ),
+                )
+            if "descriptor_intake_end_reason" in runtime_status:
+                reporter.check(
+                    runtime_status.get("descriptor_intake_end_reason")
+                    == "client_finalize",
+                    f"{prefix} runtime descriptor intake ended by client finalize",
+                    (
+                        f"{prefix} runtime descriptor_intake_end_reason="
+                        f"{runtime_status.get('descriptor_intake_end_reason')!r}"
                     ),
                 )
             runtime_drain_frame_count = integer(

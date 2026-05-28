@@ -541,6 +541,10 @@ def ipc_protocol_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "client_drain_received": protocol.get("client_drain_received"),
         "client_finalize_received": protocol.get("client_finalize_received"),
         "client_control_state": protocol.get("client_control_state"),
+        "descriptor_intake_end_reason": protocol.get("descriptor_intake_end_reason"),
+        "descriptor_intake_completed_cleanly": protocol.get(
+            "descriptor_intake_completed_cleanly"
+        ),
         "client_drain_first_frame_count": int_value(
             protocol.get("client_drain_first_frame_count")
         ),
@@ -671,6 +675,12 @@ def summarize_external_recorder_status_contract(
             "client_drain_received": protocol.get("client_drain_received"),
             "client_finalize_received": protocol.get("client_finalize_received"),
             "client_control_state": protocol.get("client_control_state"),
+            "descriptor_intake_end_reason": protocol.get(
+                "descriptor_intake_end_reason"
+            ),
+            "descriptor_intake_completed_cleanly": protocol.get(
+                "descriptor_intake_completed_cleanly"
+            ),
             "client_drain_first_frame_count": protocol.get(
                 "client_drain_first_frame_count"
             ),
@@ -706,6 +716,12 @@ def summarize_external_recorder_status_contract(
             ),
             "runtime_client_control_state": runtime_status.get(
                 "client_control_state"
+            ),
+            "runtime_descriptor_intake_end_reason": runtime_status.get(
+                "descriptor_intake_end_reason"
+            ),
+            "runtime_descriptor_intake_completed_cleanly": runtime_status.get(
+                "descriptor_intake_completed_cleanly"
             ),
             "runtime_client_drain_first_frame_count": int_value(
                 runtime_status.get("client_drain_first_frame_count")
@@ -1697,6 +1713,8 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"finalize={fmt_int(status.get('client_finalize_messages_received'))}/"
                     f"{int(status.get('client_finalize_received') is True)} "
                     f"state={status.get('client_control_state') or 'n/a'} "
+                    f"intake={status.get('descriptor_intake_end_reason') or 'n/a'}/"
+                    f"{int(status.get('descriptor_intake_completed_cleanly') is True)} "
                     f"storage={storage}"
                 )
     else:

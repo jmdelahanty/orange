@@ -743,7 +743,9 @@ than a socket teardown. `drain` is advisory and can be followed by descriptors
 that were already queued locally; descriptor intake ends at `finalize`.
 Recorder status/summary artifacts report the received client control count,
 drain/finalize counts, the final client-control state, and the frame counts at
-which drain/finalize were observed.
+which drain/finalize were observed. The recorder also records the descriptor
+intake end reason and marks the run failed if intake ends by EOF, malformed
+descriptor, ACK/RELEASE write failure, or signal before `client_finalize`.
 The first GUI PTP-stack guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
@@ -760,7 +762,8 @@ sidecars, missing parsed runtime state, missing/unhealthy storage preflight, or
 missing versioned IPC hello telemetry, and fail if reported recorder-status
 protocol sends are nonzero failures, if reported drain/finalize controls are
 missing, or if the final client-control state does not reach
-`finalize_requested`; `compare_gui_crop_preview_validation.py`
+`finalize_requested` / descriptor intake does not end via `client_finalize`;
+`compare_gui_crop_preview_validation.py`
 carries those gates into visible/hidden comparisons; and
 `summarize_gui_validation.py` prints compact full-frame/crop recorder
 heartbeat, count, protocol status-message/control, and storage status for

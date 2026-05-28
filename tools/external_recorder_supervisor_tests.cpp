@@ -489,6 +489,8 @@ void test_process_poll_reads_status_sidecar()
             << "    \"client_drain_first_frame_count\": 8,\n"
             << "    \"client_finalize_frame_count\": 8,\n"
             << "    \"client_control_state\": \"finalize_requested\",\n"
+            << "    \"descriptor_intake_end_reason\": \"client_finalize\",\n"
+            << "    \"descriptor_intake_completed_cleanly\": true,\n"
             << "    \"last_client_control_command\": \"finalize\",\n"
             << "    \"last_client_control_reason\": \"worker_drained\"\n"
             << "  },\n"
@@ -581,6 +583,10 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar client finalize frame count should parse");
     require(runtime.processes[0].recorder_status.client_control_state == "finalize_requested",
             "status sidecar client control state should parse");
+    require(runtime.processes[0].recorder_status.descriptor_intake_end_reason == "client_finalize",
+            "status sidecar descriptor intake reason should parse");
+    require(runtime.processes[0].recorder_status.descriptor_intake_completed_cleanly,
+            "status sidecar descriptor intake clean flag should parse");
     require(runtime.processes[0].recorder_status.last_client_control_command == "finalize",
             "status sidecar last client control command should parse");
 
@@ -609,6 +615,10 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed client finalize frame count");
     require(summary["processes"][0]["recorder_status"]["client_control_state"] == "finalize_requested",
             "runtime summary should include parsed client control state");
+    require(summary["processes"][0]["recorder_status"]["descriptor_intake_end_reason"] == "client_finalize",
+            "runtime summary should include parsed descriptor intake reason");
+    require(summary["processes"][0]["recorder_status"]["descriptor_intake_completed_cleanly"].get<bool>(),
+            "runtime summary should include parsed descriptor intake clean flag");
     require(summary["processes"][0]["recorder_status"]["rolling_enabled"].get<bool>(),
             "runtime summary should include parsed rolling enabled");
     require(summary["processes"][0]["recorder_status"]["rolling_current_clip_index"] == 1,

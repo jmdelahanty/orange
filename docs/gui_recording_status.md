@@ -550,10 +550,13 @@ Current GUI implication:
   recorder writer rotation while the socket/session remains active. `drain` is
   advisory and may be followed by already-queued descriptors; descriptor intake
   ends at `finalize`. Recorder status artifacts now carry the final
-  client-control state plus drain/finalize counts and frame counts, so post-run
-  validators can check that the external recorder observed the full session
-  lifecycle. Remaining external-recorder health gaps are production policy
-  around stop/drain/finalize failures rather than only final control commands.
+  client-control state plus drain/finalize counts, frame counts, and
+  descriptor-intake end reason, so post-run validators can check that the
+  external recorder observed the full session lifecycle. EOF, malformed
+  descriptors, protocol write failure, or signal stop before finalize are
+  surfaced as failed recorder status. Remaining external-recorder health gaps
+  are production policy around stop/drain/finalize failures rather than only
+  final control commands.
   The PTP stack guard exists in the validation launcher/wrapper path, but
   manual GUI operation still depends on the Host PTP Stack panel or an operator
   shell command before streaming PTP-gated cameras.

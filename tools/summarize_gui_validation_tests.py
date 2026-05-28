@@ -82,6 +82,8 @@ def write_external_recorder_status_fixture(
         "client_drain_first_frame_count": rows,
         "client_finalize_frame_count": rows,
         "client_control_state": "finalize_requested",
+        "descriptor_intake_end_reason": "client_finalize",
+        "descriptor_intake_completed_cleanly": True,
         "last_client_control_command": "finalize",
         "last_client_control_reason": "recording_drained",
     }
@@ -160,6 +162,8 @@ def write_external_recorder_status_fixture(
                             "client_drain_first_frame_count": rows,
                             "client_finalize_frame_count": rows,
                             "client_control_state": "finalize_requested",
+                            "descriptor_intake_end_reason": "client_finalize",
+                            "descriptor_intake_completed_cleanly": True,
                         },
                     }
                 ],
@@ -605,6 +609,14 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
             "full client control state should parse",
         )
         require(
+            full["descriptor_intake_end_reason"] == "client_finalize",
+            "full descriptor intake reason should parse",
+        )
+        require(
+            full["descriptor_intake_completed_cleanly"] is True,
+            "full descriptor intake clean flag should parse",
+        )
+        require(
             full["runtime_client_finalize_received"] is True,
             "full runtime client finalize should parse",
         )
@@ -623,6 +635,14 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
         require(
             full["runtime_client_control_state"] == "finalize_requested",
             "full runtime client control state should parse",
+        )
+        require(
+            full["runtime_descriptor_intake_end_reason"] == "client_finalize",
+            "full runtime descriptor intake reason should parse",
+        )
+        require(
+            full["runtime_descriptor_intake_completed_cleanly"] is True,
+            "full runtime descriptor intake clean flag should parse",
         )
         require(crop["frames_received"] == 2, "crop received count should parse")
         require(crop["frames_encoded"] == 2, "crop encoded count should parse")

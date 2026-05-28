@@ -85,8 +85,11 @@ camera stream teardown. `drain` is advisory and can precede descriptors that
 were already accepted into Orange's local recording queues; `finalize` is the
 point where descriptor intake should end. The recorder records the observed
 client control state in `ipc_protocol`, including the final
-`client_control_state`, drain/finalize message counts, and the frame counts at
-which drain/finalize were observed.
+`client_control_state`, drain/finalize message counts, the frame counts at
+which drain/finalize were observed, and the descriptor-intake end reason. A
+production recording session is clean only when descriptor intake ends via
+`client_finalize`; EOF, malformed descriptors, ACK/RELEASE write failures, or
+signal stop before finalize are recorded as unclean intake termination.
 
 There are two source-lifetime modes:
 
@@ -291,10 +294,14 @@ Current semantics:
   New recorder summaries/status sidecars also report
   `client_control_messages_received`, `client_drain_messages_received`,
   `client_finalize_messages_received`, `client_drain_received`,
-  `client_finalize_received`, and `client_control_state`; when those fields
-  are present, strict validators require at least one control message, a
-  received drain command, a received finalize command, and a final
-  `client_control_state = "finalize_requested"`.
+  `client_finalize_received`, `client_control_state`,
+  `descriptor_intake_end_reason`, and
+  `descriptor_intake_completed_cleanly`; when those fields are present, strict
+  validators require at least one control message, a received drain command, a
+  received finalize command, a final
+  `client_control_state = "finalize_requested"`,
+  `descriptor_intake_end_reason = "client_finalize"`, and clean descriptor
+  intake completion.
   Current generated full-frame and crop external IPC contracts set it by
   default.
 - Shell-launched diagnostic runs validate external recorder files after Orange

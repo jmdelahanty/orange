@@ -610,6 +610,14 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
                 status.get("client_control_state") is not None
                 and status.get("client_control_state") != "finalize_requested"
             )
+            or (
+                status.get("descriptor_intake_completed_cleanly") is not None
+                and status.get("descriptor_intake_completed_cleanly") is not True
+            )
+            or (
+                status.get("descriptor_intake_end_reason") is not None
+                and status.get("descriptor_intake_end_reason") != "client_finalize"
+            )
         ):
             external_recorder_protocol_failed_streams.append(f"{group_name}:{stream_name}")
 

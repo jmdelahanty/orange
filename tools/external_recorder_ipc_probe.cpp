@@ -147,6 +147,8 @@ struct IpcProtocolState {
     uint64_t client_drain_first_frame_count = 0;
     uint64_t client_finalize_frame_count = 0;
     std::string client_control_state = "open";
+    std::string descriptor_intake_end_reason = "not_started";
+    bool descriptor_intake_completed_cleanly = false;
     std::string last_client_control_command;
     std::string last_client_control_reason;
 };
@@ -821,6 +823,10 @@ void write_ipc_protocol_json(std::ostream& out,
         << state.client_finalize_frame_count << ",\n";
     out << indent << "  \"client_control_state\": \""
         << json_escape(state.client_control_state) << "\",\n";
+    out << indent << "  \"descriptor_intake_end_reason\": \""
+        << json_escape(state.descriptor_intake_end_reason) << "\",\n";
+    out << indent << "  \"descriptor_intake_completed_cleanly\": "
+        << (state.descriptor_intake_completed_cleanly ? "true" : "false") << ",\n";
     out << indent << "  \"last_client_control_command\": \""
         << json_escape(state.last_client_control_command) << "\",\n";
     out << indent << "  \"last_client_control_reason\": \""
@@ -4063,11 +4069,21 @@ int main(int argc, char** argv)
                     protocol_state);
             };
         auto last_status_write = std::chrono::steady_clock::now();
+        auto mark_intake_end = [&](const char* reason, bool clean) {
+            if (protocol_state.descriptor_intake_end_reason == "reading_descriptors" ||
+                protocol_state.descriptor_intake_end_reason == "not_started") {
+                protocol_state.descriptor_intake_end_reason =
+                    reason ? reason : "unknown";
+                protocol_state.descriptor_intake_completed_cleanly = clean;
+            }
+        };
 
+        protocol_state.descriptor_intake_end_reason = "reading_descriptors";
         while (!g_stop_requested.load(std::memory_order_acquire) &&
                (options.max_frames == 0 || frame_count < options.max_frames)) {
             std::string line;
             if (!read_line(client_fd, &line)) {
+                mark_intake_end("socket_eof", false);
                 break;
             }
             if (orange::external_recorder::ipc::starts_with_kind(
@@ -4116,6 +4132,7 @@ int main(int argc, char** argv)
                     protocol_state.client_finalize_received = true;
                     protocol_state.client_finalize_frame_count = frame_count;
                     protocol_state.client_control_state = "finalize_requested";
+                    mark_intake_end("client_finalize", true);
                     write_status("finalize_requested", {}, false);
                     break;
                 }
@@ -4127,6 +4144,7 @@ int main(int argc, char** argv)
             FrameDescriptor desc;
             if (!parse_frame_descriptor(line, &desc)) {
                 std::cerr << "Malformed frame descriptor: " << line << std::endl;
+                mark_intake_end("malformed_descriptor", false);
                 break;
             }
             apply_descriptor_defaults(options, &desc);
@@ -4254,6 +4272,7 @@ int main(int argc, char** argv)
                         std::to_string(desc.assigned_shard_id) +
                         (options.deferred_source_release ? " deferred_release" : "") +
                         "\n")) {
+                mark_intake_end("ack_write_failed", false);
                 break;
             }
             if (release_deferred_by_worker && target_encode_worker) {
@@ -4266,6 +4285,7 @@ int main(int argc, char** argv)
                         "RELEASE " + std::to_string(desc.recording_frame_id) + " " +
                             std::to_string(desc.assigned_gpu_id) + " " +
                             std::to_string(desc.assigned_shard_id) + "\n")) {
+                    mark_intake_end("release_write_failed", false);
                     break;
                 }
             }
@@ -4307,6 +4327,15 @@ int main(int argc, char** argv)
             if (status_now - last_status_write >= std::chrono::seconds(1)) {
                 write_status("running");
                 last_status_write = status_now;
+            }
+        }
+        if (protocol_state.descriptor_intake_end_reason == "reading_descriptors") {
+            if (options.max_frames > 0 && frame_count >= options.max_frames) {
+                mark_intake_end("max_frames_reached", true);
+            } else if (g_stop_requested.load(std::memory_order_acquire)) {
+                mark_intake_end("stop_requested", false);
+            } else {
+                mark_intake_end("loop_exited", false);
             }
         }
 
@@ -4366,7 +4395,17 @@ int main(int argc, char** argv)
                 any_worker_failed = any_worker_failed || worker->failed();
             }
         }
-        write_status(any_worker_failed ? "failed" : "completed", {}, false);
+        const bool intake_failed =
+            !protocol_state.descriptor_intake_completed_cleanly;
+        const std::string terminal_error =
+            intake_failed
+                ? ("descriptor intake ended without clean finalize: " +
+                   protocol_state.descriptor_intake_end_reason)
+                : std::string{};
+        write_status(
+            (any_worker_failed || intake_failed) ? "failed" : "completed",
+            terminal_error,
+            false);
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {
@@ -4400,7 +4439,7 @@ int main(int argc, char** argv)
                       << " worker_failed=" << (any_worker_failed ? "true" : "false");
         }
         std::cout << std::endl;
-        return any_worker_failed ? 1 : 0;
+        return (any_worker_failed || intake_failed) ? 1 : 0;
     } catch (const std::exception& ex) {
         (void)write_recorder_status_json(
             options,

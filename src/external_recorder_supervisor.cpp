@@ -261,6 +261,10 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_u64(protocol, "client_finalize_frame_count");
             snapshot.client_control_state =
                 optional_string(protocol, "client_control_state");
+            snapshot.descriptor_intake_end_reason =
+                optional_string(protocol, "descriptor_intake_end_reason");
+            snapshot.descriptor_intake_completed_cleanly =
+                optional_bool(protocol, "descriptor_intake_completed_cleanly");
             snapshot.last_client_control_command =
                 optional_string(protocol, "last_client_control_command");
             snapshot.last_client_control_reason =
@@ -1531,6 +1535,10 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                 {"client_finalize_frame_count",
                  recorder_status.client_finalize_frame_count},
                 {"client_control_state", recorder_status.client_control_state},
+                {"descriptor_intake_end_reason",
+                 recorder_status.descriptor_intake_end_reason},
+                {"descriptor_intake_completed_cleanly",
+                 recorder_status.descriptor_intake_completed_cleanly},
                 {"last_client_control_command",
                  recorder_status.last_client_control_command},
                 {"last_client_control_reason",

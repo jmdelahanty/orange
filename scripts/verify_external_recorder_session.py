@@ -525,6 +525,19 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
             protocol.get("client_control_state") == "finalize_requested",
             f"{label} client_control_state={protocol.get('client_control_state')!r}",
         )
+    if "descriptor_intake_completed_cleanly" in protocol:
+        require(
+            protocol.get("descriptor_intake_completed_cleanly") is True,
+            (
+                f"{label} descriptor_intake_completed_cleanly="
+                f"{protocol.get('descriptor_intake_completed_cleanly')!r}"
+            ),
+        )
+    if "descriptor_intake_end_reason" in protocol:
+        require(
+            protocol.get("descriptor_intake_end_reason") == "client_finalize",
+            f"{label} descriptor_intake_end_reason={protocol.get('descriptor_intake_end_reason')!r}",
+        )
     drain_frame_count = optional_int(
         protocol.get("client_drain_first_frame_count"),
         f"{label} ipc_protocol.client_drain_first_frame_count",
@@ -883,6 +896,12 @@ def verify_status_sidecar(
             if "client_control_state" in candidate:
                 require(candidate.get("client_control_state") == "finalize_requested",
                         f"runtime client_control_state={candidate.get('client_control_state')!r} for {serial}")
+            if "descriptor_intake_completed_cleanly" in candidate:
+                require(candidate.get("descriptor_intake_completed_cleanly") is True,
+                        f"runtime descriptor_intake_completed_cleanly={candidate.get('descriptor_intake_completed_cleanly')!r} for {serial}")
+            if "descriptor_intake_end_reason" in candidate:
+                require(candidate.get("descriptor_intake_end_reason") == "client_finalize",
+                        f"runtime descriptor_intake_end_reason={candidate.get('descriptor_intake_end_reason')!r} for {serial}")
             runtime_drain_frame_count = optional_int(
                 candidate.get("client_drain_first_frame_count"),
                 f"runtime client_drain_first_frame_count for {serial}",

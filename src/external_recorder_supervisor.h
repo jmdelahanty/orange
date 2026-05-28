@@ -151,6 +151,8 @@ struct RecorderStatusSnapshot {
     uint64_t client_drain_first_frame_count = 0;
     uint64_t client_finalize_frame_count = 0;
     std::string client_control_state;
+    std::string descriptor_intake_end_reason;
+    bool descriptor_intake_completed_cleanly = false;
     std::string last_client_control_command;
     std::string last_client_control_reason;
     std::string error;
