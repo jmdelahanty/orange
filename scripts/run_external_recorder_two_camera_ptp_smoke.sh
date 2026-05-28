@@ -339,6 +339,7 @@ for serial, analytics_gpu_id, shard_group in zip(camera_serials, gpu_ids, shard_
         "expected_shard_gpu_ids": shard_gpu_ids,
         "routing_policy": routing_policy,
         "summary_json": str(run_dir / f"Cam{serial}_external_summary.json"),
+        "status_json": str(run_dir / f"Cam{serial}_external_status.json"),
         "video_sanity_json": str(run_dir / f"Cam{serial}_external_video_sanity.json"),
         "mp4": str(run_dir / f"Cam{serial}_external.mp4"),
         "gop_routing_csv": str(run_dir / f"Cam{serial}_external_gop_routing.csv"),
@@ -352,6 +353,7 @@ contract = {
     "artifact_root": str(run_dir),
     "session_id": spec["experiment_id"],
     "require_summary": True,
+    "require_status": True,
     "require_video_sanity": skip_video_sanity == 0,
     "require_merged_mp4": True,
     "require_gop_routing": True,
@@ -426,6 +428,7 @@ for i in "${!CAMERAS[@]}"; do
   encode_csv="$RUN_DIR/Cam${serial}_external_encode.csv"
   gop_routing_csv="$RUN_DIR/Cam${serial}_external_gop_routing.csv"
   summary_json="$RUN_DIR/Cam${serial}_external_summary.json"
+  status_json="$RUN_DIR/Cam${serial}_external_status.json"
   video_sanity_json="$RUN_DIR/Cam${serial}_external_video_sanity.json"
   mp4_out="$RUN_DIR/Cam${serial}_external.mp4"
   keyframe_out="$RUN_DIR/Cam${serial}_external_keyframes.csv"
@@ -483,6 +486,7 @@ PY
     --encode-csv "$encode_csv" \
     --gop-routing-csv "$gop_routing_csv" \
     --summary-json "$summary_json" \
+    --status-json "$status_json" \
     --session-id "$EXPERIMENT_ID" \
     --stream-id "$serial" \
     --shard-id 0 \

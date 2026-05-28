@@ -294,13 +294,14 @@ DETACH_CSV="$RUN_DIR/external_detach.csv"
 ENCODE_CSV="$RUN_DIR/external_encode.csv"
 GOP_ROUTING_CSV="$RUN_DIR/external_gop_routing.csv"
 SUMMARY_JSON="$RUN_DIR/external_recorder_summary.json"
+STATUS_JSON="$RUN_DIR/external_recorder_status.json"
 VIDEO_SANITY_JSON="$RUN_DIR/external_video_sanity.json"
 MP4_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external.mp4"
 KEYFRAME_OUT="$RUN_DIR/Cam${CAMERA_SERIAL}_external_keyframes.csv"
 RECORDER_LOG="$RUN_DIR/external_recorder.log"
 SESSION_CONTRACT_JSON="$RUN_DIR/external_recorder_session.json"
 
-python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" <<'PY'
+python3 - "$SPEC" "$TEMP_SPEC" "$SESSION_CONTRACT_JSON" "$STAMP" "$CAMERA_SERIAL" "$ANALYTICS_GPU_ID" "$RECORDER_GPU_ID" "$SHARD_GPU_IDS" "$DURATION" "$WARMUP" "$YOLO_PREWARM_ITERATIONS" "$PTP_REGISTER_READ_DECIMATE" "$RUN_DIR" "$SUMMARY_JSON" "$STATUS_JSON" "$VIDEO_SANITY_JSON" "$MP4_OUT" "$GOP_ROUTING_CSV" "$ENCODE_FPS" "$ENCODE_MAX_FPS" "$SKIP_VIDEO_SANITY" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -319,12 +320,13 @@ yolo_prewarm_iterations = int(sys.argv[11])
 ptp_register_read_decimate = int(sys.argv[12])
 run_dir = Path(sys.argv[13])
 summary_json = Path(sys.argv[14])
-video_sanity_json = Path(sys.argv[15])
-mp4_out = Path(sys.argv[16])
-gop_routing_csv = Path(sys.argv[17])
-encode_fps = int(sys.argv[18])
-encode_max_fps = int(sys.argv[19])
-skip_video_sanity = int(sys.argv[20])
+status_json = Path(sys.argv[15])
+video_sanity_json = Path(sys.argv[16])
+mp4_out = Path(sys.argv[17])
+gop_routing_csv = Path(sys.argv[18])
+encode_fps = int(sys.argv[19])
+encode_max_fps = int(sys.argv[20])
+skip_video_sanity = int(sys.argv[21])
 
 with source.open("r", encoding="utf-8") as f:
     spec = json.load(f)
@@ -359,6 +361,7 @@ contract = {
     "artifact_root": str(run_dir),
     "session_id": spec["experiment_id"],
     "require_summary": True,
+    "require_status": True,
     "require_video_sanity": skip_video_sanity == 0,
     "require_merged_mp4": len(expected_shard_gpu_ids) > 1,
     "require_gop_routing": True,
@@ -371,6 +374,7 @@ contract = {
             "expected_shard_gpu_ids": expected_shard_gpu_ids,
             "routing_policy": routing_policy,
             "summary_json": str(summary_json),
+            "status_json": str(status_json),
             "video_sanity_json": str(video_sanity_json),
             "mp4": str(mp4_out),
             "gop_routing_csv": str(gop_routing_csv),
@@ -443,6 +447,7 @@ echo "[external-recorder] analytics_root=$ANALYTICS_ROOT"
 echo "[external-recorder] socket=$SOCKET_PATH"
 echo "[external-recorder] mp4_out=$MP4_OUT"
 echo "[external-recorder] summary_json=$SUMMARY_JSON"
+echo "[external-recorder] status_json=$STATUS_JSON"
 echo "[external-recorder] prewarm_slots=$PREWARM_SLOTS prewarm_bytes=$PREWARM_BYTES prewarm_peer_copy=$PREWARM_PEER_COPY"
 echo "[external-recorder] direct_input_source=$DIRECT_INPUT_SOURCE deferred_source_release=$DEFERRED_SOURCE_RELEASE"
 echo "[external-recorder] yolo_prewarm_iterations=$YOLO_PREWARM_ITERATIONS"
@@ -475,6 +480,7 @@ RECORDER_ARGS=(
   --encode-csv "$ENCODE_CSV"
   --gop-routing-csv "$GOP_ROUTING_CSV"
   --summary-json "$SUMMARY_JSON"
+  --status-json "$STATUS_JSON"
   --session-id "$EXPERIMENT_ID"
   --stream-id "$CAMERA_SERIAL"
   --shard-id 0

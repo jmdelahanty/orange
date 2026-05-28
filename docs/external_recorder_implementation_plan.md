@@ -739,7 +739,11 @@ fails on missing/unhealthy sidecars or missing parsed runtime state,
 `compare_gui_crop_preview_validation.py --require-external-recorder-status`
 carries that gate into visible/hidden comparisons, and
 `summarize_gui_validation.py` prints compact full-frame/crop recorder heartbeat
-and count status for operator triage.
+and count status for operator triage. The headless external-recorder session
+verifier also has `--require-recorder-status` and
+`--require-recorder-runtime-status`; new diagnostic smoke-runner contracts set
+`require_status = true` and pass `--status-json` to the recorder so those
+artifacts are checked by default when verified from their generated contract.
 
 Detailed Stage 5 protocol and routing design:
 

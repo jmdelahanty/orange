@@ -18,6 +18,7 @@ from recording_output_validation import recording_clip_output_contract_errors
 
 CONTRACT_SCHEMA_ID = "orange.external_recorder.contract"
 SUMMARY_SCHEMA_ID = "orange.external_recorder.summary"
+STATUS_SCHEMA_ID = "orange.external_recorder.status"
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 
 
@@ -83,6 +84,23 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional maximum recorder external_encode.enqueue_age_p95_ms for each selected stream.",
     )
+    parser.add_argument(
+        "--require-recorder-status",
+        action="store_true",
+        help=(
+            "Require each selected stream to have a completed "
+            "orange.external_recorder.status heartbeat sidecar. New contracts "
+            "can also set require_status=true."
+        ),
+    )
+    parser.add_argument(
+        "--require-recorder-runtime-status",
+        action="store_true",
+        help=(
+            "Require external_recorder_supervisor_runtime.json to contain a "
+            "valid parsed recorder_status entry for each selected status sidecar."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -143,6 +161,13 @@ def path_key(path: Path) -> str:
     return str(path.expanduser().resolve(strict=False))
 
 
+def derive_status_path(summary_path: Path) -> Path:
+    name = summary_path.name
+    if name.endswith("_summary.json"):
+        return summary_path.with_name(name[: -len("_summary.json")] + "_status.json")
+    return summary_path.with_name(summary_path.stem + "_status.json")
+
+
 def load_spec(args: argparse.Namespace) -> dict[str, Any] | None:
     if args.spec:
         return read_json(Path(args.spec).expanduser())
@@ -179,6 +204,7 @@ def synthesize_contract(artifact_root: Path, cameras: list[str] | None) -> dict[
         streams[serial] = {
             "stream_id": serial,
             "summary_json": str(summary_path),
+            "status_json": str(derive_status_path(summary_path)),
             "video_sanity_json": str(artifact_root / f"Cam{serial}_external_video_sanity.json"),
             "mp4": str(artifact_root / f"Cam{serial}_external.mp4"),
             "gop_routing_csv": str(artifact_root / f"Cam{serial}_external_gop_routing.csv"),
@@ -475,6 +501,109 @@ def verify_rolling_output(
     return verified_clips
 
 
+def runtime_processes_by_status_path(runtime_path: Path) -> dict[str, dict[str, Any]]:
+    runtime = read_json(runtime_path)
+    processes = runtime.get("processes")
+    require(isinstance(processes, list), f"external recorder runtime missing processes: {runtime_path}")
+    by_path: dict[str, dict[str, Any]] = {}
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        status_json_path = process.get("status_json_path")
+        if isinstance(status_json_path, str) and status_json_path:
+            by_path[path_key(Path(status_json_path))] = process
+    return by_path
+
+
+def verify_status_sidecar(
+    artifact_root: Path,
+    serial: str,
+    stream: dict[str, Any],
+    summary_path: Path,
+    summary: dict[str, Any],
+    require_status: bool,
+    require_runtime_status: bool,
+) -> dict[str, Any] | None:
+    status_path = path_from(
+        stream.get("status_json") or derive_status_path(summary_path),
+        artifact_root,
+    )
+    status_exists = status_path.exists()
+    if not status_exists and not (require_status or require_runtime_status):
+        return None
+    require(status_exists, f"missing external recorder status JSON: {status_path}")
+
+    status = read_json(status_path)
+    require(status.get("schema_id") == STATUS_SCHEMA_ID, f"unexpected status schema_id in {status_path}")
+    require(status.get("schema_version") == 1, f"unexpected status schema_version in {status_path}")
+    require(status.get("tool") == "external_recorder_ipc_probe", f"unexpected status tool in {status_path}")
+    require(str(status.get("stream_id")) == str(stream.get("stream_id", serial)), f"status stream_id mismatch in {status_path}")
+    require(status.get("status") == "completed", f"recorder status is not completed in {status_path}")
+    require(status.get("worker_failed") is False, f"recorder status worker_failed=true in {status_path}")
+    error = status.get("error")
+    require(error in (None, ""), f"recorder status reports error in {status_path}: {error}")
+
+    heartbeat_sequence = as_int(status.get("heartbeat_sequence"), "status heartbeat_sequence")
+    require(heartbeat_sequence > 0, f"recorder status heartbeat missing or zero in {status_path}")
+
+    for field in (
+        "frames_received",
+        "acks_sent",
+        "detach_copied",
+        "encode_enqueued",
+        "encode_skipped",
+        "encode_dropped",
+        "frames_encoded",
+    ):
+        if field in status and field in summary:
+            require(
+                as_int(status.get(field), f"status {field}") == as_int(summary.get(field), field),
+                f"status {field} does not match summary for {serial}",
+            )
+
+    runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
+    runtime_present = runtime_path.exists()
+    runtime_status: dict[str, Any] | None = None
+    if runtime_present or require_runtime_status:
+        require(runtime_present, f"missing external recorder supervisor runtime: {runtime_path}")
+        process = runtime_processes_by_status_path(runtime_path).get(path_key(status_path))
+        require(process is not None, f"runtime missing process for status JSON: {status_path}")
+        status_json_path = process.get("status_json_path")
+        require(
+            isinstance(status_json_path, str) and path_key(Path(status_json_path)) == path_key(status_path),
+            f"runtime status_json_path mismatch for {serial}",
+        )
+        candidate = process.get("recorder_status")
+        require(isinstance(candidate, dict), f"runtime missing recorder_status for {serial}")
+        require(candidate.get("present") is True, f"runtime recorder_status not present for {serial}")
+        require(candidate.get("valid") is True, f"runtime recorder_status invalid for {serial}")
+        require(candidate.get("status") == status.get("status"), f"runtime recorder status mismatch for {serial}")
+        require(
+            as_int(candidate.get("heartbeat_sequence"), "runtime heartbeat_sequence") == heartbeat_sequence,
+            f"runtime heartbeat does not match status sidecar for {serial}",
+        )
+        for field in ("frames_received", "acks_sent", "frames_encoded"):
+            if field in candidate and field in status:
+                require(
+                    as_int(candidate.get(field), f"runtime {field}") ==
+                    as_int(status.get(field), f"status {field}"),
+                    f"runtime {field} does not match status sidecar for {serial}",
+                )
+        runtime_status = candidate
+
+    return {
+        "status_path": str(status_path),
+        "status": status.get("status"),
+        "heartbeat_sequence": heartbeat_sequence,
+        "runtime_path": str(runtime_path) if runtime_present else "",
+        "runtime_status": runtime_status.get("status") if runtime_status is not None else None,
+        "runtime_heartbeat_sequence": (
+            as_int(runtime_status.get("heartbeat_sequence"), "runtime heartbeat_sequence")
+            if runtime_status is not None else None
+        ),
+    }
+
+
 def verify_summary(
     artifact_root: Path,
     serial: str,
@@ -485,12 +614,23 @@ def verify_summary(
     expected_encode_queue_depth: int | None,
     max_encode_queue_high_water: int | None,
     max_enqueue_age_p95_ms: float | None,
+    require_recorder_status: bool,
+    require_recorder_runtime_status: bool,
 ) -> dict[str, Any]:
     summary_path = path_from(
         stream.get("summary_json") or artifact_root / f"Cam{serial}_external_summary.json",
         artifact_root,
     )
     summary = read_json(summary_path)
+    status_summary = verify_status_sidecar(
+        artifact_root,
+        serial,
+        stream,
+        summary_path,
+        summary,
+        require_recorder_status or bool(contract.get("require_status", False)),
+        require_recorder_runtime_status or bool(contract.get("require_status_runtime", False)),
+    )
     schema_id = summary.get("schema_id")
     require(
         schema_id in (None, SUMMARY_SCHEMA_ID),
@@ -636,6 +776,7 @@ def verify_summary(
         "video_sanity": sanity_status,
         "rolling_clip_count": len(rolling_clips),
         "rolling_clips": rolling_clips,
+        "recorder_status": status_summary,
     }
 
 
@@ -892,6 +1033,8 @@ def verify(args: argparse.Namespace) -> None:
             args.expect_encode_queue_depth,
             args.max_encode_queue_high_water,
             args.max_enqueue_age_p95_ms,
+            args.require_recorder_status,
+            args.require_recorder_runtime_status,
         )
         for serial, stream in streams.items()
     ]
@@ -909,6 +1052,12 @@ def verify(args: argparse.Namespace) -> None:
     print(f"  streams: {len(summaries)}")
     print(f"  frames_received: {total_frames}")
     for item in summaries:
+        recorder_status = item.get("recorder_status")
+        status_text = "none"
+        heartbeat_text = "none"
+        if isinstance(recorder_status, dict):
+            status_text = str(recorder_status.get("status"))
+            heartbeat_text = str(recorder_status.get("heartbeat_sequence"))
         print(
             "  "
             f"camera={item['serial']} frames={item['frames_received']} "
@@ -917,7 +1066,8 @@ def verify(args: argparse.Namespace) -> None:
             f"queue_high_water={item['encode_queue_high_water']} "
             f"enqueue_age_p95_ms={item['enqueue_age_p95_ms']} "
             f"routing={item['routing_policy']} video_sanity={item['video_sanity']} "
-            f"rolling_clips={item['rolling_clip_count']}"
+            f"rolling_clips={item['rolling_clip_count']} "
+            f"recorder_status={status_text} heartbeat={heartbeat_text}"
         )
 
 
