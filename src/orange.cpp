@@ -3436,6 +3436,26 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     return snapshot;
 }
 
+void gui_drain_local_control_commands(
+    orange::control::LocalControlServer* local_control_server)
+{
+    if (!local_control_server || !local_control_server->running()) {
+        return;
+    }
+    for (const orange::control::PendingLocalControlCommand& command :
+         local_control_server->DrainPendingCommands()) {
+        std::cout << "[GUI][local_control] accepted command on GUI thread"
+                  << " method=" << command.method
+                  << " request_id=" << command.request_id
+                  << " operation_id=" << command.operation_id;
+        const auto experiment_it = command.params.find("experiment_id");
+        if (experiment_it != command.params.end() && experiment_it->is_string()) {
+            std::cout << " experiment_id=" << experiment_it->get<std::string>();
+        }
+        std::cout << " diagnostic_only=1 recording_lifecycle_mutated=0" << std::endl;
+    }
+}
+
 struct ApertureCharacterizationUiState {
     bool show_window = false;
     int selected_camera = 0;
@@ -6086,6 +6106,7 @@ int main(int argc, char **args) {
                     recording_session,
                     gui_recording_run,
                     gui_autorun_state));
+            gui_drain_local_control_commands(&gui_local_control_server);
         }
         if (gui_autorun_requests.close_window) {
             glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);

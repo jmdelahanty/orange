@@ -393,6 +393,7 @@ bool LocalControlServer::Start(const LocalControlServerOptions& options,
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_error_.clear();
         accepted_request_ids_.clear();
+        pending_commands_.clear();
     }
     thread_ = std::thread(&LocalControlServer::ServeLoop, this);
     const auto start = std::chrono::steady_clock::now();
@@ -428,6 +429,14 @@ void LocalControlServer::UpdateStatus(const LocalControlStatusSnapshot& snapshot
 {
     std::lock_guard<std::mutex> lock(status_mutex_);
     status_ = snapshot;
+}
+
+std::vector<PendingLocalControlCommand> LocalControlServer::DrainPendingCommands()
+{
+    std::vector<PendingLocalControlCommand> pending;
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    pending.swap(pending_commands_);
+    return pending;
 }
 
 std::string LocalControlServer::last_error() const
@@ -612,11 +621,24 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
         };
     }
 
+    const std::string received_at_utc = utc_now();
     bool duplicate = false;
+    bool queued_for_gui_thread = false;
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         const auto inserted = accepted_request_ids_.insert(parsed.request_id);
         duplicate = !inserted.second;
+        if (parsed.method == "citrus_completion" && !duplicate) {
+            PendingLocalControlCommand command;
+            command.method = parsed.method;
+            command.request_id = parsed.request_id;
+            command.operation_id = parsed.operation_id;
+            command.source = parsed.source;
+            command.received_at_utc = received_at_utc;
+            command.params = parsed.params;
+            pending_commands_.push_back(std::move(command));
+            queued_for_gui_thread = true;
+        }
     }
 
     if (parsed.method == "citrus_completion") {
@@ -627,6 +649,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             {"accepted", true},
             {"duplicate", duplicate},
             {"diagnostic_only", true},
+            {"queued_for_gui_thread", queued_for_gui_thread},
             {"request_id", parsed.request_id},
             {"operation_id", parsed.operation_id},
             {"method", parsed.method},
@@ -638,7 +661,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
                  {"recording_lifecycle_mutated", false},
              }},
         };
-        LogEvent({{"received_at_utc", utc_now()},
+        LogEvent({{"received_at_utc", received_at_utc},
                   {"request", request},
                   {"response", response}});
         return response;
@@ -651,6 +674,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
         {"accepted", false},
         {"duplicate", duplicate},
         {"diagnostic_only", true},
+        {"queued_for_gui_thread", false},
         {"request_id", parsed.request_id},
         {"operation_id", parsed.operation_id},
         {"method", parsed.method},
@@ -663,7 +687,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
          }},
         {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
     };
-    LogEvent({{"received_at_utc", utc_now()},
+    LogEvent({{"received_at_utc", received_at_utc},
               {"request", request},
               {"response", response}});
     return response;

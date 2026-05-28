@@ -113,11 +113,11 @@ Candidate hook points:
 
 ## Phase 2: Orange Control Ingress
 
-- [x] Add opt-in diagnostic Orange GUI local-control socket.
+- [x] Add default-on diagnostic Orange GUI local-control socket with env disable.
 - [x] Accept, validate, log, and ACK `status` and `citrus_completion`.
 - [x] Keep `start_recording` / `stop_recording` unsupported in diagnostic mode.
-- [ ] Do not mutate `CameraControl` directly from socket-reader context.
-- [ ] Introduce a thread-safe pending command bridge consumed by the main/UI
+- [x] Do not mutate `CameraControl` directly from socket-reader context.
+- [x] Introduce a thread-safe pending command bridge consumed by the main/UI
       thread before wiring recording stop.
 
 Candidate hook points:

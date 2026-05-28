@@ -22,6 +22,7 @@ using orange::control::LocalControlServer;
 using orange::control::LocalControlServerOptions;
 using orange::control::LocalControlStatusSnapshot;
 using orange::control::ParseLocalControlRequest;
+using orange::control::PendingLocalControlCommand;
 using orange::control::RecorderReadinessSnapshot;
 
 void require(const bool condition, const std::string& message)
@@ -269,14 +270,34 @@ void test_citrus_completion_is_diagnostic_ack_and_logged()
          {"grace_seconds", 10}});
     const nlohmann::json first = send_request(socket_path, request);
     const nlohmann::json duplicate = send_request(socket_path, request);
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+    const std::vector<PendingLocalControlCommand> second_drain =
+        server.DrainPendingCommands();
     server.Stop();
 
     require(first["ok"].get<bool>(), "completion response should be ok");
     require(first["accepted"].get<bool>(), "completion response should be accepted");
     require(first["diagnostic_only"].get<bool>(), "completion should be diagnostic-only");
+    require(first["queued_for_gui_thread"].get<bool>(),
+            "first completion request should queue for GUI-thread handling");
     require(!first["effect"]["recording_lifecycle_mutated"].get<bool>(),
             "completion must not mutate recording lifecycle");
     require(duplicate["duplicate"].get<bool>(), "second completion request should be duplicate");
+    require(!duplicate["queued_for_gui_thread"].get<bool>(),
+            "duplicate completion request should not queue again");
+    require(pending.size() == 1, "completion should queue exactly one pending command");
+    require(pending[0].method == "citrus_completion",
+            "pending command should preserve method");
+    require(pending[0].request_id == "completion-req-1",
+            "pending command should preserve request_id");
+    require(pending[0].operation_id == "experiment-42",
+            "pending command should preserve operation_id");
+    require(pending[0].params["experiment_id"].get<std::string>() == "citrus-exp-42",
+            "pending command should preserve params");
+    require(!pending[0].received_at_utc.empty(),
+            "pending command should capture receive timestamp");
+    require(second_drain.empty(), "pending command drain should be empty after first drain");
 
     const std::string log_text = std::filesystem::exists(log_path)
                                      ? std::filesystem::path(log_path).string()

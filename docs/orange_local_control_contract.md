@@ -48,8 +48,9 @@ The GUI validation launcher and installed sudo wrapper forward these variables
 when paths point under `/tmp`, `/run/user/1000`, or
 `/home/jeremy/orange_data`.
 
-The diagnostic endpoint acknowledges `status` and `citrus_completion`. It does
-not start or stop recording yet.
+The diagnostic endpoint acknowledges `status` and `citrus_completion`. Accepted
+`citrus_completion` requests are deduplicated, queued onto a thread-safe bridge,
+and drained/logged by the GUI thread. They do not start or stop recording yet.
 
 Use the client utility to inspect or send requests:
 
@@ -145,6 +146,7 @@ Every response is one JSON object:
   "accepted": true,
   "duplicate": false,
   "diagnostic_only": true,
+  "queued_for_gui_thread": true,
   "request_id": "uuid-or-run-unique-id",
   "operation_id": "citrus-experiment-id-or-orchestrator-phase-id",
   "method": "citrus_completion",
@@ -157,9 +159,11 @@ Every response is one JSON object:
 }
 ```
 
-For diagnostic `citrus_completion`, Orange validates, logs, and acknowledges the
-request but does not stop recording. Future stop wiring must happen by routing a
-validated request onto the same GUI/operator stop path:
+For diagnostic `citrus_completion`, Orange validates, logs, queues the request
+for GUI-thread observation, and acknowledges it. Duplicate `request_id` values
+are acknowledged but are not queued a second time. This still does not stop
+recording. Future stop wiring must happen by routing a validated GUI-thread
+command onto the same GUI/operator stop path:
 
 - mark GUI recording stop requested
 - call `request_drain_recording_run(...)`

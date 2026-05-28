@@ -62,6 +62,15 @@ struct ParsedLocalControlRequest {
     nlohmann::json params = nlohmann::json::object();
 };
 
+struct PendingLocalControlCommand {
+    std::string method;
+    std::string request_id;
+    std::string operation_id;
+    std::string source;
+    std::string received_at_utc;
+    nlohmann::json params = nlohmann::json::object();
+};
+
 nlohmann::json LocalControlStatusSnapshotToJson(
     const LocalControlStatusSnapshot& snapshot);
 
@@ -86,6 +95,7 @@ public:
     bool running() const { return running_.load(std::memory_order_acquire); }
 
     void UpdateStatus(const LocalControlStatusSnapshot& snapshot);
+    std::vector<PendingLocalControlCommand> DrainPendingCommands();
     std::string last_error() const;
 
 private:
@@ -100,6 +110,7 @@ private:
     LocalControlStatusSnapshot status_;
     mutable std::mutex state_mutex_;
     std::unordered_set<std::string> accepted_request_ids_;
+    std::vector<PendingLocalControlCommand> pending_commands_;
     std::string last_error_;
     std::thread thread_;
     std::atomic<bool> running_{false};
