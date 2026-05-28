@@ -383,6 +383,25 @@ if(BUILD_TESTING)
     target_compile_features(crop_rolling_sidecars_tests PRIVATE cxx_std_17)
     add_test(NAME crop_rolling_sidecars_tests COMMAND crop_rolling_sidecars_tests)
 
+    set(RECORDING_SESSION_MANIFEST_TEST_SOURCES ${ORANGE_CLIENT_SOURCES})
+    list(REMOVE_ITEM
+         RECORDING_SESSION_MANIFEST_TEST_SOURCES
+         "${SRC_DIR}/orange_headless_client.cpp")
+    add_executable(recording_session_manifest_tests EXCLUDE_FROM_ALL
+        "tools/recording_session_manifest_tests.cpp"
+        ${RECORDING_SESSION_MANIFEST_TEST_SOURCES}
+    )
+    target_include_directories(recording_session_manifest_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(recording_session_manifest_tests PRIVATE cxx_std_17)
+    add_test(
+        NAME recording_session_manifest_tests_build
+        COMMAND ${CMAKE_COMMAND}
+                --build "${CMAKE_BINARY_DIR}"
+                --target recording_session_manifest_tests)
+    add_test(NAME recording_session_manifest_tests COMMAND recording_session_manifest_tests)
+    set_tests_properties(recording_session_manifest_tests
+        PROPERTIES DEPENDS recording_session_manifest_tests_build)
+
     add_executable(video_encode_profile_tests
         "tools/video_encode_profile_tests.cpp"
         "${SRC_DIR}/video_encode_profile.cpp"
@@ -540,6 +559,9 @@ orange_configure_target(evt_aperture_characterize)
 orange_configure_target(nvenc_stress_load)
 orange_configure_target(external_recorder_ipc_probe)
 orange_configure_target(external_recorder_supervisor_plan)
+if(TARGET recording_session_manifest_tests)
+    orange_configure_target(recording_session_manifest_tests)
+endif()
 
 target_link_libraries(orange PRIVATE
     ${ENET_LIBRARY}
@@ -598,6 +620,36 @@ target_link_libraries(orange_client PRIVATE
 )
 if(ORANGE_ENABLE_NVTX)
     target_link_libraries(orange_client PRIVATE ${NVTX_LIBRARY})
+endif()
+
+if(TARGET recording_session_manifest_tests)
+    target_link_libraries(recording_session_manifest_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${ENET_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+        ${CUDA_NPPICC_LIBRARY}
+        ${CUDA_NPPIDEI_LIBRARY}
+        ${CUDA_NPPC_LIBRARY}
+        ${CUDA_NPPIG_LIBRARY}
+        ${CUDA_NPPIAL_LIBRARY}
+        ${NVIDIA_ENCODE_LIBRARY}
+        ${AVFORMAT_LIBRARY}
+        ${SWSCALE_LIBRARY}
+        ${SWRESAMPLE_LIBRARY}
+        ${AVUTIL_LIBRARY}
+        ${AVCODEC_LIBRARY}
+        ${OpenCV_LIBS}
+        ${TENSORRT_LIBRARY}
+        ${TENSORRT_PLUGIN_LIBRARY}
+        m
+        pthread
+    )
+    if(ORANGE_ENABLE_NVTX)
+        target_link_libraries(recording_session_manifest_tests PRIVATE ${NVTX_LIBRARY})
+    endif()
 endif()
 
 target_link_libraries(yolo_offline PRIVATE

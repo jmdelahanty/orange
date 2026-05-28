@@ -551,6 +551,104 @@ def test_latest_complete_accepts_external_camera_artifact_video() -> None:
         require(selected == complete.resolve(), "external camera_artifacts video should count as complete")
 
 
+def test_yolo_summary_reports_affinity() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010093"
+        write_text(root / "recording_snapshot.json", "{}\n")
+        write_text(root / "recording_session.json", "{}\n")
+        write_text(
+            root / f"Cam{serial}_yolo_perf.csv",
+            "\n".join(
+                [
+                    "frame_id,ok,acquisition_to_detect_done_ms,"
+                    "acquisition_to_worker_start_ms,yolo_enqueue_to_dequeue_ms,"
+                    "yolo_dequeue_to_worker_start_ms,yolo_queue_wait_ms,"
+                    "same_camera_service_gap_ms,"
+                    "yolo_affinity_configured,yolo_affinity_applied,"
+                    "yolo_affinity_env_key,yolo_affinity_requested_cpus,"
+                    "yolo_affinity_effective_cpus",
+                    f"1,1,4.0,0.10,0.02,0.01,0.03,10.0,1,1,"
+                    f"ORANGE_YOLO_AFFINITY_CAM_{serial},6,6",
+                    "",
+                ]
+            ),
+        )
+
+        summary = summarize.summarize(root, steady_after_frame=1, ffprobe="ffprobe")
+        yolo = summary["yolo"][serial]
+        affinity = yolo["affinity"]
+        require(affinity["configured"] == 1, "YOLO affinity configured flag should parse")
+        require(affinity["applied"] == 1, "YOLO affinity applied flag should parse")
+        require(
+            affinity["env_key"] == f"ORANGE_YOLO_AFFINITY_CAM_{serial}",
+            "YOLO affinity env key should parse",
+        )
+        require(affinity["requested_cpus"] == "6", "YOLO requested affinity should parse")
+        require(affinity["effective_cpus"] == "6", "YOLO effective affinity should parse")
+        metrics = yolo["metrics"]
+        require(
+            metrics["acquisition_to_worker_start_ms"]["p95"] == 0.10,
+            "YOLO acquisition-to-worker metric should parse",
+        )
+        require(
+            metrics["yolo_enqueue_to_dequeue_ms"]["p95"] == 0.02,
+            "YOLO enqueue-to-dequeue metric should parse",
+        )
+        require(
+            metrics["same_camera_service_gap_ms"]["p95"] == 10.0,
+            "YOLO service-gap metric should parse",
+        )
+
+
+def test_system_cpu_summary_reports_isolation() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot = {
+            "session": {
+                "system_cpu": {
+                    "schema_version": 1,
+                    "isolated_cpus": {
+                        "available": True,
+                        "parse_ok": True,
+                        "raw": "1-2,6,8,10,12",
+                        "cpus": [1, 2, 6, 8, 10, 12],
+                    },
+                    "kernel_cmdline": {
+                        "available": True,
+                        "options": {
+                            "isolcpus": "managed_irq,domain,1,2,6,8,10,12,38,40,42,44",
+                            "nohz_full": "1,2,6,8,10,12,38,40,42,44",
+                            "rcu_nocbs": "1,2,6,8,10,12,38,40,42,44",
+                        },
+                    },
+                }
+            }
+        }
+        write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
+        write_text(root / "recording_session.json", "{}\n")
+
+        summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
+        system_cpu = summary["system_cpu"]
+        require(
+            system_cpu["isolated_cpus"]["cpus"] == [1, 2, 6, 8, 10, 12],
+            "system CPU isolation list should be carried into summary",
+        )
+        require(
+            system_cpu["kernel_cmdline"]["options"]["nohz_full"]
+            == "1,2,6,8,10,12,38,40,42,44",
+            "kernel cmdline nohz_full option should be visible in summary",
+        )
+        require(
+            summary["system_cpu_kernel_cmdline_cpu_option_values"] == [
+                "isolcpus=cpus:1-2,6,8,10,12,38,40,42,44;flags:domain|managed_irq",
+                "nohz_full=cpus:1-2,6,8,10,12,38,40,42,44",
+                "rcu_nocbs=cpus:1-2,6,8,10,12,38,40,42,44",
+            ],
+            "normalized kernel cmdline CPU options should be visible in summary",
+        )
+
+
 def main() -> int:
     test_crop_summary_reads_rows_preview_and_fanout()
     test_crop_summary_uses_recording_backend_external_fallbacks()
@@ -559,6 +657,8 @@ def main() -> int:
     test_external_recorder_status_summary_reads_full_and_crop_sidecars()
     test_latest_complete_selects_newest_complete_recording()
     test_latest_complete_accepts_external_camera_artifact_video()
+    test_yolo_summary_reports_affinity()
+    test_system_cpu_summary_reports_isolation()
     print("summarize_gui_validation_tests passed")
     return 0
 

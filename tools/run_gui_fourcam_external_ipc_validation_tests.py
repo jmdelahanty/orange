@@ -93,6 +93,42 @@ def test_default_hidden_profile_validate_only() -> None:
         "profile should use full-frame external IPC",
     )
     require(
+        "ORANGE_YOLO_AFFINITY_CAM_*=2010093=6,2010094=8,2010095=10,2010096=12"
+        in result.stdout,
+        "profile should show the Citrus-safe per-camera YOLO affinities",
+    )
+    for serial, cpu in {
+        "2010093": 6,
+        "2010094": 8,
+        "2010095": 10,
+        "2010096": 12,
+    }.items():
+        require(
+            f"--expect-yolo-affinity {serial}={cpu}" in result.stdout,
+            f"printed validator command should check {serial} YOLO affinity",
+        )
+    require(
+        "ORANGE_GUI_REQUIRE_ISOLATED_CPUS=6,8,10,12,38,40,42,44" in result.stdout,
+        "profile should require the Orange YOLO CPU isolation set plus SMT siblings",
+    )
+    require(
+        "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=6,8,10,12,38,40,42,44" in result.stdout,
+        "profile should require matching kernel boot CPU options",
+    )
+    require(
+        "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS=isolcpus,nohz_full,rcu_nocbs" in result.stdout,
+        "profile should require all low-jitter kernel boot options",
+    )
+    require(
+        "--require-isolated-cpus 6,8,10,12,38,40,42,44" in result.stdout,
+        "printed validator command should check the kernel isolated CPU set",
+    )
+    for option in ("isolcpus", "nohz_full", "rcu_nocbs"):
+        require(
+            f"--require-kernel-cmdline-cpus {option}=6,8,10,12,38,40,42,44" in result.stdout,
+            f"printed validator command should check {option} boot CPU set",
+        )
+    require(
         "ORANGE_CROP_RECORDING_SINK_MODE=external_ipc" in result.stdout,
         "profile should use crop external IPC",
     )
@@ -110,6 +146,22 @@ def test_default_hidden_profile_validate_only() -> None:
     require(
         "--expect-gui-frame-max-fps 60" in result.stdout,
         "printed validator command should assert frame cap telemetry",
+    )
+    require(
+        "ORANGE_GUI_REQUIRE_SOURCE_VERSION=1" in result.stdout,
+        "four-camera profile should enable source-version validation",
+    )
+    require(
+        "ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE=sudo_invoking_user" in result.stdout,
+        "four-camera profile should expect sudo-invoking-user git provenance",
+    )
+    require(
+        "--require-source-version" in result.stdout,
+        "printed validator command should require source provenance",
+    )
+    require(
+        "--expect-source-git-command-user-mode sudo_invoking_user" in result.stdout,
+        "printed validator command should check git command user mode",
     )
     require(
         "ORANGE_CROP_FRAME_POOL_SIZE=128 (auto for external_ipc)" in result.stdout,
@@ -177,6 +229,10 @@ def test_print_exec_env_only_contains_profile_env() -> None:
     require(result.returncode == 0, f"profile failed: {result.stderr}")
     for expected in [
         "ORANGE_GUI_AUTORUN=1",
+        "ORANGE_GUI_AUTORUN_ENABLE_STREAM=1",
+        "ORANGE_GUI_AUTORUN_ENABLE_RECORD=1",
+        "ORANGE_GUI_AUTORUN_ENABLE_YOLO=1",
+        "ORANGE_GUI_AUTORUN_ENABLE_CROP=1",
         "ORANGE_GUI_RECORDING_SINK_MODE=external_ipc",
         "ORANGE_CROP_RECORDING_SINK_MODE=external_ipc",
         "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1",
@@ -184,6 +240,10 @@ def test_print_exec_env_only_contains_profile_env() -> None:
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2",
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8",
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6",
+        "ORANGE_YOLO_AFFINITY_CAM_2010093=6",
+        "ORANGE_YOLO_AFFINITY_CAM_2010094=8",
+        "ORANGE_YOLO_AFFINITY_CAM_2010095=10",
+        "ORANGE_YOLO_AFFINITY_CAM_2010096=12",
         "ORANGE_GUI_FRAME_MAX_FPS=60",
     ]:
         require(expected in result.stdout, f"exec env should include {expected}")
@@ -195,6 +255,7 @@ def test_overrides_are_preserved() -> None:
         extra_env={
             "ORANGE_GUI_FRAME_MAX_FPS": "45",
             "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
+            "ORANGE_GUI_REQUIRE_ISOLATED_CPUS": "6",
         },
     )
     require(result.returncode == 0, f"profile failed: {result.stderr}")
@@ -208,6 +269,102 @@ def test_overrides_are_preserved() -> None:
         "--expect-external-crop-recorder-gpu 2010095=6" in result.stdout,
         "validator command should reflect the per-camera override",
     )
+    require(
+        "--require-isolated-cpus 6" in result.stdout,
+        "validator command should reflect the isolated CPU override",
+    )
+    require(
+        "--require-kernel-cmdline-cpus isolcpus=6" in result.stdout,
+        "validator command should derive kernel CPU checks from the isolated CPU override",
+    )
+
+
+def test_empty_isolation_overrides_disable_validation_gates() -> None:
+    result = run_profile(
+        ["--validate-only"],
+        extra_env={
+            "ORANGE_GUI_REQUIRE_ISOLATED_CPUS": "",
+            "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS": "",
+        },
+    )
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    require(
+        "ORANGE_GUI_REQUIRE_ISOLATED_CPUS=<not set>" in result.stdout,
+        "explicit empty isolated CPU override should disable isolation validation",
+    )
+    require(
+        "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=<not set>" in result.stdout,
+        "explicit empty kernel cmdline CPU override should disable boot-option validation",
+    )
+    require(
+        "--require-isolated-cpus" not in result.stdout,
+        "validator command should omit isolated CPU gate when explicitly disabled",
+    )
+    require(
+        "--require-kernel-cmdline-cpus" not in result.stdout,
+        "validator command should omit boot-option gates when explicitly disabled",
+    )
+
+
+def test_yolo_affinity_overrides_are_preserved_in_exec_env() -> None:
+    result = run_profile(
+        ["--print-exec-env-only"],
+        extra_env={
+            "ORANGE_YOLO_AFFINITY_CAM_2010093": "14",
+            "ORANGE_YOLO_AFFINITY_CAM_2010095": "16",
+        },
+    )
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    require(
+        "ORANGE_YOLO_AFFINITY_CAM_2010093=14" in result.stdout,
+        "arbitrary per-camera YOLO affinity override should be preserved",
+    )
+    require(
+        "ORANGE_YOLO_AFFINITY_CAM_2010095=16" in result.stdout,
+        "default two-camera YOLO affinity override should be preserved",
+    )
+
+
+def test_no_lens_camera_content_allowance_is_printed() -> None:
+    result = run_profile(
+        ["--allow-main-video-content-failure", "2010093", "--validate-only"],
+    )
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    require(
+        "ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS=2010093" in result.stdout,
+        "profile should forward the explicit no-lens camera allowance",
+    )
+    require(
+        "--allow-main-video-content-failure 2010093" in result.stdout,
+        "printed validator command should allow the known no-lens camera content failure",
+    )
+
+
+def test_rolling_clip_seconds_option_is_printed() -> None:
+    result = run_profile(
+        ["--record-seconds", "6", "--clip-seconds", "2", "--validate-only"],
+    )
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    require(
+        "ORANGE_GUI_AUTORUN_RECORD_SECONDS=6" in result.stdout,
+        "profile should preserve the requested autorun recording duration",
+    )
+    require(
+        "ORANGE_GUI_CLIP_SECONDS=2" in result.stdout,
+        "profile should enable GUI rolling clips with the requested clip duration",
+    )
+    require(
+        "--expect-recording-mode rolling_clips" in result.stdout,
+        "printed validator command should expect rolling mode when clip seconds are set",
+    )
+    require(
+        "--expect-record-for-seconds 6" in result.stdout,
+        "printed validator command should expect the autorun recording duration",
+    )
+    require(
+        "--expect-clip-seconds 2" in result.stdout,
+        "printed validator command should expect the requested clip duration",
+    )
 
 
 def main() -> int:
@@ -218,6 +375,10 @@ def main() -> int:
         test_disabled_preview_profile_validate_only,
         test_print_exec_env_only_contains_profile_env,
         test_overrides_are_preserved,
+        test_empty_isolation_overrides_disable_validation_gates,
+        test_yolo_affinity_overrides_are_preserved_in_exec_env,
+        test_no_lens_camera_content_allowance_is_printed,
+        test_rolling_clip_seconds_option_is_printed,
     ]
     for test in tests:
         test()

@@ -383,14 +383,31 @@ std::string external_crop_contract_validation_error(const nlohmann::json& contra
                 control.contains("clip_seconds") && control["clip_seconds"].is_number_integer()
                     ? control["clip_seconds"].get<int>()
                     : 0;
-            if (record_for_seconds != 0 || clip_seconds != 0) {
-                return "external crop recorder contract invalid; crop recorder recording_control must remain single_clip";
+            RecordingControlConfig config;
+            config.record_for_seconds = record_for_seconds;
+            config.clip_seconds = clip_seconds;
+            std::string validation_error;
+            if (!validate_recording_control_config(
+                    config,
+                    &validation_error,
+                    "external crop recorder ")) {
+                return "external crop recorder contract invalid; " + validation_error;
             }
         }
         if (contract.contains("rollover") &&
-            contract["rollover"].is_object() &&
-            contract["rollover"].value("requested", false)) {
-            return "external crop recorder contract invalid; crop rolling clips are not supported";
+            contract["rollover"].is_object()) {
+            const bool rollover_requested =
+                contract["rollover"].value("requested", false);
+            const nlohmann::json control =
+                contract.value("recording_control", nlohmann::json::object());
+            const int clip_seconds =
+                control.is_object() && control.contains("clip_seconds") &&
+                        control["clip_seconds"].is_number_integer()
+                    ? control["clip_seconds"].get<int>()
+                    : 0;
+            if (rollover_requested != (clip_seconds > 0)) {
+                return "external crop recorder contract invalid; rollover request does not match recording_control";
+            }
         }
         if (contract.contains("streams") && contract["streams"].is_object()) {
             for (auto it = contract["streams"].begin(); it != contract["streams"].end(); ++it) {
@@ -410,16 +427,32 @@ std::string external_crop_contract_validation_error(const nlohmann::json& contra
                         control.contains("clip_seconds") && control["clip_seconds"].is_number_integer()
                             ? control["clip_seconds"].get<int>()
                             : 0;
-                    if (record_for_seconds != 0 || clip_seconds != 0) {
-                        return "external crop recorder contract invalid; " + it.key() +
-                            " recording_control must remain single_clip";
+                    RecordingControlConfig config;
+                    config.record_for_seconds = record_for_seconds;
+                    config.clip_seconds = clip_seconds;
+                    std::string validation_error;
+                    if (!validate_recording_control_config(
+                            config,
+                            &validation_error,
+                            "external crop recorder " + it.key() + " ")) {
+                        return "external crop recorder contract invalid; " + validation_error;
                     }
                 }
                 if (stream.contains("rollover") &&
-                    stream["rollover"].is_object() &&
-                    stream["rollover"].value("requested", false)) {
-                    return "external crop recorder contract invalid; " + it.key() +
-                        " requests crop rolling clips, which are not supported";
+                    stream["rollover"].is_object()) {
+                    const bool rollover_requested =
+                        stream["rollover"].value("requested", false);
+                    const nlohmann::json control =
+                        stream.value("recording_control", nlohmann::json::object());
+                    const int clip_seconds =
+                        control.is_object() && control.contains("clip_seconds") &&
+                                control["clip_seconds"].is_number_integer()
+                            ? control["clip_seconds"].get<int>()
+                            : 0;
+                    if (rollover_requested != (clip_seconds > 0)) {
+                        return "external crop recorder contract invalid; " + it.key() +
+                            " rollover request does not match recording_control";
+                    }
                 }
             }
         }
@@ -435,16 +468,32 @@ std::string external_crop_contract_validation_error(const nlohmann::json& contra
     return message.str();
 }
 
-nlohmann::json external_crop_single_clip_recording_control_json()
+nlohmann::json external_crop_recording_control_json(
+    const RecordingControlConfig& recording_control)
 {
     return {
-        {"record_for_seconds", 0},
-        {"clip_seconds", 0}
+        {"record_for_seconds", recording_control.record_for_seconds},
+        {"clip_seconds", recording_control.clip_seconds}
     };
 }
 
-nlohmann::json external_crop_rollover_json()
+nlohmann::json external_crop_rollover_json(const RecordingControlConfig& recording_control)
 {
+    if (recording_control.clip_seconds > 0) {
+        return {
+            {"requested", true},
+            {"status", "supported"},
+            {"implementation",
+             orange::external_recorder::kExternalRecorderRollingImplementation},
+            {"seamless_writer_switch", true},
+            {"records_during_rollover", true},
+            {"boundary", "recording_frame_id"},
+            {"output_kind", "crop"},
+            {"supported_mode", "rolling_clips"},
+            {"rolling_supported", true},
+            {"next_writer_preopened", false}
+        };
+    }
     return {
         {"requested", false},
         {"status", "not_requested"},
@@ -453,7 +502,7 @@ nlohmann::json external_crop_rollover_json()
         {"records_during_rollover", false},
         {"output_kind", "crop"},
         {"supported_mode", "single_clip"},
-        {"rolling_supported", false}
+        {"rolling_supported", true}
     };
 }
 
@@ -462,8 +511,13 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
     const std::string& recording_id,
     const CameraParams* cameras_params,
     const CameraEachSelect* cameras_select,
-    const int num_cameras)
+    const int num_cameras,
+    const RecordingControlConfig& recording_control)
 {
+    const nlohmann::json crop_recording_control =
+        external_crop_recording_control_json(recording_control);
+    const nlohmann::json crop_rollover =
+        external_crop_rollover_json(recording_control);
     nlohmann::json contract = {
         {"schema_id", "orange.external_recorder.contract"},
         {"schema_version", 1},
@@ -477,8 +531,8 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_gop_routing", true},
         {"require_status", true},
         {"require_status_runtime", true},
-        {"recording_control", external_crop_single_clip_recording_control_json()},
-        {"rollover", external_crop_rollover_json()},
+        {"recording_control", crop_recording_control},
+        {"rollover", crop_rollover},
         {"require_recorder_gpu_separate_from_analytics",
          external_crop_recorder_require_separate_gpu_from_env()},
         {"validation_errors", nlohmann::json::array()},
@@ -509,6 +563,10 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             sanitize_camera_crop_size_px(camera.crop_pipeline.crop_size_px);
         const int frame_rate =
             std::max(1, static_cast<int>(camera.frame_rate));
+        const int full_frame_gop =
+            camera.recording.encode.gop_length > 0
+                ? camera.recording.encode.gop_length
+                : frame_rate;
         const int analytics_gpu_id =
             camera.gpu_id >= 0 ? camera.gpu_id : 0;
         const int recorder_gpu_id =
@@ -545,12 +603,16 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"prewarm_slots", 4},
             {"prewarm_bytes", static_cast<uint64_t>(crop_size) * static_cast<uint64_t>(crop_size)},
             {"prewarm_peer_copy", true},
-            {"recording_control", external_crop_single_clip_recording_control_json()},
-            {"rollover", external_crop_rollover_json()},
+            {"recording_control", crop_recording_control},
+            {"rollover", crop_rollover},
             {"codec", "hevc"},
             {"preset", "p7"},
             {"tuning", "lossless"},
             {"gop", 1},
+            {"terminal_tail_coalesce_frames",
+             recording_control.clip_seconds > 0
+                 ? static_cast<uint64_t>(std::max(1, full_frame_gop))
+                 : 0ULL},
             {"bitrate_bps", 150000000},
             {"max_bitrate_bps", 150000000},
             {"vbv_buffer_size", 150000000}
@@ -1234,6 +1296,10 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     if (options.recording_backend.is_object() && !options.recording_backend.empty()) {
         manifest["recording_backend"] = options.recording_backend;
     }
+    if (!options.recording_outputs.empty()) {
+        manifest["recording_outputs"] =
+            build_recording_outputs_json(options.recording_outputs);
+    }
     return manifest;
 }
 
@@ -1795,7 +1861,10 @@ RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
                 recording_id,
                 cameras_params,
                 cameras_select,
-                num_cameras);
+                num_cameras,
+                state->recording_sink_mode == "external_ipc"
+                    ? state->gui_recording_control
+                    : RecordingControlConfig{});
         state->active_external_crop_recorder_contract = crop_contract;
         state->external_crop_recorder_last_error.clear();
 

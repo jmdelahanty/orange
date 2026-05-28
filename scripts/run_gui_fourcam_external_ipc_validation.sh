@@ -15,6 +15,9 @@ Runs the local four-camera GUI validation profile:
   - full-frame recording sink: external_ipc
   - crop recording sink: external_ipc
   - crop recorder GPUs: 2010093->4, 2010094->2, 2010095->8, 2010096->6
+  - YOLO CPU affinity: 2010093->6, 2010094->8, 2010095->10, 2010096->12
+  - required isolated CPUs: 6,8,10,12 plus SMT siblings 38,40,42,44
+  - required boot CPU options: isolcpus, nohz_full, rcu_nocbs
   - GUI display profile: fast (swap_interval=0, frame_max_fps=60, preview=15)
 
 Options:
@@ -25,6 +28,11 @@ Options:
   --citrus-display-safe       Reduce Orange display pressure for Citrus stimulus runs.
   --record-seconds <seconds>  Override autorun recording duration.
   --warmup-seconds <seconds>  Override autorun stream warmup duration.
+  --clip-seconds <seconds>    Enable GUI rolling clips with this clip duration.
+  --allow-main-video-content-failure <serials>
+                             Treat listed no-lens/invalid-content cameras as
+                             allowed main-video content failures in printed
+                             validation commands.
   --validate-only             Run launcher preflight only.
   --print-exec-env-only       Print env values that would cross the privilege boundary.
   --help
@@ -76,6 +84,19 @@ while [[ $# -gt 0 ]]; do
       [[ $# -gt 0 ]] || { echo "--warmup-seconds requires a value" >&2; exit 2; }
       is_nonnegative_integer "$1" || { echo "--warmup-seconds must be a non-negative integer" >&2; exit 2; }
       export ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS="$1"
+      shift
+      ;;
+    --clip-seconds)
+      shift
+      [[ $# -gt 0 ]] || { echo "--clip-seconds requires a value" >&2; exit 2; }
+      is_positive_integer "$1" || { echo "--clip-seconds must be a positive integer" >&2; exit 2; }
+      export ORANGE_GUI_CLIP_SECONDS="$1"
+      shift
+      ;;
+    --allow-main-video-content-failure)
+      shift
+      [[ $# -gt 0 ]] || { echo "--allow-main-video-content-failure requires a value" >&2; exit 2; }
+      export ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS="$1"
       shift
       ;;
     --validate-only)
@@ -143,11 +164,27 @@ export ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093="${ORANGE_CROP_EXTERNAL_
 export ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094="${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094:-2}"
 export ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095="${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095:-8}"
 export ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096="${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096:-6}"
+export ORANGE_YOLO_AFFINITY_CAM_2010093="${ORANGE_YOLO_AFFINITY_CAM_2010093:-6}"
+export ORANGE_YOLO_AFFINITY_CAM_2010094="${ORANGE_YOLO_AFFINITY_CAM_2010094:-8}"
+export ORANGE_YOLO_AFFINITY_CAM_2010095="${ORANGE_YOLO_AFFINITY_CAM_2010095:-10}"
+export ORANGE_YOLO_AFFINITY_CAM_2010096="${ORANGE_YOLO_AFFINITY_CAM_2010096:-12}"
+if [[ ! -v ORANGE_GUI_REQUIRE_ISOLATED_CPUS ]]; then
+  export ORANGE_GUI_REQUIRE_ISOLATED_CPUS="6,8,10,12,38,40,42,44"
+fi
+if [[ ! -v ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS ]]; then
+  export ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS="${ORANGE_GUI_REQUIRE_ISOLATED_CPUS}"
+fi
+if [[ ! -v ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS ]]; then
+  export ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS="isolcpus,nohz_full,rcu_nocbs"
+fi
 export ORANGE_PTP_REGISTER_READ_DECIMATE="${ORANGE_PTP_REGISTER_READ_DECIMATE:-100}"
 export ORANGE_GUI_AUTORUN="${ORANGE_GUI_AUTORUN:-1}"
 export ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS="${ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS:-2}"
 export ORANGE_GUI_AUTORUN_RECORD_SECONDS="${ORANGE_GUI_AUTORUN_RECORD_SECONDS:-10}"
 export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE="${ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE:-1}"
 export ORANGE_GUI_SHOW_SPEED_GRAPHS="${ORANGE_GUI_SHOW_SPEED_GRAPHS:-0}"
+export ORANGE_GUI_REQUIRE_SOURCE_VERSION="${ORANGE_GUI_REQUIRE_SOURCE_VERSION:-1}"
+export ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE="${ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE:-sudo_invoking_user}"
+export ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED="${ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED:-auto}"
 
 exec "${REPO_ROOT}/scripts/run_gui_aq_off_validation.sh"

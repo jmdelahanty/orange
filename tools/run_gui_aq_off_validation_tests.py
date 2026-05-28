@@ -109,6 +109,23 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should describe the default camera discovery mode",
         )
         require(
+            "ORANGE_YOLO_AFFINITY_CAM_*=2010095=10,2010096=12" in result.stdout,
+            "launcher output should show the Citrus-safe default two-camera YOLO affinities",
+        )
+        require(
+            "ORANGE_GUI_REQUIRE_ISOLATED_CPUS=<not set>" in result.stdout,
+            "launcher output should show isolated CPU validation is unset by default",
+        )
+        require(
+            "--expect-yolo-affinity 2010095=10" in result.stdout
+            and "--expect-yolo-affinity 2010096=12" in result.stdout,
+            "launcher validation commands should check default YOLO affinity telemetry",
+        )
+        require(
+            "--require-isolated-cpus" not in result.stdout,
+            "launcher validation commands should not require isolated CPUs by default",
+        )
+        require(
             "ORANGE_GUI_STREAM_DOWNSAMPLE=4" in result.stdout,
             "launcher output should show the default GUI display downsample",
         )
@@ -221,6 +238,14 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher should only require external crop backend metadata for external crop runs",
         )
         require(
+            "ORANGE_GUI_REQUIRE_SOURCE_VERSION=0" in result.stdout,
+            "launcher should show source-version validation is off by default",
+        )
+        require(
+            "--require-source-version" not in result.stdout,
+            "launcher should not require source provenance unless requested",
+        )
+        require(
             "--min-gui-visible-p05-fps 45" in result.stdout,
             "launcher comparison command should enforce visible GUI FPS when samples exist",
         )
@@ -243,6 +268,10 @@ def test_discovers_all_camera_json_files() -> None:
         require(
             "--require-matching-crop-config" in result.stdout,
             "launcher comparison command should require matching crop config",
+        )
+        require(
+            "--require-matching-yolo-runtime-config" in result.stdout,
+            "launcher comparison command should require matching YOLO runtime config",
         )
         require(
             "--min-gui-hidden-p05-fps 45" in result.stdout,
@@ -325,6 +354,148 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
         require(
             "--max-external-crop-enqueue-age-p95-ms 80" in result.stdout,
             "launcher comparison command should include the selected enqueue-age limit",
+        )
+
+
+def test_source_version_validation_flags_are_printed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_GUI_REQUIRE_SOURCE_VERSION": "1",
+                "ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE": "sudo_invoking_user",
+                "ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED": "1",
+                "ORANGE_GUI_REQUIRE_ISOLATED_CPUS": "6,10",
+                "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS": "6,10,38,40",
+                "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS": "isolcpus,nohz_full,rcu_nocbs",
+                "ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS": "0.5",
+                "ORANGE_GUI_MAX_YOLO_SAME_CAMERA_SERVICE_GAP_P95_MS": "15",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_GUI_REQUIRE_SOURCE_VERSION=1" in result.stdout,
+            "launcher output should show source-version validation is enabled",
+        )
+        require(
+            "ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE=sudo_invoking_user" in result.stdout,
+            "launcher output should show expected git command user mode",
+        )
+        require(
+            "ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED=1" in result.stdout,
+            "launcher output should show expected tracked dirty-state",
+        )
+        require(
+            "--require-source-version" in result.stdout,
+            "validation commands should require source provenance",
+        )
+        require(
+            "--expect-source-git-command-user-mode sudo_invoking_user" in result.stdout,
+            "validation commands should check git command user mode",
+        )
+        require(
+            "--expect-source-dirty-tracked 1" in result.stdout,
+            "validation commands should check tracked dirty-state",
+        )
+        require(
+            "ORANGE_GUI_REQUIRE_ISOLATED_CPUS=6,10" in result.stdout,
+            "launcher output should show isolated CPU validation when requested",
+        )
+        require(
+            "--require-isolated-cpus 6,10" in result.stdout,
+            "validation commands should check requested isolated CPUs",
+        )
+        require(
+            "ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=6,10,38,40" in result.stdout,
+            "launcher output should show required kernel cmdline CPUs",
+        )
+        for option in ("isolcpus", "nohz_full", "rcu_nocbs"):
+            require(
+                f"--require-kernel-cmdline-cpus {option}=6,10,38,40" in result.stdout,
+                f"validation commands should check {option} kernel CPU list",
+            )
+        require(
+            "ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS=0.5" in result.stdout,
+            "launcher output should show YOLO enqueue/dequeue validation threshold",
+        )
+        require(
+            "--max-yolo-enqueue-to-dequeue-p95-ms 0.5" in result.stdout,
+            "validation commands should check YOLO enqueue/dequeue latency",
+        )
+        require(
+            "--max-yolo-same-camera-service-gap-p95-ms 15" in result.stdout,
+            "validation commands should check YOLO service-gap latency",
+        )
+
+
+def test_main_video_content_failure_validation_flags_are_printed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010093")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS": "2010093",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS=2010093" in result.stdout,
+            "launcher output should show explicitly allowed main-video content failures",
+        )
+        require(
+            "--allow-main-video-content-failure 2010093" in result.stdout,
+            "validation commands should pass through allowed main-video content failures",
+        )
+
+
+def test_rolling_recording_validation_flags_are_printed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_GUI_AUTORUN": "1",
+                "ORANGE_GUI_AUTORUN_RECORD_SECONDS": "7",
+                "ORANGE_GUI_CLIP_SECONDS": "2",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "--expect-recording-mode rolling_clips" in result.stdout,
+            "validation commands should require rolling mode when GUI clip_seconds is set",
+        )
+        require(
+            "--expect-record-for-seconds 7" in result.stdout,
+            "validation commands should use autorun record seconds for rolling record_for_seconds",
+        )
+        require(
+            "--expect-clip-seconds 2" in result.stdout,
+            "validation commands should check GUI clip_seconds",
         )
 
 
@@ -678,6 +849,57 @@ def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
         )
 
 
+def test_yolo_worker_scheduling_env_controls_are_forwarded_to_exec_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "ORANGE_YOLO_AFFINITY_CAM_2010093": "6",
+                "ORANGE_YOLO_AFFINITY_CAM_2010095": "10",
+                "ORANGE_YOLO_RT_PRIORITY": "10",
+                "ORANGE_YOLO_RT_PRIORITY_CAM_2010093": "12",
+                "ORANGE_YOLO_RT_POLICY": "fifo",
+                "ORANGE_RECORDING_DETECT_PRIORITY": "1",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_YOLO_AFFINITY_CAM_2010093=6" in result.stdout,
+            "per-camera YOLO affinity should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_YOLO_AFFINITY_CAM_2010095=10" in result.stdout,
+            "default two-camera YOLO affinity should honor overrides",
+        )
+        require(
+            "ORANGE_YOLO_RT_PRIORITY=10" in result.stdout,
+            "YOLO realtime priority should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_YOLO_RT_PRIORITY_CAM_2010093=12" in result.stdout,
+            "per-camera YOLO realtime priority should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_YOLO_RT_POLICY=fifo" in result.stdout,
+            "YOLO realtime policy should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_RECORDING_DETECT_PRIORITY=1" in result.stdout,
+            "recording detect-priority flag should be forwarded through sudo env",
+        )
+
+
 def test_external_crop_ipc_autosizes_crop_frame_pool() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -858,6 +1080,38 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         )
 
 
+def test_default_autorun_enable_flags_are_forwarded_to_exec_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "DISPLAY": ":77",
+                "XAUTHORITY": "/tmp/orange_test.Xauthority",
+                "XDG_RUNTIME_DIR": "/run/user/1000",
+                "XDG_SESSION_TYPE": "x11",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        for expected in [
+            "ORANGE_GUI_AUTORUN_ENABLE_STREAM=1",
+            "ORANGE_GUI_AUTORUN_ENABLE_RECORD=1",
+            "ORANGE_GUI_AUTORUN_ENABLE_YOLO=1",
+            "ORANGE_GUI_AUTORUN_ENABLE_CROP=1",
+        ]:
+            require(expected in result.stdout, f"default exec env should include {expected}")
+
+
 def test_live_launcher_fails_fast_without_display_env() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1018,6 +1272,63 @@ def test_live_launcher_rejects_stale_privilege_wrapper_for_frame_cap_env() -> No
         )
 
 
+def test_live_launcher_rejects_stale_privilege_wrapper_for_yolo_affinity_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        fake_wrapper = root / "orange-gui-validation"
+        fake_wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1:-}\" == \"--help\" ]]; then\n"
+            "  echo 'Usage: wrapper --orange-bin --env KEY=VALUE --ptp-stack-mode --dry-run'\n"
+            "  exit 0\n"
+            "fi\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == ORANGE_YOLO_AFFINITY_CAM_*=* ]]; then\n"
+            "    echo 'Refusing unsupported env key: ORANGE_YOLO_AFFINITY_CAM_2010095' >&2\n"
+            "    exit 2\n"
+            "  fi\n"
+            "done\n"
+            "if [[ \" $* \" == *\" --dry-run \"* ]]; then\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'fake wrapper should not launch orange' >&2\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_wrapper.chmod(0o755)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            extra_env={
+                "DISPLAY": ":77",
+                "ORANGE_GUI_USE_PRIVILEGE_WRAPPER": "1",
+                "ORANGE_GUI_PRIVILEGE_WRAPPER": str(fake_wrapper),
+            },
+        )
+
+        require(result.returncode != 0, "stale wrapper should fail before sudo execution")
+        require(
+            "Installed GUI privilege wrapper does not support ORANGE_YOLO_AFFINITY_CAM_*"
+            in result.stderr,
+            "launcher should explain that the wrapper lacks YOLO affinity env support",
+        )
+        require(
+            "install_orange_gui_validation_wrapper.sh --install-sudoers" in result.stderr,
+            "launcher should include the reinstall command",
+        )
+        require(
+            "fake wrapper should not launch orange" not in result.stderr,
+            "launcher should only dry-run the stale wrapper",
+        )
+
+
 def test_invalid_gui_ptp_stack_mode_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1090,6 +1401,16 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
             "ORANGE_GUI_RECORD_FOR_SECONDS=10",
             "--env",
             "ORANGE_GUI_CLIP_SECONDS=2",
+            "--env",
+            "ORANGE_YOLO_AFFINITY_CAM_2010093=6",
+            "--env",
+            "ORANGE_YOLO_RT_PRIORITY=10",
+            "--env",
+            "ORANGE_YOLO_RT_PRIORITY_CAM_2010093=12",
+            "--env",
+            "ORANGE_YOLO_RT_POLICY=fifo",
+            "--env",
+            "ORANGE_RECORDING_DETECT_PRIORITY=1",
         ],
         cwd=REPO_ROOT,
         text=True,
@@ -1107,6 +1428,26 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
         "ORANGE_GUI_CLIP_SECONDS=2" in result.stdout,
         "wrapper dry-run should include GUI clip_seconds env",
     )
+    require(
+        "ORANGE_YOLO_AFFINITY_CAM_2010093=6" in result.stdout,
+        "wrapper dry-run should include per-camera YOLO affinity env",
+    )
+    require(
+        "ORANGE_YOLO_RT_PRIORITY=10" in result.stdout,
+        "wrapper dry-run should include YOLO realtime priority env",
+    )
+    require(
+        "ORANGE_YOLO_RT_PRIORITY_CAM_2010093=12" in result.stdout,
+        "wrapper dry-run should include per-camera YOLO realtime priority env",
+    )
+    require(
+        "ORANGE_YOLO_RT_POLICY=fifo" in result.stdout,
+        "wrapper dry-run should include YOLO realtime policy env",
+    )
+    require(
+        "ORANGE_RECORDING_DETECT_PRIORITY=1" in result.stdout,
+        "wrapper dry-run should include recording detect-priority env",
+    )
 
 
 def main() -> int:
@@ -1115,11 +1456,15 @@ def main() -> int:
         test_invalid_gui_privilege_wrapper_mode_fails,
         test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp,
         test_live_launcher_rejects_stale_privilege_wrapper_for_frame_cap_env,
+        test_live_launcher_rejects_stale_privilege_wrapper_for_yolo_affinity_env,
         test_invalid_gui_ptp_stack_mode_fails,
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_gui_privilege_wrapper_accepts_recording_control_envs,
         test_external_crop_queue_validation_limits_are_printed,
+        test_source_version_validation_flags_are_printed,
+        test_main_video_content_failure_validation_flags_are_printed,
+        test_rolling_recording_validation_flags_are_printed,
         test_external_crop_queue_validation_rejects_bad_values,
         test_external_crop_recorder_gpu_validation_rejects_bad_values,
         test_external_crop_separate_gpu_gate_rejects_default_same_gpu,
@@ -1129,8 +1474,10 @@ def main() -> int:
         test_expected_camera_subset_validates_only_requested_files,
         test_bad_config_fails_preflight,
         test_crop_preview_env_controls_are_forwarded_to_exec_env,
+        test_yolo_worker_scheduling_env_controls_are_forwarded_to_exec_env,
         test_external_crop_ipc_autosizes_crop_frame_pool,
         test_display_env_controls_are_forwarded_to_exec_env,
+        test_default_autorun_enable_flags_are_forwarded_to_exec_env,
         test_live_launcher_fails_fast_without_display_env,
     ]
     for test in tests:

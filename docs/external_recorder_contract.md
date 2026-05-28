@@ -254,6 +254,10 @@ Current semantics:
 - `encode_queue_depth`, `prewarm_*`, codec, GOP, and bitrate fields are
   optional launch-plan fields. If a stream omits them, the dry-run supervisor
   plan tool fills in production-like defaults.
+- `terminal_tail_coalesce_frames` is optional. If omitted, the recorder uses
+  one configured GOP as the terminal-tail coalesce threshold. GUI external crop
+  rolling sets this explicitly to the parent full-frame GOP while keeping crop
+  GOP size `1`, so crop sidecar clips align with full-frame parent clips.
 - `recording_control` is copied from the Orange session/spec intent so external
   consumers can distinguish continuous, timed, and rolling sessions. If a
   headless spec places the control at `fixed.recording_control`, the supervisor

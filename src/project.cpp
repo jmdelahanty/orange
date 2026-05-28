@@ -6,6 +6,7 @@
 #include <unistd.h>      // For gethostname in client_send_bringup_message
 #include <pwd.h>
 #include <sys/stat.h>    // For mkdir
+#include <sys/wait.h>
 #include <iostream>
 #include <fstream>       // For std::ifstream
 #include <filesystem>    // For std::filesystem
@@ -15,6 +16,8 @@
 #include <sstream>       // For std::ostringstream
 #include <ctime>         // For std::gmtime
 #include <cctype>
+#include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -103,6 +106,603 @@ std::string normalize_snapshot_recording_sink_mode(std::string value)
         return static_cast<char>(std::tolower(c));
     });
     return value.empty() ? "real" : value;
+}
+
+std::string sanitize_env_suffix(const std::string& value)
+{
+    std::string out;
+    out.reserve(value.size());
+    for (unsigned char ch : value) {
+        if (std::isalnum(ch)) {
+            out.push_back(static_cast<char>(std::toupper(ch)));
+        } else {
+            out.push_back('_');
+        }
+    }
+    return out;
+}
+
+bool parse_nonnegative_int_token(const std::string& text, int* value_out)
+{
+    if (!value_out || text.empty()) {
+        return false;
+    }
+    for (unsigned char ch : text) {
+        if (!std::isdigit(ch)) {
+            return false;
+        }
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const long value = std::strtol(text.c_str(), &end, 10);
+    if (errno != 0 || end == text.c_str() || *end != '\0' ||
+        value < 0 || value > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    *value_out = static_cast<int>(value);
+    return true;
+}
+
+nlohmann::json parse_cpu_list_for_snapshot(const std::string& raw)
+{
+    nlohmann::json result = {
+        {"parse_ok", true},
+        {"cpus", nlohmann::json::array()},
+        {"error", nullptr}
+    };
+
+    const std::string value = trim_ascii_copy(raw);
+    if (value.empty()) {
+        return result;
+    }
+
+    std::set<int> cpus;
+    std::size_t start = 0;
+    while (start <= value.size()) {
+        const std::size_t comma = value.find(',', start);
+        const std::size_t end = comma == std::string::npos ? value.size() : comma;
+        const std::string token = trim_ascii_copy(value.substr(start, end - start));
+        if (token.empty()) {
+            result["parse_ok"] = false;
+            result["error"] = "empty token";
+            return result;
+        }
+
+        const std::size_t dash = token.find('-');
+        if (dash == std::string::npos) {
+            int cpu = -1;
+            if (!parse_nonnegative_int_token(token, &cpu)) {
+                result["parse_ok"] = false;
+                result["error"] = "invalid cpu token: " + token;
+                return result;
+            }
+            cpus.insert(cpu);
+        } else {
+            const std::string first_text = trim_ascii_copy(token.substr(0, dash));
+            const std::string last_text = trim_ascii_copy(token.substr(dash + 1));
+            int first = -1;
+            int last = -1;
+            if (token.find('-', dash + 1) != std::string::npos ||
+                !parse_nonnegative_int_token(first_text, &first) ||
+                !parse_nonnegative_int_token(last_text, &last) ||
+                first > last) {
+                result["parse_ok"] = false;
+                result["error"] = "invalid cpu range: " + token;
+                return result;
+            }
+            for (int cpu = first; cpu <= last; ++cpu) {
+                cpus.insert(cpu);
+            }
+        }
+
+        if (comma == std::string::npos) {
+            break;
+        }
+        start = comma + 1;
+    }
+
+    for (const int cpu : cpus) {
+        result["cpus"].push_back(cpu);
+    }
+    return result;
+}
+
+nlohmann::json parse_kernel_cmdline_options_for_snapshot(const std::string& raw)
+{
+    const std::set<std::string> keys = {"isolcpus", "nohz_full", "rcu_nocbs"};
+    nlohmann::json options = nlohmann::json::object();
+    std::istringstream stream(raw);
+    std::string token;
+    while (stream >> token) {
+        const std::size_t equals = token.find('=');
+        if (equals == std::string::npos) {
+            continue;
+        }
+        const std::string key = token.substr(0, equals);
+        if (keys.find(key) != keys.end()) {
+            options[key] = token.substr(equals + 1);
+        }
+    }
+    return options;
+}
+
+nlohmann::json build_system_cpu_runtime_snapshot()
+{
+    std::string isolated_error;
+    const std::string isolated_raw =
+        trim_ascii_copy(read_file_to_string("/sys/devices/system/cpu/isolated", &isolated_error));
+    nlohmann::json isolated = parse_cpu_list_for_snapshot(isolated_raw);
+    isolated["source"] = "/sys/devices/system/cpu/isolated";
+    isolated["available"] = isolated_error.empty();
+    isolated["raw"] = isolated_raw;
+    if (!isolated_error.empty()) {
+        isolated["error"] = isolated_error;
+    }
+
+    std::string cmdline_error;
+    const std::string cmdline_raw =
+        trim_ascii_copy(read_file_to_string("/proc/cmdline", &cmdline_error));
+    nlohmann::json cmdline = {
+        {"source", "/proc/cmdline"},
+        {"available", cmdline_error.empty()},
+        {"raw", cmdline_raw},
+        {"options", parse_kernel_cmdline_options_for_snapshot(cmdline_raw)}
+    };
+    if (!cmdline_error.empty()) {
+        cmdline["error"] = cmdline_error;
+    }
+
+    return {
+        {"schema_version", 1},
+        {"isolated_cpus", isolated},
+        {"kernel_cmdline", cmdline}
+    };
+}
+
+nlohmann::json build_yolo_worker_runtime_snapshot(const CameraParams* cameras_params,
+                                                  int num_cameras)
+{
+    nlohmann::json affinity_by_camera = nlohmann::json::object();
+    const char* global_affinity = std::getenv("ORANGE_YOLO_AFFINITY");
+    for (int i = 0; i < num_cameras; ++i) {
+        const CameraParams& params = cameras_params[i];
+        std::string camera_key = params.camera_serial.empty()
+            ? std::to_string(params.camera_id)
+            : params.camera_serial;
+        const std::string env_key =
+            "ORANGE_YOLO_AFFINITY_CAM_" + sanitize_env_suffix(camera_key);
+        const char* per_camera_affinity = std::getenv(env_key.c_str());
+
+        nlohmann::json affinity = {
+            {"configured", false},
+            {"source", "none"},
+            {"env_key", nullptr},
+            {"requested_cpus", nullptr}
+        };
+        if (per_camera_affinity && *per_camera_affinity) {
+            affinity["configured"] = true;
+            affinity["source"] = "per_camera_environment";
+            affinity["env_key"] = env_key;
+            affinity["requested_cpus"] = per_camera_affinity;
+        } else if (global_affinity && *global_affinity) {
+            affinity["configured"] = true;
+            affinity["source"] = "global_environment";
+            affinity["env_key"] = "ORANGE_YOLO_AFFINITY";
+            affinity["requested_cpus"] = global_affinity;
+        }
+        affinity_by_camera[camera_key] = affinity;
+    }
+
+    return {
+        {"schema_version", 1},
+        {"affinity", {
+            {"source", "environment"},
+            {"per_camera", affinity_by_camera}
+        }}
+    };
+}
+
+std::string shell_single_quote(const std::string& value)
+{
+    std::string out = "'";
+    for (const char c : value) {
+        if (c == '\'') {
+            out += "'\\''";
+        } else {
+            out.push_back(c);
+        }
+    }
+    out.push_back('\'');
+    return out;
+}
+
+bool parse_uid_gid_from_env(uid_t* uid_out, gid_t* gid_out)
+{
+    if (!uid_out || !gid_out) {
+        return false;
+    }
+    const char* uid_env = std::getenv("SUDO_UID");
+    const char* gid_env = std::getenv("SUDO_GID");
+    if (!uid_env || !gid_env) {
+        return false;
+    }
+
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long uid_ul = std::strtoul(uid_env, &end, 10);
+    if (errno != 0 || end == uid_env || *end != '\0') {
+        return false;
+    }
+    errno = 0;
+    const unsigned long gid_ul = std::strtoul(gid_env, &end, 10);
+    if (errno != 0 || end == gid_env || *end != '\0') {
+        return false;
+    }
+    *uid_out = static_cast<uid_t>(uid_ul);
+    *gid_out = static_cast<gid_t>(gid_ul);
+    return true;
+}
+
+std::string run_shell_command_as_user(const std::string& command,
+                                      const uid_t uid,
+                                      const gid_t gid,
+                                      int* exit_status_out)
+{
+    constexpr std::size_t kMaxCapturedOutputBytes = 8192;
+    if (exit_status_out) {
+        *exit_status_out = -1;
+    }
+    int pipe_fds[2] = {-1, -1};
+    if (pipe(pipe_fds) != 0) {
+        return {};
+    }
+
+    const pid_t child = fork();
+    if (child < 0) {
+        close(pipe_fds[0]);
+        close(pipe_fds[1]);
+        return {};
+    }
+
+    if (child == 0) {
+        close(pipe_fds[0]);
+        if (dup2(pipe_fds[1], STDOUT_FILENO) < 0) {
+            _exit(127);
+        }
+        close(pipe_fds[1]);
+        if (setgid(gid) != 0 || setuid(uid) != 0) {
+            _exit(127);
+        }
+        execl("/bin/sh", "sh", "-c", command.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    close(pipe_fds[1]);
+    std::array<char, 256> buffer{};
+    std::string output;
+    while (true) {
+        const ssize_t bytes =
+            read(pipe_fds[0], buffer.data(), buffer.size());
+        if (bytes > 0) {
+            if (output.size() < kMaxCapturedOutputBytes) {
+                const std::size_t remaining =
+                    kMaxCapturedOutputBytes - output.size();
+                output.append(
+                    buffer.data(),
+                    std::min<std::size_t>(
+                        remaining,
+                        static_cast<std::size_t>(bytes)));
+            }
+            continue;
+        }
+        if (bytes < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    close(pipe_fds[0]);
+
+    int status = -1;
+    while (waitpid(child, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (exit_status_out) {
+        *exit_status_out = status;
+    }
+    return trim_ascii_copy(output);
+}
+
+std::string run_command_capture_stdout(const std::string& command,
+                                       int* exit_status_out = nullptr)
+{
+    constexpr std::size_t kMaxCapturedOutputBytes = 8192;
+    if (exit_status_out) {
+        *exit_status_out = -1;
+    }
+
+    uid_t sudo_uid = 0;
+    gid_t sudo_gid = 0;
+    if (geteuid() == 0 &&
+        parse_uid_gid_from_env(&sudo_uid, &sudo_gid) &&
+        (sudo_uid != 0 || sudo_gid != 0)) {
+        return run_shell_command_as_user(command, sudo_uid, sudo_gid, exit_status_out);
+    }
+
+    std::array<char, 256> buffer{};
+    std::string output;
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        return {};
+    }
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe) != nullptr) {
+        if (output.size() < kMaxCapturedOutputBytes) {
+            const std::size_t remaining =
+                kMaxCapturedOutputBytes - output.size();
+            output.append(buffer.data(), std::min<std::size_t>(
+                remaining,
+                std::strlen(buffer.data())));
+        }
+    }
+    const int status = pclose(pipe);
+    if (exit_status_out) {
+        *exit_status_out = status;
+    }
+    return trim_ascii_copy(output);
+}
+
+std::filesystem::path find_git_worktree_from(const std::filesystem::path& start)
+{
+    if (start.empty()) {
+        return {};
+    }
+    std::error_code ec;
+    std::filesystem::path current = std::filesystem::absolute(start, ec);
+    if (ec) {
+        current = start;
+    }
+    if (!std::filesystem::is_directory(current, ec)) {
+        current = current.parent_path();
+    }
+    while (!current.empty()) {
+        if (std::filesystem::exists(current / ".git", ec) && !ec) {
+            return current;
+        }
+        const std::filesystem::path parent = current.parent_path();
+        if (parent == current) {
+            break;
+        }
+        current = parent;
+    }
+    return {};
+}
+
+std::filesystem::path resolve_source_worktree()
+{
+    if (const char* env = std::getenv("ORANGE_SOURCE_WORKTREE"); env && *env) {
+        const std::filesystem::path env_path = find_git_worktree_from(env);
+        if (!env_path.empty()) {
+            return env_path;
+        }
+    }
+
+    std::error_code ec;
+    const std::filesystem::path cwd = std::filesystem::current_path(ec);
+    if (!ec) {
+        const std::filesystem::path cwd_worktree = find_git_worktree_from(cwd);
+        if (!cwd_worktree.empty()) {
+            return cwd_worktree;
+        }
+    }
+
+    const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+        const std::filesystem::path exe_worktree = find_git_worktree_from(exe);
+        if (!exe_worktree.empty()) {
+            return exe_worktree;
+        }
+    }
+    return {};
+}
+
+std::filesystem::path resolve_git_dir(const std::filesystem::path& worktree)
+{
+    if (worktree.empty()) {
+        return {};
+    }
+    const std::filesystem::path dot_git = worktree / ".git";
+    std::error_code ec;
+    if (std::filesystem::is_directory(dot_git, ec) && !ec) {
+        return dot_git;
+    }
+    if (std::filesystem::is_regular_file(dot_git, ec) && !ec) {
+        std::string error;
+        const std::string contents = read_file_to_string(dot_git.string(), &error);
+        const std::string prefix = "gitdir:";
+        if (contents.rfind(prefix, 0) == 0) {
+            std::string value = trim_ascii_copy(contents.substr(prefix.size()));
+            if (!value.empty()) {
+                std::filesystem::path gitdir(value);
+                if (gitdir.is_relative()) {
+                    gitdir = worktree / gitdir;
+                }
+                return gitdir;
+            }
+        }
+    }
+    return {};
+}
+
+std::string read_git_ref_commit(const std::filesystem::path& git_dir,
+                                const std::string& ref)
+{
+    if (git_dir.empty() || ref.empty()) {
+        return {};
+    }
+    std::string error;
+    const std::string loose_ref =
+        trim_ascii_copy(read_file_to_string((git_dir / ref).string(), &error));
+    if (!loose_ref.empty()) {
+        return loose_ref;
+    }
+
+    error.clear();
+    const std::string packed_refs =
+        read_file_to_string((git_dir / "packed-refs").string(), &error);
+    std::istringstream input(packed_refs);
+    std::string line;
+    while (std::getline(input, line)) {
+        line = trim_ascii_copy(line);
+        if (line.empty() || line[0] == '#' || line[0] == '^') {
+            continue;
+        }
+        std::istringstream fields(line);
+        std::string commit;
+        std::string packed_ref;
+        fields >> commit >> packed_ref;
+        if (packed_ref == ref) {
+            return commit;
+        }
+    }
+    return {};
+}
+
+nlohmann::json read_git_head_direct(const std::filesystem::path& worktree)
+{
+    nlohmann::json out = nlohmann::json::object();
+    const std::filesystem::path git_dir = resolve_git_dir(worktree);
+    if (git_dir.empty()) {
+        return out;
+    }
+
+    std::string error;
+    const std::string head =
+        trim_ascii_copy(read_file_to_string((git_dir / "HEAD").string(), &error));
+    if (head.empty()) {
+        return out;
+    }
+
+    if (head.rfind("ref:", 0) == 0) {
+        const std::string ref = trim_ascii_copy(head.substr(4));
+        const std::string heads_prefix = "refs/heads/";
+        out["ref"] = ref;
+        if (ref.rfind(heads_prefix, 0) == 0) {
+            out["branch"] = ref.substr(heads_prefix.size());
+        }
+        const std::string commit = read_git_ref_commit(git_dir, ref);
+        if (!commit.empty()) {
+            out["commit"] = commit;
+            out["commit_short"] = commit.substr(0, std::min<std::size_t>(12, commit.size()));
+        }
+    } else {
+        out["commit"] = head;
+        out["commit_short"] = head.substr(0, std::min<std::size_t>(12, head.size()));
+        out["detached_head"] = true;
+    }
+    return out;
+}
+
+nlohmann::json build_source_version_snapshot()
+{
+    nlohmann::json source = {
+        {"schema_version", 1},
+        {"captured_at_utc", get_current_utc_timestamp()},
+        {"vcs", "git"},
+        {"available", false}
+    };
+
+    const std::filesystem::path worktree = resolve_source_worktree();
+    if (worktree.empty()) {
+        source["error"] = "git worktree not found from cwd or executable path";
+        return source;
+    }
+
+    const std::string worktree_string = worktree.string();
+    const nlohmann::json direct_head = read_git_head_direct(worktree);
+    const std::string git_prefix = "git -C " + shell_single_quote(worktree_string) + " ";
+    int top_level_status = -1;
+    int commit_status = -1;
+    int commit_short_status = -1;
+    int branch_status = -1;
+    int describe_status = -1;
+    int tracked_status_status = -1;
+    const std::string top_level =
+        run_command_capture_stdout(git_prefix + "rev-parse --show-toplevel 2>/dev/null",
+                                   &top_level_status);
+    std::string commit =
+        run_command_capture_stdout(git_prefix + "rev-parse HEAD 2>/dev/null",
+                                   &commit_status);
+    std::string commit_short =
+        run_command_capture_stdout(git_prefix + "rev-parse --short HEAD 2>/dev/null",
+                                   &commit_short_status);
+    std::string branch =
+        run_command_capture_stdout(git_prefix + "rev-parse --abbrev-ref HEAD 2>/dev/null",
+                                   &branch_status);
+    const std::string describe =
+        run_command_capture_stdout(git_prefix + "describe --always --dirty --tags 2>/dev/null",
+                                   &describe_status);
+    const std::string tracked_status =
+        run_command_capture_stdout(git_prefix + "status --porcelain --untracked-files=no 2>/dev/null",
+                                   &tracked_status_status);
+
+    if (commit.empty() && direct_head.contains("commit") && direct_head["commit"].is_string()) {
+        commit = direct_head["commit"].get<std::string>();
+    }
+    if (commit_short.empty() &&
+        direct_head.contains("commit_short") &&
+        direct_head["commit_short"].is_string()) {
+        commit_short = direct_head["commit_short"].get<std::string>();
+    }
+    if ((branch.empty() || branch == "HEAD") &&
+        direct_head.contains("branch") &&
+        direct_head["branch"].is_string()) {
+        branch = direct_head["branch"].get<std::string>();
+    }
+
+    source["available"] = !commit.empty();
+    source["git_command_available"] =
+        top_level_status == 0 || commit_status == 0 || commit_short_status == 0 ||
+        branch_status == 0 || describe_status == 0;
+    if (geteuid() == 0) {
+        uid_t sudo_uid = 0;
+        gid_t sudo_gid = 0;
+        if (parse_uid_gid_from_env(&sudo_uid, &sudo_gid) &&
+            (sudo_uid != 0 || sudo_gid != 0)) {
+            source["git_command_user"] = {
+                {"mode", "sudo_invoking_user"},
+                {"uid", static_cast<uint64_t>(sudo_uid)},
+                {"gid", static_cast<uint64_t>(sudo_gid)}
+            };
+        } else {
+            source["git_command_user"] = {
+                {"mode", "process_euid"},
+                {"uid", static_cast<uint64_t>(geteuid())}
+            };
+        }
+    } else {
+        source["git_command_user"] = {
+            {"mode", "process_euid"},
+            {"uid", static_cast<uint64_t>(geteuid())}
+        };
+    }
+    source["worktree"] = top_level.empty() ? worktree_string : top_level;
+    if (!branch.empty()) {
+        source["branch"] = branch;
+    }
+    if (!commit.empty()) {
+        source["commit"] = commit;
+    }
+    if (!commit_short.empty()) {
+        source["commit_short"] = commit_short;
+    }
+    if (!describe.empty()) {
+        source["describe"] = describe;
+    }
+    source["dirty_tracked_available"] = tracked_status_status == 0;
+    if (tracked_status_status == 0) {
+        source["dirty_tracked"] = !tracked_status.empty();
+        source["status_porcelain_tracked"] = tracked_status;
+    }
+    return source;
 }
 
 bool snapshot_sink_writes_full_output(const std::string& sink_mode)
@@ -3101,11 +3701,16 @@ bool write_recording_snapshot(const std::string& recording_folder,
     snapshot["schema_version"] = 2;
     snapshot["recording_id"] = resolved_recording_id;
     snapshot["timestamp_utc"] = timestamp_utc;
-    snapshot["producer_version"] = "unknown";
+    const nlohmann::json source_version = build_source_version_snapshot();
+    snapshot["source_version"] = source_version;
+    snapshot["producer_version"] =
+        source_version.value("commit_short", std::string("unknown"));
     snapshot["session"] = {
         {"recording_sink_mode", recording_sink_mode.empty() ? "real" : recording_sink_mode},
         {"full_frame_video_enabled",
-         recording_sink_mode.empty() || recording_sink_mode == "real"}
+         recording_sink_mode.empty() || recording_sink_mode == "real"},
+        {"system_cpu", build_system_cpu_runtime_snapshot()},
+        {"yolo_worker", build_yolo_worker_runtime_snapshot(cameras_params, num_cameras)}
     };
 
     nlohmann::json cameras = nlohmann::json::object();

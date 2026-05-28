@@ -36,9 +36,60 @@ def sample_payload(
         "recording_folder": "/tmp/run",
         "failures": [] if status == "pass" else ["failure"],
         "warnings": ["warning"],
+        "system_cpu": {
+            "isolated_cpus": {
+                "available": True,
+                "parse_ok": True,
+                "cpus": [1, 2, 6, 8, 10, 12],
+            },
+            "kernel_cmdline": {
+                "available": True,
+                "options": {
+                    "isolcpus": "domain,managed_irq,1-2,6,8,10,12,38,40,42,44",
+                    "nohz_full": "1-2,6,8,10,12,38,40,42,44",
+                    "rcu_nocbs": "1-2,6,8,10,12,38,40,42,44",
+                },
+            },
+        },
         "summary": {
-            "2010095": {"detect_steady_p95_ms": 3.8, "queue_p95_ms": 0.02},
-            "2010096": {"detect_steady_p95_ms": 4.2, "queue_p95_ms": 0.03},
+            "2010095": {
+                "yolo_affinity": {
+                    "configured": 1,
+                    "applied": 1,
+                    "requested_cpus": "10",
+                    "effective_cpus": "10",
+                },
+                "detect_steady_p95_ms": 3.8,
+                "acquisition_to_worker_start_p95_ms": 0.12,
+                "acquisition_to_worker_start_steady_p95_ms": 0.10,
+                "yolo_enqueue_to_dequeue_p95_ms": 0.04,
+                "yolo_enqueue_to_dequeue_steady_p95_ms": 0.03,
+                "yolo_dequeue_to_worker_start_p95_ms": 0.02,
+                "yolo_dequeue_to_worker_start_steady_p95_ms": 0.01,
+                "queue_p95_ms": 0.02,
+                "queue_steady_p95_ms": 0.015,
+                "same_camera_service_gap_p95_ms": 10.5,
+                "same_camera_service_gap_steady_p95_ms": 10.1,
+            },
+            "2010096": {
+                "yolo_affinity": {
+                    "configured": 1,
+                    "applied": 1,
+                    "requested_cpus": "12",
+                    "effective_cpus": "12",
+                },
+                "detect_steady_p95_ms": 4.2,
+                "acquisition_to_worker_start_p95_ms": 0.14,
+                "acquisition_to_worker_start_steady_p95_ms": 0.12,
+                "yolo_enqueue_to_dequeue_p95_ms": 0.06,
+                "yolo_enqueue_to_dequeue_steady_p95_ms": 0.05,
+                "yolo_dequeue_to_worker_start_p95_ms": 0.04,
+                "yolo_dequeue_to_worker_start_steady_p95_ms": 0.03,
+                "queue_p95_ms": 0.03,
+                "queue_steady_p95_ms": 0.025,
+                "same_camera_service_gap_p95_ms": 10.7,
+                "same_camera_service_gap_steady_p95_ms": 10.3,
+            },
         },
         "crop_preview": {
             "2010095": {
@@ -239,10 +290,40 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
     require(summary["gui_swap_interval"] == 0, "GUI swap interval should parse")
     require(summary["gui_frame_max_fps"] == 60, "GUI frame cap should parse")
     require(summary["yolo_speed_graphs_enabled"] == 0, "speed graph state should parse")
+    require(
+        summary["isolated_cpu_values"] == [1, 2, 6, 8, 10, 12],
+        "isolated CPU values should parse",
+    )
+    require(
+        summary["kernel_cmdline_cpu_option_values"] == [
+            "isolcpus=cpus:1-2,6,8,10,12,38,40,42,44;flags:domain|managed_irq",
+            "nohz_full=cpus:1-2,6,8,10,12,38,40,42,44",
+            "rcu_nocbs=cpus:1-2,6,8,10,12,38,40,42,44",
+        ],
+        "kernel cmdline CPU option values should parse",
+    )
+    require(
+        summary["yolo_affinity_mapping_values"] == ["2010095:10->10", "2010096:12->12"],
+        "YOLO affinity mappings should parse",
+    )
     require(summary["gui_frame_total_p95_ms"] == 18.5, "GUI frame timing p95 should parse")
     require(summary["gui_main_texture_upload_p95_ms"] == 2.25, "GUI upload timing p95 should parse")
     require(summary["gui_crop_texture_upload_p95_ms"] == 0.5, "GUI crop upload timing p95 should parse")
     require(abs(summary["detect_steady_p95_avg_ms"] - 4.0) < 0.00001, "detect p95 average")
+    require(abs(summary["acq_worker_p95_avg_ms"] - 0.13) < 0.00001, "acq-worker p95 average")
+    require(abs(summary["acq_worker_steady_p95_avg_ms"] - 0.11) < 0.00001, "acq-worker steady p95 average")
+    require(abs(summary["enqueue_dequeue_p95_avg_ms"] - 0.05) < 0.00001, "enqueue-dequeue p95 average")
+    require(
+        abs(summary["enqueue_dequeue_steady_p95_avg_ms"] - 0.04) < 0.00001,
+        "enqueue-dequeue steady p95 average",
+    )
+    require(abs(summary["dequeue_worker_p95_avg_ms"] - 0.03) < 0.00001, "dequeue-worker p95 average")
+    require(abs(summary["queue_steady_p95_avg_ms"] - 0.02) < 0.00001, "queue steady p95 average")
+    require(abs(summary["service_gap_p95_avg_ms"] - 10.6) < 0.00001, "service-gap p95 average")
+    require(
+        abs(summary["service_gap_steady_p95_avg_ms"] - 10.2) < 0.00001,
+        "service-gap steady p95 average",
+    )
     require(summary["gui_crop_window_draw_p95_ms"] == 0.75, "crop window draw p95 should parse")
     require(summary["gui_speed_graph_draw_p95_ms"] == 1.25, "speed graph draw p95 should parse")
     require(
@@ -376,6 +457,86 @@ def test_threshold_failures_cover_mismatched_crop_config() -> None:
     require(
         any("crop config" in failure and "does not match" in failure for failure in failures),
         "mismatched crop backend or queue depth should fail",
+    )
+
+
+def test_threshold_failures_cover_mismatched_yolo_runtime_config() -> None:
+    baseline = compare.summarize_validation("baseline", sample_payload())
+    changed_payload = sample_payload()
+    changed_payload["summary"]["2010095"]["yolo_affinity"]["effective_cpus"] = "8"
+    changed_payload["system_cpu"]["isolated_cpus"]["cpus"] = [1, 2, 6]
+    changed_payload["system_cpu"]["kernel_cmdline"]["options"]["nohz_full"] = "1-2,6"
+    changed = compare.summarize_validation("changed", changed_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=False,
+        require_matching_yolo_runtime_config=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    failures = compare.threshold_failures(args, [baseline, changed])
+    require(
+        any("YOLO runtime config" in failure and "does not match" in failure for failure in failures),
+        "mismatched YOLO affinity, isolated CPU, or kernel boot CPU config should fail",
+    )
+
+
+def test_threshold_failures_accept_equivalent_kernel_cpu_list_syntax() -> None:
+    baseline = compare.summarize_validation("baseline", sample_payload())
+    changed_payload = sample_payload()
+    changed_payload["system_cpu"]["kernel_cmdline"]["options"] = {
+        "isolcpus": "managed_irq,domain,1,2,6,8,10,12,38,40,42,44",
+        "nohz_full": "1,2,6,8,10,12,38,40,42,44",
+        "rcu_nocbs": "1,2,6,8,10,12,38,40,42,44",
+    }
+    changed = compare.summarize_validation("changed", changed_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=False,
+        require_matching_yolo_runtime_config=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    failures = compare.threshold_failures(args, [baseline, changed])
+    require(
+        not any("YOLO runtime config" in failure for failure in failures),
+        f"equivalent kernel CPU-list syntax should not fail runtime matching: {failures}",
+    )
+
+
+def test_summarize_validation_prefers_validator_normalized_kernel_options() -> None:
+    payload = sample_payload()
+    payload["system_cpu"]["kernel_cmdline"]["options"]["nohz_full"] = "1-2,6"
+    payload["system_cpu_kernel_cmdline_cpu_option_values"] = [
+        "isolcpus=cpus:1-2,6,8,10,12,38,40,42,44;flags:domain|managed_irq",
+        "nohz_full=cpus:1-2,6,8,10,12,38,40,42,44",
+        "rcu_nocbs=cpus:1-2,6,8,10,12,38,40,42,44",
+    ]
+
+    summary = compare.summarize_validation("validator_json", payload)
+
+    require(
+        summary["kernel_cmdline_cpu_option_values"]
+        == payload["system_cpu_kernel_cmdline_cpu_option_values"],
+        "compare summary should prefer validator-provided normalized kernel options",
     )
 
 
@@ -763,6 +924,9 @@ def main() -> int:
         test_threshold_failures_cover_fps_and_external_queue_pressure,
         test_threshold_failures_cover_mismatched_camera_and_display_config,
         test_threshold_failures_cover_mismatched_crop_config,
+        test_threshold_failures_cover_mismatched_yolo_runtime_config,
+        test_threshold_failures_accept_equivalent_kernel_cpu_list_syntax,
+        test_summarize_validation_prefers_validator_normalized_kernel_options,
         test_threshold_failures_cover_mismatched_external_crop_gpu_mapping,
         test_threshold_failures_cover_same_external_crop_gpu_mapping,
         test_threshold_failures_cover_missing_external_crop_gpu_mapping,

@@ -10,6 +10,8 @@ EXPECT_PTP_ENABLED="${ORANGE_GUI_EXPECT_PTP_ENABLED:-1}"
 EXPECT_CAMERAS="${ORANGE_GUI_EXPECT_CAMERAS:-}"
 PTP_REGISTER_READ_DECIMATE="${ORANGE_PTP_REGISTER_READ_DECIMATE:-100}"
 YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
+YOLO_AFFINITY_CAM_2010095="${ORANGE_YOLO_AFFINITY_CAM_2010095:-10}"
+YOLO_AFFINITY_CAM_2010096="${ORANGE_YOLO_AFFINITY_CAM_2010096:-12}"
 GUI_STREAM_DOWNSAMPLE="${ORANGE_GUI_STREAM_DOWNSAMPLE:-4}"
 DISPLAY_PREVIEW_MAX_FPS="${ORANGE_DISPLAY_PREVIEW_MAX_FPS:-15}"
 GUI_SWAP_INTERVAL="${ORANGE_GUI_SWAP_INTERVAL:-0}"
@@ -47,6 +49,17 @@ CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER="${ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:
 CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS="${ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-}"
 CROP_EXTERNAL_REQUIRE_SEPARATE_GPU="${ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU:-0}"
 CROP_FRAME_POOL_SIZE="${ORANGE_CROP_FRAME_POOL_SIZE:-}"
+SOURCE_VERSION_REQUIRED="${ORANGE_GUI_REQUIRE_SOURCE_VERSION:-0}"
+SOURCE_GIT_COMMAND_USER_MODE="${ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE:-}"
+SOURCE_DIRTY_TRACKED_EXPECTATION="${ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED:-}"
+ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS="${ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS:-}"
+REQUIRED_ISOLATED_CPUS="${ORANGE_GUI_REQUIRE_ISOLATED_CPUS:-}"
+REQUIRED_KERNEL_CMDLINE_CPUS="${ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS:-}"
+REQUIRED_KERNEL_CMDLINE_OPTIONS="${ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS:-}"
+YOLO_MAX_ACQ_WORKER_P95_MS="${ORANGE_GUI_MAX_YOLO_ACQUISITION_TO_WORKER_START_P95_MS:-}"
+YOLO_MAX_ENQUEUE_DEQUEUE_P95_MS="${ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS:-}"
+YOLO_MAX_DEQUEUE_WORKER_P95_MS="${ORANGE_GUI_MAX_YOLO_DEQUEUE_TO_WORKER_START_P95_MS:-}"
+YOLO_MAX_SERVICE_GAP_P95_MS="${ORANGE_GUI_MAX_YOLO_SAME_CAMERA_SERVICE_GAP_P95_MS:-}"
 DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine"
 DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
 APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}"
@@ -86,6 +99,30 @@ if ! is_nonnegative_integer "${GUI_FRAME_MAX_FPS}" || (( GUI_FRAME_MAX_FPS > 100
   echo "ORANGE_GUI_FRAME_MAX_FPS must be an integer in [0,1000]" >&2
   exit 2
 fi
+case "${SOURCE_VERSION_REQUIRED}" in
+  0|1)
+    ;;
+  *)
+    echo "ORANGE_GUI_REQUIRE_SOURCE_VERSION must be 0 or 1" >&2
+    exit 2
+    ;;
+esac
+case "${SOURCE_GIT_COMMAND_USER_MODE}" in
+  ""|process_euid|sudo_invoking_user)
+    ;;
+  *)
+    echo "ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE must be process_euid or sudo_invoking_user" >&2
+    exit 2
+    ;;
+esac
+case "${SOURCE_DIRTY_TRACKED_EXPECTATION}" in
+  ""|auto|0|1)
+    ;;
+  *)
+    echo "ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED must be auto, 0, or 1" >&2
+    exit 2
+    ;;
+esac
 
 CROP_FRAME_POOL_SIZE_DISPLAY="${CROP_FRAME_POOL_SIZE:-<orange default>}"
 CROP_FRAME_POOL_VALIDATION_MIN=32
@@ -137,13 +174,102 @@ if ((${#PER_CAMERA_GPU_DISPLAY_ITEMS[@]})); then
 else
   CROP_EXTERNAL_RECORDER_GPU_PER_CAMERA_DISPLAY="<none>"
 fi
+declare -A YOLO_AFFINITY_DISPLAY_MAP=(
+  ["2010095"]="${YOLO_AFFINITY_CAM_2010095}"
+  ["2010096"]="${YOLO_AFFINITY_CAM_2010096}"
+)
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  serial="${var_name#ORANGE_YOLO_AFFINITY_CAM_}"
+  YOLO_AFFINITY_DISPLAY_MAP["${serial}"]="${!var_name}"
+done < <(compgen -e ORANGE_YOLO_AFFINITY_CAM_ | sort)
+YOLO_AFFINITY_DISPLAY_ITEMS=()
+while IFS= read -r serial; do
+  [[ -n "${serial}" ]] || continue
+  YOLO_AFFINITY_DISPLAY_ITEMS+=("${serial}=${YOLO_AFFINITY_DISPLAY_MAP[${serial}]}")
+done < <(printf '%s\n' "${!YOLO_AFFINITY_DISPLAY_MAP[@]}" | sort)
+YOLO_AFFINITY_PER_CAMERA_DISPLAY="$(IFS=,; echo "${YOLO_AFFINITY_DISPLAY_ITEMS[*]}")"
+YOLO_AFFINITY_VALIDATION_FLAGS=""
+for item in "${YOLO_AFFINITY_DISPLAY_ITEMS[@]}"; do
+  YOLO_AFFINITY_VALIDATION_FLAGS+=" --expect-yolo-affinity ${item}"
+done
+CPU_ISOLATION_VALIDATION_FLAGS=""
+if [[ -n "${REQUIRED_ISOLATED_CPUS}" ]]; then
+  CPU_ISOLATION_VALIDATION_FLAGS=" --require-isolated-cpus ${REQUIRED_ISOLATED_CPUS}"
+fi
+if [[ -n "${REQUIRED_KERNEL_CMDLINE_CPUS}" ]]; then
+  IFS=',' read -r -a REQUIRED_KERNEL_CMDLINE_OPTION_LIST <<< "${REQUIRED_KERNEL_CMDLINE_OPTIONS:-isolcpus,nohz_full,rcu_nocbs}"
+  for option_name in "${REQUIRED_KERNEL_CMDLINE_OPTION_LIST[@]}"; do
+    option_name="${option_name//[[:space:]]/}"
+    [[ -n "${option_name}" ]] || continue
+    CPU_ISOLATION_VALIDATION_FLAGS+=" --require-kernel-cmdline-cpus ${option_name}=${REQUIRED_KERNEL_CMDLINE_CPUS}"
+  done
+fi
+YOLO_LATENCY_VALIDATION_FLAGS=""
+if [[ -n "${YOLO_MAX_ACQ_WORKER_P95_MS}" ]]; then
+  YOLO_LATENCY_VALIDATION_FLAGS+=" --max-yolo-acquisition-to-worker-start-p95-ms ${YOLO_MAX_ACQ_WORKER_P95_MS}"
+fi
+if [[ -n "${YOLO_MAX_ENQUEUE_DEQUEUE_P95_MS}" ]]; then
+  YOLO_LATENCY_VALIDATION_FLAGS+=" --max-yolo-enqueue-to-dequeue-p95-ms ${YOLO_MAX_ENQUEUE_DEQUEUE_P95_MS}"
+fi
+if [[ -n "${YOLO_MAX_DEQUEUE_WORKER_P95_MS}" ]]; then
+  YOLO_LATENCY_VALIDATION_FLAGS+=" --max-yolo-dequeue-to-worker-start-p95-ms ${YOLO_MAX_DEQUEUE_WORKER_P95_MS}"
+fi
+if [[ -n "${YOLO_MAX_SERVICE_GAP_P95_MS}" ]]; then
+  YOLO_LATENCY_VALIDATION_FLAGS+=" --max-yolo-same-camera-service-gap-p95-ms ${YOLO_MAX_SERVICE_GAP_P95_MS}"
+fi
 if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --max-external-crop-encode-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
 fi
 if [[ -n "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" ]]; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --max-external-crop-enqueue-age-p95-ms ${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}"
 fi
-COMPARE_VALIDATION_FLAGS="--require-pass --require-zero-crop-drops --require-visible-samples --require-hidden-samples --require-matching-cameras --require-matching-display-config --require-matching-crop-config --min-gui-visible-p05-fps 45 --min-gui-hidden-p05-fps 45"
+SOURCE_VERSION_VALIDATION_FLAGS=""
+SOURCE_DIRTY_TRACKED_DISPLAY="${SOURCE_DIRTY_TRACKED_EXPECTATION:-<not set>}"
+if [[ "${SOURCE_VERSION_REQUIRED}" == "1" ]]; then
+  SOURCE_VERSION_VALIDATION_FLAGS+=" --require-source-version"
+fi
+if [[ -n "${SOURCE_GIT_COMMAND_USER_MODE}" ]]; then
+  SOURCE_VERSION_VALIDATION_FLAGS+=" --expect-source-git-command-user-mode ${SOURCE_GIT_COMMAND_USER_MODE}"
+fi
+if [[ "${SOURCE_DIRTY_TRACKED_EXPECTATION}" == "auto" ]]; then
+  if git_status="$(git -C "${REPO_ROOT}" status --porcelain --untracked-files=no 2>/dev/null)"; then
+    if [[ -n "${git_status}" ]]; then
+      SOURCE_DIRTY_TRACKED_EXPECTATION="1"
+    else
+      SOURCE_DIRTY_TRACKED_EXPECTATION="0"
+    fi
+    SOURCE_DIRTY_TRACKED_DISPLAY="${SOURCE_DIRTY_TRACKED_EXPECTATION} (auto)"
+  else
+    SOURCE_DIRTY_TRACKED_EXPECTATION=""
+    SOURCE_DIRTY_TRACKED_DISPLAY="auto (git status unavailable)"
+  fi
+fi
+if [[ "${SOURCE_DIRTY_TRACKED_EXPECTATION}" == "0" ||
+      "${SOURCE_DIRTY_TRACKED_EXPECTATION}" == "1" ]]; then
+  SOURCE_VERSION_VALIDATION_FLAGS+=" --expect-source-dirty-tracked ${SOURCE_DIRTY_TRACKED_EXPECTATION}"
+fi
+MAIN_VIDEO_CONTENT_VALIDATION_FLAGS=""
+if [[ -n "${ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS}" ]]; then
+  MAIN_VIDEO_CONTENT_VALIDATION_FLAGS+=" --allow-main-video-content-failure ${ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS}"
+fi
+RECORDING_MODE_VALIDATION_FLAGS=""
+if [[ -n "${GUI_CLIP_SECONDS}" ]] &&
+      is_nonnegative_integer "${GUI_CLIP_SECONDS}" &&
+      (( GUI_CLIP_SECONDS > 0 )); then
+  ROLLING_RECORD_FOR_SECONDS="${GUI_RECORD_FOR_SECONDS}"
+  if [[ -z "${ROLLING_RECORD_FOR_SECONDS}" && "${GUI_AUTORUN}" == "1" ]]; then
+    ROLLING_RECORD_FOR_SECONDS="${GUI_AUTORUN_RECORD_SECONDS}"
+  fi
+  RECORDING_MODE_VALIDATION_FLAGS+=" --expect-recording-mode rolling_clips"
+  if [[ -n "${ROLLING_RECORD_FOR_SECONDS}" ]] &&
+        is_nonnegative_integer "${ROLLING_RECORD_FOR_SECONDS}" &&
+        (( ROLLING_RECORD_FOR_SECONDS > 0 )); then
+    RECORDING_MODE_VALIDATION_FLAGS+=" --expect-record-for-seconds ${ROLLING_RECORD_FOR_SECONDS}"
+  fi
+  RECORDING_MODE_VALIDATION_FLAGS+=" --expect-clip-seconds ${GUI_CLIP_SECONDS}"
+fi
+COMPARE_VALIDATION_FLAGS="--require-pass --require-zero-crop-drops --require-visible-samples --require-hidden-samples --require-matching-cameras --require-matching-display-config --require-matching-crop-config --require-matching-yolo-runtime-config --min-gui-visible-p05-fps 45 --min-gui-hidden-p05-fps 45"
 if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
   COMPARE_VALIDATION_FLAGS+=" --max-external-crop-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
 fi
@@ -507,6 +633,14 @@ Validation environment:
   ORANGE_GUI_EXPECT_CAMERAS=${EXPECT_CAMERAS:-<all JSON files in config folder>}
   ORANGE_PTP_REGISTER_READ_DECIMATE=${PTP_REGISTER_READ_DECIMATE}
   ORANGE_YOLO_DETACH_INPUT=${YOLO_DETACH_INPUT}
+  ORANGE_YOLO_AFFINITY_CAM_*=${YOLO_AFFINITY_PER_CAMERA_DISPLAY}
+  ORANGE_GUI_REQUIRE_ISOLATED_CPUS=${REQUIRED_ISOLATED_CPUS:-<not set>}
+  ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=${REQUIRED_KERNEL_CMDLINE_CPUS:-<not set>}
+  ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS=${REQUIRED_KERNEL_CMDLINE_OPTIONS:-<default if CPU list is set>}
+  ORANGE_GUI_MAX_YOLO_ACQUISITION_TO_WORKER_START_P95_MS=${YOLO_MAX_ACQ_WORKER_P95_MS:-<not set>}
+  ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS=${YOLO_MAX_ENQUEUE_DEQUEUE_P95_MS:-<not set>}
+  ORANGE_GUI_MAX_YOLO_DEQUEUE_TO_WORKER_START_P95_MS=${YOLO_MAX_DEQUEUE_WORKER_P95_MS:-<not set>}
+  ORANGE_GUI_MAX_YOLO_SAME_CAMERA_SERVICE_GAP_P95_MS=${YOLO_MAX_SERVICE_GAP_P95_MS:-<not set>}
   ORANGE_DEFAULT_DETECT_ENGINE=${DETECT_ENGINE}
   ORANGE_GUI_RECORDING_SINK_MODE=${ORANGE_GUI_RECORDING_SINK_MODE:-<app config/default>}
   ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}
@@ -536,6 +670,10 @@ Validation environment:
   ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}
   ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-<not set>}
   ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-<not set>}
+  ORANGE_GUI_REQUIRE_SOURCE_VERSION=${SOURCE_VERSION_REQUIRED}
+  ORANGE_GUI_EXPECT_SOURCE_GIT_COMMAND_USER_MODE=${SOURCE_GIT_COMMAND_USER_MODE:-<not set>}
+  ORANGE_GUI_EXPECT_SOURCE_DIRTY_TRACKED=${SOURCE_DIRTY_TRACKED_DISPLAY}
+  ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS=${ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS:-<not set>}
 
 Display session environment forwarded to the privileged GUI launch:
   DISPLAY=${DISPLAY_ENV:-<not set>}
@@ -559,11 +697,11 @@ session and mirrored rolling manifest with:
   scripts/verify_external_recorder_session.py --analytics-root <recording_folder>
 
 For crop-recording plus crop-preview validation, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete ${RECORDING_MODE_VALIDATION_FLAGS} --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} ${SOURCE_VERSION_VALIDATION_FLAGS} ${MAIN_VIDEO_CONTENT_VALIDATION_FLAGS} ${YOLO_AFFINITY_VALIDATION_FLAGS} ${CPU_ISOLATION_VALIDATION_FLAGS} ${YOLO_LATENCY_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
 For a run where crop preview windows were hidden at finalization, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete ${RECORDING_MODE_VALIDATION_FLAGS} --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} ${SOURCE_VERSION_VALIDATION_FLAGS} ${MAIN_VIDEO_CONTENT_VALIDATION_FLAGS} ${YOLO_AFFINITY_VALIDATION_FLAGS} ${CPU_ISOLATION_VALIDATION_FLAGS} ${YOLO_LATENCY_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
 For a run with ORANGE_CROP_PREVIEW_DISABLE=1, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete ${RECORDING_MODE_VALIDATION_FLAGS} --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} ${SOURCE_VERSION_VALIDATION_FLAGS} ${MAIN_VIDEO_CONTENT_VALIDATION_FLAGS} ${YOLO_AFFINITY_VALIDATION_FLAGS} ${CPU_ISOLATION_VALIDATION_FLAGS} ${YOLO_LATENCY_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
 Then compare visible and hidden runs with:
   scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json ${COMPARE_VALIDATION_FLAGS}
 EOF
@@ -582,8 +720,8 @@ ENV_ARGS=(
   "ORANGE_CROP_STAGE_SOURCE=${ORANGE_CROP_STAGE_SOURCE:-1}"
   "ORANGE_ANALYTICS_EARLY_OWNED_FRAME=${ORANGE_ANALYTICS_EARLY_OWNED_FRAME:-1}"
   "ORANGE_YOLO_DETACH_INPUT=${YOLO_DETACH_INPUT}"
-  "ORANGE_YOLO_AFFINITY_CAM_2010095=${ORANGE_YOLO_AFFINITY_CAM_2010095:-2}"
-  "ORANGE_YOLO_AFFINITY_CAM_2010096=${ORANGE_YOLO_AFFINITY_CAM_2010096:-4}"
+  "ORANGE_YOLO_AFFINITY_CAM_2010095=${YOLO_AFFINITY_CAM_2010095}"
+  "ORANGE_YOLO_AFFINITY_CAM_2010096=${YOLO_AFFINITY_CAM_2010096}"
   "ORANGE_YOLO_READY_EVENT_FASTPATH=${ORANGE_YOLO_READY_EVENT_FASTPATH:-1}"
   "ORANGE_PTP_REGISTER_READ_DECIMATE=${PTP_REGISTER_READ_DECIMATE}"
   "ORANGE_DEFAULT_DETECT_ENGINE=${DETECT_ENGINE}"
@@ -602,24 +740,38 @@ ENV_ARGS=(
   "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
   "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}"
 )
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  case "${var_name}" in
+    ORANGE_YOLO_AFFINITY_CAM_2010095|ORANGE_YOLO_AFFINITY_CAM_2010096)
+      continue
+      ;;
+  esac
+  ENV_ARGS+=("${var_name}=${!var_name}")
+done < <(compgen -e ORANGE_YOLO_AFFINITY_CAM_ | sort)
+if [[ -n "${ORANGE_YOLO_RT_PRIORITY:-}" ]]; then
+  ENV_ARGS+=("ORANGE_YOLO_RT_PRIORITY=${ORANGE_YOLO_RT_PRIORITY}")
+fi
+if [[ -n "${ORANGE_YOLO_RT_POLICY:-}" ]]; then
+  ENV_ARGS+=("ORANGE_YOLO_RT_POLICY=${ORANGE_YOLO_RT_POLICY}")
+fi
+while IFS= read -r var_name; do
+  [[ -n "${var_name}" ]] || continue
+  ENV_ARGS+=("${var_name}=${!var_name}")
+done < <(compgen -e ORANGE_YOLO_RT_PRIORITY_CAM_ | sort)
+if [[ -n "${ORANGE_RECORDING_DETECT_PRIORITY:-}" ]]; then
+  ENV_ARGS+=("ORANGE_RECORDING_DETECT_PRIORITY=${ORANGE_RECORDING_DETECT_PRIORITY}")
+fi
 if [[ -n "${GUI_RECORD_FOR_SECONDS}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_RECORD_FOR_SECONDS=${GUI_RECORD_FOR_SECONDS}")
 fi
 if [[ -n "${GUI_CLIP_SECONDS}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_CLIP_SECONDS=${GUI_CLIP_SECONDS}")
 fi
-if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_STREAM:-}" ]]; then
-  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_STREAM=${GUI_AUTORUN_ENABLE_STREAM}")
-fi
-if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_RECORD:-}" ]]; then
-  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}")
-fi
-if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_YOLO:-}" ]]; then
-  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}")
-fi
-if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_CROP:-}" ]]; then
-  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}")
-fi
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_STREAM=${GUI_AUTORUN_ENABLE_STREAM}")
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}")
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}")
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}")
 if [[ -n "${WAYLAND_DISPLAY_ENV}" ]]; then
   ENV_ARGS+=("WAYLAND_DISPLAY=${WAYLAND_DISPLAY_ENV}")
 fi
@@ -711,6 +863,19 @@ EOF
 Installed GUI privilege wrapper does not support ORANGE_GUI_FRAME_MAX_FPS.
 
 Reinstall it before running capped GUI validation:
+
+  sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
+EOF
+    exit 1
+  fi
+  if ! "${GUI_PRIVILEGE_WRAPPER}" \
+      --dry-run \
+      --orange-bin "${ORANGE_BIN}" \
+      --env "ORANGE_YOLO_AFFINITY_CAM_2010095=${YOLO_AFFINITY_CAM_2010095}" >/dev/null; then
+    cat >&2 <<EOF
+Installed GUI privilege wrapper does not support ORANGE_YOLO_AFFINITY_CAM_*.
+
+Reinstall it before running pinned YOLO-worker GUI validation:
 
   sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
 EOF

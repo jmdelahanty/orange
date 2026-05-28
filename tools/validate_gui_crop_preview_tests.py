@@ -536,6 +536,92 @@ def write_crop_recording_artifacts(
             )
 
 
+def write_crop_clip_artifacts(
+    clip_dir: Path,
+    serial: str,
+    first_frame: int,
+    last_frame: int,
+    *,
+    crop_size: int = 256,
+    metadata_rows_override: int | None = None,
+) -> dict:
+    clip_dir.mkdir(parents=True, exist_ok=True)
+    frame_count = last_frame - first_frame + 1
+    video = clip_dir / f"Cam{serial}_crop.mp4"
+    keyframes = clip_dir / f"Cam{serial}_crop_keyframe.json"
+    metadata = clip_dir / f"Cam{serial}_crop_meta.csv"
+    perf = clip_dir / f"Cam{serial}_crop_perf.csv"
+    video.write_bytes(b"external-crop-clip-mp4")
+    keyframes.write_text(json.dumps({"total_frames": frame_count}) + "\n", encoding="utf-8")
+
+    metadata_last = (
+        first_frame + metadata_rows_override - 1
+        if metadata_rows_override is not None
+        else last_frame
+    )
+    with metadata.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CROP_META_HEADER)
+        writer.writeheader()
+        for frame_id in range(first_frame, metadata_last + 1):
+            writer.writerow(
+                {
+                    "recording_frame_id": frame_id,
+                    "local_frame_id": frame_id,
+                    "camera_frame_id": 1000 + frame_id,
+                    "timestamp": frame_id * 10,
+                    "timestamp_sys": frame_id * 20,
+                    "has_detection": 1,
+                    "blank_frame": 0,
+                    "detection_confidence": 0.9,
+                    "crop_x": 10,
+                    "crop_y": 12,
+                    "crop_w": crop_size,
+                    "crop_h": crop_size,
+                    "detection_x": 20,
+                    "detection_y": 22,
+                    "detection_w": 30,
+                    "detection_h": 32,
+                }
+            )
+    with perf.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=CROP_PERF_HEADER)
+        writer.writeheader()
+        for frame_id in range(first_frame, last_frame + 1):
+            writer.writerow(
+                {
+                    "recording_frame_id": frame_id,
+                    "local_frame_id": frame_id,
+                    "camera_frame_id": 1000 + frame_id,
+                    "dropped": 0,
+                    "drop_reason": "",
+                }
+            )
+    return {
+        "clip_index": int(clip_dir.name.split("_")[-1]),
+        "clip_id": clip_dir.name,
+        "status": "completed",
+        "stream_id": f"{serial}_crop",
+        "video": str(video),
+        "metadata": str(metadata),
+        "perf": str(perf),
+        "keyframes": str(keyframes),
+        "frame_count": frame_count,
+        "first_recording_frame_id": first_frame,
+        "last_recording_frame_id": last_frame,
+        "recording_frame_id_gaps": 0,
+        "packet_count": frame_count,
+        "packet_count_source": "external_crop_recorder_summary.packets_written",
+        "metadata_rows": frame_count if metadata_rows_override is None else metadata_rows_override,
+        "perf_rows": frame_count,
+        "width": crop_size,
+        "height": crop_size,
+        "frame_rate": 100,
+        "codec": "hevc",
+        "container": "mp4",
+        "tuning": "lossless",
+    }
+
+
 def write_rolling_full_frame_manifest(
     recording_folder: Path,
     serial: str,
@@ -543,7 +629,13 @@ def write_rolling_full_frame_manifest(
     clip_frame_counts: tuple[int, ...] = (2, 3),
     record_for_seconds: int = 5,
     clip_seconds: int = 2,
+    crop_rolling_clips: dict[str, list[dict]] | None = None,
 ) -> dict:
+    crop_clips_by_index: dict[tuple[str, int], dict] = {}
+    if crop_rolling_clips:
+        for crop_serial, crop_clips in crop_rolling_clips.items():
+            for crop_clip in crop_clips:
+                crop_clips_by_index[(crop_serial, int(crop_clip["clip_index"]))] = crop_clip
     clips = []
     next_frame = 1
     clips_dir = recording_folder / "clips"
@@ -575,14 +667,54 @@ def write_rolling_full_frame_manifest(
             "packet_count": frame_count,
             "packet_count_source": "external_recorder_summary.packets_written",
         }
-        clips.append(
-            {
-                "clip_index": clip_index,
-                "clip_id": f"clip_{clip_index:06d}",
-                "status": "completed",
-                "camera_artifacts": {serial: artifact},
+        clip_record = {
+            "clip_index": clip_index,
+            "clip_id": f"clip_{clip_index:06d}",
+            "status": "completed",
+            "camera_artifacts": {serial: artifact},
+        }
+        crop_clip = crop_clips_by_index.get((serial, clip_index))
+        if crop_clip:
+            clip_record["recording_outputs"] = {
+                serial: {
+                    "full": {
+                        "output_kind": "full",
+                        "role": "ingest_authoritative",
+                        "backend": "external_ipc",
+                        "status": "completed",
+                        "video": artifact["video"],
+                        "metadata": artifact["metadata"],
+                        "keyframes": artifact["keyframes"],
+                        "frame_count": artifact["frame_count"],
+                        "packet_count": artifact["packet_count"],
+                        "packet_count_source": artifact["packet_count_source"],
+                    },
+                    "crop": {
+                        "output_kind": "crop",
+                        "role": "sidecar",
+                        "backend": "external_ipc",
+                        "status": crop_clip.get("status", "completed"),
+                        "video": crop_clip.get("video"),
+                        "metadata": crop_clip.get("metadata"),
+                        "perf": crop_clip.get("perf"),
+                        "keyframes": crop_clip.get("keyframes"),
+                        "summary": crop_clip.get("summary"),
+                        "frame_count": crop_clip.get("frame_count"),
+                        "first_recording_frame_id": crop_clip.get("first_recording_frame_id"),
+                        "last_recording_frame_id": crop_clip.get("last_recording_frame_id"),
+                        "recording_frame_id_gaps": crop_clip.get("recording_frame_id_gaps", 0),
+                        "packet_count": crop_clip.get("packet_count"),
+                        "packet_count_source": crop_clip.get("packet_count_source"),
+                        "width": crop_clip.get("width"),
+                        "height": crop_clip.get("height"),
+                        "frame_rate": crop_clip.get("frame_rate"),
+                        "codec": crop_clip.get("codec"),
+                        "container": crop_clip.get("container"),
+                        "tuning": crop_clip.get("tuning"),
+                    }
+                }
             }
-        )
+        clips.append(clip_record)
 
     (recording_folder / "recording_clip_index.json").write_text(
         json.dumps({"mode": "rolling_clips", "row_count": len(clips)}) + "\n",
@@ -594,13 +726,21 @@ def write_rolling_full_frame_manifest(
         encoding="utf-8",
     )
 
+    recording_backend = {"mode": "external_ipc", "status": "completed"}
+    if crop_rolling_clips:
+        recording_backend["crop_recording"] = {
+            "mode": "external_ipc",
+            "status": "completed",
+            "rolling_clips": crop_rolling_clips,
+        }
+
     manifest = {
         "schema_id": "orange.recording_session",
         "schema_version": 1,
         "producer": "orange_gui_external_ipc",
         "mode": "rolling_clips",
         "status": "completed",
-        "recording_backend": {"mode": "external_ipc", "status": "completed"},
+        "recording_backend": recording_backend,
         "recording_control": {
             "record_for_seconds": record_for_seconds,
             "clip_seconds": clip_seconds,
@@ -723,50 +863,79 @@ def write_external_crop_recording_session_manifest(
     enqueue_age_p95_ms: float = 2.25,
     analytics_gpu_id: int = 5,
     recorder_gpu_id: int = 5,
+    rolling: bool = False,
+    rolling_clips: list[dict] | None = None,
+    record_for_seconds: int = 6,
+    clip_seconds: int = 2,
 ) -> None:
     summary_json = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_summary.json"
     status_json = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_status.json"
-    recording_control = {"record_for_seconds": 0, "clip_seconds": 0}
-    rollover = {
-        "requested": False,
-        "status": "not_requested",
-        "implementation": "none",
-        "seamless_writer_switch": False,
-        "records_during_rollover": False,
-        "output_kind": "crop",
-        "supported_mode": "single_clip",
-        "rolling_supported": False,
+    external_video = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external.mp4"
+    external_keyframes = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_keyframe.json"
+    recording_control = {
+        "record_for_seconds": record_for_seconds if rolling else 0,
+        "clip_seconds": clip_seconds if rolling else 0,
     }
+    if rolling:
+        rollover = {
+            "requested": True,
+            "status": "completed",
+            "implementation": "external_recorder_gop_boundary_writer_rotation",
+            "seamless_writer_switch": True,
+            "records_during_rollover": True,
+            "boundary": "recording_frame_id",
+            "output_kind": "crop",
+            "supported_mode": "rolling_clips",
+            "rolling_supported": True,
+        }
+    else:
+        rollover = {
+            "requested": False,
+            "status": "not_requested",
+            "implementation": "none",
+            "seamless_writer_switch": False,
+            "records_during_rollover": False,
+            "output_kind": "crop",
+            "supported_mode": "single_clip",
+            "rolling_supported": False,
+        }
+    crop_recording = {
+        "mode": "external_ipc",
+        "status": "completed",
+        "recording_control": recording_control,
+        "rollover": rollover,
+        "summary_json": {serial: str(summary_json)},
+        "merged_mp4": {serial: str(external_video)},
+        "keyframes": {serial: str(external_keyframes)},
+        "stream_config": {
+            serial: {
+                "stream_id": f"{serial}_crop",
+                "analytics_gpu_id": analytics_gpu_id,
+                "recorder_gpu_id": recorder_gpu_id,
+                "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
+                "encode_queue_depth": queue_depth,
+                "summary_json": str(summary_json),
+                "status_json": str(status_json),
+                "recording_control": recording_control,
+                "rollover": rollover,
+            }
+        },
+        "frames_received": {serial: frames_received},
+        "frames_encoded": {serial: frames_encoded},
+        "encode_dropped": {serial: encode_dropped},
+        "external_frames_dropped": {serial: external_frames_dropped},
+        "encode_queue_depth": {serial: queue_depth},
+        "encode_queue_high_water": {serial: queue_high_water},
+        "enqueue_age_p95_ms": {serial: enqueue_age_p95_ms},
+    }
+    if rolling and rolling_clips is not None:
+        crop_recording["rolling_clips"] = {serial: rolling_clips}
     (recording_folder / "recording_session.json").write_text(
         json.dumps(
             {
+                "mode": "rolling_clips" if rolling else "single_clip",
                 "recording_backend": {
-                    "crop_recording": {
-                        "mode": "external_ipc",
-                        "status": "completed",
-                        "recording_control": recording_control,
-                        "rollover": rollover,
-                        "stream_config": {
-                            serial: {
-                                "stream_id": f"{serial}_crop",
-                                "analytics_gpu_id": analytics_gpu_id,
-                                "recorder_gpu_id": recorder_gpu_id,
-                                "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
-                                "encode_queue_depth": queue_depth,
-                                "summary_json": str(summary_json),
-                                "status_json": str(status_json),
-                                "recording_control": recording_control,
-                                "rollover": rollover,
-                            }
-                        },
-                        "frames_received": {serial: frames_received},
-                        "frames_encoded": {serial: frames_encoded},
-                        "encode_dropped": {serial: encode_dropped},
-                        "external_frames_dropped": {serial: external_frames_dropped},
-                        "encode_queue_depth": {serial: queue_depth},
-                        "encode_queue_high_water": {serial: queue_high_water},
-                        "enqueue_age_p95_ms": {serial: enqueue_age_p95_ms},
-                    }
+                    "crop_recording": crop_recording
                 }
             }
         )
@@ -782,21 +951,40 @@ def write_external_crop_contract(
     queue_depth: int = 64,
     analytics_gpu_id: int = 5,
     recorder_gpu_id: int = 6,
+    rolling: bool = False,
+    record_for_seconds: int = 6,
+    clip_seconds: int = 2,
 ) -> None:
     artifact_root = recording_folder / "external_crop_recorder"
     summary_json = artifact_root / f"Cam{serial}_crop_external_summary.json"
     status_json = artifact_root / f"Cam{serial}_crop_external_status.json"
-    recording_control = {"record_for_seconds": 0, "clip_seconds": 0}
-    rollover = {
-        "requested": False,
-        "status": "not_requested",
-        "implementation": "none",
-        "seamless_writer_switch": False,
-        "records_during_rollover": False,
-        "output_kind": "crop",
-        "supported_mode": "single_clip",
-        "rolling_supported": False,
+    recording_control = {
+        "record_for_seconds": record_for_seconds if rolling else 0,
+        "clip_seconds": clip_seconds if rolling else 0,
     }
+    if rolling:
+        rollover = {
+            "requested": True,
+            "status": "supported",
+            "implementation": "external_recorder_gop_boundary_writer_rotation",
+            "seamless_writer_switch": True,
+            "records_during_rollover": True,
+            "boundary": "recording_frame_id",
+            "output_kind": "crop",
+            "supported_mode": "rolling_clips",
+            "rolling_supported": True,
+        }
+    else:
+        rollover = {
+            "requested": False,
+            "status": "not_requested",
+            "implementation": "none",
+            "seamless_writer_switch": False,
+            "records_during_rollover": False,
+            "output_kind": "crop",
+            "supported_mode": "single_clip",
+            "rolling_supported": False,
+        }
     (recording_folder / "external_crop_recorder_contract.json").write_text(
         json.dumps(
             {
@@ -1818,8 +2006,218 @@ def test_crop_recording_artifacts_fail_on_external_crop_rollover_request() -> No
             require_external_crop_backend_metadata=True,
         )
         require(
-            any("crop rolling is not supported" in failure for failure in reporter.failures),
+            any("crop rolling requires rolling_clips metadata" in failure for failure in reporter.failures),
             f"external crop rollover request should fail: {reporter.failures}",
+        )
+
+
+def test_crop_recording_artifacts_accept_external_crop_rolling_clips() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_crop_recording_artifacts(root, serial, rows=5)
+        (root / f"Cam{serial}_crop.mp4").unlink()
+        (root / f"Cam{serial}_crop_keyframe.json").unlink()
+
+        external_root = root / "external_crop_recorder"
+        external_root.mkdir()
+        external_video = external_root / f"Cam{serial}_crop_external.mp4"
+        external_keyframes = external_root / f"Cam{serial}_crop_external_keyframe.json"
+        external_summary = external_root / f"Cam{serial}_crop_external_summary.json"
+        external_video.write_bytes(b"external-crop-mp4")
+        external_keyframes.write_text(json.dumps({"total_frames": 5}) + "\n", encoding="utf-8")
+        write_external_crop_summary(
+            external_summary,
+            5,
+            queue_depth=64,
+            queue_high_water=12,
+            enqueue_age_p95_ms=2.25,
+        )
+        rolling_clips = [
+            write_crop_clip_artifacts(root / "clips" / "clip_000000", serial, 1, 2),
+            write_crop_clip_artifacts(root / "clips" / "clip_000001", serial, 3, 5),
+        ]
+        write_external_crop_contract(root, serial, rolling=True)
+        write_external_crop_recording_session_manifest(
+            root,
+            serial,
+            frames_received=5,
+            frames_encoded=5,
+            queue_depth=64,
+            queue_high_water=12,
+            enqueue_age_p95_ms=2.25,
+            rolling=True,
+            rolling_clips=rolling_clips,
+            record_for_seconds=6,
+            clip_seconds=2,
+        )
+
+        snapshot = crop_snapshot(serial)
+        snapshot["recording_outputs"] = {
+            serial: {
+                "crop": {
+                    "output_kind": "crop",
+                    "role": "sidecar",
+                    "backend": "external_ipc",
+                    "status": "completed",
+                    "video": str(external_video),
+                    "metadata": f"Cam{serial}_crop_meta.csv",
+                    "keyframes": str(external_keyframes),
+                    "perf": f"Cam{serial}_crop_perf.csv",
+                    "summary": str(external_summary),
+                    "frame_count": 5,
+                    "details": {
+                        "scope": "session_aggregate",
+                        "stream_id": f"{serial}_crop",
+                        "analytics_gpu_id": 5,
+                        "recorder_gpu_id": 5,
+                        "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
+                        "encode_queue_depth": 64,
+                        "summary_json": str(external_summary),
+                        "status_json": str(external_root / f"Cam{serial}_crop_external_status.json"),
+                    },
+                }
+            }
+        }
+        reporter, summary = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=5,
+            require_external_crop_backend_metadata=True,
+        )
+        require(not reporter.failures, f"unexpected failures: {reporter.failures}")
+        require(summary[serial]["backend"] == "external_ipc", "external crop backend should be summarized")
+        require(summary[serial]["rolling_clip_count"] == 2, "crop rolling clip count should be summarized")
+
+
+def test_crop_recording_artifacts_fail_on_stale_external_crop_rolling_descriptor() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_crop_recording_artifacts(root, serial, rows=5)
+        (root / f"Cam{serial}_crop.mp4").unlink()
+        (root / f"Cam{serial}_crop_keyframe.json").unlink()
+
+        external_root = root / "external_crop_recorder"
+        external_root.mkdir()
+        external_video = external_root / f"Cam{serial}_crop_external.mp4"
+        external_keyframes = external_root / f"Cam{serial}_crop_external_keyframe.json"
+        external_summary = external_root / f"Cam{serial}_crop_external_summary.json"
+        external_video.write_bytes(b"external-crop-mp4")
+        external_keyframes.write_text(json.dumps({"total_frames": 5}) + "\n", encoding="utf-8")
+        write_external_crop_summary(
+            external_summary,
+            5,
+            queue_depth=64,
+            queue_high_water=12,
+            enqueue_age_p95_ms=2.25,
+        )
+        rolling_clips = [
+            write_crop_clip_artifacts(root / "clips" / "clip_000000", serial, 1, 2),
+            write_crop_clip_artifacts(root / "clips" / "clip_000001", serial, 3, 5),
+        ]
+        write_external_crop_contract(root, serial, rolling=True)
+        write_external_crop_recording_session_manifest(
+            root,
+            serial,
+            frames_received=5,
+            frames_encoded=5,
+            queue_depth=64,
+            queue_high_water=12,
+            enqueue_age_p95_ms=2.25,
+            rolling=True,
+            rolling_clips=rolling_clips,
+            record_for_seconds=6,
+            clip_seconds=2,
+        )
+
+        snapshot = crop_snapshot(serial)
+        snapshot["recording_outputs"] = {
+            serial: {
+                "crop": {
+                    "backend": "in_process",
+                    "video": f"Cam{serial}_crop.mp4",
+                    "metadata": f"Cam{serial}_crop_meta.csv",
+                    "keyframes": f"Cam{serial}_crop_keyframe.json",
+                    "perf": f"Cam{serial}_crop_perf.csv",
+                }
+            }
+        }
+        reporter, _ = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=5,
+            require_external_crop_backend_metadata=True,
+        )
+        require(
+            any("session-aggregate crop recording_output backend" in failure for failure in reporter.failures),
+            f"stale rolling crop descriptor should fail strict metadata gate: {reporter.failures}",
+        )
+
+
+def test_crop_recording_artifacts_fail_on_external_crop_rolling_clip_row_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_crop_recording_artifacts(root, serial, rows=5)
+        (root / f"Cam{serial}_crop.mp4").unlink()
+        (root / f"Cam{serial}_crop_keyframe.json").unlink()
+
+        external_root = root / "external_crop_recorder"
+        external_root.mkdir()
+        external_video = external_root / f"Cam{serial}_crop_external.mp4"
+        external_keyframes = external_root / f"Cam{serial}_crop_external_keyframe.json"
+        external_summary = external_root / f"Cam{serial}_crop_external_summary.json"
+        external_video.write_bytes(b"external-crop-mp4")
+        external_keyframes.write_text(json.dumps({"total_frames": 5}) + "\n", encoding="utf-8")
+        write_external_crop_summary(external_summary, 5, queue_depth=64, queue_high_water=12)
+        rolling_clips = [
+            write_crop_clip_artifacts(
+                root / "clips" / "clip_000000",
+                serial,
+                1,
+                2,
+                metadata_rows_override=1,
+            ),
+            write_crop_clip_artifacts(root / "clips" / "clip_000001", serial, 3, 5),
+        ]
+        write_external_crop_contract(root, serial, rolling=True)
+        write_external_crop_recording_session_manifest(
+            root,
+            serial,
+            frames_received=5,
+            frames_encoded=5,
+            queue_depth=64,
+            queue_high_water=12,
+            rolling=True,
+            rolling_clips=rolling_clips,
+        )
+
+        snapshot = crop_snapshot(serial)
+        snapshot["recording_outputs"] = {
+            serial: {
+                "crop": {
+                    "backend": "external_ipc",
+                    "video": str(external_video),
+                    "metadata": f"Cam{serial}_crop_meta.csv",
+                    "keyframes": str(external_keyframes),
+                    "perf": f"Cam{serial}_crop_perf.csv",
+                    "summary": str(external_summary),
+                }
+            }
+        }
+        reporter, _ = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=5,
+            require_external_crop_backend_metadata=True,
+        )
+        require(
+            any("rolling crop clip 0 crop metadata rows" in failure for failure in reporter.failures),
+            f"rolling crop metadata row mismatch should fail: {reporter.failures}",
         )
 
 
@@ -2485,6 +2883,54 @@ def test_recording_session_manifest_fails_on_rolling_frame_gap() -> None:
         )
 
 
+def test_recording_session_manifest_accepts_rolling_crop_outputs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        crop_clips = {
+            serial: [
+                write_crop_clip_artifacts(root / "clips" / "clip_000000", serial, 1, 2),
+                write_crop_clip_artifacts(root / "clips" / "clip_000001", serial, 3, 5),
+            ]
+        }
+        snapshot = write_rolling_full_frame_manifest(
+            root,
+            serial,
+            crop_rolling_clips=crop_clips,
+        )
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
+        require(not reporter.failures, f"rolling crop outputs should pass: {reporter.failures}")
+
+
+def test_recording_session_manifest_fails_when_rolling_crop_output_missing() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        crop_clips = {
+            serial: [
+                write_crop_clip_artifacts(root / "clips" / "clip_000000", serial, 1, 2),
+                write_crop_clip_artifacts(root / "clips" / "clip_000001", serial, 3, 5),
+            ]
+        }
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        manifest_path = root / "recording_session.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["recording_backend"]["crop_recording"] = {
+            "mode": "external_ipc",
+            "status": "completed",
+            "rolling_clips": crop_clips,
+        }
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
+        require(
+            any("crop recording_output missing" in failure for failure in reporter.failures),
+            f"missing rolling crop clip output should fail: {reporter.failures}",
+        )
+
+
 def test_rolling_clip_videos_are_complete_recording_candidates() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2578,6 +3024,379 @@ def test_legacy_snapshot_without_crop_outputs_checks_requested_cameras() -> None
         require(set(summary) == {"2010095"}, "legacy snapshot should fall back to requested cameras")
 
 
+def test_source_version_validation_accepts_sudo_invoking_user_git() -> None:
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    snapshot = {
+        "producer_version": "0123456789ab",
+        "source_version": {
+            "schema_version": 1,
+            "captured_at_utc": "2026-05-28T12:00:00Z",
+            "vcs": "git",
+            "available": True,
+            "worktree": "/home/jeremy/orange-gop-split-a16",
+            "branch": "exp/gop-split-a16",
+            "commit": commit,
+            "commit_short": "0123456789ab",
+            "describe": "0123456-dirty",
+            "git_command_available": True,
+            "git_command_user": {
+                "mode": "sudo_invoking_user",
+                "uid": 1000,
+                "gid": 1000,
+            },
+            "dirty_tracked_available": True,
+            "dirty_tracked": True,
+            "status_porcelain_tracked": " M src/project.cpp",
+        },
+    }
+    reporter = validator.Reporter(verbose=False)
+    validator.check_source_version(
+        reporter,
+        snapshot,
+        require_source_version=True,
+        expected_git_command_user_mode="sudo_invoking_user",
+        expected_dirty_tracked=1,
+    )
+    require(not reporter.failures, f"source version validation should pass: {reporter.failures}")
+
+
+def test_source_version_validation_fails_when_git_user_is_root() -> None:
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    snapshot = {
+        "producer_version": "0123456789ab",
+        "source_version": {
+            "schema_version": 1,
+            "vcs": "git",
+            "available": True,
+            "worktree": "/home/jeremy/orange-gop-split-a16",
+            "commit": commit,
+            "commit_short": "0123456789ab",
+            "git_command_available": True,
+            "git_command_user": {
+                "mode": "process_euid",
+                "uid": 0,
+            },
+            "dirty_tracked_available": True,
+            "dirty_tracked": False,
+        },
+    }
+    reporter = validator.Reporter(verbose=False)
+    validator.check_source_version(
+        reporter,
+        snapshot,
+        require_source_version=True,
+        expected_git_command_user_mode="sudo_invoking_user",
+        expected_dirty_tracked=None,
+    )
+    require(
+        any("git_command_user.mode" in failure for failure in reporter.failures),
+        f"root git command user should fail sudo-invoking-user gate: {reporter.failures}",
+    )
+
+
+def test_yolo_affinity_validation_accepts_snapshot_and_perf_csv() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010093"
+        snapshot = {
+            "session": {
+                "yolo_worker": {
+                    "schema_version": 1,
+                    "affinity": {
+                        "source": "environment",
+                        "per_camera": {
+                            serial: {
+                                "configured": True,
+                                "source": "per_camera_environment",
+                                "env_key": f"ORANGE_YOLO_AFFINITY_CAM_{serial}",
+                                "requested_cpus": "6",
+                            }
+                        },
+                    },
+                }
+            }
+        }
+        (root / f"Cam{serial}_yolo_perf.csv").write_text(
+            "frame_id,yolo_affinity_configured,yolo_affinity_applied,"
+            "yolo_affinity_env_key,yolo_affinity_requested_cpus,"
+            "yolo_affinity_effective_cpus\n"
+            f"1,1,1,ORANGE_YOLO_AFFINITY_CAM_{serial},6,6\n",
+            encoding="utf-8",
+        )
+        reporter = validator.Reporter(verbose=False)
+
+        validator.check_yolo_affinity(reporter, root, snapshot, {serial: 6})
+
+        require(not reporter.failures, f"YOLO affinity validation should pass: {reporter.failures}")
+
+
+def test_yolo_affinity_validation_fails_on_effective_cpu_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010093"
+        snapshot = {
+            "session": {
+                "yolo_worker": {
+                    "affinity": {
+                        "per_camera": {
+                            serial: {
+                                "configured": True,
+                                "requested_cpus": "6",
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (root / f"Cam{serial}_yolo_perf.csv").write_text(
+            "frame_id,yolo_affinity_configured,yolo_affinity_applied,"
+            "yolo_affinity_requested_cpus,yolo_affinity_effective_cpus\n"
+            "1,1,1,6,8\n",
+            encoding="utf-8",
+        )
+        reporter = validator.Reporter(verbose=False)
+
+        validator.check_yolo_affinity(reporter, root, snapshot, {serial: 6})
+
+        require(
+            any("effective_cpus" in failure for failure in reporter.failures),
+            "YOLO affinity validation should fail when effective CPU differs",
+        )
+
+
+def test_yolo_validation_checks_wakeup_and_service_thresholds() -> None:
+    serial = "2010093"
+    summary = {
+        "yolo": {
+            serial: {
+                "rows": 2,
+                "ok_rows": 2,
+                "metrics": {
+                    "acquisition_to_detect_done_ms": {
+                        "p95": 4.0,
+                        "steady_p95": 4.0,
+                    },
+                    "yolo_queue_wait_ms": {"p95": 0.05},
+                    "acquisition_to_worker_start_ms": {"p95": 1.5},
+                    "yolo_enqueue_to_dequeue_ms": {"p95": 0.7},
+                    "yolo_dequeue_to_worker_start_ms": {"p95": 0.2},
+                    "same_camera_service_gap_ms": {"p95": 18.0},
+                },
+            }
+        }
+    }
+    reporter = validator.Reporter(verbose=False)
+
+    validator.check_yolo(
+        reporter,
+        summary,
+        [serial],
+        max_queue_p95_ms=1.0,
+        max_acquisition_to_worker_start_p95_ms=2.0,
+        max_enqueue_to_dequeue_p95_ms=1.0,
+        max_dequeue_to_worker_start_p95_ms=0.5,
+        max_same_camera_service_gap_p95_ms=15.0,
+        max_steady_p95_ms=None,
+        max_ptp_done_p95_ms=None,
+    )
+
+    require(
+        any("same_camera_service_gap" in failure for failure in reporter.failures),
+        "YOLO validation should fail when service-gap p95 exceeds threshold",
+    )
+    require(
+        not any("acquisition_to_worker_start" in failure for failure in reporter.failures),
+        "YOLO validation should pass acquisition-to-worker threshold",
+    )
+
+
+def test_system_cpu_isolation_validation_accepts_required_cpus() -> None:
+    snapshot = {
+        "session": {
+            "system_cpu": {
+                "isolated_cpus": {
+                    "available": True,
+                    "parse_ok": True,
+                    "raw": "1-2,6,8,10,12",
+                    "cpus": [1, 2, 6, 8, 10, 12],
+                }
+            }
+        }
+    }
+    reporter = validator.Reporter(verbose=False)
+
+    validator.check_system_cpu_isolation(reporter, snapshot, [6, 8, 10, 12])
+
+    require(not reporter.failures, f"unexpected failures: {reporter.failures}")
+
+
+def test_system_cpu_cmdline_validation_accepts_required_cpus() -> None:
+    snapshot = {
+        "session": {
+            "system_cpu": {
+                "isolated_cpus": {
+                    "available": True,
+                    "parse_ok": True,
+                    "raw": "1-2,6,8,10,12,38,40,42,44",
+                    "cpus": [1, 2, 6, 8, 10, 12, 38, 40, 42, 44],
+                },
+                "kernel_cmdline": {
+                    "available": True,
+                    "options": {
+                        "isolcpus": "domain,managed_irq,1-2,6,8,10,12,38,40,42,44",
+                        "nohz_full": "1-2,6,8,10,12,38,40,42,44",
+                        "rcu_nocbs": "1-2,6,8,10,12,38,40,42,44",
+                    },
+                },
+            }
+        }
+    }
+    reporter = validator.Reporter(verbose=False)
+
+    validator.check_system_cpu_isolation(
+        reporter,
+        snapshot,
+        [6, 8, 10, 12, 38, 40, 42, 44],
+        {
+            "isolcpus": [6, 8, 10, 12, 38, 40, 42, 44],
+            "nohz_full": [6, 8, 10, 12, 38, 40, 42, 44],
+            "rcu_nocbs": [6, 8, 10, 12, 38, 40, 42, 44],
+        },
+    )
+
+    require(not reporter.failures, f"unexpected failures: {reporter.failures}")
+    require(
+        validator.normalized_system_cpu_kernel_cmdline_options(snapshot["session"]["system_cpu"]) == [
+            "isolcpus=cpus:1-2,6,8,10,12,38,40,42,44;flags:domain|managed_irq",
+            "nohz_full=cpus:1-2,6,8,10,12,38,40,42,44",
+            "rcu_nocbs=cpus:1-2,6,8,10,12,38,40,42,44",
+        ],
+        "validator should expose normalized system CPU boot options for JSON summaries",
+    )
+
+
+def test_system_cpu_cmdline_validation_fails_when_option_missing_cpu() -> None:
+    snapshot = {
+        "session": {
+            "system_cpu": {
+                "kernel_cmdline": {
+                    "available": True,
+                    "options": {
+                        "nohz_full": "1-2,6",
+                    },
+                },
+            }
+        }
+    }
+    reporter = validator.Reporter(verbose=False)
+
+    validator.check_system_cpu_isolation(
+        reporter,
+        snapshot,
+        [],
+        {"nohz_full": [6, 8]},
+    )
+
+    require(
+        any(
+            "kernel cmdline nohz_full CPUs 1,2,6 missing required 8" in failure
+            for failure in reporter.failures
+        ),
+        "kernel cmdline CPU check should fail when a required CPU is absent",
+    )
+
+
+def test_system_cpu_isolation_validation_fails_when_cpu_missing() -> None:
+    snapshot = {
+        "session": {
+            "system_cpu": {
+                "isolated_cpus": {
+                    "available": True,
+                    "parse_ok": True,
+                    "raw": "1-2,6",
+                    "cpus": [1, 2, 6],
+                }
+            }
+        }
+    }
+    reporter = validator.Reporter(verbose=False)
+
+    validator.check_system_cpu_isolation(reporter, snapshot, [6, 8])
+
+    require(
+        any("missing required 8" in failure for failure in reporter.failures),
+        "isolated CPU check should fail when a required CPU is absent",
+    )
+
+
+def check_main_video_content_failure_allowlist(
+    allowed_content_failure_serials: set[str],
+) -> validator.Reporter:
+    reporter = validator.Reporter(verbose=False)
+    summary = {
+        "videos": {
+            "2010093": {
+                "status": "ok",
+                "frames": 100,
+                "width": 4512,
+                "height": 4512,
+                "bitrate_bps": 5_000_000,
+                "path": "/tmp/no_lens.mp4",
+            }
+        }
+    }
+    original_video_content_sanity = validator.video_content_sanity
+
+    def fake_video_content_sanity(*_args: object, **_kwargs: object) -> dict:
+        return {
+            "content_valid": False,
+            "status": "black_frame",
+            "detail": "",
+            "mean_luma": 0.0,
+            "max_stddev": 0.0,
+            "max_black_fraction_lt8": 1.0,
+        }
+
+    validator.video_content_sanity = fake_video_content_sanity
+    try:
+        validator.check_videos(
+            reporter,
+            summary,
+            ["2010093"],
+            "ffprobe",
+            "ffmpeg",
+            50.0,
+            False,
+            allowed_content_failure_serials,
+            0.98,
+            5.0,
+        )
+    finally:
+        validator.video_content_sanity = original_video_content_sanity
+    return reporter
+
+
+def test_main_video_content_failure_fails_by_default() -> None:
+    reporter = check_main_video_content_failure_allowlist(set())
+    require(
+        any("bitrate 5.0 Mbps below 50.0 Mbps" in failure for failure in reporter.failures),
+        "low-bitrate main video should fail by default",
+    )
+    require(
+        any("decoded video sanity failed: black_frame" in failure for failure in reporter.failures),
+        "black main video should fail by default",
+    )
+
+
+def test_main_video_content_failure_can_be_allowed_per_camera() -> None:
+    reporter = check_main_video_content_failure_allowlist({"2010093"})
+    require(not reporter.failures, f"allowed no-lens content should not fail: {reporter.failures}")
+    require(
+        any("allowed main-video content failure" in warning for warning in reporter.warnings),
+        "allowed no-lens content should still be visible as warnings",
+    )
+
+
 def main() -> int:
     tests = [
         test_requires_only_crop_enabled_cameras,
@@ -2616,6 +3435,9 @@ def main() -> int:
         test_crop_recording_artifacts_require_external_backend_metadata,
         test_crop_recording_artifacts_external_backend_manifest_matches_summary,
         test_crop_recording_artifacts_fail_on_external_crop_rollover_request,
+        test_crop_recording_artifacts_accept_external_crop_rolling_clips,
+        test_crop_recording_artifacts_fail_on_stale_external_crop_rolling_descriptor,
+        test_crop_recording_artifacts_fail_on_external_crop_rolling_clip_row_mismatch,
         test_crop_recording_artifacts_external_recorder_gpu_expectations,
         test_crop_recording_artifacts_external_recorder_gpu_uses_contract_fallback,
         test_crop_recording_artifacts_external_recorder_gpu_separation_gate,
@@ -2629,12 +3451,25 @@ def main() -> int:
         test_recording_session_manifest_fails_on_expected_recording_mode_mismatch,
         test_recording_session_manifest_fails_on_expected_control_mismatch,
         test_recording_session_manifest_fails_on_rolling_frame_gap,
+        test_recording_session_manifest_accepts_rolling_crop_outputs,
+        test_recording_session_manifest_fails_when_rolling_crop_output_missing,
         test_rolling_clip_videos_are_complete_recording_candidates,
         test_crop_recording_artifacts_fail_on_perf_row_mismatch,
         test_crop_recording_artifacts_fail_on_keyframe_row_mismatch,
         test_crop_recording_artifacts_fail_on_dropped_rows,
         test_crop_recording_artifacts_fail_on_yolo_row_mismatch,
         test_legacy_snapshot_without_crop_outputs_checks_requested_cameras,
+        test_source_version_validation_accepts_sudo_invoking_user_git,
+        test_source_version_validation_fails_when_git_user_is_root,
+        test_yolo_validation_checks_wakeup_and_service_thresholds,
+        test_yolo_affinity_validation_accepts_snapshot_and_perf_csv,
+        test_yolo_affinity_validation_fails_on_effective_cpu_mismatch,
+        test_system_cpu_isolation_validation_accepts_required_cpus,
+        test_system_cpu_cmdline_validation_accepts_required_cpus,
+        test_system_cpu_cmdline_validation_fails_when_option_missing_cpu,
+        test_system_cpu_isolation_validation_fails_when_cpu_missing,
+        test_main_video_content_failure_fails_by_default,
+        test_main_video_content_failure_can_be_allowed_per_camera,
     ]
 
     for test in tests:

@@ -74,6 +74,7 @@ struct Options {
     std::string stream_id;
     uint32_t record_for_seconds = 0;
     uint32_t clip_seconds = 0;
+    uint64_t terminal_tail_coalesce_frames = 0;
     int shard_id = 0;
     std::vector<int> shard_gpu_ids;
     std::string routing_policy = "single_shard";
@@ -173,6 +174,7 @@ void signal_handler(int)
         << "  --stream-id <id>      Stream id for artifacts. Defaults to camera serial.\n"
         << "  --record-for-seconds <int> Session recording duration intent. Default 0.\n"
         << "  --clip-seconds <int>  Enable GOP-aligned rolling clip MP4 outputs. Default 0.\n"
+        << "  --terminal-tail-coalesce-frames <int> Coalesce this many overrun frames into the final requested clip. Default GOP length.\n"
         << "  --shard-id <int>      Recorder shard id for this process/lane. Default 0.\n"
         << "  --shard-gpu-ids <csv> Diagnostic multi-shard GPU ids, e.g. 5,6.\n"
         << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
@@ -355,6 +357,9 @@ Options parse_options(int argc, char** argv)
             options.record_for_seconds = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--clip-seconds") {
             options.clip_seconds = parse_u32(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--terminal-tail-coalesce-frames") {
+            options.terminal_tail_coalesce_frames =
+                parse_u64(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--shard-id") {
             options.shard_id = parse_i32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--shard-gpu-ids") {
@@ -1392,7 +1397,10 @@ public:
                 target_frame_count_ =
                     static_cast<uint64_t>(options_.record_for_seconds) *
                     static_cast<uint64_t>(std::max<uint32_t>(1, options_.fps));
-                terminal_tail_coalesce_frames_ = static_cast<uint64_t>(gop_length_);
+                terminal_tail_coalesce_frames_ =
+                    options_.terminal_tail_coalesce_frames > 0
+                        ? options_.terminal_tail_coalesce_frames
+                        : static_cast<uint64_t>(gop_length_);
             }
         }
     }

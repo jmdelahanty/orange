@@ -96,6 +96,7 @@ Top-level fields:
   "recording_id": "...",
   "timestamp_utc": "...",
   "producer_version": "...",
+  "source_version": { ... },
   "recording_outputs": { ... },
   "sync": { ... },
   "cameras": { ... },
@@ -108,6 +109,19 @@ Top-level fields:
   "models": { ... }
 }
 ```
+
+`producer_version` is the short git commit when Orange can resolve its source
+worktree at recording start, otherwise `"unknown"`. `source_version` is a
+schema-1 provenance block with `vcs = "git"`, `worktree`, `branch`, `commit`,
+`commit_short`, `describe`, `git_command_user`, `git_command_available`,
+`dirty_tracked_available`, `dirty_tracked`, and `status_porcelain_tracked` when
+available. In sudo/root GUI runs, Orange runs git provenance commands in a
+forked child after dropping to `SUDO_UID`/`SUDO_GID`; that lets git evaluate the
+worktree as the invoking user instead of root. Orange still reads `.git/HEAD`
+directly as a fallback so the commit is captured even if git itself is not
+available. This is intended to make performance comparisons, especially YOLO
+queue/regression comparisons, traceable to the exact Orange checkout that
+produced the recording.
 
 `cameras` is a dictionary keyed by camera serial number (as a string), where each
 value is the original camera config JSON loaded at recording start (or `null` if missing).
@@ -808,15 +822,25 @@ Notes:
   recorder health contract. Strict GUI validation checks the crop recorder
   status sidecar, parsed supervisor runtime status, and summary count agreement.
 - GUI external crop recorder artifacts also declare their current rollover
-  state explicitly: `recording_control.clip_seconds = 0` and
-  `rollover.status = "not_requested"` with `rollover.rolling_supported =
-  false`. Cropped recordings are validated as external-IPC `single_clip`
-  sidecars today; safe cropped rolling clips still require separate session
-  index, per-clip crop metadata/keyframe, and validation plumbing before they
-  should be exposed as supported. The crop IPC sender now uses the external
-  crop recorder GOP=1 boundary for descriptor metadata, and the session helper
-  `split_recording_frame_csv_by_ranges` can create per-clip crop metadata/perf
-  sidecars from root crop CSVs once crop finalization is wired for rolling.
+  state explicitly. With `clip_seconds = 0`, crop outputs remain single-clip
+  sidecars with `rollover.status = "not_requested"`. When GUI external
+  full-frame rolling is active, crop external IPC receives the same
+  `recording_control`, declares
+  `rollover.implementation =
+  "external_recorder_gop_boundary_writer_rotation"`, keeps crop GOP size `1`,
+  and uses a terminal-tail coalesce window matched to the full-frame GOP so
+  crop clips do not create orphan final-tail clips. GUI finalization splits the
+  root Orange-written
+  `Cam*_crop_meta.csv` and `Cam*_crop_perf.csv` into per-clip crop sidecars by
+  continuous `recording_frame_id` ranges and records those paths under
+  `recording_backend.crop_recording.rolling_clips` and each rolling clip's crop
+  `recording_outputs` entry. The top-level
+  `recording_outputs[serial].crop` descriptor is also finalized as an
+  external-IPC session aggregate for the merged crop MP4 and root crop CSVs,
+  with `details.scope = "session_aggregate"` and the recorder `stream_id`,
+  socket, GPU placement, queue depth, summary, and status paths. Offline GUI
+  validation now checks the per-clip crop sidecars and encoded crop videos; live
+  GUI soak coverage is still pending.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

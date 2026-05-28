@@ -65,6 +65,9 @@ Current launcher defaults:
 - `ORANGE_GUI_CLIP_SECONDS=<app config/disabled>`
 - `ORANGE_GUI_PTP_STACK_MODE=auto` when `ORANGE_GUI_AUTORUN=1` and
   `ORANGE_GUI_EXPECT_SYNC_MODE=ptp_gate`; otherwise `off`
+- `ORANGE_YOLO_AFFINITY_CAM_2010095=10`
+- `ORANGE_YOLO_AFFINITY_CAM_2010096=12`
+- `ORANGE_GUI_REQUIRE_ISOLATED_CPUS=<unset>` for the base launcher
 - `ORANGE_CROP_FRAME_POOL_SIZE=2 * ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
   when `ORANGE_CROP_RECORDING_SINK_MODE=external_ipc`, crop/YOLO autorun are
   enabled, and the user has not set an explicit crop frame pool size. The value
@@ -76,6 +79,86 @@ small `256x256` device crop buffers until the external recorder has consumed
 them. The old pool default of `32` was enough for in-process crop encoding, but
 could drop crop outputs when all four cameras had detections and the external
 crop encode queue reached the 40-50 frame range.
+
+The four-camera external IPC profile
+`scripts/run_gui_fourcam_external_ipc_validation.sh` also pins YOLO workers by
+default:
+
+- `2010093 -> CPU 6`
+- `2010094 -> CPU 8`
+- `2010095 -> CPU 10`
+- `2010096 -> CPU 12`
+- `ORANGE_GUI_REQUIRE_ISOLATED_CPUS=6,8,10,12,38,40,42,44`
+- `ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=6,8,10,12,38,40,42,44`
+- `ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS=isolcpus,nohz_full,rcu_nocbs`
+
+This placement is chosen to coexist with the current Citrus defaults on
+`pancake0`: Citrus render uses CPU `1`, arena update uses CPU `2`, shaman IPC
+readers start at CPU `20`, and arena worker threads use CPUs `24-27`. CPU `6`
+is already in the isolated set and unused by the Citrus defaults; CPUs `8`,
+`10`, and `12` are distinct physical cores outside the Citrus default worker
+ranges. The validation requirement also includes their SMT siblings
+`38,40,42,44`. Orange does not pin YOLO work to those siblings; they are
+expected to stay unused so the primary YOLO cores have the cleanest low-jitter
+profile. Do not enable YOLO realtime priority for the first discriminator run;
+affinity-only is the intended first check.
+The launcher emits `--expect-yolo-affinity SERIAL=CPU` validation flags for the
+effective mapping. Current artifacts prove this in two places:
+`recording_snapshot.json` records the requested environment mapping under
+`session.yolo_worker.affinity`, and `Cam<serial>_yolo_perf.csv` records whether
+the worker actually applied the affinity plus the effective CPU set reported by
+`pthread_getaffinity_np`. Newer artifacts also record
+`session.system_cpu.isolated_cpus` from `/sys/devices/system/cpu/isolated` and
+the relevant `/proc/cmdline` boot options. The four-camera launcher emits
+`--require-isolated-cpus 6,8,10,12,38,40,42,44` by default so post-run
+validation proves the Orange YOLO CPU set and its unused SMT siblings were
+actually isolated during recording. It also emits repeated
+`--require-kernel-cmdline-cpus` checks for `isolcpus`, `nohz_full`, and
+`rcu_nocbs` so the artifact proves the intended boot arguments, not just the
+kernel's active isolated-CPU view. Override `ORANGE_GUI_REQUIRE_ISOLATED_CPUS=`
+and `ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=` only for pre-isolation
+diagnostics. The current pre-reboot host state is expected to report only
+`1-2,6`; the four-camera profile should fail the isolation gate until GRUB is
+updated and the machine is rebooted with `isolcpus`, `nohz_full`, and
+`rcu_nocbs` covering `1,2,6,8,10,12,38,40,42,44`.
+For the YOLO queue/wakeup discriminator, the summary and validator now surface
+`acquisition_to_worker_start_ms`, `yolo_enqueue_to_dequeue_ms`,
+`yolo_dequeue_to_worker_start_ms`, `yolo_queue_wait_ms`, and
+`same_camera_service_gap_ms`, including steady-state p95 fields in validation
+JSON and comparison summaries. Optional launcher variables such as
+`ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS` and
+`ORANGE_GUI_MAX_YOLO_SAME_CAMERA_SERVICE_GAP_P95_MS` only add validation gates;
+they do not change runtime scheduling.
+The visible/hidden comparison command includes
+`--require-matching-yolo-runtime-config`, which compares the per-camera
+requested/effective YOLO affinity mapping, the recorded isolated CPU set, and
+the recorded `isolcpus` / `nohz_full` / `rcu_nocbs` CPU-list boot options
+across validation JSON files. Boot CPU lists are compared after normalization,
+so equivalent range/list formatting compares equal while different CPU sets or
+different `isolcpus` flags still fail.
+
+Post-reboot validation sequence for the clean four-camera discriminator:
+
+```bash
+cat /sys/devices/system/cpu/isolated
+cd /home/jeremy/orange-gop-split-a16
+./scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --record-seconds 10 --warmup-seconds 2
+scripts/summarize_gui_validation.py --latest-complete
+```
+
+If a camera is intentionally optically invalid during a hardware-disrupted run
+for example because its lens is borrowed, pass
+`--allow-main-video-content-failure <serial>` to the four-camera launcher or to
+`scripts/validate_gui_ptp_recording.py`. This only downgrades main-video
+bitrate and decoded-content sanity failures for that serial to warnings; missing
+videos, bad dimensions, recorder failures, crop artifacts, and timing gates
+still fail.
+
+The expected isolation output may be compacted by the kernel, but it must
+include `6,8,10,12,38,40,42,44`. A healthy run should then show YOLO affinity
+as `6->6`, `8->8`, `10->10`, and `12->12`, with the recorded isolated CPU set
+and recorded `isolcpus` / `nohz_full` / `rcu_nocbs` options matching the
+boot-time configuration.
 
 For short GUI rolling validation, use `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`
 with `ORANGE_GUI_CLIP_SECONDS` and either `ORANGE_GUI_RECORD_FOR_SECONDS` or
@@ -92,10 +175,19 @@ rolling manifest with
 The normal GUI validator also understands `recording_session.json` with
 `mode = "rolling_clips"`: it checks per-clip full-frame video, metadata,
 keyframe sidecars, packet counts, and cross-clip `recording_frame_id`
-continuity. For a rolling-specific GUI gate, add
-`--expect-recording-mode rolling_clips`, `--expect-record-for-seconds <N>`, and
-`--expect-clip-seconds <N>` so validation fails if the run silently falls back
-to single-clip recording or uses the wrong control values. Use the external
+continuity. When crop recording artifacts are required and
+`recording_backend.crop_recording.rolling_clips` is present, it also checks
+per-clip crop video, metadata, perf, keyframe rows, and that crop clip row
+counts sum back to the root crop sidecars. With
+`--require-external-crop-backend-metadata`, rolling crop validation also
+requires the top-level session-aggregate crop descriptor and strict recorder
+stream metadata. For a rolling-specific GUI gate, add
+`--expect-recording-mode rolling_clips`, `--expect-record-for-seconds <N>`,
+`--expect-clip-seconds <N>`, `--require-source-version`, and
+`--expect-source-git-command-user-mode sudo_invoking_user` so validation fails
+if the run silently falls back to single-clip recording, uses the wrong control
+values, or lacks source provenance. Use `--expect-source-dirty-tracked 1` before
+committing the validation build and `0` after committing. Use the external
 recorder verifier as the stricter recorder-summary contract check. Both
 validators now check rolling recorder status sidecars against final recorder
 summaries when rolling output is present, including current clip, next rollover
@@ -203,7 +295,9 @@ automatically (`ORANGE_GUI_USE_PRIVILEGE_WRAPPER=auto`). Set
 
 The launcher also dry-runs the installed wrapper before privileged launch to
 confirm it accepts the current validation env contract, including
-`ORANGE_GUI_FRAME_MAX_FPS`. If the wrapper is stale, reinstall it:
+`ORANGE_GUI_FRAME_MAX_FPS` and the wildcard
+`ORANGE_YOLO_AFFINITY_CAM_*` per-camera affinity controls. If the wrapper is
+stale, reinstall it:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16

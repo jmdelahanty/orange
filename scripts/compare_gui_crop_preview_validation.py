@@ -109,6 +109,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-matching-yolo-runtime-config",
+        action="store_true",
+        help=(
+            "Exit nonzero unless all compared runs have the same per-camera "
+            "YOLO requested/effective affinity mapping, recorded isolated CPU set, "
+            "and recorded kernel CPU-list boot options."
+        ),
+    )
+    parser.add_argument(
         "--require-external-crop-recorder-gpu-separate-from-analytics",
         action="store_true",
         help=(
@@ -181,6 +190,64 @@ def finite_optional_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def parse_kernel_cpu_option_value(value: Any) -> tuple[list[int], list[str], list[str]]:
+    if value is None:
+        return [], [], []
+    cpus: set[int] = set()
+    flags: set[str] = set()
+    invalid: set[str] = set()
+    for raw_token in str(value).split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if token.isdigit():
+            cpus.add(int(token))
+            continue
+        if "-" in token:
+            first_text, last_text = token.split("-", 1)
+            if first_text.isdigit() and last_text.isdigit():
+                first = int(first_text)
+                last = int(last_text)
+                if first <= last:
+                    cpus.update(range(first, last + 1))
+                else:
+                    invalid.add(token)
+                continue
+        if token[0].isdigit():
+            invalid.add(token)
+        else:
+            flags.add(token)
+    return sorted(cpus), sorted(flags), sorted(invalid)
+
+
+def compact_cpu_list(cpus: list[int]) -> str:
+    if not cpus:
+        return ""
+    ranges: list[str] = []
+    start = cpus[0]
+    previous = cpus[0]
+    for cpu in cpus[1:]:
+        if cpu == previous + 1:
+            previous = cpu
+            continue
+        ranges.append(f"{start}-{previous}" if start != previous else str(start))
+        start = previous = cpu
+    ranges.append(f"{start}-{previous}" if start != previous else str(start))
+    return ",".join(ranges)
+
+
+def normalized_kernel_cpu_option(option: str, value: Any) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    cpus, flags, invalid = parse_kernel_cpu_option_value(value)
+    parts = [f"cpus:{compact_cpu_list(cpus) or '<none>'}"]
+    if flags:
+        parts.append(f"flags:{'|'.join(flags)}")
+    if invalid:
+        parts.append(f"invalid:{'|'.join(invalid)}")
+    return f"{option}={';'.join(parts)}"
 
 
 def mean(values: list[float]) -> float | None:
@@ -273,6 +340,26 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
     crop_preview = crop_preview if isinstance(crop_preview, dict) else {}
     crop_recording = payload.get("crop_recording")
     crop_recording = crop_recording if isinstance(crop_recording, dict) else {}
+    system_cpu = payload.get("system_cpu")
+    system_cpu = system_cpu if isinstance(system_cpu, dict) else {}
+    isolated_cpus = nested_dict(system_cpu, "isolated_cpus").get("cpus")
+    isolated_cpu_values = (
+        sorted(finite_int(cpu) for cpu in isolated_cpus)
+        if isinstance(isolated_cpus, list)
+        else []
+    )
+    provided_kernel_options = payload.get("system_cpu_kernel_cmdline_cpu_option_values")
+    if isinstance(provided_kernel_options, list):
+        kernel_cmdline_cpu_option_values = [
+            str(value) for value in provided_kernel_options if str(value).strip()
+        ]
+    else:
+        kernel_options = nested_dict(system_cpu, "kernel_cmdline", "options")
+        kernel_cmdline_cpu_option_values = []
+        for option in ("isolcpus", "nohz_full", "rcu_nocbs"):
+            normalized = normalized_kernel_cpu_option(option, kernel_options.get(option))
+            if normalized:
+                kernel_cmdline_cpu_option_values.append(normalized)
 
     cameras = sorted(
         set(str(serial) for serial in camera_summary)
@@ -292,6 +379,99 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         for value in [finite_float(item.get("queue_p95_ms")) if isinstance(item, dict) else None]
         if value is not None
     ]
+    queue_steady_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [finite_float(item.get("queue_steady_p95_ms")) if isinstance(item, dict) else None]
+        if value is not None
+    ]
+    acq_worker_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("acquisition_to_worker_start_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    acq_worker_steady_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("acquisition_to_worker_start_steady_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    enqueue_dequeue_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("yolo_enqueue_to_dequeue_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    enqueue_dequeue_steady_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("yolo_enqueue_to_dequeue_steady_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    dequeue_worker_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("yolo_dequeue_to_worker_start_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    dequeue_worker_steady_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("yolo_dequeue_to_worker_start_steady_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    service_gap_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("same_camera_service_gap_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    service_gap_steady_p95_values = [
+        value
+        for item in camera_summary.values()
+        for value in [
+            finite_float(item.get("same_camera_service_gap_steady_p95_ms"))
+            if isinstance(item, dict) else None
+        ]
+        if value is not None
+    ]
+    yolo_affinity_mapping_values: set[str] = set()
+    for serial, item in camera_summary.items():
+        if not isinstance(item, dict):
+            continue
+        affinity = item.get("yolo_affinity")
+        if not isinstance(affinity, dict):
+            continue
+        requested = affinity.get("requested_cpus")
+        effective = affinity.get("effective_cpus")
+        if requested is None and effective is None:
+            continue
+        yolo_affinity_mapping_values.add(
+            f"{serial}:{requested if requested not in {None, ''} else 'n/a'}"
+            f"->{effective if effective not in {None, ''} else 'n/a'}"
+        )
 
     crop_rows_total = 0
     crop_dropped_rows_total = 0
@@ -443,11 +623,20 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
     gui_fps = payload.get("gui_display_frame_rate")
     gui_fps = gui_fps if isinstance(gui_fps, dict) else {}
     timing_diagnosis = gui_timing_diagnosis(gui_fps)
+    source_version = payload.get("source_version")
+    source_version = source_version if isinstance(source_version, dict) else {}
 
     summary = {
         "label": label,
         "status": str(payload.get("status", "unknown")),
         "recording_folder": str(payload.get("recording_folder", "")),
+        "producer_version": payload.get("producer_version"),
+        "source_branch": source_version.get("branch"),
+        "source_commit_short": source_version.get("commit_short"),
+        "source_dirty_tracked": source_version.get("dirty_tracked"),
+        "isolated_cpu_values": isolated_cpu_values,
+        "kernel_cmdline_cpu_option_values": kernel_cmdline_cpu_option_values,
+        "yolo_affinity_mapping_values": sorted(yolo_affinity_mapping_values),
         "camera_count": len(cameras),
         "cameras": cameras,
         "failures": len(payload.get("failures", []) if isinstance(payload.get("failures"), list) else []),
@@ -456,6 +645,24 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "detect_steady_p95_max_ms": max_or_none(detect_p95_values),
         "queue_p95_avg_ms": mean(queue_p95_values),
         "queue_p95_max_ms": max_or_none(queue_p95_values),
+        "queue_steady_p95_avg_ms": mean(queue_steady_p95_values),
+        "queue_steady_p95_max_ms": max_or_none(queue_steady_p95_values),
+        "acq_worker_p95_avg_ms": mean(acq_worker_p95_values),
+        "acq_worker_p95_max_ms": max_or_none(acq_worker_p95_values),
+        "acq_worker_steady_p95_avg_ms": mean(acq_worker_steady_p95_values),
+        "acq_worker_steady_p95_max_ms": max_or_none(acq_worker_steady_p95_values),
+        "enqueue_dequeue_p95_avg_ms": mean(enqueue_dequeue_p95_values),
+        "enqueue_dequeue_p95_max_ms": max_or_none(enqueue_dequeue_p95_values),
+        "enqueue_dequeue_steady_p95_avg_ms": mean(enqueue_dequeue_steady_p95_values),
+        "enqueue_dequeue_steady_p95_max_ms": max_or_none(enqueue_dequeue_steady_p95_values),
+        "dequeue_worker_p95_avg_ms": mean(dequeue_worker_p95_values),
+        "dequeue_worker_p95_max_ms": max_or_none(dequeue_worker_p95_values),
+        "dequeue_worker_steady_p95_avg_ms": mean(dequeue_worker_steady_p95_values),
+        "dequeue_worker_steady_p95_max_ms": max_or_none(dequeue_worker_steady_p95_values),
+        "service_gap_p95_avg_ms": mean(service_gap_p95_values),
+        "service_gap_p95_max_ms": max_or_none(service_gap_p95_values),
+        "service_gap_steady_p95_avg_ms": mean(service_gap_steady_p95_values),
+        "service_gap_steady_p95_max_ms": max_or_none(service_gap_steady_p95_values),
         "crop_rows_total": crop_rows_total,
         "crop_dropped_rows_total": crop_dropped_rows_total,
         "crop_video_frames_total": crop_video_frames_total,
@@ -609,6 +816,15 @@ def add_deltas(summaries: list[dict[str, Any]]) -> None:
         "gui_hidden_p05_fps",
         "detect_steady_p95_avg_ms",
         "queue_p95_avg_ms",
+        "queue_steady_p95_avg_ms",
+        "acq_worker_p95_avg_ms",
+        "acq_worker_steady_p95_avg_ms",
+        "enqueue_dequeue_p95_avg_ms",
+        "enqueue_dequeue_steady_p95_avg_ms",
+        "dequeue_worker_p95_avg_ms",
+        "dequeue_worker_steady_p95_avg_ms",
+        "service_gap_p95_avg_ms",
+        "service_gap_steady_p95_avg_ms",
         "gui_dominant_timing_p95_ms",
     ]
     for item in summaries:
@@ -645,6 +861,12 @@ def fmt_list(values: Any) -> str:
     return ",".join(str(value) for value in values)
 
 
+def pipe_or_comma_list(values: Any) -> str:
+    if not isinstance(values, list) or not values:
+        return "-"
+    return ",".join(str(value) for value in values)
+
+
 def fmt_percent(value: Any) -> str:
     number = finite_float(value)
     if number is None:
@@ -661,7 +883,12 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
     columns = [
         ("run", lambda item: str(item.get("label", ""))),
         ("status", lambda item: str(item.get("status", "unknown"))),
+        ("git", lambda item: str(item.get("source_commit_short") or item.get("producer_version") or "-")),
+        ("dirty", lambda item: str(item.get("source_dirty_tracked")) if item.get("source_dirty_tracked") is not None else "-"),
         ("cams", lambda item: fmt_int(item.get("camera_count"))),
+        ("isolated cpus", lambda item: pipe_or_comma_list(item.get("isolated_cpu_values"))),
+        ("kernel opts", lambda item: fmt_list(item.get("kernel_cmdline_cpu_option_values"))),
+        ("yolo affinity", lambda item: fmt_list(item.get("yolo_affinity_mapping_values"))),
         ("gui p05", lambda item: fmt_float(item.get("gui_overall_p05_fps"))),
         ("visible p05", lambda item: fmt_float(item.get("gui_visible_p05_fps"))),
         ("hidden p05", lambda item: fmt_float(item.get("gui_hidden_p05_fps"))),
@@ -744,6 +971,15 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("crop pool", lambda item: fmt_list(item.get("crop_frame_pool_size_values"))),
         ("detect p95 avg", lambda item: fmt_float(item.get("detect_steady_p95_avg_ms"), 3)),
         ("detect p95 max", lambda item: fmt_float(item.get("detect_steady_p95_max_ms"), 3)),
+        ("acq worker avg", lambda item: fmt_float(item.get("acq_worker_p95_avg_ms"), 3)),
+        ("acq worker steady", lambda item: fmt_float(item.get("acq_worker_steady_p95_avg_ms"), 3)),
+        ("enqueue dequeue avg", lambda item: fmt_float(item.get("enqueue_dequeue_p95_avg_ms"), 3)),
+        ("enqueue dequeue steady", lambda item: fmt_float(item.get("enqueue_dequeue_steady_p95_avg_ms"), 3)),
+        ("dequeue worker avg", lambda item: fmt_float(item.get("dequeue_worker_p95_avg_ms"), 3)),
+        ("queue avg", lambda item: fmt_float(item.get("queue_p95_avg_ms"), 3)),
+        ("queue steady", lambda item: fmt_float(item.get("queue_steady_p95_avg_ms"), 3)),
+        ("service gap avg", lambda item: fmt_float(item.get("service_gap_p95_avg_ms"), 3)),
+        ("service gap steady", lambda item: fmt_float(item.get("service_gap_steady_p95_avg_ms"), 3)),
         ("fail/warn", lambda item: f"{fmt_int(item.get('failures'))}/{fmt_int(item.get('warnings'))}"),
     ]
 
@@ -839,6 +1075,20 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
                 failures.append(
                     f"{item.get('label')}: crop config {current_crop_config} "
                     f"does not match {summaries[0].get('label')} {expected_crop_config}"
+                )
+    if getattr(args, "require_matching_yolo_runtime_config", False) and summaries:
+        yolo_runtime_fields = [
+            "yolo_affinity_mapping_values",
+            "isolated_cpu_values",
+            "kernel_cmdline_cpu_option_values",
+        ]
+        expected_yolo_runtime = {field: summaries[0].get(field) for field in yolo_runtime_fields}
+        for item in summaries[1:]:
+            current_yolo_runtime = {field: item.get(field) for field in yolo_runtime_fields}
+            if current_yolo_runtime != expected_yolo_runtime:
+                failures.append(
+                    f"{item.get('label')}: YOLO runtime config {current_yolo_runtime} "
+                    f"does not match {summaries[0].get('label')} {expected_yolo_runtime}"
                 )
 
     if getattr(args, "require_external_crop_recorder_gpu_separate_from_analytics", False):

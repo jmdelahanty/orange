@@ -89,19 +89,19 @@ The headless in-process full-frame encoder path now satisfies the first
 "without intentional drops between clips" requirement in one-camera smokes and
 a short two-camera PTP real-YOLO smoke. Supervised headless external IPC rolling
 also writes verified clip manifests, parent indexes, and packet counts.
-Remaining production gaps are GUI/session rolling adoption, external-recorder
-GUI rolling controls, crop rolling, broader failure policy, and long soak
-testing. GUI external crop IPC is currently an explicit `single_clip` sidecar
-path: generated crop contracts and `recording_backend.crop_recording` declare
-`recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`, and
-`rollover.rolling_supported = false`; validators fail if crop rolling is
-accidentally requested before the crop clip/index contract exists.
-The first crop-rolling prerequisite now exists: `CropAndEncodeWorker` tags
-external crop IPC descriptors with the crop recorder's GOP=1 boundary, and
-`orange::session::split_recording_frame_csv_by_ranges` can split Orange-written
+Remaining production gaps are live GUI validation, broader failure policy, and
+long soak testing. GUI external crop IPC now follows the full-frame external
+IPC rolling control when that path is active: generated crop contracts and
+`recording_backend.crop_recording` carry the same `recording_control`, declare
+`external_recorder_gop_boundary_writer_rotation`, use crop GOP size `1`, and
+coalesce short terminal tails using the full-frame GOP window so crop clips
+align with the parent full-frame manifest. GUI finalization splits Orange-written
 crop metadata/perf CSVs into per-clip sidecars by continuous
-`recording_frame_id` ranges. That helper is not yet wired into GUI crop
-finalization, so crop rolling remains unsupported.
+`recording_frame_id` ranges and publishes them under
+`recording_backend.crop_recording.rolling_clips` and per-clip crop
+`recording_outputs`. The offline GUI validator checks those per-clip crop
+artifacts, but this path still needs a real GUI rolling artifact before it is
+production-proven.
 GUI full-frame external-recorder contract materialization now preserves a
 configured `recording_control`/`rollover` object instead of silently overwriting
 it with `clip_seconds = 0`. GUI full-frame external-recorder finalization now

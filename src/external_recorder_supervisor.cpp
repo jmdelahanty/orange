@@ -762,6 +762,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
             !read_string_field(stream, "tuning", &stream_plan.tuning, error_out, context) ||
             !read_int_field(stream, "gop", &stream_plan.gop, error_out, context, 1) ||
             !read_u64_field(stream,
+                            "terminal_tail_coalesce_frames",
+                            &stream_plan.terminal_tail_coalesce_frames,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
                             "bitrate_bps",
                             &stream_plan.bitrate_bps,
                             error_out,
@@ -1009,6 +1014,10 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         "--routing-policy",
         stream.routing_policy,
     };
+    if (stream.terminal_tail_coalesce_frames > 0) {
+        argv.push_back("--terminal-tail-coalesce-frames");
+        argv.push_back(std::to_string(stream.terminal_tail_coalesce_frames));
+    }
     if (stream.prewarm_bytes > 0) {
         argv.push_back("--prewarm-bytes");
         argv.push_back(std::to_string(stream.prewarm_bytes));
@@ -1059,6 +1068,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"preset", stream.preset},
             {"tuning", stream.tuning},
             {"gop", stream.gop},
+            {"terminal_tail_coalesce_frames", stream.terminal_tail_coalesce_frames},
             {"bitrate_bps", stream.bitrate_bps},
             {"max_bitrate_bps", stream.max_bitrate_bps},
             {"vbv_buffer_size", stream.vbv_buffer_size},

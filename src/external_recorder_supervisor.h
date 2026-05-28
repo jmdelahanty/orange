@@ -57,6 +57,7 @@ struct RecorderStreamPlan {
     std::string preset = "p1";
     std::string tuning = "ll";
     int gop = 25;
+    uint64_t terminal_tail_coalesce_frames = 0;
     uint64_t bitrate_bps = 150000000;
     uint64_t max_bitrate_bps = 150000000;
     uint64_t vbv_buffer_size = 150000000;

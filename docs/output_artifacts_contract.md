@@ -161,7 +161,13 @@ Current emitted top-level fields:
 - `schema_version: integer` (`2` for snapshots with unified output descriptors)
 - `recording_id: string`
 - `timestamp_utc: string` (UTC ISO8601)
-- `producer_version: string` (currently `"unknown"`)
+- `producer_version: string` (short git commit when available, otherwise
+  `"unknown"`)
+- `source_version: object` (schema-1 git provenance captured at recording
+  start; includes `worktree`, `branch`, `commit`, `commit_short`, `describe`,
+  `git_command_user`, `dirty_tracked_available`, `dirty_tracked`, and
+  `status_porcelain_tracked` when the source worktree can be resolved; sudo/root
+  GUI runs execute git in a child dropped to `SUDO_UID`/`SUDO_GID`)
 - `session: object` (optional in older artifacts)
 - `recording_outputs: object` (schema-2 output descriptors keyed by camera
   serial, then output kind)
@@ -177,6 +183,31 @@ Current emitted top-level fields:
 - `recording_sink_mode: string` (`real`, `immediate_recycle`,
   `preprocess_only`, `threaded_handoff_only`, or `external_ipc`)
 - `full_frame_video_enabled: boolean`
+- `system_cpu: object` (optional in older artifacts)
+  - `schema_version: integer`
+  - `isolated_cpus.source: string` (currently
+    `/sys/devices/system/cpu/isolated`)
+  - `isolated_cpus.available: boolean`
+  - `isolated_cpus.raw: string`
+  - `isolated_cpus.cpus: integer[]`
+  - `isolated_cpus.parse_ok: boolean`
+  - `kernel_cmdline.source: string` (currently `/proc/cmdline`)
+  - `kernel_cmdline.available: boolean`
+  - `kernel_cmdline.raw: string`
+  - `kernel_cmdline.options.isolcpus|nohz_full|rcu_nocbs: string` when present
+- `system_cpu_kernel_cmdline_cpu_option_values: string[]` in
+  `scripts/validate_gui_ptp_recording.py --json-out` and
+  `scripts/summarize_gui_validation.py --json` output only; this is a derived,
+  normalized view of the recorded boot CPU-list options for human inspection
+  and comparison debugging, not a persisted Orange snapshot field
+- `yolo_worker: object` (optional in older artifacts)
+  - `schema_version: integer`
+  - `affinity.source: string` (currently `environment`)
+  - `affinity.per_camera[serial].configured: boolean`
+  - `affinity.per_camera[serial].source: string` (`per_camera_environment`,
+    `global_environment`, or `none`)
+  - `affinity.per_camera[serial].env_key: string|null`
+  - `affinity.per_camera[serial].requested_cpus: string|null`
 - `gui_display_frame_rate: object` (optional, GUI recordings after
   finalization)
   - `schema_version: integer`
@@ -685,7 +716,7 @@ Behavior note:
 Header (exact order):
 
 ```text
-frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_at_worker_start,fps,ok,acquisition_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,ingress_event_record_to_worker_start_ms,acquisition_to_yolo_input_ready_ms,worker_start_to_yolo_input_ready_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms
+frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,yolo_affinity_configured,yolo_affinity_applied,yolo_affinity_env_key,yolo_affinity_requested_cpus,yolo_affinity_effective_cpus,acquisition_to_worker_start_ms,acquisition_to_ptp_done_ms,ptp_done_to_yolo_resource_ready_ms,yolo_resource_ready_to_pointer_attrs_done_ms,pointer_attrs_done_to_ingress_event_record_ms,ingress_event_record_to_yolo_dispatch_ready_ms,yolo_dispatch_ready_to_yolo_enqueue_ms,recording_submit_call_ms,recording_submit_to_yolo_enqueue_ms,acquisition_to_yolo_enqueue_ms,yolo_enqueue_push_ms,yolo_enqueue_to_dequeue_ms,yolo_dequeue_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,ingress_event_record_to_worker_start_ms,acquisition_to_yolo_input_ready_ms,worker_start_to_yolo_input_ready_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,service_sequence,camera_service_sequence,active_camera_count,same_camera_service_gap_ms,service_skew_latest_other_ms,service_skew_oldest_other_ms,service_count_skew_vs_min,service_count_skew_range,ingress_event_ready_before_wait,wait_ms,pre_ms,gap_ms,enqueue_ms,infer_ms,sync_ms,completion_event_ready_before_sync,cpu_wait_event_ms,cpu_ingress_event_query_ms,cpu_stream_wait_event_ms,cpu_npp_set_stream_ms,cpu_preprocess_ms,cpu_input_ready_event_record_ms,cpu_dump_ms,cpu_infer_call_ms,cpu_event_record_ms,cpu_pre_sync_ms,cpu_pre_sync_other_ms,cpu_post_sync_ms,queue_ms,post_ms,track_ms,ipc_ms,enet_ms,total_ms
 ```
 
 Field semantics:
@@ -694,8 +725,21 @@ Field semantics:
 - `queue_depth`: YOLO queue depth sampled at log emission, after processing.
 - `queue_depth_at_enqueue`: YOLO input queue depth just before acquisition
   enqueued this frame.
+- `queue_depth_after_enqueue`: YOLO input queue depth immediately after
+  acquisition enqueued this frame.
+- `queue_depth_after_dequeue`: YOLO input queue depth immediately after the
+  worker popped this frame.
 - `queue_depth_at_worker_start`: YOLO input queue depth immediately after this
   worker popped the frame for service.
+- `yolo_affinity_configured`: `1` when a YOLO affinity env var was configured
+  for this worker, otherwise `0`.
+- `yolo_affinity_applied`: `1` when `pthread_setaffinity_np` succeeded, `0`
+  when it failed, and `-1` when no affinity was configured.
+- `yolo_affinity_env_key`: env key used for the affinity request.
+- `yolo_affinity_requested_cpus`: parsed requested CPU set using `|` between
+  CPUs.
+- `yolo_affinity_effective_cpus`: `pthread_getaffinity_np` result after the
+  affinity attempt, using the same `|` format.
 - `yolo_queue_wait_ms`: host time from YOLO enqueue to worker start.
 - `oldest_frame_age_at_worker_start_ms`: age of the frame being serviced at
   worker start, measured from acquisition receive.
@@ -959,6 +1003,16 @@ GUI runs; it requires the `recording_backend.crop_recording` mode, per-camera
 `stream_config`, routing fields (`stream_id`, analytics GPU, recorder GPU,
 socket path, and queue depth), descriptor `details` consistency, and telemetry
 maps to be present instead of treating them as optional compatibility fields.
+For rolling external crop artifacts, the same strict gate also requires
+`recording_outputs[serial].crop` to be a finalized external-IPC
+session-aggregate descriptor with `details.scope = "session_aggregate"`, so an
+early pending/in-process snapshot descriptor cannot pass as current metadata.
+Use `--require-source-version` on current GUI validation runs to require the
+recording snapshot Git provenance block, and add
+`--expect-source-git-command-user-mode sudo_invoking_user` for sudo-launched
+runs that should execute git after dropping to `SUDO_UID`/`SUDO_GID`. Before a
+commit, pair this with `--expect-source-dirty-tracked 1`; after committing,
+use `--expect-source-dirty-tracked 0`.
 `scripts/summarize_gui_validation.py` reports the same external crop queue and
 drop telemetry, and also displays the external crop `stream_config` GPU/socket
 placement from `recording_backend.crop_recording` when available. If a future
@@ -988,6 +1042,23 @@ the display GPU. Use
 when Citrus is sharing the display GPU; that profile defaults to
 `ORANGE_GUI_SWAP_INTERVAL=1`, `ORANGE_GUI_FRAME_MAX_FPS=30`, and
 `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
+The same four-camera launcher pins YOLO workers to a Citrus-safe CPU set by
+default: `2010093->6`, `2010094->8`, `2010095->10`, and `2010096->12`.
+Those cores are intended to be isolated or otherwise kept free of ordinary OS
+work for the YOLO queue-wakeup discriminator. Keep Citrus' current CPU `1`,
+CPU `2`, IPC-reader range starting at `20`, and arena-worker CPUs `24-27`
+reserved for Citrus. The launcher also defaults
+`ORANGE_GUI_REQUIRE_ISOLATED_CPUS=6,8,10,12,38,40,42,44`, so the printed
+validation command includes
+`--require-isolated-cpus 6,8,10,12,38,40,42,44`. That gate checks
+`recording_snapshot.json` `session.system_cpu.isolated_cpus`, not the current
+machine state at validation time. Orange still pins YOLO only to the primary
+cores `6,8,10,12`; the sibling cores `38,40,42,44` are required to be isolated
+so they can remain unused during low-jitter validation. The same profile also
+defaults `ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=6,8,10,12,38,40,42,44` and
+`ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS=isolcpus,nohz_full,rcu_nocbs`, so
+the printed validation command also requires each recorded
+`session.system_cpu.kernel_cmdline.options` CPU list to include those CPUs.
 
 Newer GUI runs also include `session.gui_display_frame_rate.timings` so slow
 GUI refresh can be attributed to texture upload, camera/crop window drawing,
@@ -1008,7 +1079,12 @@ To compare visible-preview and hidden-preview validation JSON files, use
 `scripts/compare_gui_crop_preview_validation.py`. It summarizes GUI FPS, crop
 recording rows/drops, fanout counters, external crop queue pressure, external
 crop analytics-GPU-to-recorder-GPU placement, and the dominant GUI timing p95
-bucket side by side. It can also fail the comparison
+bucket side by side. The `--require-matching-yolo-runtime-config` gate compares
+per-camera YOLO requested/effective affinity, the recorded isolated CPU set,
+and recorded `isolcpus` / `nohz_full` / `rcu_nocbs` boot CPU-list options.
+Those boot options are normalized before comparison, so equivalent CPU range
+syntax compares equal while different CPU sets or non-CPU `isolcpus` flags
+still fail. It can also fail the comparison
 with:
 
 - `--require-pass`
@@ -1021,6 +1097,7 @@ with:
 - `--require-matching-cameras`
 - `--require-matching-display-config`
 - `--require-matching-crop-config`
+- `--require-matching-yolo-runtime-config`
 - `--max-external-crop-queue-high-water <N>`
 - `--max-external-crop-enqueue-age-p95-ms <ms>`
 

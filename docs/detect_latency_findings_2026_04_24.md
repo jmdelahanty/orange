@@ -701,6 +701,28 @@ Stable-enough diagnostic flags:
 - `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`: use the hybrid owned-buffer path for
   delayed analytics consumers.
 - `ORANGE_YOLO_AFFINITY_CAM_<serial>=<cpu>`: pin YOLO workers per camera.
+  For the current four-camera GUI/Citrus coexistence discriminator on
+  `pancake0`, the launcher defaults are `2010093->6`, `2010094->8`,
+  `2010095->10`, and `2010096->12`, leaving Citrus' default CPU `1`, CPU `2`,
+  IPC-reader range from `20`, and arena worker CPUs `24-27` untouched.
+- `ORANGE_GUI_REQUIRE_ISOLATED_CPUS=6,8,10,12,38,40,42,44`:
+  validation-only launcher gate used by the four-camera GUI profile. The
+  first four CPUs are the Orange YOLO worker targets; `38,40,42,44` are their
+  SMT siblings and should be isolated but left unused for the cleanest
+  low-jitter discriminator. Orange records
+  `/sys/devices/system/cpu/isolated` and `/proc/cmdline` under
+  `recording_snapshot.json` `session.system_cpu`; the validator checks the
+  recorded isolated CPU set, not the host state at validation time.
+- `ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_CPUS=6,8,10,12,38,40,42,44` plus
+  `ORANGE_GUI_REQUIRE_KERNEL_CMDLINE_OPTIONS=isolcpus,nohz_full,rcu_nocbs`:
+  validation-only launcher gates used by the same profile to prove the
+  recorded `/proc/cmdline` CPU-list boot options include the Orange YOLO cores
+  and their unused SMT siblings.
+- `ORANGE_GUI_MAX_YOLO_ENQUEUE_TO_DEQUEUE_P95_MS=<ms>` and
+  `ORANGE_GUI_MAX_YOLO_SAME_CAMERA_SERVICE_GAP_P95_MS=<ms>`: validation-only
+  gates for queue wakeup and per-camera service cadence. Use them after a
+  baseline run to turn the observed target into an artifact-level pass/fail
+  condition.
 - `ORANGE_CROP_PREVIEW_DISABLE=1`: disable only crop live-preview CUDA work.
 - `ORANGE_DISPLAY_PREVIEW_MAX_FPS=1`: throttle full-frame GUI display for
   isolation.
@@ -1303,8 +1325,8 @@ sudo env DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
   ORANGE_CROP_COPY_TIMING=0 \
   ORANGE_CROP_STAGE_SOURCE=1 \
   ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1 \
-  ORANGE_YOLO_AFFINITY_CAM_2010095=2 \
-  ORANGE_YOLO_AFFINITY_CAM_2010096=4 \
+  ORANGE_YOLO_AFFINITY_CAM_2010095=10 \
+  ORANGE_YOLO_AFFINITY_CAM_2010096=12 \
   ORANGE_YOLO_READY_EVENT_FASTPATH=1 \
   ./targets/release/orange
 ```

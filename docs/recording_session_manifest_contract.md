@@ -34,11 +34,19 @@ Current implementation rule:
 - GUI validation tooling now treats full-frame `rolling_clips` manifests as a
   first-class layout for `--latest-complete` discovery, per-clip artifact
   checks, packet-count checks, and cross-clip `recording_frame_id` continuity.
-- GUI external crop IPC is also single-clip only today. Its contract and
-  `recording_backend.crop_recording` metadata explicitly declare
-  `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`,
-  and `rollover.rolling_supported = false` so downstream readers do not infer
-  cropped clip rollover from the full-frame external recorder support.
+- GUI external crop IPC now follows the GUI external full-frame rolling control
+  when full-frame external IPC rolling is active. The crop recorder uses the
+  same `external_recorder_gop_boundary_writer_rotation` implementation with
+  crop GOP size `1`, plus a terminal-tail coalesce window matched to the
+  full-frame GOP so crop clips stay aligned with parent clips. GUI finalization
+  mirrors per-camera crop `rolling_output.clips[]` into
+  `recording_backend.crop_recording.rolling_clips` plus per-clip crop outputs
+  in each `clips[].recording_outputs` list. It also writes a top-level
+  `recording_outputs[serial].crop` session-aggregate descriptor for the merged
+  external crop MP4 and root crop CSV sidecars, with
+  `details.scope = "session_aggregate"`, so `recording_snapshot.json` no longer
+  retains the early pending in-process crop descriptor after finalization. When
+  `clip_seconds = 0`, crop outputs remain explicit single-clip sidecars.
 - In-GUI full-frame external IPC rolling controls now edit the loaded in-memory
   app config before streaming starts. App config `recording.recording_control` and
   `ORANGE_GUI_RECORD_FOR_SECONDS` / `ORANGE_GUI_CLIP_SECONDS` can now supply
@@ -184,8 +192,10 @@ source.
 
 Each clip manifest and top-level `clips[]` entry also carries
 `recording_outputs[serial].full` for the clip-local full-frame output. For
-rolling sessions, these descriptors are clip-scoped because there is no single
-session-wide MP4 per camera.
+rolling sessions, clip descriptors are the ingest-authoritative range contract.
+GUI external IPC may additionally include top-level session-aggregate
+descriptors for merged compatibility outputs, currently used for external crop
+recording metadata and snapshot finalization.
 
 ## Rolling Session Manifest
 
@@ -543,6 +553,10 @@ Latest terminal-tail coalescing validation:
   frame, and last completed clip outcome from the external recorder sidecar.
   Offline verifiers now check those sidecar fields against recorder summaries
   and the parsed supervisor runtime snapshot when rolling output is present.
+- Add live GUI validation/soak coverage for crop rolling finalization. Offline
+  GUI validation now checks per-clip crop video, metadata, perf, keyframe rows,
+  and total row agreement, but this still needs a real four-camera GUI rolling
+  artifact before it should be treated as production-proven.
 - Add direct muxer-reported packet counters if they become available; current
   native indexes use ffprobe after finalization and external IPC indexes use
   recorder summary `packets_written`.

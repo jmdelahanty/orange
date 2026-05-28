@@ -309,6 +309,74 @@ def int_value(value: Any) -> int | None:
         return None
 
 
+def parse_kernel_cpu_option_value(value: Any) -> tuple[list[int], list[str], list[str]]:
+    if value is None:
+        return [], [], []
+    cpus: set[int] = set()
+    flags: set[str] = set()
+    invalid: set[str] = set()
+    for raw_token in str(value).split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if token.isdigit():
+            cpus.add(int(token))
+            continue
+        if "-" in token:
+            first_text, last_text = token.split("-", 1)
+            if first_text.isdigit() and last_text.isdigit():
+                first = int(first_text)
+                last = int(last_text)
+                if first <= last:
+                    cpus.update(range(first, last + 1))
+                else:
+                    invalid.add(token)
+                continue
+        if token[0].isdigit():
+            invalid.add(token)
+        else:
+            flags.add(token)
+    return sorted(cpus), sorted(flags), sorted(invalid)
+
+
+def compact_cpu_list(cpus: list[int]) -> str:
+    if not cpus:
+        return ""
+    ranges: list[str] = []
+    start = cpus[0]
+    previous = cpus[0]
+    for cpu in cpus[1:]:
+        if cpu == previous + 1:
+            previous = cpu
+            continue
+        ranges.append(f"{start}-{previous}" if start != previous else str(start))
+        start = previous = cpu
+    ranges.append(f"{start}-{previous}" if start != previous else str(start))
+    return ",".join(ranges)
+
+
+def normalized_kernel_cpu_option(option: str, value: Any) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    cpus, flags, invalid = parse_kernel_cpu_option_value(value)
+    parts = [f"cpus:{compact_cpu_list(cpus) or '<none>'}"]
+    if flags:
+        parts.append(f"flags:{'|'.join(flags)}")
+    if invalid:
+        parts.append(f"invalid:{'|'.join(invalid)}")
+    return f"{option}={';'.join(parts)}"
+
+
+def normalized_kernel_cpu_options(system_cpu: dict[str, Any]) -> list[str]:
+    options = nested_dict(system_cpu, "kernel_cmdline", "options")
+    values: list[str] = []
+    for option in ("isolcpus", "nohz_full", "rcu_nocbs"):
+        normalized = normalized_kernel_cpu_option(option, options.get(option))
+        if normalized:
+            values.append(normalized)
+    return values
+
+
 def first_present(*values: Any) -> Any:
     for value in values:
         if value is not None:
@@ -597,11 +665,19 @@ def summarize_yolo(recording_folder: Path, steady_after_frame: int) -> dict[str,
     fields = [
         "acquisition_to_detect_done_ms",
         "capture_to_detect_done_ms",
+        "acquisition_to_worker_start_ms",
         "worker_start_to_detect_done_ms",
         "total_ms",
+        "yolo_enqueue_to_dequeue_ms",
+        "yolo_dequeue_to_worker_start_ms",
         "yolo_queue_wait_ms",
+        "oldest_queued_frame_age_at_worker_start_ms",
         "cpu_pre_sync_ms",
         "acquisition_to_ptp_done_ms",
+        "same_camera_service_gap_ms",
+        "service_skew_latest_other_ms",
+        "service_skew_oldest_other_ms",
+        "service_count_skew_range",
     ]
     summaries: dict[str, Any] = {}
     for path in sorted(recording_folder.glob("Cam*_yolo_perf.csv")):
@@ -615,11 +691,20 @@ def summarize_yolo(recording_folder: Path, steady_after_frame: int) -> dict[str,
             if rows and field in rows[0]
         }
         ok_values = [int_field(row, "ok") for row in rows if "ok" in row]
+        first = rows[0] if rows else {}
+        affinity = {
+            "configured": int_field(first, "yolo_affinity_configured"),
+            "applied": int_field(first, "yolo_affinity_applied"),
+            "env_key": first.get("yolo_affinity_env_key", ""),
+            "requested_cpus": first.get("yolo_affinity_requested_cpus", ""),
+            "effective_cpus": first.get("yolo_affinity_effective_cpus", ""),
+        }
         summaries[serial] = {
             "path": str(path),
             "rows": len(rows),
             "ok_rows": sum(1 for value in ok_values if value == 1),
             "metrics": metrics,
+            "affinity": affinity,
         }
     return summaries
 
@@ -1144,11 +1229,14 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
         and isinstance(snapshot.get("session", {}).get("gui_display_frame_rate"), dict)
         else {}
     )
+    system_cpu = nested_dict(snapshot, "session", "system_cpu")
     return {
         "recording_folder": str(recording_folder),
         "recording_id": snapshot.get("recording_id"),
         "timestamp_utc": snapshot.get("timestamp_utc"),
         "sync": snapshot.get("sync") if isinstance(snapshot.get("sync"), dict) else {},
+        "system_cpu": system_cpu,
+        "system_cpu_kernel_cmdline_cpu_option_values": normalized_kernel_cpu_options(system_cpu),
         "gui_display_frame_rate": gui_display_frame_rate,
         "gui_display_diagnosis": summarize_gui_timing_diagnosis(gui_display_frame_rate),
         "models": summarize_models(snapshot),
@@ -1216,21 +1304,61 @@ def print_human(summary: dict[str, Any]) -> None:
     else:
         print("  no PTP register-read counters found")
 
+    system_cpu = summary.get("system_cpu")
+    system_cpu = system_cpu if isinstance(system_cpu, dict) else {}
+    if system_cpu:
+        isolated = system_cpu.get("isolated_cpus")
+        isolated = isolated if isinstance(isolated, dict) else {}
+        cpus = isolated.get("cpus")
+        cpu_text = ",".join(str(cpu) for cpu in cpus) if isinstance(cpus, list) else ""
+        cmdline = system_cpu.get("kernel_cmdline")
+        cmdline = cmdline if isinstance(cmdline, dict) else {}
+        options = cmdline.get("options")
+        options = options if isinstance(options, dict) else {}
+        print("\nSystem CPU")
+        print(
+            f"  isolated: available={isolated.get('available')} "
+            f"parse_ok={isolated.get('parse_ok')} "
+            f"cpus={cpu_text or isolated.get('raw') or '<empty>'}"
+        )
+        if options:
+            print(
+                "  boot args: "
+                f"isolcpus={options.get('isolcpus', 'n/a')} "
+                f"nohz_full={options.get('nohz_full', 'n/a')} "
+                f"rcu_nocbs={options.get('rcu_nocbs', 'n/a')}"
+            )
+        normalized_options = summary.get("system_cpu_kernel_cmdline_cpu_option_values")
+        if isinstance(normalized_options, list) and normalized_options:
+            print("  boot args normalized: " + " ".join(str(item) for item in normalized_options))
+
     print("\nYOLO Latency")
     if summary["yolo"]:
         for serial, yolo in sorted(summary["yolo"].items()):
             metrics = yolo["metrics"]
             primary = metrics.get("acquisition_to_detect_done_ms") or metrics.get("capture_to_detect_done_ms") or {}
+            acquisition_to_worker = metrics.get("acquisition_to_worker_start_ms") or {}
+            enqueue_to_dequeue = metrics.get("yolo_enqueue_to_dequeue_ms") or {}
+            dequeue_to_worker = metrics.get("yolo_dequeue_to_worker_start_ms") or {}
             queue = metrics.get("yolo_queue_wait_ms") or {}
+            service_gap = metrics.get("same_camera_service_gap_ms") or {}
             cpu_pre_sync = metrics.get("cpu_pre_sync_ms") or {}
             ptp = metrics.get("acquisition_to_ptp_done_ms") or {}
+            affinity = yolo.get("affinity") if isinstance(yolo.get("affinity"), dict) else {}
+            requested_cpus = affinity.get("requested_cpus") or "n/a"
+            effective_cpus = affinity.get("effective_cpus") or "n/a"
             print(
                 f"  Cam{serial}: rows={yolo['rows']} "
                 f"detect_p95={fmt_ms_unit(primary.get('p95'))} "
                 f"steady_p95={fmt_ms_unit(primary.get('steady_p95'))} "
+                f"acq_worker_p95={fmt_ms_unit(acquisition_to_worker.get('p95'))} "
+                f"enqueue_dequeue_p95={fmt_ms_unit(enqueue_to_dequeue.get('p95'))} "
+                f"dequeue_worker_p95={fmt_ms_unit(dequeue_to_worker.get('p95'))} "
                 f"queue_p95={fmt_ms_unit(queue.get('p95'))} "
+                f"service_gap_p95={fmt_ms_unit(service_gap.get('p95'))} "
                 f"cpu_pre_sync_p95={fmt_ms_unit(cpu_pre_sync.get('p95'))} "
-                f"ptp_done_p95={fmt_ms_unit(ptp.get('p95'))}"
+                f"ptp_done_p95={fmt_ms_unit(ptp.get('p95'))} "
+                f"affinity={requested_cpus}->{effective_cpus}"
             )
     else:
         print("  no Cam*_yolo_perf.csv files found")

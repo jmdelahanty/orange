@@ -244,9 +244,14 @@ Environment precedence:
   `ORANGE_GUI_RECORD_FOR_SECONDS` is unset, Orange uses
   `ORANGE_GUI_AUTORUN_RECORD_SECONDS` as `record_for_seconds`.
 
-Crop rolling remains unsupported. GUI external crop IPC continues to declare
-`recording_control.clip_seconds = 0` and
-`rollover.rolling_supported = false`.
+GUI external crop IPC follows this same rolling control when the effective
+full-frame sink mode is `external_ipc`. With `clip_seconds > 0`, crop outputs
+are finalized as rolling sidecars using the external recorder writer-rotation
+path. The crop encoder still uses GOP size `1`, but Orange asks the crop
+recorder to coalesce a short terminal tail using the full-frame GOP window so
+crop sidecar clips align with the parent full-frame clip manifest. With
+`clip_seconds = 0`, crop outputs remain single-clip sidecars. Environment
+variables still take precedence over the JSON file and in-memory GUI controls.
 
 ### `recording.ptp_register_read_decimate`
 

@@ -208,6 +208,8 @@ void test_spec_requires_selected_stream()
 
 void test_spec_recording_control_flows_to_command()
 {
+    nlohmann::json contract = make_contract({5, 6}, "gop_modulo");
+    contract["streams"]["2010096"]["terminal_tail_coalesce_frames"] = 25;
     nlohmann::json spec = {
         {"experiment_id", "rolling_control"},
         {"selection", {{"camera_serials", {"2010096"}}, {"gpu_ids", {5}}}},
@@ -217,7 +219,7 @@ void test_spec_recording_control_flows_to_command()
                 {"record_for_seconds", 6},
                 {"clip_seconds", 2},
             }},
-            {"external_recorder_contract", make_contract({5, 6}, "gop_modulo")},
+            {"external_recorder_contract", contract},
         }},
     };
 
@@ -230,18 +232,24 @@ void test_spec_recording_control_flows_to_command()
             "record_for_seconds should flow from fixed.recording_control");
     require(plan.streams[0].clip_seconds == 2,
             "clip_seconds should flow from fixed.recording_control");
+    require(plan.streams[0].terminal_tail_coalesce_frames == 25,
+            "terminal tail coalesce frame count should flow from stream contract");
 
     const std::vector<std::string> argv = BuildRecorderCommand(plan, plan.streams[0]);
     require(has_arg_pair(argv, "--record-for-seconds", "6"),
             "command should include record duration");
     require(has_arg_pair(argv, "--clip-seconds", "2"),
             "command should include clip duration");
+    require(has_arg_pair(argv, "--terminal-tail-coalesce-frames", "25"),
+            "command should include terminal tail coalesce frame count");
 
     const nlohmann::json json_plan = SupervisorPlanToJson(plan);
     require(json_plan["streams"][0]["recording_control"]["record_for_seconds"] == 6,
             "plan json should include record duration");
     require(json_plan["streams"][0]["recording_control"]["clip_seconds"] == 2,
             "plan json should include clip duration");
+    require(json_plan["streams"][0]["terminal_tail_coalesce_frames"] == 25,
+            "plan json should include terminal tail coalesce frame count");
 }
 
 void test_invalid_shard_policy_fails()

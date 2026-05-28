@@ -288,6 +288,23 @@ bool ParseCpuList(const char* env, cpu_set_t* out_set, std::string* out_str)
     return any;
 }
 
+std::string FormatCpuSet(const cpu_set_t& cpuset)
+{
+    std::ostringstream oss;
+    bool first = true;
+    for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
+        if (!CPU_ISSET(cpu, &cpuset)) {
+            continue;
+        }
+        if (!first) {
+            oss << "|";
+        }
+        oss << cpu;
+        first = false;
+    }
+    return first ? std::string("none") : oss.str();
+}
+
 std::string SanitizeEnvSuffix(const std::string& value)
 {
     std::string out;
@@ -381,28 +398,48 @@ int ResolveYoloRtPolicy(std::string* policy_name)
     return SCHED_FIFO;
 }
 
-void ApplyYoloAffinity(const CameraParams* params, const char* thread_name)
+struct YoloThreadSchedulingSnapshot {
+    std::string affinity_env_key;
+    std::string affinity_requested_cpus;
+    std::string affinity_effective_cpus;
+    int affinity_configured = 0;
+    int affinity_applied = -1;
+};
+
+YoloThreadSchedulingSnapshot ApplyYoloAffinity(const CameraParams* params, const char* thread_name)
 {
+    YoloThreadSchedulingSnapshot snapshot;
     std::string env_key;
     const char* env = ResolveYoloAffinitySpec(params, &env_key);
     cpu_set_t cpuset;
     std::string spec;
     if (!ParseCpuList(env, &cpuset, &spec)) {
-        return;
+        return snapshot;
     }
+    snapshot.affinity_configured = 1;
+    snapshot.affinity_env_key = env_key;
+    snapshot.affinity_requested_cpus = FormatCpuSet(cpuset);
     int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
     if (rc != 0) {
+        snapshot.affinity_applied = 0;
         std::cerr << "[YOLO] Failed to set affinity for "
                   << (thread_name ? thread_name : "YoloWorker")
                   << " via " << env_key
                   << "=" << spec << ": "
                   << std::strerror(rc) << std::endl;
     } else {
+        snapshot.affinity_applied = 1;
         std::cout << "[YOLO] Applied CPU affinity for "
                   << (thread_name ? thread_name : "YoloWorker")
                   << " via " << env_key
                   << "=" << spec << std::endl;
     }
+    cpu_set_t effective;
+    CPU_ZERO(&effective);
+    if (pthread_getaffinity_np(pthread_self(), sizeof(cpu_set_t), &effective) == 0) {
+        snapshot.affinity_effective_cpus = FormatCpuSet(effective);
+    }
+    return snapshot;
 }
 
 void ApplyYoloRealtimeScheduling(const CameraParams* params, const char* thread_name)
@@ -600,6 +637,11 @@ struct YoloPerfRecord {
     int queue_depth_at_worker_start = -1;
     double fps = 0.0;
     int ok = 0;
+    int yolo_affinity_configured = 0;
+    int yolo_affinity_applied = -1;
+    std::string yolo_affinity_env_key;
+    std::string yolo_affinity_requested_cpus;
+    std::string yolo_affinity_effective_cpus;
     double acquisition_to_worker_start_ms = -1.0;
     double acquisition_to_ptp_done_ms = -1.0;
     double ptp_done_to_yolo_resource_ready_ms = -1.0;
@@ -748,6 +790,7 @@ private:
             return;
         }
         file_ << "frame_id,recording_frame_id,timestamp,timestamp_sys,queue_depth,queue_depth_at_enqueue,queue_depth_after_enqueue,queue_depth_after_dequeue,queue_depth_at_worker_start,fps,ok,"
+                 "yolo_affinity_configured,yolo_affinity_applied,yolo_affinity_env_key,yolo_affinity_requested_cpus,yolo_affinity_effective_cpus,"
                  "acquisition_to_worker_start_ms,acquisition_to_ptp_done_ms,ptp_done_to_yolo_resource_ready_ms,yolo_resource_ready_to_pointer_attrs_done_ms,pointer_attrs_done_to_ingress_event_record_ms,ingress_event_record_to_yolo_dispatch_ready_ms,yolo_dispatch_ready_to_yolo_enqueue_ms,recording_submit_call_ms,recording_submit_to_yolo_enqueue_ms,"
                  "acquisition_to_yolo_enqueue_ms,yolo_enqueue_push_ms,yolo_enqueue_to_dequeue_ms,yolo_dequeue_to_worker_start_ms,yolo_queue_wait_ms,oldest_frame_age_at_worker_start_ms,oldest_queued_frame_age_at_worker_start_ms,"
                  "ingress_event_record_to_worker_start_ms,acquisition_to_yolo_input_ready_ms,worker_start_to_yolo_input_ready_ms,acquisition_to_detect_done_ms,worker_start_to_detect_done_ms,"
@@ -782,6 +825,11 @@ private:
               << record.queue_depth_at_worker_start << ","
               << record.fps << ","
               << record.ok << ","
+              << record.yolo_affinity_configured << ","
+              << record.yolo_affinity_applied << ","
+              << record.yolo_affinity_env_key << ","
+              << record.yolo_affinity_requested_cpus << ","
+              << record.yolo_affinity_effective_cpus << ","
               << record.acquisition_to_worker_start_ms << ","
               << record.acquisition_to_ptp_done_ms << ","
               << record.ptp_done_to_yolo_resource_ready_ms << ","
@@ -1106,8 +1154,9 @@ void YoloWorker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
 
 bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     static thread_local bool affinity_set = false;
+    static thread_local YoloThreadSchedulingSnapshot scheduling_snapshot;
     if (!affinity_set) {
-        ApplyYoloAffinity(associated_camera_params_, threadName);
+        scheduling_snapshot = ApplyYoloAffinity(associated_camera_params_, threadName);
         ApplyYoloRealtimeScheduling(associated_camera_params_, threadName);
         affinity_set = true;
     }
@@ -1871,6 +1920,13 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
                 record.queue_depth_at_worker_start = queue_depth_at_worker_start;
                 record.fps = current_fps_.load(std::memory_order_relaxed);
                 record.ok = finished_in_time ? 1 : 0;
+                record.yolo_affinity_configured = scheduling_snapshot.affinity_configured;
+                record.yolo_affinity_applied = scheduling_snapshot.affinity_applied;
+                record.yolo_affinity_env_key = scheduling_snapshot.affinity_env_key;
+                record.yolo_affinity_requested_cpus =
+                    scheduling_snapshot.affinity_requested_cpus;
+                record.yolo_affinity_effective_cpus =
+                    scheduling_snapshot.affinity_effective_cpus;
                 record.acquisition_to_worker_start_ms = ms_acquisition_to_worker_start;
                 record.acquisition_to_ptp_done_ms = ms_acquisition_to_ptp_done;
                 record.ptp_done_to_yolo_resource_ready_ms =

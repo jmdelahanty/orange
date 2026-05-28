@@ -145,6 +145,7 @@ struct RollingRecordingSessionManifestOptions {
     std::string rollover_implementation = "headless_gop_boundary_writer_switch";
     bool rollover_next_writer_preopened = true;
     nlohmann::json recording_backend = nlohmann::json::object();
+    std::vector<RecordingOutputDescriptor> recording_outputs;
     std::vector<std::string> camera_serials;
     std::vector<RollingClipManifestOptions> clips;
 };

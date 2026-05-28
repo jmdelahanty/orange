@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -142,6 +143,30 @@ def parse_args() -> argparse.Namespace:
         help="Fail if YOLO queue wait p95 exceeds this value. Default: 1 ms.",
     )
     parser.add_argument(
+        "--max-yolo-acquisition-to-worker-start-p95-ms",
+        type=float,
+        default=None,
+        help="Optional fail threshold for acquisition_to_worker_start_ms p95.",
+    )
+    parser.add_argument(
+        "--max-yolo-enqueue-to-dequeue-p95-ms",
+        type=float,
+        default=None,
+        help="Optional fail threshold for yolo_enqueue_to_dequeue_ms p95.",
+    )
+    parser.add_argument(
+        "--max-yolo-dequeue-to-worker-start-p95-ms",
+        type=float,
+        default=None,
+        help="Optional fail threshold for yolo_dequeue_to_worker_start_ms p95.",
+    )
+    parser.add_argument(
+        "--max-yolo-same-camera-service-gap-p95-ms",
+        type=float,
+        default=None,
+        help="Optional fail threshold for same_camera_service_gap_ms p95.",
+    )
+    parser.add_argument(
         "--max-yolo-steady-p95-ms",
         type=float,
         default=None,
@@ -158,6 +183,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=50.0,
         help="Fail if a main camera MP4 bitrate is below this value. Default: 50 Mbps.",
+    )
+    parser.add_argument(
+        "--allow-main-video-content-failure",
+        action="append",
+        default=[],
+        metavar="SERIAL[,SERIAL...]",
+        help=(
+            "Allow low-bitrate or decoded-content sanity failures for known "
+            "optically invalid main camera videos, such as a camera with no "
+            "lens attached. This does not allow missing videos, ffprobe "
+            "failures, invalid dimensions, recorder errors, or crop failures."
+        ),
     )
     parser.add_argument(
         "--max-video-black-fraction",
@@ -221,6 +258,38 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional expected recording_snapshot "
             "session.gui_display_frame_rate.yolo_speed_graphs_enabled value."
+        ),
+    )
+    parser.add_argument(
+        "--expect-yolo-affinity",
+        action="append",
+        default=[],
+        metavar="SERIAL=CPU",
+        help=(
+            "Optional per-camera expected YOLO worker CPU affinity. Checks both "
+            "recording_snapshot session.yolo_worker requested affinity and "
+            "Cam*_yolo_perf.csv effective worker affinity columns."
+        ),
+    )
+    parser.add_argument(
+        "--require-isolated-cpus",
+        default="",
+        metavar="CPU[,CPU...]",
+        help=(
+            "Optional comma/range CPU list that must be present in "
+            "recording_snapshot session.system_cpu.isolated_cpus. Use this "
+            "to prove the kernel isolation set was active for affinity runs."
+        ),
+    )
+    parser.add_argument(
+        "--require-kernel-cmdline-cpus",
+        action="append",
+        default=[],
+        metavar="OPTION=CPU[,CPU...]",
+        help=(
+            "Optional repeated /proc/cmdline CPU-list requirement, for example "
+            "isolcpus=6,8,10,12 or nohz_full=6,8,10,12. Checks the value "
+            "captured in recording_snapshot session.system_cpu.kernel_cmdline.options."
         ),
     )
     parser.add_argument(
@@ -335,6 +404,32 @@ def parse_args() -> argparse.Namespace:
             "the artifact, require status_json heartbeat sidecars and parsed "
             "external_recorder_supervisor_runtime.json recorder_status entries."
         ),
+    )
+    parser.add_argument(
+        "--require-source-version",
+        action="store_true",
+        help=(
+            "Require recording_snapshot.json source_version Git provenance with "
+            "commit, producer_version, usable git command metadata, and tracked "
+            "dirty-state telemetry."
+        ),
+    )
+    parser.add_argument(
+        "--expect-source-git-command-user-mode",
+        choices=("process_euid", "sudo_invoking_user"),
+        default=None,
+        help=(
+            "Optional expected source_version.git_command_user.mode. Use "
+            "sudo_invoking_user for sudo-launched GUI validation runs that should "
+            "drop Git commands to SUDO_UID/SUDO_GID."
+        ),
+    )
+    parser.add_argument(
+        "--expect-source-dirty-tracked",
+        type=int,
+        choices=(0, 1),
+        default=None,
+        help="Optional expected source_version.dirty_tracked value.",
     )
     parser.add_argument(
         "--require-crop-preview-counters",
@@ -484,6 +579,20 @@ def parse_expected_cameras(value: str) -> list[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def parse_serial_filter(values: list[str], option_name: str) -> set[str]:
+    serials: set[str] = set()
+    for raw in values:
+        raw = raw.strip()
+        if not raw:
+            raise SystemExit(f"{option_name} has an empty value")
+        for token in raw.split(","):
+            serial = token.strip()
+            if not serial:
+                raise SystemExit(f"{option_name} has an empty serial in {raw!r}")
+            serials.add(serial)
+    return serials
+
+
 def parse_expected_serial_int_map(values: list[str], option_name: str) -> dict[str, int]:
     parsed: dict[str, int] = {}
     for raw in values:
@@ -502,6 +611,80 @@ def parse_expected_serial_int_map(values: list[str], option_name: str) -> dict[s
             raise SystemExit(f"{option_name} value must be >= 0, got {raw!r}")
         parsed[serial] = value
     return parsed
+
+
+def parse_cpu_list(value: str, option_name: str) -> list[int]:
+    if not value.strip():
+        return []
+    cpus: set[int] = set()
+    for token in value.split(","):
+        token = token.strip()
+        if not token:
+            raise SystemExit(f"{option_name} has an empty CPU token in {value!r}")
+        if "-" in token:
+            first_text, last_text = token.split("-", 1)
+            try:
+                first = int(first_text)
+                last = int(last_text)
+            except ValueError as exc:
+                raise SystemExit(f"{option_name} has an invalid CPU range {token!r}") from exc
+            if first < 0 or last < 0 or first > last:
+                raise SystemExit(f"{option_name} has an invalid CPU range {token!r}")
+            cpus.update(range(first, last + 1))
+            continue
+        try:
+            cpu = int(token)
+        except ValueError as exc:
+            raise SystemExit(f"{option_name} has an invalid CPU token {token!r}") from exc
+        if cpu < 0:
+            raise SystemExit(f"{option_name} CPU values must be >= 0, got {token!r}")
+        cpus.add(cpu)
+    return sorted(cpus)
+
+
+def parse_expected_option_cpu_map(values: list[str], option_name: str) -> dict[str, list[int]]:
+    parsed: dict[str, list[int]] = {}
+    for raw in values:
+        if "=" not in raw:
+            raise SystemExit(f"{option_name} must use OPTION=CPU[,CPU...], got {raw!r}")
+        option, value_text = raw.split("=", 1)
+        option = option.strip()
+        value_text = value_text.strip()
+        if not option:
+            raise SystemExit(f"{option_name} has an empty option name in {raw!r}")
+        cpus = parse_cpu_list(value_text, option_name)
+        if not cpus:
+            raise SystemExit(f"{option_name} must require at least one CPU, got {raw!r}")
+        parsed[option] = cpus
+    return parsed
+
+
+def parse_kernel_cmdline_cpu_option_value(value: Any) -> tuple[set[int], list[str]]:
+    if not isinstance(value, str):
+        return set(), ["<non-string>"]
+    cpus: set[int] = set()
+    invalid: list[str] = []
+    for raw_token in value.split(","):
+        token = raw_token.strip()
+        if not token:
+            continue
+        if re.fullmatch(r"\d+", token):
+            cpus.add(int(token))
+            continue
+        range_match = re.fullmatch(r"(\d+)-(\d+)", token)
+        if range_match:
+            first = int(range_match.group(1))
+            last = int(range_match.group(2))
+            if first <= last:
+                cpus.update(range(first, last + 1))
+            else:
+                invalid.append(token)
+            continue
+        if token[0].isdigit():
+            invalid.append(token)
+            continue
+        # isolcpus can include non-CPU flags such as "domain" or "managed_irq".
+    return cpus, invalid
 
 
 def artifact_cameras(summary: dict[str, Any], snapshot: dict[str, Any], expected: list[str]) -> list[str]:
@@ -691,12 +874,13 @@ def check_optional_backend_float_map(
     )
 
 
-def check_crop_single_clip_rollover_node(
+def check_crop_rollover_node(
     reporter: Reporter,
     node: dict[str, Any],
     label: str,
     *,
     require_present: bool = False,
+    allow_rolling: bool = False,
 ) -> None:
     control = node.get("recording_control")
     control = control if isinstance(control, dict) else {}
@@ -706,40 +890,96 @@ def check_crop_single_clip_rollover_node(
     if require_present or control:
         record_for_seconds = integer(control.get("record_for_seconds"))
         clip_seconds = integer(control.get("clip_seconds"))
-        reporter.check(
-            record_for_seconds == 0 and clip_seconds == 0,
-            f"{label} crop recording_control declares single_clip",
-            (
-                f"{label} crop recording_control requests rolling or timed control: "
-                f"record_for_seconds={record_for_seconds}, clip_seconds={clip_seconds}"
-            ),
-        )
+        if allow_rolling:
+            reporter.check(
+                record_for_seconds is not None and record_for_seconds >= 0,
+                f"{label} crop recording_control has nonnegative record_for_seconds",
+                f"{label} crop recording_control invalid record_for_seconds={record_for_seconds}",
+            )
+            reporter.check(
+                clip_seconds is not None and clip_seconds > 0,
+                f"{label} crop recording_control declares rolling",
+                (
+                    f"{label} crop recording_control does not request rolling: "
+                    f"record_for_seconds={record_for_seconds}, clip_seconds={clip_seconds}"
+                ),
+            )
+        else:
+            reporter.check(
+                record_for_seconds == 0 and clip_seconds == 0,
+                f"{label} crop recording_control declares single_clip",
+                (
+                    f"{label} crop recording_control requests rolling or timed control: "
+                    f"record_for_seconds={record_for_seconds}, clip_seconds={clip_seconds}"
+                ),
+            )
     if require_present or rollover:
         requested = rollover.get("requested")
         status = rollover.get("status")
         implementation = rollover.get("implementation")
-        reporter.check(
-            requested is False,
-            f"{label} crop rollover requested=false",
-            f"{label} crop rollover requested={requested!r}; crop rolling is not supported",
-        )
-        reporter.check(
-            status == "not_requested" and implementation == "none",
-            f"{label} crop rollover status is not_requested",
-            (
-                f"{label} crop rollover status/implementation unexpected: "
-                f"{status!r}/{implementation!r}"
-            ),
-        )
-        if "rolling_supported" in rollover:
+        if allow_rolling:
             reporter.check(
-                rollover.get("rolling_supported") is False,
-                f"{label} crop rolling_supported=false",
+                requested is True,
+                f"{label} crop rollover requested=true",
+                f"{label} crop rollover requested={requested!r}; expected rolling crop output",
+            )
+            reporter.check(
+                status in {"supported", "completed", "incomplete"} and
+                implementation == "external_recorder_gop_boundary_writer_rotation",
+                f"{label} crop rollover uses external recorder writer rotation",
                 (
-                    f"{label} crop rolling_supported={rollover.get('rolling_supported')!r}; "
-                    "crop rolling is not implemented"
+                    f"{label} crop rollover status/implementation unexpected: "
+                    f"{status!r}/{implementation!r}"
                 ),
             )
+            reporter.check(
+                rollover.get("seamless_writer_switch") is True,
+                f"{label} crop rollover seamless writer switch=true",
+                f"{label} crop rollover seamless_writer_switch={rollover.get('seamless_writer_switch')!r}",
+            )
+            reporter.check(
+                rollover.get("records_during_rollover") is True,
+                f"{label} crop rollover records during rollover=true",
+                f"{label} crop rollover records_during_rollover={rollover.get('records_during_rollover')!r}",
+            )
+            if "output_kind" in rollover:
+                reporter.check(
+                    rollover.get("output_kind") == "crop",
+                    f"{label} crop rollover output_kind=crop",
+                    f"{label} crop rollover output_kind={rollover.get('output_kind')!r}",
+                )
+            if "supported_mode" in rollover:
+                reporter.check(
+                    rollover.get("supported_mode") == "rolling_clips",
+                    f"{label} crop rollover supported_mode=rolling_clips",
+                    f"{label} crop rollover supported_mode={rollover.get('supported_mode')!r}",
+                )
+            if "rolling_supported" in rollover:
+                reporter.check(
+                    rollover.get("rolling_supported") is True,
+                    f"{label} crop rolling_supported=true",
+                    f"{label} crop rolling_supported={rollover.get('rolling_supported')!r}",
+                )
+        else:
+            reporter.check(
+                requested is False,
+                f"{label} crop rollover requested=false",
+                f"{label} crop rollover requested={requested!r}; crop rolling requires rolling_clips metadata",
+            )
+            reporter.check(
+                status == "not_requested" and implementation == "none",
+                f"{label} crop rollover status is not_requested",
+                (
+                    f"{label} crop rollover status/implementation unexpected: "
+                    f"{status!r}/{implementation!r}"
+                ),
+            )
+            if "rolling_supported" in rollover:
+                reporter.check(
+                    isinstance(rollover.get("rolling_supported"), bool),
+                    f"{label} crop rolling_supported is explicit",
+                    f"{label} crop rolling_supported={rollover.get('rolling_supported')!r}",
+                )
 
 
 def require_backend_map_key(
@@ -1001,6 +1241,133 @@ def check_recording_session_manifest(
         )
 
 
+def check_source_version(
+    reporter: Reporter,
+    snapshot: dict[str, Any],
+    *,
+    require_source_version: bool,
+    expected_git_command_user_mode: str | None,
+    expected_dirty_tracked: int | None,
+) -> dict[str, Any]:
+    source = snapshot.get("source_version")
+    source = source if isinstance(source, dict) else {}
+    if (
+        not require_source_version
+        and expected_git_command_user_mode is None
+        and expected_dirty_tracked is None
+    ):
+        return source
+
+    producer_version = snapshot.get("producer_version")
+    commit = source.get("commit")
+    commit_short = source.get("commit_short")
+    git_user = source.get("git_command_user")
+    git_user = git_user if isinstance(git_user, dict) else {}
+    dirty_tracked_available = source.get("dirty_tracked_available")
+    dirty_tracked = source.get("dirty_tracked")
+
+    if require_source_version:
+        reporter.check(
+            bool(source),
+            "recording_snapshot source_version present",
+            "recording_snapshot source_version missing",
+        )
+        reporter.check(
+            source.get("schema_version") == 1,
+            "source_version schema_version=1",
+            f"source_version schema_version={source.get('schema_version')!r}",
+        )
+        reporter.check(
+            source.get("vcs") == "git",
+            "source_version vcs=git",
+            f"source_version vcs={source.get('vcs')!r}",
+        )
+        reporter.check(
+            source.get("available") is True,
+            "source_version Git provenance available",
+            f"source_version available={source.get('available')!r}",
+        )
+        reporter.check(
+            isinstance(source.get("worktree"), str) and bool(source.get("worktree")),
+            "source_version worktree present",
+            f"source_version worktree={source.get('worktree')!r}",
+        )
+        reporter.check(
+            isinstance(commit, str) and len(commit) >= 7,
+            "source_version commit present",
+            f"source_version commit={commit!r}",
+        )
+        reporter.check(
+            isinstance(commit_short, str)
+            and bool(commit_short)
+            and isinstance(commit, str)
+            and commit.startswith(commit_short),
+            "source_version commit_short matches commit",
+            f"source_version commit_short={commit_short!r}, commit={commit!r}",
+        )
+        reporter.check(
+            producer_version == commit_short,
+            "producer_version matches source_version commit_short",
+            (
+                f"producer_version={producer_version!r}, "
+                f"source_version.commit_short={commit_short!r}"
+            ),
+        )
+        reporter.check(
+            source.get("git_command_available") is True,
+            "source_version git command available",
+            f"source_version git_command_available={source.get('git_command_available')!r}",
+        )
+        reporter.check(
+            bool(git_user.get("mode")),
+            "source_version git_command_user mode present",
+            f"source_version git_command_user.mode={git_user.get('mode')!r}",
+        )
+        reporter.check(
+            dirty_tracked_available is True,
+            "source_version tracked dirty-state telemetry available",
+            f"source_version dirty_tracked_available={dirty_tracked_available!r}",
+        )
+        reporter.check(
+            isinstance(dirty_tracked, bool),
+            "source_version dirty_tracked present",
+            f"source_version dirty_tracked={dirty_tracked!r}",
+        )
+
+    if expected_git_command_user_mode is not None:
+        reporter.check(
+            git_user.get("mode") == expected_git_command_user_mode,
+            f"source_version git_command_user.mode={expected_git_command_user_mode}",
+            (
+                f"source_version git_command_user.mode={git_user.get('mode')!r}; "
+                f"expected {expected_git_command_user_mode!r}"
+            ),
+        )
+        if expected_git_command_user_mode == "sudo_invoking_user":
+            reporter.check(
+                git_user.get("uid") not in {None, 0},
+                "source_version git_command_user uid is sudo invoking user",
+                f"source_version git_command_user.uid={git_user.get('uid')!r}",
+            )
+            reporter.check(
+                git_user.get("gid") not in {None, 0},
+                "source_version git_command_user gid is sudo invoking user",
+                f"source_version git_command_user.gid={git_user.get('gid')!r}",
+            )
+
+    if expected_dirty_tracked is not None:
+        expected_bool = bool(expected_dirty_tracked)
+        reporter.check(
+            dirty_tracked == expected_bool,
+            f"source_version dirty_tracked={expected_bool}",
+            (
+                f"source_version dirty_tracked={dirty_tracked!r}; "
+                f"expected {expected_bool!r}"
+            ),
+        )
+    return source
+
+
 def index_path_from_session(
     recording_folder: Path,
     manifest_indexes: dict[str, Any],
@@ -1097,6 +1464,18 @@ def sorted_rolling_artifacts_for_camera(
     return sorted(out, key=lambda item: integer(item[0].get("clip_index")) or 0)
 
 
+def rolling_crop_outputs_for_camera(
+    clip: dict[str, Any],
+    serial: str,
+) -> dict[str, Any]:
+    outputs = clip.get("recording_outputs")
+    outputs = outputs if isinstance(outputs, dict) else {}
+    camera_outputs = outputs.get(serial)
+    camera_outputs = camera_outputs if isinstance(camera_outputs, dict) else {}
+    crop_output = camera_outputs.get("crop")
+    return crop_output if isinstance(crop_output, dict) else {}
+
+
 def check_rolling_recording_session_manifest(
     reporter: Reporter,
     recording_folder: Path,
@@ -1165,6 +1544,73 @@ def check_rolling_recording_session_manifest(
         )
         for error in output_errors:
             reporter.fail(error)
+
+    crop_recording = backend.get("crop_recording")
+    crop_recording = crop_recording if isinstance(crop_recording, dict) else {}
+    crop_rolling_clips = crop_recording.get("rolling_clips")
+    crop_rolling_clips = crop_rolling_clips if isinstance(crop_rolling_clips, dict) else {}
+    if crop_rolling_clips:
+        clips_by_index = {
+            integer(clip.get("clip_index")): clip
+            for clip in clips
+            if isinstance(clip, dict) and integer(clip.get("clip_index")) is not None
+        }
+        for serial, serial_clips in sorted(crop_rolling_clips.items()):
+            if not isinstance(serial_clips, list):
+                reporter.fail(f"Cam{serial} crop rolling_clips entry is not a list")
+                continue
+            for crop_clip in serial_clips:
+                crop_clip = crop_clip if isinstance(crop_clip, dict) else {}
+                clip_index = integer(crop_clip.get("clip_index"))
+                parent_clip = clips_by_index.get(clip_index)
+                reporter.check(
+                    parent_clip is not None,
+                    f"Cam{serial} rolling crop clip {clip_index} has parent clip",
+                    f"Cam{serial} rolling crop clip {clip_index} missing parent clip",
+                )
+                if parent_clip is None:
+                    continue
+                crop_output = rolling_crop_outputs_for_camera(parent_clip, serial)
+                reporter.check(
+                    bool(crop_output),
+                    f"Cam{serial} rolling clip {clip_index} crop recording_output present",
+                    f"Cam{serial} rolling clip {clip_index} crop recording_output missing",
+                )
+                if not crop_output:
+                    continue
+                for output_key, clip_key in (
+                    ("video", "video"),
+                    ("metadata", "metadata"),
+                    ("perf", "perf"),
+                    ("keyframes", "keyframes"),
+                ):
+                    expected = crop_clip.get(clip_key)
+                    actual = crop_output.get(output_key)
+                    if isinstance(expected, str) and expected:
+                        reporter.check(
+                            actual == expected,
+                            (
+                                f"Cam{serial} rolling clip {clip_index} crop "
+                                f"{output_key} path matches backend"
+                            ),
+                            (
+                                f"Cam{serial} rolling clip {clip_index} crop "
+                                f"{output_key} path {actual!r} != backend {expected!r}"
+                            ),
+                        )
+                frame_count = integer(crop_clip.get("frame_count"))
+                output_frame_count = integer(crop_output.get("frame_count"))
+                reporter.check(
+                    output_frame_count == frame_count,
+                    (
+                        f"Cam{serial} rolling clip {clip_index} crop output "
+                        f"frame_count matches backend ({output_frame_count})"
+                    ),
+                    (
+                        f"Cam{serial} rolling clip {clip_index} crop output "
+                        f"frame_count {output_frame_count} != backend {frame_count}"
+                    ),
+                )
 
     for serial in cameras:
         clip_artifacts = sorted_rolling_artifacts_for_camera(manifest, serial)
@@ -1769,6 +2215,21 @@ def crop_descriptor_artifact_path(
     return path_from_recording_folder(recording_folder, value)
 
 
+def crop_backend_artifact_path(
+    recording_folder: Path,
+    crop_recording_backend: dict[str, Any],
+    serial: str,
+    map_name: str,
+) -> Path | None:
+    values = crop_recording_backend.get(map_name)
+    if not isinstance(values, dict):
+        return None
+    value = values.get(serial)
+    if not isinstance(value, str) or not value:
+        return None
+    return path_from_recording_folder(recording_folder, value)
+
+
 def resolve_crop_artifact_path(
     recording_folder: Path,
     crop_output: dict[str, Any],
@@ -1780,6 +2241,65 @@ def resolve_crop_artifact_path(
     if descriptor_path is not None:
         return descriptor_path
     return crop_artifact_path(recording_folder, crop_output, key, default_name)
+
+
+def resolve_crop_video_artifact_path(
+    recording_folder: Path,
+    crop_output: dict[str, Any],
+    crop_descriptor: dict[str, Any],
+    crop_recording_backend: dict[str, Any],
+    serial: str,
+) -> Path:
+    descriptor_path = crop_descriptor_artifact_path(recording_folder, crop_descriptor, "video")
+    if descriptor_path is not None:
+        return descriptor_path
+    backend_path = crop_backend_artifact_path(
+        recording_folder,
+        crop_recording_backend,
+        serial,
+        "merged_mp4",
+    )
+    if backend_path is not None:
+        return backend_path
+    return crop_artifact_path(recording_folder, crop_output, "video", f"Cam{serial}_crop.mp4")
+
+
+def resolve_crop_keyframe_artifact_path(
+    recording_folder: Path,
+    crop_output: dict[str, Any],
+    crop_descriptor: dict[str, Any],
+    crop_recording_backend: dict[str, Any],
+    serial: str,
+) -> Path:
+    descriptor_path = crop_descriptor_artifact_path(recording_folder, crop_descriptor, "keyframes")
+    if descriptor_path is not None:
+        return descriptor_path
+    backend_path = crop_backend_artifact_path(
+        recording_folder,
+        crop_recording_backend,
+        serial,
+        "keyframes",
+    )
+    if backend_path is not None:
+        return backend_path
+    return crop_artifact_path(recording_folder, crop_output, "keyframes", f"Cam{serial}_crop_keyframe.json")
+
+
+def resolve_crop_summary_artifact_path(
+    recording_folder: Path,
+    crop_descriptor: dict[str, Any],
+    crop_recording_backend: dict[str, Any],
+    serial: str,
+) -> Path | None:
+    descriptor_path = crop_descriptor_artifact_path(recording_folder, crop_descriptor, "summary")
+    if descriptor_path is not None:
+        return descriptor_path
+    return crop_backend_artifact_path(
+        recording_folder,
+        crop_recording_backend,
+        serial,
+        "summary_json",
+    )
 
 
 def crop_metadata_row_count(recording_folder: Path, snapshot: dict[str, Any], serial: str) -> int | None:
@@ -2124,6 +2644,7 @@ def check_videos(
     ffmpeg: str,
     min_bitrate_mbps: float,
     skip_content_check: bool,
+    allowed_content_failure_serials: set[str],
     max_black_fraction: float,
     min_stddev: float,
 ) -> dict[str, Any]:
@@ -2153,11 +2674,22 @@ def check_videos(
         )
         bitrate_bps = number(video.get("bitrate_bps"))
         bitrate_mbps = None if bitrate_bps is None else bitrate_bps / 1_000_000.0
-        reporter.check(
-            bitrate_mbps is not None and bitrate_mbps >= min_bitrate_mbps,
-            f"Cam{serial} {video_label} bitrate {fmt_float(bitrate_mbps, 1)} Mbps >= {min_bitrate_mbps:.1f} Mbps",
-            f"Cam{serial} {video_label} bitrate {bitrate_mbps} Mbps below {min_bitrate_mbps:.1f} Mbps",
-        )
+        bitrate_ok = bitrate_mbps is not None and bitrate_mbps >= min_bitrate_mbps
+        if bitrate_ok:
+            reporter.pass_(
+                f"Cam{serial} {video_label} bitrate "
+                f"{fmt_float(bitrate_mbps, 1)} Mbps >= {min_bitrate_mbps:.1f} Mbps"
+            )
+        elif serial in allowed_content_failure_serials:
+            reporter.warn(
+                f"Cam{serial} {video_label} bitrate {bitrate_mbps} Mbps below "
+                f"{min_bitrate_mbps:.1f} Mbps (allowed main-video content failure)"
+            )
+        else:
+            reporter.fail(
+                f"Cam{serial} {video_label} bitrate {bitrate_mbps} Mbps below "
+                f"{min_bitrate_mbps:.1f} Mbps"
+            )
         if skip_content_check:
             reporter.warn(f"Cam{serial} decoded video-content check skipped")
             continue
@@ -2169,16 +2701,23 @@ def check_videos(
             min_stddev,
         )
         video_sanity[serial] = sanity
-        reporter.check(
-            bool(sanity.get("content_valid")),
-            (
+        if sanity.get("content_valid"):
+            reporter.pass_(
                 f"Cam{serial} decoded video sanity pass "
                 f"(mean_luma={fmt_float(sanity.get('mean_luma'), 1)}, "
                 f"stddev={fmt_float(sanity.get('max_stddev'), 1)}, "
                 f"black={fmt_float(sanity.get('max_black_fraction_lt8'), 6)})"
-            ),
-            f"Cam{serial} decoded video sanity failed: {sanity.get('status')} {sanity.get('detail', '')}",
-        )
+            )
+        elif serial in allowed_content_failure_serials:
+            reporter.warn(
+                f"Cam{serial} decoded video sanity failed: {sanity.get('status')} "
+                f"{sanity.get('detail', '')} (allowed main-video content failure)"
+            )
+        else:
+            reporter.fail(
+                f"Cam{serial} decoded video sanity failed: "
+                f"{sanity.get('status')} {sanity.get('detail', '')}"
+            )
     return video_sanity
 
 
@@ -2187,6 +2726,10 @@ def check_yolo(
     summary: dict[str, Any],
     cameras: list[str],
     max_queue_p95_ms: float,
+    max_acquisition_to_worker_start_p95_ms: float | None,
+    max_enqueue_to_dequeue_p95_ms: float | None,
+    max_dequeue_to_worker_start_p95_ms: float | None,
+    max_same_camera_service_gap_p95_ms: float | None,
     max_steady_p95_ms: float | None,
     max_ptp_done_p95_ms: float | None,
 ) -> None:
@@ -2201,12 +2744,20 @@ def check_yolo(
         reporter.check(ok_rows == rows, f"Cam{serial} YOLO ok rows={ok_rows}/{rows}", f"Cam{serial} YOLO ok rows={ok_rows}/{rows}")
 
         detect = metric(summary, serial, "acquisition_to_detect_done_ms") or metric(summary, serial, "capture_to_detect_done_ms")
+        acquisition_to_worker = metric(summary, serial, "acquisition_to_worker_start_ms")
+        enqueue_to_dequeue = metric(summary, serial, "yolo_enqueue_to_dequeue_ms")
+        dequeue_to_worker = metric(summary, serial, "yolo_dequeue_to_worker_start_ms")
         queue = metric(summary, serial, "yolo_queue_wait_ms")
+        service_gap = metric(summary, serial, "same_camera_service_gap_ms")
         cpu_pre_sync = metric(summary, serial, "cpu_pre_sync_ms")
         ptp_done = metric(summary, serial, "acquisition_to_ptp_done_ms")
 
         detect_steady_p95 = number(detect.get("steady_p95"))
+        acquisition_to_worker_p95 = number(acquisition_to_worker.get("p95"))
+        enqueue_to_dequeue_p95 = number(enqueue_to_dequeue.get("p95"))
+        dequeue_to_worker_p95 = number(dequeue_to_worker.get("p95"))
         queue_p95 = number(queue.get("p95"))
+        service_gap_p95 = number(service_gap.get("p95"))
         cpu_pre_sync_p95 = number(cpu_pre_sync.get("p95"))
         ptp_done_p95 = number(ptp_done.get("p95"))
 
@@ -2226,6 +2777,70 @@ def check_yolo(
             f"Cam{serial} YOLO queue p95={fmt_float(queue_p95)} ms",
             f"Cam{serial} YOLO queue p95={queue_p95} ms exceeds {max_queue_p95_ms:.3f} ms",
         )
+        if acquisition_to_worker_p95 is not None:
+            if max_acquisition_to_worker_start_p95_ms is None:
+                reporter.pass_(
+                    f"Cam{serial} acquisition_to_worker_start p95={acquisition_to_worker_p95:.3f} ms"
+                )
+            else:
+                reporter.check(
+                    acquisition_to_worker_p95 <= max_acquisition_to_worker_start_p95_ms,
+                    (
+                        f"Cam{serial} acquisition_to_worker_start p95="
+                        f"{acquisition_to_worker_p95:.3f} ms"
+                    ),
+                    (
+                        f"Cam{serial} acquisition_to_worker_start p95="
+                        f"{acquisition_to_worker_p95:.3f} ms > "
+                        f"{max_acquisition_to_worker_start_p95_ms:.3f} ms"
+                    ),
+                )
+        if enqueue_to_dequeue_p95 is not None:
+            if max_enqueue_to_dequeue_p95_ms is None:
+                reporter.pass_(
+                    f"Cam{serial} yolo_enqueue_to_dequeue p95={enqueue_to_dequeue_p95:.3f} ms"
+                )
+            else:
+                reporter.check(
+                    enqueue_to_dequeue_p95 <= max_enqueue_to_dequeue_p95_ms,
+                    f"Cam{serial} yolo_enqueue_to_dequeue p95={enqueue_to_dequeue_p95:.3f} ms",
+                    (
+                        f"Cam{serial} yolo_enqueue_to_dequeue p95={enqueue_to_dequeue_p95:.3f} ms "
+                        f"> {max_enqueue_to_dequeue_p95_ms:.3f} ms"
+                    ),
+                )
+        if dequeue_to_worker_p95 is not None:
+            if max_dequeue_to_worker_start_p95_ms is None:
+                reporter.pass_(
+                    f"Cam{serial} yolo_dequeue_to_worker_start p95={dequeue_to_worker_p95:.3f} ms"
+                )
+            else:
+                reporter.check(
+                    dequeue_to_worker_p95 <= max_dequeue_to_worker_start_p95_ms,
+                    (
+                        f"Cam{serial} yolo_dequeue_to_worker_start p95="
+                        f"{dequeue_to_worker_p95:.3f} ms"
+                    ),
+                    (
+                        f"Cam{serial} yolo_dequeue_to_worker_start p95="
+                        f"{dequeue_to_worker_p95:.3f} ms > "
+                        f"{max_dequeue_to_worker_start_p95_ms:.3f} ms"
+                    ),
+                )
+        if service_gap_p95 is not None:
+            if max_same_camera_service_gap_p95_ms is None:
+                reporter.pass_(
+                    f"Cam{serial} same_camera_service_gap p95={service_gap_p95:.3f} ms"
+                )
+            else:
+                reporter.check(
+                    service_gap_p95 <= max_same_camera_service_gap_p95_ms,
+                    f"Cam{serial} same_camera_service_gap p95={service_gap_p95:.3f} ms",
+                    (
+                        f"Cam{serial} same_camera_service_gap p95={service_gap_p95:.3f} ms "
+                        f"> {max_same_camera_service_gap_p95_ms:.3f} ms"
+                    ),
+                )
         if cpu_pre_sync_p95 is not None:
             reporter.pass_(f"Cam{serial} YOLO cpu_pre_sync p95={cpu_pre_sync_p95:.3f} ms")
         if ptp_done_p95 is None:
@@ -2238,6 +2853,180 @@ def check_yolo(
             )
         else:
             reporter.pass_(f"Cam{serial} acquisition_to_ptp_done p95={ptp_done_p95:.3f} ms")
+
+
+def pipe_cpu_set_contains_exactly(value: str | None, expected_cpu: int) -> bool:
+    if value is None:
+        return False
+    parts = {part.strip() for part in str(value).split("|") if part.strip()}
+    return parts == {str(expected_cpu)}
+
+
+def int_set_from_json_list(value: Any) -> set[int]:
+    if not isinstance(value, list):
+        return set()
+    cpus: set[int] = set()
+    for item in value:
+        try:
+            cpu = int(item)
+        except (TypeError, ValueError):
+            continue
+        cpus.add(cpu)
+    return cpus
+
+
+def normalized_system_cpu_kernel_cmdline_options(system_cpu: dict[str, Any]) -> list[str]:
+    return gui_summary.normalized_kernel_cpu_options(system_cpu)
+
+
+def check_system_cpu_isolation(
+    reporter: Reporter,
+    snapshot: dict[str, Any],
+    required_cpus: list[int],
+    required_kernel_cmdline_cpus_by_option: dict[str, list[int]] | None = None,
+) -> dict[str, Any]:
+    required_kernel_cmdline_cpus_by_option = required_kernel_cmdline_cpus_by_option or {}
+    system_cpu = nested_dict(snapshot, "session", "system_cpu")
+    isolated = nested_dict(system_cpu, "isolated_cpus")
+    if not required_cpus and not required_kernel_cmdline_cpus_by_option:
+        return system_cpu
+
+    reporter.check(
+        bool(system_cpu),
+        "recording_snapshot session.system_cpu present",
+        "recording_snapshot session.system_cpu missing",
+    )
+    if required_cpus:
+        reporter.check(
+            isolated.get("available") is True,
+            "system_cpu isolated CPU telemetry available",
+            f"system_cpu isolated CPU telemetry unavailable: {isolated.get('error')!r}",
+        )
+        reporter.check(
+            isolated.get("parse_ok") is True,
+            "system_cpu isolated CPU list parsed",
+            (
+                "system_cpu isolated CPU list failed to parse: "
+                f"raw={isolated.get('raw')!r} error={isolated.get('error')!r}"
+            ),
+        )
+
+        observed = int_set_from_json_list(isolated.get("cpus"))
+        missing = sorted(set(required_cpus) - observed)
+        required_text = ",".join(str(cpu) for cpu in required_cpus)
+        observed_text = ",".join(str(cpu) for cpu in sorted(observed))
+        reporter.check(
+            not missing,
+            f"system_cpu isolated CPUs include {required_text}",
+            (
+                f"system_cpu isolated CPUs {observed_text or '<empty>'} "
+                f"missing required {','.join(str(cpu) for cpu in missing)}"
+            ),
+        )
+
+    if required_kernel_cmdline_cpus_by_option:
+        cmdline = nested_dict(system_cpu, "kernel_cmdline")
+        options = nested_dict(cmdline, "options")
+        reporter.check(
+            cmdline.get("available") is True,
+            "system_cpu kernel cmdline telemetry available",
+            f"system_cpu kernel cmdline telemetry unavailable: {cmdline.get('error')!r}",
+        )
+        reporter.check(
+            bool(options),
+            "system_cpu kernel cmdline options present",
+            "system_cpu kernel cmdline options missing",
+        )
+        for option, cpus in sorted(required_kernel_cmdline_cpus_by_option.items()):
+            raw_value = options.get(option)
+            reporter.check(
+                isinstance(raw_value, str) and bool(raw_value.strip()),
+                f"kernel cmdline {option} option present",
+                f"kernel cmdline {option} option missing",
+            )
+            if not isinstance(raw_value, str) or not raw_value.strip():
+                continue
+            observed, invalid = parse_kernel_cmdline_cpu_option_value(raw_value)
+            if invalid:
+                reporter.fail(
+                    f"kernel cmdline {option} has invalid CPU tokens: {','.join(invalid)}"
+                )
+            missing = sorted(set(cpus) - observed)
+            required_text = ",".join(str(cpu) for cpu in cpus)
+            observed_text = ",".join(str(cpu) for cpu in sorted(observed))
+            reporter.check(
+                not missing,
+                f"kernel cmdline {option} CPUs include {required_text}",
+                (
+                    f"kernel cmdline {option} CPUs {observed_text or '<empty>'} "
+                    f"missing required {','.join(str(cpu) for cpu in missing)}"
+                ),
+            )
+    return system_cpu
+
+
+def check_yolo_affinity(
+    reporter: Reporter,
+    recording_folder: Path,
+    snapshot: dict[str, Any],
+    expected_affinity_by_serial: dict[str, int],
+) -> None:
+    if not expected_affinity_by_serial:
+        return
+    yolo_worker = nested_dict(snapshot, "session", "yolo_worker")
+    affinity_by_camera = nested_dict(yolo_worker, "affinity", "per_camera")
+    for serial, expected_cpu in sorted(expected_affinity_by_serial.items()):
+        snapshot_affinity = (
+            affinity_by_camera.get(serial)
+            if isinstance(affinity_by_camera, dict)
+            else None
+        )
+        snapshot_affinity = snapshot_affinity if isinstance(snapshot_affinity, dict) else {}
+        requested_cpus = snapshot_affinity.get("requested_cpus")
+        reporter.check(
+            snapshot_affinity.get("configured") is True and str(requested_cpus) == str(expected_cpu),
+            f"Cam{serial} snapshot YOLO affinity requested CPU {expected_cpu}",
+            (
+                f"Cam{serial} snapshot YOLO affinity requested_cpus={requested_cpus!r}, "
+                f"expected {expected_cpu}"
+            ),
+        )
+
+        rows = read_csv_rows(recording_folder / f"Cam{serial}_yolo_perf.csv")
+        if not rows:
+            reporter.fail(f"Cam{serial} YOLO affinity check missing yolo perf rows")
+            continue
+        first = rows[0]
+        configured = integer(first.get("yolo_affinity_configured"))
+        applied = integer(first.get("yolo_affinity_applied"))
+        requested_effective = first.get("yolo_affinity_requested_cpus")
+        effective_cpus = first.get("yolo_affinity_effective_cpus")
+        reporter.check(
+            configured == 1,
+            f"Cam{serial} YOLO affinity configured in perf CSV",
+            f"Cam{serial} YOLO affinity configured={configured}, expected 1",
+        )
+        reporter.check(
+            applied == 1,
+            f"Cam{serial} YOLO affinity applied by worker",
+            f"Cam{serial} YOLO affinity applied={applied}, expected 1",
+        )
+        reporter.check(
+            pipe_cpu_set_contains_exactly(requested_effective, expected_cpu),
+            f"Cam{serial} YOLO affinity requested_cpus={requested_effective}",
+            (
+                f"Cam{serial} YOLO affinity requested_cpus={requested_effective!r}, "
+                f"expected CPU {expected_cpu}"
+            ),
+        )
+        reporter.check(
+            pipe_cpu_set_contains_exactly(effective_cpus, expected_cpu),
+            f"Cam{serial} YOLO affinity effective_cpus={effective_cpus}",
+            (
+                f"Cam{serial} YOLO affinity effective_cpus={effective_cpus!r}, "
+                f"expected CPU {expected_cpu}"
+            ),
+        )
 
 
 def check_crop_preview_counters(
@@ -2697,6 +3486,287 @@ def check_gui_display_frame_rate(
     return out
 
 
+def crop_rolling_clips_for_serial(
+    crop_recording_backend: dict[str, Any],
+    serial: str,
+) -> list[dict[str, Any]]:
+    rolling_clips = crop_recording_backend.get("rolling_clips")
+    if not isinstance(rolling_clips, dict):
+        return []
+    serial_clips = rolling_clips.get(serial)
+    if not isinstance(serial_clips, list):
+        return []
+    return [clip for clip in serial_clips if isinstance(clip, dict)]
+
+
+def crop_clip_artifact_path(
+    recording_folder: Path,
+    clip: dict[str, Any],
+    *keys: str,
+) -> Path | None:
+    for key in keys:
+        value = clip.get(key)
+        if isinstance(value, str) and value:
+            return path_from_recording_folder(recording_folder, value)
+    return None
+
+
+def check_crop_metadata_geometry(
+    reporter: Reporter,
+    serial: str,
+    rows: list[dict[str, str]],
+    crop_size: int | None,
+    label: str,
+) -> None:
+    label_prefix = f"{label} " if label else ""
+    if crop_size is None:
+        reporter.fail(f"Cam{serial} {label_prefix}crop size missing from recording_snapshot")
+        return
+    bad_geometry_rows = []
+    for index, row in enumerate(rows, start=2):
+        crop_w = int_csv_field(row, "crop_w")
+        crop_h = int_csv_field(row, "crop_h")
+        blank_frame = int_csv_field(row, "blank_frame") == 1
+        has_detection = int_csv_field(row, "has_detection") == 1
+        if blank_frame and not has_detection:
+            if crop_w != 0 or crop_h != 0:
+                bad_geometry_rows.append(index)
+        elif crop_w != crop_size or crop_h != crop_size:
+            bad_geometry_rows.append(index)
+    reporter.check(
+        not bad_geometry_rows,
+        f"Cam{serial} {label_prefix}crop metadata geometry matches crop_size_px={crop_size}",
+        (
+            f"Cam{serial} {label_prefix}crop metadata has {len(bad_geometry_rows)} row(s) "
+            f"with geometry inconsistent with crop_size_px={crop_size}"
+        ),
+    )
+
+
+def check_crop_rolling_clip_artifacts(
+    reporter: Reporter,
+    recording_folder: Path,
+    serial: str,
+    clip: dict[str, Any],
+    crop_size: int | None,
+    ffprobe: str,
+    *,
+    probe_video: bool,
+) -> dict[str, Any]:
+    clip_index = integer(clip.get("clip_index"))
+    label = f"rolling crop clip {clip_index}" if clip_index is not None else "rolling crop clip"
+    frame_count = integer(clip.get("frame_count"))
+    first_frame = integer(clip.get("first_recording_frame_id"))
+    last_frame = integer(clip.get("last_recording_frame_id"))
+    video_path = crop_clip_artifact_path(recording_folder, clip, "video", "mp4")
+    metadata_path = crop_clip_artifact_path(recording_folder, clip, "metadata")
+    perf_path = crop_clip_artifact_path(recording_folder, clip, "perf")
+    keyframes_path = crop_clip_artifact_path(recording_folder, clip, "keyframes", "mp4_keyframe")
+
+    reporter.check(
+        clip_index is not None and clip_index >= 0,
+        f"Cam{serial} {label} index present",
+        f"Cam{serial} rolling crop clip has invalid clip_index={clip_index}",
+    )
+    reporter.check(
+        frame_count is not None and frame_count > 0,
+        f"Cam{serial} {label} frame_count={frame_count}",
+        f"Cam{serial} {label} invalid frame_count={frame_count}",
+    )
+    reporter.check(
+        (
+            first_frame is not None and last_frame is not None and
+            frame_count is not None and
+            first_frame > 0 and last_frame == first_frame + frame_count - 1
+        ),
+        f"Cam{serial} {label} frame range matches frame_count",
+        (
+            f"Cam{serial} {label} invalid frame range: first={first_frame}, "
+            f"last={last_frame}, frame_count={frame_count}"
+        ),
+    )
+
+    for path, artifact_label in (
+        (video_path, "video"),
+        (metadata_path, "metadata"),
+        (perf_path, "perf"),
+        (keyframes_path, "keyframes"),
+    ):
+        reporter.check(
+            path is not None and path.exists() and (artifact_label != "video" or path.stat().st_size > 0),
+            f"Cam{serial} {label} {artifact_label} present",
+            f"Cam{serial} {label} {artifact_label} missing or empty: {path}",
+        )
+
+    keyframes_valid = keyframes_path is not None and json_file_parses_as_object(keyframes_path)
+    keyframes = read_json(keyframes_path) if keyframes_valid and keyframes_path is not None else {}
+    keyframe_total_frames = integer(keyframes.get("total_frames"))
+    reporter.check(
+        keyframes_valid,
+        f"Cam{serial} {label} keyframe sidecar parses as JSON",
+        f"Cam{serial} {label} keyframe sidecar missing or invalid JSON: {keyframes_path}",
+    )
+
+    crop_rows = read_csv_rows(metadata_path) if metadata_path is not None else []
+    crop_perf_rows = read_csv_rows(perf_path) if perf_path is not None else []
+    metadata_rows_declared = integer(clip.get("metadata_rows"))
+    perf_rows_declared = integer(clip.get("perf_rows"))
+    reporter.check(
+        bool(crop_rows),
+        f"Cam{serial} {label} crop metadata rows={len(crop_rows)}",
+        f"Cam{serial} {label} crop metadata has no data rows",
+    )
+    reporter.check(
+        bool(crop_perf_rows),
+        f"Cam{serial} {label} crop perf rows={len(crop_perf_rows)}",
+        f"Cam{serial} {label} crop perf has no data rows",
+    )
+    reporter.check(
+        frame_count is not None and len(crop_rows) == frame_count,
+        f"Cam{serial} {label} crop metadata rows match frame_count ({len(crop_rows)})",
+        (
+            f"Cam{serial} {label} crop metadata rows ({len(crop_rows)}) != "
+            f"frame_count ({frame_count})"
+        ),
+    )
+    reporter.check(
+        frame_count is not None and len(crop_perf_rows) == frame_count,
+        f"Cam{serial} {label} crop perf rows match frame_count ({len(crop_perf_rows)})",
+        (
+            f"Cam{serial} {label} crop perf rows ({len(crop_perf_rows)}) != "
+            f"frame_count ({frame_count})"
+        ),
+    )
+    if metadata_rows_declared is not None:
+        reporter.check(
+            metadata_rows_declared == len(crop_rows),
+            f"Cam{serial} {label} metadata_rows matches sidecar",
+            (
+                f"Cam{serial} {label} metadata_rows ({metadata_rows_declared}) != "
+                f"sidecar rows ({len(crop_rows)})"
+            ),
+        )
+    if perf_rows_declared is not None:
+        reporter.check(
+            perf_rows_declared == len(crop_perf_rows),
+            f"Cam{serial} {label} perf_rows matches sidecar",
+            (
+                f"Cam{serial} {label} perf_rows ({perf_rows_declared}) != "
+                f"sidecar rows ({len(crop_perf_rows)})"
+            ),
+        )
+    reporter.check(
+        keyframe_total_frames == frame_count,
+        f"Cam{serial} {label} keyframe total_frames matches frame_count ({keyframe_total_frames})",
+        (
+            f"Cam{serial} {label} keyframe total_frames ({keyframe_total_frames}) != "
+            f"frame_count ({frame_count})"
+        ),
+    )
+
+    crop_ids, missing_crop_ids = recording_frame_ids_from_rows(crop_rows)
+    perf_ids, missing_perf_ids = recording_frame_ids_from_rows(crop_perf_rows)
+    reporter.check(
+        missing_crop_ids == 0 and ids_are_positive_strictly_increasing(crop_ids),
+        f"Cam{serial} {label} metadata recording_frame_id values are positive and increasing",
+        (
+            f"Cam{serial} {label} metadata recording_frame_id values are invalid "
+            f"(missing={missing_crop_ids})"
+        ),
+    )
+    reporter.check(
+        missing_perf_ids == 0 and ids_are_positive_strictly_increasing(perf_ids),
+        f"Cam{serial} {label} perf recording_frame_id values are positive and increasing",
+        (
+            f"Cam{serial} {label} perf recording_frame_id values are invalid "
+            f"(missing={missing_perf_ids})"
+        ),
+    )
+    reporter.check(
+        crop_ids == perf_ids,
+        f"Cam{serial} {label} perf and metadata recording_frame_id sequences match",
+        f"Cam{serial} {label} perf and metadata recording_frame_id sequences differ",
+    )
+    if crop_ids and first_frame is not None and last_frame is not None and frame_count is not None:
+        reporter.check(
+            crop_ids[0] == first_frame and crop_ids[-1] == last_frame and
+            len(crop_ids) == frame_count,
+            f"Cam{serial} {label} recording_frame_id range matches clip",
+            (
+                f"Cam{serial} {label} recording_frame_id range "
+                f"{crop_ids[0]}-{crop_ids[-1]} does not match clip "
+                f"{first_frame}-{last_frame} frame_count={frame_count}"
+            ),
+        )
+
+    dropped_rows = [
+        index
+        for index, row in enumerate(crop_perf_rows, start=2)
+        if int_csv_field(row, "dropped") not in (0, None)
+    ]
+    missing_dropped_rows = [
+        index
+        for index, row in enumerate(crop_perf_rows, start=2)
+        if int_csv_field(row, "dropped") is None
+    ]
+    reporter.check(
+        not missing_dropped_rows,
+        f"Cam{serial} {label} crop perf dropped column present",
+        f"Cam{serial} {label} crop perf missing dropped value on {len(missing_dropped_rows)} row(s)",
+    )
+    reporter.check(
+        not dropped_rows,
+        f"Cam{serial} {label} crop perf reports no dropped crop frames",
+        f"Cam{serial} {label} crop perf reports {len(dropped_rows)} dropped crop frame(s)",
+    )
+    check_crop_metadata_geometry(reporter, serial, crop_rows, crop_size, label)
+
+    video_frames: int | None = None
+    video_width: int | None = None
+    video_height: int | None = None
+    if video_path is not None and video_path.exists() and probe_video:
+        video = gui_summary.ffprobe_video(video_path, ffprobe)
+        video_frames = integer(video.get("frames"))
+        video_width = integer(video.get("width"))
+        video_height = integer(video.get("height"))
+        reporter.check(
+            video.get("status") == "ok",
+            f"Cam{serial} {label} crop MP4 ffprobe status=ok",
+            f"Cam{serial} {label} crop MP4 ffprobe status={video.get('status')!r}",
+        )
+        reporter.check(
+            video_frames == frame_count,
+            f"Cam{serial} {label} crop MP4 frame count matches frame_count ({video_frames})",
+            (
+                f"Cam{serial} {label} crop MP4 frames ({video_frames}) != "
+                f"frame_count ({frame_count})"
+            ),
+        )
+        if crop_size is not None:
+            reporter.check(
+                video_width == crop_size and video_height == crop_size,
+                f"Cam{serial} {label} crop MP4 dimensions match crop_size_px ({crop_size})",
+                (
+                    f"Cam{serial} {label} crop MP4 dimensions {video_width}x{video_height} "
+                    f"!= crop_size_px {crop_size}"
+                ),
+            )
+
+    return {
+        "clip_index": clip_index,
+        "frame_count": frame_count,
+        "first_recording_frame_id": first_frame,
+        "last_recording_frame_id": last_frame,
+        "metadata_rows": len(crop_rows),
+        "perf_rows": len(crop_perf_rows),
+        "keyframe_total_frames": keyframe_total_frames,
+        "video_frames": video_frames,
+        "video_width": video_width,
+        "video_height": video_height,
+        "dropped_rows": len(dropped_rows),
+    }
+
+
 def check_crop_recording_artifacts(
     reporter: Reporter,
     recording_folder: Path,
@@ -2729,39 +3799,125 @@ def check_crop_recording_artifacts(
         "recording_backend",
         "crop_recording",
     )
+    crop_backend_rolling_clips = crop_recording_backend.get("rolling_clips")
+    crop_backend_rolling_clips = (
+        crop_backend_rolling_clips
+        if isinstance(crop_backend_rolling_clips, dict)
+        else {}
+    )
+    crop_rolling_allowed = (
+        recording_session_manifest.get("mode") == "rolling_clips" and
+        bool(crop_backend_rolling_clips)
+    )
     external_crop_contract = read_json(recording_folder / "external_crop_recorder_contract.json")
-    check_crop_single_clip_rollover_node(
+    check_crop_rollover_node(
         reporter,
         external_crop_contract,
         "external_crop_recorder_contract",
         require_present=require_external_crop_backend_metadata and bool(external_crop_contract),
+        allow_rolling=crop_rolling_allowed,
     )
-    check_crop_single_clip_rollover_node(
+    check_crop_rollover_node(
         reporter,
         crop_recording_backend,
         "recording_backend.crop_recording",
         require_present=require_external_crop_backend_metadata and bool(crop_recording_backend),
+        allow_rolling=crop_rolling_allowed,
     )
 
     for serial in target_cameras:
+        serial_rolling_clips = crop_rolling_clips_for_serial(crop_recording_backend, serial)
+        serial_crop_rolling_allowed = crop_rolling_allowed and bool(serial_rolling_clips)
+        if crop_rolling_allowed:
+            reporter.check(
+                bool(serial_rolling_clips),
+                f"Cam{serial} crop rolling clips present",
+                f"Cam{serial} crop rolling clips missing from recording_backend.crop_recording.rolling_clips",
+            )
         crop_output = crop_output_for(snapshot, serial)
         crop_descriptor = crop_recording_output_descriptor(snapshot, serial)
+        crop_descriptor_details = nested_dict(crop_descriptor, "details")
         crop_size = crop_size_from_snapshot(snapshot, serial)
-        video_path = resolve_crop_artifact_path(
-            recording_folder, crop_output, crop_descriptor, "video", f"Cam{serial}_crop.mp4"
+        backend_mode = crop_recording_backend.get("mode")
+        prefer_external_backend_artifacts = (
+            isinstance(backend_mode, str)
+            and backend_mode == "external_ipc"
+            and serial_crop_rolling_allowed
+        )
+        if require_external_crop_backend_metadata and serial_crop_rolling_allowed:
+            reporter.check(
+                bool(crop_descriptor),
+                f"Cam{serial} session-aggregate crop recording_output present",
+                f"Cam{serial} session-aggregate crop recording_output missing",
+            )
+            reporter.check(
+                crop_descriptor.get("backend") == "external_ipc",
+                f"Cam{serial} session-aggregate crop recording_output backend=external_ipc",
+                (
+                    f"Cam{serial} session-aggregate crop recording_output "
+                    f"backend={crop_descriptor.get('backend')!r}"
+                ),
+            )
+            reporter.check(
+                crop_descriptor.get("status") in {"completed", "finalized"},
+                f"Cam{serial} session-aggregate crop recording_output completed",
+                (
+                    f"Cam{serial} session-aggregate crop recording_output "
+                    f"status={crop_descriptor.get('status')!r}"
+                ),
+            )
+            reporter.check(
+                crop_descriptor_details.get("scope") == "session_aggregate",
+                f"Cam{serial} session-aggregate crop recording_output scope=session_aggregate",
+                (
+                    f"Cam{serial} session-aggregate crop recording_output "
+                    f"scope={crop_descriptor_details.get('scope')!r}"
+                ),
+            )
+        # In GUI external crop rolling, recording_snapshot.json can still carry
+        # the in-process crop descriptor that was known before recorder
+        # finalization. The final recording_session backend is authoritative for
+        # external crop video/keyframe/summary artifacts unless the snapshot has
+        # already been updated with the final external session-aggregate
+        # descriptor.
+        crop_descriptor_for_external_artifacts = (
+            crop_descriptor
+            if (
+                not prefer_external_backend_artifacts or
+                crop_descriptor.get("backend") == "external_ipc"
+            )
+            else {}
+        )
+        video_path = resolve_crop_video_artifact_path(
+            recording_folder,
+            crop_output,
+            crop_descriptor_for_external_artifacts,
+            crop_recording_backend,
+            serial,
         )
         metadata_path = resolve_crop_artifact_path(
             recording_folder, crop_output, crop_descriptor, "metadata", f"Cam{serial}_crop_meta.csv"
         )
-        keyframes_path = resolve_crop_artifact_path(
-            recording_folder, crop_output, crop_descriptor, "keyframes", f"Cam{serial}_crop_keyframe.json"
+        keyframes_path = resolve_crop_keyframe_artifact_path(
+            recording_folder,
+            crop_output,
+            crop_descriptor_for_external_artifacts,
+            crop_recording_backend,
+            serial,
         )
         perf_path = resolve_crop_artifact_path(
             recording_folder, crop_output, crop_descriptor, "perf", f"Cam{serial}_crop_perf.csv"
         )
         descriptor_backend = str(crop_descriptor.get("backend", ""))
-        summary_path = crop_descriptor_artifact_path(
-            recording_folder, crop_descriptor, "summary"
+        if prefer_external_backend_artifacts:
+            descriptor_backend = "external_ipc"
+        elif not descriptor_backend and isinstance(crop_recording_backend, dict):
+            descriptor_backend = backend_mode if isinstance(backend_mode, str) else ""
+        summary_path = resolve_crop_summary_artifact_path(
+            recording_folder,
+            crop_descriptor_for_external_artifacts,
+            crop_recording_backend,
+            serial,
         )
 
         video_exists = video_path.exists() and video_path.stat().st_size > 0
@@ -2823,6 +3979,19 @@ def check_crop_recording_artifacts(
                 f"crop metadata rows ({len(crop_rows)})"
             ),
         )
+        if require_external_crop_backend_metadata and serial_crop_rolling_allowed:
+            descriptor_frame_count = integer(crop_descriptor.get("frame_count"))
+            reporter.check(
+                descriptor_frame_count == len(crop_rows),
+                (
+                    f"Cam{serial} session-aggregate crop recording_output "
+                    f"frame_count matches crop metadata rows ({descriptor_frame_count})"
+                ),
+                (
+                    f"Cam{serial} session-aggregate crop recording_output "
+                    f"frame_count ({descriptor_frame_count}) != crop metadata rows ({len(crop_rows)})"
+                ),
+            )
 
         crop_ids, missing_crop_ids = recording_frame_ids_from_rows(crop_rows)
         perf_ids, missing_perf_ids = recording_frame_ids_from_rows(crop_perf_rows)
@@ -3064,23 +4233,26 @@ def check_crop_recording_artifacts(
                 contract_stream_config,
                 detail_stream_config,
             )
-            check_crop_single_clip_rollover_node(
+            check_crop_rollover_node(
                 reporter,
                 contract_stream_config,
                 f"Cam{serial} external_crop_recorder_contract.stream",
                 require_present=False,
+                allow_rolling=serial_crop_rolling_allowed,
             )
-            check_crop_single_clip_rollover_node(
+            check_crop_rollover_node(
                 reporter,
                 backend_stream_config,
                 f"Cam{serial} recording_backend.crop_recording.stream_config",
                 require_present=False,
+                allow_rolling=serial_crop_rolling_allowed,
             )
-            check_crop_single_clip_rollover_node(
+            check_crop_rollover_node(
                 reporter,
                 descriptor_details,
                 f"Cam{serial} recording_outputs.crop.details",
                 require_present=False,
+                allow_rolling=serial_crop_rolling_allowed,
             )
             external_stream_config_source = (
                 "recording_backend.crop_recording.stream_config"
@@ -3222,13 +4394,21 @@ def check_crop_recording_artifacts(
                         serial,
                         "enqueue_age_p95_ms",
                     )
-                details = nested_dict(crop_descriptor, "details")
+                details = crop_descriptor_details
                 reporter.check(
                     bool(details),
                     f"Cam{serial} recording_outputs.crop.details present",
                     f"Cam{serial} recording_outputs.crop.details missing",
                 )
                 if details:
+                    if serial_crop_rolling_allowed:
+                        check_descriptor_detail_matches_string(
+                            reporter,
+                            serial,
+                            details,
+                            "scope",
+                            "session_aggregate",
+                        )
                     check_descriptor_detail_matches_string(
                         reporter,
                         serial,
@@ -3293,28 +4473,7 @@ def check_crop_recording_artifacts(
                     ),
                 )
 
-        if crop_size is None:
-            reporter.fail(f"Cam{serial} crop size missing from recording_snapshot")
-        else:
-            bad_geometry_rows = []
-            for index, row in enumerate(crop_rows, start=2):
-                crop_w = int_csv_field(row, "crop_w")
-                crop_h = int_csv_field(row, "crop_h")
-                blank_frame = int_csv_field(row, "blank_frame") == 1
-                has_detection = int_csv_field(row, "has_detection") == 1
-                if blank_frame and not has_detection:
-                    if crop_w != 0 or crop_h != 0:
-                        bad_geometry_rows.append(index)
-                elif crop_w != crop_size or crop_h != crop_size:
-                    bad_geometry_rows.append(index)
-            reporter.check(
-                not bad_geometry_rows,
-                f"Cam{serial} crop metadata geometry matches crop_size_px={crop_size}",
-                (
-                    f"Cam{serial} crop metadata has {len(bad_geometry_rows)} row(s) "
-                    f"with geometry inconsistent with crop_size_px={crop_size}"
-                ),
-            )
+        check_crop_metadata_geometry(reporter, serial, crop_rows, crop_size, "")
 
         video_frames: int | None = None
         video_width: int | None = None
@@ -3355,6 +4514,63 @@ def check_crop_recording_artifacts(
                 f"Cam{serial} crop metadata rows ({len(crop_rows)}) != YOLO rows ({yolo_rows})",
             )
 
+        rolling_clip_summaries: list[dict[str, Any]] = []
+        if serial_crop_rolling_allowed:
+            for clip in serial_rolling_clips:
+                rolling_clip_summaries.append(
+                    check_crop_rolling_clip_artifacts(
+                        reporter,
+                        recording_folder,
+                        serial,
+                        clip,
+                        crop_size,
+                        ffprobe,
+                        probe_video=probe_video,
+                    )
+                )
+            rolling_metadata_rows = sum(
+                item.get("metadata_rows") or 0 for item in rolling_clip_summaries
+            )
+            rolling_perf_rows = sum(
+                item.get("perf_rows") or 0 for item in rolling_clip_summaries
+            )
+            rolling_frame_count = sum(
+                item.get("frame_count") or 0 for item in rolling_clip_summaries
+            )
+            reporter.check(
+                rolling_metadata_rows == len(crop_rows),
+                (
+                    f"Cam{serial} rolling crop metadata rows sum to root crop metadata rows "
+                    f"({rolling_metadata_rows})"
+                ),
+                (
+                    f"Cam{serial} rolling crop metadata rows ({rolling_metadata_rows}) != "
+                    f"root crop metadata rows ({len(crop_rows)})"
+                ),
+            )
+            reporter.check(
+                rolling_perf_rows == len(crop_perf_rows),
+                (
+                    f"Cam{serial} rolling crop perf rows sum to root crop perf rows "
+                    f"({rolling_perf_rows})"
+                ),
+                (
+                    f"Cam{serial} rolling crop perf rows ({rolling_perf_rows}) != "
+                    f"root crop perf rows ({len(crop_perf_rows)})"
+                ),
+            )
+            reporter.check(
+                rolling_frame_count == len(crop_rows),
+                (
+                    f"Cam{serial} rolling crop frame_count sums to crop metadata rows "
+                    f"({rolling_frame_count})"
+                ),
+                (
+                    f"Cam{serial} rolling crop frame_count ({rolling_frame_count}) != "
+                    f"crop metadata rows ({len(crop_rows)})"
+                ),
+            )
+
         crop_summary[serial] = {
             "backend": descriptor_backend or None,
             "video": str(video_path),
@@ -3383,6 +4599,8 @@ def check_crop_recording_artifacts(
             "external_socket_path": external_socket_path,
             "external_stream_config": external_stream_config or None,
             "external_stream_config_source": external_stream_config_source,
+            "rolling_clip_count": len(rolling_clip_summaries) if serial_crop_rolling_allowed else 0,
+            "rolling_clips": rolling_clip_summaries,
         }
 
     return crop_summary
@@ -3392,15 +4610,32 @@ def compact_camera_summary(summary: dict[str, Any], cameras: list[str], video_sa
     out: dict[str, Any] = {}
     for serial in cameras:
         detect = metric(summary, serial, "acquisition_to_detect_done_ms") or metric(summary, serial, "capture_to_detect_done_ms")
+        acquisition_to_worker = metric(summary, serial, "acquisition_to_worker_start_ms")
+        enqueue_to_dequeue = metric(summary, serial, "yolo_enqueue_to_dequeue_ms")
+        dequeue_to_worker = metric(summary, serial, "yolo_dequeue_to_worker_start_ms")
         queue = metric(summary, serial, "yolo_queue_wait_ms")
+        service_gap = metric(summary, serial, "same_camera_service_gap_ms")
         ptp_done = metric(summary, serial, "acquisition_to_ptp_done_ms")
+        yolo = nested_dict(summary, "yolo", serial)
+        yolo_affinity = yolo.get("affinity")
+        yolo_affinity = yolo_affinity if isinstance(yolo_affinity, dict) else {}
         pipeline = nested_dict(summary, "pipeline", serial).get("final", {})
         video = nested_dict(summary, "videos", serial)
         outputs = nested_dict(summary, "outputs", serial)
         out[serial] = {
+            "yolo_affinity": yolo_affinity,
             "detect_steady_p95_ms": detect.get("steady_p95"),
             "detect_p95_ms": detect.get("p95"),
+            "acquisition_to_worker_start_p95_ms": acquisition_to_worker.get("p95"),
+            "acquisition_to_worker_start_steady_p95_ms": acquisition_to_worker.get("steady_p95"),
+            "yolo_enqueue_to_dequeue_p95_ms": enqueue_to_dequeue.get("p95"),
+            "yolo_enqueue_to_dequeue_steady_p95_ms": enqueue_to_dequeue.get("steady_p95"),
+            "yolo_dequeue_to_worker_start_p95_ms": dequeue_to_worker.get("p95"),
+            "yolo_dequeue_to_worker_start_steady_p95_ms": dequeue_to_worker.get("steady_p95"),
             "queue_p95_ms": queue.get("p95"),
+            "queue_steady_p95_ms": queue.get("steady_p95"),
+            "same_camera_service_gap_p95_ms": service_gap.get("p95"),
+            "same_camera_service_gap_steady_p95_ms": service_gap.get("steady_p95"),
             "ptp_done_p95_ms": ptp_done.get("p95"),
             "pipeline_final": pipeline,
             "outputs": outputs,
@@ -3425,12 +4660,54 @@ def print_camera_summary(camera_summary: dict[str, Any]) -> None:
         output_text = ",".join(sorted(outputs.keys())) if isinstance(outputs, dict) and outputs else "none"
         print(
             f"  Cam{serial}: detect_steady_p95={item.get('detect_steady_p95_ms')} ms "
+            f"acq_worker_p95={item.get('acquisition_to_worker_start_p95_ms')} ms "
+            f"acq_worker_steady_p95={item.get('acquisition_to_worker_start_steady_p95_ms')} ms "
+            f"enqueue_dequeue_p95={item.get('yolo_enqueue_to_dequeue_p95_ms')} ms "
+            f"enqueue_dequeue_steady_p95={item.get('yolo_enqueue_to_dequeue_steady_p95_ms')} ms "
+            f"dequeue_worker_p95={item.get('yolo_dequeue_to_worker_start_p95_ms')} ms "
             f"queue_p95={item.get('queue_p95_ms')} ms "
+            f"queue_steady_p95={item.get('queue_steady_p95_ms')} ms "
+            f"service_gap_p95={item.get('same_camera_service_gap_p95_ms')} ms "
+            f"service_gap_steady_p95={item.get('same_camera_service_gap_steady_p95_ms')} ms "
             f"ptp_done_p95={item.get('ptp_done_p95_ms')} ms "
             f"outputs={output_text} "
             f"video_frames={video.get('frames')} "
             f"bitrate_mbps={video.get('bitrate_mbps')}"
         )
+
+
+def print_system_cpu_summary(system_cpu: dict[str, Any]) -> None:
+    if not system_cpu:
+        return
+    isolated = system_cpu.get("isolated_cpus")
+    isolated = isolated if isinstance(isolated, dict) else {}
+    cpus = isolated.get("cpus")
+    if isinstance(cpus, list):
+        cpu_text = ",".join(str(cpu) for cpu in cpus)
+    else:
+        cpu_text = str(isolated.get("raw") or "")
+    print("\nSystem CPU")
+    print(
+        f"  isolated: available={isolated.get('available')} "
+        f"parse_ok={isolated.get('parse_ok')} cpus={cpu_text or '<empty>'}"
+    )
+    cmdline = system_cpu.get("kernel_cmdline")
+    cmdline = cmdline if isinstance(cmdline, dict) else {}
+    options = cmdline.get("options")
+    options = options if isinstance(options, dict) else {}
+    if cmdline:
+        option_text = ", ".join(
+            f"{key}={options.get(key)}"
+            for key in ("isolcpus", "nohz_full", "rcu_nocbs")
+            if options.get(key)
+        )
+        print(
+            f"  kernel_cmdline: available={cmdline.get('available')} "
+            f"options={option_text or '<none>'}"
+        )
+    normalized_options = normalized_system_cpu_kernel_cmdline_options(system_cpu)
+    if normalized_options:
+        print("  kernel_cmdline normalized: " + " ".join(normalized_options))
 
 
 def print_crop_preview_summary(crop_preview: dict[str, Any]) -> None:
@@ -3484,6 +4761,7 @@ def print_crop_recording_summary(crop_recording: dict[str, Any]) -> None:
             f"external_queue={item.get('external_encode_queue_depth')} "
             f"external_q_high={item.get('external_encode_queue_high_water')} "
             f"external_enqueue_p95={item.get('external_enqueue_age_p95_ms')} "
+            f"rolling_clips={item.get('rolling_clip_count')} "
             f"yolo_rows={item.get('yolo_rows')}"
         )
 
@@ -3573,6 +4851,22 @@ def main() -> int:
         args.expect_external_crop_recorder_gpu,
         "--expect-external-crop-recorder-gpu",
     )
+    allowed_main_video_content_failure_serials = parse_serial_filter(
+        args.allow_main_video_content_failure,
+        "--allow-main-video-content-failure",
+    )
+    expected_yolo_affinity_by_serial = parse_expected_serial_int_map(
+        args.expect_yolo_affinity,
+        "--expect-yolo-affinity",
+    )
+    required_isolated_cpus = parse_cpu_list(
+        args.require_isolated_cpus,
+        "--require-isolated-cpus",
+    )
+    required_kernel_cmdline_cpus_by_option = parse_expected_option_cpu_map(
+        args.require_kernel_cmdline_cpus,
+        "--require-kernel-cmdline-cpus",
+    )
     recording_folder = resolve_requested_recording_folder(args)
     summary = gui_summary.summarize(recording_folder, args.steady_after_frame, args.ffprobe)
     snapshot = read_json(recording_folder / "recording_snapshot.json")
@@ -3584,9 +4878,31 @@ def main() -> int:
         print(f"GUI PTP recording validation: {recording_folder}")
         print(f"Cameras: {', '.join('Cam' + serial for serial in cameras) if cameras else 'none'}")
 
+    check_source_version(
+        reporter,
+        snapshot,
+        require_source_version=args.require_source_version,
+        expected_git_command_user_mode=args.expect_source_git_command_user_mode,
+        expected_dirty_tracked=args.expect_source_dirty_tracked,
+    )
+    system_cpu_summary = check_system_cpu_isolation(
+        reporter,
+        snapshot,
+        required_isolated_cpus,
+        required_kernel_cmdline_cpus_by_option,
+    )
+
     if not cameras:
         reporter.fail("no cameras discovered or requested")
     else:
+        unknown_allowed_content_failure_serials = sorted(
+            allowed_main_video_content_failure_serials.difference(cameras)
+        )
+        if unknown_allowed_content_failure_serials:
+            reporter.fail(
+                "allowed main-video content failure camera(s) not present: "
+                + ", ".join(f"Cam{serial}" for serial in unknown_allowed_content_failure_serials)
+            )
         check_sync_config(
             reporter,
             snapshot,
@@ -3631,6 +4947,7 @@ def main() -> int:
             args.ffmpeg,
             args.min_main_video_bitrate_mbps,
             args.skip_video_content_check,
+            allowed_main_video_content_failure_serials,
             args.max_video_black_fraction,
             args.min_video_stddev,
         )
@@ -3639,8 +4956,18 @@ def main() -> int:
             summary,
             cameras,
             args.max_yolo_queue_p95_ms,
+            args.max_yolo_acquisition_to_worker_start_p95_ms,
+            args.max_yolo_enqueue_to_dequeue_p95_ms,
+            args.max_yolo_dequeue_to_worker_start_p95_ms,
+            args.max_yolo_same_camera_service_gap_p95_ms,
             args.max_yolo_steady_p95_ms,
             args.max_ptp_done_p95_ms,
+        )
+        check_yolo_affinity(
+            reporter,
+            recording_folder,
+            snapshot,
+            expected_yolo_affinity_by_serial,
         )
         crop_preview_summary = check_crop_preview_counters(
             reporter,
@@ -3696,6 +5023,19 @@ def main() -> int:
     result = {
         "schema_version": 1,
         "recording_folder": str(recording_folder),
+        "producer_version": snapshot.get("producer_version"),
+        "allowed_main_video_content_failure_cameras": sorted(
+            allowed_main_video_content_failure_serials
+        ),
+        "source_version": (
+            snapshot.get("source_version")
+            if isinstance(snapshot.get("source_version"), dict)
+            else {}
+        ),
+        "system_cpu": system_cpu_summary,
+        "system_cpu_kernel_cmdline_cpu_option_values": (
+            normalized_system_cpu_kernel_cmdline_options(system_cpu_summary)
+        ),
         "status": "fail" if reporter.failures else "pass",
         "passes": reporter.passes,
         "warnings": reporter.warnings,
@@ -3714,6 +5054,7 @@ def main() -> int:
     if args.json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
+        print_system_cpu_summary(system_cpu_summary)
         print_camera_summary(camera_summary)
         print_crop_preview_summary(crop_preview_summary)
         print_crop_recording_summary(crop_recording_summary)
