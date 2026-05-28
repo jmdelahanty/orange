@@ -31,6 +31,9 @@ Current implementation rule:
   `orange_gui_external_ipc` `rolling_clips` manifest, writes per-clip
   `clip_manifest.json`, writes `recording_clip_index.json/csv`, and updates
   `recording_snapshot.json` session pointers.
+- GUI validation tooling now treats full-frame `rolling_clips` manifests as a
+  first-class layout for `--latest-complete` discovery, per-clip artifact
+  checks, packet-count checks, and cross-clip `recording_frame_id` continuity.
 - GUI external crop IPC is also single-clip only today. Its contract and
   `recording_backend.crop_recording` metadata explicitly declare
   `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`,

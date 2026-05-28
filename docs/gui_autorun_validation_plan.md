@@ -85,6 +85,11 @@ autorun. If `ORANGE_GUI_AUTORUN=1`, `ORANGE_GUI_CLIP_SECONDS > 0`, and
 After the run, validate the full-frame external recorder session and mirrored
 rolling manifest with
 `scripts/verify_external_recorder_session.py --analytics-root <recording_folder>`.
+The normal GUI validator also understands `recording_session.json` with
+`mode = "rolling_clips"`: it checks per-clip full-frame video, metadata,
+keyframe sidecars, packet counts, and cross-clip `recording_frame_id`
+continuity. Use the external recorder verifier as the stricter recorder-summary
+contract check.
 
 ## Host PTP Stack Readiness
 

@@ -14,7 +14,10 @@ from pathlib import Path
 from typing import Any
 
 import summarize_gui_validation as gui_summary
-from recording_output_validation import recording_output_contract_errors
+from recording_output_validation import (
+    recording_clip_output_contract_errors,
+    recording_output_contract_errors,
+)
 
 
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
@@ -378,6 +381,17 @@ def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
         video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
         if video_path.exists() and video_path.stat().st_size > 0:
             videos.add(str(serial))
+    clips = manifest.get("clips")
+    clips = clips if isinstance(clips, list) else []
+    for clip in clips:
+        clip = clip if isinstance(clip, dict) else {}
+        clip_artifacts = clip.get("camera_artifacts")
+        clip_artifacts = clip_artifacts if isinstance(clip_artifacts, dict) else {}
+        for serial, artifact in clip_artifacts.items():
+            artifact = artifact if isinstance(artifact, dict) else {}
+            video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+            if video_path.exists() and video_path.stat().st_size > 0:
+                videos.add(str(serial))
     pipeline = {
         serial
         for path in recording_folder.glob("Cam*_pipeline_perf.csv")
@@ -828,9 +842,10 @@ def check_recording_session_manifest(
         f"recording_session producer is {producer}",
         f"recording_session producer={manifest.get('producer')!r}",
     )
+    mode = str(manifest.get("mode", ""))
     reporter.check(
-        manifest.get("mode") == "single_clip",
-        "recording_session mode is single_clip",
+        mode in {"single_clip", "rolling_clips"},
+        f"recording_session mode is {mode}",
         f"recording_session mode={manifest.get('mode')!r}",
     )
 
@@ -843,10 +858,20 @@ def check_recording_session_manifest(
         "recording_snapshot session recording_session_manifest_path mismatch",
     )
     reporter.check(
-        snapshot_session.get("recording_mode") == "single_clip",
-        "recording_snapshot session mode is single_clip",
+        snapshot_session.get("recording_mode") == mode,
+        f"recording_snapshot session mode is {mode}",
         f"recording_snapshot recording_mode={snapshot_session.get('recording_mode')!r}",
     )
+
+    if mode == "rolling_clips":
+        check_rolling_recording_session_manifest(
+            reporter,
+            recording_folder,
+            manifest,
+            snapshot_session,
+            cameras,
+        )
+        return
 
     camera_artifacts = manifest.get("camera_artifacts")
     camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
@@ -934,6 +959,210 @@ def check_recording_session_manifest(
             packet_source not in {"", "not_collected", "unavailable"},
             f"Cam{serial} recording_session packet_count_source={packet_source}",
             f"Cam{serial} recording_session packet_count_source={packet_source!r}",
+        )
+
+
+def index_path_from_session(
+    recording_folder: Path,
+    manifest_indexes: dict[str, Any],
+    snapshot_indexes: dict[str, Any],
+    absolute_key: str,
+    relative_key: str,
+) -> Path:
+    value = first_present(snapshot_indexes.get(absolute_key), manifest_indexes.get(absolute_key))
+    if isinstance(value, str) and value:
+        return path_from_recording_folder(recording_folder, value)
+    value = first_present(snapshot_indexes.get(relative_key), manifest_indexes.get(relative_key))
+    if not isinstance(value, str) or not value:
+        return recording_folder / f"__missing_{relative_key}"
+    return path_from_recording_folder(recording_folder, value)
+
+
+def sorted_rolling_artifacts_for_camera(
+    manifest: dict[str, Any],
+    serial: str,
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    clips = manifest.get("clips")
+    clips = clips if isinstance(clips, list) else []
+    out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for clip in clips:
+        clip = clip if isinstance(clip, dict) else {}
+        artifacts = nested_dict(clip, "camera_artifacts")
+        artifact = artifacts.get(serial)
+        if isinstance(artifact, dict):
+            out.append((clip, artifact))
+    return sorted(out, key=lambda item: integer(item[0].get("clip_index")) or 0)
+
+
+def check_rolling_recording_session_manifest(
+    reporter: Reporter,
+    recording_folder: Path,
+    manifest: dict[str, Any],
+    snapshot_session: dict[str, Any],
+    cameras: list[str],
+) -> None:
+    backend = manifest.get("recording_backend")
+    backend = backend if isinstance(backend, dict) else {}
+    rollover = manifest.get("rollover")
+    rollover = rollover if isinstance(rollover, dict) else {}
+    clips = manifest.get("clips")
+    clips = clips if isinstance(clips, list) else []
+
+    reporter.check(
+        bool(clips),
+        f"recording_session rolling clips present ({len(clips)})",
+        "recording_session rolling clips missing",
+    )
+    reporter.check(
+        backend.get("mode") == "external_ipc",
+        "rolling recording_session backend is external_ipc",
+        f"rolling recording_session backend mode={backend.get('mode')!r}",
+    )
+    reporter.check(
+        rollover.get("implementation") == "external_recorder_gop_boundary_writer_rotation",
+        "rolling rollover implementation is external_recorder_gop_boundary_writer_rotation",
+        f"rolling rollover implementation={rollover.get('implementation')!r}",
+    )
+
+    manifest_indexes = manifest.get("indexes")
+    manifest_indexes = manifest_indexes if isinstance(manifest_indexes, dict) else {}
+    snapshot_indexes = snapshot_session.get("recording_session_index")
+    snapshot_indexes = snapshot_indexes if isinstance(snapshot_indexes, dict) else {}
+    index_json_path = index_path_from_session(
+        recording_folder,
+        manifest_indexes,
+        snapshot_indexes,
+        "clip_index_json_path",
+        "clip_index_json",
+    )
+    index_csv_path = index_path_from_session(
+        recording_folder,
+        manifest_indexes,
+        snapshot_indexes,
+        "clip_index_csv_path",
+        "clip_index_csv",
+    )
+    reporter.check(
+        index_json_path.exists(),
+        "recording_session rolling JSON index present",
+        f"recording_session rolling JSON index missing: {index_json_path}",
+    )
+    reporter.check(
+        index_csv_path.exists(),
+        "recording_session rolling CSV index present",
+        f"recording_session rolling CSV index missing: {index_csv_path}",
+    )
+
+    for clip in clips:
+        clip = clip if isinstance(clip, dict) else {}
+        output_errors = recording_clip_output_contract_errors(
+            recording_folder,
+            clip,
+            cameras,
+        )
+        for error in output_errors:
+            reporter.fail(error)
+
+    for serial in cameras:
+        clip_artifacts = sorted_rolling_artifacts_for_camera(manifest, serial)
+        reporter.check(
+            bool(clip_artifacts),
+            f"Cam{serial} rolling camera_artifacts present ({len(clip_artifacts)} clips)",
+            f"Cam{serial} missing rolling camera_artifacts",
+        )
+        expected_next_frame: int | None = None
+        total_frames = 0
+        total_packets = 0
+        for clip, artifact in clip_artifacts:
+            clip_index = integer(clip.get("clip_index"))
+            video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+            metadata_path = path_from_recording_folder(recording_folder, artifact.get("metadata"))
+            keyframe_path = path_from_recording_folder(recording_folder, artifact.get("keyframes"))
+            frame_count = integer(artifact.get("frame_count"))
+            first_frame = integer(artifact.get("first_recording_frame_id"))
+            last_frame = integer(artifact.get("last_recording_frame_id"))
+            frame_gaps = integer(artifact.get("recording_frame_id_gaps"))
+            packet_count = integer(artifact.get("packet_count"))
+            packet_source = str(artifact.get("packet_count_source", ""))
+            metadata_rows = count_csv_data_rows(metadata_path)
+
+            reporter.check(
+                video_path.exists() and video_path.stat().st_size > 0,
+                f"Cam{serial} rolling clip {clip_index} video present",
+                f"Cam{serial} rolling clip {clip_index} video missing: {video_path}",
+            )
+            reporter.check(
+                metadata_path.exists(),
+                f"Cam{serial} rolling clip {clip_index} metadata present",
+                f"Cam{serial} rolling clip {clip_index} metadata missing: {metadata_path}",
+            )
+            reporter.check(
+                keyframe_path.exists(),
+                f"Cam{serial} rolling clip {clip_index} keyframe present",
+                f"Cam{serial} rolling clip {clip_index} keyframe missing: {keyframe_path}",
+            )
+            reporter.check(
+                frame_count is not None and frame_count > 0,
+                f"Cam{serial} rolling clip {clip_index} frame_count={frame_count}",
+                f"Cam{serial} rolling clip {clip_index} invalid frame_count={frame_count}",
+            )
+            reporter.check(
+                frame_count is not None and metadata_rows == frame_count,
+                f"Cam{serial} rolling clip {clip_index} metadata rows match frame_count",
+                (
+                    f"Cam{serial} rolling clip {clip_index} metadata_rows={metadata_rows}, "
+                    f"frame_count={frame_count}"
+                ),
+            )
+            reporter.check(
+                first_frame is not None and last_frame is not None and frame_count is not None
+                and last_frame == first_frame + frame_count - 1,
+                f"Cam{serial} rolling clip {clip_index} frame range matches frame_count",
+                (
+                    f"Cam{serial} rolling clip {clip_index} invalid frame range: "
+                    f"first={first_frame}, last={last_frame}, frame_count={frame_count}"
+                ),
+            )
+            if expected_next_frame is not None:
+                reporter.check(
+                    first_frame == expected_next_frame,
+                    f"Cam{serial} rolling clip {clip_index} continues at frame {first_frame}",
+                    (
+                        f"Cam{serial} rolling frame continuity break at clip {clip_index}: "
+                        f"expected first={expected_next_frame}, got {first_frame}"
+                    ),
+                )
+            if first_frame is not None and last_frame is not None and frame_count:
+                expected_next_frame = last_frame + 1
+                total_frames += frame_count
+            if frame_gaps is not None:
+                reporter.check(
+                    frame_gaps == 0,
+                    f"Cam{serial} rolling clip {clip_index} recording_frame_id_gaps=0",
+                    f"Cam{serial} rolling clip {clip_index} recording_frame_id_gaps={frame_gaps}",
+                )
+            reporter.check(
+                packet_count is not None and packet_count > 0,
+                f"Cam{serial} rolling clip {clip_index} packet_count present",
+                f"Cam{serial} rolling clip {clip_index} packet_count={packet_count}",
+            )
+            if packet_count is not None:
+                total_packets += packet_count
+            reporter.check(
+                packet_source not in {"", "not_collected", "unavailable"},
+                f"Cam{serial} rolling clip {clip_index} packet_count_source={packet_source}",
+                f"Cam{serial} rolling clip {clip_index} packet_count_source={packet_source!r}",
+            )
+
+        reporter.check(
+            total_frames > 0,
+            f"Cam{serial} rolling total frame_count={total_frames}",
+            f"Cam{serial} rolling total frame_count={total_frames}",
+        )
+        reporter.check(
+            total_packets > 0,
+            f"Cam{serial} rolling total packet_count={total_packets}",
+            f"Cam{serial} rolling total packet_count={total_packets}",
         )
 
 
@@ -1641,25 +1870,30 @@ def check_videos(
         if not video:
             reporter.fail(f"Cam{serial} missing main MP4")
             continue
+        video_label = (
+            "rolling full-frame video"
+            if video.get("source") == "recording_session_rolling_clips"
+            else "main MP4"
+        )
         reporter.check(
             video.get("status") == "ok",
-            f"Cam{serial} main MP4 ffprobe status=ok",
-            f"Cam{serial} main MP4 ffprobe status={video.get('status')!r}",
+            f"Cam{serial} {video_label} ffprobe status=ok",
+            f"Cam{serial} {video_label} ffprobe status={video.get('status')!r}",
         )
         frames = integer(video.get("frames"))
         width = integer(video.get("width"))
         height = integer(video.get("height"))
         reporter.check(
             bool(frames and frames > 0 and width and width > 0 and height and height > 0),
-            f"Cam{serial} main MP4 dimensions/frame count present ({width}x{height}, frames={frames})",
-            f"Cam{serial} invalid main MP4 dimensions/frame count ({width}x{height}, frames={frames})",
+            f"Cam{serial} {video_label} dimensions/frame count present ({width}x{height}, frames={frames})",
+            f"Cam{serial} invalid {video_label} dimensions/frame count ({width}x{height}, frames={frames})",
         )
         bitrate_bps = number(video.get("bitrate_bps"))
         bitrate_mbps = None if bitrate_bps is None else bitrate_bps / 1_000_000.0
         reporter.check(
             bitrate_mbps is not None and bitrate_mbps >= min_bitrate_mbps,
-            f"Cam{serial} main MP4 bitrate {fmt_float(bitrate_mbps, 1)} Mbps >= {min_bitrate_mbps:.1f} Mbps",
-            f"Cam{serial} main MP4 bitrate {bitrate_mbps} Mbps below {min_bitrate_mbps:.1f} Mbps",
+            f"Cam{serial} {video_label} bitrate {fmt_float(bitrate_mbps, 1)} Mbps >= {min_bitrate_mbps:.1f} Mbps",
+            f"Cam{serial} {video_label} bitrate {bitrate_mbps} Mbps below {min_bitrate_mbps:.1f} Mbps",
         )
         if skip_content_check:
             reporter.warn(f"Cam{serial} decoded video-content check skipped")

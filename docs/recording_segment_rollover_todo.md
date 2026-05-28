@@ -104,7 +104,8 @@ mirrors external `rolling_output.clips[]` summaries into the GUI
 `recording_clip_index.json/csv`, and `recording_snapshot.json` session
 pointers. GUI full-frame app/env recording-control plumbing now exists for
 external IPC. The remaining GUI full-frame work is in-GUI operator controls and
-live validation/soak coverage.
+live validation/soak coverage; the normal GUI validator now supports
+full-frame rolling manifest discovery and per-clip continuity checks.
 
 ## Implementation Plan
 

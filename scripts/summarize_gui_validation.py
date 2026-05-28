@@ -148,6 +148,17 @@ def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
         video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
         if video_path.exists() and video_path.stat().st_size > 0:
             videos.add(str(serial))
+    clips = manifest.get("clips")
+    clips = clips if isinstance(clips, list) else []
+    for clip in clips:
+        clip = clip if isinstance(clip, dict) else {}
+        clip_artifacts = clip.get("camera_artifacts")
+        clip_artifacts = clip_artifacts if isinstance(clip_artifacts, dict) else {}
+        for serial, artifact in clip_artifacts.items():
+            artifact = artifact if isinstance(artifact, dict) else {}
+            video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+            if video_path.exists() and video_path.stat().st_size > 0:
+                videos.add(str(serial))
     pipeline = {
         serial
         for path in recording_folder.glob("Cam*_pipeline_perf.csv")
@@ -1082,6 +1093,42 @@ def summarize_videos(recording_folder: Path, ffprobe: str) -> dict[str, Any]:
             "path": str(video_path),
             "source": "recording_session",
             **ffprobe_video(video_path, ffprobe),
+        }
+    clips = manifest.get("clips")
+    clips = clips if isinstance(clips, list) else []
+    rolling_paths: dict[str, list[Path]] = {}
+    for clip in clips:
+        clip = clip if isinstance(clip, dict) else {}
+        clip_artifacts = clip.get("camera_artifacts")
+        clip_artifacts = clip_artifacts if isinstance(clip_artifacts, dict) else {}
+        for serial, artifact in sorted(clip_artifacts.items()):
+            artifact = artifact if isinstance(artifact, dict) else {}
+            video_path = path_from_recording_folder(recording_folder, artifact.get("video"))
+            if video_path.exists() and video_path.stat().st_size > 0:
+                rolling_paths.setdefault(str(serial), []).append(video_path)
+    for serial, paths in sorted(rolling_paths.items()):
+        probed = [ffprobe_video(path, ffprobe) for path in paths]
+        ok_items = [item for item in probed if item.get("status") == "ok"]
+        first = probed[0] if probed else {}
+        status = "ok" if len(ok_items) == len(probed) else str(first.get("status", "missing"))
+        duration_s = sum(float(item.get("duration_s") or 0.0) for item in ok_items)
+        size_bytes = sum(int(item.get("size_bytes") or 0) for item in probed)
+        frames = sum(int(item.get("frames") or 0) for item in ok_items)
+        bitrate_bps = int((size_bytes * 8) / duration_s) if duration_s > 0 else None
+        out[serial] = {
+            "path": str(paths[0]),
+            "paths": [str(path) for path in paths],
+            "source": "recording_session_rolling_clips",
+            "clip_count": len(paths),
+            "clip_statuses": [item.get("status") for item in probed],
+            "status": status,
+            "width": first.get("width"),
+            "height": first.get("height"),
+            "frames": frames,
+            "avg_frame_rate": first.get("avg_frame_rate"),
+            "duration_s": duration_s,
+            "size_bytes": size_bytes,
+            "bitrate_bps": bitrate_bps,
         }
     return out
 

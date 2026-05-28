@@ -15,6 +15,7 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import validate_gui_ptp_recording as validator  # noqa: E402
+import summarize_gui_validation as gui_summary  # noqa: E402
 from recording_output_validation import recording_output_contract_errors  # noqa: E402
 
 
@@ -533,6 +534,98 @@ def write_crop_recording_artifacts(
                     "drop_reason": "test_drop" if dropped_row == frame_id else "",
                 }
             )
+
+
+def write_rolling_full_frame_manifest(
+    recording_folder: Path,
+    serial: str,
+    *,
+    clip_frame_counts: tuple[int, ...] = (2, 3),
+) -> dict:
+    clips = []
+    next_frame = 1
+    clips_dir = recording_folder / "clips"
+    for clip_index, frame_count in enumerate(clip_frame_counts):
+        clip_dir = clips_dir / f"clip_{clip_index:06d}"
+        clip_dir.mkdir(parents=True, exist_ok=True)
+        first_frame = next_frame
+        last_frame = first_frame + frame_count - 1
+        next_frame = last_frame + 1
+
+        video = clip_dir / f"Cam{serial}.mp4"
+        metadata = clip_dir / f"Cam{serial}_meta.csv"
+        keyframes = clip_dir / f"Cam{serial}_keyframe.json"
+        video.write_bytes(b"fake mp4 payload\n")
+        keyframes.write_text(json.dumps({"total_frames": frame_count}) + "\n", encoding="utf-8")
+        with metadata.open("w", encoding="utf-8") as handle:
+            handle.write("recording_frame_id\n")
+            for frame_id in range(first_frame, last_frame + 1):
+                handle.write(f"{frame_id}\n")
+
+        artifact = {
+            "video": str(video.relative_to(recording_folder)),
+            "metadata": str(metadata.relative_to(recording_folder)),
+            "keyframes": str(keyframes.relative_to(recording_folder)),
+            "frame_count": frame_count,
+            "first_recording_frame_id": first_frame,
+            "last_recording_frame_id": last_frame,
+            "recording_frame_id_gaps": 0,
+            "packet_count": frame_count,
+            "packet_count_source": "external_recorder_summary.packets_written",
+        }
+        clips.append(
+            {
+                "clip_index": clip_index,
+                "clip_id": f"clip_{clip_index:06d}",
+                "status": "completed",
+                "camera_artifacts": {serial: artifact},
+            }
+        )
+
+    (recording_folder / "recording_clip_index.json").write_text(
+        json.dumps({"mode": "rolling_clips", "row_count": len(clips)}) + "\n",
+        encoding="utf-8",
+    )
+    (recording_folder / "recording_clip_index.csv").write_text(
+        "clip_index,camera_serial\n"
+        + "".join(f"{clip['clip_index']},{serial}\n" for clip in clips),
+        encoding="utf-8",
+    )
+
+    manifest = {
+        "schema_id": "orange.recording_session",
+        "schema_version": 1,
+        "producer": "orange_gui_external_ipc",
+        "mode": "rolling_clips",
+        "status": "completed",
+        "recording_backend": {"mode": "external_ipc", "status": "completed"},
+        "rollover": {"implementation": "external_recorder_gop_boundary_writer_rotation"},
+        "indexes": {
+            "clip_index_json": "recording_clip_index.json",
+            "clip_index_csv": "recording_clip_index.csv",
+            "row_count": len(clips),
+        },
+        "clips": clips,
+    }
+    (recording_folder / "recording_session.json").write_text(
+        json.dumps(manifest) + "\n",
+        encoding="utf-8",
+    )
+    snapshot = {
+        "session": {
+            "recording_mode": "rolling_clips",
+            "recording_session_manifest_path": str(recording_folder / "recording_session.json"),
+            "recording_session_index": {
+                "clip_index_json_path": str(recording_folder / "recording_clip_index.json"),
+                "clip_index_csv_path": str(recording_folder / "recording_clip_index.csv"),
+            },
+        }
+    }
+    (recording_folder / "recording_snapshot.json").write_text(
+        json.dumps(snapshot) + "\n",
+        encoding="utf-8",
+    )
+    return snapshot
 
 
 def check_crop_recording(
@@ -2168,6 +2261,60 @@ def test_recording_output_contract_allows_external_crop_sidecar_failure() -> Non
         require(not errors, f"external crop sidecar failure should not poison full output: {errors}")
 
 
+def test_recording_session_manifest_accepts_rolling_clips() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
+        require(not reporter.failures, f"rolling recording_session should pass: {reporter.failures}")
+
+
+def test_recording_session_manifest_fails_on_rolling_frame_gap() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        manifest_path = root / "recording_session.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["clips"][1]["camera_artifacts"][serial]["first_recording_frame_id"] += 1
+        manifest["clips"][1]["camera_artifacts"][serial]["last_recording_frame_id"] += 1
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
+        require(
+            any("rolling frame continuity break" in failure for failure in reporter.failures),
+            f"rolling frame gap should fail: {reporter.failures}",
+        )
+
+
+def test_rolling_clip_videos_are_complete_recording_candidates() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_rolling_full_frame_manifest(root, serial)
+        (root / f"Cam{serial}_pipeline_perf.csv").write_text("frame_id\n1\n", encoding="utf-8")
+        (root / f"Cam{serial}_yolo_perf.csv").write_text("frame_id,ok\n1,1\n", encoding="utf-8")
+
+        require(
+            serial in validator.camera_serials_with_complete_artifacts(root),
+            "validator should discover rolling clip videos for --latest-complete",
+        )
+        require(
+            validator.is_complete_recording_candidate(root),
+            "validator should treat rolling clip video runs as complete candidates",
+        )
+        require(
+            serial in gui_summary.camera_serials_with_complete_artifacts(root),
+            "summary helper should discover rolling clip videos for --latest-complete",
+        )
+        videos = gui_summary.summarize_videos(root, "false")
+        require(videos[serial]["source"] == "recording_session_rolling_clips", "rolling video source should be explicit")
+        require(videos[serial]["clip_count"] == 2, "rolling video summary should aggregate clips")
+
+
 def test_crop_recording_artifacts_fail_on_perf_row_mismatch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2280,6 +2427,9 @@ def main() -> int:
         test_crop_recording_artifacts_fail_on_external_crop_drops,
         test_recording_output_contract_allows_external_crop_video_paths,
         test_recording_output_contract_allows_external_crop_sidecar_failure,
+        test_recording_session_manifest_accepts_rolling_clips,
+        test_recording_session_manifest_fails_on_rolling_frame_gap,
+        test_rolling_clip_videos_are_complete_recording_candidates,
         test_crop_recording_artifacts_fail_on_perf_row_mismatch,
         test_crop_recording_artifacts_fail_on_keyframe_row_mismatch,
         test_crop_recording_artifacts_fail_on_dropped_rows,
