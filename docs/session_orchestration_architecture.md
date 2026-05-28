@@ -157,7 +157,8 @@ For the local four-camera Citrus integration profile, use
 `scripts/run_orange_citrus_fourcam_orchestrator.sh`. That wrapper keeps the
 same dry-run-first boundary while composing the production-like Orange
 four-camera external-IPC launcher, the Citrus GUI binary, real-display env
-defaults, Citrus perf JSONL collection, and the Orange/Citrus socket paths.
+defaults, Citrus perf JSONL collection, the Orange/Citrus socket paths, and a
+default post-finalization Orange artifact validator.
 
 ### NodeExecutor
 

@@ -372,6 +372,22 @@ orchestrator. It does not talk to Orange recorder sockets and does not delete
 data. Stop/finalization still goes through Orange `stop_recording` or
 `citrus_completion`, according to `--stop-policy`.
 
+Post-run validators are opt-in for the base orchestrator:
+
+```bash
+scripts/orange_citrus_orchestrator.py \
+  --execute \
+  --orange-validation-command \
+    "scripts/validate_gui_ptp_recording.py --latest-complete --json-out /tmp/orange_validation.json"
+```
+
+Validation commands run after Citrus reaches a terminal state and after Orange
+finalization, when `--stop-policy` waits for finalization. Non-zero exit status
+or timeout fails the orchestrator, and stdout/stderr tails plus return codes are
+written under `validations[]` in the combined summary. Commands may use
+`{operation_id}`, `{orange_recording_folder}`, and `{citrus_perf_jsonl_path}`
+placeholders.
+
 Four-camera Citrus profile wrapper:
 
 ```bash
@@ -393,3 +409,13 @@ Orange recording start. The orchestrator still sends the real
 disabled by default in this profile so the orchestrator remains the single
 recording-stop owner; use `--enable-citrus-orange-completion-notify` only for
 an explicit notifier integration test.
+
+The profile also adds a default Orange GUI PTP validation command. It checks the
+four expected cameras, crop recording artifacts, hidden crop-preview counters,
+external recorder status/hello/storage preflight, separate crop-recorder GPU
+placement, source provenance, YOLO CPU affinity, active CPU isolation, and the
+Citrus-safe display profile (`swap_interval=1`, GUI frame cap `30`, display
+preview cap `10`). It intentionally does not enforce the old `45 fps` GUI p05
+threshold because Citrus-safe mode caps Orange's GUI loop at `30 fps`. Use
+`--skip-orange-validation` for lifecycle-only diagnostics or
+`--orange-validation-command` to replace the default.

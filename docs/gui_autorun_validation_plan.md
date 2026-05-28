@@ -406,6 +406,12 @@ Citrus autorun start delay, so the orchestrator still controls the actual
 experiment start after Orange recording is active. Use `--attach-orange` and
 `--attach-citrus` to control already-running GUI processes instead.
 
+By default, the profile runs Orange validation after finalization and writes
+the validator JSON to `/tmp/<operation_id>_orange_gui_validation.json`. The
+default validator matches the Citrus-safe display profile and does not require
+`45 fps` GUI p05. Disable it with `--skip-orange-validation` for lifecycle-only
+smokes, or replace it with `--orange-validation-command`.
+
 During a live GUI run, query the endpoint with:
 
 ```bash

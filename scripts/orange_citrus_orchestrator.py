@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 ORANGE_REQUEST_SCHEMA_ID = "orange.local_control.request"
 CITRUS_REQUEST_SCHEMA_ID = "citrus.local_control.request"
 SCHEMA_VERSION = 1
@@ -194,6 +195,61 @@ def parse_env_items(items: list[str]) -> dict[str, str]:
     return parsed
 
 
+def parse_labeled_command_items(items: list[str]) -> list[dict[str, str]]:
+    parsed: list[dict[str, str]] = []
+    for item in items:
+        if "=" not in item:
+            raise OrchestratorError(f"validation command must be LABEL=COMMAND: {item}")
+        label, command = item.split("=", 1)
+        if not label:
+            raise OrchestratorError(f"validation command has empty label: {item}")
+        if not command.strip():
+            raise OrchestratorError(f"validation command has empty command: {item}")
+        parsed.append({"label": label, "command": command})
+    return parsed
+
+
+def validation_commands_from_args(args: argparse.Namespace) -> list[dict[str, str]]:
+    commands = parse_labeled_command_items(args.validation_command)
+    for index, command in enumerate(args.orange_validation_command, start=1):
+        if not command.strip():
+            raise OrchestratorError("--orange-validation-command cannot be empty")
+        commands.append({"label": f"orange_validation_{index}", "command": command})
+    for index, command in enumerate(args.citrus_validation_command, start=1):
+        if not command.strip():
+            raise OrchestratorError("--citrus-validation-command cannot be empty")
+        commands.append({"label": f"citrus_validation_{index}", "command": command})
+    return commands
+
+
+def tail_text(value: str, max_chars: int) -> tuple[str, bool]:
+    if max_chars <= 0 or len(value) <= max_chars:
+        return value, False
+    return value[-max_chars:], True
+
+
+def render_validation_command(
+    command: str,
+    *,
+    operation_id: str,
+    orange_status: dict[str, Any],
+    citrus_status: dict[str, Any],
+) -> str:
+    replacements = {
+        "{operation_id}": shlex.quote(operation_id),
+        "{orange_recording_folder}": shlex.quote(
+            str(json_path(orange_status, ["recording", "folder"], ""))
+        ),
+        "{citrus_perf_jsonl_path}": shlex.quote(
+            str(json_path(citrus_status, ["output", "perf_jsonl_path"], ""))
+        ),
+    }
+    rendered = command
+    for needle, value in replacements.items():
+        rendered = rendered.replace(needle, value)
+    return rendered
+
+
 def orange_ready_for_recording(status: dict[str, Any]) -> bool:
     return bool(json_path(status, ["readiness", "ready_for_recording_request"], False))
 
@@ -251,6 +307,7 @@ class Orchestrator:
         self.args = args
         self.steps: list[StepLog] = []
         self.started_processes: list[dict[str, Any]] = []
+        self.validation_results: list[dict[str, Any]] = []
         self.orange_recording_started = False
 
     def step(self, name: str) -> StepLog:
@@ -450,11 +507,127 @@ class Orchestrator:
             final_orange_status = self.request_orange_stop(final_citrus_status)
             self.orange_recording_started = False
 
+        self.validation_results = self.run_validations(
+            final_orange_status,
+            final_citrus_status,
+        )
+
         return self.summary(
             "pass",
             final_orange_status=final_orange_status,
             final_citrus_status=final_citrus_status,
         )
+
+    def run_validations(
+        self,
+        orange_status: dict[str, Any],
+        citrus_status: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        commands = validation_commands_from_args(self.args)
+        if not commands:
+            return []
+
+        results: list[dict[str, Any]] = []
+        env = os.environ.copy()
+        env.update(parse_env_items(self.args.validation_env))
+        cwd = self.args.validation_cwd or str(REPO_ROOT)
+
+        for item in commands:
+            label = item["label"]
+            rendered_command = render_validation_command(
+                item["command"],
+                operation_id=self.args.operation_id,
+                orange_status=orange_status,
+                citrus_status=citrus_status,
+            )
+            argv = shlex.split(rendered_command)
+            step = self.step(f"validation_{label}")
+            started = time.monotonic()
+            result: dict[str, Any] = {
+                "label": label,
+                "command": argv,
+                "command_text": rendered_command,
+                "cwd": cwd,
+                "returncode": None,
+                "timed_out": False,
+                "duration_seconds": None,
+                "stdout": "",
+                "stderr": "",
+                "stdout_truncated": False,
+                "stderr_truncated": False,
+            }
+            try:
+                completed = subprocess.run(
+                    argv,
+                    cwd=cwd,
+                    env=env,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=self.args.validation_timeout_seconds,
+                    check=False,
+                    errors="replace",
+                )
+                duration = time.monotonic() - started
+                stdout, stdout_truncated = tail_text(
+                    completed.stdout,
+                    self.args.validation_output_max_chars,
+                )
+                stderr, stderr_truncated = tail_text(
+                    completed.stderr,
+                    self.args.validation_output_max_chars,
+                )
+                result.update(
+                    {
+                        "returncode": completed.returncode,
+                        "duration_seconds": duration,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "stdout_truncated": stdout_truncated,
+                        "stderr_truncated": stderr_truncated,
+                    }
+                )
+                step.finish(ok=completed.returncode == 0, result=result)
+                results.append(result)
+                if completed.returncode != 0:
+                    self.validation_results = results
+                    raise OrchestratorError(
+                        f"validation command {label} failed with exit code {completed.returncode}"
+                    )
+            except subprocess.TimeoutExpired as exc:
+                duration = time.monotonic() - started
+                stdout_raw = exc.stdout or ""
+                stderr_raw = exc.stderr or ""
+                if isinstance(stdout_raw, bytes):
+                    stdout_raw = stdout_raw.decode("utf-8", errors="replace")
+                if isinstance(stderr_raw, bytes):
+                    stderr_raw = stderr_raw.decode("utf-8", errors="replace")
+                stdout, stdout_truncated = tail_text(
+                    stdout_raw,
+                    self.args.validation_output_max_chars,
+                )
+                stderr, stderr_truncated = tail_text(
+                    stderr_raw,
+                    self.args.validation_output_max_chars,
+                )
+                result.update(
+                    {
+                        "timed_out": True,
+                        "duration_seconds": duration,
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "stdout_truncated": stdout_truncated,
+                        "stderr_truncated": stderr_truncated,
+                    }
+                )
+                step.finish(ok=False, result=result)
+                results.append(result)
+                self.validation_results = results
+                raise OrchestratorError(
+                    f"validation command {label} timed out after "
+                    f"{self.args.validation_timeout_seconds}s"
+                ) from exc
+        return results
 
     def request_orange_stop(self, citrus_status: dict[str, Any]) -> dict[str, Any]:
         if self.args.stop_policy == "stop_recording":
@@ -549,6 +722,7 @@ class Orchestrator:
                 "perf_jsonl_path_known": citrus_perf_jsonl_path_known(citrus_status),
                 "perf_jsonl_path": json_path(citrus_status, ["output", "perf_jsonl_path"], ""),
             },
+            "validations": self.validation_results,
             "started_processes": self.started_processes,
             "steps": [step.__dict__ for step in self.steps],
             "failure_stop_response": failure_stop_response,
@@ -581,6 +755,33 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--orange-finalize-timeout-seconds", type=positive_float, default=180.0)
     parser.add_argument("--orange-stop-grace-seconds", type=nonnegative_float, default=0.0)
     parser.add_argument("--require-citrus-perf-jsonl", action="store_true")
+    parser.add_argument(
+        "--validation-command",
+        action="append",
+        default=[],
+        help="Post-run validation command as LABEL=COMMAND. Repeatable. Non-zero exits fail the orchestrator.",
+    )
+    parser.add_argument(
+        "--orange-validation-command",
+        action="append",
+        default=[],
+        help="Post-run Orange validation command. Repeatable. Label is orange_validation_N.",
+    )
+    parser.add_argument(
+        "--citrus-validation-command",
+        action="append",
+        default=[],
+        help="Post-run Citrus validation command. Repeatable. Label is citrus_validation_N.",
+    )
+    parser.add_argument(
+        "--validation-env",
+        action="append",
+        default=[],
+        help="Extra env override for validation commands, KEY=VALUE. Repeatable.",
+    )
+    parser.add_argument("--validation-cwd", default=str(REPO_ROOT))
+    parser.add_argument("--validation-timeout-seconds", type=positive_float, default=120.0)
+    parser.add_argument("--validation-output-max-chars", type=int, default=20000)
     parser.add_argument("--skip-wait-orange-finalized", action="store_true")
     parser.add_argument("--no-stop-orange-on-failure", dest="stop_orange_on_failure", action="store_false")
     parser.set_defaults(stop_orange_on_failure=True)
@@ -635,6 +836,14 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "require_perf_jsonl": args.require_citrus_perf_jsonl,
         },
+        "validations": [
+            {
+                **item,
+                "cwd": args.validation_cwd,
+                "timeout_seconds": args.validation_timeout_seconds,
+            }
+            for item in validation_commands_from_args(args)
+        ],
     }
 
 

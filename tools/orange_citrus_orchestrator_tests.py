@@ -124,6 +124,8 @@ def test_dry_run_default_does_not_open_sockets() -> None:
             "--orange-env",
             "ORANGE_GUI_SHOW_SPEED_GRAPHS=0",
             "--require-citrus-perf-jsonl",
+            "--validation-command",
+            f"quick={sys.executable} -c \"print('dry-run-validation')\"",
         ]
     )
     require(result.returncode == 0, f"dry-run failed: {result.stderr}")
@@ -153,6 +155,11 @@ def test_dry_run_default_does_not_open_sockets() -> None:
     require(
         payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE"] == "0",
         "orchestrator should keep launched Orange alive for socket control",
+    )
+    require(payload["validations"][0]["label"] == "quick", "dry-run should show validation labels")
+    require(
+        payload["validations"][0]["command"] == f"{sys.executable} -c \"print('dry-run-validation')\"",
+        "dry-run should show validation command text",
     )
 
 
@@ -215,6 +222,8 @@ def test_execute_against_fake_local_control_servers() -> None:
                     "--orange-finalize-timeout-seconds",
                     "2",
                     "--require-citrus-perf-jsonl",
+                    "--validation-command",
+                    f"quick={sys.executable} -c \"print('validation-ok')\"",
                     "--summary-json",
                     str(summary_path),
                 ]
@@ -228,6 +237,9 @@ def test_execute_against_fake_local_control_servers() -> None:
         require(payload["orange"]["recording_finalized"], "summary should report Orange finalized")
         require(payload["citrus"]["terminal_state"] == "completed", "summary should report Citrus terminal")
         require(payload["citrus"]["perf_jsonl_path"] == "/tmp/citrus_perf.jsonl", "summary should carry perf path")
+        require(len(payload["validations"]) == 1, "summary should carry validation results")
+        require(payload["validations"][0]["returncode"] == 0, "validation command should pass")
+        require("validation-ok" in payload["validations"][0]["stdout"], "validation stdout should be captured")
         require(summary_path.exists(), "summary JSON should be written")
         require(json.loads(summary_path.read_text())["result"] == "pass", "summary file should match")
 

@@ -54,6 +54,11 @@ Options:
   --no-citrus-autorun-loader     Do not set Citrus autorun loader envs.
   --enable-citrus-orange-completion-notify
                                   Let Citrus also notify Orange on terminal state.
+  --skip-orange-validation        Do not run the default Orange artifact validator.
+  --orange-validation-command <command>
+                                  Override the default Orange validator command.
+  --orange-validation-json <path> Orange validator JSON output path.
+  --validation-timeout-seconds <seconds>
   --orange-stop-grace-seconds <seconds>
   --stop-policy <policy>         stop_recording, citrus_completion, or none.
   --timeout-seconds <seconds>    Orange/Citrus readiness timeout.
@@ -94,6 +99,16 @@ default_xdg_session_type() {
   esac
 }
 
+join_command() {
+  local quoted=()
+  local arg
+  for arg in "$@"; do
+    quoted+=("$(printf '%q' "${arg}")")
+  done
+  local IFS=" "
+  printf '%s\n' "${quoted[*]}"
+}
+
 require_value() {
   local option="$1"
   local value_count="$2"
@@ -126,11 +141,15 @@ CITRUS_AUTORUN_START_DELAY_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_START_DELAY_S
 CITRUS_AUTORUN_LOADER=1
 CITRUS_ORANGE_COMPLETION_NOTIFY=0
 REQUIRE_CITRUS_PERF_JSONL=1
+ORANGE_VALIDATION_ENABLED="${ORANGE_CITRUS_ORANGE_VALIDATION_ENABLED:-1}"
+ORANGE_VALIDATION_COMMAND="${ORANGE_CITRUS_ORANGE_VALIDATION_COMMAND:-}"
+ORANGE_VALIDATION_JSON="${ORANGE_CITRUS_ORANGE_VALIDATION_JSON:-}"
 STOP_POLICY="${ORANGE_CITRUS_STOP_POLICY:-stop_recording}"
 TIMEOUT_SECONDS="${ORANGE_CITRUS_TIMEOUT_SECONDS:-180}"
 CITRUS_TERMINAL_TIMEOUT_SECONDS="${ORANGE_CITRUS_TERMINAL_TIMEOUT_SECONDS:-600}"
 ORANGE_FINALIZE_TIMEOUT_SECONDS="${ORANGE_CITRUS_ORANGE_FINALIZE_TIMEOUT_SECONDS:-240}"
 ORANGE_STOP_GRACE_SECONDS="${ORANGE_CITRUS_ORANGE_STOP_GRACE_SECONDS:-0}"
+VALIDATION_TIMEOUT_SECONDS="${ORANGE_CITRUS_VALIDATION_TIMEOUT_SECONDS:-300}"
 ORANGE_EXTRA_ENV=()
 CITRUS_EXTRA_ENV=()
 
@@ -277,6 +296,29 @@ while [[ $# -gt 0 ]]; do
       CITRUS_ORANGE_COMPLETION_NOTIFY=1
       shift
       ;;
+    --skip-orange-validation)
+      ORANGE_VALIDATION_ENABLED=0
+      shift
+      ;;
+    --orange-validation-command)
+      shift
+      require_value "--orange-validation-command" "$#"
+      ORANGE_VALIDATION_COMMAND="$1"
+      ORANGE_VALIDATION_ENABLED=1
+      shift
+      ;;
+    --orange-validation-json)
+      shift
+      require_value "--orange-validation-json" "$#"
+      ORANGE_VALIDATION_JSON="$1"
+      shift
+      ;;
+    --validation-timeout-seconds)
+      shift
+      require_value "--validation-timeout-seconds" "$#"
+      VALIDATION_TIMEOUT_SECONDS="$1"
+      shift
+      ;;
     --orange-stop-grace-seconds)
       shift
       require_value "--orange-stop-grace-seconds" "$#"
@@ -326,6 +368,49 @@ done
 if [[ -z "${SUMMARY_JSON}" ]]; then
   SUMMARY_JSON="/tmp/${OPERATION_ID}_orchestrator_summary.json"
 fi
+if [[ -z "${ORANGE_VALIDATION_JSON}" ]]; then
+  ORANGE_VALIDATION_JSON="/tmp/${OPERATION_ID}_orange_gui_validation.json"
+fi
+if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
+  ORANGE_VALIDATION_COMMAND="$(join_command \
+    "${REPO_ROOT}/scripts/validate_gui_ptp_recording.py" \
+    "--latest-complete" \
+    "--expected-cameras" "2010093,2010094,2010095,2010096" \
+    "--require-crop-recording-artifacts" \
+    "--require-crop-preview-counters" \
+    "--expect-crop-preview-max-fps" "15" \
+    "--expect-crop-preview-disabled" "0" \
+    "--expect-crop-preview-display-enabled" "0" \
+    "--min-crop-frame-pool-size" "128" \
+    "--expect-external-crop-encode-queue-depth" "64" \
+    "--require-external-crop-backend-metadata" \
+    "--require-external-crop-recorder-gpu-separate-from-analytics" \
+    "--expect-external-crop-recorder-gpu" "2010093=4" \
+    "--expect-external-crop-recorder-gpu" "2010094=2" \
+    "--expect-external-crop-recorder-gpu" "2010095=8" \
+    "--expect-external-crop-recorder-gpu" "2010096=6" \
+    "--require-external-recorder-status" \
+    "--require-external-recorder-storage-preflight" \
+    "--require-external-recorder-protocol-hello" \
+    "--require-source-version" \
+    "--expect-source-git-command-user-mode" "sudo_invoking_user" \
+    "--expect-source-dirty-tracked" "0" \
+    "--expect-yolo-affinity" "2010093=6" \
+    "--expect-yolo-affinity" "2010094=8" \
+    "--expect-yolo-affinity" "2010095=10" \
+    "--expect-yolo-affinity" "2010096=12" \
+    "--require-isolated-cpus" "6,8,10,12,38,40,42,44" \
+    "--require-kernel-cmdline-cpus" "isolcpus=6,8,10,12,38,40,42,44" \
+    "--require-kernel-cmdline-cpus" "nohz_full=6,8,10,12,38,40,42,44" \
+    "--require-kernel-cmdline-cpus" "rcu_nocbs=6,8,10,12,38,40,42,44" \
+    "--expect-gui-stream-downsample" "4" \
+    "--expect-display-preview-max-fps" "10" \
+    "--expect-gui-swap-interval" "1" \
+    "--expect-gui-frame-max-fps" "30" \
+    "--expect-yolo-speed-graphs-enabled" "0" \
+    "--require-gui-timing-telemetry" \
+    "--json-out" "${ORANGE_VALIDATION_JSON}")"
+fi
 
 ARGS=(
   "${REPO_ROOT}/scripts/orange_citrus_orchestrator.py"
@@ -341,6 +426,7 @@ ARGS=(
   "--citrus-terminal-timeout-seconds" "${CITRUS_TERMINAL_TIMEOUT_SECONDS}"
   "--orange-finalize-timeout-seconds" "${ORANGE_FINALIZE_TIMEOUT_SECONDS}"
   "--orange-stop-grace-seconds" "${ORANGE_STOP_GRACE_SECONDS}"
+  "--validation-timeout-seconds" "${VALIDATION_TIMEOUT_SECONDS}"
 )
 
 if (( EXECUTE )); then
@@ -355,6 +441,9 @@ if [[ -n "${CITRUS_COMMAND}" ]]; then
 fi
 if (( REQUIRE_CITRUS_PERF_JSONL )); then
   ARGS+=("--require-citrus-perf-jsonl")
+fi
+if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" ]]; then
+  ARGS+=("--orange-validation-command" "${ORANGE_VALIDATION_COMMAND}")
 fi
 
 DISPLAY_ENV_ITEMS=()

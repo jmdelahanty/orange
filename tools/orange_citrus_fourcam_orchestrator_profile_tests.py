@@ -114,6 +114,21 @@ def test_default_dry_run_builds_live_profile() -> None:
             citrus_env["CITRUS_ORANGE_COMPLETION_NOTIFY"] == "0",
             "profile should keep Citrus completion notifier disabled by default",
         )
+        require(len(payload["validations"]) == 1, "profile should include default Orange validation")
+        validation = payload["validations"][0]
+        require(validation["label"] == "orange_validation_1", "default validator should be Orange labeled")
+        require(
+            "validate_gui_ptp_recording.py" in validation["command"],
+            "default validator should run the GUI PTP validator",
+        )
+        require(
+            "--expect-gui-frame-max-fps 30" in validation["command"],
+            "default validator should match the Citrus-safe frame cap",
+        )
+        require(
+            "--expect-display-preview-max-fps 10" in validation["command"],
+            "default validator should match the Citrus-safe display preview cap",
+        )
 
 
 def test_attach_mode_does_not_launch_processes() -> None:
@@ -124,6 +139,7 @@ def test_attach_mode_does_not_launch_processes() -> None:
             "--attach-orange",
             "--attach-citrus",
             "--allow-missing-citrus-perf-jsonl",
+            "--skip-orange-validation",
             "--orange-socket",
             "/tmp/orange-attach.sock",
             "--citrus-socket",
@@ -150,6 +166,7 @@ def test_attach_mode_does_not_launch_processes() -> None:
         "CITRUS_PERF_JSONL" not in payload["citrus"]["env_overlay"],
         "allow-missing perf option should avoid injecting Citrus perf env",
     )
+    require(payload["validations"] == [], "skip validation should avoid profile validation commands")
 
 
 def main() -> int:
