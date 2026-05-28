@@ -18,6 +18,7 @@ CROP_RECORDING_SINK_MODE="${ORANGE_CROP_RECORDING_SINK_MODE:-in_process}"
 CROP_EXTERNAL_ENCODE_QUEUE_DEPTH="${ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH:-64}"
 CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER="${ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-}"
 CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS="${ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-}"
+CROP_EXTERNAL_REQUIRE_SEPARATE_GPU="${ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU:-0}"
 DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine"
 DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
 APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}"
@@ -27,8 +28,12 @@ is_nonnegative_integer() {
 }
 
 EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS="--expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
+PER_CAMERA_GPU_DISPLAY_ITEMS=()
 if [[ "${CROP_RECORDING_SINK_MODE}" == "external_ipc" ]]; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --require-external-crop-backend-metadata"
+fi
+if [[ "${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}" == "1" ]]; then
+  EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --require-external-crop-recorder-gpu-separate-from-analytics"
 fi
 if [[ -n "${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID:-}" ]] && is_nonnegative_integer "${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID}"; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --expect-external-crop-recorder-gpu-id ${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID}"
@@ -36,11 +41,17 @@ fi
 while IFS= read -r var_name; do
   [[ -n "${var_name}" ]] || continue
   var_value="${!var_name}"
+  serial="${var_name#ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_}"
+  PER_CAMERA_GPU_DISPLAY_ITEMS+=("${serial}=${var_value}")
   if is_nonnegative_integer "${var_value}"; then
-    serial="${var_name#ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_}"
     EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --expect-external-crop-recorder-gpu ${serial}=${var_value}"
   fi
 done < <(compgen -e ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_ | sort)
+if ((${#PER_CAMERA_GPU_DISPLAY_ITEMS[@]})); then
+  CROP_EXTERNAL_RECORDER_GPU_PER_CAMERA_DISPLAY="$(IFS=,; echo "${PER_CAMERA_GPU_DISPLAY_ITEMS[*]}")"
+else
+  CROP_EXTERNAL_RECORDER_GPU_PER_CAMERA_DISPLAY="<none>"
+fi
 if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
   EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS+=" --max-external-crop-encode-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
 fi
@@ -53,6 +64,9 @@ if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
 fi
 if [[ -n "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" ]]; then
   COMPARE_VALIDATION_FLAGS+=" --max-external-crop-enqueue-age-p95-ms ${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}"
+fi
+if [[ "${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}" == "1" ]]; then
+  COMPARE_VALIDATION_FLAGS+=" --require-external-crop-recorder-gpu-separate-from-analytics"
 fi
 
 if [[ ! -x "${ORANGE_BIN}" ]]; then
@@ -71,7 +85,9 @@ python3 - \
   "${EXPECT_CAMERAS}" \
   "${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}" \
   "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" \
-  "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" <<'PY'
+  "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" \
+  "${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}" \
+  "${CROP_RECORDING_SINK_MODE}" <<'PY'
 import json
 import os
 import sys
@@ -87,6 +103,8 @@ expect_cameras_raw = sys.argv[7]
 crop_external_queue_depth_raw = sys.argv[8]
 crop_external_max_queue_high_water_raw = sys.argv[9]
 crop_external_max_enqueue_age_p95_ms_raw = sys.argv[10]
+crop_external_require_separate_gpu_raw = sys.argv[11]
+crop_recording_sink_mode = sys.argv[12]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -103,6 +121,22 @@ def expected_config_names(config_dir: Path, raw: str) -> list[str]:
             names.append(item if item.endswith(".json") else f"{item}.json")
         return sorted(set(names))
     return sorted(path.name for path in config_dir.glob("*.json"))
+
+def optional_int(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+def resolved_crop_recorder_gpu(serial: str, analytics_gpu_id: int) -> int | None:
+    per_camera_name = f"ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_{serial}"
+    per_camera_raw = os.environ.get(per_camera_name, "")
+    if per_camera_raw:
+        return optional_int(per_camera_raw)
+    global_raw = os.environ.get("ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID", "")
+    if global_raw:
+        return optional_int(global_raw)
+    return analytics_gpu_id
 
 try:
     ptp_register_read_decimate = int(ptp_register_read_decimate_raw)
@@ -143,6 +177,9 @@ if crop_external_max_enqueue_age_p95_ms_raw:
             errors.append("ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be >= 0")
     except ValueError:
         errors.append("ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be a number")
+
+if crop_external_require_separate_gpu_raw not in {"0", "1"}:
+    errors.append("ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU must be 0 or 1")
 
 def validate_optional_gpu_env(name: str) -> None:
     raw = os.environ.get(name, "")
@@ -215,6 +252,30 @@ else:
             ptp_enabled = bool(data.get("ptp", {}).get("enabled", False))
             if ptp_enabled != expect_ptp_enabled:
                 errors.append(f"{path}: ptp.enabled is not {expect_ptp_enabled}")
+        if (
+            crop_recording_sink_mode == "external_ipc"
+            and crop_external_require_separate_gpu_raw == "1"
+        ):
+            serial = path.stem
+            analytics_gpu_id = optional_int(data.get("source_gpu_id"))
+            if analytics_gpu_id is None:
+                errors.append(
+                    f"{path}: source_gpu_id missing; cannot validate "
+                    "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1"
+                )
+            else:
+                recorder_gpu_id = resolved_crop_recorder_gpu(serial, analytics_gpu_id)
+                if recorder_gpu_id is None:
+                    errors.append(
+                        f"{path}: external crop recorder GPU override is invalid for {serial}"
+                    )
+                elif recorder_gpu_id == analytics_gpu_id:
+                    errors.append(
+                        f"{path}: external crop recorder GPU would be {recorder_gpu_id}, "
+                        f"matching source_gpu_id {analytics_gpu_id}; set "
+                        "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID or "
+                        f"ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_{serial} to a different GPU"
+                    )
     if expected:
         notes.append(
             "validated camera configs: "
@@ -257,7 +318,8 @@ Validation environment:
   ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}
   ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}
   ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID:-<camera GPU/default>}
-  ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>=<optional per-camera override>
+  ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*=${CROP_EXTERNAL_RECORDER_GPU_PER_CAMERA_DISPLAY}
+  ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}
   ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-<not set>}
   ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-<not set>}
 
@@ -304,6 +366,7 @@ ENV_ARGS=(
   "ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}"
   "ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}"
   "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
+  "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}"
 )
 if [[ -n "${ORANGE_GUI_RECORDING_SINK_MODE:-}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_RECORDING_SINK_MODE=${ORANGE_GUI_RECORDING_SINK_MODE}")

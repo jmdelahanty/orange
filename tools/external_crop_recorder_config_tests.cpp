@@ -110,6 +110,55 @@ void invalid_override_falls_back()
         "invalid per-camera override without global override should fall back to analytics GPU");
 }
 
+void require_separate_gpu_flag_parses()
+{
+    ScopedEnv require_separate("ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU");
+    require_separate.Unset();
+    require(
+        !orange::session::external_crop_recorder_require_separate_gpu_from_env(),
+        "unset separate-GPU flag should be false");
+
+    require_separate.Set("1");
+    require(
+        orange::session::external_crop_recorder_require_separate_gpu_from_env(),
+        "separate-GPU flag should accept 1");
+
+    require_separate.Set("true");
+    require(
+        orange::session::external_crop_recorder_require_separate_gpu_from_env(),
+        "separate-GPU flag should accept true");
+
+    require_separate.Set("off");
+    require(
+        !orange::session::external_crop_recorder_require_separate_gpu_from_env(),
+        "separate-GPU flag should accept off");
+
+    require_separate.Set("not-a-bool");
+    require(
+        !orange::session::external_crop_recorder_require_separate_gpu_from_env(),
+        "invalid separate-GPU flag should be treated as false");
+}
+
+void same_gpu_guard_uses_separate_gpu_flag()
+{
+    ScopedEnv require_separate("ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU");
+    require_separate.Unset();
+    require(
+        !orange::session::external_crop_recorder_same_gpu_disallowed(5, 5),
+        "same-GPU placement should be allowed when the guard is unset");
+
+    require_separate.Set("1");
+    require(
+        orange::session::external_crop_recorder_same_gpu_disallowed(5, 5),
+        "same-GPU placement should be rejected when the guard is enabled");
+    require(
+        !orange::session::external_crop_recorder_same_gpu_disallowed(5, 6),
+        "different recorder GPU should pass when the guard is enabled");
+    require(
+        !orange::session::external_crop_recorder_same_gpu_disallowed(-1, -1),
+        "unknown analytics GPU should not trip the same-GPU guard");
+}
+
 }  // namespace
 
 int main()
@@ -118,5 +167,7 @@ int main()
     global_override_applies();
     per_camera_override_wins();
     invalid_override_falls_back();
+    require_separate_gpu_flag_parses();
+    same_gpu_guard_uses_separate_gpu_flag();
     return 0;
 }

@@ -29,10 +29,12 @@ def write_camera_config(
     ptp_enabled: bool = True,
     aq: str = "off",
     temporal_aq: str = "off",
+    source_gpu_id: int = 5,
 ) -> None:
     payload = {
         "schema_version": schema_version,
         "camera_serial": serial,
+        "source_gpu_id": source_gpu_id,
         "sync_mode": sync_mode,
         "ptp": {
             "enabled": ptp_enabled,
@@ -126,6 +128,14 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should describe the default external crop recorder GPU placement",
         )
         require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*=<none>" in result.stdout,
+            "launcher output should show no per-camera external crop recorder GPU overrides by default",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=0" in result.stdout,
+            "launcher output should show the default external crop GPU separation gate",
+        )
+        require(
             "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<not set>" in result.stdout,
             "launcher output should show queue high-water validation is unset by default",
         )
@@ -192,6 +202,7 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
                 "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
                 "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID": "8",
                 "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
+                "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "1",
                 "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "48",
                 "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "80",
             },
@@ -219,8 +230,16 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
             "launcher validation commands should include the global crop recorder GPU expectation",
         )
         require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*=2010095=6" in result.stdout,
+            "launcher output should show selected per-camera crop recorder GPU overrides",
+        )
+        require(
             "--expect-external-crop-recorder-gpu 2010095=6" in result.stdout,
             "launcher validation commands should include the per-camera crop recorder GPU expectation",
+        )
+        require(
+            "--require-external-crop-recorder-gpu-separate-from-analytics" in result.stdout,
+            "launcher validation commands should include the optional external crop GPU separation gate",
         )
         require(
             "--max-external-crop-encode-queue-high-water 48" in result.stdout,
@@ -256,6 +275,7 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
                 "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "0",
                 "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "many",
                 "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "-1",
+                "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "yes",
             },
         )
 
@@ -271,6 +291,10 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
         require(
             "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS must be >= 0" in result.stderr,
             "enqueue-age error should explain the nonnegative requirement",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU must be 0 or 1" in result.stderr,
+            "external crop GPU separation gate should explain the boolean requirement",
         )
 
 
@@ -300,6 +324,124 @@ def test_external_crop_recorder_gpu_validation_rejects_bad_values() -> None:
         require(
             "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095 must be >= 0" in result.stderr,
             "per-camera crop GPU override error should explain nonnegative requirement",
+        )
+
+
+def test_external_crop_separate_gpu_gate_rejects_default_same_gpu() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095", source_gpu_id=5)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
+                "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "1",
+            },
+        )
+
+        require(result.returncode != 0, "separate-GPU gate should reject default same-GPU placement")
+        require(
+            "external crop recorder GPU would be 5, matching source_gpu_id 5" in result.stderr,
+            "separate-GPU preflight should name the same-GPU mapping",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095" in result.stderr,
+            "separate-GPU preflight should suggest the per-camera override",
+        )
+
+
+def test_external_crop_separate_gpu_gate_accepts_override() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095", source_gpu_id=5)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
+                "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "1",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID": "6",
+            },
+        )
+
+        require(result.returncode == 0, f"separate-GPU override should pass: {result.stderr}")
+        require(
+            "--require-external-crop-recorder-gpu-separate-from-analytics" in result.stdout,
+            "launcher output should keep the separate-GPU validation gate",
+        )
+
+
+def test_external_crop_four_camera_pix_local_mapping_accepts_per_camera_overrides() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        camera_source_gpus = {
+            "2010093": 3,
+            "2010094": 1,
+            "2010095": 7,
+            "2010096": 5,
+        }
+        expected_crop_gpus = {
+            "2010093": 4,
+            "2010094": 2,
+            "2010095": 8,
+            "2010096": 6,
+        }
+        for serial, source_gpu_id in camera_source_gpus.items():
+            write_camera_config(config_dir, serial, source_gpu_id=source_gpu_id)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            expect_cameras="2010093,2010094,2010095,2010096",
+            extra_env={
+                "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
+                "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "1",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093": "4",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094": "2",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "8",
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096": "6",
+            },
+        )
+
+        require(result.returncode == 0, f"four-camera per-camera mapping should pass: {result.stderr}")
+        require(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=<camera GPU/default>" in result.stdout,
+            "launcher should not require a global crop recorder GPU override",
+        )
+        require(
+            (
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*="
+                "2010093=4,2010094=2,2010095=8,2010096=6"
+            ) in result.stdout,
+            "launcher output should show the selected four-camera crop recorder GPU overrides",
+        )
+        require(
+            "--expect-external-crop-recorder-gpu-id" not in result.stdout,
+            "launcher validation commands should not emit a global crop recorder GPU expectation",
+        )
+        for serial, expected_gpu_id in expected_crop_gpus.items():
+            require(
+                f"--expect-external-crop-recorder-gpu {serial}={expected_gpu_id}" in result.stdout,
+                f"launcher validation commands should include the {serial} crop recorder GPU expectation",
+            )
+        require(
+            "--require-external-crop-recorder-gpu-separate-from-analytics" in result.stdout,
+            "launcher validation commands should keep the separate-GPU gate for the live run shape",
         )
 
 
@@ -377,6 +519,7 @@ def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
                 "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID": "8",
                 "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
+                "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "1",
             },
         )
 
@@ -404,6 +547,10 @@ def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=6" in result.stdout,
             "per-camera external crop recorder GPU override should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1" in result.stdout,
+            "external crop separate-GPU gate should be forwarded through sudo env",
         )
 
 
@@ -449,6 +596,9 @@ def main() -> int:
         test_external_crop_queue_validation_limits_are_printed,
         test_external_crop_queue_validation_rejects_bad_values,
         test_external_crop_recorder_gpu_validation_rejects_bad_values,
+        test_external_crop_separate_gpu_gate_rejects_default_same_gpu,
+        test_external_crop_separate_gpu_gate_accepts_override,
+        test_external_crop_four_camera_pix_local_mapping_accepts_per_camera_overrides,
         test_expected_camera_gate_fails_when_missing,
         test_expected_camera_subset_validates_only_requested_files,
         test_bad_config_fails_preflight,

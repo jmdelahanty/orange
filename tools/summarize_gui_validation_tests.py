@@ -174,6 +174,17 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
             crop["external_stream_config"]["recorder_gpu_id"] == 6,
             "external stream config should be copied from recording_backend",
         )
+        require(
+            crop["external_stream_config_source"] == "recording_backend.crop_recording.stream_config",
+            "recording_backend stream config should be identified as the source",
+        )
+        require(crop["external_analytics_gpu_id"] == 5, "analytics GPU should parse")
+        require(crop["external_recorder_gpu_id"] == 6, "recorder GPU should parse")
+        require(crop["external_gpu_mapping"] == "5->6", "external GPU mapping should parse")
+        require(
+            crop["external_same_gpu_as_analytics"] is False,
+            "separate GPU mapping should not use the analytics GPU",
+        )
         diagnosis = summary["gui_display_diagnosis"]
         require(
             diagnosis["dominant_timing_bucket"] == "camera_window_draw_ms",
@@ -251,6 +262,121 @@ def test_crop_summary_uses_recording_backend_external_fallbacks() -> None:
             crop["external_stream_config"]["recorder_gpu_id"] == 8,
             "backend stream config should remain visible",
         )
+        require(crop["external_gpu_mapping"] == "7->8", "backend GPU mapping should parse")
+        require(
+            crop["external_same_gpu_as_analytics"] is False,
+            "backend GPU mapping should not use the analytics GPU",
+        )
+
+
+def test_crop_summary_marks_same_external_gpu_as_analytics() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = {
+            "schema_version": 2,
+            "recording_outputs": {
+                serial: {
+                    "crop": {
+                        "output_kind": "crop",
+                        "role": "sidecar",
+                        "backend": "external_ipc",
+                        "status": "completed",
+                        "metadata": f"Cam{serial}_crop_meta.csv",
+                        "perf": f"Cam{serial}_crop_perf.csv",
+                        "sidecar_perf": f"Cam{serial}_crop_sidecar_perf.csv",
+                    }
+                }
+            },
+        }
+        session = {
+            "recording_outputs": snapshot["recording_outputs"],
+            "recording_backend": {
+                "crop_recording": {
+                    "stream_config": {
+                        serial: {
+                            "stream_id": f"{serial}_crop",
+                            "analytics_gpu_id": 5,
+                            "recorder_gpu_id": 5,
+                            "socket_path": f"/tmp/orange_external_crop_recorder_{serial}.sock",
+                            "encode_queue_depth": 64,
+                        }
+                    }
+                }
+            },
+        }
+        write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
+        write_text(root / "recording_session.json", json.dumps(session) + "\n")
+        write_text(root / f"Cam{serial}_crop_meta.csv", "recording_frame_id,has_detection\n1,1\n")
+        write_text(root / f"Cam{serial}_crop_perf.csv", "recording_frame_id,dropped\n1,0\n")
+        write_text(root / f"Cam{serial}_crop_sidecar_perf.csv", "crop_frame_pool_size\n32\n")
+
+        summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
+        crop = summary["crop"][serial]
+        require(crop["external_gpu_mapping"] == "5->5", "same-GPU mapping should parse")
+        require(
+            crop["external_same_gpu_as_analytics"] is True,
+            "same-GPU mapping should be marked",
+        )
+
+
+def test_crop_summary_uses_external_crop_contract_stream_config_fallback() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010096"
+        snapshot = {
+            "schema_version": 2,
+            "recording_outputs": {
+                serial: {
+                    "crop": {
+                        "output_kind": "crop",
+                        "role": "sidecar",
+                        "backend": "external_ipc",
+                        "status": "completed",
+                        "metadata": f"Cam{serial}_crop_meta.csv",
+                        "perf": f"Cam{serial}_crop_perf.csv",
+                        "sidecar_perf": f"Cam{serial}_crop_sidecar_perf.csv",
+                        "details": {
+                            "stream_id": f"{serial}_crop",
+                            "video_backend": "external_ipc",
+                        },
+                    }
+                }
+            },
+        }
+        contract = {
+            "streams": {
+                f"{serial}_crop": {
+                    "stream_id": f"{serial}_crop",
+                    "analytics_gpu_id": 5,
+                    "recorder_gpu_id": 8,
+                    "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
+                    "encode_queue_depth": 64,
+                }
+            }
+        }
+        write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
+        write_text(root / "recording_session.json", json.dumps({"recording_outputs": snapshot["recording_outputs"]}) + "\n")
+        write_text(root / "external_crop_recorder_contract.json", json.dumps(contract) + "\n")
+        write_text(root / f"Cam{serial}_crop_meta.csv", "recording_frame_id,has_detection\n1,1\n")
+        write_text(root / f"Cam{serial}_crop_perf.csv", "recording_frame_id,dropped\n1,0\n")
+        write_text(root / f"Cam{serial}_crop_sidecar_perf.csv", "crop_frame_pool_size\n32\n")
+
+        summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
+        crop = summary["crop"][serial]
+        require(
+            crop["external_stream_config_source"] == "external_crop_recorder_contract.json",
+            "external crop contract should be identified as the fallback source",
+        )
+        require(crop["external_gpu_mapping"] == "5->8", "contract GPU mapping should parse")
+        require(
+            crop["external_same_gpu_as_analytics"] is False,
+            "contract GPU mapping should mark separate CUDA devices",
+        )
+        require(
+            crop["external_stream_config"]["socket_path"] == f"/tmp/orange_external_recorder_{serial}_crop.sock",
+            "contract socket path should be used as stream config",
+        )
 
 
 def test_latest_complete_selects_newest_complete_recording() -> None:
@@ -295,6 +421,8 @@ def test_latest_complete_accepts_external_camera_artifact_video() -> None:
 def main() -> int:
     test_crop_summary_reads_rows_preview_and_fanout()
     test_crop_summary_uses_recording_backend_external_fallbacks()
+    test_crop_summary_marks_same_external_gpu_as_analytics()
+    test_crop_summary_uses_external_crop_contract_stream_config_fallback()
     test_latest_complete_selects_newest_complete_recording()
     test_latest_complete_accepts_external_camera_artifact_video()
     print("summarize_gui_validation_tests passed")

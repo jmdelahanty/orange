@@ -259,6 +259,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-crop-recorder-gpu-separate-from-analytics",
+        action="store_true",
+        help=(
+            "For external crop streams, fail unless recorder_gpu_id differs from "
+            "analytics_gpu_id. Use this to prove the crop recorder is not on "
+            "the same CUDA device as the crop-production source GPU."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-encode-queue-high-water",
         type=int,
         default=None,
@@ -463,6 +472,65 @@ def nested_dict(value: Any, *keys: str) -> dict[str, Any]:
             return {}
         current = current.get(key)
     return current if isinstance(current, dict) else {}
+
+
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def external_crop_contract_stream_config(
+    contract: dict[str, Any],
+    serial: str,
+    stream_id: str | None,
+) -> dict[str, Any]:
+    streams = nested_dict(contract, "streams")
+    if not streams:
+        return {}
+
+    candidates = [
+        value
+        for value in (stream_id, f"{serial}_crop")
+        if isinstance(value, str) and value
+    ]
+    for candidate in candidates:
+        value = streams.get(candidate)
+        if isinstance(value, dict):
+            return value
+
+    for value in streams.values():
+        if not isinstance(value, dict):
+            continue
+        if value.get("stream_id") in candidates or value.get("camera_serial") in candidates:
+            return value
+    return {}
+
+
+def descriptor_stream_config(details: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+    fields = (
+        "stream_id",
+        "analytics_gpu_id",
+        "recorder_gpu_id",
+        "socket_path",
+        "encode_queue_depth",
+        "summary_json",
+    )
+    return {field: details[field] for field in fields if field in details}
+
+
+def merge_stream_config_with_fallbacks(*configs: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+        for key, value in config.items():
+            if key not in merged and value not in (None, ""):
+                merged[key] = value
+    return merged
 
 
 def path_from_recording_folder(recording_folder: Path, value: Any) -> Path:
@@ -1806,6 +1874,7 @@ def check_crop_recording_artifacts(
     expected_external_queue_depth: int | None = None,
     expected_external_recorder_gpu_id: int | None = None,
     expected_external_recorder_gpu_by_serial: dict[str, int] | None = None,
+    require_external_recorder_gpu_separate_from_analytics: bool = False,
     max_external_queue_high_water: int | None = None,
     max_external_enqueue_age_p95_ms: float | None = None,
     require_external_crop_backend_metadata: bool = False,
@@ -1824,6 +1893,7 @@ def check_crop_recording_artifacts(
         "recording_backend",
         "crop_recording",
     )
+    external_crop_contract = read_json(recording_folder / "external_crop_recorder_contract.json")
 
     for serial in target_cameras:
         crop_output = crop_output_for(snapshot, serial)
@@ -1959,6 +2029,7 @@ def check_crop_recording_artifacts(
         external_encode_queue_high_water: int | None = None
         external_enqueue_age_p95_ms: float | None = None
         external_stream_config: dict[str, Any] = {}
+        external_stream_config_source: str | None = None
         external_stream_id: str | None = None
         external_analytics_gpu_id: int | None = None
         external_recorder_gpu_id: int | None = None
@@ -2127,8 +2198,34 @@ def check_crop_recording_artifacts(
                 external_enqueue_age_p95_ms,
                 "external crop external_encode.enqueue_age_p95_ms",
             )
-            stream_config = nested_dict(crop_recording_backend, "stream_config").get(serial)
-            external_stream_config = stream_config if isinstance(stream_config, dict) else {}
+            backend_stream_config = nested_dict(crop_recording_backend, "stream_config").get(serial)
+            backend_stream_config = backend_stream_config if isinstance(backend_stream_config, dict) else {}
+            descriptor_details = nested_dict(crop_descriptor, "details")
+            detail_stream_config = descriptor_stream_config(descriptor_details)
+            contract_stream_config = external_crop_contract_stream_config(
+                external_crop_contract,
+                serial,
+                str(first_present(
+                    backend_stream_config.get("stream_id"),
+                    detail_stream_config.get("stream_id"),
+                    "",
+                )) or None,
+            )
+            external_stream_config = merge_stream_config_with_fallbacks(
+                backend_stream_config,
+                contract_stream_config,
+                detail_stream_config,
+            )
+            external_stream_config_source = (
+                "recording_backend.crop_recording.stream_config"
+                if backend_stream_config else (
+                    "external_crop_recorder_contract.json"
+                    if contract_stream_config else (
+                        "recording_outputs.crop.details"
+                        if detail_stream_config else None
+                    )
+                )
+            )
             stream_id_value = external_stream_config.get("stream_id")
             external_stream_id = stream_id_value if isinstance(stream_id_value, str) and stream_id_value else None
             external_analytics_gpu_id = integer(external_stream_config.get("analytics_gpu_id"))
@@ -2154,36 +2251,64 @@ def check_crop_recording_artifacts(
                         f"({external_recorder_gpu_id}) != {expected_recorder_gpu}"
                     ),
                 )
+            if require_external_recorder_gpu_separate_from_analytics:
+                reporter.check(
+                    external_analytics_gpu_id is not None and external_recorder_gpu_id is not None,
+                    (
+                        f"Cam{serial} external crop analytics/recorder GPU metadata present "
+                        f"({external_analytics_gpu_id}->{external_recorder_gpu_id})"
+                    ),
+                    (
+                        f"Cam{serial} external crop analytics/recorder GPU metadata missing: "
+                        f"analytics_gpu_id={external_analytics_gpu_id}, "
+                        f"recorder_gpu_id={external_recorder_gpu_id}"
+                    ),
+                )
+                if external_analytics_gpu_id is not None and external_recorder_gpu_id is not None:
+                    reporter.check(
+                        external_recorder_gpu_id != external_analytics_gpu_id,
+                        (
+                            f"Cam{serial} external crop recorder GPU "
+                            f"{external_recorder_gpu_id} is separate from analytics GPU "
+                            f"{external_analytics_gpu_id}"
+                        ),
+                        (
+                            f"Cam{serial} external crop recorder_gpu_id "
+                            f"({external_recorder_gpu_id}) matches analytics_gpu_id "
+                            f"({external_analytics_gpu_id}); this uses the same CUDA device "
+                            "as crop production"
+                        ),
+                    )
             if require_external_crop_backend_metadata:
                 reporter.check(
-                    bool(external_stream_config),
+                    bool(backend_stream_config),
                     f"Cam{serial} recording_backend.crop_recording.stream_config present",
                     f"Cam{serial} recording_backend.crop_recording.stream_config missing",
                 )
                 stream_id = require_stream_config_string(
                     reporter,
                     serial,
-                    external_stream_config,
+                    backend_stream_config,
                     "stream_id",
                 )
                 analytics_gpu_id = require_stream_config_int(
                     reporter,
                     serial,
-                    external_stream_config,
+                    backend_stream_config,
                     "analytics_gpu_id",
                     minimum=0,
                 )
                 recorder_gpu_id = require_stream_config_int(
                     reporter,
                     serial,
-                    external_stream_config,
+                    backend_stream_config,
                     "recorder_gpu_id",
                     minimum=0,
                 )
                 socket_path = require_stream_config_string(
                     reporter,
                     serial,
-                    external_stream_config,
+                    backend_stream_config,
                     "socket_path",
                 )
                 for map_name in (
@@ -2257,8 +2382,8 @@ def check_crop_recording_artifacts(
                             "summary_json",
                             str(summary_path),
                         )
-            if external_stream_config and external_encode_queue_depth is not None:
-                stream_config_queue_depth = integer(external_stream_config.get("encode_queue_depth"))
+            if backend_stream_config and external_encode_queue_depth is not None:
+                stream_config_queue_depth = integer(backend_stream_config.get("encode_queue_depth"))
                 reporter.check(
                     stream_config_queue_depth == external_encode_queue_depth,
                     (
@@ -2361,6 +2486,7 @@ def check_crop_recording_artifacts(
             "external_recorder_gpu_id": external_recorder_gpu_id,
             "external_socket_path": external_socket_path,
             "external_stream_config": external_stream_config or None,
+            "external_stream_config_source": external_stream_config_source,
         }
 
     return crop_summary
@@ -2617,6 +2743,9 @@ def main() -> int:
             expected_external_queue_depth=args.expect_external_crop_encode_queue_depth,
             expected_external_recorder_gpu_id=args.expect_external_crop_recorder_gpu_id,
             expected_external_recorder_gpu_by_serial=expected_external_recorder_gpu_by_serial,
+            require_external_recorder_gpu_separate_from_analytics=(
+                args.require_external_crop_recorder_gpu_separate_from_analytics
+            ),
             max_external_queue_high_water=args.max_external_crop_encode_queue_high_water,
             max_external_enqueue_age_p95_ms=args.max_external_crop_enqueue_age_p95_ms,
             require_external_crop_backend_metadata=args.require_external_crop_backend_metadata,

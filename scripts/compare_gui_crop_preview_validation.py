@@ -109,6 +109,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-crop-recorder-gpu-separate-from-analytics",
+        action="store_true",
+        help=(
+            "Exit nonzero if any external crop stream is missing GPU placement "
+            "metadata or reports recorder_gpu_id equal to analytics_gpu_id."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-queue-high-water",
         type=nonnegative_int,
         help="Exit nonzero if any compared run exceeds this external crop encode queue high-water.",
@@ -272,6 +280,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
     external_crop_queue_high_water_values: list[int] = []
     external_crop_enqueue_age_p95_values: list[float] = []
     external_crop_gpu_mapping_values: set[str] = set()
+    external_crop_same_gpu_mapping_values: set[str] = set()
     for serial, item in crop_recording.items():
         if not isinstance(item, dict):
             continue
@@ -305,9 +314,15 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         analytics_gpu_id = item.get("external_analytics_gpu_id")
         recorder_gpu_id = item.get("external_recorder_gpu_id")
         if analytics_gpu_id is not None and recorder_gpu_id is not None:
+            analytics_gpu_id_int = finite_int(analytics_gpu_id)
+            recorder_gpu_id_int = finite_int(recorder_gpu_id)
             external_crop_gpu_mapping_values.add(
-                f"{serial}:{finite_int(analytics_gpu_id)}->{finite_int(recorder_gpu_id)}"
+                f"{serial}:{analytics_gpu_id_int}->{recorder_gpu_id_int}"
             )
+            if analytics_gpu_id_int == recorder_gpu_id_int:
+                external_crop_same_gpu_mapping_values.add(
+                    f"{serial}:{analytics_gpu_id_int}->{recorder_gpu_id_int}"
+                )
 
     preview_offered_total = 0
     preview_updated_total = 0
@@ -403,6 +418,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "crop_backend_values": sorted(crop_backend_values),
         "external_crop_queue_depth_values": sorted(external_crop_queue_depth_values),
         "external_crop_gpu_mapping_values": sorted(external_crop_gpu_mapping_values),
+        "external_crop_same_gpu_mapping_values": sorted(external_crop_same_gpu_mapping_values),
         "external_crop_queue_high_water_max": max_or_none(external_crop_queue_high_water_values),
         "external_crop_enqueue_age_p95_max_ms": max_or_none(external_crop_enqueue_age_p95_values),
         "preview_offered_total": preview_offered_total,
@@ -610,6 +626,7 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("ext drops", lambda item: fmt_int(item.get("external_crop_dropped_total"))),
         ("ext q depth", lambda item: fmt_list(item.get("external_crop_queue_depth_values"))),
         ("ext gpus", lambda item: fmt_list(item.get("external_crop_gpu_mapping_values"))),
+        ("ext same-gpu", lambda item: fmt_list(item.get("external_crop_same_gpu_mapping_values"))),
         ("ext q high", lambda item: fmt_optional_int(item.get("external_crop_queue_high_water_max"))),
         ("ext q age p95", lambda item: fmt_float(item.get("external_crop_enqueue_age_p95_max_ms"), 2)),
         ("detect rows", lambda item: fmt_int(item.get("crop_metadata_detection_rows_total"))),
@@ -742,6 +759,26 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
                 failures.append(
                     f"{item.get('label')}: crop config {current_crop_config} "
                     f"does not match {summaries[0].get('label')} {expected_crop_config}"
+                )
+
+    if getattr(args, "require_external_crop_recorder_gpu_separate_from_analytics", False):
+        for item in summaries:
+            has_external_crop = "external_ipc" in (
+                item.get("crop_backend_values")
+                if isinstance(item.get("crop_backend_values"), list) else []
+            )
+            mappings = item.get("external_crop_gpu_mapping_values")
+            mappings = mappings if isinstance(mappings, list) else []
+            same_gpu_mappings = item.get("external_crop_same_gpu_mapping_values")
+            same_gpu_mappings = same_gpu_mappings if isinstance(same_gpu_mappings, list) else []
+            if has_external_crop and not mappings:
+                failures.append(
+                    f"{item.get('label')}: external crop GPU placement metadata missing"
+                )
+            if same_gpu_mappings:
+                failures.append(
+                    f"{item.get('label')}: external crop recorder uses analytics GPU "
+                    f"for {same_gpu_mappings}"
                 )
 
     fps_thresholds = [

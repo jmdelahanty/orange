@@ -554,6 +554,11 @@ ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam
 ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
 ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
+ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
 ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
 ./scripts/run_gui_aq_off_validation.sh
 ```
@@ -569,6 +574,42 @@ quietly mixing different crop recorder placements. When these env vars are
 set, `scripts/run_gui_aq_off_validation.sh` also prints validation commands
 with matching `--expect-external-crop-recorder-gpu*` gates.
 
+If the experiment is specifically testing whether crop video encoding has been
+moved off the same CUDA device as crop production, set
+`ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1`. The launcher will add
+`--require-external-crop-recorder-gpu-separate-from-analytics` to the printed
+per-run validator and A/B comparison commands, and the GUI recording-session
+runtime refuses to start supervised external crop recorders if the resolved
+contract still maps a crop recorder onto the same `analytics_gpu_id`. That gate
+fails when an external crop stream reports the same `analytics_gpu_id` and
+`recorder_gpu_id`.
+The compact GUI summary also reports `gpu_mapping` and
+`same_gpu_as_analytics` for each external crop stream so same-GPU placement is
+visible even when the hard gate was not enabled. This is a CUDA-device
+placement check; it does not infer physical A16 encoder topology across
+different GPU ids.
+
+The command examples below use a current validate-only placement that keeps all
+crop recorders off their source GPUs and within the same `PIX` topology island
+as the camera source GPU on the local A16 machine:
+
+```text
+2010093: 3 -> 4
+2010094: 1 -> 2
+2010095: 7 -> 8
+2010096: 5 -> 6
+```
+
+This is a diagnostic placement, not a claim that these are the final balanced
+GPU assignments for crop encoding.
+
+Deferred diagnostic: if separate-GPU NVENC placement still does not answer the
+GUI pacing question, evaluate an `external_cpu` crop sink that asynchronously
+copies crop-owned `256x256` Mono8 buffers into pinned host memory and lets a
+software encoder process write the crop MP4. That would remove crop NVENC
+competition entirely, leaving only a small host-copy cost and CPU encoder
+jitter to measure.
+
 - [ ] Baseline with crop preview disabled:
 
 ```bash
@@ -577,6 +618,11 @@ ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_DISABLE=1 \
 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
 ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
+ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
 ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
 ./scripts/run_gui_aq_off_validation.sh
 ```
@@ -589,6 +635,11 @@ ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_MAX_FPS=15 \
 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
 ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
+ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
 ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
 ./scripts/run_gui_aq_off_validation.sh
 ```
@@ -601,6 +652,11 @@ ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_MAX_FPS=15 \
 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
 ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
+ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
 ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
 ./scripts/run_gui_aq_off_validation.sh
 ```
@@ -616,6 +672,11 @@ ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_MAX_FPS=30 \
 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
 ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
+ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
+ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
 ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
 ./scripts/run_gui_aq_off_validation.sh
 ```
@@ -644,6 +705,11 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --min-crop-frame-pool-size 32 \
   --expect-external-crop-encode-queue-depth 64 \
   --require-external-crop-backend-metadata \
+  --require-external-crop-recorder-gpu-separate-from-analytics \
+  --expect-external-crop-recorder-gpu 2010093=4 \
+  --expect-external-crop-recorder-gpu 2010094=2 \
+  --expect-external-crop-recorder-gpu 2010095=8 \
+  --expect-external-crop-recorder-gpu 2010096=6 \
   --expect-gui-stream-downsample 4 \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
@@ -665,6 +731,11 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --min-crop-frame-pool-size 32 \
   --expect-external-crop-encode-queue-depth 64 \
   --require-external-crop-backend-metadata \
+  --require-external-crop-recorder-gpu-separate-from-analytics \
+  --expect-external-crop-recorder-gpu 2010093=4 \
+  --expect-external-crop-recorder-gpu 2010094=2 \
+  --expect-external-crop-recorder-gpu 2010095=8 \
+  --expect-external-crop-recorder-gpu 2010096=6 \
   --expect-gui-stream-downsample 4 \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
@@ -684,6 +755,11 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --min-crop-frame-pool-size 32 \
   --expect-external-crop-encode-queue-depth 64 \
   --require-external-crop-backend-metadata \
+  --require-external-crop-recorder-gpu-separate-from-analytics \
+  --expect-external-crop-recorder-gpu 2010093=4 \
+  --expect-external-crop-recorder-gpu 2010094=2 \
+  --expect-external-crop-recorder-gpu 2010095=8 \
+  --expect-external-crop-recorder-gpu 2010096=6 \
   --expect-gui-stream-downsample 4 \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
@@ -706,6 +782,7 @@ scripts/compare_gui_crop_preview_validation.py \
   --require-matching-cameras \
   --require-matching-display-config \
   --require-matching-crop-config \
+  --require-external-crop-recorder-gpu-separate-from-analytics \
   --min-gui-visible-p05-fps 45 \
   --min-gui-hidden-p05-fps 45
 ```

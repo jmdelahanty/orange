@@ -111,6 +111,13 @@ Diagnostic note:
   and confirm the resulting `analytics_gpu_id -> recorder_gpu_id` mapping in
   validation JSON before comparing runs. The GUI validation launcher rejects
   non-integer or negative placement values before starting Orange.
+- `ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1` is a placement diagnostic guard.
+  The GUI validation launcher preflights the local camera config before Orange
+  starts, and the GUI recording-session runtime also refuses to start
+  supervised external crop recorders when any crop stream resolves
+  `recorder_gpu_id == analytics_gpu_id`. That condition means the crop recorder
+  is still on the same CUDA device as crop production. It does not infer
+  physical encoder topology across different GPU ids.
 - `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<N>` and
   `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=<ms>` are launcher validation
   helpers. They do not change runtime behavior; `scripts/run_gui_aq_off_validation.sh`
@@ -228,7 +235,8 @@ For GUI external crop recording, `recording_session.json`
   plan, including `stream_id`, `analytics_gpu_id`, `recorder_gpu_id`,
   `encode_queue_depth`, socket path, FPS, GOP, codec, and tuning. The
   `analytics_gpu_id` is the source/crop-production GPU; `recorder_gpu_id` is
-  the external process encode GPU.
+  the external process encode GPU. External crop recorder contracts also carry
+  `same_gpu_as_analytics` for this same-GPU placement check.
 - `frames_received`, `frames_encoded`, `encode_dropped`,
   `external_frames_dropped`: count telemetry copied from each external crop
   recorder summary.

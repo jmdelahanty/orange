@@ -1027,6 +1027,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         }
     }
 
+    const bool recording_session_ok =
+        external_recorder_ok &&
+        (!crop_external_recorder_active || crop_external_recorder_ok);
+
     orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
     manifest_options.producer = external_ipc ? "orange_gui_external_ipc" : "orange_gui";
     manifest_options.session_id =
@@ -1034,7 +1038,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     manifest_options.created_at_utc = run->recording_started_at_utc;
     manifest_options.updated_at_utc = run->recording_drained_at_utc;
     manifest_options.recording_folder = run->recording_folder;
-    manifest_options.status = external_recorder_ok ? "completed" : "incomplete";
+    manifest_options.status = recording_session_ok ? "completed" : "incomplete";
     manifest_options.stream_started_at_utc = run->recording_started_at_utc;
     manifest_options.stream_finished_at_utc = run->recording_drained_at_utc;
     manifest_options.stream_actual_elapsed_s =
@@ -1156,7 +1160,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             orange::external_recorder::BuildExternalRecorderFinalizationManifest(
                 finalization_options);
         finalization["recording_session_manifest"] = {
-            {"pass", external_recorder_ok},
+            {"pass", recording_session_ok},
             {"path", manifest_path.string()},
             {"mode", "single_clip"},
             {"producer", "orange_gui_external_ipc"},
@@ -1206,7 +1210,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
     const nlohmann::json snapshot_update = {
         {"recording_mode", "single_clip"},
         {"recording_session_manifest_path", manifest_path.string()},
-        {"recording_session_status", external_recorder_ok ? "completed" : "incomplete"},
+        {"recording_session_status", recording_session_ok ? "completed" : "incomplete"},
         {"recording_session_camera_count", camera_serials.size()},
         {"gui_display_frame_rate", gui_display_frame_rate}
     };

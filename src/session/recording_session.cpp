@@ -289,6 +289,23 @@ int resolve_external_crop_encode_queue_depth()
     return depth;
 }
 
+std::string external_crop_contract_validation_error(const nlohmann::json& contract)
+{
+    if (!contract.contains("validation_errors") ||
+        !contract["validation_errors"].is_array() ||
+        contract["validation_errors"].empty()) {
+        return {};
+    }
+    std::ostringstream message;
+    message << "external crop recorder contract invalid";
+    for (const auto& error : contract["validation_errors"]) {
+        if (error.is_string()) {
+            message << "; " << error.get<std::string>();
+        }
+    }
+    return message.str();
+}
+
 nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
     const std::string& recording_folder,
     const std::string& recording_id,
@@ -307,6 +324,9 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_video_sanity", false},
         {"require_merged_mp4", true},
         {"require_gop_routing", true},
+        {"require_recorder_gpu_separate_from_analytics",
+         external_crop_recorder_require_separate_gpu_from_env()},
+        {"validation_errors", nlohmann::json::array()},
         {"streams", nlohmann::json::object()}
     };
 
@@ -338,6 +358,8 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             camera.gpu_id >= 0 ? camera.gpu_id : 0;
         const int recorder_gpu_id =
             resolve_external_crop_recorder_gpu_id_from_env(serial, analytics_gpu_id);
+        const bool same_gpu_as_analytics =
+            recorder_gpu_id == analytics_gpu_id;
         const std::string prefix =
             (std::filesystem::path(artifact_root) /
              ("Cam" + serial + "_crop_external")).string();
@@ -349,6 +371,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"camera_serial", stream_id},
             {"analytics_gpu_id", analytics_gpu_id},
             {"recorder_gpu_id", recorder_gpu_id},
+            {"same_gpu_as_analytics", same_gpu_as_analytics},
             {"expected_shard_gpu_ids", nlohmann::json::array({recorder_gpu_id})},
             {"routing_policy", "single_shard"},
             {"summary_json", prefix + "_summary.json"},
@@ -374,6 +397,17 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"max_bitrate_bps", 150000000},
             {"vbv_buffer_size", 150000000}
         };
+        if (external_crop_recorder_same_gpu_disallowed(
+                analytics_gpu_id,
+                recorder_gpu_id)) {
+            contract["validation_errors"].push_back(
+                "Cam" + serial +
+                " external crop recorder GPU " + std::to_string(recorder_gpu_id) +
+                " matches analytics GPU " + std::to_string(analytics_gpu_id) +
+                "; set ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID or " +
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_" + serial +
+                " to a different GPU");
+        }
     }
     return contract;
 }
@@ -1612,6 +1646,18 @@ RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
             return result;
         }
         state->external_crop_recorder_contract_path = crop_contract_path.string();
+
+        const std::string crop_contract_error =
+            external_crop_contract_validation_error(crop_contract);
+        if (!crop_contract_error.empty()) {
+            result.recording_folder = recording_folder;
+            result.recording_sink_mode = normalized_sink_mode.empty() ? recording_sink_mode : normalized_sink_mode;
+            result.error_message = crop_contract_error;
+            state->external_crop_recorder_last_error = crop_contract_error;
+            std::cerr << "[recording_session] " << crop_contract_error << std::endl;
+            cleanup_failed_start();
+            return result;
+        }
 
         orange::external_recorder::SupervisedRecorderLifecycleOptions crop_lifecycle_options;
         crop_lifecycle_options.contract = crop_contract;

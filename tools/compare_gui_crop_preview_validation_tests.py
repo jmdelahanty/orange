@@ -143,6 +143,10 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
         summary["external_crop_gpu_mapping_values"] == ["2010095:5->5", "2010096:7->7"],
         "external crop GPU placement should aggregate by camera",
     )
+    require(
+        summary["external_crop_same_gpu_mapping_values"] == ["2010095:5->5", "2010096:7->7"],
+        "same-GPU external crop placement should aggregate by camera",
+    )
     require(summary["external_crop_queue_high_water_max"] == 12, "external queue high-water should aggregate")
     require(summary["external_crop_enqueue_age_p95_max_ms"] == 2.5, "external enqueue age should aggregate")
     require(summary["preview_offered_total"] == 180, "preview offered should aggregate")
@@ -349,6 +353,68 @@ def test_threshold_failures_cover_mismatched_external_crop_gpu_mapping() -> None
     )
 
 
+def test_threshold_failures_cover_same_external_crop_gpu_mapping() -> None:
+    same_gpu = compare.summarize_validation("same-gpu", sample_payload())
+    separate_payload = sample_payload()
+    separate_payload["crop_recording"]["2010095"]["external_recorder_gpu_id"] = 6
+    separate_payload["crop_recording"]["2010096"]["external_recorder_gpu_id"] = 8
+    separate = compare.summarize_validation("separate-gpu", separate_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=False,
+        require_external_crop_recorder_gpu_separate_from_analytics=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    failures = compare.threshold_failures(args, [same_gpu])
+    require(
+        any("uses analytics GPU" in failure for failure in failures),
+        "same analytics/recorder GPU should fail the separation threshold",
+    )
+    require(
+        not compare.threshold_failures(args, [separate]),
+        "separate analytics/recorder GPU placement should pass the separation threshold",
+    )
+
+
+def test_threshold_failures_cover_missing_external_crop_gpu_mapping() -> None:
+    payload = sample_payload()
+    for item in payload["crop_recording"].values():
+        item.pop("external_analytics_gpu_id", None)
+        item.pop("external_recorder_gpu_id", None)
+    summary = compare.summarize_validation("missing-gpu", payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=False,
+        require_external_crop_recorder_gpu_separate_from_analytics=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    failures = compare.threshold_failures(args, [summary])
+    require(
+        any("GPU placement metadata missing" in failure for failure in failures),
+        "missing external crop GPU metadata should fail the separation threshold",
+    )
+
+
 def test_table_contains_expected_columns_and_values() -> None:
     summary = compare.summarize_validation("visible", sample_payload())
     table = compare.render_table([summary])
@@ -378,6 +444,8 @@ def test_table_contains_expected_columns_and_values() -> None:
     require("ext q depth" in table, "table should include external queue depth column")
     require("ext gpus" in table, "table should include external crop GPU placement column")
     require("2010096:7->7" in table, "table should include external crop GPU placement values")
+    require("ext same-gpu" in table, "table should include same-GPU external crop column")
+    require("2010095:5->5" in table, "table should include same-GPU external crop values")
     require("ext q high" in table, "table should include external queue high-water column")
     require("ext q age p95" in table, "table should include external enqueue-age column")
 
@@ -453,6 +521,7 @@ def test_cli_thresholds_fail_with_clear_stderr() -> None:
                 "8",
                 "--max-external-crop-enqueue-age-p95-ms",
                 "2",
+                "--require-external-crop-recorder-gpu-separate-from-analytics",
             ],
             cwd=REPO_ROOT,
             text=True,
@@ -464,6 +533,10 @@ def test_cli_thresholds_fail_with_clear_stderr() -> None:
         require(result.returncode == 1, "CLI should fail when thresholds are missed")
         require("visible GUI p05 FPS=42.0 below 45.0" in result.stderr, "CLI stderr should name FPS miss")
         require("external crop queue high-water=12.0 > 8" in result.stderr, "CLI stderr should name queue miss")
+        require(
+            "uses analytics GPU" in result.stderr,
+            "CLI stderr should name same-GPU external crop placement",
+        )
         require("dominant p95" in result.stdout, "CLI table should still include dominant timing column")
 
 
@@ -590,6 +663,8 @@ def main() -> int:
         test_threshold_failures_cover_mismatched_camera_and_display_config,
         test_threshold_failures_cover_mismatched_crop_config,
         test_threshold_failures_cover_mismatched_external_crop_gpu_mapping,
+        test_threshold_failures_cover_same_external_crop_gpu_mapping,
+        test_threshold_failures_cover_missing_external_crop_gpu_mapping,
         test_table_contains_expected_columns_and_values,
         test_uses_validator_timing_diagnosis_when_present,
         test_table_marks_absent_fanout_as_unavailable,

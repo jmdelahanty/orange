@@ -314,6 +314,54 @@ def serial_map_value(container: dict[str, Any], map_name: str, serial: str) -> A
     return mapping.get(serial) if mapping else None
 
 
+def external_crop_contract_stream_config(
+    contract: dict[str, Any],
+    serial: str,
+    stream_id: str | None,
+) -> dict[str, Any]:
+    streams = nested_dict(contract, "streams")
+    if not streams:
+        return {}
+
+    candidates = [value for value in (stream_id, f"{serial}_crop") if isinstance(value, str) and value]
+    for candidate in candidates:
+        value = streams.get(candidate)
+        if isinstance(value, dict):
+            return value
+
+    for value in streams.values():
+        if not isinstance(value, dict):
+            continue
+        if value.get("stream_id") in candidates or value.get("camera_serial") in candidates:
+            return value
+    return {}
+
+
+def descriptor_stream_config(details: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+    fields = (
+        "stream_id",
+        "analytics_gpu_id",
+        "recorder_gpu_id",
+        "socket_path",
+        "encode_queue_depth",
+        "summary_json",
+    )
+    return {field: details[field] for field in fields if field in details}
+
+
+def merge_stream_config_with_fallbacks(*configs: dict[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    for config in configs:
+        if not isinstance(config, dict):
+            continue
+        for key, value in config.items():
+            if key not in merged and value not in (None, ""):
+                merged[key] = value
+    return merged
+
+
 def summarize_gui_timing_diagnosis(gui_display_frame_rate: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(gui_display_frame_rate, dict):
         return {}
@@ -476,6 +524,7 @@ def summarize_crop_recording(
 ) -> dict[str, Any]:
     summaries: dict[str, Any] = {}
     crop_recording_backend = nested_dict(manifest, "recording_backend", "crop_recording")
+    external_crop_contract = read_json(recording_folder / "external_crop_recorder_contract.json")
     serials: set[str] = {
         str(serial)
         for serial, camera_outputs in outputs.items()
@@ -494,6 +543,7 @@ def summarize_crop_recording(
     for serial in sorted(serials):
         crop_output = outputs.get(serial, {}).get("crop")
         crop_output = crop_output if isinstance(crop_output, dict) else {}
+        crop_details = nested_dict(crop_output, "details")
         metadata_path = output_path(
             recording_folder,
             crop_output,
@@ -529,8 +579,29 @@ def summarize_crop_recording(
         queue_high_water = external_summary.get("encode_queue_high_water")
         if queue_high_water is None and summary_path.exists():
             queue_high_water = external_detach_queue_high_water(summary_path)
-        stream_config = serial_map_value(crop_recording_backend, "stream_config", serial)
-        stream_config = stream_config if isinstance(stream_config, dict) else {}
+        backend_stream_config = serial_map_value(crop_recording_backend, "stream_config", serial)
+        backend_stream_config = backend_stream_config if isinstance(backend_stream_config, dict) else {}
+        detail_stream_config = descriptor_stream_config(crop_details)
+        contract_stream_config = external_crop_contract_stream_config(
+            external_crop_contract,
+            serial,
+            str(first_present(backend_stream_config.get("stream_id"), detail_stream_config.get("stream_id"), "")) or None,
+        )
+        stream_config = merge_stream_config_with_fallbacks(
+            backend_stream_config,
+            contract_stream_config,
+            detail_stream_config,
+        )
+        stream_config_source = (
+            "recording_backend.crop_recording.stream_config"
+            if backend_stream_config else (
+                "external_crop_recorder_contract.json"
+                if contract_stream_config else (
+                    "recording_outputs.crop.details"
+                    if detail_stream_config else None
+                )
+            )
+        )
         external_frames_received = int_value(first_present(
             external_summary.get("frames_received"),
             serial_map_value(crop_recording_backend, "frames_received", serial),
@@ -560,6 +631,13 @@ def summarize_crop_recording(
             external_encode.get("enqueue_age_p95_ms"),
             serial_map_value(crop_recording_backend, "enqueue_age_p95_ms", serial),
         ))
+        external_analytics_gpu_id = int_value(stream_config.get("analytics_gpu_id"))
+        external_recorder_gpu_id = int_value(stream_config.get("recorder_gpu_id"))
+        external_gpu_mapping = None
+        external_same_gpu_as_analytics = None
+        if external_analytics_gpu_id is not None and external_recorder_gpu_id is not None:
+            external_gpu_mapping = f"{external_analytics_gpu_id}->{external_recorder_gpu_id}"
+            external_same_gpu_as_analytics = external_analytics_gpu_id == external_recorder_gpu_id
 
         summaries[serial] = {
             "backend": crop_output.get("backend"),
@@ -630,6 +708,7 @@ def summarize_crop_recording(
             ),
             "external_summary_path": str(summary_path),
             "external_stream_config": stream_config,
+            "external_stream_config_source": stream_config_source,
             "external_frames_received": external_frames_received,
             "external_frames_encoded": external_frames_encoded,
             "external_encode_dropped": external_encode_dropped,
@@ -639,6 +718,10 @@ def summarize_crop_recording(
             "external_enqueue_age_p95_ms": external_enqueue_age_p95_ms,
             "external_encode_total_p95_ms": external_encode.get("encode_total_p95_ms"),
             "external_lock_bitstream_p95_ms": external_encode.get("lock_bitstream_p95_ms"),
+            "external_analytics_gpu_id": external_analytics_gpu_id,
+            "external_recorder_gpu_id": external_recorder_gpu_id,
+            "external_gpu_mapping": external_gpu_mapping,
+            "external_same_gpu_as_analytics": external_same_gpu_as_analytics,
         }
     return summaries
 
@@ -1098,10 +1181,17 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"lock_p95={fmt_float_unit(crop.get('external_lock_bitstream_p95_ms'), 2, 'ms')}"
                 )
             if stream_config:
+                same_gpu = crop.get("external_same_gpu_as_analytics")
+                same_gpu_text = (
+                    "unknown" if same_gpu is None else ("yes" if same_gpu else "no")
+                )
                 print(
                     f"    external_config: stream={stream_config.get('stream_id') or 'n/a'} "
-                    f"analytics_gpu={fmt_int(stream_config.get('analytics_gpu_id'))} "
-                    f"recorder_gpu={fmt_int(stream_config.get('recorder_gpu_id'))} "
+                    f"gpu_mapping={crop.get('external_gpu_mapping') or 'n/a'} "
+                    f"analytics_gpu={fmt_int(crop.get('external_analytics_gpu_id'))} "
+                    f"recorder_gpu={fmt_int(crop.get('external_recorder_gpu_id'))} "
+                    f"same_gpu_as_analytics={same_gpu_text} "
+                    f"source={crop.get('external_stream_config_source') or 'n/a'} "
                     f"socket={stream_config.get('socket_path') or 'n/a'}"
                 )
     else:

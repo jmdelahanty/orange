@@ -541,6 +541,42 @@ CropProducer
 This should be a separate sidecar recorder contract, not an extension of the
 full-frame GOP recorder.
 
+### CPU Crop Encoder Diagnostic
+
+If crop NVENC placement remains suspicious after external crop IPC validation,
+add an opt-in software crop sink rather than making it the default:
+`ORANGE_CROP_RECORDING_SINK_MODE=external_cpu`.
+
+Proposed diagnostic shape:
+
+```text
+CropProducer
+  -> crop-owned CUDA buffer
+  -> async device-to-pinned-host copy
+  -> external CPU crop sidecar recorder
+  -> software MP4 encoder
+```
+
+At `256x256` Mono8 and `100 fps`, the host-copy payload is about `6.6 MB/s`
+per camera, or about `26 MB/s` for four cameras. The expected risk is CPU
+encoder latency/jitter, not PCIe bandwidth. Prefer a bounded pinned-host pool,
+CUDA copy-complete events, and a separate CPU encode queue so Orange releases
+the crop-frame lease after the host copy rather than after software encode.
+
+Suggested metadata:
+
+- `recording_outputs[serial].crop.backend = "external_cpu"`
+- `recording_outputs[serial].crop.details.encoder_backend = "software"`
+- `recording_outputs[serial].crop.details.software_encoder = "libx264"` or
+  `"libx265"`
+- host-copy p95/max latency
+- CPU encode p95/max latency
+- host queue depth, high-water, dropped frames, and enqueue-age p95
+
+Use this only as a discriminator for GPU/NVENC contention. If software crop
+encoding proves useful, promote it through the same descriptor, sidecar, and
+validator contract used by `external_ipc`.
+
 ### Crop Quality Profiles
 
 Once behavior is represented by `VideoEncodeProfile`, evaluate:

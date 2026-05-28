@@ -47,6 +47,33 @@ bool read_nonnegative_int_env(const char* name, const int max_value, int* value_
     return true;
 }
 
+bool read_bool_env(const char* name, bool* value_out)
+{
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    std::string text = trim_ascii_copy(raw);
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (text == "1" || text == "true" || text == "yes" || text == "on") {
+        if (value_out) {
+            *value_out = true;
+        }
+        return true;
+    }
+    if (text == "0" || text == "false" || text == "no" || text == "off") {
+        if (value_out) {
+            *value_out = false;
+        }
+        return true;
+    }
+    std::cerr << "[recording_session] Ignoring invalid " << name << "='"
+              << raw << "'" << std::endl;
+    return false;
+}
+
 }  // namespace
 
 int resolve_external_crop_recorder_gpu_id_from_env(const std::string& serial,
@@ -74,6 +101,21 @@ int resolve_external_crop_recorder_gpu_id_from_env(const std::string& serial,
     }
 
     return fallback;
+}
+
+bool external_crop_recorder_require_separate_gpu_from_env()
+{
+    bool value = false;
+    (void)read_bool_env("ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU", &value);
+    return value;
+}
+
+bool external_crop_recorder_same_gpu_disallowed(const int analytics_gpu_id,
+                                                const int recorder_gpu_id)
+{
+    return external_crop_recorder_require_separate_gpu_from_env() &&
+           analytics_gpu_id >= 0 &&
+           recorder_gpu_id == analytics_gpu_id;
 }
 
 }  // namespace orange::session
