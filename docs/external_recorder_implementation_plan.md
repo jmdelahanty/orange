@@ -649,6 +649,31 @@ Supervised hardware smoke result:
 
 Latest GUI/session external IPC validation:
 
+- Four-camera GUI autorun artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`
+- command shape:
+  `ORANGE_GUI_AUTORUN=1 ORANGE_GUI_AUTORUN_RECORD_SECONDS=10 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc ORANGE_CROP_RECORDING_SINK_MODE=external_ipc ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 ORANGE_PTP_REGISTER_READ_DECIMATE=100 ./scripts/run_gui_aq_off_validation.sh`
+- config: `100_cam4_ptp_fourcam`, four cameras
+  `2010093/2010094/2010095/2010096`, `sync_mode = "ptp_gate"`,
+  `ptp.enabled = true`, and `ptp.mode = "TwoStep"`
+- the validation launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128`
+  for external crop IPC, derived from the default crop external encode queue
+  depth of `64`
+- full-frame external IPC: all four cameras wrote valid `4512x4512` MP4s with
+  `1016` frames each, `0` external IPC failures, `0` ACK timeouts,
+  `0` camera frame-ID gaps, `0` GetFrame errors, and `0` encode failures
+- external crop IPC: all four crop streams received/encoded `1016/1016`
+  frames with `0` drops; crop metadata rows, crop perf rows, keyframe
+  `total_frames`, crop MP4 frame counts, and YOLO rows all matched
+- crop fanout matched detection rows for every camera, and
+  `producer_crop_frame_pool_misses_total = 0`
+- YOLO queue p95 stayed under `1 ms` for all cameras (`0.393/0.397/0.481/0.623
+  ms`), and steady detect p95 was `4.962/5.151/5.613/6.116 ms`
+- `scripts/validate_gui_ptp_recording.py --latest-complete` with the external
+  crop backend and per-camera recorder GPU checks passed with `0` warnings
+
+Earlier two-camera GUI validation:
+
 - GUI artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`
 - command shape:
@@ -686,9 +711,11 @@ Latest source-lifetime hardening:
   external-recorder range at about `4.383 ms`.
 
 Next production slice: add GUI-visible recorder health/heartbeat and failure
-reporting around the supervised lifecycle, and add a GUI PTP stack
-preflight/repair guard so `ptp_gate` startup fails clearly instead of leaving
-streaming/YOLO FPS at zero when `ptp4l`/`phc2sys` are stopped.
+reporting around the supervised lifecycle. The first GUI PTP-stack guard now
+exists in the validation launcher/wrapper path: `ORANGE_GUI_PTP_STACK_MODE`
+maps to `orange-gui-validation --ptp-stack-mode off|require|auto`, and autorun
+PTP-gated validation defaults to `auto` so `ptp4l`/`phc2sys` are started and
+rechecked before Orange opens cameras.
 
 Detailed Stage 5 protocol and routing design:
 

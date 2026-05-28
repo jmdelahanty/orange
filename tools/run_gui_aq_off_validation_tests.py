@@ -141,6 +141,26 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show autorun crop preview hiding disabled by default",
         )
         require(
+            "ORANGE_GUI_AUTORUN_ENABLE_STREAM=1" in result.stdout,
+            "launcher output should show autorun streaming enabled by default",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_RECORD=1" in result.stdout,
+            "launcher output should show autorun recording enabled by default",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_YOLO=1" in result.stdout,
+            "launcher output should show autorun YOLO enabled by default",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_CROP=1" in result.stdout,
+            "launcher output should show autorun crop recording enabled by default",
+        )
+        require(
+            "ORANGE_GUI_PTP_STACK_MODE=off" in result.stdout,
+            "launcher output should show host PTP preflight off by default for manual runs",
+        )
+        require(
             "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
             "launcher output should show the default external crop queue depth",
         )
@@ -310,6 +330,10 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
                 "ORANGE_GUI_AUTORUN_RECORD_SECONDS": "0",
                 "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "yes",
                 "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW": "nope",
+                "ORANGE_GUI_AUTORUN_ENABLE_STREAM": "maybe",
+                "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "maybe",
+                "ORANGE_GUI_AUTORUN_ENABLE_YOLO": "maybe",
+                "ORANGE_GUI_AUTORUN_ENABLE_CROP": "maybe",
             },
         )
 
@@ -349,6 +373,22 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
         require(
             "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW must be 0 or 1" in result.stderr,
             "autorun crop preview flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_STREAM must be 0 or 1" in result.stderr,
+            "autorun stream enable flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_RECORD must be 0 or 1" in result.stderr,
+            "autorun record enable flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_YOLO must be 0 or 1" in result.stderr,
+            "autorun YOLO enable flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_CROP must be 0 or 1" in result.stderr,
+            "autorun crop enable flag should explain the boolean requirement",
         )
 
 
@@ -608,6 +648,52 @@ def test_crop_preview_env_controls_are_forwarded_to_exec_env() -> None:
         )
 
 
+def test_external_crop_ipc_autosizes_crop_frame_pool() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
+                "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            "ORANGE_CROP_FRAME_POOL_SIZE=128" in result.stdout,
+            "external crop IPC should auto-forward a crop pool sized above the encode queue",
+        )
+
+        validation_result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_CROP_RECORDING_SINK_MODE": "external_ipc",
+                "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
+            },
+        )
+
+        require(validation_result.returncode == 0, f"launcher failed: {validation_result.stderr}")
+        require(
+            "ORANGE_CROP_FRAME_POOL_SIZE=128 (auto for external_ipc)" in validation_result.stdout,
+            "launcher output should explain the auto-sized external crop pool",
+        )
+        require(
+            "--min-crop-frame-pool-size 128" in validation_result.stdout,
+            "validation commands should require the auto-sized crop pool",
+        )
+
+
 def test_display_env_controls_are_forwarded_to_exec_env() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -636,6 +722,10 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_AUTORUN_RECORD_SECONDS": "7",
                 "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "1",
                 "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW": "1",
+                "ORANGE_GUI_AUTORUN_ENABLE_STREAM": "1",
+                "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "1",
+                "ORANGE_GUI_AUTORUN_ENABLE_YOLO": "1",
+                "ORANGE_GUI_AUTORUN_ENABLE_CROP": "1",
             },
         )
 
@@ -675,6 +765,26 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1" in result.stdout,
             "GUI autorun crop-preview flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_STREAM=1" in result.stdout,
+            "GUI autorun stream-enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_RECORD=1" in result.stdout,
+            "GUI autorun record-enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_YOLO=1" in result.stdout,
+            "GUI autorun YOLO-enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_ENABLE_CROP=1" in result.stdout,
+            "GUI autorun crop-enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_PTP_STACK_MODE=auto" in result.stdout,
+            "GUI autorun PTP-gate runs should default to auto-starting/checking the host PTP stack",
         )
         require(
             "DISPLAY=:77" in result.stdout,
@@ -754,6 +864,78 @@ def test_invalid_gui_privilege_wrapper_mode_fails() -> None:
         )
 
 
+def test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        fake_wrapper = root / "orange-gui-validation"
+        fake_wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1:-}\" == \"--help\" ]]; then\n"
+            "  echo 'Usage: stale-wrapper --orange-bin --env KEY=VALUE'\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'fake wrapper should not be executed' >&2\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_wrapper.chmod(0o755)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            extra_env={
+                "DISPLAY": ":77",
+                "ORANGE_GUI_AUTORUN": "1",
+                "ORANGE_GUI_USE_PRIVILEGE_WRAPPER": "1",
+                "ORANGE_GUI_PRIVILEGE_WRAPPER": str(fake_wrapper),
+            },
+        )
+
+        require(result.returncode != 0, "stale wrapper should fail before sudo execution")
+        require(
+            "Installed GUI privilege wrapper does not support --ptp-stack-mode" in result.stderr,
+            "launcher should explain that the installed wrapper must be refreshed",
+        )
+        require(
+            "install_orange_gui_validation_wrapper.sh --install-sudoers" in result.stderr,
+            "launcher should include the reinstall command",
+        )
+        require(
+            "fake wrapper should not be executed" not in result.stderr,
+            "launcher should only inspect wrapper help and not execute the stale wrapper",
+        )
+
+
+def test_invalid_gui_ptp_stack_mode_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_GUI_PTP_STACK_MODE": "sometimes",
+            },
+        )
+
+        require(result.returncode != 0, "bad GUI PTP stack mode should fail")
+        require(
+            "ORANGE_GUI_PTP_STACK_MODE must be off, require, or auto" in result.stderr,
+            "bad GUI PTP stack mode should explain accepted values",
+        )
+
+
 def test_gui_privilege_wrapper_help_documents_contract() -> None:
     result = subprocess.run(
         [str(GUI_WRAPPER_SCRIPT), "--help"],
@@ -768,8 +950,29 @@ def test_gui_privilege_wrapper_help_documents_contract() -> None:
     require("--orange-bin" in result.stdout, "wrapper help should document --orange-bin")
     require("--env KEY=VALUE" in result.stdout, "wrapper help should document --env")
     require(
+        "--ptp-stack-mode" in result.stdout,
+        "wrapper help should document the PTP stack preflight mode",
+    )
+    require(
         "ORANGE_GUI_AUTORUN" in result.stdout,
         "wrapper help should mention the GUI autorun env contract",
+    )
+
+
+def test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode() -> None:
+    result = subprocess.run(
+        [str(GUI_WRAPPER_SCRIPT), "--dry-run", "--ptp-stack-mode", "sometimes"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode != 0, "wrapper should reject invalid PTP stack modes")
+    require(
+        "--ptp-stack-mode must be off, require, or auto" in result.stderr,
+        "wrapper should explain accepted PTP stack mode values",
     )
 
 
@@ -777,7 +980,10 @@ def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
         test_invalid_gui_privilege_wrapper_mode_fails,
+        test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp,
+        test_invalid_gui_ptp_stack_mode_fails,
         test_gui_privilege_wrapper_help_documents_contract,
+        test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_external_crop_queue_validation_limits_are_printed,
         test_external_crop_queue_validation_rejects_bad_values,
         test_external_crop_recorder_gpu_validation_rejects_bad_values,
@@ -788,6 +994,7 @@ def main() -> int:
         test_expected_camera_subset_validates_only_requested_files,
         test_bad_config_fails_preflight,
         test_crop_preview_env_controls_are_forwarded_to_exec_env,
+        test_external_crop_ipc_autosizes_crop_frame_pool,
         test_display_env_controls_are_forwarded_to_exec_env,
         test_live_launcher_fails_fast_without_display_env,
     ]

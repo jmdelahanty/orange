@@ -1052,7 +1052,7 @@ Crop output snapshot shape:
         "source_gpu_id": 5,
         "crop_size_px": 328,
         "preview_max_fps": 15,
-        "crop_frame_pool_size": 32,
+        "crop_frame_pool_size": 128,
         "width": 328,
         "height": 328,
         "coordinate_space": "full_frame_pixels",
@@ -1074,6 +1074,12 @@ Crop output snapshot shape:
   }
 }
 ```
+
+`runtime.crop_frame_pool_size` records the effective crop-frame pool size used
+by the GUI process for that run. It is the default crop producer pool unless
+`ORANGE_CROP_FRAME_POOL_SIZE` is set by the launcher or operator; GUI external
+crop IPC validation currently auto-sizes this above the external crop encode
+queue depth.
 
 Suggested snapshot shape:
 

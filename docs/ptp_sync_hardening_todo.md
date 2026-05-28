@@ -268,11 +268,11 @@ Current read:
   if the host PTP stack is not ready. If Orange starts it, the stack is left
   running after the run and should be stopped explicitly with
   `scripts/ptp_stack.sh stop` when no more PTP validation is planned.
-- GUI `ptp_gate` currently does not do the same automatic repair. If the host
-  PTP stack is stopped, the GUI stream can remain at `0` streaming/YOLO FPS
-  while startup waits in PTP offset/gate setup before acquisition begins. Add a
-  GUI preflight/repair guard so this becomes an explicit operator-visible
-  failure or repair action.
+- GUI `ptp_gate` now has two operational repair paths: the manual
+  `Host PTP Stack` panel exposes status/start/stop/restart controls, and the
+  validation launcher/wrapper can run `--ptp-stack-mode off|require|auto`.
+  Autorun PTP-gated validation defaults to `auto`, so stopped
+  `ptp4l`/`phc2sys` are repaired before Orange opens cameras.
 - The original hardening items below are still relevant: deadline-based
   barriers, thread-safe shared state, robust reset after partial failure, and
   GUI/headless lifecycle symmetry are not solved by register-read decimation.

@@ -33,8 +33,16 @@ variable.
   session finalizes.
 - `ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1`: disable crop preview display before
   streaming starts while leaving crop recording enabled.
+- `ORANGE_GUI_AUTORUN_ENABLE_STREAM=1`: enable streaming for all opened cameras.
+- `ORANGE_GUI_AUTORUN_ENABLE_RECORD=1`: enable recording for all opened cameras.
+- `ORANGE_GUI_AUTORUN_ENABLE_YOLO=1`: enable YOLO for all opened cameras.
+- `ORANGE_GUI_AUTORUN_ENABLE_CROP=1`: enable crop recording for all opened cameras.
 
-The existing launcher should forward these through the `sudo env` boundary.
+When crop autorun is enabled, the GUI forces recording and YOLO on for the same
+cameras because crop recording depends on YOLO-selected detections.
+
+The existing launcher should forward these through the privileged launch
+boundary.
 
 Current launcher defaults:
 
@@ -43,6 +51,44 @@ Current launcher defaults:
 - `ORANGE_GUI_AUTORUN_RECORD_SECONDS=10`
 - `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`
 - `ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=0`
+- `ORANGE_GUI_AUTORUN_ENABLE_STREAM=1`
+- `ORANGE_GUI_AUTORUN_ENABLE_RECORD=1`
+- `ORANGE_GUI_AUTORUN_ENABLE_YOLO=1`
+- `ORANGE_GUI_AUTORUN_ENABLE_CROP=1`
+- `ORANGE_GUI_PTP_STACK_MODE=auto` when `ORANGE_GUI_AUTORUN=1` and
+  `ORANGE_GUI_EXPECT_SYNC_MODE=ptp_gate`; otherwise `off`
+- `ORANGE_CROP_FRAME_POOL_SIZE=2 * ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
+  when `ORANGE_CROP_RECORDING_SINK_MODE=external_ipc`, crop/YOLO autorun are
+  enabled, and the user has not set an explicit crop frame pool size. The value
+  is clamped to `[64,512]`; with the default external crop queue depth of `64`,
+  the launcher forwards `ORANGE_CROP_FRAME_POOL_SIZE=128`.
+
+The external crop IPC pool default matters because queued crop encode jobs hold
+small `256x256` device crop buffers until the external recorder has consumed
+them. The old pool default of `32` was enough for in-process crop encoding, but
+could drop crop outputs when all four cameras had detections and the external
+crop encode queue reached the 40-50 frame range.
+
+## Host PTP Stack Readiness
+
+Manual GUI runs should use the existing `Host PTP Stack` panel before opening
+or streaming PTP-gated cameras:
+
+1. Click `Refresh PTP status`.
+2. If `ptp4l`, `phc2sys`, or the socket are missing, click
+   `Start PTP stack`.
+3. Open cameras and start streaming after the status is healthy.
+
+Automated GUI validation cannot rely on that click. The privileged wrapper now
+supports `--ptp-stack-mode off|require|auto`, and the validation launcher maps
+`ORANGE_GUI_PTP_STACK_MODE` onto that wrapper option. For autorun PTP-gated
+validation, the launcher defaults to `auto`, so the wrapper runs
+`scripts/ptp_stack.sh status`, starts the host stack if needed, and rechecks
+before launching Orange.
+
+Use `ORANGE_GUI_PTP_STACK_MODE=require` to fail fast instead of repairing, or
+`off` to skip wrapper-side PTP checks when intentionally testing the GUI panel
+itself.
 
 ## Display Session Requirements
 
@@ -164,15 +210,21 @@ First-slice state sequence:
 ```text
 select_config
   -> open_cameras
+  -> apply stream/record/YOLO/crop camera selections
   -> start_streaming
   -> stream_warmup
   -> start_recording
   -> recording
   -> stop_recording
-  -> wait_finalize
   -> stop_streaming
   -> done
 ```
+
+For external IPC recording, autorun intentionally goes from `stop_recording` to
+`stop_streaming`. The stream shutdown path stops the worker graph, closes IPC
+clients, stops supervised recorders, and writes the final `recording_session.json`.
+Waiting for drain while streaming can hang because the external IPC workers are
+still alive by design.
 
 ## Validation
 
@@ -184,3 +236,41 @@ select_config
 - A live autorun recording must produce the same artifacts as a manual GUI run:
   `recording_session.json`, full-frame external IPC outputs, crop outputs when
   enabled, GUI timing telemetry, and validator pass/fail output.
+
+Latest hardware validation, 2026-05-28:
+
+- Command shape:
+
+  ```bash
+  DISPLAY=:1 \
+    XAUTHORITY=/run/user/1000/gdm/Xauthority \
+    XDG_RUNTIME_DIR=/run/user/1000 \
+    XDG_SESSION_TYPE=x11 \
+    ORANGE_GUI_AUTORUN=1 \
+    ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=2 \
+    ORANGE_GUI_AUTORUN_RECORD_SECONDS=10 \
+    ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1 \
+    ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1 \
+    ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
+    ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
+    ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
+    ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
+    ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
+    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
+    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
+    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
+    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
+    ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
+    ./scripts/run_gui_aq_off_validation.sh
+  ```
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`.
+- The launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128`.
+- Full validator passed with `0` warnings using the hidden-crop-preview command
+  printed by the launcher, with `--min-crop-frame-pool-size 128`.
+- All four cameras recorded `1016` full-frame external IPC frames and `1016`
+  crop frames/metadata rows; crop perf rows, keyframe sidecars, MP4 frame
+  counts, and YOLO rows all matched.
+- External crop recorders received/encoded `1016/1016` frames per camera with
+  `0` drops. Crop fanout matched detection rows, and
+  `producer_crop_frame_pool_misses_total = 0` for every camera.

@@ -171,6 +171,10 @@ struct GuiAutorunConfig {
     int record_seconds = 10;
     bool exit_after_finalize = false;
     bool hide_crop_preview = false;
+    bool enable_stream = true;
+    bool enable_record = true;
+    bool enable_yolo = true;
+    bool enable_crop = true;
     std::string config_dir;
 };
 
@@ -236,6 +240,22 @@ int gui_env_int(const char* name, const int default_value, const int min_value)
     return static_cast<int>(parsed);
 }
 
+int resolve_gui_crop_frame_pool_size()
+{
+    const char* raw = std::getenv("ORANGE_CROP_FRAME_POOL_SIZE");
+    if (!raw || !*raw) {
+        return CropProducer::kDefaultCropFramePoolSize;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(raw, &end, 10);
+    if (end == raw || *end != '\0' ||
+        parsed < CropProducer::kMinCropFramePoolSize ||
+        parsed > CropProducer::kMaxCropFramePoolSize) {
+        return CropProducer::kDefaultCropFramePoolSize;
+    }
+    return static_cast<int>(parsed);
+}
+
 GuiAutorunConfig resolve_gui_autorun_config()
 {
     GuiAutorunConfig config;
@@ -248,6 +268,14 @@ GuiAutorunConfig resolve_gui_autorun_config()
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE", false);
     config.hide_crop_preview =
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW", false);
+    config.enable_stream =
+        gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_STREAM", true);
+    config.enable_record =
+        gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_RECORD", true);
+    config.enable_yolo =
+        gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_YOLO", true);
+    config.enable_crop =
+        gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_CROP", true);
     const char* config_dir = std::getenv("ORANGE_GUI_CONFIG_DIR");
     if (config_dir && *config_dir) {
         config.config_dir = config_dir;
@@ -422,7 +450,7 @@ GuiAutorunRequests gui_autorun_update(
 
         case GuiAutorunStage::kRecording:
             if (!camera_control->record_video) {
-                gui_autorun_enter_stage(state, GuiAutorunStage::kWaitFinalize);
+                gui_autorun_enter_stage(state, GuiAutorunStage::kStopStreaming);
             } else if (gui_autorun_stage_elapsed_s(*state) >=
                        static_cast<double>(config.record_seconds)) {
                 gui_autorun_enter_stage(state, GuiAutorunStage::kStopRecording);
@@ -431,7 +459,7 @@ GuiAutorunRequests gui_autorun_update(
 
         case GuiAutorunStage::kStopRecording:
             if (!camera_control->record_video) {
-                gui_autorun_enter_stage(state, GuiAutorunStage::kWaitFinalize);
+                gui_autorun_enter_stage(state, GuiAutorunStage::kStopStreaming);
             } else if (!state->action_requested) {
                 requests.toggle_recording = true;
                 state->action_requested = true;
@@ -483,6 +511,32 @@ GuiAutorunRequests gui_autorun_update(
     }
 
     return requests;
+}
+
+void apply_gui_autorun_camera_selection(const GuiAutorunConfig& config,
+                                        CameraEachSelect* cameras_select,
+                                        const int num_cameras)
+{
+    if (!config.enabled || !cameras_select || num_cameras <= 0) {
+        return;
+    }
+    for (int i = 0; i < num_cameras; ++i) {
+        cameras_select[i].stream_on = config.enable_stream;
+        cameras_select[i].record = config.enable_record;
+        cameras_select[i].yolo = config.enable_yolo;
+        cameras_select[i].crop_and_encode = config.enable_crop;
+        if (cameras_select[i].crop_and_encode) {
+            cameras_select[i].record = true;
+            cameras_select[i].yolo = true;
+        }
+    }
+    std::cout << "[GUI][autorun] camera selection"
+              << " stream=" << (config.enable_stream ? 1 : 0)
+              << " record=" << (config.enable_record ? 1 : 0)
+              << " yolo=" << (config.enable_yolo ? 1 : 0)
+              << " crop=" << (config.enable_crop ? 1 : 0)
+              << " cameras=" << num_cameras
+              << std::endl;
 }
 
 ImVec2 fit_square_image_size(const ImVec2 available, const float fallback_size)
@@ -3873,7 +3927,7 @@ nlohmann::json build_gui_crop_output_snapshot(const CameraParams& camera_params,
             {"worker", "CropAndEncodeWorker"},
             {"source_gpu_id", camera_params.gpu_id},
             {"crop_size_px", resolved_crop_size},
-            {"crop_frame_pool_size", CropProducer::kDefaultCropFramePoolSize},
+            {"crop_frame_pool_size", resolve_gui_crop_frame_pool_size()},
             {"preview_max_fps", resolve_effective_crop_preview_max_fps(camera_params)},
             {"width", enabled ? resolved_crop_size : 0},
             {"height", enabled ? resolved_crop_size : 0},
@@ -4187,6 +4241,10 @@ int main(int argc, char **args) {
                   << " record_seconds=" << gui_autorun_config.record_seconds
                   << " exit_after_finalize=" << gui_autorun_config.exit_after_finalize
                   << " hide_crop_preview=" << gui_autorun_config.hide_crop_preview
+                  << " enable_stream=" << gui_autorun_config.enable_stream
+                  << " enable_record=" << gui_autorun_config.enable_record
+                  << " enable_yolo=" << gui_autorun_config.enable_yolo
+                  << " enable_crop=" << gui_autorun_config.enable_crop
                   << std::endl;
     }
     
@@ -5156,6 +5214,10 @@ int main(int argc, char **args) {
                                 crop_preview_config_status_warning = false;
                             }
                         }
+                        apply_gui_autorun_camera_selection(
+                            gui_autorun_config,
+                            cameras_select,
+                            num_cameras);
                         realtime_plot_data = new ScrollingBuffer[num_cameras];
 
                     }
@@ -5690,6 +5752,15 @@ int main(int argc, char **args) {
                                 resolved_recording_folder = start_result.recording_folder;
                                 resolved_recording_sink_mode = start_result.recording_sink_mode;
                                 if (start_result.ok) {
+                                    for (int i = 0; i < num_cameras; ++i) {
+                                        if (cropProducerWorkers[i]) {
+                                            cropProducerWorkers[i]->RotateRecordingFolder(
+                                                resolved_recording_folder);
+                                        }
+                                        if (cropPreviewWorkers[i]) {
+                                            cropPreviewWorkers[i]->ResetRunCounters();
+                                        }
+                                    }
                                     update_gui_detect_model_snapshots(
                                         resolved_recording_folder,
                                         cameras_params,
@@ -5713,16 +5784,9 @@ int main(int argc, char **args) {
                                         cameras_select,
                                         num_cameras);
                                     for (int i = 0; i < num_cameras; ++i) {
-                                        if (cropProducerWorkers[i]) {
-                                            cropProducerWorkers[i]->RotateRecordingFolder(
-                                                resolved_recording_folder);
-                                        }
                                         if (cropAndEncodeWorkers[i]) {
                                             cropAndEncodeWorkers[i]->RotateRecordingFolder(
                                                 resolved_recording_folder);
-                                        }
-                                        if (cropPreviewWorkers[i]) {
-                                            cropPreviewWorkers[i]->ResetRunCounters();
                                         }
                                         if (poseWorkers[i]) {
                                             poseWorkers[i]->RotateRecordingFolder(

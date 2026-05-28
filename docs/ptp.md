@@ -77,18 +77,24 @@ main UI now also exposes a `Host PTP Stack` section with:
 The UI calls `scripts/ptp_stack.sh` directly and shows captured stdout/stderr,
 plus a compact status summary for `ptp4l`, `phc2sys`, and socket presence.
 
-GUI validation note: the GUI `ptp_gate` streaming path currently does not
-auto-repair a stopped host PTP stack the way headless validation can. If
-`ptp4l`/`phc2sys` are stopped, starting a GUI PTP stream may leave
-`Streaming FPS` and `YOLO FPS` at `0` while startup waits in PTP offset/gate
-setup before acquisition begins. Before GUI PTP validation, run:
+GUI validation note: manual GUI use can start the host stack from the
+`Host PTP Stack` panel. For automated GUI validation, the privileged
+`orange-gui-validation` wrapper supports `--ptp-stack-mode off|require|auto`;
+`scripts/run_gui_aq_off_validation.sh` defaults to `auto` for
+`ORANGE_GUI_AUTORUN=1` with `ptp_gate` configs. That path checks
+`ptp4l`/`phc2sys` and `/var/run/ptp4l`, starts the stack if needed, and
+rechecks before launching Orange.
+
+If you are running the GUI manually or with `ORANGE_GUI_PTP_STACK_MODE=off`,
+check the stack first:
 
 ```bash
 sudo -n ./scripts/ptp_stack.sh status
 ```
 
-If the status shows missing `ptp4l`, `phc2sys`, or `/var/run/ptp4l`, start the
-stack and recheck:
+If the status shows missing `ptp4l`, `phc2sys`, or `/var/run/ptp4l`, either
+click `Start PTP stack` in the GUI panel or start the stack and recheck from
+the shell:
 
 ```bash
 sudo -n ./scripts/ptp_stack.sh start

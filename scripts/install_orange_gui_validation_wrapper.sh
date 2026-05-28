@@ -77,6 +77,7 @@ HELP_TEXT="$("$TARGET" --help)"
 for required in \
   "--orange-bin" \
   "--env KEY=VALUE" \
+  "--ptp-stack-mode" \
   "ORANGE_GUI_AUTORUN" \
   "/home/jeremy/orange-gop-split-a16/targets/release/orange"; do
   if [[ "$HELP_TEXT" != *"$required"* ]]; then

@@ -510,9 +510,20 @@ Current GUI implication:
   `151.3 Mbps`, and decoded video sanity passed.
 - YOLO steady detect p95 was `4.314 ms` for `2010095` and `4.227 ms` for
   `2010096`; YOLO queue p95 stayed `0.019/0.017 ms`.
+- Four-camera GUI autorun external IPC validation passed on 2026-05-28:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`.
+  This used `100_cam4_ptp_fourcam`, full-frame external IPC, external crop IPC,
+  crop preview hidden, per-camera external crop recorder GPUs
+  `2010093 -> 4`, `2010094 -> 2`, `2010095 -> 8`, `2010096 -> 6`, and the
+  launcher auto-sized `ORANGE_CROP_FRAME_POOL_SIZE=128`.
+- In that run all four full-frame MP4s were valid `4512x4512` videos with
+  `1016` frames, all crop streams wrote `1016` metadata/perf/keyframe/video
+  frames, crop fanout matched detection rows, and crop pool misses were `0`.
+  The full validator passed with `0` warnings.
 - Remaining GUI external-recorder gaps are user-visible recorder
-  heartbeat/failure reporting and a GUI-side PTP preflight/repair path. The
-  existing validation is command-line driven after the recording completes.
+  heartbeat/failure reporting. The PTP stack guard exists in the validation
+  launcher/wrapper path, but manual GUI operation still depends on the Host PTP
+  Stack panel or an operator shell command before streaming PTP-gated cameras.
 
 Earlier GUI external-recorder fail-fast artifact:
 
@@ -556,35 +567,44 @@ Current GUI validation tooling:
 Current decision:
 
 - the GUI is acceptable at its current capability level for now
-- validated GUI recording can start, stop, drain, and finalize without requiring
-  `Stop streaming` to complete the recording drain
+- validated GUI external IPC recording can start, stop recording, stop
+  streaming, drain workers, stop supervised recorders, and write the final
+  `recording_session.json` without manual clicks when autorun is enabled
 - GUI external IPC is now the validated low-latency process-isolated recording
-  path for the two-camera `100_cam4_ptp` setup
+  path for the two-camera `100_cam4_ptp` setup and the four-camera
+  `100_cam4_ptp_fourcam` setup with crop recording enabled
 - the remaining GUI detect-latency gap is specific to in-process recording
   contention, not PTP register polling or the GUI display lifecycle
 
 ### PTP Stack Operational Caveat
 
 The 2026-05-21 GUI external IPC retry initially showed `Streaming FPS = 0` and
-`YOLO FPS = 0` because the host PTP stack was stopped. In the current GUI path,
-`ptp_gate` startup can wait in the PTP offset/gate setup before
-`AcquisitionStart`, so the stream appears idle rather than failing fast. Before
-GUI PTP validation, check:
+`YOLO FPS = 0` because the host PTP stack was stopped. Manual GUI runs should
+use the `Host PTP Stack` panel to refresh status and click `Start PTP stack`
+before opening or streaming PTP-gated cameras. Automated GUI validation uses
+the privileged wrapper's `--ptp-stack-mode` path; for
+`ORANGE_GUI_AUTORUN=1` with `ptp_gate` configs,
+`scripts/run_gui_aq_off_validation.sh` defaults
+`ORANGE_GUI_PTP_STACK_MODE=auto`, starts the stack if needed, and rechecks it
+before launching Orange.
+
+For manual shell checks, run:
 
 ```bash
 sudo -n ./scripts/ptp_stack.sh status
 ```
 
-If `ptp4l`/`phc2sys` or `/var/run/ptp4l` are missing, start them:
+If `ptp4l`/`phc2sys` or `/var/run/ptp4l` are missing, click `Start PTP stack`
+in the GUI panel or start them from the shell:
 
 ```bash
 sudo -n ./scripts/ptp_stack.sh start
 sudo -n ./scripts/ptp_stack.sh status
 ```
 
-Headless PTP runs may repair this automatically. The GUI path still needs a
-preflight/repair guard so operators do not have to infer the issue from zero
-streaming FPS.
+Headless PTP runs may also repair this automatically. Keep the PTP stack
+running while doing repeated GUI validation, then stop it explicitly when no
+more PTP-gated runs are planned.
 
 ## Known Caveats
 

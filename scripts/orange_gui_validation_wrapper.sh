@@ -8,6 +8,7 @@ EXPERIMENT_ORANGE_BIN="$EXPERIMENT_ORANGE_ROOT/targets/release/orange"
 ORANGE_BIN="$EXPERIMENT_ORANGE_BIN"
 EVT_PROFILE="/etc/profile.d/evt.sh"
 DRY_RUN=0
+PTP_STACK_MODE="off"
 ENV_ITEMS=()
 
 usage() {
@@ -20,6 +21,7 @@ Runs the Orange GUI as root for local display/camera validation.
 Options:
   --orange-bin <path>       Use an allowed Orange GUI binary.
   --env KEY=VALUE           Export one whitelisted runtime environment value.
+  --ptp-stack-mode <mode>   Host PTP preflight: off, require, or auto.
   --dry-run                 Validate arguments and print the command/env only.
   --help
 
@@ -31,6 +33,11 @@ Allowed env values are intentionally limited to the GUI validation launcher
 contract: display/session variables, GUI autorun controls such as
 ORANGE_GUI_AUTORUN, recording sink controls, crop-recorder controls, YOLO/PTP
 diagnostics, and known path roots.
+
+PTP stack modes:
+  off      Do not check the host linuxptp stack.
+  require  Require ptp4l, phc2sys, and /var/run/ptp4l before launch.
+  auto     Start the host PTP stack when the preflight is not healthy.
 EOF
 }
 
@@ -60,6 +67,93 @@ validate_existing_path_under_allowed_roots() {
         ;;
     esac
   done
+  return 1
+}
+
+resolve_ptp_stack_script_path() {
+  local candidate
+  case "$ORANGE_BIN" in
+    "$DEFAULT_ORANGE_BIN")
+      candidate="$DEFAULT_ORANGE_ROOT/scripts/ptp_stack.sh"
+      ;;
+    "$EXPERIMENT_ORANGE_BIN")
+      candidate="$EXPERIMENT_ORANGE_ROOT/scripts/ptp_stack.sh"
+      ;;
+    *)
+      candidate="$EXPERIMENT_ORANGE_ROOT/scripts/ptp_stack.sh"
+      ;;
+  esac
+
+  if [[ -x "$candidate" ]]; then
+    printf '%s\n' "$candidate"
+    return 0
+  fi
+  if [[ -x "$EXPERIMENT_ORANGE_ROOT/scripts/ptp_stack.sh" ]]; then
+    printf '%s\n' "$EXPERIMENT_ORANGE_ROOT/scripts/ptp_stack.sh"
+    return 0
+  fi
+  if [[ -x "$DEFAULT_ORANGE_ROOT/scripts/ptp_stack.sh" ]]; then
+    printf '%s\n' "$DEFAULT_ORANGE_ROOT/scripts/ptp_stack.sh"
+    return 0
+  fi
+  return 1
+}
+
+ptp_status_healthy_from_output() {
+  local output="$1"
+  [[ "$output" != *"(no ptp4l/phc2sys process)"* ]] || return 1
+  [[ "$output" == *"ptp4l"* ]] || return 1
+  [[ "$output" == *"phc2sys"* ]] || return 1
+  [[ "$output" != *"(socket "*" not found)"* ]] || return 1
+  [[ "$output" == *"sending: GET TIME_STATUS_NP"* ]] || return 1
+}
+
+ensure_ptp_stack_for_gui() {
+  case "$PTP_STACK_MODE" in
+    off)
+      return 0
+      ;;
+    require|auto)
+      ;;
+    *)
+      echo "Invalid PTP stack mode: $PTP_STACK_MODE" >&2
+      return 2
+      ;;
+  esac
+
+  local ptp_script
+  ptp_script="$(resolve_ptp_stack_script_path)" || {
+    echo "Could not find executable scripts/ptp_stack.sh for PTP preflight." >&2
+    return 1
+  }
+
+  local status_before
+  status_before="$("$ptp_script" status 2>&1)"
+  if ptp_status_healthy_from_output "$status_before"; then
+    echo "[sudo-wrapper] host PTP stack healthy"
+    return 0
+  fi
+
+  if [[ "$PTP_STACK_MODE" == "require" ]]; then
+    echo "[sudo-wrapper] host PTP stack is not healthy and --ptp-stack-mode=require was used" >&2
+    printf '%s\n' "$status_before" >&2
+    return 1
+  fi
+
+  echo "[sudo-wrapper] host PTP stack is not healthy; starting it"
+  printf '%s\n' "$status_before"
+  "$ptp_script" start
+
+  local status_after
+  status_after="$("$ptp_script" status 2>&1)"
+  if ptp_status_healthy_from_output "$status_after"; then
+    echo "[sudo-wrapper] host PTP stack healthy after start"
+    printf '%s\n' "$status_after"
+    return 0
+  fi
+
+  echo "[sudo-wrapper] host PTP stack is still not healthy after start" >&2
+  printf '%s\n' "$status_after" >&2
   return 1
 }
 
@@ -140,7 +234,7 @@ validate_env_item() {
         return 2
       }
       ;;
-    ORANGE_YOLO_PERF_LOG|ORANGE_CROP_COPY_TIMING|ORANGE_CROP_STAGE_SOURCE|ORANGE_ANALYTICS_EARLY_OWNED_FRAME|ORANGE_YOLO_DETACH_INPUT|ORANGE_YOLO_READY_EVENT_FASTPATH|ORANGE_GUI_SHOW_SPEED_GRAPHS|ORANGE_GUI_AUTORUN|ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE|ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW|ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU|ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT|ORANGE_CROP_PREVIEW_DISABLE)
+    ORANGE_YOLO_PERF_LOG|ORANGE_CROP_COPY_TIMING|ORANGE_CROP_STAGE_SOURCE|ORANGE_ANALYTICS_EARLY_OWNED_FRAME|ORANGE_YOLO_DETACH_INPUT|ORANGE_YOLO_READY_EVENT_FASTPATH|ORANGE_GUI_SHOW_SPEED_GRAPHS|ORANGE_GUI_AUTORUN|ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE|ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW|ORANGE_GUI_AUTORUN_ENABLE_STREAM|ORANGE_GUI_AUTORUN_ENABLE_RECORD|ORANGE_GUI_AUTORUN_ENABLE_YOLO|ORANGE_GUI_AUTORUN_ENABLE_CROP|ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU|ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT|ORANGE_CROP_PREVIEW_DISABLE)
       is_bool "$value" || {
         echo "$key must be 0 or 1" >&2
         return 2
@@ -200,6 +294,20 @@ while [[ $# -gt 0 ]]; do
       validate_env_item "$1"
       shift
       ;;
+    --ptp-stack-mode)
+      shift
+      [[ $# -gt 0 ]] || { echo "--ptp-stack-mode requires a value." >&2; exit 2; }
+      PTP_STACK_MODE="$1"
+      case "$PTP_STACK_MODE" in
+        off|require|auto)
+          ;;
+        *)
+          echo "--ptp-stack-mode must be off, require, or auto" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
     --dry-run)
       DRY_RUN=1
       shift
@@ -236,6 +344,7 @@ done
 
 echo "[sudo-wrapper] running Orange GUI validation"
 echo "[sudo-wrapper] orange_bin=$ORANGE_BIN"
+echo "[sudo-wrapper] ptp_stack_mode=$PTP_STACK_MODE"
 for item in "${ENV_ITEMS[@]}"; do
   echo "[sudo-wrapper] env $item"
 done
@@ -243,5 +352,7 @@ done
 if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
+
+ensure_ptp_stack_for_gui
 
 exec "$ORANGE_BIN"

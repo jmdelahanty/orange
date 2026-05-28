@@ -18,6 +18,17 @@ GUI_AUTORUN_STREAM_WARMUP_SECONDS="${ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS:-3
 GUI_AUTORUN_RECORD_SECONDS="${ORANGE_GUI_AUTORUN_RECORD_SECONDS:-10}"
 GUI_AUTORUN_EXIT_AFTER_FINALIZE="${ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE:-0}"
 GUI_AUTORUN_HIDE_CROP_PREVIEW="${ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW:-0}"
+GUI_AUTORUN_ENABLE_STREAM="${ORANGE_GUI_AUTORUN_ENABLE_STREAM:-1}"
+GUI_AUTORUN_ENABLE_RECORD="${ORANGE_GUI_AUTORUN_ENABLE_RECORD:-1}"
+GUI_AUTORUN_ENABLE_YOLO="${ORANGE_GUI_AUTORUN_ENABLE_YOLO:-1}"
+GUI_AUTORUN_ENABLE_CROP="${ORANGE_GUI_AUTORUN_ENABLE_CROP:-1}"
+if [[ -n "${ORANGE_GUI_PTP_STACK_MODE:-}" ]]; then
+  GUI_PTP_STACK_MODE="${ORANGE_GUI_PTP_STACK_MODE}"
+elif [[ "${EXPECT_SYNC_MODE}" == "ptp_gate" && "${GUI_AUTORUN}" == "1" ]]; then
+  GUI_PTP_STACK_MODE="auto"
+else
+  GUI_PTP_STACK_MODE="off"
+fi
 DISPLAY_ENV="${DISPLAY:-}"
 XAUTHORITY_ENV="${XAUTHORITY:-${HOME}/.Xauthority}"
 WAYLAND_DISPLAY_ENV="${WAYLAND_DISPLAY:-}"
@@ -31,6 +42,7 @@ CROP_EXTERNAL_ENCODE_QUEUE_DEPTH="${ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH:-64}
 CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER="${ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-}"
 CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS="${ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-}"
 CROP_EXTERNAL_REQUIRE_SEPARATE_GPU="${ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU:-0}"
+CROP_FRAME_POOL_SIZE="${ORANGE_CROP_FRAME_POOL_SIZE:-}"
 DEFAULT_DETECT_ENGINE="/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_a16_gpu5_trt100_fp16_bo5_avg32.engine"
 DETECT_ENGINE="${ORANGE_GUI_DETECT_ENGINE:-${DEFAULT_DETECT_ENGINE}}"
 APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/default.json}"
@@ -47,6 +59,41 @@ case "${GUI_USE_PRIVILEGE_WRAPPER}" in
     exit 2
     ;;
 esac
+case "${GUI_PTP_STACK_MODE}" in
+  off|require|auto)
+    ;;
+  *)
+    echo "ORANGE_GUI_PTP_STACK_MODE must be off, require, or auto" >&2
+    exit 2
+    ;;
+esac
+if [[ -n "${CROP_FRAME_POOL_SIZE}" ]]; then
+  if ! is_nonnegative_integer "${CROP_FRAME_POOL_SIZE}" ||
+      (( CROP_FRAME_POOL_SIZE < 1 || CROP_FRAME_POOL_SIZE > 512 )); then
+    echo "ORANGE_CROP_FRAME_POOL_SIZE must be an integer in [1,512]" >&2
+    exit 2
+  fi
+fi
+
+CROP_FRAME_POOL_SIZE_DISPLAY="${CROP_FRAME_POOL_SIZE:-<orange default>}"
+CROP_FRAME_POOL_VALIDATION_MIN=32
+if [[ -z "${CROP_FRAME_POOL_SIZE}" &&
+      "${CROP_RECORDING_SINK_MODE}" == "external_ipc" &&
+      "${GUI_AUTORUN_ENABLE_CROP}" == "1" &&
+      "${GUI_AUTORUN_ENABLE_YOLO}" == "1" ]] &&
+      is_nonnegative_integer "${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}" &&
+      (( CROP_EXTERNAL_ENCODE_QUEUE_DEPTH > 0 )); then
+  CROP_FRAME_POOL_SIZE=$((CROP_EXTERNAL_ENCODE_QUEUE_DEPTH * 2))
+  if (( CROP_FRAME_POOL_SIZE < 64 )); then
+    CROP_FRAME_POOL_SIZE=64
+  elif (( CROP_FRAME_POOL_SIZE > 512 )); then
+    CROP_FRAME_POOL_SIZE=512
+  fi
+  CROP_FRAME_POOL_SIZE_DISPLAY="${CROP_FRAME_POOL_SIZE} (auto for external_ipc)"
+fi
+if [[ -n "${CROP_FRAME_POOL_SIZE}" ]]; then
+  CROP_FRAME_POOL_VALIDATION_MIN="${CROP_FRAME_POOL_SIZE}"
+fi
 
 EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS="--expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
 PER_CAMERA_GPU_DISPLAY_ITEMS=()
@@ -113,7 +160,11 @@ python3 - \
   "${GUI_AUTORUN_STREAM_WARMUP_SECONDS}" \
   "${GUI_AUTORUN_RECORD_SECONDS}" \
   "${GUI_AUTORUN_EXIT_AFTER_FINALIZE}" \
-  "${GUI_AUTORUN_HIDE_CROP_PREVIEW}" <<'PY'
+  "${GUI_AUTORUN_HIDE_CROP_PREVIEW}" \
+  "${GUI_AUTORUN_ENABLE_STREAM}" \
+  "${GUI_AUTORUN_ENABLE_RECORD}" \
+  "${GUI_AUTORUN_ENABLE_YOLO}" \
+  "${GUI_AUTORUN_ENABLE_CROP}" <<'PY'
 import json
 import os
 import sys
@@ -136,6 +187,10 @@ gui_autorun_stream_warmup_seconds_raw = sys.argv[14]
 gui_autorun_record_seconds_raw = sys.argv[15]
 gui_autorun_exit_after_finalize_raw = sys.argv[16]
 gui_autorun_hide_crop_preview_raw = sys.argv[17]
+gui_autorun_enable_stream_raw = sys.argv[18]
+gui_autorun_enable_record_raw = sys.argv[19]
+gui_autorun_enable_yolo_raw = sys.argv[20]
+gui_autorun_enable_crop_raw = sys.argv[21]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -218,6 +273,14 @@ if gui_autorun_exit_after_finalize_raw not in {"0", "1"}:
     errors.append("ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE must be 0 or 1")
 if gui_autorun_hide_crop_preview_raw not in {"0", "1"}:
     errors.append("ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW must be 0 or 1")
+if gui_autorun_enable_stream_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_ENABLE_STREAM must be 0 or 1")
+if gui_autorun_enable_record_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_ENABLE_RECORD must be 0 or 1")
+if gui_autorun_enable_yolo_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_ENABLE_YOLO must be 0 or 1")
+if gui_autorun_enable_crop_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_ENABLE_CROP must be 0 or 1")
 try:
     gui_autorun_stream_warmup_seconds = int(gui_autorun_stream_warmup_seconds_raw)
     if gui_autorun_stream_warmup_seconds < 0:
@@ -370,9 +433,14 @@ Validation environment:
   ORANGE_GUI_AUTORUN_RECORD_SECONDS=${GUI_AUTORUN_RECORD_SECONDS}
   ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=${GUI_AUTORUN_EXIT_AFTER_FINALIZE}
   ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=${GUI_AUTORUN_HIDE_CROP_PREVIEW}
+  ORANGE_GUI_AUTORUN_ENABLE_STREAM=${GUI_AUTORUN_ENABLE_STREAM}
+  ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}
+  ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}
+  ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}
+  ORANGE_GUI_PTP_STACK_MODE=${GUI_PTP_STACK_MODE}
   ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS:-<camera config/default>}
   ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE:-0}
-  ORANGE_CROP_FRAME_POOL_SIZE=${ORANGE_CROP_FRAME_POOL_SIZE:-<orange default>}
+  ORANGE_CROP_FRAME_POOL_SIZE=${CROP_FRAME_POOL_SIZE_DISPLAY}
   ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}
   ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}
   ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID:-<camera GPU/default>}
@@ -400,11 +468,11 @@ For a compact artifact health, crop fanout, and GUI timing summary, use:
   scripts/summarize_gui_validation.py --latest-complete
 
 For crop-recording plus crop-preview validation, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size 32 ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
 For a run where crop preview windows were hidden at finalization, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size 32 ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
 For a run with ORANGE_CROP_PREVIEW_DISABLE=1, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size 32 ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
 Then compare visible and hidden runs with:
   scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json ${COMPARE_VALIDATION_FLAGS}
 EOF
@@ -441,6 +509,18 @@ ENV_ARGS=(
   "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
   "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}"
 )
+if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_STREAM:-}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_STREAM=${GUI_AUTORUN_ENABLE_STREAM}")
+fi
+if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_RECORD:-}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}")
+fi
+if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_YOLO:-}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}")
+fi
+if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_CROP:-}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}")
+fi
 if [[ -n "${WAYLAND_DISPLAY_ENV}" ]]; then
   ENV_ARGS+=("WAYLAND_DISPLAY=${WAYLAND_DISPLAY_ENV}")
 fi
@@ -465,8 +545,8 @@ fi
 if [[ -n "${ORANGE_CROP_PREVIEW_DISABLE:-}" ]]; then
   ENV_ARGS+=("ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE}")
 fi
-if [[ -n "${ORANGE_CROP_FRAME_POOL_SIZE:-}" ]]; then
-  ENV_ARGS+=("ORANGE_CROP_FRAME_POOL_SIZE=${ORANGE_CROP_FRAME_POOL_SIZE}")
+if [[ -n "${CROP_FRAME_POOL_SIZE}" ]]; then
+  ENV_ARGS+=("ORANGE_CROP_FRAME_POOL_SIZE=${CROP_FRAME_POOL_SIZE}")
 fi
 if [[ -n "${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID:-}" ]]; then
   ENV_ARGS+=("ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=${ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID}")
@@ -510,11 +590,73 @@ if [[ "${GUI_USE_PRIVILEGE_WRAPPER}" == "1" || ( "${GUI_USE_PRIVILEGE_WRAPPER}" 
     echo "Install it with: scripts/install_orange_gui_validation_wrapper.sh --install-sudoers" >&2
     exit 1
   fi
+  WRAPPER_SUPPORTS_PTP_STACK=0
+  if "${GUI_PRIVILEGE_WRAPPER}" --help | grep -q -- "--ptp-stack-mode"; then
+    WRAPPER_SUPPORTS_PTP_STACK=1
+  fi
+  if [[ "${GUI_PTP_STACK_MODE}" != "off" && "${WRAPPER_SUPPORTS_PTP_STACK}" != "1" ]]; then
+    cat >&2 <<EOF
+Installed GUI privilege wrapper does not support --ptp-stack-mode.
+
+Reinstall it before running autorun PTP validation:
+
+  sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
+EOF
+    exit 1
+  fi
   WRAPPER_ARGS=("--orange-bin" "${ORANGE_BIN}")
+  if [[ "${WRAPPER_SUPPORTS_PTP_STACK}" == "1" ]]; then
+    WRAPPER_ARGS+=("--ptp-stack-mode" "${GUI_PTP_STACK_MODE}")
+  fi
   for env_arg in "${ENV_ARGS[@]}"; do
     WRAPPER_ARGS+=("--env" "${env_arg}")
   done
   exec sudo -n "${GUI_PRIVILEGE_WRAPPER}" "${WRAPPER_ARGS[@]}"
+fi
+
+if [[ "${GUI_PTP_STACK_MODE}" != "off" ]]; then
+  PTP_STACK_SCRIPT="${REPO_ROOT}/scripts/ptp_stack.sh"
+  if [[ ! -x "${PTP_STACK_SCRIPT}" ]]; then
+    echo "PTP stack script is missing or not executable: ${PTP_STACK_SCRIPT}" >&2
+    exit 1
+  fi
+  PTP_STATUS="$(sudo -n "${PTP_STACK_SCRIPT}" status 2>&1)" || {
+    echo "Failed to query host PTP stack with sudo -n." >&2
+    printf '%s\n' "${PTP_STATUS}" >&2
+    echo "Install/use the GUI privilege wrapper or start PTP manually from an interactive shell." >&2
+    exit 1
+  }
+  PTP_HEALTHY=0
+  if [[ "${PTP_STATUS}" != *"(no ptp4l/phc2sys process)"* &&
+        "${PTP_STATUS}" == *"ptp4l"* &&
+        "${PTP_STATUS}" == *"phc2sys"* &&
+        "${PTP_STATUS}" != *"(socket "*" not found)"* &&
+        "${PTP_STATUS}" == *"sending: GET TIME_STATUS_NP"* ]]; then
+    PTP_HEALTHY=1
+  fi
+  if [[ "${PTP_HEALTHY}" != "1" && "${GUI_PTP_STACK_MODE}" == "require" ]]; then
+    echo "Host PTP stack is not healthy and ORANGE_GUI_PTP_STACK_MODE=require was used." >&2
+    printf '%s\n' "${PTP_STATUS}" >&2
+    exit 1
+  fi
+  if [[ "${PTP_HEALTHY}" != "1" ]]; then
+    printf '%s\n' "${PTP_STATUS}"
+    sudo -n "${PTP_STACK_SCRIPT}" start
+    PTP_STATUS_AFTER="$(sudo -n "${PTP_STACK_SCRIPT}" status 2>&1)" || {
+      echo "Failed to recheck host PTP stack with sudo -n after start." >&2
+      printf '%s\n' "${PTP_STATUS_AFTER}" >&2
+      exit 1
+    }
+    if [[ "${PTP_STATUS_AFTER}" == *"(no ptp4l/phc2sys process)"* ||
+          "${PTP_STATUS_AFTER}" != *"ptp4l"* ||
+          "${PTP_STATUS_AFTER}" != *"phc2sys"* ||
+          "${PTP_STATUS_AFTER}" == *"(socket "*" not found)"* ||
+          "${PTP_STATUS_AFTER}" != *"sending: GET TIME_STATUS_NP"* ]]; then
+      echo "Host PTP stack is still not healthy after start." >&2
+      printf '%s\n' "${PTP_STATUS_AFTER}" >&2
+      exit 1
+    fi
+  fi
 fi
 
 exec sudo env "${ENV_ARGS[@]}" "${ORANGE_BIN}"
