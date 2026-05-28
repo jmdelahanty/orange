@@ -5436,6 +5436,7 @@ int main(int argc, char **args) {
                     cameras_params,
                     cameras_select,
                     num_cameras,
+                    &app_storage_config,
                     &recording_config_defaults_status,
                     recording_config_defaults_status_warning,
                     &recording_preflight_errors);

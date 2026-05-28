@@ -102,10 +102,10 @@ it with `clip_seconds = 0`. GUI full-frame external-recorder finalization now
 mirrors external `rolling_output.clips[]` summaries into the GUI
 `recording_session.json`, per-clip `clip_manifest.json`, session
 `recording_clip_index.json/csv`, and `recording_snapshot.json` session
-pointers. GUI full-frame app/env recording-control plumbing now exists for
-external IPC. The remaining GUI full-frame work is in-GUI operator controls and
-live validation/soak coverage; the normal GUI validator now supports
-full-frame rolling manifest discovery and per-clip continuity checks.
+pointers. GUI full-frame app/env recording-control plumbing and in-memory
+Recording panel controls now exist for external IPC. The remaining GUI
+full-frame work is live validation/soak coverage; the normal GUI validator now
+supports full-frame rolling manifest discovery and per-clip continuity checks.
 
 ## Implementation Plan
 
@@ -203,9 +203,12 @@ Refs:
 
 ## Phase 6: UX and Controls
 
-- [ ] Add UI controls:
-  - enable/disable auto rollover
-  - segment duration minutes
+- [x] Add first GUI controls for full-frame external IPC rolling:
+  - enable/disable full-frame rolling
+  - record duration seconds
+  - clip seconds
+- [ ] Add broader UI controls:
+  - segment duration minutes with production defaults
   - align-to-wall-clock
   - “rollover now” debug button.
 - [ ] Show runtime status:

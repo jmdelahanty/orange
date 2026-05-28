@@ -39,8 +39,8 @@ Current implementation rule:
   `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`,
   and `rollover.rolling_supported = false` so downstream readers do not infer
   cropped clip rollover from the full-frame external recorder support.
-- In-GUI rolling controls and live UI affordances remain future work. App
-  config `recording.recording_control` and
+- In-GUI full-frame external IPC rolling controls now edit the loaded in-memory
+  app config before streaming starts. App config `recording.recording_control` and
   `ORANGE_GUI_RECORD_FOR_SECONDS` / `ORANGE_GUI_CLIP_SECONDS` can now supply
   that control for full-frame GUI external IPC runs.
 

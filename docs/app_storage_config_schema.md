@@ -230,6 +230,10 @@ and finalization mirrors recorder `rolling_output.clips[]` into
 `recording_session.json`, `recording_clip_index.json/csv`, and
 `recording_snapshot.json` pointers.
 
+The GUI Recording panel exposes in-memory controls for these same values when
+the effective full-frame sink mode is `external_ipc`. The controls are locked
+while streaming is active and do not rewrite the JSON file.
+
 Environment precedence:
 
 - `ORANGE_GUI_RECORD_FOR_SECONDS` overrides

@@ -7,7 +7,11 @@
 #include "recording_validation.h"
 
 #include <iomanip>
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <sstream>
+#include <limits>
 
 namespace {
 
@@ -137,6 +141,144 @@ void set_single_helper_gpu_id(CameraParams* camera_params, const int helper_gpu_
         camera_params->recording.strategy.split_gop.encoder_gpu_ids.size() > 1
             ? "multi_gpu"
             : "single_gpu";
+}
+
+std::string normalized_ascii(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return value;
+}
+
+const char* nonempty_env(const char* name)
+{
+    const char* raw = std::getenv(name);
+    return raw && *raw ? raw : nullptr;
+}
+
+bool parse_nonnegative_int_text(const char* raw, int* value_out)
+{
+    if (!raw || !*raw) {
+        return false;
+    }
+    char* end = nullptr;
+    const long value = std::strtol(raw, &end, 10);
+    while (end && *end && std::isspace(static_cast<unsigned char>(*end)) != 0) {
+        ++end;
+    }
+    if (end == raw || (end && *end) || value < 0 ||
+        value > std::numeric_limits<int>::max()) {
+        return false;
+    }
+    if (value_out) {
+        *value_out = static_cast<int>(value);
+    }
+    return true;
+}
+
+std::string effective_gui_recording_sink_mode(const AppStorageConfig* app_storage_config)
+{
+    if (const char* env = nonempty_env("ORANGE_GUI_RECORDING_SINK_MODE")) {
+        return normalized_ascii(env);
+    }
+    if (app_storage_config && !app_storage_config->gui_recording_sink_mode.empty()) {
+        return normalized_ascii(app_storage_config->gui_recording_sink_mode);
+    }
+    return "real";
+}
+
+int effective_recording_control_value(const AppStorageConfig* app_storage_config,
+                                      const char* env_name,
+                                      const int AppStorageConfig::*field)
+{
+    int env_value = 0;
+    if (parse_nonnegative_int_text(nonempty_env(env_name), &env_value)) {
+        return env_value;
+    }
+    return app_storage_config ? std::max(0, app_storage_config->*field) : 0;
+}
+
+void render_gui_external_rolling_controls(AppStorageConfig* app_storage_config,
+                                          const bool streaming_active)
+{
+    ImGui::SeparatorText("External IPC Rolling");
+
+    if (!app_storage_config) {
+        ImGui::TextDisabled("App recording config is unavailable.");
+        return;
+    }
+
+    const std::string sink_mode = effective_gui_recording_sink_mode(app_storage_config);
+    const bool external_ipc = sink_mode == "external_ipc";
+    const bool record_for_env = nonempty_env("ORANGE_GUI_RECORD_FOR_SECONDS") != nullptr;
+    const bool clip_env = nonempty_env("ORANGE_GUI_CLIP_SECONDS") != nullptr;
+    int record_for_seconds = effective_recording_control_value(
+        app_storage_config,
+        "ORANGE_GUI_RECORD_FOR_SECONDS",
+        &AppStorageConfig::gui_recording_record_for_seconds);
+    int clip_seconds = effective_recording_control_value(
+        app_storage_config,
+        "ORANGE_GUI_CLIP_SECONDS",
+        &AppStorageConfig::gui_recording_clip_seconds);
+    bool rolling_enabled = clip_seconds > 0;
+
+    ImGui::BeginDisabled(streaming_active || !external_ipc || clip_env);
+    if (ImGui::Checkbox("Enable full-frame rolling clips", &rolling_enabled)) {
+        if (rolling_enabled) {
+            if (app_storage_config->gui_recording_clip_seconds <= 0) {
+                app_storage_config->gui_recording_clip_seconds = 1800;
+            }
+            if (!record_for_env && app_storage_config->gui_recording_record_for_seconds <= 0) {
+                app_storage_config->gui_recording_record_for_seconds =
+                    std::max(3600, app_storage_config->gui_recording_clip_seconds);
+            }
+        } else {
+            if (!record_for_env) {
+                app_storage_config->gui_recording_record_for_seconds = 0;
+            }
+            app_storage_config->gui_recording_clip_seconds = 0;
+        }
+        record_for_seconds = effective_recording_control_value(
+            app_storage_config,
+            "ORANGE_GUI_RECORD_FOR_SECONDS",
+            &AppStorageConfig::gui_recording_record_for_seconds);
+        clip_seconds = effective_recording_control_value(
+            app_storage_config,
+            "ORANGE_GUI_CLIP_SECONDS",
+            &AppStorageConfig::gui_recording_clip_seconds);
+    }
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(streaming_active || !external_ipc || !rolling_enabled || record_for_env);
+    if (ImGui::InputInt("record duration seconds", &record_for_seconds)) {
+        app_storage_config->gui_recording_record_for_seconds = std::max(1, record_for_seconds);
+        record_for_seconds = app_storage_config->gui_recording_record_for_seconds;
+    }
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(streaming_active || !external_ipc || !rolling_enabled || clip_env);
+    if (ImGui::InputInt("clip seconds", &clip_seconds)) {
+        app_storage_config->gui_recording_clip_seconds = std::max(1, clip_seconds);
+        clip_seconds = app_storage_config->gui_recording_clip_seconds;
+    }
+    ImGui::EndDisabled();
+
+    if (!external_ipc) {
+        ImGui::TextDisabled("Full-frame rolling uses GUI recording sink mode external_ipc.");
+    } else if (record_for_env || clip_env) {
+        ImGui::TextDisabled("ORANGE_GUI_RECORD_FOR_SECONDS / ORANGE_GUI_CLIP_SECONDS override these fields.");
+    } else if (streaming_active) {
+        ImGui::TextDisabled("Rolling settings are locked while streaming is active.");
+    }
+
+    if (rolling_enabled) {
+        ImGui::TextDisabled(
+            "Effective full-frame clips: %d seconds per clip for %d recording seconds.",
+            clip_seconds,
+            record_for_seconds);
+    } else {
+        ImGui::TextDisabled("Effective full-frame clips: single clip.");
+    }
 }
 
 void render_advanced_recording_controls(CameraParams* cameras_params,
@@ -445,6 +587,7 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
                                                     CameraParams* cameras_params,
                                                     CameraEachSelect* cameras_select,
                                                     const int num_cameras,
+                                                    AppStorageConfig* app_storage_config,
                                                     const std::string* config_defaults_status,
                                                     const bool config_defaults_status_warning,
                                                     const std::vector<std::string>* preflight_errors)
@@ -602,6 +745,8 @@ RecordingPanelActions render_recording_config_panel(std::string* input_folder,
             encoder_config->record_output_width,
             encoder_config->record_output_height
         ).c_str());
+
+    render_gui_external_rolling_controls(app_storage_config, streaming_active);
 
     if (camera_open && cameras_params != nullptr && cameras_select != nullptr && num_cameras > 0) {
         ImGui::SeparatorText("Estimated Recording Bitrate");
