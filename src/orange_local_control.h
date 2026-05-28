@@ -26,6 +26,23 @@ struct RecorderReadinessSnapshot {
     int socket_ready_count = 0;
 };
 
+struct CitrusCompletionStopSnapshot {
+    bool enabled = false;
+    bool scheduled = false;
+    bool stop_triggered = false;
+    double grace_seconds = 0.0;
+    double seconds_until_deadline = 0.0;
+    std::string request_id;
+    std::string operation_id;
+    std::string source;
+    std::string experiment_id;
+    std::string terminal_state;
+    std::string reason;
+    std::string received_at_utc;
+    std::string last_event;
+    std::string last_event_at_utc;
+};
+
 struct LocalControlStatusSnapshot {
     std::string process = "orange_gui";
     std::string updated_at_utc;
@@ -45,6 +62,7 @@ struct LocalControlStatusSnapshot {
     std::vector<std::string> crop_selected_camera_serials;
     RecorderReadinessSnapshot full_frame_recorder;
     RecorderReadinessSnapshot crop_recorder;
+    CitrusCompletionStopSnapshot citrus_completion_stop;
 };
 
 struct LocalControlServerOptions {
@@ -52,6 +70,7 @@ struct LocalControlServerOptions {
     std::string event_log_path;
     int socket_mode = 0666;
     std::size_t max_request_bytes = 64 * 1024;
+    bool allow_gui_lifecycle_commands = false;
 };
 
 struct ParsedLocalControlRequest {
@@ -110,6 +129,7 @@ private:
     LocalControlStatusSnapshot status_;
     mutable std::mutex state_mutex_;
     std::unordered_set<std::string> accepted_request_ids_;
+    std::unordered_set<std::string> accepted_operation_keys_;
     std::vector<PendingLocalControlCommand> pending_commands_;
     std::string last_error_;
     std::thread thread_;

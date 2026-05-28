@@ -129,7 +129,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--grace-seconds",
         type=nonnegative_float,
         default=10.0,
-        help="Requested future stop grace period. Diagnostic-only today.",
+        help="Requested Orange stop grace period when Citrus completion stop is enabled.",
     )
 
     start = subparsers.add_parser(

@@ -42,15 +42,15 @@ Refs:
 ## Current Baseline and Gap
 
 - Recording stop in `orange-jeremy` is currently user-driven from the UI toggle.
-- Citrus stop paths exist (`STOP ALL`, protocol finish, or explicit arena stop),
-  but Citrus does not currently emit a stop-control message to `orange-jeremy`.
+- Citrus now has its first opt-in real-GUI autorun and local-control socket
+  slice with `status`, `start_experiment`, and `stop_experiment`.
 - `orange-jeremy` ENet receive handling currently updates calibration and
   peer-state signals, but does not map incoming control to recording actions.
 
 Explicit limitation note (current state):
 
-- Citrus currently does not emit any dedicated "experiment ended" request to
-  Orange's local control endpoint.
+- Citrus currently does not automatically emit any dedicated "experiment ended"
+  request to Orange's local control endpoint.
 
 Refs:
 
@@ -66,7 +66,12 @@ Refs:
   - client bringup/state updates,
   - INDIGO peer registration,
   - calibration pose signals.
-- No Citrus-side emission hook, no Orange-side delayed-stop scheduler, and no drain-timeout policy are implemented yet.
+- Citrus-side GUI automation/local status exists.
+- Orange has a default-on local-control endpoint and a GUI-thread pending
+  command bridge.
+- Orange has an opt-in Citrus completion delayed-stop scheduler.
+- Citrus automatic completion emission and Orange drain-timeout policy are not
+  implemented yet.
 - Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
 
 ## Desired Behavior
@@ -91,10 +96,11 @@ Refs:
   - `method = citrus_completion`,
   - `params.reason`, `params.terminal_state`, and `params.grace_seconds`.
 - [x] Define replay and dedup policy:
-  - same `request_id` must be ignored after first accept.
-- [ ] Define repeated request policy while countdown active:
-  - either keep earliest deadline or replace with latest, but pick one.
-- [ ] Define what "exit" means:
+  - same `request_id` or same `method + operation_id` must be ignored after
+    first accept.
+- [x] Define repeated request policy while countdown active:
+  - earliest-deadline-wins; later requests cannot extend recording.
+- [x] Define what "exit" means:
   - stop recording only, not process shutdown.
 
 ## Phase 1: Citrus Emission Hook
@@ -102,6 +108,11 @@ Refs:
 - [ ] Add local-control request emission at experiment terminal boundary in Citrus:
   - arena stop command path,
   - protocol-finish path that leads to `Arena::Stop()`.
+- [x] Add first Citrus local-control/status socket and GUI autorun surface:
+  - `CITRUS_GUI_LOCAL_CONTROL_SOCKET`,
+  - `status`,
+  - `start_experiment`,
+  - `stop_experiment`.
 - [ ] Ensure emission happens once per experiment end event.
 - [ ] Write command to Orange's Unix-domain JSON control socket with idempotent
       `request_id`.
@@ -126,14 +137,14 @@ Candidate hook points:
 
 ## Phase 3: Delayed Stop Scheduler
 
-- [ ] Add recording-stop scheduler state in `orange-jeremy`:
+- [x] Add recording-stop scheduler state in `orange-jeremy`:
   - `stop_scheduled` flag,
   - `stop_deadline_ns` (steady clock),
   - `stop_request_id`.
-- [ ] On accepted command:
+- [x] On accepted command:
   - if recording is active, set deadline = now + `grace_seconds`,
   - if not recording, no-op with status log.
-- [ ] On main loop tick:
+- [x] On main loop tick:
   - when deadline reached, trigger same stop transition as UI button path
     (`record_video=false`, `recording_draining=true`, `stop_record=true`).
 

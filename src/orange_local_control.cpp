@@ -147,6 +147,32 @@ std::string local_control_phase(const LocalControlStatusSnapshot& snapshot)
     return "idle";
 }
 
+nlohmann::json citrus_completion_stop_to_json(
+    const CitrusCompletionStopSnapshot& snapshot)
+{
+    return {
+        {"enabled", snapshot.enabled},
+        {"scheduled", snapshot.scheduled},
+        {"stop_triggered", snapshot.stop_triggered},
+        {"grace_seconds", snapshot.grace_seconds},
+        {"seconds_until_deadline", snapshot.seconds_until_deadline},
+        {"request_id", snapshot.request_id},
+        {"operation_id", snapshot.operation_id},
+        {"source", snapshot.source},
+        {"experiment_id", snapshot.experiment_id},
+        {"terminal_state", snapshot.terminal_state},
+        {"reason", snapshot.reason},
+        {"received_at_utc", snapshot.received_at_utc},
+        {"last_event", snapshot.last_event},
+        {"last_event_at_utc", snapshot.last_event_at_utc},
+    };
+}
+
+std::string operation_dedupe_key(const ParsedLocalControlRequest& parsed)
+{
+    return parsed.method + "\n" + parsed.operation_id;
+}
+
 }  // namespace
 
 nlohmann::json LocalControlStatusSnapshotToJson(
@@ -266,6 +292,11 @@ nlohmann::json LocalControlStatusSnapshotToJson(
          {
              {"full_frame", recorder_readiness_to_json(snapshot.full_frame_recorder)},
              {"crop", recorder_readiness_to_json(snapshot.crop_recorder)},
+         }},
+        {"local_control",
+         {
+             {"citrus_completion_stop",
+              citrus_completion_stop_to_json(snapshot.citrus_completion_stop)},
          }},
     };
 }
@@ -393,6 +424,7 @@ bool LocalControlServer::Start(const LocalControlServerOptions& options,
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_error_.clear();
         accepted_request_ids_.clear();
+        accepted_operation_keys_.clear();
         pending_commands_.clear();
     }
     thread_ = std::thread(&LocalControlServer::ServeLoop, this);
@@ -627,7 +659,14 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         const auto inserted = accepted_request_ids_.insert(parsed.request_id);
-        duplicate = !inserted.second;
+        const bool duplicate_request_id = !inserted.second;
+        bool duplicate_operation_id = false;
+        if (!duplicate_request_id && is_mutating_method(parsed.method)) {
+            const auto operation_inserted =
+                accepted_operation_keys_.insert(operation_dedupe_key(parsed));
+            duplicate_operation_id = !operation_inserted.second;
+        }
+        duplicate = duplicate_request_id || duplicate_operation_id;
         if (parsed.method == "citrus_completion" && !duplicate) {
             PendingLocalControlCommand command;
             command.method = parsed.method;
@@ -648,7 +687,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             {"ok", true},
             {"accepted", true},
             {"duplicate", duplicate},
-            {"diagnostic_only", true},
+            {"diagnostic_only", !options_.allow_gui_lifecycle_commands},
             {"queued_for_gui_thread", queued_for_gui_thread},
             {"request_id", parsed.request_id},
             {"operation_id", parsed.operation_id},
@@ -657,6 +696,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
             {"effect",
              {
+                 {"gui_lifecycle_command_deferred", queued_for_gui_thread},
                  {"recording_stop_requested", false},
                  {"recording_lifecycle_mutated", false},
              }},

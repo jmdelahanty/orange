@@ -217,6 +217,8 @@ void test_status_request_returns_readiness_snapshot()
             "active recording should be ready for Citrus experiment start");
     require(response["status"]["external_recorders"]["full_frame"]["supervisors_ready"].get<bool>(),
             "status should report full-frame recorder ready");
+    require(!response["status"]["local_control"]["citrus_completion_stop"]["enabled"].get<bool>(),
+            "status should report Citrus completion stop scheduler disabled by default");
 }
 
 void test_status_readiness_matches_expected_camera_sets_without_order_sensitivity()
@@ -270,6 +272,15 @@ void test_citrus_completion_is_diagnostic_ack_and_logged()
          {"grace_seconds", 10}});
     const nlohmann::json first = send_request(socket_path, request);
     const nlohmann::json duplicate = send_request(socket_path, request);
+    const nlohmann::json same_operation_duplicate = send_request(
+        socket_path,
+        request_json(
+            "citrus_completion",
+            "completion-req-2",
+            "experiment-42",
+            {{"experiment_id", "citrus-exp-42"},
+             {"terminal_state", "completed"},
+             {"grace_seconds", 5}}));
     const std::vector<PendingLocalControlCommand> pending =
         server.DrainPendingCommands();
     const std::vector<PendingLocalControlCommand> second_drain =
@@ -286,6 +297,10 @@ void test_citrus_completion_is_diagnostic_ack_and_logged()
     require(duplicate["duplicate"].get<bool>(), "second completion request should be duplicate");
     require(!duplicate["queued_for_gui_thread"].get<bool>(),
             "duplicate completion request should not queue again");
+    require(same_operation_duplicate["duplicate"].get<bool>(),
+            "same method and operation_id should be duplicate with a new request_id");
+    require(!same_operation_duplicate["queued_for_gui_thread"].get<bool>(),
+            "same-operation duplicate should not queue again");
     require(pending.size() == 1, "completion should queue exactly one pending command");
     require(pending[0].method == "citrus_completion",
             "pending command should preserve method");
@@ -309,6 +324,42 @@ void test_citrus_completion_is_diagnostic_ack_and_logged()
         std::istreambuf_iterator<char>()};
     require(contents.find("citrus_completion") != std::string::npos,
             "event log should contain completion method");
+}
+
+void test_citrus_completion_reports_deferred_lifecycle_mode_when_enabled()
+{
+    const auto socket_path = temp_path("completion_enabled.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_lifecycle_commands = true;
+    std::string error;
+    require(server.Start(options, &error), "server start should allow lifecycle command mode");
+    wait_until_running(&server);
+    server.UpdateStatus(healthy_status());
+
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json(
+            "citrus_completion",
+            "completion-enabled-req-1",
+            "experiment-enabled-42",
+            {{"experiment_id", "citrus-exp-42"},
+             {"terminal_state", "completed"},
+             {"grace_seconds", 0}}));
+    server.Stop();
+
+    require(response["ok"].get<bool>(), "completion response should be ok");
+    require(!response["diagnostic_only"].get<bool>(),
+            "completion response should report non-diagnostic mode when lifecycle commands are enabled");
+    require(response["queued_for_gui_thread"].get<bool>(),
+            "completion response should still report GUI-thread queueing");
+    require(response["effect"]["gui_lifecycle_command_deferred"].get<bool>(),
+            "completion response should report deferred GUI lifecycle action");
+    require(!response["effect"]["recording_lifecycle_mutated"].get<bool>(),
+            "socket thread must still not mutate recording lifecycle");
 }
 
 void test_start_stop_are_not_implemented_in_diagnostic_mode()
@@ -345,6 +396,8 @@ int main()
          test_status_readiness_matches_expected_camera_sets_without_order_sensitivity},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
+        {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",
+         test_citrus_completion_reports_deferred_lifecycle_mode_when_enabled},
         {"start_stop_are_not_implemented_in_diagnostic_mode",
          test_start_stop_are_not_implemented_in_diagnostic_mode},
     };

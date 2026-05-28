@@ -55,6 +55,7 @@
 #include <cstring>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <array>
 #include <iomanip>
@@ -155,6 +156,23 @@ struct GuiRecordingRunState {
     std::chrono::steady_clock::time_point recording_drained_at{};
 };
 
+struct GuiLocalControlStopSchedulerState {
+    bool enabled = false;
+    bool scheduled = false;
+    bool stop_triggered = false;
+    double grace_seconds = 0.0;
+    std::string request_id;
+    std::string operation_id;
+    std::string source;
+    std::string experiment_id;
+    std::string terminal_state;
+    std::string reason;
+    std::string received_at_utc;
+    std::string last_event;
+    std::string last_event_at_utc;
+    std::chrono::steady_clock::time_point deadline{};
+};
+
 enum class GuiAutorunStage {
     kDisabled = 0,
     kSelectConfig,
@@ -247,6 +265,12 @@ bool gui_local_control_disabled()
 {
     return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_DISABLE", false) ||
            gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_DISABLE", false);
+}
+
+bool gui_local_control_citrus_stop_enabled()
+{
+    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP", false) ||
+           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP", false);
 }
 
 std::string gui_local_control_socket_path()
@@ -2810,6 +2834,22 @@ void gui_mark_recording_finished(GuiSessionTimingState* timing)
     timing->finalizing_started_at = {};
 }
 
+void gui_request_recording_stop_through_operator_path(
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    GuiRecordingRunState* recording_run,
+    GuiSessionTimingState* timing,
+    const std::string& stop_reason)
+{
+    gui_note_recording_stop_requested(recording_run, stop_reason);
+    orange::session::request_drain_recording_run(recording_session, camera_control);
+    gui_mark_recording_finalizing(timing);
+    try_stop_timer();
+    if (camera_control && !camera_control->recording_draining) {
+        gui_mark_recording_finished(timing);
+    }
+}
+
 GuiSessionTimingSnapshot gui_session_timing_snapshot(
     GuiSessionTimingState* timing,
     const CameraControl* camera_control)
@@ -3383,6 +3423,94 @@ orange::control::RecorderReadinessSnapshot gui_control_recorder_readiness(
     return snapshot;
 }
 
+std::string gui_json_string_or_empty(const nlohmann::json& object, const char* key)
+{
+    const auto it = object.find(key);
+    if (it == object.end() || !it->is_string()) {
+        return {};
+    }
+    return it->get<std::string>();
+}
+
+double gui_json_nonnegative_seconds_or_default(
+    const nlohmann::json& object,
+    const char* key,
+    const double default_value)
+{
+    const auto it = object.find(key);
+    if (it == object.end()) {
+        return default_value;
+    }
+    if (!it->is_number()) {
+        return default_value;
+    }
+    const double parsed = it->get<double>();
+    if (!std::isfinite(parsed) || parsed < 0.0) {
+        return default_value;
+    }
+    return parsed;
+}
+
+orange::control::CitrusCompletionStopSnapshot gui_control_stop_snapshot(
+    const GuiLocalControlStopSchedulerState& scheduler)
+{
+    orange::control::CitrusCompletionStopSnapshot snapshot;
+    snapshot.enabled = scheduler.enabled;
+    snapshot.scheduled = scheduler.scheduled;
+    snapshot.stop_triggered = scheduler.stop_triggered;
+    snapshot.grace_seconds = scheduler.grace_seconds;
+    snapshot.request_id = scheduler.request_id;
+    snapshot.operation_id = scheduler.operation_id;
+    snapshot.source = scheduler.source;
+    snapshot.experiment_id = scheduler.experiment_id;
+    snapshot.terminal_state = scheduler.terminal_state;
+    snapshot.reason = scheduler.reason;
+    snapshot.received_at_utc = scheduler.received_at_utc;
+    snapshot.last_event = scheduler.last_event;
+    snapshot.last_event_at_utc = scheduler.last_event_at_utc;
+    if (scheduler.scheduled && has_gui_timepoint(scheduler.deadline)) {
+        const double remaining =
+            std::chrono::duration<double>(
+                scheduler.deadline - std::chrono::steady_clock::now())
+                .count();
+        snapshot.seconds_until_deadline = std::max(0.0, remaining);
+    }
+    return snapshot;
+}
+
+void gui_note_local_control_stop_event(
+    GuiLocalControlStopSchedulerState* scheduler,
+    const std::string& event)
+{
+    if (!scheduler) {
+        return;
+    }
+    scheduler->last_event = event;
+    scheduler->last_event_at_utc = get_current_utc_timestamp();
+}
+
+void gui_clear_local_control_stop_schedule(
+    GuiLocalControlStopSchedulerState* scheduler)
+{
+    if (!scheduler) {
+        return;
+    }
+    scheduler->scheduled = false;
+    scheduler->deadline = {};
+}
+
+void gui_reset_local_control_stop_scheduler_for_recording_start(
+    GuiLocalControlStopSchedulerState* scheduler)
+{
+    if (!scheduler) {
+        return;
+    }
+    const bool enabled = scheduler->enabled;
+    *scheduler = GuiLocalControlStopSchedulerState{};
+    scheduler->enabled = enabled;
+    gui_note_local_control_stop_event(scheduler, "recording_started");
+}
+
 orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     CameraControl* camera_control,
     const CameraParams* cameras_params,
@@ -3390,7 +3518,8 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     const int num_cameras,
     const orange::session::RecordingSessionState& recording_session,
     const GuiRecordingRunState& recording_run,
-    const GuiAutorunState& autorun_state)
+    const GuiAutorunState& autorun_state,
+    const GuiLocalControlStopSchedulerState& local_control_stop_scheduler)
 {
     orange::control::LocalControlStatusSnapshot snapshot;
     snapshot.updated_at_utc = get_current_utc_timestamp();
@@ -3433,11 +3562,15 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
     snapshot.crop_recorder = gui_control_recorder_readiness(
         recording_session.external_crop_recorder_lifecycle,
         recording_session.crop_recording_sink_mode == "external_ipc");
+    snapshot.citrus_completion_stop =
+        gui_control_stop_snapshot(local_control_stop_scheduler);
     return snapshot;
 }
 
 void gui_drain_local_control_commands(
-    orange::control::LocalControlServer* local_control_server)
+    orange::control::LocalControlServer* local_control_server,
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    CameraControl* camera_control)
 {
     if (!local_control_server || !local_control_server->running()) {
         return;
@@ -3452,8 +3585,115 @@ void gui_drain_local_control_commands(
         if (experiment_it != command.params.end() && experiment_it->is_string()) {
             std::cout << " experiment_id=" << experiment_it->get<std::string>();
         }
-        std::cout << " diagnostic_only=1 recording_lifecycle_mutated=0" << std::endl;
+        std::cout << " stop_enabled="
+                  << (stop_scheduler && stop_scheduler->enabled ? 1 : 0)
+                  << std::endl;
+
+        if (!stop_scheduler || command.method != "citrus_completion") {
+            continue;
+        }
+        if (!stop_scheduler->enabled) {
+            gui_note_local_control_stop_event(stop_scheduler, "ignored_disabled");
+            std::cout << "[GUI][local_control] citrus_completion stop ignored"
+                      << " request_id=" << command.request_id
+                      << " reason=stop_control_disabled" << std::endl;
+            continue;
+        }
+        if (!camera_control || !camera_control->record_video) {
+            gui_note_local_control_stop_event(stop_scheduler, "ignored_not_recording");
+            std::cout << "[GUI][local_control] citrus_completion stop ignored"
+                      << " request_id=" << command.request_id
+                      << " reason=orange_not_recording" << std::endl;
+            continue;
+        }
+
+        const double grace_seconds =
+            gui_json_nonnegative_seconds_or_default(
+                command.params,
+                "grace_seconds",
+                10.0);
+        const auto now = std::chrono::steady_clock::now();
+        const auto deadline =
+            now +
+            std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                std::chrono::duration<double>(grace_seconds));
+
+        const bool keep_existing_deadline =
+            stop_scheduler->scheduled &&
+            has_gui_timepoint(stop_scheduler->deadline) &&
+            stop_scheduler->deadline <= deadline;
+        if (keep_existing_deadline) {
+            gui_note_local_control_stop_event(
+                stop_scheduler,
+                "kept_existing_earlier_deadline");
+            std::cout << "[GUI][local_control] citrus_completion stop schedule kept"
+                      << " request_id=" << command.request_id
+                      << " existing_request_id=" << stop_scheduler->request_id
+                      << " policy=earliest_deadline" << std::endl;
+            continue;
+        }
+
+        stop_scheduler->scheduled = true;
+        stop_scheduler->stop_triggered = false;
+        stop_scheduler->grace_seconds = grace_seconds;
+        stop_scheduler->request_id = command.request_id;
+        stop_scheduler->operation_id = command.operation_id;
+        stop_scheduler->source = command.source;
+        stop_scheduler->experiment_id =
+            gui_json_string_or_empty(command.params, "experiment_id");
+        stop_scheduler->terminal_state =
+            gui_json_string_or_empty(command.params, "terminal_state");
+        stop_scheduler->reason =
+            gui_json_string_or_empty(command.params, "reason");
+        stop_scheduler->received_at_utc = command.received_at_utc;
+        stop_scheduler->deadline = deadline;
+        gui_note_local_control_stop_event(
+            stop_scheduler,
+            keep_existing_deadline ? "kept_existing_earlier_deadline" : "scheduled");
+        std::cout << "[GUI][local_control] scheduled Citrus completion stop"
+                  << " request_id=" << stop_scheduler->request_id
+                  << " operation_id=" << stop_scheduler->operation_id
+                  << " experiment_id=" << stop_scheduler->experiment_id
+                  << " grace_seconds=" << stop_scheduler->grace_seconds
+                  << std::endl;
     }
+}
+
+void gui_poll_local_control_stop_scheduler(
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    orange::session::RecordingSessionState* recording_session,
+    CameraControl* camera_control,
+    GuiRecordingRunState* recording_run,
+    GuiSessionTimingState* timing)
+{
+    if (!stop_scheduler || !stop_scheduler->scheduled) {
+        return;
+    }
+    if (!camera_control || !camera_control->record_video) {
+        gui_clear_local_control_stop_schedule(stop_scheduler);
+        gui_note_local_control_stop_event(
+            stop_scheduler,
+            "cancelled_recording_inactive");
+        return;
+    }
+    if (std::chrono::steady_clock::now() < stop_scheduler->deadline) {
+        return;
+    }
+
+    gui_clear_local_control_stop_schedule(stop_scheduler);
+    stop_scheduler->stop_triggered = true;
+    gui_note_local_control_stop_event(stop_scheduler, "stop_triggered");
+    gui_request_recording_stop_through_operator_path(
+        recording_session,
+        camera_control,
+        recording_run,
+        timing,
+        "citrus_completion");
+    std::cout << "[GUI][local_control] triggered Citrus completion stop"
+              << " request_id=" << stop_scheduler->request_id
+              << " operation_id=" << stop_scheduler->operation_id
+              << " experiment_id=" << stop_scheduler->experiment_id
+              << std::endl;
 }
 
 struct ApertureCharacterizationUiState {
@@ -5946,6 +6186,9 @@ int main(int argc, char **args) {
     orange::session::RecordingSessionState recording_session;
     GuiSessionTimingState gui_session_timing;
     GuiRecordingRunState gui_recording_run;
+    GuiLocalControlStopSchedulerState gui_local_control_stop_scheduler;
+    gui_local_control_stop_scheduler.enabled =
+        gui_local_control_citrus_stop_enabled();
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::control::LocalControlServer gui_local_control_server;
     if (!gui_local_control_disabled()) {
@@ -5953,6 +6196,8 @@ int main(int argc, char **args) {
         control_options.socket_path = gui_local_control_socket_path();
         control_options.event_log_path =
             gui_local_control_log_path(control_options.socket_path);
+        control_options.allow_gui_lifecycle_commands =
+            gui_local_control_stop_scheduler.enabled;
         std::string control_error;
         if (!gui_local_control_server.Start(control_options, &control_error)) {
             std::cerr << "[GUI][local_control] failed to start: "
@@ -6105,8 +6350,18 @@ int main(int argc, char **args) {
                     num_cameras,
                     recording_session,
                     gui_recording_run,
-                    gui_autorun_state));
-            gui_drain_local_control_commands(&gui_local_control_server);
+                    gui_autorun_state,
+                    gui_local_control_stop_scheduler));
+            gui_drain_local_control_commands(
+                &gui_local_control_server,
+                &gui_local_control_stop_scheduler,
+                camera_control);
+            gui_poll_local_control_stop_scheduler(
+                &gui_local_control_stop_scheduler,
+                &recording_session,
+                camera_control,
+                &gui_recording_run,
+                &gui_session_timing);
         }
         if (gui_autorun_requests.close_window) {
             glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
@@ -7540,6 +7795,8 @@ int main(int argc, char **args) {
                                     camera_control,
                                     resolved_recording_folder,
                                     resolved_recording_sink_mode);
+                                gui_reset_local_control_stop_scheduler_for_recording_start(
+                                    &gui_local_control_stop_scheduler);
                                 std::cout << "Recording toggled ON." << std::endl;
                                 if (resolved_recording_sink_mode != "real") {
                                     std::cout << "Full-frame video disabled by GUI recording sink mode: "
@@ -7550,17 +7807,14 @@ int main(int argc, char **args) {
                                 }
                             } else {
                                 // STOP RECORDING
-                                gui_note_recording_stop_requested(
+                                gui_request_recording_stop_through_operator_path(
+                                    &recording_session,
+                                    camera_control,
                                     &gui_recording_run,
+                                    &gui_session_timing,
                                     gui_autorun_requests.toggle_recording
                                         ? "autorun_stop"
                                         : "manual_stop");
-                                orange::session::request_drain_recording_run(&recording_session, camera_control);
-                                gui_mark_recording_finalizing(&gui_session_timing);
-                                try_stop_timer();
-                                if (!camera_control->recording_draining) {
-                                    gui_mark_recording_finished(&gui_session_timing);
-                                }
                                 std::cout << "Recording toggled OFF. Encoders will drain queued frames." << std::endl;
                             }
                         }
