@@ -37,6 +37,12 @@ variable.
 - `ORANGE_GUI_AUTORUN_ENABLE_RECORD=1`: enable recording for all opened cameras.
 - `ORANGE_GUI_AUTORUN_ENABLE_YOLO=1`: enable YOLO for all opened cameras.
 - `ORANGE_GUI_AUTORUN_ENABLE_CROP=1`: enable crop recording for all opened cameras.
+- `ORANGE_GUI_RECORD_FOR_SECONDS=<N>`: override GUI full-frame
+  `recording_control.record_for_seconds` for timed/rolling external recorder
+  runs.
+- `ORANGE_GUI_CLIP_SECONDS=<N>`: override GUI full-frame
+  `recording_control.clip_seconds`; values greater than `0` request rolling
+  clips in the full-frame external IPC recorder.
 
 When crop autorun is enabled, the GUI forces recording and YOLO on for the same
 cameras because crop recording depends on YOLO-selected detections.
@@ -55,6 +61,8 @@ Current launcher defaults:
 - `ORANGE_GUI_AUTORUN_ENABLE_RECORD=1`
 - `ORANGE_GUI_AUTORUN_ENABLE_YOLO=1`
 - `ORANGE_GUI_AUTORUN_ENABLE_CROP=1`
+- `ORANGE_GUI_RECORD_FOR_SECONDS=<app config/disabled>`
+- `ORANGE_GUI_CLIP_SECONDS=<app config/disabled>`
 - `ORANGE_GUI_PTP_STACK_MODE=auto` when `ORANGE_GUI_AUTORUN=1` and
   `ORANGE_GUI_EXPECT_SYNC_MODE=ptp_gate`; otherwise `off`
 - `ORANGE_CROP_FRAME_POOL_SIZE=2 * ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
@@ -68,6 +76,12 @@ small `256x256` device crop buffers until the external recorder has consumed
 them. The old pool default of `32` was enough for in-process crop encoding, but
 could drop crop outputs when all four cameras had detections and the external
 crop encode queue reached the 40-50 frame range.
+
+For short GUI rolling validation, use `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`
+with `ORANGE_GUI_CLIP_SECONDS` and either `ORANGE_GUI_RECORD_FOR_SECONDS` or
+autorun. If `ORANGE_GUI_AUTORUN=1`, `ORANGE_GUI_CLIP_SECONDS > 0`, and
+`ORANGE_GUI_RECORD_FOR_SECONDS` is unset, Orange uses
+`ORANGE_GUI_AUTORUN_RECORD_SECONDS` as `record_for_seconds`.
 
 ## Host PTP Stack Readiness
 

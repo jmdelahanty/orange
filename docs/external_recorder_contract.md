@@ -386,6 +386,10 @@ GUI/session status:
 
 - The GUI can recognize `recording.sink_mode = "external_ipc"` from app config
   or `ORANGE_GUI_RECORDING_SINK_MODE=external_ipc`.
+- GUI app config `recording.recording_control` and the
+  `ORANGE_GUI_RECORD_FOR_SECONDS` / `ORANGE_GUI_CLIP_SECONDS` env overrides are
+  applied to the materialized full-frame contract. `clip_seconds > 0` requests
+  rolling external recorder clips and requires `record_for_seconds > 0`.
 - On record start, the GUI uses `src/external_recorder_contract_utils.*` to
   materialize the same contract shape into the proposed recording folder as
   `external_recorder_contract.json`, starts supervised diagnostic recorder
@@ -395,9 +399,11 @@ GUI/session status:
   split-GOP shard assignments.
 - On finalization, the GUI closes IPC connections, stops the supervised
   recorder lifecycle, reads external recorder summary JSON for each selected
-  camera, and writes a shared single-clip `recording_session.json` with
+  camera, and writes a shared `recording_session.json` with
   `producer = "orange_gui_external_ipc"` and
-  `recording_backend.mode = "external_ipc"`.
+  `recording_backend.mode = "external_ipc"`. For rolling contracts, the GUI
+  mirrors recorder `rolling_output.clips[]` into a `rolling_clips` manifest
+  and session clip indexes.
 - Recorder child-process, socket state, and parsed `status_json` heartbeat
   state are visible in the GUI. The status line shows heartbeat coverage plus
   recorder-side received/encoded frame totals when sidecars are present.
@@ -478,9 +484,10 @@ Verifier checks:
 - MP4 exists, has a valid video stream, and passes video sanity when required
 - GOP routing CSV has one data row per received frame
 - for rolling runs, analytics `recording_session.json` is `mode =
-  "rolling_clips"`, uses `producer = "orange_headless_external_ipc"`, records
-  `recording_backend.mode = "external_ipc"`, and its per-camera clip artifacts
-  match the verified external summaries
+  "rolling_clips"`, uses `producer = "orange_headless_external_ipc"` or
+  `producer = "orange_gui_external_ipc"`, records `recording_backend.mode =
+  "external_ipc"`, and its per-camera clip artifacts match the verified
+  external summaries
 - for rolling runs, analytics `recording_clip_index.json`,
   `recording_clip_index.csv`, and `recording_snapshot.json` index pointers
   match the verified external summaries

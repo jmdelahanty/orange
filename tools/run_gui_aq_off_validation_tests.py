@@ -165,6 +165,14 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show autorun crop recording enabled by default",
         )
         require(
+            "ORANGE_GUI_RECORD_FOR_SECONDS=<app config/disabled>" in result.stdout,
+            "launcher output should show GUI recording control disabled by default",
+        )
+        require(
+            "ORANGE_GUI_CLIP_SECONDS=<app config/disabled>" in result.stdout,
+            "launcher output should show GUI clip rollover disabled by default",
+        )
+        require(
             "ORANGE_GUI_PTP_STACK_MODE=off" in result.stdout,
             "launcher output should show host PTP preflight off by default for manual runs",
         )
@@ -346,6 +354,8 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
                 "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "maybe",
                 "ORANGE_GUI_AUTORUN_ENABLE_YOLO": "maybe",
                 "ORANGE_GUI_AUTORUN_ENABLE_CROP": "maybe",
+                "ORANGE_GUI_RECORD_FOR_SECONDS": "-1",
+                "ORANGE_GUI_CLIP_SECONDS": "many",
             },
         )
 
@@ -401,6 +411,14 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
         require(
             "ORANGE_GUI_AUTORUN_ENABLE_CROP must be 0 or 1" in result.stderr,
             "autorun crop enable flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_RECORD_FOR_SECONDS must be >= 0" in result.stderr,
+            "GUI record_for_seconds override should explain the nonnegative requirement",
+        )
+        require(
+            "ORANGE_GUI_CLIP_SECONDS must be an integer" in result.stderr,
+            "GUI clip_seconds override should explain the integer requirement",
         )
 
 
@@ -740,6 +758,8 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "1",
                 "ORANGE_GUI_AUTORUN_ENABLE_YOLO": "1",
                 "ORANGE_GUI_AUTORUN_ENABLE_CROP": "1",
+                "ORANGE_GUI_RECORD_FOR_SECONDS": "7",
+                "ORANGE_GUI_CLIP_SECONDS": "2",
             },
         )
 
@@ -803,6 +823,14 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_AUTORUN_ENABLE_CROP=1" in result.stdout,
             "GUI autorun crop-enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_RECORD_FOR_SECONDS=7" in result.stdout,
+            "GUI record_for_seconds should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_CLIP_SECONDS=2" in result.stdout,
+            "GUI clip_seconds should be forwarded through sudo env",
         )
         require(
             "ORANGE_GUI_PTP_STACK_MODE=auto" in result.stdout,
@@ -1053,6 +1081,33 @@ def test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode() -> None:
         "wrapper should explain accepted PTP stack mode values",
     )
 
+def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
+    result = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            "ORANGE_GUI_RECORD_FOR_SECONDS=10",
+            "--env",
+            "ORANGE_GUI_CLIP_SECONDS=2",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode == 0, f"wrapper should accept GUI recording control envs: {result.stderr}")
+    require(
+        "ORANGE_GUI_RECORD_FOR_SECONDS=10" in result.stdout,
+        "wrapper dry-run should include GUI record_for_seconds env",
+    )
+    require(
+        "ORANGE_GUI_CLIP_SECONDS=2" in result.stdout,
+        "wrapper dry-run should include GUI clip_seconds env",
+    )
+
 
 def main() -> int:
     tests = [
@@ -1063,6 +1118,7 @@ def main() -> int:
         test_invalid_gui_ptp_stack_mode_fails,
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
+        test_gui_privilege_wrapper_accepts_recording_control_envs,
         test_external_crop_queue_validation_limits_are_printed,
         test_external_crop_queue_validation_rejects_bad_values,
         test_external_crop_recorder_gpu_validation_rejects_bad_values,

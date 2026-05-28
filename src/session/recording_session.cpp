@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <sstream>
 
@@ -76,6 +77,34 @@ int resolve_positive_int_env(const char* name, const int fallback, const int max
         return fallback;
     }
     return static_cast<int>(value);
+}
+
+bool resolve_nonnegative_int_env(const char* name, int* value_out)
+{
+    const char* raw = std::getenv(name);
+    if (!raw || !*raw) {
+        return false;
+    }
+    std::string text = trim_ascii_copy(raw);
+    if (text.empty()) {
+        return false;
+    }
+
+    char* end = nullptr;
+    const long value = std::strtol(text.c_str(), &end, 10);
+    while (end && *end && std::isspace(static_cast<unsigned char>(*end)) != 0) {
+        ++end;
+    }
+    if (end == text.c_str() || (end && *end) || value < 0 ||
+        value > std::numeric_limits<int>::max()) {
+        std::cerr << "[recording_session] Ignoring invalid " << name << "='"
+                  << raw << "'" << std::endl;
+        return false;
+    }
+    if (value_out) {
+        *value_out = static_cast<int>(value);
+    }
+    return true;
 }
 
 std::string shell_single_quote(const std::string& value)
@@ -239,6 +268,54 @@ std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_
                   << " (full-frame video disabled for non-real sink modes)" << std::endl;
     }
     return normalized;
+}
+
+RecordingControlConfig resolve_gui_recording_control(
+    const AppStorageConfig* app_storage_config)
+{
+    RecordingControlConfig config;
+    if (app_storage_config) {
+        config.record_for_seconds =
+            std::max(0, app_storage_config->gui_recording_record_for_seconds);
+        config.clip_seconds =
+            std::max(0, app_storage_config->gui_recording_clip_seconds);
+    }
+
+    int env_value = 0;
+    if (resolve_nonnegative_int_env("ORANGE_GUI_RECORD_FOR_SECONDS", &env_value)) {
+        config.record_for_seconds = env_value;
+    }
+    if (resolve_nonnegative_int_env("ORANGE_GUI_CLIP_SECONDS", &env_value)) {
+        config.clip_seconds = env_value;
+    }
+    if (config.clip_seconds > 0 &&
+        config.record_for_seconds <= 0 &&
+        env_flag_enabled("ORANGE_GUI_AUTORUN") &&
+        resolve_nonnegative_int_env("ORANGE_GUI_AUTORUN_RECORD_SECONDS", &env_value) &&
+        env_value > 0) {
+        config.record_for_seconds = env_value;
+        std::cout
+            << "[recording_session] Using ORANGE_GUI_AUTORUN_RECORD_SECONDS="
+            << env_value
+            << " as GUI external recorder record_for_seconds." << std::endl;
+    }
+
+    std::string validation_error;
+    if (!validate_recording_control_config(
+            config,
+            &validation_error,
+            "GUI ")) {
+        std::cerr << "[recording_session] " << validation_error
+                  << "; disabling GUI recording_control." << std::endl;
+        config = RecordingControlConfig{};
+    }
+
+    if (config.enabled()) {
+        std::cout << "[recording_session] GUI recording_control: record_for_seconds="
+                  << config.record_for_seconds
+                  << " clip_seconds=" << config.clip_seconds << std::endl;
+    }
+    return config;
 }
 
 std::string normalize_crop_recording_sink_mode(std::string requested)
@@ -1423,6 +1500,7 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
     state->recording_sink_mode = resolve_gui_recording_sink_mode(app_storage_config);
+    state->gui_recording_control = resolve_gui_recording_control(app_storage_config);
     state->crop_recording_sink_mode = resolve_gui_crop_recording_sink_mode();
     state->external_recorder_contract_config =
         resolve_gui_external_recorder_contract_config(
@@ -1608,6 +1686,12 @@ RecordingRunStartResult begin_recording_run(RecordingSessionState* state,
         contract_input.cameras_params = cameras_params;
         contract_input.cameras_select = cameras_select;
         contract_input.num_cameras = num_cameras;
+        if (state->gui_recording_control.enabled()) {
+            contract_input.recording_control.record_for_seconds =
+                state->gui_recording_control.record_for_seconds;
+            contract_input.recording_control.clip_seconds =
+                state->gui_recording_control.clip_seconds;
+        }
         const nlohmann::json contract =
             orange::external_recorder::MaterializeExternalRecorderContractForCameras(
                 contract_input);

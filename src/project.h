@@ -29,6 +29,8 @@ struct AppStorageConfig {
     std::string default_detect_engine;
     std::string default_recording_root;
     std::string gui_recording_sink_mode = "real";
+    int gui_recording_record_for_seconds = 0;
+    int gui_recording_clip_seconds = 0;
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
     int gui_ptp_register_read_decimate = 1;

@@ -83,6 +83,10 @@ Missing-file behavior should remain non-fatal:
   },
   "recording": {
     "sink_mode": "real",
+    "recording_control": {
+      "record_for_seconds": 0,
+      "clip_seconds": 0
+    },
     "external_recorder_contract_path": ""
   },
   "storage": {
@@ -192,6 +196,53 @@ ACK timeouts, frame gaps, GetFrame errors, or encode failures. The standard GUI
 validator now follows `recording_session.json` external video paths and passes
 for this layout. Remaining production-hardening work is GUI-visible recorder
 health/failure reporting and GUI PTP-stack preflight/repair.
+
+### `recording.recording_control`
+
+Type:
+
+- object
+
+Fields:
+
+- `record_for_seconds`: integer, minimum `0`
+- `clip_seconds`: integer, minimum `0`
+
+Meaning:
+
+- app-level GUI recording-control intent for timed and rolling full-frame
+  recording sessions
+
+Recommended default:
+
+```json
+{
+  "record_for_seconds": 0,
+  "clip_seconds": 0
+}
+```
+
+`clip_seconds = 0` keeps the GUI compatibility single-clip layout.
+`clip_seconds > 0` requests full-frame rolling clips and requires
+`record_for_seconds > 0`. In the GUI external IPC path, Orange applies this
+control when materializing the supervised full-frame external recorder contract,
+and finalization mirrors recorder `rolling_output.clips[]` into
+`recording_session.json`, `recording_clip_index.json/csv`, and
+`recording_snapshot.json` pointers.
+
+Environment precedence:
+
+- `ORANGE_GUI_RECORD_FOR_SECONDS` overrides
+  `recording.recording_control.record_for_seconds`.
+- `ORANGE_GUI_CLIP_SECONDS` overrides
+  `recording.recording_control.clip_seconds`.
+- If `ORANGE_GUI_CLIP_SECONDS > 0` is used for an autorun and
+  `ORANGE_GUI_RECORD_FOR_SECONDS` is unset, Orange uses
+  `ORANGE_GUI_AUTORUN_RECORD_SECONDS` as `record_for_seconds`.
+
+Crop rolling remains unsupported. GUI external crop IPC continues to declare
+`recording_control.clip_seconds = 0` and
+`rollover.rolling_supported = false`.
 
 ### `recording.ptp_register_read_decimate`
 

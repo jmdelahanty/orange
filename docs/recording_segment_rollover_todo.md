@@ -102,7 +102,8 @@ it with `clip_seconds = 0`. GUI full-frame external-recorder finalization now
 mirrors external `rolling_output.clips[]` summaries into the GUI
 `recording_session.json`, per-clip `clip_manifest.json`, session
 `recording_clip_index.json/csv`, and `recording_snapshot.json` session
-pointers. The remaining GUI full-frame work is operator-facing controls and
+pointers. GUI full-frame app/env recording-control plumbing now exists for
+external IPC. The remaining GUI full-frame work is in-GUI operator controls and
 live validation/soak coverage.
 
 ## Implementation Plan

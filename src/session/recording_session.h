@@ -14,9 +14,19 @@
 
 namespace orange::session {
 
+struct RecordingControlConfig {
+    int record_for_seconds = 0;
+    int clip_seconds = 0;
+
+    bool enabled() const {
+        return record_for_seconds > 0 || clip_seconds > 0;
+    }
+};
+
 struct RecordingSessionState {
     std::vector<std::unique_ptr<ModernRecordingPipeline>> recording_pipelines;
     std::string recording_sink_mode = "real";
+    RecordingControlConfig gui_recording_control;
     std::string external_recorder_config_status;
     std::string external_recorder_contract_source;
     nlohmann::json external_recorder_contract_config = nlohmann::json::object();
@@ -40,15 +50,6 @@ struct RecordingRunStartResult {
     std::string error_message;
     std::string external_recorder_contract_path;
     std::string external_recorder_supervisor_plan_path;
-};
-
-struct RecordingControlConfig {
-    int record_for_seconds = 0;
-    int clip_seconds = 0;
-
-    bool enabled() const {
-        return record_for_seconds > 0 || clip_seconds > 0;
-    }
 };
 
 struct SingleClipRecordingSessionManifestOptions {

@@ -6,6 +6,10 @@
   },
   "recording": {
     "sink_mode": "real",
+    "recording_control": {
+      "record_for_seconds": 0,
+      "clip_seconds": 0
+    },
     "external_recorder_contract_path": ""
   },
   "storage": {

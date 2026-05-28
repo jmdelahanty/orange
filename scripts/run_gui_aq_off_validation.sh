@@ -24,6 +24,8 @@ GUI_AUTORUN_ENABLE_STREAM="${ORANGE_GUI_AUTORUN_ENABLE_STREAM:-1}"
 GUI_AUTORUN_ENABLE_RECORD="${ORANGE_GUI_AUTORUN_ENABLE_RECORD:-1}"
 GUI_AUTORUN_ENABLE_YOLO="${ORANGE_GUI_AUTORUN_ENABLE_YOLO:-1}"
 GUI_AUTORUN_ENABLE_CROP="${ORANGE_GUI_AUTORUN_ENABLE_CROP:-1}"
+GUI_RECORD_FOR_SECONDS="${ORANGE_GUI_RECORD_FOR_SECONDS:-}"
+GUI_CLIP_SECONDS="${ORANGE_GUI_CLIP_SECONDS:-}"
 if [[ -n "${ORANGE_GUI_PTP_STACK_MODE:-}" ]]; then
   GUI_PTP_STACK_MODE="${ORANGE_GUI_PTP_STACK_MODE}"
 elif [[ "${EXPECT_SYNC_MODE}" == "ptp_gate" && "${GUI_AUTORUN}" == "1" ]]; then
@@ -182,7 +184,9 @@ python3 - \
   "${GUI_AUTORUN_ENABLE_STREAM}" \
   "${GUI_AUTORUN_ENABLE_RECORD}" \
   "${GUI_AUTORUN_ENABLE_YOLO}" \
-  "${GUI_AUTORUN_ENABLE_CROP}" <<'PY'
+  "${GUI_AUTORUN_ENABLE_CROP}" \
+  "${GUI_RECORD_FOR_SECONDS}" \
+  "${GUI_CLIP_SECONDS}" <<'PY'
 import json
 import os
 import sys
@@ -209,6 +213,8 @@ gui_autorun_enable_stream_raw = sys.argv[18]
 gui_autorun_enable_record_raw = sys.argv[19]
 gui_autorun_enable_yolo_raw = sys.argv[20]
 gui_autorun_enable_crop_raw = sys.argv[21]
+gui_record_for_seconds_raw = sys.argv[22]
+gui_clip_seconds_raw = sys.argv[23]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -227,6 +233,8 @@ def expected_config_names(config_dir: Path, raw: str) -> list[str]:
     return sorted(path.name for path in config_dir.glob("*.json"))
 
 def optional_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
     try:
         return int(value)
     except (TypeError, ValueError):
@@ -305,6 +313,7 @@ try:
         errors.append("ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS must be >= 0")
 except ValueError:
     errors.append("ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS must be an integer")
+gui_autorun_record_seconds = 0
 try:
     gui_autorun_record_seconds = int(gui_autorun_record_seconds_raw)
     if gui_autorun_record_seconds < 1:
@@ -337,10 +346,22 @@ if detect_engine:
     if not detect_engine_path.is_file():
         errors.append(f"detect engine does not exist: {detect_engine_path}")
 
+app_record_for_seconds = 0
+app_clip_seconds = 0
 if app_config_path.exists():
     try:
         app_config = json.loads(app_config_path.read_text())
         app_engine = app_config.get("models", {}).get("default_detect_engine", "")
+        app_recording_control = app_config.get("recording", {}).get("recording_control", {})
+        app_record_for_seconds = optional_int(app_recording_control.get("record_for_seconds"))
+        app_clip_seconds = optional_int(app_recording_control.get("clip_seconds"))
+        if app_recording_control and (
+            app_record_for_seconds is None or app_clip_seconds is None
+        ):
+            notes.append(
+                "app config recording_control is present but not fully numeric; "
+                "Orange will validate it on startup"
+            )
         if app_engine and detect_engine and app_engine != detect_engine:
             notes.append(
                 "app config default_detect_engine differs; this launcher will "
@@ -356,6 +377,51 @@ if app_config_path.exists():
         notes.append(f"could not inspect app config {app_config_path}: {exc}")
 else:
     notes.append(f"app config not found at {app_config_path}; using launcher detect-engine override")
+
+def parse_optional_nonnegative_int(raw: str, name: str) -> int | None:
+    if raw == "":
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        errors.append(f"{name} must be an integer")
+        return None
+    if value < 0:
+        errors.append(f"{name} must be >= 0")
+        return None
+    return value
+
+env_record_for_seconds = parse_optional_nonnegative_int(
+    gui_record_for_seconds_raw,
+    "ORANGE_GUI_RECORD_FOR_SECONDS",
+)
+env_clip_seconds = parse_optional_nonnegative_int(
+    gui_clip_seconds_raw,
+    "ORANGE_GUI_CLIP_SECONDS",
+)
+effective_record_for_seconds = (
+    env_record_for_seconds
+    if env_record_for_seconds is not None
+    else (app_record_for_seconds or 0)
+)
+effective_clip_seconds = (
+    env_clip_seconds
+    if env_clip_seconds is not None
+    else (app_clip_seconds or 0)
+)
+if effective_clip_seconds > 0 and effective_record_for_seconds <= 0:
+    if gui_autorun_raw == "1":
+        effective_record_for_seconds = gui_autorun_record_seconds
+        notes.append(
+            "GUI recording_control will use ORANGE_GUI_AUTORUN_RECORD_SECONDS "
+            "as record_for_seconds for this rolling autorun"
+        )
+    else:
+        errors.append(
+            "GUI rolling recording_control requires ORANGE_GUI_RECORD_FOR_SECONDS "
+            "or recording.recording_control.record_for_seconds when "
+            "ORANGE_GUI_CLIP_SECONDS/clip_seconds is > 0"
+        )
 
 if not config_dir.is_dir():
     errors.append(f"config folder does not exist: {config_dir}")
@@ -457,6 +523,8 @@ Validation environment:
   ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}
   ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}
   ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}
+  ORANGE_GUI_RECORD_FOR_SECONDS=${GUI_RECORD_FOR_SECONDS:-<app config/disabled>}
+  ORANGE_GUI_CLIP_SECONDS=${GUI_CLIP_SECONDS:-<app config/disabled>}
   ORANGE_GUI_PTP_STACK_MODE=${GUI_PTP_STACK_MODE}
   ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS:-<camera config/default>}
   ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE:-0}
@@ -531,6 +599,12 @@ ENV_ARGS=(
   "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
   "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}"
 )
+if [[ -n "${GUI_RECORD_FOR_SECONDS}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_RECORD_FOR_SECONDS=${GUI_RECORD_FOR_SECONDS}")
+fi
+if [[ -n "${GUI_CLIP_SECONDS}" ]]; then
+  ENV_ARGS+=("ORANGE_GUI_CLIP_SECONDS=${GUI_CLIP_SECONDS}")
+fi
 if [[ -n "${ORANGE_GUI_AUTORUN_ENABLE_STREAM:-}" ]]; then
   ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_STREAM=${GUI_AUTORUN_ENABLE_STREAM}")
 fi

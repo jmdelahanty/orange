@@ -22,6 +22,7 @@
 #include <utility>
 #include <mutex>
 #include <set>
+#include <limits>
 #include <cuda_runtime.h>
 #include "json.hpp"      // For nlohmann::json
 #include "fetch_generated.h" // For FetchGame:: enums and builders
@@ -107,6 +108,34 @@ std::string normalize_snapshot_recording_sink_mode(std::string value)
 bool snapshot_sink_writes_full_output(const std::string& sink_mode)
 {
     return sink_mode == "real" || sink_mode == "external_ipc";
+}
+
+bool read_nonnegative_int_field(const nlohmann::json& object,
+                                const char* key,
+                                int* value_out,
+                                std::string* error_out,
+                                const std::string& context)
+{
+    if (!object.contains(key)) {
+        return true;
+    }
+    if (!object[key].is_number_integer()) {
+        if (error_out) {
+            *error_out = context + "." + key + " must be an integer";
+        }
+        return false;
+    }
+    const int64_t value = object[key].get<int64_t>();
+    if (value < 0 || value > std::numeric_limits<int>::max()) {
+        if (error_out) {
+            *error_out = context + "." + key + " must be a non-negative int";
+        }
+        return false;
+    }
+    if (value_out) {
+        *value_out = static_cast<int>(value);
+    }
+    return true;
 }
 
 std::string snapshot_recording_output_backend(const std::string& sink_mode)
@@ -305,6 +334,8 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.default_detect_engine.clear();
     config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir_str);
     config.gui_recording_sink_mode = "real";
+    config.gui_recording_record_for_seconds = 0;
+    config.gui_recording_clip_seconds = 0;
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
     config.gui_ptp_register_read_decimate = 1;
@@ -408,6 +439,48 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 trim_ascii_copy(recording["sink_mode"].get<std::string>());
             if (!sink_mode.empty()) {
                 config.gui_recording_sink_mode = sink_mode;
+            }
+        }
+        if (recording.contains("recording_control")) {
+            if (!recording["recording_control"].is_object()) {
+                if (error_out) {
+                    *error_out = "recording.recording_control must be an object in " +
+                                 config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& control = recording["recording_control"];
+            if (!read_nonnegative_int_field(
+                    control,
+                    "record_for_seconds",
+                    &config.gui_recording_record_for_seconds,
+                    error_out,
+                    "recording.recording_control")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+            if (!read_nonnegative_int_field(
+                    control,
+                    "clip_seconds",
+                    &config.gui_recording_clip_seconds,
+                    error_out,
+                    "recording.recording_control")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+            if (config.gui_recording_clip_seconds > 0 &&
+                config.gui_recording_record_for_seconds <= 0) {
+                if (error_out) {
+                    *error_out =
+                        "recording.recording_control.clip_seconds requires "
+                        "record_for_seconds > 0 in " +
+                        config_path.string();
+                }
+                return false;
             }
         }
         if (recording.contains("external_recorder_contract")) {

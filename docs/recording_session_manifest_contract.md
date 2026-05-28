@@ -36,9 +36,10 @@ Current implementation rule:
   `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`,
   and `rollover.rolling_supported = false` so downstream readers do not infer
   cropped clip rollover from the full-frame external recorder support.
-- GUI/session rolling controls and live UI affordances remain future work. The
-  current GUI rolling path depends on a materialized supervised external
-  recorder contract/config that already carries valid `recording_control`.
+- In-GUI rolling controls and live UI affordances remain future work. App
+  config `recording.recording_control` and
+  `ORANGE_GUI_RECORD_FOR_SECONDS` / `ORANGE_GUI_CLIP_SECONDS` can now supply
+  that control for full-frame GUI external IPC runs.
 
 The current headless rolling implementation keeps acquisition and recording
 active during clip rollover:
