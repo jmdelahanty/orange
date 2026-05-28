@@ -151,6 +151,9 @@ fi
 if [[ "${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}" == "1" ]]; then
   COMPARE_VALIDATION_FLAGS+=" --require-external-crop-recorder-gpu-separate-from-analytics"
 fi
+if [[ -n "${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS}" ]]; then
+  COMPARE_VALIDATION_FLAGS+=" --require-external-recorder-status"
+fi
 
 if [[ ! -x "${ORANGE_BIN}" ]]; then
   echo "Missing executable: ${ORANGE_BIN}" >&2

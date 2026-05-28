@@ -117,6 +117,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-recorder-status",
+        action="store_true",
+        help=(
+            "Exit nonzero if external recorder status summaries are missing or "
+            "any full-frame/crop recorder stream is not completed with a valid "
+            "parsed runtime heartbeat."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-queue-high-water",
         type=nonnegative_int,
         help="Exit nonzero if any compared run exceeds this external crop encode queue high-water.",
@@ -200,6 +209,19 @@ def nested_float(payload: dict[str, Any], *keys: str) -> float | None:
             return None
         item = item.get(key)
     return finite_float(item)
+
+
+def iter_external_recorder_status(payload: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+    status_root = payload.get("external_recorder_status")
+    status_root = status_root if isinstance(status_root, dict) else {}
+    entries: list[tuple[str, str, dict[str, Any]]] = []
+    for group_name, streams in status_root.items():
+        if not isinstance(group_name, str) or not isinstance(streams, dict):
+            continue
+        for stream_name, status in streams.items():
+            if isinstance(status, dict):
+                entries.append((group_name, str(stream_name), status))
+    return entries
 
 
 GUI_TIMING_BREAKDOWN_BUCKETS = [
@@ -324,6 +346,29 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
                     f"{serial}:{analytics_gpu_id_int}->{recorder_gpu_id_int}"
                 )
 
+    external_status_entries = iter_external_recorder_status(payload)
+    external_recorder_status_values: set[str] = set()
+    external_recorder_status_failed_streams: list[str] = []
+    external_recorder_heartbeat_values: list[int] = []
+    external_recorder_frames_received_total = 0
+    external_recorder_frames_encoded_total = 0
+    for group_name, stream_name, status in external_status_entries:
+        status_value = status.get("status")
+        status_value = status_value if isinstance(status_value, str) else ""
+        if status_value:
+            external_recorder_status_values.add(status_value)
+        heartbeat_sequence = finite_optional_int(status.get("heartbeat_sequence"))
+        if heartbeat_sequence is not None:
+            external_recorder_heartbeat_values.append(heartbeat_sequence)
+        external_recorder_frames_received_total += finite_int(status.get("frames_received"))
+        external_recorder_frames_encoded_total += finite_int(status.get("frames_encoded"))
+        if (
+            status_value != "completed"
+            or status.get("runtime_present") is not True
+            or status.get("runtime_valid") is not True
+        ):
+            external_recorder_status_failed_streams.append(f"{group_name}:{stream_name}")
+
     preview_offered_total = 0
     preview_updated_total = 0
     preview_skipped_total = 0
@@ -421,6 +466,25 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "external_crop_same_gpu_mapping_values": sorted(external_crop_same_gpu_mapping_values),
         "external_crop_queue_high_water_max": max_or_none(external_crop_queue_high_water_values),
         "external_crop_enqueue_age_p95_max_ms": max_or_none(external_crop_enqueue_age_p95_values),
+        "external_recorder_status_streams_total": len(external_status_entries),
+        "external_recorder_status_values": sorted(external_recorder_status_values),
+        "external_recorder_status_failed_streams": external_recorder_status_failed_streams,
+        "external_recorder_heartbeat_min": (
+            min(external_recorder_heartbeat_values)
+            if external_recorder_heartbeat_values else None
+        ),
+        "external_recorder_heartbeat_max": (
+            max(external_recorder_heartbeat_values)
+            if external_recorder_heartbeat_values else None
+        ),
+        "external_recorder_frames_received_total": (
+            external_recorder_frames_received_total
+            if external_status_entries else None
+        ),
+        "external_recorder_frames_encoded_total": (
+            external_recorder_frames_encoded_total
+            if external_status_entries else None
+        ),
         "preview_offered_total": preview_offered_total,
         "preview_updated_total": preview_updated_total,
         "preview_skipped_total": preview_skipped_total,
@@ -633,6 +697,16 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("ext same-gpu", lambda item: fmt_list(item.get("external_crop_same_gpu_mapping_values"))),
         ("ext q high", lambda item: fmt_optional_int(item.get("external_crop_queue_high_water_max"))),
         ("ext q age p95", lambda item: fmt_float(item.get("external_crop_enqueue_age_p95_max_ms"), 2)),
+        ("ext status", lambda item: (
+            "-"
+            if finite_int(item.get("external_recorder_status_streams_total")) <= 0
+            else (
+                "ok"
+                if not item.get("external_recorder_status_failed_streams")
+                else fmt_list(item.get("external_recorder_status_failed_streams"))
+            )
+        )),
+        ("ext hb min", lambda item: fmt_optional_int(item.get("external_recorder_heartbeat_min"))),
         ("detect rows", lambda item: fmt_int(item.get("crop_metadata_detection_rows_total"))),
         ("rec fanout", lambda item: fmt_ratio(
             item.get("producer_recording_crop_frame_accepted_total"),
@@ -785,6 +859,18 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
                 failures.append(
                     f"{item.get('label')}: external crop recorder uses analytics GPU "
                     f"for {same_gpu_mappings}"
+                )
+
+    if getattr(args, "require_external_recorder_status", False):
+        for item in summaries:
+            streams_total = finite_int(item.get("external_recorder_status_streams_total"))
+            failed_streams = item.get("external_recorder_status_failed_streams")
+            failed_streams = failed_streams if isinstance(failed_streams, list) else []
+            if streams_total <= 0:
+                failures.append(f"{item.get('label')}: external recorder status missing")
+            if failed_streams:
+                failures.append(
+                    f"{item.get('label')}: external recorder status not healthy for {failed_streams}"
                 )
 
     fps_thresholds = [

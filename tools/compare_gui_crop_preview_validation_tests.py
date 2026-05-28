@@ -109,6 +109,44 @@ def sample_payload(
                 "external_socket_path": "/tmp/orange_external_recorder_2010096_crop.sock",
             },
         },
+        "external_recorder_status": {
+            "full": {
+                "2010095": {
+                    "status": "completed",
+                    "heartbeat_sequence": 4,
+                    "frames_received": 100,
+                    "frames_encoded": 100,
+                    "runtime_present": True,
+                    "runtime_valid": True,
+                },
+                "2010096": {
+                    "status": "completed",
+                    "heartbeat_sequence": 5,
+                    "frames_received": 80,
+                    "frames_encoded": 80,
+                    "runtime_present": True,
+                    "runtime_valid": True,
+                },
+            },
+            "crop": {
+                "2010095": {
+                    "status": "completed",
+                    "heartbeat_sequence": 6,
+                    "frames_received": 100,
+                    "frames_encoded": 100,
+                    "runtime_present": True,
+                    "runtime_valid": True,
+                },
+                "2010096": {
+                    "status": "completed",
+                    "heartbeat_sequence": 7,
+                    "frames_received": 80,
+                    "frames_encoded": 80,
+                    "runtime_present": True,
+                    "runtime_valid": True,
+                },
+            },
+        },
         "gui_display_frame_rate": {
             "stream_downsample": 4,
             "display_preview_max_fps": 30,
@@ -151,6 +189,22 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
     )
     require(summary["external_crop_queue_high_water_max"] == 12, "external queue high-water should aggregate")
     require(summary["external_crop_enqueue_age_p95_max_ms"] == 2.5, "external enqueue age should aggregate")
+    require(summary["external_recorder_status_streams_total"] == 4, "external status streams should aggregate")
+    require(summary["external_recorder_status_values"] == ["completed"], "external status values should aggregate")
+    require(
+        summary["external_recorder_status_failed_streams"] == [],
+        "healthy external status streams should not be marked failed",
+    )
+    require(summary["external_recorder_heartbeat_min"] == 4, "external heartbeat min should aggregate")
+    require(summary["external_recorder_heartbeat_max"] == 7, "external heartbeat max should aggregate")
+    require(
+        summary["external_recorder_frames_received_total"] == 360,
+        "external status received counts should aggregate",
+    )
+    require(
+        summary["external_recorder_frames_encoded_total"] == 360,
+        "external status encoded counts should aggregate",
+    )
     require(summary["preview_offered_total"] == 180, "preview offered should aggregate")
     require(summary["preview_updated_total"] == 27, "preview updates should aggregate")
     require(summary["preview_skipped_total"] == 153, "preview skipped should aggregate")
@@ -372,6 +426,7 @@ def test_threshold_failures_cover_same_external_crop_gpu_mapping() -> None:
         require_matching_display_config=False,
         require_matching_crop_config=False,
         require_external_crop_recorder_gpu_separate_from_analytics=True,
+        require_external_recorder_status=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -405,6 +460,7 @@ def test_threshold_failures_cover_missing_external_crop_gpu_mapping() -> None:
         require_matching_display_config=False,
         require_matching_crop_config=False,
         require_external_crop_recorder_gpu_separate_from_analytics=True,
+        require_external_recorder_status=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -452,6 +508,47 @@ def test_table_contains_expected_columns_and_values() -> None:
     require("2010095:5->5" in table, "table should include same-GPU external crop values")
     require("ext q high" in table, "table should include external queue high-water column")
     require("ext q age p95" in table, "table should include external enqueue-age column")
+    require("ext status" in table, "table should include external recorder status column")
+    require("ext hb min" in table, "table should include external recorder heartbeat column")
+    require("ok" in table, "table should include healthy external recorder status")
+
+
+def test_threshold_failures_cover_external_recorder_status() -> None:
+    healthy = compare.summarize_validation("healthy", sample_payload())
+    missing_payload = sample_payload()
+    missing_payload.pop("external_recorder_status", None)
+    missing = compare.summarize_validation("missing", missing_payload)
+    failed_payload = sample_payload()
+    failed_payload["external_recorder_status"]["crop"]["2010096"]["status"] = "failed"
+    failed_payload["external_recorder_status"]["crop"]["2010096"]["runtime_valid"] = False
+    failed = compare.summarize_validation("failed", failed_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=False,
+        require_external_crop_recorder_gpu_separate_from_analytics=False,
+        require_external_recorder_status=True,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    require(not compare.threshold_failures(args, [healthy]), "healthy recorder status should pass")
+    failures = compare.threshold_failures(args, [missing, failed])
+    require(
+        any("external recorder status missing" in failure for failure in failures),
+        "missing external status should fail",
+    )
+    require(
+        any("crop:2010096" in failure for failure in failures),
+        "failed external status stream should be named",
+    )
 
 
 def test_uses_validator_timing_diagnosis_when_present() -> None:
@@ -670,6 +767,7 @@ def main() -> int:
         test_threshold_failures_cover_same_external_crop_gpu_mapping,
         test_threshold_failures_cover_missing_external_crop_gpu_mapping,
         test_table_contains_expected_columns_and_values,
+        test_threshold_failures_cover_external_recorder_status,
         test_uses_validator_timing_diagnosis_when_present,
         test_table_marks_absent_fanout_as_unavailable,
         test_absent_timing_counts_stay_unavailable,
