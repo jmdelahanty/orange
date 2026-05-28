@@ -8,6 +8,7 @@
 
 #include <cerrno>
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -107,15 +108,119 @@ void set_error(std::string* error_out, const std::string& error)
     }
 }
 
+nlohmann::json matches_expected_or_null(const std::vector<std::string>& expected,
+                                        const std::vector<std::string>& actual)
+{
+    if (expected.empty()) {
+        return nullptr;
+    }
+    std::vector<std::string> sorted_expected = expected;
+    std::vector<std::string> sorted_actual = actual;
+    std::sort(sorted_expected.begin(), sorted_expected.end());
+    std::sort(sorted_actual.begin(), sorted_actual.end());
+    return sorted_expected == sorted_actual;
+}
+
+bool matches_expected_or_true_when_unset(const std::vector<std::string>& expected,
+                                         const std::vector<std::string>& actual)
+{
+    if (expected.empty()) {
+        return true;
+    }
+    return matches_expected_or_null(expected, actual).get<bool>();
+}
+
+std::string local_control_phase(const LocalControlStatusSnapshot& snapshot)
+{
+    if (snapshot.recording_finalizing) {
+        return "recording_finalizing";
+    }
+    if (snapshot.recording_active) {
+        return "recording";
+    }
+    if (snapshot.streaming_active) {
+        return "streaming";
+    }
+    if (snapshot.cameras_open) {
+        return "cameras_open";
+    }
+    return "idle";
+}
+
 }  // namespace
 
 nlohmann::json LocalControlStatusSnapshotToJson(
     const LocalControlStatusSnapshot& snapshot)
 {
+    const nlohmann::json open_match =
+        matches_expected_or_null(snapshot.expected_camera_serials, snapshot.open_camera_serials);
+    const nlohmann::json stream_match =
+        matches_expected_or_null(
+            snapshot.expected_camera_serials,
+            snapshot.stream_selected_camera_serials);
+    const nlohmann::json record_match =
+        matches_expected_or_null(
+            snapshot.expected_camera_serials,
+            snapshot.record_selected_camera_serials);
+    const nlohmann::json yolo_match =
+        matches_expected_or_null(
+            snapshot.expected_camera_serials,
+            snapshot.yolo_selected_camera_serials);
+    const nlohmann::json crop_match =
+        matches_expected_or_null(
+            snapshot.expected_camera_serials,
+            snapshot.crop_selected_camera_serials);
+    const bool expected_open =
+        matches_expected_or_true_when_unset(
+            snapshot.expected_camera_serials,
+            snapshot.open_camera_serials);
+    const bool expected_stream_selected =
+        matches_expected_or_true_when_unset(
+            snapshot.expected_camera_serials,
+            snapshot.stream_selected_camera_serials);
+    const bool expected_record_selected =
+        matches_expected_or_true_when_unset(
+            snapshot.expected_camera_serials,
+            snapshot.record_selected_camera_serials);
+    const bool expected_yolo_selected =
+        matches_expected_or_true_when_unset(
+            snapshot.expected_camera_serials,
+            snapshot.yolo_selected_camera_serials);
+    const bool expected_crop_selected =
+        snapshot.crop_selected_camera_serials.empty()
+            ? true
+            : matches_expected_or_true_when_unset(
+                  snapshot.expected_camera_serials,
+                  snapshot.crop_selected_camera_serials);
+    const bool selections_match_expected =
+        expected_stream_selected &&
+        expected_record_selected &&
+        expected_yolo_selected &&
+        expected_crop_selected;
+    const bool ready_for_recording_request =
+        snapshot.cameras_open &&
+        snapshot.streaming_active &&
+        !snapshot.recording_active &&
+        !snapshot.recording_finalizing &&
+        expected_open &&
+        selections_match_expected;
+    const bool ready_for_citrus_experiment =
+        snapshot.cameras_open &&
+        snapshot.streaming_active &&
+        snapshot.recording_active &&
+        !snapshot.recording_finalizing &&
+        expected_open &&
+        selections_match_expected;
+    const bool recording_finalized =
+        !snapshot.recording_active &&
+        !snapshot.recording_finalizing &&
+        !snapshot.recording_folder.empty();
+
     return {
         {"process", snapshot.process},
         {"updated_at_utc", snapshot.updated_at_utc},
         {"autorun_stage", snapshot.autorun_stage},
+        {"phase", local_control_phase(snapshot)},
         {"readiness",
          {
              {"process_started", true},
@@ -123,12 +228,21 @@ nlohmann::json LocalControlStatusSnapshotToJson(
              {"streaming_active", snapshot.streaming_active},
              {"recording_active", snapshot.recording_active},
              {"recording_finalizing", snapshot.recording_finalizing},
+             {"recording_finalized", recording_finalized},
              {"active_recorders", snapshot.active_recorders},
+             {"open_cameras_match_expected", open_match},
+             {"stream_selection_matches_expected", stream_match},
+             {"record_selection_matches_expected", record_match},
+             {"yolo_selection_matches_expected", yolo_match},
+             {"crop_selection_matches_expected", crop_match},
              {"selected_cameras_match_expected",
               snapshot.expected_camera_serials.empty()
                   ? nlohmann::json(nullptr)
-                  : nlohmann::json(snapshot.open_camera_serials ==
-                                   snapshot.expected_camera_serials)},
+                  : nlohmann::json(
+                        expected_open &&
+                        selections_match_expected)},
+             {"ready_for_recording_request", ready_for_recording_request},
+             {"ready_for_citrus_experiment", ready_for_citrus_experiment},
              {"full_frame_external_recorders_ready",
               snapshot.full_frame_recorder.supervisors_ready},
              {"crop_external_recorders_ready",

@@ -349,17 +349,19 @@ future Orange/Citrus orchestrator should share one Orange-owned local control
 plane. The v1 contract is documented in
 [orange_local_control_contract.md](./orange_local_control_contract.md).
 
-Current GUI support is diagnostic-only and opt-in:
+Current GUI support is diagnostic-only and starts by default at
+`/tmp/orange_local_control.sock`:
 
 ```bash
-ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock \
-  ./scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe
+./scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe
 ```
 
 The endpoint accepts `status` and `citrus_completion` requests over a Unix-domain
 JSON socket, logs/ACKs completion requests, and deliberately does not start or
 stop recording yet. Future stop wiring must translate an accepted request into
 the same safe GUI/operator stop path used by the recording button.
+Override the path with `ORANGE_GUI_LOCAL_CONTROL_SOCKET`, or disable it with
+`ORANGE_GUI_LOCAL_CONTROL_DISABLE=1`.
 
 During a live GUI run, query the diagnostic endpoint with:
 

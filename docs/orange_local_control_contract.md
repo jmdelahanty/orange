@@ -26,17 +26,27 @@ are live stimulus state contracts, not lifecycle command channels. Do not talk
 directly to external recorder sockets from Citrus or the orchestrator; those are
 Orange-owned recorder implementation details.
 
-The current Orange GUI endpoint is opt-in and diagnostic-only:
+The current Orange GUI endpoint is created by default and is diagnostic-only:
 
 ```bash
-ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock ./scripts/run_gui_fourcam_external_ipc_validation.sh ...
+./scripts/run_gui_fourcam_external_ipc_validation.sh ...
 ```
 
-It also accepts `ORANGE_LOCAL_CONTROL_SOCKET`. Events are logged to
+Default socket:
+
+```text
+/tmp/orange_local_control.sock
+```
+
+Override it with `ORANGE_GUI_LOCAL_CONTROL_SOCKET` or
+`ORANGE_LOCAL_CONTROL_SOCKET`. Events are logged to
 `ORANGE_GUI_LOCAL_CONTROL_LOG` / `ORANGE_LOCAL_CONTROL_LOG`, or to
-`<socket>.events.jsonl` by default. The GUI validation launcher and installed
-sudo wrapper forward these variables when they point under `/tmp`,
-`/run/user/1000`, or `/home/jeremy/orange_data`.
+`<socket>.events.jsonl` by default. Set `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1` or
+`ORANGE_LOCAL_CONTROL_DISABLE=1` to disable the endpoint for a diagnostic run.
+
+The GUI validation launcher and installed sudo wrapper forward these variables
+when paths point under `/tmp`, `/run/user/1000`, or
+`/home/jeremy/orange_data`.
 
 The diagnostic endpoint acknowledges `status` and `citrus_completion`. It does
 not start or stop recording yet.
@@ -100,14 +110,25 @@ return `unsupported_in_diagnostic_mode`.
 
 Orange readiness means more than process started. Status reports:
 
+- derived `phase` (`idle`, `cameras_open`, `streaming`, `recording`, or
+  `recording_finalizing`)
 - cameras open
 - streaming active
 - selected/open camera serials and expected serial match
 - recording active or finalizing
+- `ready_for_recording_request`, true only when cameras are open, streaming is
+  active, expected camera selections match, and no recording is active/finalizing
+- `ready_for_citrus_experiment`, true only when cameras are open, streaming is
+  active, expected camera selections match, and Orange recording is already
+  active
 - active recording folder and sink mode
 - selected record/YOLO/crop camera serials
 - full-frame external recorder lifecycle readiness
 - crop external recorder lifecycle readiness
+
+Camera-set comparisons are order-insensitive. If no expected serials are
+configured, match fields are reported as `null` and readiness falls back to the
+observed runtime state.
 
 External recorder readiness means the Orange supervisor lifecycle has started,
 all expected recorder processes are active, and all recorder sockets are ready.

@@ -33,7 +33,7 @@ void require(const bool condition, const std::string& message)
 
 std::filesystem::path temp_path(const std::string& name)
 {
-    return std::filesystem::temp_directory_path() /
+    return std::filesystem::path("/tmp") /
            ("orange_local_control_test_" + std::to_string(getpid()) + "_" + name);
 }
 
@@ -154,6 +154,21 @@ void wait_until_running(LocalControlServer* server)
     }
 }
 
+void require_start_server(LocalControlServer* server,
+                          const std::filesystem::path& socket_path,
+                          const std::filesystem::path& log_path = {})
+{
+    std::string error;
+    const bool started = server->Start({socket_path.string(), log_path.string()}, &error);
+    if (!started && error.empty()) {
+        error = server->last_error();
+    }
+    require(
+        started,
+        "server start failed for socket " + socket_path.string() + ": " + error);
+    wait_until_running(server);
+}
+
 void test_parse_requires_operation_for_mutating_methods()
 {
     std::string error;
@@ -180,10 +195,7 @@ void test_status_request_returns_readiness_snapshot()
     std::filesystem::remove(log_path);
 
     LocalControlServer server;
-    std::string error;
-    require(server.Start({socket_path.string(), log_path.string()}, &error),
-            "server start failed: " + error);
-    wait_until_running(&server);
+    require_start_server(&server, socket_path, log_path);
     server.UpdateStatus(healthy_status());
 
     const nlohmann::json response =
@@ -196,8 +208,45 @@ void test_status_request_returns_readiness_snapshot()
             "status should report cameras open");
     require(response["status"]["readiness"]["selected_cameras_match_expected"].get<bool>(),
             "status should report selected cameras match expected");
+    require(response["status"]["phase"].get<std::string>() == "recording",
+            "status should expose derived recording phase");
+    require(!response["status"]["readiness"]["ready_for_recording_request"].get<bool>(),
+            "active recording should not be ready for another start request");
+    require(response["status"]["readiness"]["ready_for_citrus_experiment"].get<bool>(),
+            "active recording should be ready for Citrus experiment start");
     require(response["status"]["external_recorders"]["full_frame"]["supervisors_ready"].get<bool>(),
             "status should report full-frame recorder ready");
+}
+
+void test_status_readiness_matches_expected_camera_sets_without_order_sensitivity()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.recording_active = false;
+    status.active_recorders = 0;
+    status.open_camera_serials = {"2010094", "2010093"};
+    status.stream_selected_camera_serials = {"2010094", "2010093"};
+    status.record_selected_camera_serials = {"2010094", "2010093"};
+    status.yolo_selected_camera_serials = {"2010094", "2010093"};
+    status.crop_selected_camera_serials.clear();
+    const nlohmann::json json = orange::control::LocalControlStatusSnapshotToJson(status);
+
+    require(json["phase"].get<std::string>() == "streaming", "phase should be streaming");
+    require(json["readiness"]["open_cameras_match_expected"].get<bool>(),
+            "open camera match should ignore order");
+    require(json["readiness"]["selected_cameras_match_expected"].get<bool>(),
+            "selection match should ignore order and allow unrequested crop");
+    require(json["readiness"]["ready_for_recording_request"].get<bool>(),
+            "streaming configured state should be ready for recording request");
+    require(!json["readiness"]["ready_for_citrus_experiment"].get<bool>(),
+            "Citrus should not start before Orange recording is active");
+
+    status.record_selected_camera_serials = {"2010093"};
+    const nlohmann::json mismatch =
+        orange::control::LocalControlStatusSnapshotToJson(status);
+    require(!mismatch["readiness"]["record_selection_matches_expected"].get<bool>(),
+            "record selection mismatch should be explicit");
+    require(!mismatch["readiness"]["ready_for_recording_request"].get<bool>(),
+            "recording request should not be ready when record selection mismatches expected cameras");
 }
 
 void test_citrus_completion_is_diagnostic_ack_and_logged()
@@ -208,10 +257,7 @@ void test_citrus_completion_is_diagnostic_ack_and_logged()
     std::filesystem::remove(log_path);
 
     LocalControlServer server;
-    std::string error;
-    require(server.Start({socket_path.string(), log_path.string()}, &error),
-            "server start failed: " + error);
-    wait_until_running(&server);
+    require_start_server(&server, socket_path, log_path);
     server.UpdateStatus(healthy_status());
 
     const nlohmann::json request = request_json(
@@ -250,10 +296,7 @@ void test_start_stop_are_not_implemented_in_diagnostic_mode()
     std::filesystem::remove(socket_path);
 
     LocalControlServer server;
-    std::string error;
-    require(server.Start({socket_path.string(), ""}, &error),
-            "server start failed: " + error);
-    wait_until_running(&server);
+    require_start_server(&server, socket_path);
     server.UpdateStatus(healthy_status());
 
     const nlohmann::json response = send_request(
@@ -277,6 +320,8 @@ int main()
          test_parse_requires_operation_for_mutating_methods},
         {"status_request_returns_readiness_snapshot",
          test_status_request_returns_readiness_snapshot},
+        {"status_readiness_matches_expected_camera_sets_without_order_sensitivity",
+         test_status_readiness_matches_expected_camera_sets_without_order_sensitivity},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"start_stop_are_not_implemented_in_diagnostic_mode",

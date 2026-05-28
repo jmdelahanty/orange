@@ -237,6 +237,36 @@ bool gui_env_flag_enabled(const char* name, const bool default_value = false)
     return default_value;
 }
 
+std::string gui_env_string_or_empty(const char* name)
+{
+    const char* raw = std::getenv(name);
+    return raw && *raw ? std::string(raw) : std::string();
+}
+
+bool gui_local_control_disabled()
+{
+    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_DISABLE", false) ||
+           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_DISABLE", false);
+}
+
+std::string gui_local_control_socket_path()
+{
+    std::string path = gui_env_string_or_empty("ORANGE_GUI_LOCAL_CONTROL_SOCKET");
+    if (path.empty()) {
+        path = gui_env_string_or_empty("ORANGE_LOCAL_CONTROL_SOCKET");
+    }
+    return path.empty() ? "/tmp/orange_local_control.sock" : path;
+}
+
+std::string gui_local_control_log_path(const std::string& socket_path)
+{
+    std::string path = gui_env_string_or_empty("ORANGE_GUI_LOCAL_CONTROL_LOG");
+    if (path.empty()) {
+        path = gui_env_string_or_empty("ORANGE_LOCAL_CONTROL_LOG");
+    }
+    return path.empty() ? (socket_path + ".events.jsonl") : path;
+}
+
 int gui_env_int(const char* name, const int default_value, const int min_value)
 {
     const char* raw = std::getenv(name);
@@ -5898,26 +5928,18 @@ int main(int argc, char **args) {
     GuiRecordingRunState gui_recording_run;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::control::LocalControlServer gui_local_control_server;
-    const char* gui_local_control_socket_env = std::getenv("ORANGE_GUI_LOCAL_CONTROL_SOCKET");
-    if (!gui_local_control_socket_env || !*gui_local_control_socket_env) {
-        gui_local_control_socket_env = std::getenv("ORANGE_LOCAL_CONTROL_SOCKET");
-    }
-    if (gui_local_control_socket_env && *gui_local_control_socket_env) {
-        const char* log_env = std::getenv("ORANGE_GUI_LOCAL_CONTROL_LOG");
-        if (!log_env || !*log_env) {
-            log_env = std::getenv("ORANGE_LOCAL_CONTROL_LOG");
-        }
+    if (!gui_local_control_disabled()) {
         orange::control::LocalControlServerOptions control_options;
-        control_options.socket_path = gui_local_control_socket_env;
+        control_options.socket_path = gui_local_control_socket_path();
         control_options.event_log_path =
-            log_env && *log_env
-                ? std::string(log_env)
-                : (control_options.socket_path + ".events.jsonl");
+            gui_local_control_log_path(control_options.socket_path);
         std::string control_error;
         if (!gui_local_control_server.Start(control_options, &control_error)) {
             std::cerr << "[GUI][local_control] failed to start: "
                       << control_error << std::endl;
         }
+    } else {
+        std::cout << "[GUI][local_control] disabled by environment" << std::endl;
     }
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
