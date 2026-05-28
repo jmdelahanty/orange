@@ -927,6 +927,19 @@ def check_external_recorder_status_contract(
     if not streams:
         reporter.fail(f"{label} external recorder contract has no streams: {contract_path}")
         return {}
+    reporter.check(
+        contract.get("require_status") is True,
+        f"{label} external recorder contract require_status=true",
+        f"{label} external recorder contract require_status={contract.get('require_status')!r}",
+    )
+    reporter.check(
+        contract.get("require_status_runtime") is True,
+        f"{label} external recorder contract require_status_runtime=true",
+        (
+            f"{label} external recorder contract "
+            f"require_status_runtime={contract.get('require_status_runtime')!r}"
+        ),
+    )
 
     artifact_root_value = contract.get("artifact_root")
     artifact_root = (

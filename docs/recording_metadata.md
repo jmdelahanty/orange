@@ -796,6 +796,10 @@ Notes:
   source/crop-production GPU and `recorder_gpu_id` is the external process
   encode GPU; they can differ when crop recorder GPU placement is intentionally
   overridden for NVENC load-routing diagnostics.
+- GUI external crop recorder contracts now declare `require_status = true` and
+  `require_status_runtime = true`, matching the full-frame supervised external
+  recorder health contract. Strict GUI validation checks the crop recorder
+  status sidecar, parsed supervisor runtime status, and summary count agreement.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

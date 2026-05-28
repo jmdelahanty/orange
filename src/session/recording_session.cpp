@@ -324,6 +324,8 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_video_sanity", false},
         {"require_merged_mp4", true},
         {"require_gop_routing", true},
+        {"require_status", true},
+        {"require_status_runtime", true},
         {"require_recorder_gpu_separate_from_analytics",
          external_crop_recorder_require_separate_gpu_from_env()},
         {"validation_errors", nlohmann::json::array()},

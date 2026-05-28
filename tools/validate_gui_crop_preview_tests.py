@@ -678,6 +678,8 @@ def write_external_crop_contract(
                 "schema_id": "orange.external_recorder.contract",
                 "schema_version": 1,
                 "artifact_root": str(artifact_root),
+                "require_status": True,
+                "require_status_runtime": True,
                 "streams": {
                     f"{serial}_crop": {
                         "stream_id": f"{serial}_crop",
@@ -779,6 +781,8 @@ def write_external_recorder_status_fixture(
                 "schema_id": "orange.external_recorder.contract",
                 "schema_version": 1,
                 "artifact_root": str(artifact_root),
+                "require_status": True,
+                "require_status_runtime": True,
                 "streams": {
                     stream_id: {
                         "stream_id": stream_id,
@@ -1102,6 +1106,29 @@ def test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime() -
         require(
             any("simulated failure" in failure for failure in reporter.failures),
             "status sidecar error should fail",
+        )
+
+
+def test_external_recorder_status_validation_requires_contract_flags() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(root, "2010095")
+        contract_path = root / "external_recorder_contract.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["require_status"] = False
+        del contract["require_status_runtime"]
+        contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+
+        require(
+            any("require_status=False" in failure for failure in reporter.failures),
+            "strict status validation should fail when contract disables require_status",
+        )
+        require(
+            any("require_status_runtime=None" in failure for failure in reporter.failures),
+            "strict status validation should fail when contract omits require_status_runtime",
         )
 
 
@@ -2143,6 +2170,7 @@ def main() -> int:
         test_preview_sampling_fails_when_preview_hidden,
         test_external_recorder_status_validation_checks_full_and_crop_contracts,
         test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime,
+        test_external_recorder_status_validation_requires_contract_flags,
         test_external_recorder_status_validation_derives_status_path_from_summary,
         test_crop_recording_artifacts_pass_when_aligned,
         test_crop_recording_artifacts_use_recording_output_descriptor_paths,
