@@ -5643,25 +5643,6 @@ int main(int argc, char **args) {
     // Initialize the YOLOv8 plugins
     YOLOv8::initialize_plugins();
 
-    gx_context *window = (gx_context *) malloc(sizeof(gx_context));
-    *window = (gx_context){
-        .swap_interval = gx_resolve_swap_interval(1),
-        .frame_max_fps = gx_resolve_frame_max_fps(0),
-        .width = 1920,
-        .height = 1080,
-        .render_target_title = (char *) "Orange",
-        .glsl_version = (char *) malloc(100)
-    };
-
-    render_initialize_target(window);
-
-    int max_cameras = 20;
-    int cam_count;
-    GigEVisionDeviceInfo unsorted_device_info[max_cameras];
-    cam_count = scan_cameras(max_cameras, unsorted_device_info);
-    GigEVisionDeviceInfo device_info[max_cameras];
-    sort_cameras_ip(unsorted_device_info, device_info, cam_count);
-
     std::filesystem::path cwd = std::filesystem::current_path();
     std::string delimiter = "/";
     std::vector<std::string> tokenized_path = string_split(cwd, delimiter);
@@ -5681,6 +5662,35 @@ int main(int argc, char **args) {
                   << app_storage_config.gui_ptp_register_read_decimate
                   << std::endl;
     }
+
+    const u32 gui_swap_interval_default =
+        app_storage_config.gui_swap_interval >= 0
+            ? static_cast<u32>(app_storage_config.gui_swap_interval)
+            : 1;
+    const u32 gui_frame_max_fps_default =
+        app_storage_config.gui_frame_max_fps >= 0
+            ? static_cast<u32>(app_storage_config.gui_frame_max_fps)
+            : 0;
+
+    gx_context *window = (gx_context *) malloc(sizeof(gx_context));
+    *window = (gx_context){
+        .swap_interval = gx_resolve_swap_interval(gui_swap_interval_default),
+        .frame_max_fps = gx_resolve_frame_max_fps(gui_frame_max_fps_default),
+        .width = 1920,
+        .height = 1080,
+        .render_target_title = (char *) "Orange",
+        .glsl_version = (char *) malloc(100)
+    };
+
+    render_initialize_target(window);
+
+    int max_cameras = 20;
+    int cam_count;
+    GigEVisionDeviceInfo unsorted_device_info[max_cameras];
+    cam_count = scan_cameras(max_cameras, unsorted_device_info);
+    GigEVisionDeviceInfo device_info[max_cameras];
+    sort_cameras_ip(unsorted_device_info, device_info, cam_count);
+
     std::string app_storage_warning;
     std::string input_folder = resolve_default_recording_root(orange_root_dir_str, &app_storage_warning);
     if (!app_storage_warning.empty()) {
@@ -5717,6 +5727,10 @@ int main(int argc, char **args) {
     GL_Texture* crop_tex = nullptr;
     int num_cameras = 0;
     int stream_downsample = resolve_gui_stream_downsample(4);
+    const int gui_display_preview_max_fps_default =
+        app_storage_config.gui_display_preview_max_fps >= 0
+            ? app_storage_config.gui_display_preview_max_fps
+            : 60;
     int crop_size_px = CropAndEncodeWorker::kDefaultCropSize;
     std::string crop_size_config_status;
     bool crop_size_config_status_warning = false;
@@ -6586,6 +6600,8 @@ int main(int argc, char **args) {
                         cameras_select = new CameraEachSelect[num_cameras];
                         for (int i = 0; i < num_cameras; ++i) {
                             cameras_select[i].downsample = stream_downsample;
+                            cameras_select[i].display_preview_max_fps =
+                                gui_display_preview_max_fps_default;
                         }
 
                         std::vector<int> selected_cameras;

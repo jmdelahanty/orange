@@ -12,6 +12,14 @@
     },
     "external_recorder_contract_path": ""
   },
+  "gui": {
+    "display": {
+      "profile": "default",
+      "display_preview_max_fps": null,
+      "swap_interval": null,
+      "frame_max_fps": null
+    }
+  },
   "storage": {
     "default_recording_root": "/home/jeremy/orange_data/exp/unsorted",
     "latest_recording": {

@@ -211,6 +211,46 @@ def test_citrus_display_safe_profile_validate_only() -> None:
     )
 
 
+def test_display_pacing_options_override_profile_defaults() -> None:
+    result = run_profile(
+        [
+            "--citrus-display-safe",
+            "--display-preview-max-fps",
+            "5",
+            "--swap-interval",
+            "0",
+            "--gui-frame-max-fps",
+            "20",
+            "--validate-only",
+        ]
+    )
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    require(
+        "ORANGE_DISPLAY_PREVIEW_MAX_FPS=5" in result.stdout,
+        "explicit display preview cap should override the selected profile",
+    )
+    require(
+        "ORANGE_GUI_SWAP_INTERVAL=0" in result.stdout,
+        "explicit swap interval should override the selected profile",
+    )
+    require(
+        "ORANGE_GUI_FRAME_MAX_FPS=20" in result.stdout,
+        "explicit GUI frame cap should override the selected profile",
+    )
+    require(
+        "--expect-display-preview-max-fps 5" in result.stdout,
+        "printed validator command should assert the explicit preview cap",
+    )
+    require(
+        "--expect-gui-swap-interval 0" in result.stdout,
+        "printed validator command should assert the explicit swap interval",
+    )
+    require(
+        "--expect-gui-frame-max-fps 20" in result.stdout,
+        "printed validator command should assert the explicit frame cap",
+    )
+
+
 def test_disabled_preview_profile_validate_only() -> None:
     result = run_profile(["--disable-crop-preview", "--validate-only"])
     require(result.returncode == 0, f"profile failed: {result.stderr}")
@@ -372,6 +412,7 @@ def main() -> int:
         test_default_hidden_profile_validate_only,
         test_visible_profile_validate_only,
         test_citrus_display_safe_profile_validate_only,
+        test_display_pacing_options_override_profile_defaults,
         test_disabled_preview_profile_validate_only,
         test_print_exec_env_only_contains_profile_env,
         test_overrides_are_preserved,

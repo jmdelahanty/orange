@@ -616,6 +616,12 @@ Current GUI validation tooling:
   `scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`,
   which defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
   `ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
+  For combined Orange/Citrus runs that still miss Citrus deadlines, the
+  four-camera launcher also accepts explicit `--gui-frame-max-fps`,
+  `--display-preview-max-fps`, and `--swap-interval` overrides. Persistent
+  workstation defaults can be stored in app config at
+  `gui.display.profile = "citrus_safe"` plus optional explicit display values;
+  env/launcher values remain the highest-precedence overrides.
 - The next GUI run should also visually confirm the new status timers:
   stream elapsed while streaming, active recording elapsed while recording, and
   finalizing elapsed during drain after the recording button is paused/stopped.

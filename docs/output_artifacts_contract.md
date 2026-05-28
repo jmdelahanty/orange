@@ -1042,6 +1042,9 @@ the display GPU. Use
 when Citrus is sharing the display GPU; that profile defaults to
 `ORANGE_GUI_SWAP_INTERVAL=1`, `ORANGE_GUI_FRAME_MAX_FPS=30`, and
 `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
+Persistent workstation policy can also be configured in
+`~/orange_data/config/app/default.json` under `gui.display`; launcher/env
+values intentionally override app config for explicit validation runs.
 The same four-camera launcher pins YOLO workers to a Citrus-safe CPU set by
 default: `2010093->6`, `2010094->8`, `2010095->10`, and `2010096->12`.
 Those cores are intended to be isolated or otherwise kept free of ordinary OS

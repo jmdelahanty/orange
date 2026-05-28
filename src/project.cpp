@@ -911,7 +911,80 @@ std::string build_default_orange_root_dir(std::string* warning_out)
 
 std::string build_default_app_config_path(const std::string& orange_root_dir_str)
 {
+    const char* app_config_override = std::getenv("ORANGE_APP_CONFIG_PATH");
+    if (app_config_override && app_config_override[0] != '\0') {
+        return trim_ascii_copy(app_config_override);
+    }
+    const char* gui_app_config_override = std::getenv("ORANGE_GUI_APP_CONFIG_PATH");
+    if (gui_app_config_override && gui_app_config_override[0] != '\0') {
+        return trim_ascii_copy(gui_app_config_override);
+    }
     return (std::filesystem::path(orange_root_dir_str) / "config" / "app" / "default.json").string();
+}
+
+static bool read_optional_bounded_int_field(const nlohmann::json& object,
+                                            const char* field_name,
+                                            int* value_out,
+                                            const int min_value,
+                                            const int max_value,
+                                            std::string* error_out,
+                                            const std::string& context)
+{
+    if (!value_out || !object.contains(field_name) || object[field_name].is_null()) {
+        return true;
+    }
+    if (!object[field_name].is_number_integer()) {
+        if (error_out) {
+            *error_out = context + "." + field_name + " must be an integer";
+        }
+        return false;
+    }
+    const int value = object[field_name].get<int>();
+    if (value < min_value || value > max_value) {
+        if (error_out) {
+            *error_out = context + "." + field_name + " must be in [" +
+                         std::to_string(min_value) + "," + std::to_string(max_value) + "]";
+        }
+        return false;
+    }
+    *value_out = value;
+    return true;
+}
+
+static bool apply_app_config_display_profile(AppStorageConfig* config,
+                                             const std::string& profile,
+                                             std::string* error_out,
+                                             const std::string& config_path)
+{
+    if (!config) {
+        return false;
+    }
+    std::string normalized = trim_ascii_copy(profile);
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    config->gui_display_profile = normalized;
+    if (normalized.empty() || normalized == "default") {
+        return true;
+    }
+    if (normalized == "fast") {
+        config->gui_display_preview_max_fps = 15;
+        config->gui_swap_interval = 0;
+        config->gui_frame_max_fps = 60;
+        return true;
+    }
+    if (normalized == "citrus_safe" || normalized == "citrus-safe") {
+        config->gui_display_profile = "citrus_safe";
+        config->gui_display_preview_max_fps = 10;
+        config->gui_swap_interval = 1;
+        config->gui_frame_max_fps = 30;
+        return true;
+    }
+    if (error_out) {
+        *error_out =
+            "gui.display.profile must be default, fast, or citrus_safe in " + config_path;
+    }
+    return false;
 }
 
 bool load_app_storage_config(const std::string& orange_root_dir_str,
@@ -939,6 +1012,10 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
     config.gui_ptp_register_read_decimate = 1;
+    config.gui_display_profile.clear();
+    config.gui_display_preview_max_fps = -1;
+    config.gui_swap_interval = -1;
+    config.gui_frame_max_fps = -1;
     config.write_local_pointer = true;
     config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
     config.write_run_pointer = true;
@@ -1130,6 +1207,80 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 return false;
             }
             config.gui_ptp_register_read_decimate = decimate;
+        }
+    }
+
+    if (root.contains("gui")) {
+        if (!root["gui"].is_object()) {
+            if (error_out) {
+                *error_out = "gui must be an object in " + config_path.string();
+            }
+            return false;
+        }
+        const nlohmann::json& gui = root["gui"];
+        if (gui.contains("display")) {
+            if (!gui["display"].is_object()) {
+                if (error_out) {
+                    *error_out = "gui.display must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& display = gui["display"];
+            if (display.contains("profile") && !display["profile"].is_null()) {
+                if (!display["profile"].is_string()) {
+                    if (error_out) {
+                        *error_out =
+                            "gui.display.profile must be a string in " + config_path.string();
+                    }
+                    return false;
+                }
+                if (!apply_app_config_display_profile(
+                        &config,
+                        display["profile"].get<std::string>(),
+                        error_out,
+                        config_path.string())) {
+                    return false;
+                }
+            }
+            if (!read_optional_bounded_int_field(
+                    display,
+                    "display_preview_max_fps",
+                    &config.gui_display_preview_max_fps,
+                    0,
+                    10000,
+                    error_out,
+                    "gui.display")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+            if (!read_optional_bounded_int_field(
+                    display,
+                    "swap_interval",
+                    &config.gui_swap_interval,
+                    0,
+                    4,
+                    error_out,
+                    "gui.display")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+            if (!read_optional_bounded_int_field(
+                    display,
+                    "frame_max_fps",
+                    &config.gui_frame_max_fps,
+                    0,
+                    1000,
+                    error_out,
+                    "gui.display")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
         }
     }
 

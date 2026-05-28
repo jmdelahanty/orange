@@ -319,7 +319,12 @@ Citrus-safe profile:
 
 That profile defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
 `ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
-Environment variables can still override those values for a specific run.
+Environment variables can still override those values for a specific run, and
+the four-camera launcher exposes `--gui-frame-max-fps`,
+`--display-preview-max-fps`, and `--swap-interval` for run-local tuning. For a
+persistent workstation default, set `gui.display.profile = "citrus_safe"` in
+`~/orange_data/config/app/default.json`; env/launcher values remain the highest
+precedence.
 
 ## Automation Research
 

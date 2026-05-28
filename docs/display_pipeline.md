@@ -52,6 +52,12 @@ interaction work.
   `scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe`.
   That profile defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
   `ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
+- Persistent workstation defaults can live in
+  `~/orange_data/config/app/default.json` under `gui.display`. Supported
+  profiles are `default`, `fast`, and `citrus_safe`; explicit
+  `display_preview_max_fps`, `swap_interval`, and `frame_max_fps` values
+  override the profile. Runtime env/launcher values still take precedence over
+  app config for one-off validation runs.
 - `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the four-camera launcher default. Set it
   to `1` only when live per-camera ImPlot speed graphs are needed during
   recording.

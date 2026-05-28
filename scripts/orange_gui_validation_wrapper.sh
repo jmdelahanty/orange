@@ -226,6 +226,14 @@ validate_env_item() {
         return 2
       }
       ;;
+    ORANGE_APP_CONFIG_PATH|ORANGE_GUI_APP_CONFIG_PATH)
+      value="$(validate_existing_path_under_allowed_roots "$value" \
+        "/home/jeremy/orange_data/config/app" \
+        "/tmp")" || {
+        echo "App config path is outside allowed roots or missing: $value" >&2
+        return 2
+      }
+      ;;
     ORANGE_GUI_EXTERNAL_RECORDER_CONTRACT_PATH)
       value="$(validate_existing_path_under_allowed_roots "$value" \
         "/home/jeremy/orange_data" \

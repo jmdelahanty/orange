@@ -26,6 +26,10 @@ Options:
   --disable-crop-preview      Disable crop preview generation.
   --fast-display              Use fast validation display pacing (default).
   --citrus-display-safe       Reduce Orange display pressure for Citrus stimulus runs.
+  --display-preview-max-fps <fps>
+                             Override full-frame GUI display preview cadence.
+  --swap-interval <interval>  Override GLFW swap interval, in [0,4].
+  --gui-frame-max-fps <fps>   Override GUI loop frame cap; 0 disables cap.
   --record-seconds <seconds>  Override autorun recording duration.
   --warmup-seconds <seconds>  Override autorun stream warmup duration.
   --clip-seconds <seconds>    Enable GUI rolling clips with this clip duration.
@@ -50,6 +54,14 @@ is_nonnegative_integer() {
   [[ "$1" =~ ^[0-9]+$ ]]
 }
 
+require_nonnegative_integer_in_range() {
+  local value="$1"
+  local label="$2"
+  local max_value="$3"
+  is_nonnegative_integer "${value}" || { echo "${label} must be a non-negative integer" >&2; exit 2; }
+  (( value <= max_value )) || { echo "${label} must be <= ${max_value}" >&2; exit 2; }
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --hidden-crop-preview)
@@ -70,6 +82,27 @@ while [[ $# -gt 0 ]]; do
       ;;
     --citrus-display-safe)
       DISPLAY_PROFILE="citrus_safe"
+      shift
+      ;;
+    --display-preview-max-fps)
+      shift
+      [[ $# -gt 0 ]] || { echo "--display-preview-max-fps requires a value" >&2; exit 2; }
+      require_nonnegative_integer_in_range "$1" "--display-preview-max-fps" 10000
+      export ORANGE_DISPLAY_PREVIEW_MAX_FPS="$1"
+      shift
+      ;;
+    --swap-interval)
+      shift
+      [[ $# -gt 0 ]] || { echo "--swap-interval requires a value" >&2; exit 2; }
+      require_nonnegative_integer_in_range "$1" "--swap-interval" 4
+      export ORANGE_GUI_SWAP_INTERVAL="$1"
+      shift
+      ;;
+    --gui-frame-max-fps)
+      shift
+      [[ $# -gt 0 ]] || { echo "--gui-frame-max-fps requires a value" >&2; exit 2; }
+      require_nonnegative_integer_in_range "$1" "--gui-frame-max-fps" 1000
+      export ORANGE_GUI_FRAME_MAX_FPS="$1"
       shift
       ;;
     --record-seconds)
