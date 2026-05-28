@@ -689,6 +689,38 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         )
 
 
+def test_live_launcher_fails_fast_without_display_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=False,
+            extra_env={
+                "DISPLAY": "",
+                "WAYLAND_DISPLAY": "",
+                "XDG_SESSION_TYPE": "tty",
+            },
+        )
+
+        require(result.returncode != 0, "live launcher should fail without a display")
+        require(
+            "No GUI display session detected" in result.stderr,
+            "live launcher should explain missing DISPLAY/WAYLAND_DISPLAY",
+        )
+        require(
+            "tmux set-environment -g DISPLAY" in result.stderr,
+            "live launcher should include tmux display refresh guidance",
+        )
+
+
 def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
@@ -703,6 +735,7 @@ def main() -> int:
         test_bad_config_fails_preflight,
         test_crop_preview_env_controls_are_forwarded_to_exec_env,
         test_display_env_controls_are_forwarded_to_exec_env,
+        test_live_launcher_fails_fast_without_display_env,
     ]
     for test in tests:
         test()

@@ -468,4 +468,27 @@ if [[ "${ORANGE_GUI_PRINT_EXEC_ENV_ONLY:-0}" == "1" ]]; then
   exit 0
 fi
 
+if [[ -z "${DISPLAY_ENV}" && -z "${WAYLAND_DISPLAY_ENV}" && "${ORANGE_GUI_ALLOW_NO_DISPLAY:-0}" != "1" ]]; then
+  cat >&2 <<'EOF'
+No GUI display session detected: DISPLAY and WAYLAND_DISPLAY are both unset.
+
+Run this launcher from a graphical terminal, or refresh the tmux environment
+from one before launching Orange. For X11/XWayland sessions, also allow the
+root-launched Orange process to connect to the display:
+
+  xhost +SI:localuser:root
+
+Useful tmux refresh commands from the graphical terminal:
+
+  tmux set-environment -g DISPLAY "$DISPLAY"
+  tmux set-environment -g XAUTHORITY "${XAUTHORITY:-$HOME/.Xauthority}"
+  tmux set-environment -g WAYLAND_DISPLAY "$WAYLAND_DISPLAY"
+  tmux set-environment -g XDG_RUNTIME_DIR "$XDG_RUNTIME_DIR"
+  tmux set-environment -g XDG_SESSION_TYPE "$XDG_SESSION_TYPE"
+
+Set ORANGE_GUI_ALLOW_NO_DISPLAY=1 only for non-performance smoke diagnostics.
+EOF
+  exit 1
+fi
+
 exec sudo env "${ENV_ARGS[@]}" "${ORANGE_BIN}"

@@ -67,7 +67,20 @@ xhost +SI:localuser:root
 ```
 
 If a terminal has no `DISPLAY` and no `WAYLAND_DISPLAY`, it is not attached to
-the desktop session and cannot launch the live GUI validation directly.
+the desktop session and cannot launch the live GUI validation directly. The
+launcher fails before `sudo` in that state unless
+`ORANGE_GUI_ALLOW_NO_DISPLAY=1` is set for a non-performance smoke diagnostic.
+
+For tmux sessions, refresh the display variables from a graphical terminal
+before launching Orange from inside tmux:
+
+```bash
+tmux set-environment -g DISPLAY "$DISPLAY"
+tmux set-environment -g XAUTHORITY "${XAUTHORITY:-$HOME/.Xauthority}"
+tmux set-environment -g WAYLAND_DISPLAY "$WAYLAND_DISPLAY"
+tmux set-environment -g XDG_RUNTIME_DIR "$XDG_RUNTIME_DIR"
+tmux set-environment -g XDG_SESSION_TYPE "$XDG_SESSION_TYPE"
+```
 
 ## Automation Research
 
