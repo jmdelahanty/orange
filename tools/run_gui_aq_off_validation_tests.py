@@ -990,6 +990,8 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_AUTORUN_ENABLE_CROP": "1",
                 "ORANGE_GUI_RECORD_FOR_SECONDS": "7",
                 "ORANGE_GUI_CLIP_SECONDS": "2",
+                "ORANGE_GUI_LOCAL_CONTROL_SOCKET": "/tmp/orange_test_control.sock",
+                "ORANGE_GUI_LOCAL_CONTROL_LOG": "/tmp/orange_test_control.jsonl",
             },
         )
 
@@ -1061,6 +1063,14 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_CLIP_SECONDS=2" in result.stdout,
             "GUI clip_seconds should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_test_control.sock" in result.stdout,
+            "GUI local control socket should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_LOCAL_CONTROL_LOG=/tmp/orange_test_control.jsonl" in result.stdout,
+            "GUI local control event log should be forwarded through sudo env",
         )
         require(
             "ORANGE_GUI_PTP_STACK_MODE=auto" in result.stdout,
@@ -1506,6 +1516,38 @@ def test_gui_privilege_wrapper_accepts_app_config_envs() -> None:
         )
 
 
+def test_gui_privilege_wrapper_accepts_local_control_envs() -> None:
+    result = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            "ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_control_test.sock",
+            "--env",
+            "ORANGE_GUI_LOCAL_CONTROL_LOG=/tmp/orange_control_test.jsonl",
+            "--env",
+            "ORANGE_LOCAL_CONTROL_SOCKET=/run/user/1000/orange_control_test.sock",
+            "--env",
+            "ORANGE_LOCAL_CONTROL_LOG=/run/user/1000/orange_control_test.jsonl",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode == 0, f"wrapper should accept local control envs: {result.stderr}")
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_control_test.sock" in result.stdout,
+        "wrapper dry-run should include GUI local control socket",
+    )
+    require(
+        "ORANGE_LOCAL_CONTROL_LOG=/run/user/1000/orange_control_test.jsonl" in result.stdout,
+        "wrapper dry-run should include generic local control log",
+    )
+
+
 def test_gui_privilege_wrapper_rejects_missing_app_config_env() -> None:
     missing_path = Path("/tmp/orange_missing_app_config_for_wrapper_test.json")
     result = subprocess.run(
@@ -1541,6 +1583,7 @@ def main() -> int:
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_gui_privilege_wrapper_accepts_recording_control_envs,
         test_gui_privilege_wrapper_accepts_app_config_envs,
+        test_gui_privilege_wrapper_accepts_local_control_envs,
         test_gui_privilege_wrapper_rejects_missing_app_config_env,
         test_external_crop_queue_validation_limits_are_printed,
         test_source_version_validation_flags_are_printed,

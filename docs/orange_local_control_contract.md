@@ -34,7 +34,9 @@ ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock ./scripts/run_gui
 
 It also accepts `ORANGE_LOCAL_CONTROL_SOCKET`. Events are logged to
 `ORANGE_GUI_LOCAL_CONTROL_LOG` / `ORANGE_LOCAL_CONTROL_LOG`, or to
-`<socket>.events.jsonl` by default.
+`<socket>.events.jsonl` by default. The GUI validation launcher and installed
+sudo wrapper forward these variables when they point under `/tmp`,
+`/run/user/1000`, or `/home/jeremy/orange_data`.
 
 The diagnostic endpoint acknowledges `status` and `citrus_completion`. It does
 not start or stop recording yet.

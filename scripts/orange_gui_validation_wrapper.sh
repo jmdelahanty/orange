@@ -71,6 +71,23 @@ validate_existing_path_under_allowed_roots() {
   return 1
 }
 
+validate_path_under_allowed_roots() {
+  local value="$1"
+  shift
+  local resolved
+  resolved="$(realpath -m "$value")" || return 1
+  local root
+  for root in "$@"; do
+    case "$resolved" in
+      "$root"|"$root"/*)
+        printf '%s\n' "$resolved"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 resolve_ptp_stack_script_path() {
   local candidate
   case "$ORANGE_BIN" in
@@ -231,6 +248,15 @@ validate_env_item() {
         "/home/jeremy/orange_data/config/app" \
         "/tmp")" || {
         echo "App config path is outside allowed roots or missing: $value" >&2
+        return 2
+      }
+      ;;
+    ORANGE_LOCAL_CONTROL_SOCKET|ORANGE_GUI_LOCAL_CONTROL_SOCKET|ORANGE_LOCAL_CONTROL_LOG|ORANGE_GUI_LOCAL_CONTROL_LOG)
+      value="$(validate_path_under_allowed_roots "$value" \
+        "/tmp" \
+        "/run/user/1000" \
+        "/home/jeremy/orange_data")" || {
+        echo "Local control path is outside allowed roots: $value" >&2
         return 2
       }
       ;;
