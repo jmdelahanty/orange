@@ -103,6 +103,7 @@ Implemented:
   - `--mp4-out`
   - `--mp4-keyframe`
   - `--summary-json`
+  - `--status-json`
 - A single-camera smoke runner:
   - `scripts/run_external_recorder_smoke.sh`
   - writes `external_video_sanity.json`
@@ -141,11 +142,12 @@ Limitations:
   still diagnostic rather than production recorder policy.
 - The descriptor has useful routing/session fields, but there is not yet a
   versioned production protocol with explicit `STOP` / `DRAIN` / `FINALIZE`,
-  heartbeat, or health messages.
+  in-band heartbeat, or health messages.
 - External split-GOP/multi-GPU routing exists in the diagnostic probe, and GUI
   session supervision now starts, drains, finalizes, and summarizes external
-  recorder processes for single-clip `external_ipc` runs. User-visible
-  heartbeat/failure reporting remains follow-up work.
+  recorder processes for single-clip `external_ipc` runs. The diagnostic
+  recorder now writes a stream-level `orange.external_recorder.status` sidecar,
+  but GUI consumption of that sidecar remains follow-up work.
 - No production GUI UI selection has been added yet; in-process recording
   remains the GUI fallback/default path unless `external_ipc` is selected by
   config or environment.
@@ -711,13 +713,17 @@ Latest source-lifetime hardening:
   external-recorder range at about `4.383 ms`.
 
 Next production slice: turn the diagnostic descriptor/routing contract into a
-versioned production recorder protocol with an explicit protocol heartbeat. The
-first GUI-visible recorder-health slice now exists: the supervised lifecycle
-polls child recorder processes with `waitpid(..., WNOHANG)` while recording or
-draining, marks unexpected nonzero/signal exits as runtime errors, and renders
-full-frame and crop recorder process/socket health in the GUI. This is process
-supervision, not yet a recorder-protocol heartbeat. The first GUI PTP-stack
-guard also exists in the validation launcher/wrapper path:
+versioned production recorder protocol with explicit control messages and an
+in-band protocol heartbeat. The first GUI-visible recorder-health slice now
+exists: the supervised lifecycle polls child recorder processes with
+`waitpid(..., WNOHANG)` while recording or draining, marks unexpected
+nonzero/signal exits as runtime errors, and renders full-frame and crop
+recorder process/socket health in the GUI. The diagnostic recorder also writes
+a stream-level `orange.external_recorder.status` heartbeat sidecar with
+listening, connected, running, finalizing, completed, and failed states. That
+sidecar is separate from the frame ACK protocol; GUI consumption of it remains
+the next health-display slice. The first GUI PTP-stack guard also exists in the
+validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
 `orange-gui-validation --ptp-stack-mode off|require|auto`, and autorun
 PTP-gated validation defaults to `auto` so `ptp4l`/`phc2sys` are started and

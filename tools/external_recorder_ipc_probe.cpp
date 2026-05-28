@@ -68,6 +68,7 @@ struct Options {
     std::string mp4_keyframe_path;
     std::string encode_csv_path;
     std::string summary_json_path;
+    std::string status_json_path;
     std::string gop_routing_csv_path;
     std::string session_id;
     std::string stream_id;
@@ -166,6 +167,7 @@ void signal_handler(int)
         << "  --mp4-keyframe <path>  Optional keyframe sidecar path for --mp4-out.\n"
         << "  --encode-csv <path>   Optional external encode timing CSV.\n"
         << "  --summary-json <path>  Optional run summary JSON.\n"
+        << "  --status-json <path>   Optional live status/heartbeat JSON.\n"
         << "  --gop-routing-csv <path> Optional per-frame route/shard CSV.\n"
         << "  --session-id <id>     Session id for artifacts. Defaults to first descriptor.\n"
         << "  --stream-id <id>      Stream id for artifacts. Defaults to camera serial.\n"
@@ -341,6 +343,8 @@ Options parse_options(int argc, char** argv)
             options.encode_csv_path = consume(arg.c_str());
         } else if (arg == "--summary-json") {
             options.summary_json_path = consume(arg.c_str());
+        } else if (arg == "--status-json") {
+            options.status_json_path = consume(arg.c_str());
         } else if (arg == "--gop-routing-csv") {
             options.gop_routing_csv_path = consume(arg.c_str());
         } else if (arg == "--session-id") {
@@ -578,6 +582,96 @@ uint64_t steady_clock_now_ns()
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+std::vector<int> effective_shard_gpu_ids(const Options& options);
+
+bool write_recorder_status_json(const Options& options,
+                                const std::string& session_id,
+                                const std::string& stream_id,
+                                const std::string& status,
+                                const uint64_t heartbeat_sequence,
+                                const uint64_t frames_received,
+                                const uint64_t acks_sent,
+                                const uint64_t detach_copied,
+                                const uint64_t encode_enqueued,
+                                const uint64_t encode_skipped,
+                                const uint64_t encode_dropped,
+                                const uint64_t encode_queue_high_water,
+                                const uint64_t frames_encoded,
+                                const uint64_t frames_dropped,
+                                const bool worker_failed,
+                                const std::string& error_message = {})
+{
+    if (options.status_json_path.empty()) {
+        return true;
+    }
+
+    try {
+        ensure_parent_directory(options.status_json_path);
+        const std::string temp_path = options.status_json_path + ".tmp";
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            std::ofstream out(temp_path, std::ios::out | std::ios::trunc);
+            if (!out) {
+                return false;
+            }
+            out << "{\n";
+            out << "  \"schema_id\": \"orange.external_recorder.status\",\n";
+            out << "  \"schema_version\": 1,\n";
+            out << "  \"tool\": \"external_recorder_ipc_probe\",\n";
+            out << "  \"status\": \"" << json_escape(status) << "\",\n";
+            out << "  \"session_id\": \"" << json_escape(session_id) << "\",\n";
+            out << "  \"stream_id\": \"" << json_escape(stream_id) << "\",\n";
+            out << "  \"socket_path\": \"" << json_escape(options.socket_path) << "\",\n";
+            out << "  \"status_json\": \"" << json_escape(options.status_json_path) << "\",\n";
+            out << "  \"steady_clock_ns\": " << steady_clock_now_ns() << ",\n";
+            out << "  \"heartbeat_sequence\": " << heartbeat_sequence << ",\n";
+            out << "  \"recorder_gpu_id\": " << options.gpu_id << ",\n";
+            out << "  \"shard_gpu_ids\": [";
+            const std::vector<int> shard_gpu_ids = effective_shard_gpu_ids(options);
+            for (size_t i = 0; i < shard_gpu_ids.size(); ++i) {
+                if (i > 0) {
+                    out << ", ";
+                }
+                out << shard_gpu_ids[i];
+            }
+            out << "],\n";
+            out << "  \"routing_policy\": \"" << json_escape(options.routing_policy) << "\",\n";
+            out << "  \"frames_received\": " << frames_received << ",\n";
+            out << "  \"acks_sent\": " << acks_sent << ",\n";
+            out << "  \"detach_copied\": " << detach_copied << ",\n";
+            out << "  \"encode_enqueued\": " << encode_enqueued << ",\n";
+            out << "  \"encode_skipped\": " << encode_skipped << ",\n";
+            out << "  \"encode_dropped\": " << encode_dropped << ",\n";
+            out << "  \"encode_queue_high_water\": " << encode_queue_high_water << ",\n";
+            out << "  \"frames_encoded\": " << frames_encoded << ",\n";
+            out << "  \"frames_dropped\": " << frames_dropped << ",\n";
+            out << "  \"worker_failed\": " << (worker_failed ? "true" : "false");
+            if (!error_message.empty()) {
+                out << ",\n  \"error\": \"" << json_escape(error_message) << "\"\n";
+            } else {
+                out << "\n";
+            }
+            out << "}\n";
+            out.close();
+            if (!out) {
+                return false;
+            }
+        }
+
+        std::error_code ec;
+        std::filesystem::rename(temp_path, options.status_json_path, ec);
+        if (ec) {
+            std::filesystem::remove(options.status_json_path, ec);
+            ec.clear();
+            std::filesystem::rename(temp_path, options.status_json_path, ec);
+        }
+        return !ec;
+    } catch (...) {
+        return false;
+    }
 }
 
 GUID resolve_codec_guid(const std::string& codec)
@@ -3243,8 +3337,10 @@ int main(int argc, char** argv)
 {
     int listen_fd = -1;
     int client_fd = -1;
+    Options options;
+    uint64_t status_heartbeat_sequence = 0;
     try {
-        const Options options = parse_options(argc, argv);
+        options = parse_options(argc, argv);
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
 
@@ -3295,6 +3391,22 @@ int main(int argc, char** argv)
         std::cout << "external_recorder_ipc_probe listening"
                   << " socket=" << options.socket_path
                   << " gpu_id=" << options.gpu_id << std::endl;
+        (void)write_recorder_status_json(
+            options,
+            options.session_id,
+            options.stream_id,
+            "listening",
+            ++status_heartbeat_sequence,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false);
 
         client_fd = accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) {
@@ -3306,6 +3418,22 @@ int main(int argc, char** argv)
                 worker->set_protocol_writer(client_fd, &protocol_write_mutex);
             }
         }
+        (void)write_recorder_status_json(
+            options,
+            options.session_id,
+            options.stream_id,
+            "connected",
+            ++status_heartbeat_sequence,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            false);
 
         std::ofstream csv;
         if (!options.csv_path.empty()) {
@@ -3351,6 +3479,57 @@ int main(int argc, char** argv)
         std::vector<double> detach_total_samples;
         std::vector<double> detach_open_samples;
         std::vector<double> detach_copy_samples;
+        auto collect_encode_progress =
+            [&encode_workers](uint64_t* frames_encoded,
+                              uint64_t* frames_dropped,
+                              bool* worker_failed) {
+                uint64_t encoded = 0;
+                uint64_t dropped = 0;
+                bool failed = false;
+                for (const auto& worker : encode_workers) {
+                    if (!worker) {
+                        continue;
+                    }
+                    encoded += worker->frames_encoded();
+                    dropped += worker->frames_dropped();
+                    failed = failed || worker->failed();
+                }
+                if (frames_encoded) {
+                    *frames_encoded = encoded;
+                }
+                if (frames_dropped) {
+                    *frames_dropped = dropped;
+                }
+                if (worker_failed) {
+                    *worker_failed = failed;
+                }
+            };
+        auto write_status =
+            [&](const std::string& status,
+                const std::string& error_message = {}) {
+                uint64_t frames_encoded = 0;
+                uint64_t frames_dropped = 0;
+                bool worker_failed = false;
+                collect_encode_progress(&frames_encoded, &frames_dropped, &worker_failed);
+                (void)write_recorder_status_json(
+                    options,
+                    observed_session_id,
+                    observed_stream_id,
+                    status,
+                    ++status_heartbeat_sequence,
+                    frame_count,
+                    ack_count,
+                    detach_copied_count,
+                    encode_enqueued_count,
+                    encode_skipped_count,
+                    encode_dropped_count,
+                    encode_queue_high_water,
+                    frames_encoded,
+                    frames_dropped,
+                    worker_failed,
+                    error_message);
+            };
+        auto last_status_write = std::chrono::steady_clock::now();
 
         while (!g_stop_requested.load(std::memory_order_acquire) &&
                (options.max_frames == 0 || frame_count < options.max_frames)) {
@@ -3538,8 +3717,14 @@ int main(int argc, char** argv)
                 }
             }
             ++frame_count;
+            const auto status_now = std::chrono::steady_clock::now();
+            if (status_now - last_status_write >= std::chrono::seconds(1)) {
+                write_status("running");
+                last_status_write = status_now;
+            }
         }
 
+        write_status("finalizing");
         for (auto& worker : encode_workers) {
             if (worker) {
                 worker->stop();
@@ -3582,6 +3767,19 @@ int main(int argc, char** argv)
             encode_workers.empty() ? nullptr : &encode_summary,
             shard_summaries,
             merged_output ? &merged_summary : nullptr);
+        bool any_worker_failed = false;
+        if (merged_output && merged_summary.failed) {
+            any_worker_failed = true;
+        }
+        if (!encode_workers.empty()) {
+            for (const auto& worker : encode_workers) {
+                if (!worker) {
+                    continue;
+                }
+                any_worker_failed = any_worker_failed || worker->failed();
+            }
+        }
+        write_status(any_worker_failed ? "failed" : "completed");
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {
@@ -3599,10 +3797,6 @@ int main(int argc, char** argv)
             unlink(options.socket_path.c_str());
         }
         std::cout << "external_recorder_ipc_probe complete frames=" << frame_count;
-        bool any_worker_failed = false;
-        if (merged_output && merged_summary.failed) {
-            any_worker_failed = true;
-        }
         if (!encode_workers.empty()) {
             uint64_t total_encoded = 0;
             uint64_t total_dropped = 0;
@@ -3621,6 +3815,23 @@ int main(int argc, char** argv)
         std::cout << std::endl;
         return any_worker_failed ? 1 : 0;
     } catch (const std::exception& ex) {
+        (void)write_recorder_status_json(
+            options,
+            options.session_id,
+            options.stream_id,
+            "failed",
+            ++status_heartbeat_sequence,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            true,
+            ex.what());
         if (client_fd >= 0) {
             close(client_fd);
         }

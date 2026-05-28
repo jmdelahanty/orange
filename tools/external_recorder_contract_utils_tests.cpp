@@ -94,6 +94,12 @@ void materializes_contract_and_supervisor_plan()
     require(contract["streams"]["2010096"].value("mp4", "") ==
                 "/tmp/orange_contract_utils_test/custom_session_001.mp4",
             "stream override path template was not expanded");
+    require(contract["streams"]["2010095"].value("status_json", "") ==
+                "/tmp/orange_contract_utils_test/external_recorder/Cam2010095_external_status.json",
+            "2010095 status sidecar path mismatch");
+    require(contract["streams"]["2010096"].value("status_json", "") ==
+                "/tmp/orange_contract_utils_test/external_recorder/Cam2010096_external_status.json",
+            "2010096 status sidecar path mismatch");
 
     orange::external_recorder::SupervisorPlanOptions plan_options;
     orange::external_recorder::SupervisorPlan plan;

@@ -324,6 +324,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         set_json_default(&stream, "expected_shard_gpu_ids", shard_gpu_ids);
         set_json_default(&stream, "routing_policy", multi_shard ? "gop_modulo" : "single_shard");
         set_json_default(&stream, "summary_json", prefix + "_summary.json");
+        set_json_default(&stream, "status_json", prefix + "_status.json");
         set_json_default(&stream, "video_sanity_json", prefix + "_video_sanity.json");
         set_json_default(&stream, "mp4", prefix + ".mp4");
         set_json_default(&stream, "gop_routing_csv", prefix + "_gop_routing.csv");
@@ -347,6 +348,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
 
         for (const char* key : {
                  "summary_json",
+                 "status_json",
                  "video_sanity_json",
                  "mp4",
                  "gop_routing_csv",

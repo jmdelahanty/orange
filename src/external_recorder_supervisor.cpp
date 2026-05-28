@@ -534,6 +534,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                                error_out,
                                context) ||
             !read_string_field(stream,
+                               "status_json",
+                               &stream_plan.status_json,
+                               error_out,
+                               context) ||
+            !read_string_field(stream,
                                "video_sanity_json",
                                &stream_plan.video_sanity_json,
                                error_out,
@@ -697,6 +702,13 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         if (stream_plan.mp4_keyframe.empty()) {
             stream_plan.mp4_keyframe = derive_keyframe_path(stream_plan.mp4);
         }
+        if (stream_plan.status_json.empty()) {
+            stream_plan.status_json =
+                !stream_plan.summary_json.empty()
+                    ? replace_suffix(stream_plan.summary_json, "_summary.json", "_status.json")
+                    : path_join(plan.artifact_root,
+                                "Cam" + stream_plan.camera_serial + "_external_status.json");
+        }
         if (stream_plan.detach_csv.empty()) {
             stream_plan.detach_csv =
                 !stream_plan.gop_routing_csv.empty()
@@ -842,6 +854,8 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         stream.gop_routing_csv,
         "--summary-json",
         stream.summary_json,
+        "--status-json",
+        stream.status_json,
         "--session-id",
         plan.session_id,
         "--stream-id",
@@ -883,6 +897,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"routing_policy", stream.routing_policy},
             {"socket_path", stream.socket_path},
             {"summary_json", stream.summary_json},
+            {"status_json", stream.status_json},
             {"video_sanity_json", stream.video_sanity_json},
             {"mp4", stream.mp4},
             {"mp4_keyframe", stream.mp4_keyframe},

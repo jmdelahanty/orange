@@ -114,6 +114,8 @@ void test_single_shard_plan_builds_command()
             "detach csv should derive from gop routing path");
     require(stream.encode_csv.find("Cam2010096_external_encode.csv") != std::string::npos,
             "encode csv should derive from gop routing path");
+    require(stream.status_json.find("Cam2010096_external_status.json") != std::string::npos,
+            "status json should derive from summary path");
 
     const std::vector<std::string> argv = BuildRecorderCommand(plan, stream);
     require(argv.front() == options.recorder_tool_path, "command should start with recorder tool");
@@ -124,6 +126,10 @@ void test_single_shard_plan_builds_command()
             "command should include single_shard policy");
     require(has_arg_pair(argv, "--prewarm-bytes", "20358144"),
             "command should include prewarm bytes");
+    require(has_arg_pair(argv,
+                         "--status-json",
+                         "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_external_status.json"),
+            "command should include live status sidecar path");
     require(!has_arg(argv, "--shard-gpu-ids"),
             "single shard command should not include --shard-gpu-ids");
 }
@@ -148,6 +154,9 @@ void test_two_shard_plan_builds_gop_modulo_command()
             "plan json schema id should be present");
     require(json_plan["streams"][0]["command"]["argv"].is_array(),
             "plan json should expose command argv");
+    require(json_plan["streams"][0].value("status_json", "").find(
+                "Cam2010096_external_status.json") != std::string::npos,
+            "plan json should expose status sidecar path");
 }
 
 void test_spec_requires_external_ipc_sink()

@@ -135,6 +135,7 @@ For camera `2010095`, the stream says:
 - which recorder GPU or shard GPUs should encode
 - which routing policy should be used
 - where the recorder summary should be written
+- where the recorder live status/heartbeat sidecar should be written
 - where the final MP4 should be written
 - where video sanity and GOP routing sidecars should be written
 
@@ -187,6 +188,7 @@ This contract covers the current diagnostic external recorder path:
         "expected_shard_gpu_ids": [5, 6],
         "routing_policy": "gop_modulo",
         "summary_json": "/tmp/.../Cam2010095_external_summary.json",
+        "status_json": "/tmp/.../Cam2010095_external_status.json",
         "video_sanity_json": "/tmp/.../Cam2010095_external_video_sanity.json",
         "mp4": "/tmp/.../Cam2010095_external.mp4",
         "gop_routing_csv": "/tmp/.../Cam2010095_external_gop_routing.csv",
@@ -224,6 +226,11 @@ Current semantics:
 - Orange parses this block, fails fast on malformed specs, preserves it in
   `experiment_spec.json`, and exposes per-camera expected artifact paths in
   `runs.json` / `runs.csv`.
+- `status_json` is a recorder-owned live status sidecar with
+  `schema_id = "orange.external_recorder.status"`. The diagnostic recorder
+  rewrites it while listening, after connection, during recording, during
+  finalization, and at completion/failure. It is process/sync telemetry and not
+  part of the frame ACK protocol.
 - Shell-launched diagnostic runs validate external recorder files after Orange
   exits through `scripts/verify_external_recorder_session.py`.
 - Supervised headless and GUI/session runs finalize the recorder lifecycle from
@@ -322,6 +329,9 @@ shutdown/drain path is available as an opt-in headless slice through
 - `external_recorder_verifier_handoff.json`
 - `external_recorder_finalization.json`
 
+Each recorder process can also write its stream-level live status sidecar,
+normally named `Cam<serial>_external_status.json`.
+
 The provisional `external_recorder_session.json`,
 `external_recorder_supervisor_plan.json`,
 `external_recorder_supervisor_runtime.json`,
@@ -378,14 +388,18 @@ GUI/session status:
   camera, and writes a shared single-clip `recording_session.json` with
   `producer = "orange_gui_external_ipc"` and
   `recording_backend.mode = "external_ipc"`.
+- Recorder child-process and socket state are visible in the GUI. The
+  `status_json` heartbeat sidecars are written by the recorder processes for
+  diagnostics and future GUI health display.
 - First GUI/session hardware validation passed on 2026-05-21:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`. Both cameras
   recorded `1645` submitted/ACKed/encoded frames with no external IPC
   failures, no ACK timeouts, no frame gaps/GetFrame errors, and valid decoded
   external MP4s. `scripts/validate_gui_ptp_recording.py --latest-complete`
   now follows `recording_session.json` external video paths for this layout.
-- User-visible recorder heartbeat/failure reporting and GUI-side PTP stack
-  preflight remain follow-up work.
+- GUI-side consumption of recorder heartbeat sidecars and richer protocol-level
+  health messages remain follow-up work. GUI-side PTP stack preflight exists in
+  the validation launcher/wrapper path.
 
 CLI lifecycle smoke without cameras:
 

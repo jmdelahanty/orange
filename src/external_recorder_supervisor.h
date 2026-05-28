@@ -37,6 +37,7 @@ struct RecorderStreamPlan {
     std::string routing_policy = "single_shard";
     std::string socket_path;
     std::string summary_json;
+    std::string status_json;
     std::string video_sanity_json;
     std::string mp4;
     std::string mp4_keyframe;
