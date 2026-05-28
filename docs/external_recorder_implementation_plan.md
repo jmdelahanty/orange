@@ -652,7 +652,7 @@ Latest GUI/session external IPC validation:
 - Four-camera GUI autorun artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`
 - command shape:
-  `ORANGE_GUI_AUTORUN=1 ORANGE_GUI_AUTORUN_RECORD_SECONDS=10 ORANGE_GUI_RECORDING_SINK_MODE=external_ipc ORANGE_CROP_RECORDING_SINK_MODE=external_ipc ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 ORANGE_PTP_REGISTER_READ_DECIMATE=100 ./scripts/run_gui_aq_off_validation.sh`
+  `./scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview`
 - config: `100_cam4_ptp_fourcam`, four cameras
   `2010093/2010094/2010095/2010096`, `sync_mode = "ptp_gate"`,
   `ptp.enabled = true`, and `ptp.mode = "TwoStep"`

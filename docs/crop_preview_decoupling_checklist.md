@@ -585,24 +585,16 @@ this path; preview queue and fanout telemetry now live in the sidecar summary.
 Run these on the same four-camera setup where the crop windows were observed to
 reduce GUI frame rate.
 
-For the local four-camera PTP folder, launch with:
+For the local four-camera PTP folder, use the profile wrapper:
 
 ```bash
-ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
-ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
-ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
-ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
-./scripts/run_gui_aq_off_validation.sh
+./scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview
 ```
 
-By default, each external crop recorder uses that camera's analytics/source
-GPU. For placement diagnostics, set
+That wrapper sets the four-camera config, expected camera list, full-frame
+external IPC, crop external IPC, the local separate-GPU crop-recorder mapping,
+PTP register-read decimation, and capped no-vsync GUI frame pacing. For
+placement diagnostics, set
 `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=<gpu>` for all crop streams or
 `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>=<gpu>` for a single camera.
 The validator JSON and comparison helper report the resulting
@@ -651,52 +643,21 @@ jitter to measure.
 - [ ] Baseline with crop preview disabled:
 
 ```bash
-ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
-ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
-ORANGE_CROP_PREVIEW_DISABLE=1 \
-ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
-ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
-./scripts/run_gui_aq_off_validation.sh
+./scripts/run_gui_fourcam_external_ipc_validation.sh --disable-crop-preview
 ```
 
 - [ ] Preview cadence at `15 fps`:
 
 ```bash
-ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
-ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_MAX_FPS=15 \
-ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
-ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
-./scripts/run_gui_aq_off_validation.sh
+./scripts/run_gui_fourcam_external_ipc_validation.sh --visible-crop-preview
 ```
 
 - [ ] Hidden-preview recording with crop recording still active:
 
 ```bash
-ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
-ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_MAX_FPS=15 \
-ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
-ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
-./scripts/run_gui_aq_off_validation.sh
+./scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview
 ```
 
 In the GUI, leave crop recording enabled and hide crop preview windows before
@@ -705,18 +666,8 @@ or during the recording. The crop artifacts should still be produced.
 - [ ] Optional comparison at `30 fps`:
 
 ```bash
-ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
-ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
 ORANGE_CROP_PREVIEW_MAX_FPS=30 \
-ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
-ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
-ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
-ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
-./scripts/run_gui_aq_off_validation.sh
+./scripts/run_gui_fourcam_external_ipc_validation.sh --visible-crop-preview
 ```
 
 For each run:

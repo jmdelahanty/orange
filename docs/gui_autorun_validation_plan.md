@@ -262,23 +262,14 @@ Latest hardware validation, 2026-05-28:
     XAUTHORITY=/run/user/1000/gdm/Xauthority \
     XDG_RUNTIME_DIR=/run/user/1000 \
     XDG_SESSION_TYPE=x11 \
-    ORANGE_GUI_AUTORUN=1 \
-    ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=2 \
-    ORANGE_GUI_AUTORUN_RECORD_SECONDS=10 \
-    ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1 \
-    ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1 \
-    ORANGE_GUI_CONFIG_DIR=/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam \
-    ORANGE_GUI_EXPECT_CAMERAS=2010093,2010094,2010095,2010096 \
-    ORANGE_GUI_RECORDING_SINK_MODE=external_ipc \
-    ORANGE_CROP_RECORDING_SINK_MODE=external_ipc \
-    ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1 \
-    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4 \
-    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2 \
-    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=8 \
-    ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010096=6 \
-    ORANGE_PTP_REGISTER_READ_DECIMATE=100 \
-    ./scripts/run_gui_aq_off_validation.sh
+    ./scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview
   ```
+- This profile script expands to the `100_cam4_ptp_fourcam` config, expected
+  cameras `2010093,2010094,2010095,2010096`, full-frame external IPC, crop
+  external IPC, separate crop recorder GPU placement
+  `2010093->4`, `2010094->2`, `2010095->8`, `2010096->6`, PTP register-read
+  decimation `100`, `ORANGE_GUI_SWAP_INTERVAL=0`, and
+  `ORANGE_GUI_FRAME_MAX_FPS=60`.
 - Artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`.
 - The launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128`.
