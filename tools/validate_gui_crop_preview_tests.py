@@ -627,6 +627,17 @@ def write_external_crop_recording_session_manifest(
 ) -> None:
     summary_json = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_summary.json"
     status_json = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_status.json"
+    recording_control = {"record_for_seconds": 0, "clip_seconds": 0}
+    rollover = {
+        "requested": False,
+        "status": "not_requested",
+        "implementation": "none",
+        "seamless_writer_switch": False,
+        "records_during_rollover": False,
+        "output_kind": "crop",
+        "supported_mode": "single_clip",
+        "rolling_supported": False,
+    }
     (recording_folder / "recording_session.json").write_text(
         json.dumps(
             {
@@ -634,6 +645,8 @@ def write_external_crop_recording_session_manifest(
                     "crop_recording": {
                         "mode": "external_ipc",
                         "status": "completed",
+                        "recording_control": recording_control,
+                        "rollover": rollover,
                         "stream_config": {
                             serial: {
                                 "stream_id": f"{serial}_crop",
@@ -643,6 +656,8 @@ def write_external_crop_recording_session_manifest(
                                 "encode_queue_depth": queue_depth,
                                 "summary_json": str(summary_json),
                                 "status_json": str(status_json),
+                                "recording_control": recording_control,
+                                "rollover": rollover,
                             }
                         },
                         "frames_received": {serial: frames_received},
@@ -672,6 +687,17 @@ def write_external_crop_contract(
     artifact_root = recording_folder / "external_crop_recorder"
     summary_json = artifact_root / f"Cam{serial}_crop_external_summary.json"
     status_json = artifact_root / f"Cam{serial}_crop_external_status.json"
+    recording_control = {"record_for_seconds": 0, "clip_seconds": 0}
+    rollover = {
+        "requested": False,
+        "status": "not_requested",
+        "implementation": "none",
+        "seamless_writer_switch": False,
+        "records_during_rollover": False,
+        "output_kind": "crop",
+        "supported_mode": "single_clip",
+        "rolling_supported": False,
+    }
     (recording_folder / "external_crop_recorder_contract.json").write_text(
         json.dumps(
             {
@@ -680,6 +706,8 @@ def write_external_crop_contract(
                 "artifact_root": str(artifact_root),
                 "require_status": True,
                 "require_status_runtime": True,
+                "recording_control": recording_control,
+                "rollover": rollover,
                 "streams": {
                     f"{serial}_crop": {
                         "stream_id": f"{serial}_crop",
@@ -690,6 +718,8 @@ def write_external_crop_contract(
                         "encode_queue_depth": queue_depth,
                         "summary_json": str(summary_json),
                         "status_json": str(status_json),
+                        "recording_control": recording_control,
+                        "rollover": rollover,
                     }
                 }
             }
@@ -1258,6 +1288,7 @@ def test_crop_recording_artifacts_external_queue_expectations() -> None:
             queue_high_water=12,
             enqueue_age_p95_ms=2.25,
         )
+        write_external_crop_contract(root, serial)
 
         snapshot = crop_snapshot(serial)
         snapshot["recording_outputs"] = {
@@ -1388,6 +1419,7 @@ def test_crop_recording_artifacts_require_external_backend_metadata() -> None:
             queue_high_water=12,
             enqueue_age_p95_ms=2.25,
         )
+        write_external_crop_contract(root, serial)
 
         snapshot = crop_snapshot(serial)
         snapshot["recording_outputs"] = {
@@ -1512,6 +1544,67 @@ def test_crop_recording_artifacts_external_backend_manifest_matches_summary() ->
         require(
             any("stream_config encode_queue_depth" in failure for failure in reporter.failures),
             "recording_backend crop stream_config queue-depth mismatch should fail",
+        )
+
+
+def test_crop_recording_artifacts_fail_on_external_crop_rollover_request() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_crop_recording_artifacts(root, serial, rows=3)
+        (root / f"Cam{serial}_crop.mp4").unlink()
+        (root / f"Cam{serial}_crop_keyframe.json").unlink()
+
+        external_root = root / "external_crop_recorder"
+        external_root.mkdir()
+        external_video = external_root / f"Cam{serial}_crop_external.mp4"
+        external_keyframes = external_root / f"Cam{serial}_crop_external_keyframe.json"
+        external_summary = external_root / f"Cam{serial}_crop_external_summary.json"
+        external_video.write_bytes(b"external-crop-mp4")
+        external_keyframes.write_text(json.dumps({"total_frames": 3}) + "\n", encoding="utf-8")
+        write_external_crop_summary(external_summary, 3)
+        write_external_crop_contract(root, serial)
+        write_external_crop_recording_session_manifest(root, serial)
+
+        session_path = root / "recording_session.json"
+        session = json.loads(session_path.read_text(encoding="utf-8"))
+        crop_backend = session["recording_backend"]["crop_recording"]
+        crop_backend["recording_control"]["record_for_seconds"] = 6
+        crop_backend["recording_control"]["clip_seconds"] = 2
+        crop_backend["rollover"]["requested"] = True
+        crop_backend["rollover"]["status"] = "supported"
+        session_path.write_text(json.dumps(session) + "\n", encoding="utf-8")
+
+        contract_path = root / "external_crop_recorder_contract.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        contract["recording_control"]["record_for_seconds"] = 6
+        contract["recording_control"]["clip_seconds"] = 2
+        contract["rollover"]["requested"] = True
+        contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
+
+        snapshot = crop_snapshot(serial)
+        snapshot["recording_outputs"] = {
+            serial: {
+                "crop": {
+                    "backend": "external_ipc",
+                    "video": str(external_video),
+                    "metadata": f"Cam{serial}_crop_meta.csv",
+                    "keyframes": str(external_keyframes),
+                    "perf": f"Cam{serial}_crop_perf.csv",
+                    "summary": str(external_summary),
+                }
+            }
+        }
+        reporter, _ = check_crop_recording(
+            root,
+            snapshot,
+            [serial],
+            yolo_rows=3,
+            require_external_crop_backend_metadata=True,
+        )
+        require(
+            any("crop rolling is not supported" in failure for failure in reporter.failures),
+            f"external crop rollover request should fail: {reporter.failures}",
         )
 
 
@@ -2178,6 +2271,7 @@ def main() -> int:
         test_crop_recording_artifacts_external_queue_high_water_cannot_exceed_depth,
         test_crop_recording_artifacts_require_external_backend_metadata,
         test_crop_recording_artifacts_external_backend_manifest_matches_summary,
+        test_crop_recording_artifacts_fail_on_external_crop_rollover_request,
         test_crop_recording_artifacts_external_recorder_gpu_expectations,
         test_crop_recording_artifacts_external_recorder_gpu_uses_contract_fallback,
         test_crop_recording_artifacts_external_recorder_gpu_separation_gate,

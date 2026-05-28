@@ -25,6 +25,11 @@ Current implementation rule:
   recorder path: the GUI launches supervised recorder processes on record
   start, drains/finalizes them, and writes an
   `orange_gui_external_ipc` single-clip `recording_session.json`.
+- GUI external crop IPC is also single-clip only today. Its contract and
+  `recording_backend.crop_recording` metadata explicitly declare
+  `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`,
+  and `rollover.rolling_supported = false` so downstream readers do not infer
+  cropped clip rollover from the full-frame external recorder support.
 - GUI/session rolling supervision remains future work. GUI manifests carry
   `recording_control` and `rollover` metadata, but rolling clip control is not
   yet wired through the session UI.

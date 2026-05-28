@@ -659,6 +659,57 @@ def check_optional_backend_float_map(
     )
 
 
+def check_crop_single_clip_rollover_node(
+    reporter: Reporter,
+    node: dict[str, Any],
+    label: str,
+    *,
+    require_present: bool = False,
+) -> None:
+    control = node.get("recording_control")
+    control = control if isinstance(control, dict) else {}
+    rollover = node.get("rollover")
+    rollover = rollover if isinstance(rollover, dict) else {}
+
+    if require_present or control:
+        record_for_seconds = integer(control.get("record_for_seconds"))
+        clip_seconds = integer(control.get("clip_seconds"))
+        reporter.check(
+            record_for_seconds == 0 and clip_seconds == 0,
+            f"{label} crop recording_control declares single_clip",
+            (
+                f"{label} crop recording_control requests rolling or timed control: "
+                f"record_for_seconds={record_for_seconds}, clip_seconds={clip_seconds}"
+            ),
+        )
+    if require_present or rollover:
+        requested = rollover.get("requested")
+        status = rollover.get("status")
+        implementation = rollover.get("implementation")
+        reporter.check(
+            requested is False,
+            f"{label} crop rollover requested=false",
+            f"{label} crop rollover requested={requested!r}; crop rolling is not supported",
+        )
+        reporter.check(
+            status == "not_requested" and implementation == "none",
+            f"{label} crop rollover status is not_requested",
+            (
+                f"{label} crop rollover status/implementation unexpected: "
+                f"{status!r}/{implementation!r}"
+            ),
+        )
+        if "rolling_supported" in rollover:
+            reporter.check(
+                rollover.get("rolling_supported") is False,
+                f"{label} crop rolling_supported=false",
+                (
+                    f"{label} crop rolling_supported={rollover.get('rolling_supported')!r}; "
+                    "crop rolling is not implemented"
+                ),
+            )
+
+
 def require_backend_map_key(
     reporter: Reporter,
     backend: dict[str, Any],
@@ -2182,6 +2233,18 @@ def check_crop_recording_artifacts(
         "crop_recording",
     )
     external_crop_contract = read_json(recording_folder / "external_crop_recorder_contract.json")
+    check_crop_single_clip_rollover_node(
+        reporter,
+        external_crop_contract,
+        "external_crop_recorder_contract",
+        require_present=require_external_crop_backend_metadata and bool(external_crop_contract),
+    )
+    check_crop_single_clip_rollover_node(
+        reporter,
+        crop_recording_backend,
+        "recording_backend.crop_recording",
+        require_present=require_external_crop_backend_metadata and bool(crop_recording_backend),
+    )
 
     for serial in target_cameras:
         crop_output = crop_output_for(snapshot, serial)
@@ -2503,6 +2566,24 @@ def check_crop_recording_artifacts(
                 backend_stream_config,
                 contract_stream_config,
                 detail_stream_config,
+            )
+            check_crop_single_clip_rollover_node(
+                reporter,
+                contract_stream_config,
+                f"Cam{serial} external_crop_recorder_contract.stream",
+                require_present=False,
+            )
+            check_crop_single_clip_rollover_node(
+                reporter,
+                backend_stream_config,
+                f"Cam{serial} recording_backend.crop_recording.stream_config",
+                require_present=False,
+            )
+            check_crop_single_clip_rollover_node(
+                reporter,
+                descriptor_details,
+                f"Cam{serial} recording_outputs.crop.details",
+                require_present=False,
             )
             external_stream_config_source = (
                 "recording_backend.crop_recording.stream_config"

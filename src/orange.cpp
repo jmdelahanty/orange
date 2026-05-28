@@ -1236,6 +1236,20 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         nlohmann::json crop_encode_queue_depth = nlohmann::json::object();
         nlohmann::json crop_encode_queue_high_water = nlohmann::json::object();
         nlohmann::json crop_enqueue_age_p95_ms = nlohmann::json::object();
+        const nlohmann::json crop_recording_control = {
+            {"record_for_seconds", 0},
+            {"clip_seconds", 0}
+        };
+        const nlohmann::json crop_rollover = {
+            {"requested", false},
+            {"status", "not_requested"},
+            {"implementation", "none"},
+            {"seamless_writer_switch", false},
+            {"records_during_rollover", false},
+            {"output_kind", "crop"},
+            {"supported_mode", "single_clip"},
+            {"rolling_supported", false}
+        };
 
         auto append_external_crop_output =
             [&](const auto& stream,
@@ -1285,6 +1299,8 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     {"socket_path", stream.socket_path},
                     {"summary_json", stream.summary_json},
                     {"status_json", stream.status_json},
+                    {"recording_control", crop_recording_control},
+                    {"rollover", crop_rollover},
                     {"selection_policy", "largest_detection_by_confidence"},
                     {"blank_frame_policy", "encode_black_frame_when_no_detection"}
                 };
@@ -1309,7 +1325,9 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     {"encode_max_fps", stream.encode_max_fps},
                     {"gop", stream.gop},
                     {"codec", stream.codec},
-                    {"tuning", stream.tuning}
+                    {"tuning", stream.tuning},
+                    {"recording_control", crop_recording_control},
+                    {"rollover", crop_rollover}
                 };
             };
 
@@ -1442,6 +1460,8 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             {"keyframes", crop_keyframe_paths},
             {"gop_routing_csv", crop_gop_routing_paths},
             {"stream_config", crop_stream_config},
+            {"recording_control", crop_recording_control},
+            {"rollover", crop_rollover},
             {"frames_received", crop_frames_received},
             {"frames_encoded", crop_frames_encoded},
             {"encode_dropped", crop_encode_dropped},
@@ -1551,6 +1571,20 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                     {"video_backend", "external_ipc"},
                     {"metadata_backend", "orange_gui"},
                     {"status_reason", "external crop recorder output missing from supervisor plan"},
+                    {"recording_control", {
+                        {"record_for_seconds", 0},
+                        {"clip_seconds", 0}
+                    }},
+                    {"rollover", {
+                        {"requested", false},
+                        {"status", "not_requested"},
+                        {"implementation", "none"},
+                        {"seamless_writer_switch", false},
+                        {"records_during_rollover", false},
+                        {"output_kind", "crop"},
+                        {"supported_mode", "single_clip"},
+                        {"rolling_supported", false}
+                    }},
                     {"selection_policy", "largest_detection_by_confidence"},
                     {"blank_frame_policy", "encode_black_frame_when_no_detection"}
                 };

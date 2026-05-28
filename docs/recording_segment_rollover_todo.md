@@ -90,7 +90,12 @@ The headless in-process full-frame encoder path now satisfies the first
 a short two-camera PTP real-YOLO smoke. Supervised headless external IPC rolling
 also writes verified clip manifests, parent indexes, and packet counts.
 Remaining production gaps are GUI/session rolling adoption, external-recorder
-GUI supervision, broader failure policy, and long soak testing.
+GUI rolling supervision, crop rolling, broader failure policy, and long soak
+testing. GUI external crop IPC is currently an explicit `single_clip` sidecar
+path: generated crop contracts and `recording_backend.crop_recording` declare
+`recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`, and
+`rollover.rolling_supported = false`; validators fail if crop rolling is
+accidentally requested before the crop clip/index contract exists.
 
 ## Implementation Plan
 

@@ -800,6 +800,13 @@ Notes:
   `require_status_runtime = true`, matching the full-frame supervised external
   recorder health contract. Strict GUI validation checks the crop recorder
   status sidecar, parsed supervisor runtime status, and summary count agreement.
+- GUI external crop recorder artifacts also declare their current rollover
+  state explicitly: `recording_control.clip_seconds = 0` and
+  `rollover.status = "not_requested"` with `rollover.rolling_supported =
+  false`. Cropped recordings are validated as external-IPC `single_clip`
+  sidecars today; safe cropped rolling clips still require separate session
+  index, per-clip crop metadata/keyframe, and validation plumbing before they
+  should be exposed as supported.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

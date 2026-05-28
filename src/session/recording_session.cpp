@@ -294,6 +294,58 @@ std::string external_crop_contract_validation_error(const nlohmann::json& contra
     if (!contract.contains("validation_errors") ||
         !contract["validation_errors"].is_array() ||
         contract["validation_errors"].empty()) {
+        if (contract.contains("recording_control") &&
+            contract["recording_control"].is_object()) {
+            const nlohmann::json& control = contract["recording_control"];
+            const int record_for_seconds =
+                control.contains("record_for_seconds") &&
+                        control["record_for_seconds"].is_number_integer()
+                    ? control["record_for_seconds"].get<int>()
+                    : 0;
+            const int clip_seconds =
+                control.contains("clip_seconds") && control["clip_seconds"].is_number_integer()
+                    ? control["clip_seconds"].get<int>()
+                    : 0;
+            if (record_for_seconds != 0 || clip_seconds != 0) {
+                return "external crop recorder contract invalid; crop recorder recording_control must remain single_clip";
+            }
+        }
+        if (contract.contains("rollover") &&
+            contract["rollover"].is_object() &&
+            contract["rollover"].value("requested", false)) {
+            return "external crop recorder contract invalid; crop rolling clips are not supported";
+        }
+        if (contract.contains("streams") && contract["streams"].is_object()) {
+            for (auto it = contract["streams"].begin(); it != contract["streams"].end(); ++it) {
+                const nlohmann::json& stream = it.value();
+                if (!stream.is_object()) {
+                    continue;
+                }
+                if (stream.contains("recording_control") &&
+                    stream["recording_control"].is_object()) {
+                    const nlohmann::json& control = stream["recording_control"];
+                    const int record_for_seconds =
+                        control.contains("record_for_seconds") &&
+                                control["record_for_seconds"].is_number_integer()
+                            ? control["record_for_seconds"].get<int>()
+                            : 0;
+                    const int clip_seconds =
+                        control.contains("clip_seconds") && control["clip_seconds"].is_number_integer()
+                            ? control["clip_seconds"].get<int>()
+                            : 0;
+                    if (record_for_seconds != 0 || clip_seconds != 0) {
+                        return "external crop recorder contract invalid; " + it.key() +
+                            " recording_control must remain single_clip";
+                    }
+                }
+                if (stream.contains("rollover") &&
+                    stream["rollover"].is_object() &&
+                    stream["rollover"].value("requested", false)) {
+                    return "external crop recorder contract invalid; " + it.key() +
+                        " requests crop rolling clips, which are not supported";
+                }
+            }
+        }
         return {};
     }
     std::ostringstream message;
@@ -304,6 +356,28 @@ std::string external_crop_contract_validation_error(const nlohmann::json& contra
         }
     }
     return message.str();
+}
+
+nlohmann::json external_crop_single_clip_recording_control_json()
+{
+    return {
+        {"record_for_seconds", 0},
+        {"clip_seconds", 0}
+    };
+}
+
+nlohmann::json external_crop_rollover_json()
+{
+    return {
+        {"requested", false},
+        {"status", "not_requested"},
+        {"implementation", "none"},
+        {"seamless_writer_switch", false},
+        {"records_during_rollover", false},
+        {"output_kind", "crop"},
+        {"supported_mode", "single_clip"},
+        {"rolling_supported", false}
+    };
 }
 
 nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
@@ -326,6 +400,8 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_gop_routing", true},
         {"require_status", true},
         {"require_status_runtime", true},
+        {"recording_control", external_crop_single_clip_recording_control_json()},
+        {"rollover", external_crop_rollover_json()},
         {"require_recorder_gpu_separate_from_analytics",
          external_crop_recorder_require_separate_gpu_from_env()},
         {"validation_errors", nlohmann::json::array()},
@@ -392,6 +468,8 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"prewarm_slots", 4},
             {"prewarm_bytes", static_cast<uint64_t>(crop_size) * static_cast<uint64_t>(crop_size)},
             {"prewarm_peer_copy", true},
+            {"recording_control", external_crop_single_clip_recording_control_json()},
+            {"rollover", external_crop_rollover_json()},
             {"codec", "hevc"},
             {"preset", "p7"},
             {"tuning", "lossless"},
