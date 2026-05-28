@@ -252,6 +252,16 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_u64(rolling, "next_rollover_at_recording_frame_id");
             snapshot.rolling_frames_until_next_rollover =
                 optional_u64(rolling, "frames_until_next_rollover");
+            snapshot.rolling_completed_clip_count =
+                optional_u64(rolling, "completed_clip_count");
+            snapshot.rolling_last_completed_clip_index =
+                optional_int(rolling, "last_completed_clip_index");
+            snapshot.rolling_last_completed_clip_last_recording_frame_id =
+                optional_u64(rolling, "last_completed_clip_last_recording_frame_id");
+            snapshot.rolling_last_completed_clip_frame_count =
+                optional_u64(rolling, "last_completed_clip_frame_count");
+            snapshot.rolling_last_rollover_status =
+                optional_string(rolling, "last_rollover_status");
         }
         snapshot.worker_failed = optional_bool(parsed, "worker_failed");
         snapshot.error = optional_string(parsed, "error");
@@ -1364,6 +1374,14 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                  recorder_status.rolling_next_rollover_at_recording_frame_id},
                 {"rolling_frames_until_next_rollover",
                  recorder_status.rolling_frames_until_next_rollover},
+                {"rolling_completed_clip_count", recorder_status.rolling_completed_clip_count},
+                {"rolling_last_completed_clip_index",
+                 recorder_status.rolling_last_completed_clip_index},
+                {"rolling_last_completed_clip_last_recording_frame_id",
+                 recorder_status.rolling_last_completed_clip_last_recording_frame_id},
+                {"rolling_last_completed_clip_frame_count",
+                 recorder_status.rolling_last_completed_clip_frame_count},
+                {"rolling_last_rollover_status", recorder_status.rolling_last_rollover_status},
                 {"worker_failed", recorder_status.worker_failed},
                 {"error", recorder_status.error},
             }},

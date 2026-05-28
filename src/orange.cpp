@@ -2526,6 +2526,7 @@ struct GuiExternalRecorderStatusLine {
     uint64_t rolling_next_rollover_at_recording_frame_id = 0;
     std::string recorder_status_detail;
     std::string rolling_status_detail;
+    std::string rolling_last_rollover_detail;
 };
 
 GuiExternalRecorderStatusLine gui_external_recorder_status_line(
@@ -2576,6 +2577,21 @@ GuiExternalRecorderStatusLine gui_external_recorder_status_line(
                                << " frames_left="
                                << recorder_status.rolling_frames_until_next_rollover;
                         line.rolling_status_detail = detail.str();
+                        if (recorder_status.rolling_completed_clip_count > 0) {
+                            std::ostringstream last_detail;
+                            last_detail
+                                << camera
+                                << " completed_clip="
+                                << recorder_status.rolling_last_completed_clip_index
+                                << " status="
+                                << recorder_status.rolling_last_rollover_status
+                                << " last_frame="
+                                << recorder_status
+                                       .rolling_last_completed_clip_last_recording_frame_id
+                                << " frames="
+                                << recorder_status.rolling_last_completed_clip_frame_count;
+                            line.rolling_last_rollover_detail = last_detail.str();
+                        }
                     }
                 }
                 if (line.recorder_status_detail.empty()) {
@@ -2705,6 +2721,11 @@ void render_gui_external_recorder_status_line(
             line.rolling_status_detail.c_str(),
             line.rolling_process_count,
             line.process_count);
+    }
+    if (!line.rolling_last_rollover_detail.empty()) {
+        ImGui::TextDisabled(
+            "Last rollover: %s",
+            line.rolling_last_rollover_detail.c_str());
     }
     if (!line.error.empty()) {
         ImGui::TextWrapped("%s", line.error.c_str());

@@ -343,8 +343,9 @@ Each recorder process can also write its stream-level live status sidecar,
 normally named `Cam<serial>_external_status.json`. For rolling runs, that
 heartbeat includes a `rolling` object with the requested control values,
 GOP-aligned `clip_span_frames`, estimated `current_clip_index`,
-`next_rollover_at_recording_frame_id`, and `frames_until_next_rollover`. This
-is live progress telemetry; the final `rolling_output.clips[]` list in
+`next_rollover_at_recording_frame_id`, `frames_until_next_rollover`, completed
+clip count, and last completed rollover outcome. This is live progress
+telemetry; the final `rolling_output.clips[]` list in
 `external_recorder_summary.json` remains the authoritative clip artifact list.
 
 The provisional `external_recorder_session.json`,
@@ -413,7 +414,8 @@ GUI/session status:
   state are visible in the GUI. The status line shows heartbeat coverage plus
   recorder-side received/encoded frame totals when sidecars are present. For
   rolling full-frame runs it also shows the recorder's current clip index and
-  next GOP-aligned rollover boundary from the live status sidecar.
+  next GOP-aligned rollover boundary from the live status sidecar, plus the
+  last completed clip when a rollover has already occurred.
 - First GUI/session hardware validation passed on 2026-05-21:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`. Both cameras
   recorded `1645` submitted/ACKed/encoded frames with no external IPC

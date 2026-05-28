@@ -401,7 +401,12 @@ void test_process_poll_reads_status_sidecar()
             << "    \"target_frame_count\": 600,\n"
             << "    \"current_clip_index\": 1,\n"
             << "    \"next_rollover_at_recording_frame_id\": 401,\n"
-            << "    \"frames_until_next_rollover\": 37\n"
+            << "    \"frames_until_next_rollover\": 37,\n"
+            << "    \"completed_clip_count\": 1,\n"
+            << "    \"last_completed_clip_index\": 0,\n"
+            << "    \"last_completed_clip_last_recording_frame_id\": 200,\n"
+            << "    \"last_completed_clip_frame_count\": 200,\n"
+            << "    \"last_rollover_status\": \"completed\"\n"
             << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
@@ -437,6 +442,12 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar rolling current clip should parse");
     require(runtime.processes[0].recorder_status.rolling_frames_until_next_rollover == 37,
             "status sidecar rolling frame countdown should parse");
+    require(runtime.processes[0].recorder_status.rolling_completed_clip_count == 1,
+            "status sidecar rolling completed clip count should parse");
+    require(runtime.processes[0].recorder_status.rolling_last_completed_clip_index == 0,
+            "status sidecar rolling last completed clip should parse");
+    require(runtime.processes[0].recorder_status.rolling_last_rollover_status == "completed",
+            "status sidecar rolling last rollover status should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),
@@ -453,6 +464,12 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed rolling clip index");
     require(summary["processes"][0]["recorder_status"]["rolling_frames_until_next_rollover"] == 37,
             "runtime summary should include parsed rolling countdown");
+    require(summary["processes"][0]["recorder_status"]["rolling_completed_clip_count"] == 1,
+            "runtime summary should include parsed rolling completed clip count");
+    require(summary["processes"][0]["recorder_status"]["rolling_last_completed_clip_index"] == 0,
+            "runtime summary should include parsed rolling last completed clip");
+    require(summary["processes"][0]["recorder_status"]["rolling_last_rollover_status"] == "completed",
+            "runtime summary should include parsed rolling last rollover status");
 
     std::filesystem::remove(status_path);
 }

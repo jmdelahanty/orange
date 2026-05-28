@@ -538,9 +538,9 @@ Latest terminal-tail coalescing validation:
 
 - Add live GUI validation/soak coverage for external-recorder rolling
   finalization.
-- Add broader GUI runtime status for rolling clips, including last rollover
-  outcome. The first live heartbeat/status slice now surfaces current clip
-  index and next rollover frame from the external recorder sidecar.
+- Add live GUI validation/soak coverage for external-recorder rolling status.
+  The live heartbeat/status slice surfaces current clip index, next rollover
+  frame, and last completed clip outcome from the external recorder sidecar.
 - Add direct muxer-reported packet counters if they become available; current
   native indexes use ffprobe after finalization and external IPC indexes use
   recorder summary `packets_written`.

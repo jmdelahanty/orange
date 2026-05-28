@@ -593,6 +593,11 @@ struct RollingStatusSnapshot {
     int current_clip_index = 0;
     uint64_t next_rollover_at_recording_frame_id = 0;
     uint64_t frames_until_next_rollover = 0;
+    uint64_t completed_clip_count = 0;
+    int last_completed_clip_index = -1;
+    uint64_t last_completed_clip_last_recording_frame_id = 0;
+    uint64_t last_completed_clip_frame_count = 0;
+    std::string last_rollover_status = "none";
 };
 
 RollingStatusSnapshot rolling_status_from_progress(const Options& options,
@@ -730,7 +735,17 @@ bool write_recorder_status_json(const Options& options,
             out << "    \"next_rollover_at_recording_frame_id\": "
                 << rolling_status.next_rollover_at_recording_frame_id << ",\n";
             out << "    \"frames_until_next_rollover\": "
-                << rolling_status.frames_until_next_rollover << "\n";
+                << rolling_status.frames_until_next_rollover << ",\n";
+            out << "    \"completed_clip_count\": "
+                << rolling_status.completed_clip_count << ",\n";
+            out << "    \"last_completed_clip_index\": "
+                << rolling_status.last_completed_clip_index << ",\n";
+            out << "    \"last_completed_clip_last_recording_frame_id\": "
+                << rolling_status.last_completed_clip_last_recording_frame_id << ",\n";
+            out << "    \"last_completed_clip_frame_count\": "
+                << rolling_status.last_completed_clip_frame_count << ",\n";
+            out << "    \"last_rollover_status\": \""
+                << json_escape(rolling_status.last_rollover_status) << "\"\n";
             out << "  },\n";
             out << "  \"frames_received\": " << frames_received << ",\n";
             out << "  \"acks_sent\": " << acks_sent << ",\n";
@@ -3608,6 +3623,25 @@ int main(int argc, char** argv)
                 uint64_t frames_dropped = 0;
                 bool worker_failed = false;
                 collect_encode_progress(&frames_encoded, &frames_dropped, &worker_failed);
+                RollingStatusSnapshot rolling_status =
+                    rolling_status_from_progress(options, frame_count);
+                if (merged_output) {
+                    const MergedOutputSummary merged_summary = merged_output->summary();
+                    const std::vector<RollingClipOutputSummary>& clips =
+                        merged_summary.rolling.clips;
+                    rolling_status.completed_clip_count = clips.size();
+                    if (!clips.empty()) {
+                        const RollingClipOutputSummary& last_clip = clips.back();
+                        rolling_status.last_completed_clip_index =
+                            last_clip.clip_index;
+                        rolling_status.last_completed_clip_last_recording_frame_id =
+                            last_clip.last_recording_frame_id;
+                        rolling_status.last_completed_clip_frame_count =
+                            last_clip.frame_count;
+                        rolling_status.last_rollover_status =
+                            last_clip.failed ? "failed" : "completed";
+                    }
+                }
                 (void)write_recorder_status_json(
                     options,
                     observed_session_id,
@@ -3625,7 +3659,7 @@ int main(int argc, char** argv)
                     frames_dropped,
                     worker_failed,
                     error_message,
-                    rolling_status_from_progress(options, frame_count));
+                    rolling_status);
             };
         auto last_status_write = std::chrono::steady_clock::now();
 
