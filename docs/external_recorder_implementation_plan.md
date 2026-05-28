@@ -724,9 +724,10 @@ a stream-level `orange.external_recorder.status` heartbeat sidecar with
 listening, connected, running, finalizing, completed, and failed states. That
 sidecar is separate from the frame ACK protocol; supervised runtime now parses
 it into `processes[].recorder_status`, and the GUI status line displays
-heartbeat coverage plus recorder-side received/encoded totals. The remaining
-health work is an in-band protocol heartbeat/control plane for the production
-recorder. The first GUI PTP-stack guard also exists in the
+heartbeat coverage plus recorder-side received/encoded totals and storage
+preflight health. The remaining health work is an in-band protocol
+heartbeat/control plane for the production recorder. The first GUI PTP-stack
+guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
 `orange-gui-validation --ptp-stack-mode off|require|auto`, and autorun

@@ -451,7 +451,18 @@ void test_process_poll_reads_status_sidecar()
             << "    \"low_space\": false,\n"
             << "    \"min_free_bytes\": 123456789,\n"
             << "    \"low_space_warning_bytes\": 234567890,\n"
-            << "    \"paths\": []\n"
+            << "    \"paths\": [\n"
+            << "      {\n"
+            << "        \"path\": \"/tmp/orange_external_recorder_status_test\",\n"
+            << "        \"ok\": true,\n"
+            << "        \"meets_min_free\": true,\n"
+            << "        \"below_warning\": false,\n"
+            << "        \"capacity_bytes\": 1000000000,\n"
+            << "        \"free_bytes\": 900000000,\n"
+            << "        \"available_bytes\": 800000000,\n"
+            << "        \"error\": \"\"\n"
+            << "      }\n"
+            << "    ]\n"
             << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
@@ -503,6 +514,16 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar min free bytes should parse");
     require(runtime.processes[0].recorder_status.storage_low_space_warning_bytes == 234567890ULL,
             "status sidecar low-space warning bytes should parse");
+    require(runtime.processes[0].recorder_status.storage_path_count == 1,
+            "status sidecar storage path count should parse");
+    require(runtime.processes[0].recorder_status.storage_paths_ok_count == 1,
+            "status sidecar storage path ok count should parse");
+    require(runtime.processes[0].recorder_status.storage_paths_low_space_count == 0,
+            "status sidecar low-space path count should parse");
+    require(runtime.processes[0].recorder_status.storage_has_min_available_bytes,
+            "status sidecar storage min available flag should parse");
+    require(runtime.processes[0].recorder_status.storage_min_available_bytes == 800000000ULL,
+            "status sidecar storage min available bytes should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),
@@ -535,6 +556,16 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed min free bytes");
     require(summary["processes"][0]["recorder_status"]["storage_low_space_warning_bytes"] == 234567890ULL,
             "runtime summary should include parsed low-space warning bytes");
+    require(summary["processes"][0]["recorder_status"]["storage_path_count"] == 1,
+            "runtime summary should include parsed storage path count");
+    require(summary["processes"][0]["recorder_status"]["storage_paths_ok_count"] == 1,
+            "runtime summary should include parsed storage path ok count");
+    require(summary["processes"][0]["recorder_status"]["storage_paths_low_space_count"] == 0,
+            "runtime summary should include parsed storage low-space path count");
+    require(summary["processes"][0]["recorder_status"]["storage_has_min_available_bytes"].get<bool>(),
+            "runtime summary should include parsed storage min available flag");
+    require(summary["processes"][0]["recorder_status"]["storage_min_available_bytes"] == 800000000ULL,
+            "runtime summary should include parsed storage min available bytes");
 
 
     std::filesystem::remove(status_path);

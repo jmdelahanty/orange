@@ -131,7 +131,10 @@ External recorder storage safety now has a first implementation slice:
 `--low-space-warning-bytes`, reports `storage_preflight` in status/summary
 JSON, fails before listening when the hard minimum is not met, and the external
 session/GUI validators reject summaries or status sidecars that report failed
-storage preflight or low-space warnings.
+storage preflight or low-space warnings. The GUI recorder status line and
+summary tooling now surface storage health, path counts, and minimum available
+bytes from the live status heartbeat so low-space conditions are visible before
+post-run validation.
 
 ## Implementation Plan
 

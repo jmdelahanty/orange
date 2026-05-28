@@ -48,6 +48,25 @@ def write_external_recorder_status_fixture(
     summary_path = artifact_root / f"{name_prefix}_summary.json"
     status_path = artifact_root / f"{name_prefix}_status.json"
     runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
+    storage_preflight = {
+        "checked": True,
+        "ok": True,
+        "low_space": False,
+        "min_free_bytes": 1024,
+        "low_space_warning_bytes": 2048,
+        "paths": [
+            {
+                "path": str(artifact_root),
+                "ok": True,
+                "meets_min_free": True,
+                "below_warning": False,
+                "capacity_bytes": 8192,
+                "free_bytes": 6144,
+                "available_bytes": 4096,
+                "error": "",
+            }
+        ],
+    }
     write_text(
         summary_path,
         json.dumps(
@@ -55,6 +74,7 @@ def write_external_recorder_status_fixture(
                 "frames_received": rows,
                 "frames_encoded": rows,
                 "acks_sent": rows,
+                "storage_preflight": storage_preflight,
             }
         )
         + "\n",
@@ -71,6 +91,7 @@ def write_external_recorder_status_fixture(
                 "frames_encoded": rows,
                 "acks_sent": rows,
                 "worker_failed": False,
+                "storage_preflight": storage_preflight,
             }
         )
         + "\n",
@@ -93,6 +114,14 @@ def write_external_recorder_status_fixture(
                                 if runtime_heartbeat_sequence is not None
                                 else heartbeat_sequence
                             ),
+                            "storage_checked": True,
+                            "storage_ok": True,
+                            "storage_low_space": False,
+                            "storage_path_count": 1,
+                            "storage_paths_ok_count": 1,
+                            "storage_paths_low_space_count": 0,
+                            "storage_has_min_available_bytes": True,
+                            "storage_min_available_bytes": 4096,
                         },
                     }
                 ],
@@ -506,6 +535,19 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
         require(full["counts_match_summary"] is True, "full status counts should match summary")
         require(full["heartbeat_sequence"] == 4, "full heartbeat should parse")
         require(full["runtime_heartbeat_sequence"] == 4, "full runtime heartbeat should parse")
+        require(full["storage_checked"] is True, "full storage checked flag should parse")
+        require(full["storage_ok"] is True, "full storage ok flag should parse")
+        require(full["storage_low_space"] is False, "full storage low-space flag should parse")
+        require(full["storage_path_count"] == 1, "full storage path count should parse")
+        require(full["storage_paths_ok_count"] == 1, "full storage path ok count should parse")
+        require(
+            full["storage_min_available_bytes"] == 4096,
+            "full storage min available bytes should parse",
+        )
+        require(
+            full["runtime_storage_min_available_bytes"] == 4096,
+            "full runtime storage min available bytes should parse",
+        )
         require(crop["frames_received"] == 2, "crop received count should parse")
         require(crop["frames_encoded"] == 2, "crop encoded count should parse")
         require(crop["acks_sent"] == 2, "crop ACK count should parse")

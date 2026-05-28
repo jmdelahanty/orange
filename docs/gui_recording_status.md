@@ -566,8 +566,8 @@ Current GUI validation tooling:
   `External Recorder Status` section when recorder contracts are present. It
   reads full-frame and crop `status_json` heartbeat sidecars, the corresponding
   supervisor runtime JSON, and summary counts so compact run summaries expose
-  recorder completion, heartbeat, ACK/received/encoded totals, and count
-  mismatches.
+  recorder completion, heartbeat, ACK/received/encoded totals, storage
+  preflight health, and count mismatches.
 - `scripts/validate_gui_ptp_recording.py <recording_folder>` validates one
   explicit GUI recording artifact.
 - `scripts/validate_gui_ptp_recording.py --latest` validates the newest GUI

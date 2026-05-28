@@ -683,6 +683,10 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
     failed_payload["external_recorder_status"]["crop"]["2010096"]["status"] = "failed"
     failed_payload["external_recorder_status"]["crop"]["2010096"]["runtime_valid"] = False
     failed = compare.summarize_validation("failed", failed_payload)
+    storage_payload = sample_payload()
+    storage_payload["external_recorder_status"]["full"]["2010095"]["storage_ok"] = True
+    storage_payload["external_recorder_status"]["full"]["2010095"]["storage_low_space"] = True
+    storage = compare.summarize_validation("storage", storage_payload)
     args = SimpleNamespace(
         require_pass=False,
         require_zero_crop_drops=False,
@@ -701,7 +705,7 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
     )
 
     require(not compare.threshold_failures(args, [healthy]), "healthy recorder status should pass")
-    failures = compare.threshold_failures(args, [missing, failed])
+    failures = compare.threshold_failures(args, [missing, failed, storage])
     require(
         any("external recorder status missing" in failure for failure in failures),
         "missing external status should fail",
@@ -709,6 +713,10 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
     require(
         any("crop:2010096" in failure for failure in failures),
         "failed external status stream should be named",
+    )
+    require(
+        any("full:2010095" in failure for failure in failures),
+        "low-space external status stream should be named",
     )
 
 

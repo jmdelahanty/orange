@@ -130,6 +130,11 @@ struct RecorderStatusSnapshot {
     bool storage_low_space = false;
     uint64_t storage_min_free_bytes = 0;
     uint64_t storage_low_space_warning_bytes = 0;
+    uint64_t storage_path_count = 0;
+    uint64_t storage_paths_ok_count = 0;
+    uint64_t storage_paths_low_space_count = 0;
+    bool storage_has_min_available_bytes = false;
+    uint64_t storage_min_available_bytes = 0;
     std::string error;
 };
 

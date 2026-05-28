@@ -2873,15 +2873,46 @@ struct GuiExternalRecorderStatusLine {
     int recorder_status_valid_count = 0;
     uint64_t frames_received = 0;
     uint64_t frames_encoded = 0;
+    int storage_checked_count = 0;
+    int storage_healthy_count = 0;
+    int storage_low_space_count = 0;
+    uint64_t storage_path_count = 0;
+    uint64_t storage_paths_ok_count = 0;
+    bool storage_has_min_available_bytes = false;
+    uint64_t storage_min_available_bytes = 0;
     int rolling_process_count = 0;
     int rolling_current_clip_index = -1;
     int rolling_clip_seconds = 0;
     uint64_t rolling_frames_until_next_rollover = 0;
     uint64_t rolling_next_rollover_at_recording_frame_id = 0;
     std::string recorder_status_detail;
+    std::string storage_status_detail;
     std::string rolling_status_detail;
     std::string rolling_last_rollover_detail;
 };
+
+std::string gui_format_storage_bytes(uint64_t bytes)
+{
+    static constexpr const char* kUnits[] = {"B", "KiB", "MiB", "GiB", "TiB"};
+    double value = static_cast<double>(bytes);
+    size_t unit_index = 0;
+    constexpr size_t kUnitCount = sizeof(kUnits) / sizeof(kUnits[0]);
+    while (value >= 1024.0 && unit_index + 1 < kUnitCount) {
+        value /= 1024.0;
+        ++unit_index;
+    }
+
+    std::ostringstream out;
+    if (unit_index == 0 || value >= 100.0) {
+        out << std::fixed << std::setprecision(0);
+    } else if (value >= 10.0) {
+        out << std::fixed << std::setprecision(1);
+    } else {
+        out << std::fixed << std::setprecision(2);
+    }
+    out << value << ' ' << kUnits[unit_index];
+    return out.str();
+}
 
 GuiExternalRecorderStatusLine gui_external_recorder_status_line(
     const char* label,
@@ -2907,6 +2938,76 @@ GuiExternalRecorderStatusLine gui_external_recorder_status_line(
                 ++line.recorder_status_valid_count;
                 line.frames_received += recorder_status.frames_received;
                 line.frames_encoded += recorder_status.frames_encoded;
+                if (recorder_status.storage_checked) {
+                    ++line.storage_checked_count;
+                    const bool storage_healthy =
+                        recorder_status.storage_ok &&
+                        !recorder_status.storage_low_space;
+                    if (storage_healthy) {
+                        ++line.storage_healthy_count;
+                    }
+                    if (recorder_status.storage_low_space) {
+                        ++line.storage_low_space_count;
+                    }
+                    line.storage_path_count += recorder_status.storage_path_count;
+                    line.storage_paths_ok_count +=
+                        recorder_status.storage_paths_ok_count;
+                    if (recorder_status.storage_has_min_available_bytes &&
+                        (!line.storage_has_min_available_bytes ||
+                         recorder_status.storage_min_available_bytes <
+                             line.storage_min_available_bytes)) {
+                        line.storage_min_available_bytes =
+                            recorder_status.storage_min_available_bytes;
+                        line.storage_has_min_available_bytes = true;
+                    }
+                    if (line.storage_status_detail.empty()) {
+                        const std::string camera =
+                            process.camera_serial.empty()
+                                ? process.stream_id
+                                : ("Cam" + process.camera_serial);
+                        std::ostringstream detail;
+                        detail
+                            << camera << " storage="
+                            << (storage_healthy
+                                    ? "ok"
+                                    : (recorder_status.storage_low_space
+                                           ? "low_space"
+                                           : "failed"))
+                            << " paths=" << recorder_status.storage_paths_ok_count
+                            << "/" << recorder_status.storage_path_count;
+                        if (recorder_status.storage_has_min_available_bytes) {
+                            detail << " min_avail="
+                                   << gui_format_storage_bytes(
+                                          recorder_status
+                                              .storage_min_available_bytes);
+                        }
+                        if (recorder_status.storage_min_free_bytes > 0) {
+                            detail << " min_required="
+                                   << gui_format_storage_bytes(
+                                          recorder_status.storage_min_free_bytes);
+                        }
+                        if (recorder_status.storage_low_space_warning_bytes > 0) {
+                            detail << " warn_below="
+                                   << gui_format_storage_bytes(
+                                          recorder_status
+                                              .storage_low_space_warning_bytes);
+                        }
+                        line.storage_status_detail = detail.str();
+                    }
+                    if (!storage_healthy) {
+                        ++line.error_count;
+                        if (line.error.empty()) {
+                            const std::string camera =
+                                process.camera_serial.empty()
+                                    ? process.stream_id
+                                    : ("Cam" + process.camera_serial);
+                            line.error = camera + ": recorder storage ";
+                            line.error += recorder_status.storage_low_space
+                                ? "below low-space threshold"
+                                : "preflight failed";
+                        }
+                    }
+                }
                 if (recorder_status.rolling_enabled) {
                     ++line.rolling_process_count;
                     if (line.rolling_status_detail.empty()) {
@@ -3068,6 +3169,32 @@ void render_gui_external_recorder_status_line(
             line.recorder_status_detail.c_str(),
             static_cast<unsigned long long>(line.frames_received),
             static_cast<unsigned long long>(line.frames_encoded));
+    }
+    if (line.storage_checked_count > 0) {
+        const bool storage_healthy =
+            line.storage_healthy_count == line.storage_checked_count &&
+            line.storage_low_space_count == 0;
+        ImVec4 storage_color = storage_healthy
+            ? ImVec4{0.25f, 0.85f, 0.35f, 1.0f}
+            : ImVec4{1.0f, 0.25f, 0.20f, 1.0f};
+        const std::string min_available =
+            line.storage_has_min_available_bytes
+                ? gui_format_storage_bytes(line.storage_min_available_bytes)
+                : "unknown";
+        ImGui::TextColored(
+            storage_color,
+            "Storage: %d/%d healthy, low=%d",
+            line.storage_healthy_count,
+            line.storage_checked_count,
+            line.storage_low_space_count);
+        ImGui::TextDisabled(
+            "Storage paths: %llu/%llu ok, min available=%s",
+            static_cast<unsigned long long>(line.storage_paths_ok_count),
+            static_cast<unsigned long long>(line.storage_path_count),
+            min_available.c_str());
+        if (!line.storage_status_detail.empty()) {
+            ImGui::TextDisabled("%s", line.storage_status_detail.c_str());
+        }
     }
     if (!line.rolling_status_detail.empty()) {
         ImGui::TextDisabled(

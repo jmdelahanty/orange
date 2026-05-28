@@ -479,6 +479,41 @@ def status_path_from_stream(recording_folder: Path, stream: dict[str, Any]) -> P
     return None
 
 
+def storage_preflight_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    storage = nested_dict(payload, "storage_preflight")
+    if not storage:
+        return {}
+    paths = storage.get("paths")
+    paths = paths if isinstance(paths, list) else []
+    min_available_bytes: int | None = None
+    paths_ok_count = 0
+    paths_low_space_count = 0
+    for raw_path in paths:
+        path = raw_path if isinstance(raw_path, dict) else {}
+        if path.get("ok") is True:
+            paths_ok_count += 1
+        if path.get("below_warning") is True:
+            paths_low_space_count += 1
+        available_bytes = int_value(path.get("available_bytes"))
+        if available_bytes is not None:
+            min_available_bytes = (
+                available_bytes
+                if min_available_bytes is None
+                else min(min_available_bytes, available_bytes)
+            )
+    return {
+        "checked": storage.get("checked"),
+        "ok": storage.get("ok"),
+        "low_space": storage.get("low_space"),
+        "min_free_bytes": int_value(storage.get("min_free_bytes")),
+        "low_space_warning_bytes": int_value(storage.get("low_space_warning_bytes")),
+        "path_count": len(paths),
+        "paths_ok_count": paths_ok_count,
+        "paths_low_space_count": paths_low_space_count,
+        "min_available_bytes": min_available_bytes,
+    }
+
+
 def runtime_processes_by_status_path(runtime: dict[str, Any]) -> dict[str, dict[str, Any]]:
     processes = runtime.get("processes")
     processes = processes if isinstance(processes, list) else []
@@ -533,6 +568,7 @@ def summarize_external_recorder_status_contract(
         frames_received = int_value(status.get("frames_received"))
         frames_encoded = int_value(status.get("frames_encoded"))
         acks_sent = int_value(status.get("acks_sent"))
+        storage = storage_preflight_summary(status)
         counts_match_summary = (
             None if not summary else (
                 frames_received == int_value(summary.get("frames_received"))
@@ -565,6 +601,21 @@ def summarize_external_recorder_status_contract(
             "runtime_valid": runtime_status.get("valid") is True,
             "runtime_status": runtime_status.get("status"),
             "runtime_heartbeat_sequence": int_value(runtime_status.get("heartbeat_sequence")),
+            "storage_checked": storage.get("checked"),
+            "storage_ok": storage.get("ok"),
+            "storage_low_space": storage.get("low_space"),
+            "storage_min_free_bytes": storage.get("min_free_bytes"),
+            "storage_low_space_warning_bytes": storage.get("low_space_warning_bytes"),
+            "storage_path_count": storage.get("path_count"),
+            "storage_paths_ok_count": storage.get("paths_ok_count"),
+            "storage_paths_low_space_count": storage.get("paths_low_space_count"),
+            "storage_min_available_bytes": storage.get("min_available_bytes"),
+            "runtime_storage_checked": runtime_status.get("storage_checked"),
+            "runtime_storage_ok": runtime_status.get("storage_ok"),
+            "runtime_storage_low_space": runtime_status.get("storage_low_space"),
+            "runtime_storage_min_available_bytes": int_value(
+                runtime_status.get("storage_min_available_bytes")
+            ),
         }
     return out
 
@@ -1268,6 +1319,25 @@ def fmt_int(value: Any) -> str:
     return "n/a" if value is None else str(value)
 
 
+def fmt_bytes(value: Any) -> str:
+    byte_count = int_value(value)
+    if byte_count is None:
+        return "n/a"
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    scaled = float(byte_count)
+    unit_index = 0
+    while scaled >= 1024.0 and unit_index + 1 < len(units):
+        scaled /= 1024.0
+        unit_index += 1
+    if unit_index == 0 or scaled >= 100.0:
+        digits = 0
+    elif scaled >= 10.0:
+        digits = 1
+    else:
+        digits = 2
+    return f"{scaled:.{digits}f} {units[unit_index]}"
+
+
 def fmt_float_unit(value: Any, digits: int, unit: str) -> str:
     return "n/a" if value is None else f"{float(value):.{digits}f}{unit}"
 
@@ -1476,16 +1546,43 @@ def print_human(summary: dict[str, Any]) -> None:
                     health_parts.append("counts_mismatch")
                 if status.get("worker_failed") is True:
                     health_parts.append("worker_failed")
+                if status.get("storage_ok") is False:
+                    health_parts.append("storage_failed")
+                if status.get("storage_low_space") is True:
+                    health_parts.append("storage_low_space")
+                if status.get("runtime_storage_ok") is False:
+                    health_parts.append("runtime_storage_failed")
+                if status.get("runtime_storage_low_space") is True:
+                    health_parts.append("runtime_storage_low_space")
                 if status.get("error"):
                     health_parts.append(f"error={status.get('error')}")
                 health = "ok" if not health_parts else ",".join(health_parts)
+                storage = "n/a"
+                if status.get("storage_checked") is True:
+                    storage_state = (
+                        "ok"
+                        if status.get("storage_ok") is True
+                        and status.get("storage_low_space") is not True
+                        else (
+                            "low_space"
+                            if status.get("storage_low_space") is True
+                            else "failed"
+                        )
+                    )
+                    storage = (
+                        f"{storage_state} "
+                        f"paths={fmt_int(status.get('storage_paths_ok_count'))}/"
+                        f"{fmt_int(status.get('storage_path_count'))} "
+                        f"min_avail={fmt_bytes(status.get('storage_min_available_bytes'))}"
+                    )
                 print(
                     f"  {group_name} Cam{serial}: {health} "
                     f"heartbeat={fmt_int(status.get('heartbeat_sequence'))} "
                     f"runtime_heartbeat={fmt_int(status.get('runtime_heartbeat_sequence'))} "
                     f"received={fmt_int(status.get('frames_received'))} "
                     f"encoded={fmt_int(status.get('frames_encoded'))} "
-                    f"acks={fmt_int(status.get('acks_sent'))}"
+                    f"acks={fmt_int(status.get('acks_sent'))} "
+                    f"storage={storage}"
                 )
     else:
         print("  no external recorder contracts found")

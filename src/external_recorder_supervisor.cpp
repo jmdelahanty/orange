@@ -275,6 +275,31 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_u64(storage, "min_free_bytes");
             snapshot.storage_low_space_warning_bytes =
                 optional_u64(storage, "low_space_warning_bytes");
+            if (storage.contains("paths") && storage["paths"].is_array()) {
+                for (const nlohmann::json& path : storage["paths"]) {
+                    if (!path.is_object()) {
+                        continue;
+                    }
+                    ++snapshot.storage_path_count;
+                    if (optional_bool(path, "ok")) {
+                        ++snapshot.storage_paths_ok_count;
+                    }
+                    if (optional_bool(path, "below_warning")) {
+                        ++snapshot.storage_paths_low_space_count;
+                    }
+                    if (path.contains("available_bytes") &&
+                        (path["available_bytes"].is_number_unsigned() ||
+                         path["available_bytes"].is_number_integer())) {
+                        const uint64_t available_bytes =
+                            optional_u64(path, "available_bytes");
+                        if (!snapshot.storage_has_min_available_bytes ||
+                            available_bytes < snapshot.storage_min_available_bytes) {
+                            snapshot.storage_min_available_bytes = available_bytes;
+                            snapshot.storage_has_min_available_bytes = true;
+                        }
+                    }
+                }
+            }
         }
         snapshot.error = optional_string(parsed, "error");
         snapshot.valid =
@@ -1434,6 +1459,14 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                 {"storage_min_free_bytes", recorder_status.storage_min_free_bytes},
                 {"storage_low_space_warning_bytes",
                  recorder_status.storage_low_space_warning_bytes},
+                {"storage_path_count", recorder_status.storage_path_count},
+                {"storage_paths_ok_count", recorder_status.storage_paths_ok_count},
+                {"storage_paths_low_space_count",
+                 recorder_status.storage_paths_low_space_count},
+                {"storage_has_min_available_bytes",
+                 recorder_status.storage_has_min_available_bytes},
+                {"storage_min_available_bytes",
+                 recorder_status.storage_min_available_bytes},
                 {"error", recorder_status.error},
             }},
         });

@@ -546,6 +546,10 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
             status_value != "completed"
             or status.get("runtime_present") is not True
             or status.get("runtime_valid") is not True
+            or status.get("storage_ok") is False
+            or status.get("storage_low_space") is True
+            or status.get("runtime_storage_ok") is False
+            or status.get("runtime_storage_low_space") is True
         ):
             external_recorder_status_failed_streams.append(f"{group_name}:{stream_name}")
 
