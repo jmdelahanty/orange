@@ -256,6 +256,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
+    "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/shared_recording_output.cpp"
     "${SRC_DIR}/encoder_preprocess_worker.cpp"
@@ -282,6 +283,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/external_recorder_lifecycle.cpp"
     "${SRC_DIR}/external_recorder_supervisor.cpp"
     "${SRC_DIR}/session/external_crop_recorder_config.cpp"
+    "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
     "${SRC_DIR}/session/recording_session.cpp"
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
@@ -372,6 +374,14 @@ if(BUILD_TESTING)
     target_include_directories(recording_output_descriptor_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(recording_output_descriptor_tests PRIVATE cxx_std_17)
     add_test(NAME recording_output_descriptor_tests COMMAND recording_output_descriptor_tests)
+
+    add_executable(crop_rolling_sidecars_tests
+        "tools/crop_rolling_sidecars_tests.cpp"
+        "${SRC_DIR}/session/crop_rolling_sidecars.cpp"
+    )
+    target_include_directories(crop_rolling_sidecars_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(crop_rolling_sidecars_tests PRIVATE cxx_std_17)
+    add_test(NAME crop_rolling_sidecars_tests COMMAND crop_rolling_sidecars_tests)
 
     add_executable(video_encode_profile_tests
         "tools/video_encode_profile_tests.cpp"

@@ -813,7 +813,10 @@ Notes:
   false`. Cropped recordings are validated as external-IPC `single_clip`
   sidecars today; safe cropped rolling clips still require separate session
   index, per-clip crop metadata/keyframe, and validation plumbing before they
-  should be exposed as supported.
+  should be exposed as supported. The crop IPC sender now uses the external
+  crop recorder GOP=1 boundary for descriptor metadata, and the session helper
+  `split_recording_frame_csv_by_ranges` can create per-clip crop metadata/perf
+  sidecars from root crop CSVs once crop finalization is wired for rolling.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

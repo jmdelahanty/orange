@@ -435,9 +435,10 @@ camera_control_(camera_control)
               << name << ": " << crop_recording_sink_mode_ << std::endl;
 
     if (external_crop_recording_enabled()) {
-        const int gop_length = camera_params_->recording.encode.gop_length > 0
-            ? camera_params_->recording.encode.gop_length
-            : static_cast<int>(std::max(1u, camera_params_->frame_rate));
+        // The external crop recorder contract uses GOP=1 so every crop frame is
+        // independently routable and future crop clip rollover can use exact
+        // recording-frame boundaries.
+        const int gop_length = 1;
         external_crop_ipc_ = std::make_unique<ExternalCropIpcClient>(
             camera_params_->camera_serial,
             camera_params_->gpu_id,

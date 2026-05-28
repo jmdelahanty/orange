@@ -96,6 +96,12 @@ path: generated crop contracts and `recording_backend.crop_recording` declare
 `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`, and
 `rollover.rolling_supported = false`; validators fail if crop rolling is
 accidentally requested before the crop clip/index contract exists.
+The first crop-rolling prerequisite now exists: `CropAndEncodeWorker` tags
+external crop IPC descriptors with the crop recorder's GOP=1 boundary, and
+`orange::session::split_recording_frame_csv_by_ranges` can split Orange-written
+crop metadata/perf CSVs into per-clip sidecars by continuous
+`recording_frame_id` ranges. That helper is not yet wired into GUI crop
+finalization, so crop rolling remains unsupported.
 GUI full-frame external-recorder contract materialization now preserves a
 configured `recording_control`/`rollover` object instead of silently overwriting
 it with `clip_seconds = 0`. GUI full-frame external-recorder finalization now
@@ -162,7 +168,8 @@ GUI full-frame work is live validation/soak coverage.
   - external recorder production/GUI supervision path (headless diagnostic
     external IPC and GUI finalization bridge are now implemented; live GUI
     rolling validation still needed),
-  - `CropAndEncodeWorker` crop recording path,
+  - `CropAndEncodeWorker` crop recording path (first prerequisite helper and
+    GOP descriptor alignment exist; finalization/index wiring still needed),
   - `GPUVideoEncoder` path (headless / legacy path where used).
 - [x] Keep headless full-frame `recording_frame_id` continuity across segments.
 
