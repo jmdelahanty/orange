@@ -2063,8 +2063,18 @@ def check_ipc_protocol_payload(
         "client_drain_messages_received": integer(
             protocol.get("client_drain_messages_received")
         ),
+        "client_finalize_messages_received": integer(
+            protocol.get("client_finalize_messages_received")
+        ),
         "client_drain_received": protocol.get("client_drain_received"),
         "client_finalize_received": protocol.get("client_finalize_received"),
+        "client_control_state": protocol.get("client_control_state"),
+        "client_drain_first_frame_count": integer(
+            protocol.get("client_drain_first_frame_count")
+        ),
+        "client_finalize_frame_count": integer(
+            protocol.get("client_finalize_frame_count")
+        ),
     }
     reporter.check(
         protocol.get("name") == "orange.external_recorder.ipc",
@@ -2107,6 +2117,13 @@ def check_ipc_protocol_payload(
             f"{prefix} client drain messages received",
             f"{prefix} client_drain_messages_received={drain_count}",
         )
+    finalize_count = integer(protocol.get("client_finalize_messages_received"))
+    if finalize_count is not None:
+        reporter.check(
+            finalize_count > 0,
+            f"{prefix} client finalize messages received",
+            f"{prefix} client_finalize_messages_received={finalize_count}",
+        )
     if "client_drain_received" in protocol:
         reporter.check(
             protocol.get("client_drain_received") is True,
@@ -2118,6 +2135,23 @@ def check_ipc_protocol_payload(
             protocol.get("client_finalize_received") is True,
             f"{prefix} client finalize control received",
             f"{prefix} client_finalize_received={protocol.get('client_finalize_received')!r}",
+        )
+    if "client_control_state" in protocol:
+        reporter.check(
+            protocol.get("client_control_state") == "finalize_requested",
+            f"{prefix} client control state reached finalize_requested",
+            f"{prefix} client_control_state={protocol.get('client_control_state')!r}",
+        )
+    drain_frame_count = integer(protocol.get("client_drain_first_frame_count"))
+    finalize_frame_count = integer(protocol.get("client_finalize_frame_count"))
+    if drain_frame_count is not None and finalize_frame_count is not None:
+        reporter.check(
+            drain_frame_count <= finalize_frame_count,
+            f"{prefix} client drain frame count precedes finalize",
+            (
+                f"{prefix} client_drain_first_frame_count={drain_frame_count}, "
+                f"client_finalize_frame_count={finalize_frame_count}"
+            ),
         )
     return summary
 
@@ -2473,6 +2507,18 @@ def check_external_recorder_status_contract(
                         f"{runtime_drain_count}"
                     ),
                 )
+            runtime_finalize_count = integer(
+                runtime_status.get("client_finalize_messages_received")
+            )
+            if runtime_finalize_count is not None:
+                reporter.check(
+                    runtime_finalize_count > 0,
+                    f"{prefix} runtime client finalize messages received",
+                    (
+                        f"{prefix} runtime client_finalize_messages_received="
+                        f"{runtime_finalize_count}"
+                    ),
+                )
             if "client_drain_received" in runtime_status:
                 reporter.check(
                     runtime_status.get("client_drain_received") is True,
@@ -2480,6 +2526,34 @@ def check_external_recorder_status_contract(
                     (
                         f"{prefix} runtime client_drain_received="
                         f"{runtime_status.get('client_drain_received')!r}"
+                    ),
+                )
+            if "client_control_state" in runtime_status:
+                reporter.check(
+                    runtime_status.get("client_control_state") == "finalize_requested",
+                    f"{prefix} runtime client control state reached finalize_requested",
+                    (
+                        f"{prefix} runtime client_control_state="
+                        f"{runtime_status.get('client_control_state')!r}"
+                    ),
+                )
+            runtime_drain_frame_count = integer(
+                runtime_status.get("client_drain_first_frame_count")
+            )
+            runtime_finalize_frame_count = integer(
+                runtime_status.get("client_finalize_frame_count")
+            )
+            if (
+                runtime_drain_frame_count is not None
+                and runtime_finalize_frame_count is not None
+            ):
+                reporter.check(
+                    runtime_drain_frame_count <= runtime_finalize_frame_count,
+                    f"{prefix} runtime client drain frame count precedes finalize",
+                    (
+                        f"{prefix} runtime client_drain_first_frame_count="
+                        f"{runtime_drain_frame_count}, "
+                        f"client_finalize_frame_count={runtime_finalize_frame_count}"
                     ),
                 )
             if "client_finalize_received" in runtime_status:

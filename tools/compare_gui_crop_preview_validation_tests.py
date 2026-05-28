@@ -33,8 +33,12 @@ def add_external_protocol(status: dict) -> dict:
             "client_hello_received": True,
             "client_control_messages_received": 2,
             "client_drain_messages_received": 1,
+            "client_finalize_messages_received": 1,
             "client_drain_received": True,
             "client_finalize_received": True,
+            "client_drain_first_frame_count": 3,
+            "client_finalize_frame_count": 3,
+            "client_control_state": "finalize_requested",
         }
     )
     return status

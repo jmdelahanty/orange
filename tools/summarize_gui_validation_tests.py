@@ -76,8 +76,12 @@ def write_external_recorder_status_fixture(
         "recorder_status_send_failures": 0,
         "client_control_messages_received": 2,
         "client_drain_messages_received": 1,
+        "client_finalize_messages_received": 1,
         "client_drain_received": True,
         "client_finalize_received": True,
+        "client_drain_first_frame_count": rows,
+        "client_finalize_frame_count": rows,
+        "client_control_state": "finalize_requested",
         "last_client_control_command": "finalize",
         "last_client_control_reason": "recording_drained",
     }
@@ -150,8 +154,12 @@ def write_external_recorder_status_fixture(
                             "recorder_status_send_failures": 0,
                             "client_control_messages_received": 2,
                             "client_drain_messages_received": 1,
+                            "client_finalize_messages_received": 1,
                             "client_drain_received": True,
                             "client_finalize_received": True,
+                            "client_drain_first_frame_count": rows,
+                            "client_finalize_frame_count": rows,
+                            "client_control_state": "finalize_requested",
                         },
                     }
                 ],
@@ -589,6 +597,14 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
         require(full["client_drain_received"] is True, "full client drain should parse")
         require(full["client_drain_messages_received"] == 1, "full client drain count should parse")
         require(
+            full["client_finalize_messages_received"] == 1,
+            "full client finalize count should parse",
+        )
+        require(
+            full["client_control_state"] == "finalize_requested",
+            "full client control state should parse",
+        )
+        require(
             full["runtime_client_finalize_received"] is True,
             "full runtime client finalize should parse",
         )
@@ -599,6 +615,14 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
         require(
             full["runtime_client_drain_messages_received"] == 1,
             "full runtime client drain count should parse",
+        )
+        require(
+            full["runtime_client_finalize_messages_received"] == 1,
+            "full runtime client finalize count should parse",
+        )
+        require(
+            full["runtime_client_control_state"] == "finalize_requested",
+            "full runtime client control state should parse",
         )
         require(crop["frames_received"] == 2, "crop received count should parse")
         require(crop["frames_encoded"] == 2, "crop encoded count should parse")

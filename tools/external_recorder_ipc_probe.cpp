@@ -141,8 +141,12 @@ struct IpcProtocolState {
     uint64_t recorder_status_send_failures = 0;
     uint64_t client_control_messages_received = 0;
     uint64_t client_drain_messages_received = 0;
+    uint64_t client_finalize_messages_received = 0;
     bool client_drain_received = false;
     bool client_finalize_received = false;
+    uint64_t client_drain_first_frame_count = 0;
+    uint64_t client_finalize_frame_count = 0;
+    std::string client_control_state = "open";
     std::string last_client_control_command;
     std::string last_client_control_reason;
 };
@@ -805,10 +809,18 @@ void write_ipc_protocol_json(std::ostream& out,
         << state.client_control_messages_received << ",\n";
     out << indent << "  \"client_drain_messages_received\": "
         << state.client_drain_messages_received << ",\n";
+    out << indent << "  \"client_finalize_messages_received\": "
+        << state.client_finalize_messages_received << ",\n";
     out << indent << "  \"client_drain_received\": "
         << (state.client_drain_received ? "true" : "false") << ",\n";
     out << indent << "  \"client_finalize_received\": "
         << (state.client_finalize_received ? "true" : "false") << ",\n";
+    out << indent << "  \"client_drain_first_frame_count\": "
+        << state.client_drain_first_frame_count << ",\n";
+    out << indent << "  \"client_finalize_frame_count\": "
+        << state.client_finalize_frame_count << ",\n";
+    out << indent << "  \"client_control_state\": \""
+        << json_escape(state.client_control_state) << "\",\n";
     out << indent << "  \"last_client_control_command\": \""
         << json_escape(state.last_client_control_command) << "\",\n";
     out << indent << "  \"last_client_control_reason\": \""
@@ -4090,13 +4102,20 @@ int main(int argc, char** argv)
                 if (control.command ==
                     orange::external_recorder::ipc::kClientControlDrain) {
                     protocol_state.client_drain_messages_received++;
+                    if (!protocol_state.client_drain_received) {
+                        protocol_state.client_drain_first_frame_count = frame_count;
+                    }
                     protocol_state.client_drain_received = true;
+                    protocol_state.client_control_state = "draining";
                     write_status("drain_requested", {}, false);
                     continue;
                 }
                 if (control.command ==
                     orange::external_recorder::ipc::kClientControlFinalize) {
+                    protocol_state.client_finalize_messages_received++;
                     protocol_state.client_finalize_received = true;
+                    protocol_state.client_finalize_frame_count = frame_count;
+                    protocol_state.client_control_state = "finalize_requested";
                     write_status("finalize_requested", {}, false);
                     break;
                 }

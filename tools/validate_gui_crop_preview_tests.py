@@ -1052,8 +1052,12 @@ def external_ipc_protocol_payload() -> dict:
         "client_hello_received": True,
         "client_control_messages_received": 2,
         "client_drain_messages_received": 1,
+        "client_finalize_messages_received": 1,
         "client_drain_received": True,
         "client_finalize_received": True,
+        "client_drain_first_frame_count": 3,
+        "client_finalize_frame_count": 3,
+        "client_control_state": "finalize_requested",
     }
 
 
@@ -1194,8 +1198,12 @@ def write_external_recorder_status_fixture(
         "client_hello_received": True,
         "client_control_messages_received": 2,
         "client_drain_messages_received": 1,
+        "client_finalize_messages_received": 1,
         "client_drain_received": True,
         "client_finalize_received": True,
+        "client_drain_first_frame_count": rows,
+        "client_finalize_frame_count": rows,
+        "client_control_state": "finalize_requested",
     }
     if rolling:
         runtime_recorder_status.update(

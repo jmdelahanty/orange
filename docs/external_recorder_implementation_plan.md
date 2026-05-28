@@ -742,7 +742,8 @@ rolling clip finalization remains an internal recorder writer rotation rather
 than a socket teardown. `drain` is advisory and can be followed by descriptors
 that were already queued locally; descriptor intake ends at `finalize`.
 Recorder status/summary artifacts report the received client control count,
-drain count, and whether drain/finalize were observed.
+drain/finalize counts, the final client-control state, and the frame counts at
+which drain/finalize were observed.
 The first GUI PTP-stack guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
@@ -757,8 +758,9 @@ both strict and summary paths:
 `--require-external-recorder-protocol-hello` fail on missing/unhealthy
 sidecars, missing parsed runtime state, missing/unhealthy storage preflight, or
 missing versioned IPC hello telemetry, and fail if reported recorder-status
-protocol sends are nonzero failures or if a reported client-finalize control is
-missing; `compare_gui_crop_preview_validation.py`
+protocol sends are nonzero failures, if reported drain/finalize controls are
+missing, or if the final client-control state does not reach
+`finalize_requested`; `compare_gui_crop_preview_validation.py`
 carries those gates into visible/hidden comparisons; and
 `summarize_gui_validation.py` prints compact full-frame/crop recorder
 heartbeat, count, protocol status-message/control, and storage status for

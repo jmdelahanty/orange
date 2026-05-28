@@ -483,8 +483,12 @@ void test_process_poll_reads_status_sidecar()
             << "    \"recorder_status_send_failures\": 0,\n"
             << "    \"client_control_messages_received\": 2,\n"
             << "    \"client_drain_messages_received\": 1,\n"
+            << "    \"client_finalize_messages_received\": 1,\n"
             << "    \"client_drain_received\": true,\n"
             << "    \"client_finalize_received\": true,\n"
+            << "    \"client_drain_first_frame_count\": 8,\n"
+            << "    \"client_finalize_frame_count\": 8,\n"
+            << "    \"client_control_state\": \"finalize_requested\",\n"
             << "    \"last_client_control_command\": \"finalize\",\n"
             << "    \"last_client_control_reason\": \"worker_drained\"\n"
             << "  },\n"
@@ -565,10 +569,18 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar client control count should parse");
     require(runtime.processes[0].recorder_status.client_drain_messages_received == 1,
             "status sidecar client drain count should parse");
+    require(runtime.processes[0].recorder_status.client_finalize_messages_received == 1,
+            "status sidecar client finalize count should parse");
     require(runtime.processes[0].recorder_status.client_drain_received,
             "status sidecar client drain flag should parse");
     require(runtime.processes[0].recorder_status.client_finalize_received,
             "status sidecar client finalize flag should parse");
+    require(runtime.processes[0].recorder_status.client_drain_first_frame_count == 8,
+            "status sidecar client drain frame count should parse");
+    require(runtime.processes[0].recorder_status.client_finalize_frame_count == 8,
+            "status sidecar client finalize frame count should parse");
+    require(runtime.processes[0].recorder_status.client_control_state == "finalize_requested",
+            "status sidecar client control state should parse");
     require(runtime.processes[0].recorder_status.last_client_control_command == "finalize",
             "status sidecar last client control command should parse");
 
@@ -585,10 +597,18 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed recorder status message count");
     require(summary["processes"][0]["recorder_status"]["client_drain_messages_received"] == 1,
             "runtime summary should include parsed client drain count");
+    require(summary["processes"][0]["recorder_status"]["client_finalize_messages_received"] == 1,
+            "runtime summary should include parsed client finalize count");
     require(summary["processes"][0]["recorder_status"]["client_drain_received"].get<bool>(),
             "runtime summary should include parsed client drain flag");
     require(summary["processes"][0]["recorder_status"]["client_finalize_received"].get<bool>(),
             "runtime summary should include parsed client finalize flag");
+    require(summary["processes"][0]["recorder_status"]["client_drain_first_frame_count"] == 8,
+            "runtime summary should include parsed client drain frame count");
+    require(summary["processes"][0]["recorder_status"]["client_finalize_frame_count"] == 8,
+            "runtime summary should include parsed client finalize frame count");
+    require(summary["processes"][0]["recorder_status"]["client_control_state"] == "finalize_requested",
+            "runtime summary should include parsed client control state");
     require(summary["processes"][0]["recorder_status"]["rolling_enabled"].get<bool>(),
             "runtime summary should include parsed rolling enabled");
     require(summary["processes"][0]["recorder_status"]["rolling_current_clip_index"] == 1,

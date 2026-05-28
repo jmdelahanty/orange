@@ -504,6 +504,12 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
     )
     if drain_count is not None:
         require(drain_count > 0, f"{label} client_drain_messages_received={drain_count}")
+    finalize_count = optional_int(
+        protocol.get("client_finalize_messages_received"),
+        f"{label} ipc_protocol.client_finalize_messages_received",
+    )
+    if finalize_count is not None:
+        require(finalize_count > 0, f"{label} client_finalize_messages_received={finalize_count}")
     if "client_drain_received" in protocol:
         require(
             protocol.get("client_drain_received") is True,
@@ -513,6 +519,27 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
         require(
             protocol.get("client_finalize_received") is True,
             f"{label} client_finalize_received is not true",
+        )
+    if "client_control_state" in protocol:
+        require(
+            protocol.get("client_control_state") == "finalize_requested",
+            f"{label} client_control_state={protocol.get('client_control_state')!r}",
+        )
+    drain_frame_count = optional_int(
+        protocol.get("client_drain_first_frame_count"),
+        f"{label} ipc_protocol.client_drain_first_frame_count",
+    )
+    finalize_frame_count = optional_int(
+        protocol.get("client_finalize_frame_count"),
+        f"{label} ipc_protocol.client_finalize_frame_count",
+    )
+    if drain_frame_count is not None and finalize_frame_count is not None:
+        require(
+            drain_frame_count <= finalize_frame_count,
+            (
+                f"{label} client_drain_first_frame_count={drain_frame_count} "
+                f"after client_finalize_frame_count={finalize_frame_count}"
+            ),
         )
 
 
@@ -843,9 +870,35 @@ def verify_status_sidecar(
             if runtime_drain_count is not None:
                 require(runtime_drain_count > 0,
                         f"runtime client_drain_messages_received={runtime_drain_count} for {serial}")
+            runtime_finalize_count = optional_int(
+                candidate.get("client_finalize_messages_received"),
+                f"runtime client_finalize_messages_received for {serial}",
+            )
+            if runtime_finalize_count is not None:
+                require(runtime_finalize_count > 0,
+                        f"runtime client_finalize_messages_received={runtime_finalize_count} for {serial}")
             if "client_drain_received" in candidate:
                 require(candidate.get("client_drain_received") is True,
                         f"runtime client_drain_received is not true for {serial}")
+            if "client_control_state" in candidate:
+                require(candidate.get("client_control_state") == "finalize_requested",
+                        f"runtime client_control_state={candidate.get('client_control_state')!r} for {serial}")
+            runtime_drain_frame_count = optional_int(
+                candidate.get("client_drain_first_frame_count"),
+                f"runtime client_drain_first_frame_count for {serial}",
+            )
+            runtime_finalize_frame_count = optional_int(
+                candidate.get("client_finalize_frame_count"),
+                f"runtime client_finalize_frame_count for {serial}",
+            )
+            if runtime_drain_frame_count is not None and runtime_finalize_frame_count is not None:
+                require(
+                    runtime_drain_frame_count <= runtime_finalize_frame_count,
+                    (
+                        f"runtime client_drain_first_frame_count={runtime_drain_frame_count} "
+                        f"after client_finalize_frame_count={runtime_finalize_frame_count} for {serial}"
+                    ),
+                )
         runtime_status = candidate
 
     return {

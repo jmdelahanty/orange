@@ -595,12 +595,20 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
                 and finite_int(status.get("client_drain_messages_received")) <= 0
             )
             or (
+                status.get("client_finalize_messages_received") is not None
+                and finite_int(status.get("client_finalize_messages_received")) <= 0
+            )
+            or (
                 status.get("client_drain_received") is not None
                 and status.get("client_drain_received") is not True
             )
             or (
                 status.get("client_finalize_received") is not None
                 and status.get("client_finalize_received") is not True
+            )
+            or (
+                status.get("client_control_state") is not None
+                and status.get("client_control_state") != "finalize_requested"
             )
         ):
             external_recorder_protocol_failed_streams.append(f"{group_name}:{stream_name}")

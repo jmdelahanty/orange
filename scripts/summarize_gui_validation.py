@@ -535,8 +535,18 @@ def ipc_protocol_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "client_drain_messages_received": int_value(
             protocol.get("client_drain_messages_received")
         ),
+        "client_finalize_messages_received": int_value(
+            protocol.get("client_finalize_messages_received")
+        ),
         "client_drain_received": protocol.get("client_drain_received"),
         "client_finalize_received": protocol.get("client_finalize_received"),
+        "client_control_state": protocol.get("client_control_state"),
+        "client_drain_first_frame_count": int_value(
+            protocol.get("client_drain_first_frame_count")
+        ),
+        "client_finalize_frame_count": int_value(
+            protocol.get("client_finalize_frame_count")
+        ),
         "last_client_control_command": protocol.get("last_client_control_command"),
         "last_client_control_reason": protocol.get("last_client_control_reason"),
     }
@@ -655,8 +665,18 @@ def summarize_external_recorder_status_contract(
             "client_drain_messages_received": protocol.get(
                 "client_drain_messages_received"
             ),
+            "client_finalize_messages_received": protocol.get(
+                "client_finalize_messages_received"
+            ),
             "client_drain_received": protocol.get("client_drain_received"),
             "client_finalize_received": protocol.get("client_finalize_received"),
+            "client_control_state": protocol.get("client_control_state"),
+            "client_drain_first_frame_count": protocol.get(
+                "client_drain_first_frame_count"
+            ),
+            "client_finalize_frame_count": protocol.get(
+                "client_finalize_frame_count"
+            ),
             "last_client_control_command": protocol.get("last_client_control_command"),
             "last_client_control_reason": protocol.get("last_client_control_reason"),
             "runtime_ipc_protocol_name": runtime_status.get("ipc_protocol_name"),
@@ -675,11 +695,23 @@ def summarize_external_recorder_status_contract(
             "runtime_client_drain_messages_received": int_value(
                 runtime_status.get("client_drain_messages_received")
             ),
+            "runtime_client_finalize_messages_received": int_value(
+                runtime_status.get("client_finalize_messages_received")
+            ),
             "runtime_client_drain_received": runtime_status.get(
                 "client_drain_received"
             ),
             "runtime_client_finalize_received": runtime_status.get(
                 "client_finalize_received"
+            ),
+            "runtime_client_control_state": runtime_status.get(
+                "client_control_state"
+            ),
+            "runtime_client_drain_first_frame_count": int_value(
+                runtime_status.get("client_drain_first_frame_count")
+            ),
+            "runtime_client_finalize_frame_count": int_value(
+                runtime_status.get("client_finalize_frame_count")
             ),
             "runtime_storage_checked": runtime_status.get("storage_checked"),
             "runtime_storage_ok": runtime_status.get("storage_ok"),
@@ -1662,7 +1694,9 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"client_control={fmt_int(status.get('client_control_messages_received'))} "
                     f"drain={fmt_int(status.get('client_drain_messages_received'))}/"
                     f"{int(status.get('client_drain_received') is True)} "
-                    f"finalize={int(status.get('client_finalize_received') is True)} "
+                    f"finalize={fmt_int(status.get('client_finalize_messages_received'))}/"
+                    f"{int(status.get('client_finalize_received') is True)} "
+                    f"state={status.get('client_control_state') or 'n/a'} "
                     f"storage={storage}"
                 )
     else:
