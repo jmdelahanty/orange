@@ -520,6 +520,18 @@ Current GUI implication:
   `1016` frames, all crop streams wrote `1016` metadata/perf/keyframe/video
   frames, crop fanout matched detection rows, and crop pool misses were `0`.
   The full validator passed with `0` warnings.
+- A later four-camera GUI timing validation on 2026-05-28 used the same
+  external full-frame/crop IPC shape at
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_01_05_07`. The artifact
+  stayed healthy (`0` PTP gaps, `0` GetFrame errors, `0` encode/crop drops,
+  valid full-frame and crop MP4s) and the GUI hidden-preview FPS gate passed
+  with p05 `66.3 fps` and p50 `165.1 fps` when
+  `ORANGE_GUI_SWAP_INTERVAL=0` was uncapped. The code now records
+  `frame_max_fps` and the launcher defaults to `ORANGE_GUI_FRAME_MAX_FPS=60`
+  so no-vsync validation is paced rather than unbounded.
+- The main GUI refresh fix was not crop preview rendering: the recording panel
+  had been running advanced split-GOP topology validation every frame. That
+  work is now behind the `Advanced Recording Validation` tree expansion.
 - Remaining GUI external-recorder gaps are user-visible recorder
   heartbeat/failure reporting. The PTP stack guard exists in the validation
   launcher/wrapper path, but manual GUI operation still depends on the Host PTP
@@ -540,7 +552,8 @@ Earlier GUI external-recorder fail-fast artifact:
 Current GUI validation tooling:
 
 - `scripts/run_gui_aq_off_validation.sh` now prints the expected post-run
-  validator commands.
+  validator commands, including expected `stream_downsample`,
+  `display_preview_max_fps`, `swap_interval`, and `frame_max_fps`.
 - `scripts/validate_gui_ptp_recording.py <recording_folder>` validates one
   explicit GUI recording artifact.
 - `scripts/validate_gui_ptp_recording.py --latest` validates the newest GUI
@@ -560,6 +573,13 @@ Current GUI validation tooling:
   `producer = "orange_gui_external_ipc"`, validates frame counts against the
   external recorder summaries, and decodes the external MP4s referenced by
   `recording_session.json`.
+- For GUI refresh checks, use the printed validator commands with
+  `--require-gui-timing-telemetry`, `--expect-gui-swap-interval`, and
+  `--expect-gui-frame-max-fps`. The validation launcher defaults to
+  `ORANGE_GUI_SWAP_INTERVAL=0` and `ORANGE_GUI_FRAME_MAX_FPS=60`. If Citrus is
+  actively using the same display GPU for `120 Hz` stimulus generation, do not
+  run unbounded no-vsync Orange GUI validation; keep the cap, lower it, or use
+  `ORANGE_GUI_SWAP_INTERVAL=1`.
 - The next GUI run should also visually confirm the new status timers:
   stream elapsed while streaming, active recording elapsed while recording, and
   finalizing elapsed during drain after the recording button is paused/stopped.

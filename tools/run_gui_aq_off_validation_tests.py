@@ -930,6 +930,62 @@ def test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp() -> None
         )
 
 
+def test_live_launcher_rejects_stale_privilege_wrapper_for_frame_cap_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        fake_wrapper = root / "orange-gui-validation"
+        fake_wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1:-}\" == \"--help\" ]]; then\n"
+            "  echo 'Usage: wrapper --orange-bin --env KEY=VALUE --ptp-stack-mode --dry-run'\n"
+            "  exit 0\n"
+            "fi\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == ORANGE_GUI_FRAME_MAX_FPS=* ]]; then\n"
+            "    echo 'Refusing unsupported env key: ORANGE_GUI_FRAME_MAX_FPS' >&2\n"
+            "    exit 2\n"
+            "  fi\n"
+            "done\n"
+            "if [[ \" $* \" == *\" --dry-run \"* ]]; then\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'fake wrapper should not launch orange' >&2\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_wrapper.chmod(0o755)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            extra_env={
+                "DISPLAY": ":77",
+                "ORANGE_GUI_USE_PRIVILEGE_WRAPPER": "1",
+                "ORANGE_GUI_PRIVILEGE_WRAPPER": str(fake_wrapper),
+            },
+        )
+
+        require(result.returncode != 0, "stale wrapper should fail before sudo execution")
+        require(
+            "Installed GUI privilege wrapper does not support ORANGE_GUI_FRAME_MAX_FPS" in result.stderr,
+            "launcher should explain that the wrapper lacks frame-cap env support",
+        )
+        require(
+            "install_orange_gui_validation_wrapper.sh --install-sudoers" in result.stderr,
+            "launcher should include the reinstall command",
+        )
+        require(
+            "fake wrapper should not launch orange" not in result.stderr,
+            "launcher should only dry-run the stale wrapper",
+        )
+
+
 def test_invalid_gui_ptp_stack_mode_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -999,6 +1055,7 @@ def main() -> int:
         test_discovers_all_camera_json_files,
         test_invalid_gui_privilege_wrapper_mode_fails,
         test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp,
+        test_live_launcher_rejects_stale_privilege_wrapper_for_frame_cap_env,
         test_invalid_gui_ptp_stack_mode_fails,
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,

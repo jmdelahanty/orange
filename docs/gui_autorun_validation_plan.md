@@ -169,6 +169,22 @@ automatically (`ORANGE_GUI_USE_PRIVILEGE_WRAPPER=auto`). Set
 `ORANGE_GUI_USE_PRIVILEGE_WRAPPER=1` to require it, or `0` to force the older
 `sudo env` path.
 
+The launcher also dry-runs the installed wrapper before privileged launch to
+confirm it accepts the current validation env contract, including
+`ORANGE_GUI_FRAME_MAX_FPS`. If the wrapper is stale, reinstall it:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
+```
+
+The current validation display defaults are `ORANGE_GUI_SWAP_INTERVAL=0` and
+`ORANGE_GUI_FRAME_MAX_FPS=60`. This removes the vblank wait that made
+`render_present_ms` dominate earlier four-camera runs, while still capping the
+GUI loop so it does not consume unbounded display-GPU time. When Citrus
+stimulus generation is active on the same display GPU, keep the cap in place,
+lower it, or use `ORANGE_GUI_SWAP_INTERVAL=1` for the Orange GUI run.
+
 ## Automation Research
 
 Dear ImGui applications can be automated through the upstream Dear ImGui Test

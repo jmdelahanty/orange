@@ -183,6 +183,8 @@ Current emitted top-level fields:
   - `source: string` (currently `imgui_io_delta_time`)
   - `stream_downsample: integer` (GUI display preview downsample)
   - `display_preview_max_fps: integer` (main display preview cadence cap)
+  - `swap_interval: integer` (GLFW swap interval; `0` means vsync disabled)
+  - `frame_max_fps: integer` (GUI loop frame cap; `0` means uncapped)
   - `yolo_speed_graphs_enabled: boolean` (whether per-camera ImPlot speed
     graphs were enabled at finalization)
   - `saw_crop_preview_enabled|hidden|visible: boolean`
@@ -968,14 +970,19 @@ unless the sidecar shows cadence skips and fewer preview updates than offers.
 GUI runs also write `recording_snapshot.json`
 `session.gui_display_frame_rate`, with overall, crop-preview-visible, and
 crop-preview-hidden ImGui delta-time FPS buckets plus
-`stream_downsample`, `display_preview_max_fps`, and
+`stream_downsample`, `display_preview_max_fps`, `swap_interval`,
+`frame_max_fps`, and
 `yolo_speed_graphs_enabled`. The `--min-gui-*fps-p05`,
-`--expect-gui-stream-downsample`, and `--expect-display-preview-max-fps`
-validator thresholds use those fields to reject UI-refresh collapses and stale
-display configuration. Use `--expect-yolo-speed-graphs-enabled 0` to prove the
+`--expect-gui-stream-downsample`, `--expect-display-preview-max-fps`,
+`--expect-gui-swap-interval`, and `--expect-gui-frame-max-fps` validator
+thresholds use those fields to reject UI-refresh collapses and stale display
+configuration. Use `--expect-yolo-speed-graphs-enabled 0` to prove the
 recording-time ImPlot speed graphs were disabled. Keep
 `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` for performance validation unless the run
-specifically needs live speed plots.
+specifically needs live speed plots. The GUI validation launcher currently
+defaults to `ORANGE_GUI_SWAP_INTERVAL=0` plus `ORANGE_GUI_FRAME_MAX_FPS=60`:
+that avoids vblank/compositor stalls without letting the GUI loop run
+unbounded on the display GPU.
 
 Newer GUI runs also include `session.gui_display_frame_rate.timings` so slow
 GUI refresh can be attributed to texture upload, camera/crop window drawing,

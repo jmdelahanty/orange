@@ -211,7 +211,7 @@ Test and validation surfaces:
 - Crop sidecar counters prove preview sampling happened and did not become crop
   artifact drops.
 - GUI FPS no longer collapses to the previously observed about `20 fps` when
-  crop preview windows are visible.
+  crop preview windows are visible or hidden.
 - The validator can distinguish:
   - crop recording health,
   - preview cadence telemetry,
@@ -407,6 +407,10 @@ Acceptance:
   - `--expect-display-preview-max-fps <N>` checks both
     `session.gui_display_frame_rate.display_preview_max_fps` and per-camera
     pipeline final `display_preview_max_fps`.
+  - `--expect-gui-swap-interval <N>` checks
+    `session.gui_display_frame_rate.swap_interval`.
+  - `--expect-gui-frame-max-fps <N>` checks
+    `session.gui_display_frame_rate.frame_max_fps`.
 - [x] Make recording-time YOLO speed graphs opt-in.
   - `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the validation launcher default.
   - Set `ORANGE_GUI_SHOW_SPEED_GRAPHS=1` only when live per-camera ImPlot speed
@@ -425,6 +429,17 @@ Acceptance:
   - `scripts/summarize_gui_validation.py --json` reports
     `gui_display_diagnosis`.
   - Human output prints the dominant p95 bucket, frame-total p95, and share.
+- [x] Move advanced split-GOP validation off the normal per-frame GUI path.
+  - The recording panel now does cheap record/split-GOP counts each frame.
+  - Expensive topology/peer-access checks only run when
+    `Advanced Recording Validation` is expanded.
+- [x] Add explicit GUI frame pacing telemetry and validation.
+  - `ORANGE_GUI_SWAP_INTERVAL` controls GLFW swap interval.
+  - `ORANGE_GUI_FRAME_MAX_FPS` caps the GUI loop when no-vsync validation is
+    used.
+  - The validation launcher defaults to `swap_interval=0` and
+    `frame_max_fps=60`, avoiding vblank stalls without unbounded display-GPU
+    usage.
 
 Acceptance:
 
@@ -456,18 +471,28 @@ healthy but GUI FPS still collapsed.
   - Fall back to the existing RGBA path when color or overlays require it.
 - [x] Record `stream_downsample` and `display_preview_max_fps` in
   `session.gui_display_frame_rate`.
+- [x] Record `swap_interval` and `frame_max_fps` in
+  `session.gui_display_frame_rate`.
 
 Acceptance:
 
 - [x] Build and unit/validator tests pass.
-- [ ] New hidden-preview four-camera GUI run reports
-  `stream_downsample=4`, `display_preview_max_fps=15`, and GUI hidden p05 FPS
-  at or above the validation threshold.
+- [x] Hidden-preview four-camera GUI run reports `stream_downsample=4`,
+  `display_preview_max_fps=15`, `swap_interval=0`, and GUI hidden p05 FPS at or
+  above the validation threshold.
+  - Artifact: `/home/jeremy/orange_data/exp/unsorted/2026_05_28_01_05_07`.
+  - GUI hidden p05 `66.3 fps`; recording panel draw p95 about `0.10 ms`;
+    render/present p95 about `4.44 ms`.
+  - This artifact predates `frame_max_fps` telemetry. The next live GUI run
+    should assert `--expect-gui-frame-max-fps 60`.
 - [ ] Follow-up visible-preview run remains healthy with crop preview windows
   shown.
 - [ ] If hidden-preview FPS is still low with speed graphs disabled, rerun with
   `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15` and consider moving display preprocessing
   to the acquisition GPU so only downsampled previews cross to display GPU.
+  - 2026-05-28 note: the hidden-preview collapse is resolved for the latest
+    measured no-vsync path. Keep the acquisition-GPU display-preprocess idea
+    deferred unless capped no-vsync or visible-preview runs still fail.
 
 Latest observation before disabling speed graphs: artifact
 `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_43_41` had healthy
@@ -805,6 +830,8 @@ pool sizes.
 
 Success criteria:
 
+- [x] GUI FPS no longer collapses to about `20 fps` when crop windows are
+  hidden.
 - [ ] GUI FPS no longer collapses to about `20 fps` when crop windows are shown.
 - [ ] Crop recording remains YOLO-cadence/full-rate.
 - [ ] Crop drops remain zero.

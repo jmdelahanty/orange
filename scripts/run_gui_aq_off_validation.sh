@@ -618,6 +618,19 @@ Reinstall it before running autorun PTP validation:
 EOF
     exit 1
   fi
+  if ! "${GUI_PRIVILEGE_WRAPPER}" \
+      --dry-run \
+      --orange-bin "${ORANGE_BIN}" \
+      --env "ORANGE_GUI_FRAME_MAX_FPS=${GUI_FRAME_MAX_FPS}" >/dev/null; then
+    cat >&2 <<EOF
+Installed GUI privilege wrapper does not support ORANGE_GUI_FRAME_MAX_FPS.
+
+Reinstall it before running capped GUI validation:
+
+  sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
+EOF
+    exit 1
+  fi
   WRAPPER_ARGS=("--orange-bin" "${ORANGE_BIN}")
   if [[ "${WRAPPER_SUPPORTS_PTP_STACK}" == "1" ]]; then
     WRAPPER_ARGS+=("--ptp-stack-mode" "${GUI_PTP_STACK_MODE}")

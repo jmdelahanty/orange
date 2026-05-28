@@ -1,14 +1,19 @@
 # Display Pipeline Notes
 
-Last updated: 2026-05-27.
+Last updated: 2026-05-28.
 
 This document summarizes the current GUI display path and where stalls can
 still occur, based on code inspection and four-camera GUI validation runs.
 After the 2026-05-27 downsample/preview work and external crop-recorder slice,
-crop artifacts are healthy with crop preview hidden, but the GUI can still run
-near `25 fps` while recording four cameras. The remaining suspect area is GUI
-render work during recording, especially per-camera YOLO speed graphs and
-cross-GPU display preview updates.
+crop artifacts were healthy with crop preview hidden, but the GUI still ran
+near `25 fps` while recording four cameras. The 2026-05-28 GUI timing pass
+found two dominant UI-side causes:
+
+- the advanced split-GOP validation panel was running expensive GPU-topology
+  checks every frame; it now runs those checks only when the tree is expanded
+- `swap_interval=1` left `render_present_ms` dominated by vblank/compositor
+  waits; the validation launcher now uses `ORANGE_GUI_SWAP_INTERVAL=0` with
+  `ORANGE_GUI_FRAME_MAX_FPS=60` so no-vsync validation is explicitly capped
 
 ## UI/render loop
 
@@ -38,6 +43,14 @@ interaction work.
   four-camera validation launcher sets `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15` by
   default after the `30 fps` preview cap still left the GUI near `25 fps`.
   `ORANGE_DISPLAY_MAX_FPS` remains a legacy alias.
+- Direct Orange launches default to `ORANGE_GUI_SWAP_INTERVAL=1` and
+  `ORANGE_GUI_FRAME_MAX_FPS=0` unless overridden. The validation launcher
+  defaults to `ORANGE_GUI_SWAP_INTERVAL=0` and
+  `ORANGE_GUI_FRAME_MAX_FPS=60`; this avoids vblank stalls without spinning the
+  GUI loop at hundreds of FPS. If Citrus is using the same display GPU for
+  `120 Hz` stimulus generation, prefer the capped mode, lower
+  `ORANGE_GUI_FRAME_MAX_FPS`, or restore `ORANGE_GUI_SWAP_INTERVAL=1` while
+  stimulus timing is critical.
 - `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the four-camera launcher default. Set it
   to `1` only when live per-camera ImPlot speed graphs are needed during
   recording.
@@ -99,10 +112,13 @@ When the source is color, or YOLO detection overlays are enabled and available:
 - `cudaStreamSynchronize(m_stream)` in display worker after the PBO write.
 - Cross‑GPU CPU round‑trip when `camera_params->gpu_id != display_gpu_id`.
 - OpenGL presentation/compositor pressure, especially when the desktop output
-  resolution is high.
+  resolution is high or the GUI is waiting on vsync.
 - Per-camera ImPlot speed graphs in the recording branch. These are now opt-in
   because they only appear once recording starts and can make the measured GUI
   frame rate look like a crop/recording problem even when artifacts are clean.
+- Advanced split-GOP validation in the recording panel. This now runs only
+  when the operator expands `Advanced Recording Validation`; keep it collapsed
+  during performance validation.
 
 ## CPU display path
 
@@ -127,6 +143,10 @@ When the source is color, or YOLO detection overlays are enabled and available:
 - Keep `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` for performance validation. Re-enable
   with `ORANGE_GUI_SHOW_SPEED_GRAPHS=1` only for operator diagnostics that need
   the graphs.
+- Keep validation runs explicitly paced with `ORANGE_GUI_FRAME_MAX_FPS=60`.
+  `ORANGE_GUI_SWAP_INTERVAL=0` without a frame cap can consume unnecessary
+  display-GPU time and should not be used while Citrus stimulus generation is
+  timing-critical on the same GPU.
 - Raise `ORANGE_DISPLAY_PREVIEW_MAX_FPS` only when a smoother live preview is
   more important than GUI control responsiveness.
 - Skip YOLO overlay wait when display latency matters:
@@ -149,7 +169,8 @@ When the source is color, or YOLO detection overlays are enabled and available:
 
 - Measure UI FPS (`ImGui::GetIO().Framerate`) and streaming FPS simultaneously.
 - Confirm `recording_snapshot.json` `session.gui_display_frame_rate` reports
-  the intended `stream_downsample` and `display_preview_max_fps`.
+  the intended `stream_downsample`, `display_preview_max_fps`,
+  `swap_interval`, and `frame_max_fps`.
 - Inspect `session.gui_display_frame_rate.timings` first:
   - high `main_texture_upload_ms` points at PBO upload/texture transfer,
   - high `camera_window_draw_ms` points at ImGui image/window drawing,
