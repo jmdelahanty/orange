@@ -483,6 +483,15 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
         protocol.get("client_hello_received") is True,
         f"{label} client_hello_received is not true",
     )
+    send_failures = optional_int(
+        protocol.get("recorder_status_send_failures"),
+        f"{label} ipc_protocol.recorder_status_send_failures",
+    )
+    if send_failures is not None:
+        require(
+            send_failures == 0,
+            f"{label} recorder_status_send_failures={send_failures}",
+        )
 
 
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
@@ -784,6 +793,15 @@ def verify_status_sidecar(
                     f"runtime recorder_hello_sent is not true for {serial}")
             require(candidate.get("client_hello_received") is True,
                     f"runtime client_hello_received is not true for {serial}")
+            runtime_send_failures = optional_int(
+                candidate.get("recorder_status_send_failures"),
+                f"runtime recorder_status_send_failures for {serial}",
+            )
+            if runtime_send_failures is not None:
+                require(
+                    runtime_send_failures == 0,
+                    f"runtime recorder_status_send_failures={runtime_send_failures} for {serial}",
+                )
         runtime_status = candidate
 
     return {

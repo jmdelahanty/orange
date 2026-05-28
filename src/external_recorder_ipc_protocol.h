@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstdlib>
 #include <sstream>
 #include <string>
@@ -13,6 +14,7 @@ inline constexpr const char* kProtocolName = "orange.external_recorder.ipc";
 inline constexpr int kProtocolVersion = 1;
 inline constexpr const char* kRecorderHelloKind = "RECORDER_HELLO";
 inline constexpr const char* kClientHelloKind = "CLIENT_HELLO";
+inline constexpr const char* kRecorderStatusKind = "RECORDER_STATUS";
 
 struct HelloFields {
     std::string kind;
@@ -23,6 +25,23 @@ struct HelloFields {
     std::string session_id;
     std::string stream_id;
     std::string features;
+    std::string error;
+};
+
+struct RecorderStatusFields {
+    std::string kind;
+    std::string protocol;
+    int version = 0;
+    std::string role;
+    std::string session_id;
+    std::string stream_id;
+    std::string status;
+    uint64_t heartbeat_sequence = 0;
+    uint64_t frames_received = 0;
+    uint64_t acks_sent = 0;
+    uint64_t frames_encoded = 0;
+    uint64_t encode_dropped = 0;
+    bool worker_failed = false;
     std::string error;
 };
 
@@ -74,6 +93,91 @@ inline std::unordered_map<std::string, std::string> parse_key_values(std::istrin
     return values;
 }
 
+inline std::string find_value(const std::unordered_map<std::string, std::string>& values,
+                              const char* key)
+{
+    const auto it = values.find(key);
+    return it == values.end() ? std::string() : it->second;
+}
+
+inline bool parse_int_value(const std::string& value, int* out)
+{
+    if (!out || value.empty()) {
+        return false;
+    }
+    char* end = nullptr;
+    const long parsed = std::strtol(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != '\0') {
+        return false;
+    }
+    *out = static_cast<int>(parsed);
+    return true;
+}
+
+inline bool parse_u64_value(const std::string& value, uint64_t* out)
+{
+    if (!out || value.empty()) {
+        return false;
+    }
+    if (value[0] == '-') {
+        return false;
+    }
+    char* end = nullptr;
+    const unsigned long long parsed = std::strtoull(value.c_str(), &end, 10);
+    if (end == value.c_str() || *end != '\0') {
+        return false;
+    }
+    *out = static_cast<uint64_t>(parsed);
+    return true;
+}
+
+inline bool parse_optional_u64_field(
+    const std::unordered_map<std::string, std::string>& values,
+    const char* key,
+    uint64_t* out,
+    std::string* error)
+{
+    const std::string value = find_value(values, key);
+    if (value.empty()) {
+        return true;
+    }
+    if (parse_u64_value(value, out)) {
+        return true;
+    }
+    if (error) {
+        *error = std::string("invalid numeric field: ") + key;
+    }
+    return false;
+}
+
+inline bool parse_optional_bool_field(
+    const std::unordered_map<std::string, std::string>& values,
+    const char* key,
+    bool* out,
+    std::string* error)
+{
+    const std::string value = find_value(values, key);
+    if (value.empty()) {
+        return true;
+    }
+    if (value == "true" || value == "1") {
+        if (out) {
+            *out = true;
+        }
+        return true;
+    }
+    if (value == "false" || value == "0") {
+        if (out) {
+            *out = false;
+        }
+        return true;
+    }
+    if (error) {
+        *error = std::string("invalid bool field: ") + key;
+    }
+    return false;
+}
+
 inline bool parse_protocol_hello_line(const std::string& line,
                                       const char* expected_kind,
                                       HelloFields* hello)
@@ -97,33 +201,27 @@ inline bool parse_protocol_hello_line(const std::string& line,
     }
 
     const std::unordered_map<std::string, std::string> values = parse_key_values(&in);
-    auto find_value = [&values](const char* key) -> std::string {
-        const auto it = values.find(key);
-        return it == values.end() ? std::string() : it->second;
-    };
+    parsed.protocol = find_value(values, "protocol");
+    parsed.role = find_value(values, "role");
+    parsed.camera_serial = find_value(values, "camera_serial");
+    parsed.session_id = find_value(values, "session_id");
+    parsed.stream_id = find_value(values, "stream_id");
+    parsed.features = find_value(values, "features");
 
-    parsed.protocol = find_value("protocol");
-    parsed.role = find_value("role");
-    parsed.camera_serial = find_value("camera_serial");
-    parsed.session_id = find_value("session_id");
-    parsed.stream_id = find_value("stream_id");
-    parsed.features = find_value("features");
-
-    const std::string version_value = find_value("version");
-    if (!version_value.empty()) {
-        char* end = nullptr;
-        const long parsed_version = std::strtol(version_value.c_str(), &end, 10);
-        if (end != version_value.c_str() && *end == '\0') {
-            parsed.version = static_cast<int>(parsed_version);
-        }
+    const std::string version_value = find_value(values, "version");
+    if (!version_value.empty() &&
+        !parse_int_value(version_value, &parsed.version)) {
+        parsed.error = "invalid protocol version";
     }
 
-    if (parsed.protocol != kProtocolName) {
-        parsed.error = "unexpected protocol name";
-    } else if (parsed.version != kProtocolVersion) {
-        parsed.error = "unsupported protocol version";
-    } else if (parsed.role.empty()) {
-        parsed.error = "missing protocol role";
+    if (parsed.error.empty()) {
+        if (parsed.protocol != kProtocolName) {
+            parsed.error = "unexpected protocol name";
+        } else if (parsed.version != kProtocolVersion) {
+            parsed.error = "unsupported protocol version";
+        } else if (parsed.role.empty()) {
+            parsed.error = "missing protocol role";
+        }
     }
 
     if (hello) {
@@ -142,6 +240,78 @@ inline bool parse_client_hello_line(const std::string& line, HelloFields* hello)
     return parse_protocol_hello_line(line, kClientHelloKind, hello);
 }
 
+inline bool parse_recorder_status_line(const std::string& line,
+                                       RecorderStatusFields* status)
+{
+    RecorderStatusFields parsed;
+    std::istringstream in(line);
+    in >> parsed.kind;
+    if (!in || parsed.kind.empty()) {
+        parsed.error = "missing status kind";
+        if (status) {
+            *status = parsed;
+        }
+        return false;
+    }
+    if (parsed.kind != kRecorderStatusKind) {
+        parsed.error = "unexpected status kind";
+        if (status) {
+            *status = parsed;
+        }
+        return false;
+    }
+
+    const std::unordered_map<std::string, std::string> values = parse_key_values(&in);
+    parsed.protocol = find_value(values, "protocol");
+    parsed.role = find_value(values, "role");
+    parsed.session_id = find_value(values, "session_id");
+    parsed.stream_id = find_value(values, "stream_id");
+    parsed.status = find_value(values, "status");
+
+    const std::string version_value = find_value(values, "version");
+    if (!version_value.empty() &&
+        !parse_int_value(version_value, &parsed.version)) {
+        parsed.error = "invalid protocol version";
+    } else if (parsed.protocol != kProtocolName) {
+        parsed.error = "unexpected protocol name";
+    } else if (parsed.version != kProtocolVersion) {
+        parsed.error = "unsupported protocol version";
+    } else if (parsed.role.empty()) {
+        parsed.error = "missing protocol role";
+    } else if (parsed.status.empty()) {
+        parsed.error = "missing recorder status";
+    }
+
+    if (parsed.error.empty()) {
+        parse_optional_u64_field(
+            values, "heartbeat_sequence", &parsed.heartbeat_sequence, &parsed.error);
+    }
+    if (parsed.error.empty()) {
+        parse_optional_u64_field(
+            values, "frames_received", &parsed.frames_received, &parsed.error);
+    }
+    if (parsed.error.empty()) {
+        parse_optional_u64_field(values, "acks_sent", &parsed.acks_sent, &parsed.error);
+    }
+    if (parsed.error.empty()) {
+        parse_optional_u64_field(
+            values, "frames_encoded", &parsed.frames_encoded, &parsed.error);
+    }
+    if (parsed.error.empty()) {
+        parse_optional_u64_field(
+            values, "encode_dropped", &parsed.encode_dropped, &parsed.error);
+    }
+    if (parsed.error.empty()) {
+        parse_optional_bool_field(
+            values, "worker_failed", &parsed.worker_failed, &parsed.error);
+    }
+
+    if (status) {
+        *status = parsed;
+    }
+    return parsed.error.empty();
+}
+
 inline std::string build_recorder_hello_line(const std::string& session_id,
                                              const std::string& stream_id)
 {
@@ -152,7 +322,7 @@ inline std::string build_recorder_hello_line(const std::string& session_id,
         << " role=recorder"
         << " session_id=" << token_value(session_id)
         << " stream_id=" << token_value(stream_id)
-        << " features=frame_ack_release,status_json,storage_preflight\n";
+        << " features=frame_ack_release,recorder_status,status_json,storage_preflight\n";
     return out.str();
 }
 
@@ -169,6 +339,34 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
         << " camera_serial=" << token_value(camera_serial)
         << " session_id=" << token_value(session_id)
         << " stream_id=" << token_value(stream_id)
+        << "\n";
+    return out.str();
+}
+
+inline std::string build_recorder_status_line(const std::string& session_id,
+                                              const std::string& stream_id,
+                                              const std::string& status,
+                                              uint64_t heartbeat_sequence,
+                                              uint64_t frames_received,
+                                              uint64_t acks_sent,
+                                              uint64_t frames_encoded,
+                                              uint64_t encode_dropped,
+                                              bool worker_failed)
+{
+    std::ostringstream out;
+    out << kRecorderStatusKind
+        << " protocol=" << kProtocolName
+        << " version=" << kProtocolVersion
+        << " role=recorder"
+        << " session_id=" << token_value(session_id)
+        << " stream_id=" << token_value(stream_id)
+        << " status=" << token_value(status)
+        << " heartbeat_sequence=" << heartbeat_sequence
+        << " frames_received=" << frames_received
+        << " acks_sent=" << acks_sent
+        << " frames_encoded=" << frames_encoded
+        << " encode_dropped=" << encode_dropped
+        << " worker_failed=" << (worker_failed ? "true" : "false")
         << "\n";
     return out.str();
 }

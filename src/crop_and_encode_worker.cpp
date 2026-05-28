@@ -348,38 +348,59 @@ private:
 
     bool read_ack(uint64_t recording_frame_id)
     {
-        std::string line;
-        if (!read_protocol_line(&line)) {
-            return false;
-        }
-        std::istringstream in(line);
-        std::string kind;
-        uint64_t frame_id = 0;
-        in >> kind >> frame_id;
-        if (kind != "ACK" || frame_id != recording_frame_id) {
-            return false;
-        }
-
-        std::string token;
         bool deferred_release = false;
-        while (in >> token) {
-            if (token == "deferred_release") {
-                deferred_release = true;
-                break;
+        while (true) {
+            std::string line;
+            if (!read_protocol_line(&line)) {
+                return false;
             }
+            bool malformed_status = false;
+            if (handle_recorder_status_line(line, &malformed_status)) {
+                if (malformed_status) {
+                    return false;
+                }
+                continue;
+            }
+
+            std::istringstream in(line);
+            std::string kind;
+            uint64_t frame_id = 0;
+            in >> kind >> frame_id;
+            if (kind != "ACK" || frame_id != recording_frame_id) {
+                return false;
+            }
+
+            std::string token;
+            while (in >> token) {
+                if (token == "deferred_release") {
+                    deferred_release = true;
+                    break;
+                }
+            }
+            break;
         }
         if (!deferred_release) {
             return true;
         }
 
-        if (!read_protocol_line(&line)) {
-            return false;
+        while (true) {
+            std::string line;
+            if (!read_protocol_line(&line)) {
+                return false;
+            }
+            bool malformed_status = false;
+            if (handle_recorder_status_line(line, &malformed_status)) {
+                if (malformed_status) {
+                    return false;
+                }
+                continue;
+            }
+            std::istringstream release_in(line);
+            std::string kind;
+            uint64_t frame_id = 0;
+            release_in >> kind >> frame_id;
+            return kind == "RELEASE" && frame_id == recording_frame_id;
         }
-        std::istringstream release_in(line);
-        kind.clear();
-        frame_id = 0;
-        release_in >> kind >> frame_id;
-        return kind == "RELEASE" && frame_id == recording_frame_id;
     }
 
     bool read_recorder_hello()
@@ -403,6 +424,29 @@ private:
             log_limited("send crop client protocol hello failed: " +
                         std::string(std::strerror(errno)));
             return false;
+        }
+        return true;
+    }
+
+    bool handle_recorder_status_line(const std::string& line, bool* malformed)
+    {
+        if (malformed) {
+            *malformed = false;
+        }
+        if (!orange::external_recorder::ipc::starts_with_kind(
+                line,
+                orange::external_recorder::ipc::kRecorderStatusKind)) {
+            return false;
+        }
+        orange::external_recorder::ipc::RecorderStatusFields status;
+        if (!orange::external_recorder::ipc::parse_recorder_status_line(
+                line,
+                &status)) {
+            log_limited("invalid external crop recorder status protocol line: " +
+                        status.error + " line='" + line + "'");
+            if (malformed) {
+                *malformed = true;
+            }
         }
         return true;
     }

@@ -436,6 +436,22 @@ private:
         if (ack_deferred_release) {
             *ack_deferred_release = false;
         }
+        if (orange::external_recorder::ipc::starts_with_kind(
+                line,
+                orange::external_recorder::ipc::kRecorderStatusKind)) {
+            orange::external_recorder::ipc::RecorderStatusFields status;
+            if (!orange::external_recorder::ipc::parse_recorder_status_line(
+                    line,
+                    &status)) {
+                log_limited("invalid external recorder status protocol line: " +
+                            status.error + " line='" + line + "'");
+                return false;
+            }
+            recorder_status_messages_received_.fetch_add(
+                1,
+                std::memory_order_relaxed);
+            return true;
+        }
         std::istringstream in(line);
         std::string kind;
         uint64_t frame_id = 0;
@@ -764,6 +780,7 @@ private:
     std::atomic<int> in_flight_{0};
     std::atomic<uint64_t> frames_acked_{0};
     std::atomic<uint64_t> frames_released_{0};
+    std::atomic<uint64_t> recorder_status_messages_received_{0};
     std::atomic<uint64_t> failures_{0};
     std::atomic<uint64_t> ack_timeouts_{0};
     std::atomic<uint64_t> failures_logged_{0};

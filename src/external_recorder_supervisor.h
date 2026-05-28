@@ -141,6 +141,8 @@ struct RecorderStatusSnapshot {
     int ipc_protocol_version = 0;
     bool recorder_hello_sent = false;
     bool client_hello_received = false;
+    uint64_t recorder_status_messages_sent = 0;
+    uint64_t recorder_status_send_failures = 0;
     std::string error;
 };
 

@@ -75,6 +75,41 @@ void parses_ipc_protocol_hello_lines()
     require(client_fields.session_id == "session_001",
             "client hello session should be tokenized");
 
+    const std::string recorder_status =
+        orange::external_recorder::ipc::build_recorder_status_line(
+            "session 001",
+            "2010095 crop",
+            "running",
+            12,
+            300,
+            299,
+            280,
+            0,
+            false);
+    orange::external_recorder::ipc::RecorderStatusFields status_fields;
+    require(orange::external_recorder::ipc::parse_recorder_status_line(
+                recorder_status,
+                &status_fields),
+            "recorder status should parse");
+    require(status_fields.protocol == orange::external_recorder::ipc::kProtocolName,
+            "recorder status protocol mismatch");
+    require(status_fields.version == orange::external_recorder::ipc::kProtocolVersion,
+            "recorder status version mismatch");
+    require(status_fields.session_id == "session_001",
+            "recorder status session should be tokenized");
+    require(status_fields.stream_id == "2010095_crop",
+            "recorder status stream should be tokenized");
+    require(status_fields.heartbeat_sequence == 12,
+            "recorder status heartbeat mismatch");
+    require(status_fields.frames_received == 300,
+            "recorder status frames received mismatch");
+    require(status_fields.acks_sent == 299,
+            "recorder status ACK count mismatch");
+    require(status_fields.frames_encoded == 280,
+            "recorder status encoded count mismatch");
+    require(!status_fields.worker_failed,
+            "recorder status worker failed flag mismatch");
+
     orange::external_recorder::ipc::HelloFields bad_fields;
     require(!orange::external_recorder::ipc::parse_client_hello_line(
                 "CLIENT_HELLO protocol=wrong version=1 role=orange",

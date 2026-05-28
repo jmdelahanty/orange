@@ -478,7 +478,9 @@ void test_process_poll_reads_status_sidecar()
             << "    \"name\": \"orange.external_recorder.ipc\",\n"
             << "    \"version\": 1,\n"
             << "    \"recorder_hello_sent\": true,\n"
-            << "    \"client_hello_received\": true\n"
+            << "    \"client_hello_received\": true,\n"
+            << "    \"recorder_status_messages_sent\": 3,\n"
+            << "    \"recorder_status_send_failures\": 0\n"
             << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
@@ -549,6 +551,10 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar recorder hello flag should parse");
     require(runtime.processes[0].recorder_status.client_hello_received,
             "status sidecar client hello flag should parse");
+    require(runtime.processes[0].recorder_status.recorder_status_messages_sent == 3,
+            "status sidecar recorder status message count should parse");
+    require(runtime.processes[0].recorder_status.recorder_status_send_failures == 0,
+            "status sidecar recorder status failure count should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),
@@ -559,6 +565,8 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed heartbeat");
     require(summary["processes"][0]["recorder_status"]["frames_encoded"] == 8,
             "runtime summary should include parsed encoded count");
+    require(summary["processes"][0]["recorder_status"]["recorder_status_messages_sent"] == 3,
+            "runtime summary should include parsed recorder status message count");
     require(summary["processes"][0]["recorder_status"]["rolling_enabled"].get<bool>(),
             "runtime summary should include parsed rolling enabled");
     require(summary["processes"][0]["recorder_status"]["rolling_current_clip_index"] == 1,

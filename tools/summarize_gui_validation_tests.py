@@ -72,6 +72,8 @@ def write_external_recorder_status_fixture(
         "version": 1,
         "recorder_hello_sent": True,
         "client_hello_received": True,
+        "recorder_status_messages_sent": heartbeat_sequence,
+        "recorder_status_send_failures": 0,
     }
     write_text(
         summary_path,
@@ -134,6 +136,12 @@ def write_external_recorder_status_fixture(
                             "ipc_protocol_version": 1,
                             "recorder_hello_sent": True,
                             "client_hello_received": True,
+                            "recorder_status_messages_sent": (
+                                runtime_heartbeat_sequence
+                                if runtime_heartbeat_sequence is not None
+                                else heartbeat_sequence
+                            ),
+                            "recorder_status_send_failures": 0,
                         },
                     }
                 ],
@@ -562,6 +570,11 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
         )
         require(full["ipc_protocol_name"] == "orange.external_recorder.ipc", "full protocol should parse")
         require(full["client_hello_received"] is True, "full client hello should parse")
+        require(full["recorder_status_messages_sent"] == 4, "full recorder status count should parse")
+        require(
+            full["runtime_recorder_status_messages_sent"] == 4,
+            "full runtime recorder status count should parse",
+        )
         require(crop["frames_received"] == 2, "crop received count should parse")
         require(crop["frames_encoded"] == 2, "crop encoded count should parse")
         require(crop["acks_sent"] == 2, "crop ACK count should parse")

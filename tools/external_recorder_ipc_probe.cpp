@@ -137,6 +137,8 @@ struct Sample {
 struct IpcProtocolState {
     bool recorder_hello_sent = false;
     bool client_hello_received = false;
+    uint64_t recorder_status_messages_sent = 0;
+    uint64_t recorder_status_send_failures = 0;
 };
 
 void signal_handler(int)
@@ -788,7 +790,11 @@ void write_ipc_protocol_json(std::ostream& out,
     out << indent << "  \"recorder_hello_sent\": "
         << (state.recorder_hello_sent ? "true" : "false") << ",\n";
     out << indent << "  \"client_hello_received\": "
-        << (state.client_hello_received ? "true" : "false") << "\n";
+        << (state.client_hello_received ? "true" : "false") << ",\n";
+    out << indent << "  \"recorder_status_messages_sent\": "
+        << state.recorder_status_messages_sent << ",\n";
+    out << indent << "  \"recorder_status_send_failures\": "
+        << state.recorder_status_send_failures << "\n";
     out << indent << "}";
 }
 
@@ -1222,6 +1228,41 @@ bool write_protocol_line(int fd, std::mutex* mutex, const std::string& line)
         return write_all(fd, line);
     }
     return write_all(fd, line);
+}
+
+bool write_recorder_status_protocol_line(int fd,
+                                         std::mutex* mutex,
+                                         IpcProtocolState* state,
+                                         const std::string& session_id,
+                                         const std::string& stream_id,
+                                         const std::string& status,
+                                         uint64_t heartbeat_sequence,
+                                         uint64_t frames_received,
+                                         uint64_t acks_sent,
+                                         uint64_t frames_encoded,
+                                         uint64_t encode_dropped,
+                                         bool worker_failed)
+{
+    if (fd < 0 || !state || !state->client_hello_received) {
+        return true;
+    }
+    const std::string line =
+        orange::external_recorder::ipc::build_recorder_status_line(
+            session_id,
+            stream_id,
+            status,
+            heartbeat_sequence,
+            frames_received,
+            acks_sent,
+            frames_encoded,
+            encode_dropped,
+            worker_failed);
+    if (!write_protocol_line(fd, mutex, line)) {
+        ++state->recorder_status_send_failures;
+        return false;
+    }
+    ++state->recorder_status_messages_sent;
+    return true;
 }
 
 bool parse_frame_descriptor(const std::string& line, FrameDescriptor* desc)
@@ -3924,7 +3965,8 @@ int main(int argc, char** argv)
             };
         auto write_status =
             [&](const std::string& status,
-                const std::string& error_message = {}) {
+                const std::string& error_message = {},
+                bool send_protocol_status = true) {
                 uint64_t frames_encoded = 0;
                 uint64_t frames_dropped = 0;
                 bool worker_failed = false;
@@ -3948,12 +3990,34 @@ int main(int argc, char** argv)
                             last_clip.failed ? "failed" : "completed";
                     }
                 }
+                const uint64_t heartbeat_sequence = ++status_heartbeat_sequence;
+                const std::string protocol_session_id =
+                    observed_session_id.empty() ? options.session_id : observed_session_id;
+                const std::string protocol_stream_id =
+                    observed_stream_id.empty() ? options.stream_id : observed_stream_id;
+                if (send_protocol_status &&
+                    !write_recorder_status_protocol_line(
+                        client_fd,
+                        &protocol_write_mutex,
+                        &protocol_state,
+                        protocol_session_id,
+                        protocol_stream_id,
+                        status,
+                        heartbeat_sequence,
+                        frame_count,
+                        ack_count,
+                        frames_encoded,
+                        encode_dropped_count,
+                        worker_failed)) {
+                    std::cerr << "Failed to send recorder status protocol line"
+                              << std::endl;
+                }
                 (void)write_recorder_status_json(
                     options,
                     observed_session_id,
                     observed_stream_id,
                     status,
-                    ++status_heartbeat_sequence,
+                    heartbeat_sequence,
                     frame_count,
                     ack_count,
                     detach_copied_count,
@@ -4178,7 +4242,7 @@ int main(int argc, char** argv)
             }
         }
 
-        write_status("finalizing");
+        write_status("finalizing", {}, false);
         for (auto& worker : encode_workers) {
             if (worker) {
                 worker->stop();
@@ -4234,7 +4298,7 @@ int main(int argc, char** argv)
                 any_worker_failed = any_worker_failed || worker->failed();
             }
         }
-        write_status(any_worker_failed ? "failed" : "completed");
+        write_status(any_worker_failed ? "failed" : "completed", {}, false);
         for (auto& [handle_hex, imported] : imported_handles) {
             (void)handle_hex;
             if (imported.ptr) {

@@ -241,6 +241,10 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
             snapshot.ipc_protocol_version = optional_int(protocol, "version");
             snapshot.recorder_hello_sent = optional_bool(protocol, "recorder_hello_sent");
             snapshot.client_hello_received = optional_bool(protocol, "client_hello_received");
+            snapshot.recorder_status_messages_sent =
+                optional_u64(protocol, "recorder_status_messages_sent");
+            snapshot.recorder_status_send_failures =
+                optional_u64(protocol, "recorder_status_send_failures");
         }
         if (parsed.contains("rolling") && parsed["rolling"].is_object()) {
             const nlohmann::json& rolling = parsed["rolling"];
@@ -1490,6 +1494,10 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                 {"ipc_protocol_version", recorder_status.ipc_protocol_version},
                 {"recorder_hello_sent", recorder_status.recorder_hello_sent},
                 {"client_hello_received", recorder_status.client_hello_received},
+                {"recorder_status_messages_sent",
+                 recorder_status.recorder_status_messages_sent},
+                {"recorder_status_send_failures",
+                 recorder_status.recorder_status_send_failures},
                 {"error", recorder_status.error},
             }},
         });

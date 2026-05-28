@@ -727,6 +727,12 @@ it into `processes[].recorder_status`, and the GUI status line displays
 heartbeat coverage plus recorder-side received/encoded totals and storage
 preflight health. The first in-band protocol health slice is a versioned
 `RECORDER_HELLO`/`CLIENT_HELLO` handshake recorded in summary/status artifacts.
+The next slice now adds low-rate in-band `RECORDER_STATUS` messages after the
+client hello. The recorder sends the same heartbeat sequence and frame counters
+that it writes to the status sidecar, records
+`recorder_status_messages_sent` / `recorder_status_send_failures` in
+`ipc_protocol`, and both full-frame and crop Orange clients skip those messages
+while preserving strict `ACK` / `RELEASE` ordering.
 The first GUI PTP-stack guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
@@ -740,10 +746,12 @@ both strict and summary paths:
 --require-external-recorder-storage-preflight` and
 `--require-external-recorder-protocol-hello` fail on missing/unhealthy
 sidecars, missing parsed runtime state, missing/unhealthy storage preflight, or
-missing versioned IPC hello telemetry; `compare_gui_crop_preview_validation.py`
+missing versioned IPC hello telemetry, and fail if reported recorder-status
+protocol sends are nonzero failures; `compare_gui_crop_preview_validation.py`
 carries those gates into visible/hidden comparisons; and
 `summarize_gui_validation.py` prints compact full-frame/crop recorder
-heartbeat, count, protocol, and storage status for operator triage. The
+heartbeat, count, protocol status-message, and storage status for operator
+triage. The
 headless external-recorder session verifier also has
 `--require-recorder-status`, `--require-recorder-runtime-status`,
 `--require-recorder-storage-preflight`, and

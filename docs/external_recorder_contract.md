@@ -59,12 +59,19 @@ hello before accepting frames:
 ```text
 RECORDER_HELLO protocol=orange.external_recorder.ipc version=1 ...
 CLIENT_HELLO protocol=orange.external_recorder.ipc version=1 ...
+RECORDER_STATUS protocol=orange.external_recorder.ipc version=1 ...
 ```
 
 This is intentionally separate from per-frame ACK/RELEASE. It proves the peer
 is the expected recorder protocol before Orange starts handing out CUDA IPC
 frame descriptors, and the recorder writes the observed handshake into
-`ipc_protocol` fields in both `status_json` and summary JSON.
+`ipc_protocol` fields in both `status_json` and summary JSON. After the hello,
+the diagnostic recorder can also send low-rate in-band `RECORDER_STATUS`
+messages with the same heartbeat sequence and frame counters that are written
+to the status sidecar. Full-frame and crop handoff clients tolerate these
+messages while waiting for `ACK` / `RELEASE`, so status telemetry no longer
+depends only on the JSON sidecar path. The sidecar remains the durable
+operator-facing health artifact.
 
 There are two source-lifetime modes:
 
@@ -265,8 +272,9 @@ Current semantics:
 - `require_protocol_hello = true` requires `ipc_protocol` payloads showing
   `recorder_hello_sent = true` and `client_hello_received = true` in recorder
   summary/status JSON and, when runtime status is required, parsed runtime
-  protocol fields. Current generated full-frame and crop external IPC
-  contracts set it by default.
+  protocol fields. When present, `recorder_status_send_failures` must be zero.
+  Current generated full-frame and crop external IPC contracts set it by
+  default.
 - Shell-launched diagnostic runs validate external recorder files after Orange
   exits through `scripts/verify_external_recorder_session.py`.
 - Supervised headless and GUI/session runs finalize the recorder lifecycle from

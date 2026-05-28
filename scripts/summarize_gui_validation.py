@@ -523,6 +523,12 @@ def ipc_protocol_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "version": int_value(protocol.get("version")),
         "recorder_hello_sent": protocol.get("recorder_hello_sent"),
         "client_hello_received": protocol.get("client_hello_received"),
+        "recorder_status_messages_sent": int_value(
+            protocol.get("recorder_status_messages_sent")
+        ),
+        "recorder_status_send_failures": int_value(
+            protocol.get("recorder_status_send_failures")
+        ),
     }
 
 
@@ -627,10 +633,22 @@ def summarize_external_recorder_status_contract(
             "ipc_protocol_version": protocol.get("version"),
             "recorder_hello_sent": protocol.get("recorder_hello_sent"),
             "client_hello_received": protocol.get("client_hello_received"),
+            "recorder_status_messages_sent": protocol.get(
+                "recorder_status_messages_sent"
+            ),
+            "recorder_status_send_failures": protocol.get(
+                "recorder_status_send_failures"
+            ),
             "runtime_ipc_protocol_name": runtime_status.get("ipc_protocol_name"),
             "runtime_ipc_protocol_version": int_value(runtime_status.get("ipc_protocol_version")),
             "runtime_recorder_hello_sent": runtime_status.get("recorder_hello_sent"),
             "runtime_client_hello_received": runtime_status.get("client_hello_received"),
+            "runtime_recorder_status_messages_sent": int_value(
+                runtime_status.get("recorder_status_messages_sent")
+            ),
+            "runtime_recorder_status_send_failures": int_value(
+                runtime_status.get("recorder_status_send_failures")
+            ),
             "runtime_storage_checked": runtime_status.get("storage_checked"),
             "runtime_storage_ok": runtime_status.get("storage_ok"),
             "runtime_storage_low_space": runtime_status.get("storage_low_space"),
@@ -1607,6 +1625,8 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"{fmt_int(status.get('ipc_protocol_version'))} "
                     f"hello={int(status.get('recorder_hello_sent') is True)}/"
                     f"{int(status.get('client_hello_received') is True)} "
+                    f"status_msgs={fmt_int(status.get('recorder_status_messages_sent'))}/"
+                    f"{fmt_int(status.get('recorder_status_send_failures'))} "
                     f"storage={storage}"
                 )
     else:

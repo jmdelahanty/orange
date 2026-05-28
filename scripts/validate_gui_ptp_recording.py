@@ -2051,6 +2051,12 @@ def check_ipc_protocol_payload(
         "ipc_protocol_version": integer(protocol.get("version")),
         "recorder_hello_sent": protocol.get("recorder_hello_sent"),
         "client_hello_received": protocol.get("client_hello_received"),
+        "recorder_status_messages_sent": integer(
+            protocol.get("recorder_status_messages_sent")
+        ),
+        "recorder_status_send_failures": integer(
+            protocol.get("recorder_status_send_failures")
+        ),
     }
     reporter.check(
         protocol.get("name") == "orange.external_recorder.ipc",
@@ -2072,6 +2078,13 @@ def check_ipc_protocol_payload(
         f"{prefix} client_hello_received=true",
         f"{prefix} client_hello_received={protocol.get('client_hello_received')!r}",
     )
+    send_failures = integer(protocol.get("recorder_status_send_failures"))
+    if send_failures is not None:
+        reporter.check(
+            send_failures == 0,
+            f"{prefix} recorder status protocol sends succeeded",
+            f"{prefix} recorder_status_send_failures={send_failures}",
+        )
     return summary
 
 
@@ -2390,6 +2403,18 @@ def check_external_recorder_status_contract(
                     f"{runtime_status.get('client_hello_received')!r}"
                 ),
             )
+            runtime_send_failures = integer(
+                runtime_status.get("recorder_status_send_failures")
+            )
+            if runtime_send_failures is not None:
+                reporter.check(
+                    runtime_send_failures == 0,
+                    f"{prefix} runtime recorder status protocol sends succeeded",
+                    (
+                        f"{prefix} runtime recorder_status_send_failures="
+                        f"{runtime_send_failures}"
+                    ),
+                )
 
         status_summary[serial] = {
             "status_json": str(status_path) if status_path is not None else "",

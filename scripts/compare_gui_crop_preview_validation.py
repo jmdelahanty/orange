@@ -585,6 +585,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
             or finite_int(status.get("ipc_protocol_version")) != 1
             or status.get("recorder_hello_sent") is not True
             or status.get("client_hello_received") is not True
+            or finite_int(status.get("recorder_status_send_failures")) != 0
         ):
             external_recorder_protocol_failed_streams.append(f"{group_name}:{stream_name}")
 
