@@ -86,10 +86,33 @@ struct SupervisorProcessOptions {
     bool allow_regular_file_socket_ready_for_tests = false;
 };
 
+struct RecorderStatusSnapshot {
+    std::string path;
+    bool present = false;
+    bool valid = false;
+    std::string schema_id;
+    int schema_version = 0;
+    std::string status;
+    uint64_t steady_clock_ns = 0;
+    uint64_t heartbeat_sequence = 0;
+    uint64_t frames_received = 0;
+    uint64_t acks_sent = 0;
+    uint64_t detach_copied = 0;
+    uint64_t encode_enqueued = 0;
+    uint64_t encode_skipped = 0;
+    uint64_t encode_dropped = 0;
+    uint64_t encode_queue_high_water = 0;
+    uint64_t frames_encoded = 0;
+    uint64_t frames_dropped = 0;
+    bool worker_failed = false;
+    std::string error;
+};
+
 struct RecorderProcessState {
     std::string stream_id;
     std::string camera_serial;
     std::string socket_path;
+    std::string status_json_path;
     std::string log_path;
     std::vector<std::string> argv;
     pid_t pid = -1;
@@ -100,6 +123,7 @@ struct RecorderProcessState {
     int term_signal = 0;
     std::string status = "not_started";
     std::string error;
+    RecorderStatusSnapshot recorder_status;
 };
 
 struct SupervisorRuntimeState {

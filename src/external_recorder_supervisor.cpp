@@ -152,6 +152,107 @@ bool poll_process_exit(RecorderProcessState* process, std::string* error_out)
     return true;
 }
 
+uint64_t optional_u64(const nlohmann::json& node, const char* key)
+{
+    if (!node.contains(key)) {
+        return 0;
+    }
+    const nlohmann::json& value = node[key];
+    if (value.is_number_unsigned()) {
+        return value.get<uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const int64_t parsed = value.get<int64_t>();
+        return parsed > 0 ? static_cast<uint64_t>(parsed) : 0;
+    }
+    return 0;
+}
+
+int optional_int(const nlohmann::json& node, const char* key)
+{
+    if (!node.contains(key)) {
+        return 0;
+    }
+    const nlohmann::json& value = node[key];
+    if (value.is_number_integer() || value.is_number_unsigned()) {
+        return value.get<int>();
+    }
+    return 0;
+}
+
+std::string optional_string(const nlohmann::json& node, const char* key)
+{
+    if (!node.contains(key) || !node[key].is_string()) {
+        return {};
+    }
+    return node[key].get<std::string>();
+}
+
+bool optional_bool(const nlohmann::json& node, const char* key)
+{
+    return node.contains(key) && node[key].is_boolean() && node[key].get<bool>();
+}
+
+void refresh_recorder_status_sidecar(RecorderProcessState* process)
+{
+    if (!process || process->status_json_path.empty()) {
+        return;
+    }
+
+    RecorderStatusSnapshot snapshot;
+    snapshot.path = process->status_json_path;
+
+    std::error_code exists_error;
+    if (!std::filesystem::exists(process->status_json_path, exists_error)) {
+        process->recorder_status = std::move(snapshot);
+        return;
+    }
+
+    snapshot.present = true;
+    try {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::ifstream input(process->status_json_path);
+        if (!input) {
+            snapshot.error = "failed to open recorder status sidecar";
+            process->recorder_status = std::move(snapshot);
+            return;
+        }
+
+        const nlohmann::json parsed = nlohmann::json::parse(input);
+        snapshot.schema_id = optional_string(parsed, "schema_id");
+        snapshot.schema_version = optional_int(parsed, "schema_version");
+        snapshot.status = optional_string(parsed, "status");
+        snapshot.steady_clock_ns = optional_u64(parsed, "steady_clock_ns");
+        snapshot.heartbeat_sequence = optional_u64(parsed, "heartbeat_sequence");
+        snapshot.frames_received = optional_u64(parsed, "frames_received");
+        snapshot.acks_sent = optional_u64(parsed, "acks_sent");
+        snapshot.detach_copied = optional_u64(parsed, "detach_copied");
+        snapshot.encode_enqueued = optional_u64(parsed, "encode_enqueued");
+        snapshot.encode_skipped = optional_u64(parsed, "encode_skipped");
+        snapshot.encode_dropped = optional_u64(parsed, "encode_dropped");
+        snapshot.encode_queue_high_water =
+            optional_u64(parsed, "encode_queue_high_water");
+        snapshot.frames_encoded = optional_u64(parsed, "frames_encoded");
+        snapshot.frames_dropped = optional_u64(parsed, "frames_dropped");
+        snapshot.worker_failed = optional_bool(parsed, "worker_failed");
+        snapshot.error = optional_string(parsed, "error");
+        snapshot.valid =
+            snapshot.schema_id == "orange.external_recorder.status" &&
+            snapshot.schema_version == 1 &&
+            !snapshot.status.empty();
+        if (!snapshot.valid && snapshot.error.empty()) {
+            snapshot.error = "recorder status sidecar has unexpected schema";
+        }
+    } catch (const std::exception& ex) {
+        snapshot.valid = false;
+        snapshot.error = std::string("failed to parse recorder status sidecar: ") +
+                         ex.what();
+    }
+
+    process->recorder_status = std::move(snapshot);
+}
+
 bool all_processes_inactive(const SupervisorRuntimeState& runtime)
 {
     for (const RecorderProcessState& process : runtime.processes) {
@@ -967,6 +1068,8 @@ bool StartSupervisorProcesses(const SupervisorPlan& plan,
         process.stream_id = stream.stream_id;
         process.camera_serial = stream.camera_serial;
         process.socket_path = stream.socket_path;
+        process.status_json_path = stream.status_json;
+        process.recorder_status.path = stream.status_json;
         process.log_path = stream.recorder_log;
         process.argv = BuildRecorderCommand(plan, stream);
         process.status = "not_started";
@@ -979,6 +1082,13 @@ bool StartSupervisorProcesses(const SupervisorPlan& plan,
         }
         if (options.unlink_existing_sockets) {
             unlink(process.socket_path.c_str());
+        }
+        if (!process.status_json_path.empty()) {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            std::error_code remove_error;
+            std::filesystem::remove(process.status_json_path, remove_error);
+            std::filesystem::remove(process.status_json_path + ".tmp", remove_error);
         }
 
         int log_fd = -1;
@@ -1041,6 +1151,7 @@ bool StartSupervisorProcesses(const SupervisorPlan& plan,
         std::string wait_error;
         for (RecorderProcessState& process : runtime.processes) {
             poll_process_exit(&process, &wait_error);
+            refresh_recorder_status_sidecar(&process);
             if (!process.active && !process.socket_ready) {
                 *runtime_out = std::move(runtime);
                 SupervisorProcessOptions stop_options = options;
@@ -1087,6 +1198,7 @@ bool StopSupervisorProcesses(SupervisorRuntimeState* runtime,
             std::string wait_error;
             for (RecorderProcessState& process : runtime->processes) {
                 poll_process_exit(&process, &wait_error);
+                refresh_recorder_status_sidecar(&process);
             }
             if (all_processes_inactive(*runtime)) {
                 return true;
@@ -1156,6 +1268,7 @@ bool PollSupervisorProcesses(SupervisorRuntimeState* runtime,
     std::string wait_error;
     for (RecorderProcessState& process : runtime->processes) {
         poll_process_exit(&process, &wait_error);
+        refresh_recorder_status_sidecar(&process);
     }
 
     for (const RecorderProcessState& process : runtime->processes) {
@@ -1176,10 +1289,12 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
 {
     nlohmann::json processes = nlohmann::json::array();
     for (const RecorderProcessState& process : runtime.processes) {
+        const RecorderStatusSnapshot& recorder_status = process.recorder_status;
         processes.push_back({
             {"stream_id", process.stream_id},
             {"camera_serial", process.camera_serial},
             {"socket_path", process.socket_path},
+            {"status_json_path", process.status_json_path},
             {"log_path", process.log_path},
             {"argv", process.argv},
             {"pid", process.pid > 0 ? static_cast<int>(process.pid) : -1},
@@ -1190,6 +1305,27 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
             {"term_signal", process.term_signal},
             {"status", process.status},
             {"error", process.error},
+            {"recorder_status", {
+                {"path", recorder_status.path},
+                {"present", recorder_status.present},
+                {"valid", recorder_status.valid},
+                {"schema_id", recorder_status.schema_id},
+                {"schema_version", recorder_status.schema_version},
+                {"status", recorder_status.status},
+                {"steady_clock_ns", recorder_status.steady_clock_ns},
+                {"heartbeat_sequence", recorder_status.heartbeat_sequence},
+                {"frames_received", recorder_status.frames_received},
+                {"acks_sent", recorder_status.acks_sent},
+                {"detach_copied", recorder_status.detach_copied},
+                {"encode_enqueued", recorder_status.encode_enqueued},
+                {"encode_skipped", recorder_status.encode_skipped},
+                {"encode_dropped", recorder_status.encode_dropped},
+                {"encode_queue_high_water", recorder_status.encode_queue_high_water},
+                {"frames_encoded", recorder_status.frames_encoded},
+                {"frames_dropped", recorder_status.frames_dropped},
+                {"worker_failed", recorder_status.worker_failed},
+                {"error", recorder_status.error},
+            }},
         });
     }
     return {

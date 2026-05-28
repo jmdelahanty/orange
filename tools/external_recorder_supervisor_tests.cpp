@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -359,6 +360,73 @@ void test_process_poll_detects_unexpected_signal_exit()
     std::filesystem::remove(plan.streams[0].recorder_log);
 }
 
+void test_process_poll_reads_status_sidecar()
+{
+    const std::string suffix =
+        std::to_string(static_cast<long long>(getpid())) + "_status";
+    const std::filesystem::path status_path =
+        std::filesystem::temp_directory_path() /
+        ("orange_external_recorder_status_" + suffix + ".json");
+    {
+        std::ofstream out(status_path);
+        out
+            << "{\n"
+            << "  \"schema_id\": \"orange.external_recorder.status\",\n"
+            << "  \"schema_version\": 1,\n"
+            << "  \"status\": \"running\",\n"
+            << "  \"steady_clock_ns\": 12345,\n"
+            << "  \"heartbeat_sequence\": 7,\n"
+            << "  \"frames_received\": 11,\n"
+            << "  \"acks_sent\": 10,\n"
+            << "  \"detach_copied\": 9,\n"
+            << "  \"encode_enqueued\": 8,\n"
+            << "  \"encode_skipped\": 1,\n"
+            << "  \"encode_dropped\": 0,\n"
+            << "  \"encode_queue_high_water\": 3,\n"
+            << "  \"frames_encoded\": 8,\n"
+            << "  \"frames_dropped\": 0,\n"
+            << "  \"worker_failed\": false\n"
+            << "}\n";
+    }
+
+    SupervisorRuntimeState runtime;
+    runtime.artifact_root = "/tmp/orange_external_recorder_supervisor_tests";
+    runtime.session_id = "status_session";
+    runtime.processes.push_back({});
+    runtime.processes[0].stream_id = "2010096";
+    runtime.processes[0].camera_serial = "2010096";
+    runtime.processes[0].status_json_path = status_path.string();
+    runtime.processes[0].recorder_status.path = status_path.string();
+
+    std::string error;
+    require(PollSupervisorProcesses(&runtime, &error),
+            "status sidecar polling should not fail: " + error);
+    require(runtime.processes[0].recorder_status.present,
+            "status sidecar should be present");
+    require(runtime.processes[0].recorder_status.valid,
+            "status sidecar should be valid");
+    require(runtime.processes[0].recorder_status.status == "running",
+            "status sidecar status should parse");
+    require(runtime.processes[0].recorder_status.heartbeat_sequence == 7,
+            "status sidecar heartbeat should parse");
+    require(runtime.processes[0].recorder_status.frames_received == 11,
+            "status sidecar received count should parse");
+    require(runtime.processes[0].recorder_status.frames_encoded == 8,
+            "status sidecar encoded count should parse");
+
+    const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
+    require(summary["processes"][0]["status_json_path"] == status_path.string(),
+            "runtime summary should include status sidecar path");
+    require(summary["processes"][0]["recorder_status"]["valid"].get<bool>(),
+            "runtime summary should include parsed status validity");
+    require(summary["processes"][0]["recorder_status"]["heartbeat_sequence"] == 7,
+            "runtime summary should include parsed heartbeat");
+    require(summary["processes"][0]["recorder_status"]["frames_encoded"] == 8,
+            "runtime summary should include parsed encoded count");
+
+    std::filesystem::remove(status_path);
+}
+
 void test_supervised_lifecycle_writes_artifacts_and_env()
 {
     const std::filesystem::path stub_path =
@@ -470,6 +538,7 @@ int main(int argc, char** argv)
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},
         {"process_lifecycle_waits_socket_and_stops", test_process_lifecycle_waits_socket_and_stops},
         {"process_poll_detects_unexpected_signal_exit", test_process_poll_detects_unexpected_signal_exit},
+        {"process_poll_reads_status_sidecar", test_process_poll_reads_status_sidecar},
         {"supervised_lifecycle_writes_artifacts_and_env", test_supervised_lifecycle_writes_artifacts_and_env},
     };
 

@@ -536,11 +536,14 @@ Current GUI implication:
   draining and shows full-frame/crop recorder process and socket readiness in
   the status area. Unexpected nonzero or signal exits are carried into final
   `recording_session.json`/finalization failure reporting.
-- Remaining GUI external-recorder gaps are protocol-level heartbeat/failure
-  messages from the recorder process itself. The PTP stack guard exists in the
-  validation launcher/wrapper path, but manual GUI operation still depends on
-  the Host PTP Stack panel or an operator shell command before streaming
-  PTP-gated cameras.
+- The GUI also consumes the recorder-owned
+  `orange.external_recorder.status` sidecar when present. It shows heartbeat
+  coverage and recorder-side received/encoded frame totals, and invalid or
+  failed status sidecars are surfaced as status-line errors. Remaining
+  external-recorder health gaps are richer in-band protocol messages beyond
+  this sidecar. The PTP stack guard exists in the validation launcher/wrapper
+  path, but manual GUI operation still depends on the Host PTP Stack panel or
+  an operator shell command before streaming PTP-gated cameras.
 
 Earlier GUI external-recorder fail-fast artifact:
 

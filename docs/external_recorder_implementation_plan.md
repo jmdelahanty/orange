@@ -475,8 +475,8 @@ headless process lifecycle validation; it is GUI/session production hardening:
 1. Validate the GUI/session external IPC path with
    `ORANGE_PTP_REGISTER_READ_DECIMATE=100`
    and the high-effort A16 detect engine candidate.
-2. Add user-visible recorder heartbeat/failure reporting beyond the current
-   finalization summary.
+2. Extend recorder health beyond the first sidecar-backed GUI status line into
+   the eventual versioned in-band recorder protocol.
 3. Turn the diagnostic descriptor/routing contract into a versioned production
    recorder protocol.
 
@@ -721,8 +721,11 @@ nonzero/signal exits as runtime errors, and renders full-frame and crop
 recorder process/socket health in the GUI. The diagnostic recorder also writes
 a stream-level `orange.external_recorder.status` heartbeat sidecar with
 listening, connected, running, finalizing, completed, and failed states. That
-sidecar is separate from the frame ACK protocol; GUI consumption of it remains
-the next health-display slice. The first GUI PTP-stack guard also exists in the
+sidecar is separate from the frame ACK protocol; supervised runtime now parses
+it into `processes[].recorder_status`, and the GUI status line displays
+heartbeat coverage plus recorder-side received/encoded totals. The remaining
+health work is an in-band protocol heartbeat/control plane for the production
+recorder. The first GUI PTP-stack guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
 `orange-gui-validation --ptp-stack-mode off|require|auto`, and autorun

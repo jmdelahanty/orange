@@ -1859,6 +1859,11 @@ struct GuiExternalRecorderStatusLine {
     int active_count = 0;
     int socket_ready_count = 0;
     int error_count = 0;
+    int recorder_status_present_count = 0;
+    int recorder_status_valid_count = 0;
+    uint64_t frames_received = 0;
+    uint64_t frames_encoded = 0;
+    std::string recorder_status_detail;
 };
 
 GuiExternalRecorderStatusLine gui_external_recorder_status_line(
@@ -1877,6 +1882,57 @@ GuiExternalRecorderStatusLine gui_external_recorder_status_line(
         }
         if (process.socket_ready) {
             ++line.socket_ready_count;
+        }
+        const auto& recorder_status = process.recorder_status;
+        if (recorder_status.present) {
+            ++line.recorder_status_present_count;
+            if (recorder_status.valid) {
+                ++line.recorder_status_valid_count;
+                line.frames_received += recorder_status.frames_received;
+                line.frames_encoded += recorder_status.frames_encoded;
+                if (line.recorder_status_detail.empty()) {
+                    const std::string camera =
+                        process.camera_serial.empty()
+                            ? process.stream_id
+                            : ("Cam" + process.camera_serial);
+                    std::ostringstream detail;
+                    detail << camera
+                           << " recorder=" << recorder_status.status
+                           << " seq=" << recorder_status.heartbeat_sequence
+                           << " rx=" << recorder_status.frames_received
+                           << " enc=" << recorder_status.frames_encoded;
+                    line.recorder_status_detail = detail.str();
+                }
+                if (recorder_status.status == "failed" ||
+                    recorder_status.worker_failed ||
+                    !recorder_status.error.empty()) {
+                    ++line.error_count;
+                    if (line.error.empty()) {
+                        const std::string camera =
+                            process.camera_serial.empty()
+                                ? process.stream_id
+                                : ("Cam" + process.camera_serial);
+                        line.error =
+                            camera + ": recorder status " + recorder_status.status;
+                        if (!recorder_status.error.empty()) {
+                            line.error += ": " + recorder_status.error;
+                        }
+                    }
+                }
+            } else {
+                ++line.error_count;
+                if (line.error.empty()) {
+                    const std::string camera =
+                        process.camera_serial.empty()
+                            ? process.stream_id
+                            : ("Cam" + process.camera_serial);
+                    line.error =
+                        camera + ": invalid recorder status sidecar";
+                    if (!recorder_status.error.empty()) {
+                        line.error += ": " + recorder_status.error;
+                    }
+                }
+            }
         }
         if (!process.error.empty()) {
             ++line.error_count;
@@ -1939,13 +1995,22 @@ void render_gui_external_recorder_status_line(
 
     ImGui::TextColored(
         color,
-        "%s: %s (%d/%d running, %d/%d sockets)",
+        "%s: %s (%d/%d running, %d/%d sockets, %d/%d status)",
         line.label.c_str(),
         line.status.c_str(),
         line.active_count,
         line.process_count,
         line.socket_ready_count,
+        line.process_count,
+        line.recorder_status_valid_count,
         line.process_count);
+    if (!line.recorder_status_detail.empty()) {
+        ImGui::TextDisabled(
+            "%s, total rx=%llu enc=%llu",
+            line.recorder_status_detail.c_str(),
+            static_cast<unsigned long long>(line.frames_received),
+            static_cast<unsigned long long>(line.frames_encoded));
+    }
     if (!line.error.empty()) {
         ImGui::TextWrapped("%s", line.error.c_str());
     }
