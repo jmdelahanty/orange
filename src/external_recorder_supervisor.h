@@ -82,6 +82,7 @@ struct SupervisorPlan {
     bool require_gop_routing = true;
     bool require_status = true;
     bool require_status_runtime = false;
+    bool require_storage_preflight = true;
     std::vector<RecorderStreamPlan> streams;
 };
 

@@ -568,6 +568,9 @@ Current GUI validation tooling:
   supervisor runtime JSON, and summary counts so compact run summaries expose
   recorder completion, heartbeat, ACK/received/encoded totals, storage
   preflight health, and count mismatches.
+- External IPC validation commands now include
+  `--require-external-recorder-storage-preflight`, so new runs fail if recorder
+  summary/status sidecars or parsed runtime state omit storage preflight health.
 - `scripts/validate_gui_ptp_recording.py <recording_folder>` validates one
   explicit GUI recording artifact.
 - `scripts/validate_gui_ptp_recording.py --latest` validates the newest GUI

@@ -406,6 +406,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-recorder-storage-preflight",
+        action="store_true",
+        help=(
+            "For full-frame and crop external_ipc recorder contracts present in "
+            "the artifact, require storage_preflight payloads in recorder "
+            "status/summary JSON and parsed runtime storage fields."
+        ),
+    )
+    parser.add_argument(
         "--require-source-version",
         action="store_true",
         help=(
@@ -1939,10 +1948,41 @@ def check_storage_preflight_payload(
     reporter: Reporter,
     prefix: str,
     payload: dict[str, Any],
-) -> None:
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
     storage = payload.get("storage_preflight")
     if not isinstance(storage, dict):
-        return
+        return summary
+    paths = storage.get("paths")
+    paths = paths if isinstance(paths, list) else []
+    min_available_bytes: int | None = None
+    paths_ok_count = 0
+    paths_low_space_count = 0
+    for path in paths:
+        if not isinstance(path, dict):
+            continue
+        if path.get("ok") is True:
+            paths_ok_count += 1
+        if path.get("below_warning") is True:
+            paths_low_space_count += 1
+        available_bytes = integer(path.get("available_bytes"))
+        if available_bytes is not None:
+            min_available_bytes = (
+                available_bytes
+                if min_available_bytes is None
+                else min(min_available_bytes, available_bytes)
+            )
+    summary = {
+        "storage_checked": storage.get("checked"),
+        "storage_ok": storage.get("ok"),
+        "storage_low_space": storage.get("low_space"),
+        "storage_min_free_bytes": integer(storage.get("min_free_bytes")),
+        "storage_low_space_warning_bytes": integer(storage.get("low_space_warning_bytes")),
+        "storage_path_count": len(paths),
+        "storage_paths_ok_count": paths_ok_count,
+        "storage_paths_low_space_count": paths_low_space_count,
+        "storage_min_available_bytes": min_available_bytes,
+    }
     reporter.check(
         storage.get("ok") is not False,
         f"{prefix} storage_preflight ok=true",
@@ -1983,6 +2023,45 @@ def check_storage_preflight_payload(
                     f"below_warning={path.get('below_warning')!r}"
                 ),
             )
+    return summary
+
+
+def require_storage_preflight_summary(
+    reporter: Reporter,
+    prefix: str,
+    storage_summary: dict[str, Any],
+) -> None:
+    reporter.check(
+        storage_summary.get("storage_checked") is True,
+        f"{prefix} storage_preflight checked=true",
+        f"{prefix} storage_preflight checked={storage_summary.get('storage_checked')!r}",
+    )
+    reporter.check(
+        storage_summary.get("storage_ok") is True,
+        f"{prefix} storage_preflight ok=true",
+        f"{prefix} storage_preflight ok={storage_summary.get('storage_ok')!r}",
+    )
+    reporter.check(
+        storage_summary.get("storage_low_space") is not True,
+        f"{prefix} storage_preflight low_space=false",
+        f"{prefix} storage_preflight low_space={storage_summary.get('storage_low_space')!r}",
+    )
+    path_count = integer(storage_summary.get("storage_path_count"))
+    paths_ok_count = integer(storage_summary.get("storage_paths_ok_count"))
+    reporter.check(
+        path_count is not None and path_count > 0,
+        f"{prefix} storage_preflight paths present",
+        f"{prefix} storage_preflight path_count={path_count}",
+    )
+    if path_count is not None and paths_ok_count is not None:
+        reporter.check(
+            paths_ok_count == path_count,
+            f"{prefix} storage_preflight all paths ok ({paths_ok_count}/{path_count})",
+            (
+                f"{prefix} storage_preflight paths_ok_count={paths_ok_count}, "
+                f"path_count={path_count}"
+            ),
+        )
 
 
 def check_external_recorder_status_contract(
@@ -1990,6 +2069,7 @@ def check_external_recorder_status_contract(
     recording_folder: Path,
     contract_path: Path,
     label: str,
+    require_storage_preflight: bool,
 ) -> dict[str, Any]:
     contract = read_json(contract_path)
     if not contract:
@@ -2011,6 +2091,18 @@ def check_external_recorder_status_contract(
             f"{label} external recorder contract "
             f"require_status_runtime={contract.get('require_status_runtime')!r}"
         ),
+    )
+    if require_storage_preflight:
+        reporter.check(
+            contract.get("require_storage_preflight") is True,
+            f"{label} external recorder contract require_storage_preflight=true",
+            (
+                f"{label} external recorder contract "
+                f"require_storage_preflight={contract.get('require_storage_preflight')!r}"
+            ),
+        )
+    storage_preflight_required = (
+        require_storage_preflight or contract.get("require_storage_preflight") is True
     )
 
     artifact_root_value = contract.get("artifact_root")
@@ -2066,7 +2158,17 @@ def check_external_recorder_status_contract(
             f"{prefix} recorder worker_failed=false",
             f"{prefix} recorder worker_failed={status.get('worker_failed')!r}",
         )
-        check_storage_preflight_payload(reporter, f"{prefix} status", status)
+        status_storage_summary = check_storage_preflight_payload(
+            reporter,
+            f"{prefix} status",
+            status,
+        )
+        if storage_preflight_required:
+            require_storage_preflight_summary(
+                reporter,
+                f"{prefix} status",
+                status_storage_summary,
+            )
         reporter.check(
             not status.get("error"),
             f"{prefix} recorder status error empty",
@@ -2081,7 +2183,17 @@ def check_external_recorder_status_contract(
         summary_acks_sent = integer(summary.get("acks_sent"))
         if summary:
             check_external_summary_mp4_queue_overflow(reporter, prefix, summary)
-            check_storage_preflight_payload(reporter, f"{prefix} summary", summary)
+            summary_storage_summary = check_storage_preflight_payload(
+                reporter,
+                f"{prefix} summary",
+                summary,
+            )
+            if storage_preflight_required:
+                require_storage_preflight_summary(
+                    reporter,
+                    f"{prefix} summary",
+                    summary_storage_summary,
+                )
             reporter.check(
                 frames_received == summary_frames_received,
                 f"{prefix} status frames_received matches summary ({frames_received})",
@@ -2157,6 +2269,19 @@ def check_external_recorder_status_contract(
                 runtime_status,
                 rolling_status_summary,
             )
+        if storage_preflight_required:
+            runtime_storage_summary = {
+                "storage_checked": runtime_status.get("storage_checked"),
+                "storage_ok": runtime_status.get("storage_ok"),
+                "storage_low_space": runtime_status.get("storage_low_space"),
+                "storage_path_count": runtime_status.get("storage_path_count"),
+                "storage_paths_ok_count": runtime_status.get("storage_paths_ok_count"),
+            }
+            require_storage_preflight_summary(
+                reporter,
+                f"{prefix} runtime",
+                runtime_storage_summary,
+            )
 
         status_summary[serial] = {
             "status_json": str(status_path) if status_path is not None else "",
@@ -2169,6 +2294,19 @@ def check_external_recorder_status_contract(
             "runtime_present": runtime_process is not None,
             "runtime_valid": runtime_status.get("valid") is True,
         }
+        status_summary[serial].update(status_storage_summary)
+        status_summary[serial].update(
+            {
+                "runtime_storage_checked": runtime_status.get("storage_checked"),
+                "runtime_storage_ok": runtime_status.get("storage_ok"),
+                "runtime_storage_low_space": runtime_status.get("storage_low_space"),
+                "runtime_storage_path_count": runtime_status.get("storage_path_count"),
+                "runtime_storage_paths_ok_count": runtime_status.get("storage_paths_ok_count"),
+                "runtime_storage_min_available_bytes": integer(
+                    runtime_status.get("storage_min_available_bytes")
+                ),
+            }
+        )
         status_summary[serial].update(rolling_status_summary)
     return status_summary
 
@@ -2177,6 +2315,7 @@ def check_external_recorder_status(
     reporter: Reporter,
     recording_folder: Path,
     require_status: bool,
+    require_storage_preflight: bool = False,
 ) -> dict[str, Any]:
     if not require_status:
         return {}
@@ -2195,6 +2334,7 @@ def check_external_recorder_status(
             recording_folder,
             contract_path,
             label,
+            require_storage_preflight,
         )
     reporter.check(
         found,
@@ -5044,6 +5184,7 @@ def main() -> int:
             reporter,
             recording_folder,
             args.require_external_recorder_status,
+            args.require_external_recorder_storage_preflight,
         )
         check_pipeline(
             reporter,

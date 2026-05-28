@@ -44,6 +44,7 @@ void write_verifier_handoff_artifact(SupervisedRecorderLifecycleState* state)
     handoff_options.require_video_sanity = state->plan.require_video_sanity;
     handoff_options.require_status = state->plan.require_status;
     handoff_options.require_status_runtime = state->plan.require_status_runtime;
+    handoff_options.require_storage_preflight = state->plan.require_storage_preflight;
     const ArtifactWriteResult result =
         WriteExternalRecorderVerifierHandoffArtifact(handoff_options);
     if (!result.ok) {

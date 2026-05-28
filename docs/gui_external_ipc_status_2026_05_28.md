@@ -144,6 +144,7 @@ scripts/validate_gui_ptp_recording.py \
   --expect-external-crop-recorder-gpu 2010095=8 \
   --expect-external-crop-recorder-gpu 2010096=6 \
   --require-external-recorder-status \
+  --require-external-recorder-storage-preflight \
   --require-source-version \
   --expect-source-git-command-user-mode sudo_invoking_user \
   --expect-source-dirty-tracked 0 \

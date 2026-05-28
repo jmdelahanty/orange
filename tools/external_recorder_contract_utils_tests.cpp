@@ -90,6 +90,8 @@ void materializes_contract_and_supervisor_plan()
             "materialized contract should require recorder status sidecars");
     require(contract.value("require_status_runtime", false),
             "materialized contract should require supervised runtime status");
+    require(contract.value("require_storage_preflight", false),
+            "materialized contract should require storage preflight telemetry");
     require(contract["streams"].size() == 2, "expected two contract streams");
     require(contract["streams"]["2010095"].value("routing_policy", "") == "gop_modulo",
             "2010095 should route by GOP modulo");
@@ -230,6 +232,7 @@ void writes_failfast_artifacts()
         {"require_gop_routing", true},
         {"require_status", true},
         {"require_status_runtime", true},
+        {"require_storage_preflight", true},
         {"streams", {
             {"2010095", {
                 {"stream_id", "2010095"},
@@ -364,6 +367,7 @@ void writes_runtime_handoff_and_finalization_artifacts()
     handoff_options.require_video_sanity = true;
     handoff_options.require_status = true;
     handoff_options.require_status_runtime = true;
+    handoff_options.require_storage_preflight = true;
     const nlohmann::json handoff =
         orange::external_recorder::BuildExternalRecorderVerifierHandoff(handoff_options);
     require(handoff.value("schema_id", "") == "orange.external_recorder.verifier_handoff",
@@ -374,12 +378,15 @@ void writes_runtime_handoff_and_finalization_artifacts()
                 "--analytics-root",
                 "/tmp/orange_analytics_root",
                 "--require-recorder-status",
-                "--require-recorder-runtime-status"}),
+                "--require-recorder-runtime-status",
+                "--require-recorder-storage-preflight"}),
             "handoff command mismatch");
     require(handoff.value("requires_status", false),
             "handoff should record status requirement");
     require(handoff.value("requires_status_runtime", false),
             "handoff should record runtime status requirement");
+    require(handoff.value("requires_storage_preflight", false),
+            "handoff should record storage preflight requirement");
     const orange::external_recorder::ArtifactWriteResult handoff_result =
         orange::external_recorder::WriteExternalRecorderVerifierHandoffArtifact(
             handoff_options);

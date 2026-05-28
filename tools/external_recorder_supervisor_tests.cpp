@@ -76,6 +76,7 @@ nlohmann::json make_contract(const std::vector<int>& shard_gpu_ids,
         {"require_gop_routing", true},
         {"require_status", true},
         {"require_status_runtime", true},
+        {"require_storage_preflight", true},
         {"streams", {
             {"2010096", {
                 {"stream_id", "2010096"},
@@ -112,6 +113,8 @@ void test_single_shard_plan_builds_command()
     require(plan.streams.size() == 1, "expected one stream");
     require(plan.require_status, "plan should require recorder status sidecars");
     require(plan.require_status_runtime, "plan should require runtime recorder status parsing");
+    require(plan.require_storage_preflight,
+            "plan should require recorder storage preflight telemetry");
     const auto& stream = plan.streams[0];
     require(stream.socket_path == "/tmp/orange_external_recorder_2010096.sock",
             "default socket path should use camera serial");
@@ -163,6 +166,8 @@ void test_two_shard_plan_builds_gop_modulo_command()
             "plan json should expose status sidecar requirement");
     require(json_plan.value("require_status_runtime", false),
             "plan json should expose runtime status requirement");
+    require(json_plan.value("require_storage_preflight", false),
+            "plan json should expose storage preflight requirement");
     require(json_plan["streams"][0].value("status_json", "").find(
                 "Cam2010096_external_status.json") != std::string::npos,
             "plan json should expose status sidecar path");

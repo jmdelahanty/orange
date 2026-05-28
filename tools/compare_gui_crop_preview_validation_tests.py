@@ -169,6 +169,13 @@ def sample_payload(
                     "frames_encoded": 100,
                     "runtime_present": True,
                     "runtime_valid": True,
+                    "storage_checked": True,
+                    "storage_ok": True,
+                    "storage_low_space": False,
+                    "storage_path_count": 1,
+                    "runtime_storage_checked": True,
+                    "runtime_storage_ok": True,
+                    "runtime_storage_low_space": False,
                 },
                 "2010096": {
                     "status": "completed",
@@ -177,6 +184,13 @@ def sample_payload(
                     "frames_encoded": 80,
                     "runtime_present": True,
                     "runtime_valid": True,
+                    "storage_checked": True,
+                    "storage_ok": True,
+                    "storage_low_space": False,
+                    "storage_path_count": 1,
+                    "runtime_storage_checked": True,
+                    "runtime_storage_ok": True,
+                    "runtime_storage_low_space": False,
                 },
             },
             "crop": {
@@ -187,6 +201,13 @@ def sample_payload(
                     "frames_encoded": 100,
                     "runtime_present": True,
                     "runtime_valid": True,
+                    "storage_checked": True,
+                    "storage_ok": True,
+                    "storage_low_space": False,
+                    "storage_path_count": 1,
+                    "runtime_storage_checked": True,
+                    "runtime_storage_ok": True,
+                    "runtime_storage_low_space": False,
                 },
                 "2010096": {
                     "status": "completed",
@@ -195,6 +216,13 @@ def sample_payload(
                     "frames_encoded": 80,
                     "runtime_present": True,
                     "runtime_valid": True,
+                    "storage_checked": True,
+                    "storage_ok": True,
+                    "storage_low_space": False,
+                    "storage_path_count": 1,
+                    "runtime_storage_checked": True,
+                    "runtime_storage_ok": True,
+                    "runtime_storage_low_space": False,
                 },
             },
         },
@@ -687,6 +715,15 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
     storage_payload["external_recorder_status"]["full"]["2010095"]["storage_ok"] = True
     storage_payload["external_recorder_status"]["full"]["2010095"]["storage_low_space"] = True
     storage = compare.summarize_validation("storage", storage_payload)
+    missing_storage_payload = sample_payload()
+    missing_storage_payload["external_recorder_status"]["full"]["2010096"].pop(
+        "storage_checked",
+        None,
+    )
+    missing_storage = compare.summarize_validation(
+        "missing-storage",
+        missing_storage_payload,
+    )
     args = SimpleNamespace(
         require_pass=False,
         require_zero_crop_drops=False,
@@ -697,6 +734,7 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
         require_matching_crop_config=False,
         require_external_crop_recorder_gpu_separate_from_analytics=False,
         require_external_recorder_status=True,
+        require_external_recorder_storage_preflight=True,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -705,7 +743,7 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
     )
 
     require(not compare.threshold_failures(args, [healthy]), "healthy recorder status should pass")
-    failures = compare.threshold_failures(args, [missing, failed, storage])
+    failures = compare.threshold_failures(args, [missing, failed, storage, missing_storage])
     require(
         any("external recorder status missing" in failure for failure in failures),
         "missing external status should fail",
@@ -717,6 +755,10 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
     require(
         any("full:2010095" in failure for failure in failures),
         "low-space external status stream should be named",
+    )
+    require(
+        any("full:2010096" in failure for failure in failures),
+        "missing storage preflight stream should be named",
     )
 
 

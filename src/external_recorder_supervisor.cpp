@@ -611,6 +611,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                          "require_status_runtime",
                          &plan.require_status_runtime,
                          error_out,
+                         "external_recorder_contract") ||
+        !read_bool_field(contract,
+                         "require_storage_preflight",
+                         &plan.require_storage_preflight,
+                         error_out,
                          "external_recorder_contract")) {
         return false;
     }
@@ -1154,6 +1159,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"require_gop_routing", plan.require_gop_routing},
         {"require_status", plan.require_status},
         {"require_status_runtime", plan.require_status_runtime},
+        {"require_storage_preflight", plan.require_storage_preflight},
         {"streams", streams},
     };
 }

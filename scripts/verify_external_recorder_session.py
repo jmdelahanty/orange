@@ -111,6 +111,15 @@ def parse_args() -> argparse.Namespace:
             "valid parsed recorder_status entry for each selected status sidecar."
         ),
     )
+    parser.add_argument(
+        "--require-recorder-storage-preflight",
+        action="store_true",
+        help=(
+            "Require summary/status recorder storage_preflight payloads, and "
+            "runtime parsed storage fields when runtime status is required. "
+            "New contracts can also set require_storage_preflight=true."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -412,13 +421,24 @@ def require_no_mp4_queue_overflow(payload: dict[str, Any], label: str) -> None:
         require(events == 0, f"{label} mp4_queue_overflow_events={events}")
 
 
-def require_storage_preflight_ok(payload: dict[str, Any], label: str) -> None:
+def require_storage_preflight_ok(
+    payload: dict[str, Any],
+    label: str,
+    require_present: bool = False,
+) -> None:
     storage = payload.get("storage_preflight")
     if not isinstance(storage, dict):
+        require(not require_present, f"{label} missing storage_preflight")
         return
-    require(storage.get("ok") is not False, f"{label} storage_preflight.ok=false")
+    if require_present:
+        require(storage.get("checked") is True, f"{label} storage_preflight.checked is not true")
+        require(storage.get("ok") is True, f"{label} storage_preflight.ok is not true")
+    else:
+        require(storage.get("ok") is not False, f"{label} storage_preflight.ok=false")
     require(storage.get("low_space") is not True, f"{label} storage_preflight.low_space=true")
     paths = storage.get("paths")
+    if require_present:
+        require(isinstance(paths, list) and len(paths) > 0, f"{label} storage_preflight.paths missing")
     if isinstance(paths, list):
         for index, path in enumerate(paths):
             if not isinstance(path, dict):
@@ -631,6 +651,7 @@ def verify_status_sidecar(
     summary: dict[str, Any],
     require_status: bool,
     require_runtime_status: bool,
+    require_storage_preflight: bool,
 ) -> dict[str, Any] | None:
     status_path = path_from(
         stream.get("status_json") or derive_status_path(summary_path),
@@ -648,7 +669,11 @@ def verify_status_sidecar(
     require(str(status.get("stream_id")) == str(stream.get("stream_id", serial)), f"status stream_id mismatch in {status_path}")
     require(status.get("status") == "completed", f"recorder status is not completed in {status_path}")
     require(status.get("worker_failed") is False, f"recorder status worker_failed=true in {status_path}")
-    require_storage_preflight_ok(status, f"status for {serial}")
+    require_storage_preflight_ok(
+        status,
+        f"status for {serial}",
+        require_storage_preflight,
+    )
     error = status.get("error")
     require(error in (None, ""), f"recorder status reports error in {status_path}: {error}")
 
@@ -702,6 +727,20 @@ def verify_status_sidecar(
                 )
         if status_rolling_summary:
             compare_runtime_rolling_status(serial, candidate, status_rolling_summary)
+        if require_storage_preflight:
+            require(candidate.get("storage_checked") is True,
+                    f"runtime storage_checked is not true for {serial}")
+            require(candidate.get("storage_ok") is True,
+                    f"runtime storage_ok is not true for {serial}")
+            require(candidate.get("storage_low_space") is not True,
+                    f"runtime storage_low_space=true for {serial}")
+            require(as_int(candidate.get("storage_path_count"), "runtime storage_path_count") > 0,
+                    f"runtime storage_path_count missing for {serial}")
+            require(
+                as_int(candidate.get("storage_paths_ok_count"), "runtime storage_paths_ok_count") ==
+                as_int(candidate.get("storage_path_count"), "runtime storage_path_count"),
+                f"runtime storage path ok count mismatch for {serial}",
+            )
         runtime_status = candidate
 
     return {
@@ -850,6 +889,7 @@ def verify_summary(
     max_enqueue_age_p95_ms: float | None,
     require_recorder_status: bool,
     require_recorder_runtime_status: bool,
+    require_recorder_storage_preflight: bool,
 ) -> dict[str, Any]:
     summary_path = path_from(
         stream.get("summary_json") or artifact_root / f"Cam{serial}_external_summary.json",
@@ -864,6 +904,7 @@ def verify_summary(
         summary,
         require_recorder_status or bool(contract.get("require_status", False)),
         require_recorder_runtime_status or bool(contract.get("require_status_runtime", False)),
+        require_recorder_storage_preflight or bool(contract.get("require_storage_preflight", False)),
     )
     schema_id = summary.get("schema_id")
     require(
@@ -875,7 +916,11 @@ def verify_summary(
     require(str(summary.get("stream_id")) == str(stream.get("stream_id", serial)), f"stream_id mismatch in {summary_path}")
     require(summary.get("encode") is True, f"summary encode=false in {summary_path}")
     require(summary.get("worker_failed") is False, f"recorder worker_failed=true in {summary_path}")
-    require_storage_preflight_ok(summary, f"summary for {serial}")
+    require_storage_preflight_ok(
+        summary,
+        f"summary for {serial}",
+        require_recorder_storage_preflight or bool(contract.get("require_storage_preflight", False)),
+    )
 
     frames_received = as_int(summary.get("frames_received"), "frames_received")
     acks_sent = as_int(summary.get("acks_sent"), "acks_sent")
@@ -1281,6 +1326,7 @@ def verify(args: argparse.Namespace) -> None:
             args.max_enqueue_age_p95_ms,
             args.require_recorder_status,
             args.require_recorder_runtime_status,
+            args.require_recorder_storage_preflight,
         )
         for serial, stream in streams.items()
     ]

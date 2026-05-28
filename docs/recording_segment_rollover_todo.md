@@ -134,7 +134,10 @@ session/GUI validators reject summaries or status sidecars that report failed
 storage preflight or low-space warnings. The GUI recorder status line and
 summary tooling now surface storage health, path counts, and minimum available
 bytes from the live status heartbeat so low-space conditions are visible before
-post-run validation.
+post-run validation. New external IPC contracts also set
+`require_storage_preflight = true`, and GUI/headless validation commands require
+the storage payloads to be present rather than merely rejecting bad values when
+the payload happens to exist.
 
 ## Implementation Plan
 

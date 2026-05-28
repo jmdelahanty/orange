@@ -354,6 +354,7 @@ contract = {
     "session_id": spec["experiment_id"],
     "require_summary": True,
     "require_status": True,
+    "require_storage_preflight": True,
     "require_video_sanity": skip_video_sanity == 0,
     "require_merged_mp4": True,
     "require_gop_routing": True,

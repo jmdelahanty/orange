@@ -243,6 +243,10 @@ Current semantics:
   `require_status_runtime = true` additionally requires supervised runtime
   parsing in `external_recorder_supervisor_runtime.json`; use it only for
   Orange-supervised runs, not shell-launched recorder processes.
+- `require_storage_preflight = true` requires `storage_preflight` payloads in
+  recorder summary/status JSON and, when runtime status is required, parsed
+  runtime storage fields. Current generated full-frame and crop external IPC
+  contracts set it by default.
 - Shell-launched diagnostic runs validate external recorder files after Orange
   exits through `scripts/verify_external_recorder_session.py`.
 - Supervised headless and GUI/session runs finalize the recorder lifecycle from
@@ -424,12 +428,12 @@ GUI/session status:
   `recording_backend.mode = "external_ipc"`. For rolling contracts, the GUI
   mirrors recorder `rolling_output.clips[]` into a `rolling_clips` manifest
   and session clip indexes.
-- Recorder child-process, socket state, and parsed `status_json` heartbeat
-  state are visible in the GUI. The status line shows heartbeat coverage plus
-  recorder-side received/encoded frame totals when sidecars are present. For
-  rolling full-frame runs it also shows the recorder's current clip index and
-  next GOP-aligned rollover boundary from the live status sidecar, plus the
-  last completed clip when a rollover has already occurred.
+- Recorder child-process, socket state, parsed `status_json` heartbeat state,
+  and storage preflight state are visible in the GUI. The status line shows
+  heartbeat coverage plus recorder-side received/encoded frame totals when
+  sidecars are present. For rolling full-frame runs it also shows the recorder's
+  current clip index and next GOP-aligned rollover boundary from the live status
+  sidecar, plus the last completed clip when a rollover has already occurred.
 - First GUI/session hardware validation passed on 2026-05-21:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_21_12_39_24`. Both cameras
   recorded `1645` submitted/ACKed/encoded frames with no external IPC

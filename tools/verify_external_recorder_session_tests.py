@@ -262,6 +262,12 @@ def write_runtime(
         "frames_received": 3,
         "acks_sent": 3,
         "frames_encoded": 3,
+        "storage_checked": True,
+        "storage_ok": True,
+        "storage_low_space": False,
+        "storage_path_count": 1,
+        "storage_paths_ok_count": 1,
+        "storage_paths_low_space_count": 0,
     }
     if rolling:
         recorder_status.update(
@@ -302,6 +308,7 @@ def verify_one(
     max_enqueue_age: float | None = None,
     require_status: bool = False,
     require_runtime_status: bool = False,
+    require_storage_preflight: bool = False,
 ) -> dict:
     serial = "2010096"
     stream = {
@@ -331,6 +338,7 @@ def verify_one(
             max_enqueue_age,
             require_status,
             require_runtime_status,
+            require_storage_preflight,
         )
     finally:
         verifier.ffprobe_video = original_ffprobe
@@ -419,35 +427,49 @@ def test_mp4_queue_overflow_failures() -> None:
 def test_storage_preflight_failures() -> None:
     checks = [
         (
+            lambda payload: payload.pop("storage_preflight", None),
+            "summary for 2010096 missing storage_preflight",
+            True,
+        ),
+        (
             lambda payload: payload.update({"storage_preflight": storage_preflight_payload(ok=False)}),
             "summary for 2010096 storage_preflight.ok=false",
+            False,
         ),
         (
             lambda payload: payload.update(
                 {"storage_preflight": storage_preflight_payload(low_space=True)}
             ),
             "summary for 2010096 storage_preflight.low_space=true",
+            False,
         ),
         (
             lambda payload: payload.update(
                 {"storage_preflight": storage_preflight_payload(meets_min_free=False)}
             ),
             "summary for 2010096 storage path /tmp below min_free_bytes",
+            False,
         ),
         (
             lambda payload: payload.update(
                 {"storage_preflight": storage_preflight_payload(below_warning=True)}
             ),
             "summary for 2010096 storage path /tmp below low_space_warning_bytes",
+            False,
         ),
     ]
-    for mutator, expected in checks:
+    for mutator, expected, require_storage_preflight in checks:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             summary_path, mp4_path = write_summary(root, "2010096")
             rewrite_summary(summary_path, mutator)
             try:
-                verify_one(root, summary_path, mp4_path)
+                verify_one(
+                    root,
+                    summary_path,
+                    mp4_path,
+                    require_storage_preflight=require_storage_preflight,
+                )
             except verifier.VerificationError as exc:
                 require(expected in str(exc), f"unexpected storage failure: {exc}")
             else:
@@ -472,6 +494,55 @@ def test_storage_preflight_failures() -> None:
             )
         else:
             raise AssertionError("expected status storage preflight failure")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        status_path = write_status(root, "2010096")
+        rewrite_summary(status_path, lambda payload: payload.pop("storage_preflight", None))
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                require_status=True,
+                require_storage_preflight=True,
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "status for 2010096 missing storage_preflight" in str(exc),
+                f"unexpected missing status storage failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected missing status storage preflight failure")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        status_path = write_status(root, "2010096")
+        runtime_path = write_runtime(root, "2010096", status_path)
+        rewrite_summary(
+            runtime_path,
+            lambda payload: payload["processes"][0]["recorder_status"].update(
+                {"storage_checked": False}
+            ),
+        )
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                require_status=True,
+                require_runtime_status=True,
+                require_storage_preflight=True,
+            )
+        except verifier.VerificationError as exc:
+            require(
+                "runtime storage_checked is not true for 2010096" in str(exc),
+                f"unexpected runtime storage failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected runtime storage preflight failure")
 
 
 def test_rolling_output_uses_summary_recording_control() -> None:

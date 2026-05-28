@@ -135,6 +135,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-recorder-storage-preflight",
+        action="store_true",
+        help=(
+            "Exit nonzero if external recorder status summaries are missing "
+            "healthy storage preflight or parsed runtime storage fields."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-queue-high-water",
         type=nonnegative_int,
         help="Exit nonzero if any compared run exceeds this external crop encode queue high-water.",
@@ -529,6 +537,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
     external_status_entries = iter_external_recorder_status(payload)
     external_recorder_status_values: set[str] = set()
     external_recorder_status_failed_streams: list[str] = []
+    external_recorder_storage_failed_streams: list[str] = []
     external_recorder_heartbeat_values: list[int] = []
     external_recorder_frames_received_total = 0
     external_recorder_frames_encoded_total = 0
@@ -552,6 +561,16 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
             or status.get("runtime_storage_low_space") is True
         ):
             external_recorder_status_failed_streams.append(f"{group_name}:{stream_name}")
+        if (
+            status.get("storage_checked") is not True
+            or status.get("storage_ok") is not True
+            or status.get("storage_low_space") is True
+            or finite_int(status.get("storage_path_count")) <= 0
+            or status.get("runtime_storage_checked") is not True
+            or status.get("runtime_storage_ok") is not True
+            or status.get("runtime_storage_low_space") is True
+        ):
+            external_recorder_storage_failed_streams.append(f"{group_name}:{stream_name}")
 
     preview_offered_total = 0
     preview_updated_total = 0
@@ -680,6 +699,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "external_recorder_status_streams_total": len(external_status_entries),
         "external_recorder_status_values": sorted(external_recorder_status_values),
         "external_recorder_status_failed_streams": external_recorder_status_failed_streams,
+        "external_recorder_storage_failed_streams": external_recorder_storage_failed_streams,
         "external_recorder_heartbeat_min": (
             min(external_recorder_heartbeat_values)
             if external_recorder_heartbeat_values else None
@@ -1125,6 +1145,18 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
             if failed_streams:
                 failures.append(
                     f"{item.get('label')}: external recorder status not healthy for {failed_streams}"
+                )
+    if getattr(args, "require_external_recorder_storage_preflight", False):
+        for item in summaries:
+            streams_total = finite_int(item.get("external_recorder_status_streams_total"))
+            failed_streams = item.get("external_recorder_storage_failed_streams")
+            failed_streams = failed_streams if isinstance(failed_streams, list) else []
+            if streams_total <= 0:
+                failures.append(f"{item.get('label')}: external recorder status missing")
+            if failed_streams:
+                failures.append(
+                    f"{item.get('label')}: external recorder storage preflight "
+                    f"not healthy for {failed_streams}"
                 )
 
     fps_thresholds = [

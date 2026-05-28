@@ -734,16 +734,19 @@ validation launcher/wrapper path:
 PTP-gated validation defaults to `auto` so `ptp4l`/`phc2sys` are started and
 rechecked before Orange opens cameras.
 
-The post-run tooling now checks the sidecar heartbeat in both strict and
-summary paths: `validate_gui_ptp_recording.py --require-external-recorder-status`
-fails on missing/unhealthy sidecars or missing parsed runtime state,
-`compare_gui_crop_preview_validation.py --require-external-recorder-status`
-carries that gate into visible/hidden comparisons, and
-`summarize_gui_validation.py` prints compact full-frame/crop recorder heartbeat
-and count status for operator triage. The headless external-recorder session
-verifier also has `--require-recorder-status` and
-`--require-recorder-runtime-status`; new diagnostic smoke-runner contracts set
-`require_status = true` and pass `--status-json` to the recorder so those
+The post-run tooling now checks the sidecar heartbeat and storage preflight in
+both strict and summary paths:
+`validate_gui_ptp_recording.py --require-external-recorder-status
+--require-external-recorder-storage-preflight` fails on missing/unhealthy
+sidecars, missing parsed runtime state, or missing/unhealthy storage preflight;
+`compare_gui_crop_preview_validation.py` carries those gates into
+visible/hidden comparisons; and `summarize_gui_validation.py` prints compact
+full-frame/crop recorder heartbeat, count, and storage status for operator
+triage. The headless external-recorder session verifier also has
+`--require-recorder-status`, `--require-recorder-runtime-status`, and
+`--require-recorder-storage-preflight`; new diagnostic smoke-runner contracts
+set `require_status = true` and `require_storage_preflight = true` and pass
+`--status-json` to the recorder so those
 artifacts are checked by default when verified from their generated contract.
 GUI materialized contracts now default to both `require_status = true` and
 `require_status_runtime = true`, while shell-launched diagnostics keep runtime

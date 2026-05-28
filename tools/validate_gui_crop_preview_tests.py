@@ -993,6 +993,7 @@ def write_external_crop_contract(
                 "artifact_root": str(artifact_root),
                 "require_status": True,
                 "require_status_runtime": True,
+                "require_storage_preflight": True,
                 "recording_control": recording_control,
                 "rollover": rollover,
                 "streams": {
@@ -1164,6 +1165,14 @@ def write_external_recorder_status_fixture(
             if runtime_heartbeat_sequence is not None
             else heartbeat_sequence
         ),
+        "storage_checked": True,
+        "storage_ok": True,
+        "storage_low_space": False,
+        "storage_path_count": 1,
+        "storage_paths_ok_count": 1,
+        "storage_paths_low_space_count": 0,
+        "storage_has_min_available_bytes": True,
+        "storage_min_available_bytes": 4096,
     }
     if rolling:
         runtime_recorder_status.update(
@@ -1201,6 +1210,7 @@ def write_external_recorder_status_fixture(
                 "artifact_root": str(artifact_root),
                 "require_status": True,
                 "require_status_runtime": True,
+                "require_storage_preflight": True,
                 "streams": {
                     stream_id: {
                         "stream_id": stream_id,
@@ -1634,6 +1644,11 @@ def test_external_recorder_status_validation_fails_on_storage_preflight() -> Non
     cases = [
         (
             "summary",
+            lambda payload: payload.pop("storage_preflight", None),
+            "summary storage_preflight checked=None",
+        ),
+        (
+            "summary",
             lambda payload: payload.update(
                 {"storage_preflight": external_storage_preflight_payload(ok=False)}
             ),
@@ -1691,6 +1706,7 @@ def test_external_recorder_status_validation_requires_contract_flags() -> None:
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
         contract["require_status"] = False
         del contract["require_status_runtime"]
+        del contract["require_storage_preflight"]
         contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
 
         reporter = validator.Reporter(verbose=False)
@@ -1703,6 +1719,17 @@ def test_external_recorder_status_validation_requires_contract_flags() -> None:
         require(
             any("require_status_runtime=None" in failure for failure in reporter.failures),
             "strict status validation should fail when contract omits require_status_runtime",
+        )
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(
+            reporter,
+            root,
+            True,
+            require_storage_preflight=True,
+        )
+        require(
+            any("require_storage_preflight=None" in failure for failure in reporter.failures),
+            "strict storage validation should fail when contract omits require_storage_preflight",
         )
 
 

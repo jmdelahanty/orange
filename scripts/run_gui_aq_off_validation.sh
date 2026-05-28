@@ -148,7 +148,7 @@ EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS="--expect-external-crop-encode-queue-depth 
 EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS=""
 if [[ "${ORANGE_GUI_RECORDING_SINK_MODE:-}" == "external_ipc" ||
       "${CROP_RECORDING_SINK_MODE}" == "external_ipc" ]]; then
-  EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS="--require-external-recorder-status"
+  EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS="--require-external-recorder-status --require-external-recorder-storage-preflight"
 fi
 PER_CAMERA_GPU_DISPLAY_ITEMS=()
 if [[ "${CROP_RECORDING_SINK_MODE}" == "external_ipc" ]]; then
@@ -280,7 +280,7 @@ if [[ "${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}" == "1" ]]; then
   COMPARE_VALIDATION_FLAGS+=" --require-external-crop-recorder-gpu-separate-from-analytics"
 fi
 if [[ -n "${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS}" ]]; then
-  COMPARE_VALIDATION_FLAGS+=" --require-external-recorder-status"
+  COMPARE_VALIDATION_FLAGS+=" --require-external-recorder-status --require-external-recorder-storage-preflight"
 fi
 
 if [[ ! -x "${ORANGE_BIN}" ]]; then

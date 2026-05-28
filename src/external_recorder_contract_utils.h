@@ -91,6 +91,7 @@ struct VerifierHandoffArtifactOptions {
     bool require_video_sanity = true;
     bool require_status = true;
     bool require_status_runtime = false;
+    bool require_storage_preflight = true;
 };
 
 struct FinalizationManifestOptions {
