@@ -993,6 +993,7 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_LOCAL_CONTROL_SOCKET": "/tmp/orange_test_control.sock",
                 "ORANGE_GUI_LOCAL_CONTROL_LOG": "/tmp/orange_test_control.jsonl",
                 "ORANGE_GUI_LOCAL_CONTROL_DISABLE": "0",
+                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP": "1",
             },
         )
@@ -1077,6 +1078,10 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_LOCAL_CONTROL_DISABLE=0" in result.stdout,
             "GUI local control disable flag should be forwarded through sudo env when set",
+        )
+        require(
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1" in result.stdout,
+            "GUI local control recording stop flag should be forwarded through sudo env when set",
         )
         require(
             "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1" in result.stdout,
@@ -1542,6 +1547,8 @@ def test_gui_privilege_wrapper_accepts_local_control_envs() -> None:
             "--env",
             "ORANGE_GUI_LOCAL_CONTROL_DISABLE=0",
             "--env",
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1",
+            "--env",
             "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1",
         ],
         cwd=REPO_ROOT,
@@ -1563,6 +1570,10 @@ def test_gui_privilege_wrapper_accepts_local_control_envs() -> None:
     require(
         "ORANGE_GUI_LOCAL_CONTROL_DISABLE=0" in result.stdout,
         "wrapper dry-run should include local control disable flag",
+    )
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1" in result.stdout,
+        "wrapper dry-run should include local control recording stop flag",
     )
     require(
         "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1" in result.stdout,

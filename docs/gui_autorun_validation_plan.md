@@ -356,14 +356,21 @@ Current GUI support starts by default at
 ./scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe
 ```
 
-The endpoint accepts `status` and `citrus_completion` requests over a
-Unix-domain JSON socket. By default, completion requests are logged/ACKed but do
-not stop recording. For integrated Citrus stop tests, enable
-`ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`; then accepted Citrus completion
-requests schedule a GUI-thread delayed stop that uses the same safe
-GUI/operator stop path as the recording button. Override the path with
-`ORANGE_GUI_LOCAL_CONTROL_SOCKET`, or disable the endpoint with
-`ORANGE_GUI_LOCAL_CONTROL_DISABLE=1`.
+The endpoint accepts `status`, `citrus_completion`, and opt-in `stop_recording`
+requests over a Unix-domain JSON socket. By default, completion requests are
+logged/ACKed but do not stop recording, and `stop_recording` is rejected. For
+integrated stop tests, enable
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1` or the Citrus-specific alias
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`; then accepted
+`citrus_completion` and `stop_recording` requests schedule a GUI-thread delayed
+stop that uses the same safe GUI/operator stop path as the recording button.
+Override the path with `ORANGE_GUI_LOCAL_CONTROL_SOCKET`, or disable the
+endpoint with `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1`.
+
+Citrus can opt into sending Orange completion notifications with
+`CITRUS_ORANGE_COMPLETION_NOTIFY=1`,
+`CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`, and
+`CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`.
 
 During a live GUI run, query the endpoint with:
 

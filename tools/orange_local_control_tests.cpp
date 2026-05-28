@@ -219,6 +219,8 @@ void test_status_request_returns_readiness_snapshot()
             "status should report full-frame recorder ready");
     require(!response["status"]["local_control"]["citrus_completion_stop"]["enabled"].get<bool>(),
             "status should report Citrus completion stop scheduler disabled by default");
+    require(!response["status"]["local_control"]["recording_stop"]["enabled"].get<bool>(),
+            "status should report recording stop scheduler disabled by default");
 }
 
 void test_status_readiness_matches_expected_camera_sets_without_order_sensitivity()
@@ -362,6 +364,54 @@ void test_citrus_completion_reports_deferred_lifecycle_mode_when_enabled()
             "socket thread must still not mutate recording lifecycle");
 }
 
+void test_stop_recording_queues_when_lifecycle_mode_enabled()
+{
+    const auto socket_path = temp_path("stop_enabled.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_lifecycle_commands = true;
+    std::string error;
+    require(server.Start(options, &error), "server start should allow stop_recording mode");
+    wait_until_running(&server);
+    server.UpdateStatus(healthy_status());
+
+    const nlohmann::json request =
+        request_json("stop_recording", "stop-enabled-req-1", "stop-op-1",
+                     {{"reason", "orchestrator_stop"},
+                      {"grace_seconds", 0}});
+    const nlohmann::json first = send_request(socket_path, request);
+    const nlohmann::json duplicate = send_request(socket_path, request);
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(first["ok"].get<bool>(), "stop_recording response should be ok when enabled");
+    require(first["accepted"].get<bool>(),
+            "stop_recording response should be accepted when enabled");
+    require(!first["diagnostic_only"].get<bool>(),
+            "stop_recording response should report non-diagnostic mode when enabled");
+    require(first["queued_for_gui_thread"].get<bool>(),
+            "stop_recording should queue for GUI-thread handling when enabled");
+    require(!first["effect"]["recording_lifecycle_mutated"].get<bool>(),
+            "socket thread must not mutate recording lifecycle for stop_recording");
+    require(duplicate["duplicate"].get<bool>(),
+            "duplicate stop_recording request should be duplicate");
+    require(!duplicate["queued_for_gui_thread"].get<bool>(),
+            "duplicate stop_recording request should not queue again");
+    require(pending.size() == 1, "stop_recording should queue exactly one pending command");
+    require(pending[0].method == "stop_recording",
+            "pending stop command should preserve method");
+    require(pending[0].request_id == "stop-enabled-req-1",
+            "pending stop command should preserve request_id");
+    require(pending[0].operation_id == "stop-op-1",
+            "pending stop command should preserve operation_id");
+    require(pending[0].params["reason"].get<std::string>() == "orchestrator_stop",
+            "pending stop command should preserve params");
+}
+
 void test_start_stop_are_not_implemented_in_diagnostic_mode()
 {
     const auto socket_path = temp_path("stop.sock");
@@ -381,6 +431,27 @@ void test_start_stop_are_not_implemented_in_diagnostic_mode()
     require(
         response["error"]["code"].get<std::string>() == "unsupported_in_diagnostic_mode",
         "stop_recording should report diagnostic-mode unsupported");
+
+    LocalControlServer enabled_server;
+    LocalControlServerOptions options;
+    const auto start_socket_path = temp_path("start_enabled.sock");
+    std::filesystem::remove(start_socket_path);
+    options.socket_path = start_socket_path.string();
+    options.allow_gui_lifecycle_commands = true;
+    std::string error;
+    require(enabled_server.Start(options, &error), "server start should allow lifecycle mode");
+    wait_until_running(&enabled_server);
+    enabled_server.UpdateStatus(healthy_status());
+
+    const nlohmann::json start_response = send_request(
+        start_socket_path,
+        request_json("start_recording", "start-req-1", "start-op-1"));
+    enabled_server.Stop();
+
+    require(!start_response["ok"].get<bool>(),
+            "start_recording should still not be ok yet");
+    require(!start_response["accepted"].get<bool>(),
+            "start_recording should still not be accepted yet");
 }
 
 }  // namespace
@@ -398,6 +469,8 @@ int main()
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",
          test_citrus_completion_reports_deferred_lifecycle_mode_when_enabled},
+        {"stop_recording_queues_when_lifecycle_mode_enabled",
+         test_stop_recording_queues_when_lifecycle_mode_enabled},
         {"start_stop_are_not_implemented_in_diagnostic_mode",
          test_start_stop_are_not_implemented_in_diagnostic_mode},
     };

@@ -27,7 +27,8 @@ are live stimulus state contracts, not lifecycle command channels. Do not talk
 directly to external recorder sockets from Citrus or the orchestrator; those are
 Orange-owned recorder implementation details.
 
-The current Orange GUI endpoint is created by default and is diagnostic-only:
+The current Orange GUI endpoint is created by default. Lifecycle effects are
+disabled unless an explicit recording-stop gate is enabled:
 
 ```bash
 ./scripts/run_gui_fourcam_external_ipc_validation.sh ...
@@ -44,20 +45,24 @@ Override it with `ORANGE_GUI_LOCAL_CONTROL_SOCKET` or
 `ORANGE_GUI_LOCAL_CONTROL_LOG` / `ORANGE_LOCAL_CONTROL_LOG`, or to
 `<socket>.events.jsonl` by default. Set `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1` or
 `ORANGE_LOCAL_CONTROL_DISABLE=1` to disable the endpoint for a diagnostic run.
-Citrus completion-driven recording stop is disabled by default; enable it only
-for integrated control tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`
-or `ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`.
+Local-control recording stop is disabled by default; enable it only for
+integrated control tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`
+or `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`. The older Citrus-specific
+aliases `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` and
+`ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` also enable the same recording-stop
+gate.
 
 The GUI validation launcher and installed sudo wrapper forward these variables
 when paths point under `/tmp`, `/run/user/1000`, or
 `/home/jeremy/orange_data`.
 
-The endpoint acknowledges `status` and `citrus_completion`. Accepted
-`citrus_completion` requests are deduplicated by both `request_id` and
-`method + operation_id`, queued onto a thread-safe bridge, and drained by the
-GUI thread. With the Citrus stop env disabled, the GUI thread only logs them.
-With the env enabled and Orange actively recording, the GUI thread schedules a
-delayed stop using `params.grace_seconds`.
+The endpoint acknowledges `status`, `citrus_completion`, and opt-in
+`stop_recording`. Accepted mutating requests are deduplicated by both
+`request_id` and `method + operation_id`, queued onto a thread-safe bridge, and
+drained by the GUI thread. With the recording-stop gate disabled, Citrus
+completion requests are logged only and `stop_recording` is rejected. With the
+gate enabled and Orange actively recording, both `citrus_completion` and
+`stop_recording` schedule a delayed stop using `params.grace_seconds`.
 
 Use the client utility to inspect or send requests:
 
@@ -76,8 +81,8 @@ scripts/orange_local_control_client.py \
 ```
 
 `start-recording` and `stop-recording` subcommands already render/send the v1
-schema, but the current diagnostic Orange endpoint rejects them with
-`unsupported_in_diagnostic_mode`.
+schema. `stop-recording` requires the recording-stop gate above. `start-recording`
+is still schema-defined but rejected with `unsupported_in_diagnostic_mode`.
 
 ## Request
 
@@ -112,7 +117,8 @@ Supported methods:
 `request_id` is required for all requests. Mutating methods also require
 `operation_id`; duplicate `request_id` values and duplicate
 `method + operation_id` values are idempotent. In the current slice,
-`start_recording` and `stop_recording` are schema-defined but return
+`stop_recording` is accepted only when local-control recording stop is enabled.
+`start_recording` is schema-defined but still returns
 `unsupported_in_diagnostic_mode`.
 
 ## Status Semantics
@@ -134,10 +140,12 @@ Orange readiness means more than process started. Status reports:
 - selected record/YOLO/crop camera serials
 - full-frame external recorder lifecycle readiness
 - crop external recorder lifecycle readiness
-- `local_control.citrus_completion_stop`: whether Citrus completion stop is
+- `local_control.recording_stop`: whether local-control recording stop is
   enabled, whether a stop is scheduled, whether one has triggered, the current
-  request/operation/experiment ids, terminal state/reason, remaining deadline
-  seconds, and the latest scheduler event
+  method/request/operation/experiment ids, terminal state/reason, remaining
+  deadline seconds, and the latest scheduler event
+- `local_control.citrus_completion_stop`: compatibility alias for the same
+  recording-stop status
 
 Camera-set comparisons are order-insensitive. If no expected serials are
 configured, match fields are reported as `null` and readiness falls back to the
@@ -173,14 +181,15 @@ Every response is one JSON object:
 ```
 
 For `citrus_completion`, Orange validates, logs, queues the request for
-GUI-thread handling, and acknowledges it. Duplicate `request_id` values and
-duplicate `method + operation_id` values are acknowledged but are not queued a
-second time.
+GUI-thread handling, and acknowledges it. For `stop_recording`, Orange does the
+same when local-control recording stop is enabled; otherwise it rejects the
+request. Duplicate `request_id` values and duplicate `method + operation_id`
+values are acknowledged but are not queued a second time for accepted methods.
 
 The immediate socket response reports only immediate socket-thread effects:
 `recording_lifecycle_mutated` is false because the socket thread never mutates
-recording state. If `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` is set, the
-GUI thread may later schedule and trigger the stop.
+recording state. If local-control recording stop is enabled, the GUI thread may
+later schedule and trigger the stop.
 
 The current repeated-request policy while a countdown is active is
 earliest-deadline-wins. A later distinct completion request cannot extend an
@@ -246,13 +255,32 @@ refresh, local-control socket/log info, selected rig/canvas/protocols,
 per-arena runtime fields, latest stimulus/camera frame ids, output directory
 after experiment start, `terminal_state`, and `last_operation_id`.
 
-Current Citrus validation: Citrus builds, its unit suite passes with 83 tests,
+Current Citrus validation: Citrus builds, its unit suite passes with 84 tests,
 and a real-display smoke on `DISPLAY=:1` answered `status` on DP-3 at
-`1920x1080 @ 120Hz` with render loop active. Readiness was false when no arena
-or protocol was loaded, as expected.
+`1920x1080 @ 120Hz` with render loop active. Orange completion notification was
+disabled by default, as intended.
 
-Known Citrus caveat: this slice does not yet send Citrus completion to Orange
-automatically. Full four-arena GoodCop/BadCop should first be tested with
+Updated Citrus notifier slice: Citrus can now opt into notifying Orange after a
+terminal experiment state with:
+
+- `CITRUS_ORANGE_COMPLETION_NOTIFY=1`
+- `CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`
+- `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`
+
+Citrus uses stable retry request ids shaped like
+`citrus_completion:<experiment_id>:<terminal_state>:<reason>`.
+Terminal states are stable and machine-parseable:
+
+- `completed`
+- `stopped`
+- `failed`
+- `start_rejected`
+
+The specific cause is reported in `terminal_reason`, for example
+`protocol_finished`, `stopped_by_local_control`, or
+`stopped_by_autorun_duration`.
+
+Full four-arena GoodCop/BadCop should first be tested with
 `good_cop_bad_cop_demo.json`.
 
 ## Orchestrator Role

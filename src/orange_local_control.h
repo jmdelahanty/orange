@@ -26,12 +26,13 @@ struct RecorderReadinessSnapshot {
     int socket_ready_count = 0;
 };
 
-struct CitrusCompletionStopSnapshot {
+struct LocalControlRecordingStopSnapshot {
     bool enabled = false;
     bool scheduled = false;
     bool stop_triggered = false;
     double grace_seconds = 0.0;
     double seconds_until_deadline = 0.0;
+    std::string method;
     std::string request_id;
     std::string operation_id;
     std::string source;
@@ -62,7 +63,7 @@ struct LocalControlStatusSnapshot {
     std::vector<std::string> crop_selected_camera_serials;
     RecorderReadinessSnapshot full_frame_recorder;
     RecorderReadinessSnapshot crop_recorder;
-    CitrusCompletionStopSnapshot citrus_completion_stop;
+    LocalControlRecordingStopSnapshot local_control_recording_stop;
 };
 
 struct LocalControlServerOptions {

@@ -44,13 +44,17 @@ Refs:
 - Recording stop in `orange-jeremy` is currently user-driven from the UI toggle.
 - Citrus now has its first opt-in real-GUI autorun and local-control socket
   slice with `status`, `start_experiment`, and `stop_experiment`.
+- Citrus now has an opt-in Orange completion notifier:
+  `CITRUS_ORANGE_COMPLETION_NOTIFY=1`,
+  `CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`, and
+  `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`.
 - `orange-jeremy` ENet receive handling currently updates calibration and
   peer-state signals, but does not map incoming control to recording actions.
 
 Explicit limitation note (current state):
 
-- Citrus currently does not automatically emit any dedicated "experiment ended"
-  request to Orange's local control endpoint.
+- Citrus completion emission is opt-in, not enabled by default.
+- Full Orange+Citrus live validation is still pending.
 
 Refs:
 
@@ -69,8 +73,10 @@ Refs:
 - Citrus-side GUI automation/local status exists.
 - Orange has a default-on local-control endpoint and a GUI-thread pending
   command bridge.
-- Orange has an opt-in Citrus completion delayed-stop scheduler.
-- Citrus automatic completion emission and Orange drain-timeout policy are not
+- Orange has an opt-in local-control recording stop scheduler for
+  `citrus_completion` and `stop_recording`.
+- Citrus has opt-in automatic completion emission to Orange.
+- Full integrated validation and Orange drain-timeout policy are not
   implemented yet.
 - Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
 
@@ -105,7 +111,7 @@ Refs:
 
 ## Phase 1: Citrus Emission Hook
 
-- [ ] Add local-control request emission at experiment terminal boundary in Citrus:
+- [x] Add local-control request emission at experiment terminal boundary in Citrus:
   - arena stop command path,
   - protocol-finish path that leads to `Arena::Stop()`.
 - [x] Add first Citrus local-control/status socket and GUI autorun surface:
@@ -113,9 +119,11 @@ Refs:
   - `status`,
   - `start_experiment`,
   - `stop_experiment`.
-- [ ] Ensure emission happens once per experiment end event.
-- [ ] Write command to Orange's Unix-domain JSON control socket with idempotent
+- [x] Ensure emission happens once per experiment end event.
+- [x] Write command to Orange's Unix-domain JSON control socket with idempotent
       `request_id`.
+  - Citrus uses stable retry ids shaped like
+    `citrus_completion:<experiment_id>:<terminal_state>:<reason>`.
 
 Candidate hook points:
 
@@ -127,6 +135,8 @@ Candidate hook points:
 - [x] Add default-on diagnostic Orange GUI local-control socket with env disable.
 - [x] Accept, validate, log, and ACK `status` and `citrus_completion`.
 - [x] Keep `start_recording` / `stop_recording` unsupported in diagnostic mode.
+- [x] Accept opt-in `stop_recording` when local-control recording stop is
+      explicitly enabled.
 - [x] Do not mutate `CameraControl` directly from socket-reader context.
 - [x] Introduce a thread-safe pending command bridge consumed by the main/UI
       thread before wiring recording stop.

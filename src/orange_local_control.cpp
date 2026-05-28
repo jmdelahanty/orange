@@ -147,8 +147,8 @@ std::string local_control_phase(const LocalControlStatusSnapshot& snapshot)
     return "idle";
 }
 
-nlohmann::json citrus_completion_stop_to_json(
-    const CitrusCompletionStopSnapshot& snapshot)
+nlohmann::json recording_stop_to_json(
+    const LocalControlRecordingStopSnapshot& snapshot)
 {
     return {
         {"enabled", snapshot.enabled},
@@ -156,6 +156,7 @@ nlohmann::json citrus_completion_stop_to_json(
         {"stop_triggered", snapshot.stop_triggered},
         {"grace_seconds", snapshot.grace_seconds},
         {"seconds_until_deadline", snapshot.seconds_until_deadline},
+        {"method", snapshot.method},
         {"request_id", snapshot.request_id},
         {"operation_id", snapshot.operation_id},
         {"source", snapshot.source},
@@ -295,8 +296,10 @@ nlohmann::json LocalControlStatusSnapshotToJson(
          }},
         {"local_control",
          {
+             {"recording_stop",
+              recording_stop_to_json(snapshot.local_control_recording_stop)},
              {"citrus_completion_stop",
-              citrus_completion_stop_to_json(snapshot.citrus_completion_stop)},
+              recording_stop_to_json(snapshot.local_control_recording_stop)},
          }},
     };
 }
@@ -667,7 +670,11 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             duplicate_operation_id = !operation_inserted.second;
         }
         duplicate = duplicate_request_id || duplicate_operation_id;
-        if (parsed.method == "citrus_completion" && !duplicate) {
+        const bool supports_gui_thread_queue =
+            parsed.method == "citrus_completion" ||
+            (parsed.method == "stop_recording" &&
+             options_.allow_gui_lifecycle_commands);
+        if (supports_gui_thread_queue && !duplicate) {
             PendingLocalControlCommand command;
             command.method = parsed.method;
             command.request_id = parsed.request_id;
@@ -707,6 +714,34 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
         return response;
     }
 
+    if (parsed.method == "stop_recording" &&
+        options_.allow_gui_lifecycle_commands) {
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", true},
+            {"accepted", true},
+            {"duplicate", duplicate},
+            {"diagnostic_only", false},
+            {"queued_for_gui_thread", queued_for_gui_thread},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+            {"effect",
+             {
+                 {"gui_lifecycle_command_deferred", queued_for_gui_thread},
+                 {"recording_stop_requested", false},
+                 {"recording_lifecycle_mutated", false},
+             }},
+        };
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
+    }
+
     nlohmann::json response = {
         {"schema_id", kLocalControlResponseSchemaId},
         {"schema_version", kLocalControlSchemaVersion},
@@ -723,7 +758,9 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
          {
              {"code", "unsupported_in_diagnostic_mode"},
              {"message",
-              "start_recording and stop_recording are contract-defined but not wired to Orange recording lifecycle yet"},
+              parsed.method == "stop_recording"
+                  ? "stop_recording requires ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1 or ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1"
+                  : "start_recording is contract-defined but not wired to Orange recording lifecycle yet"},
          }},
         {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
     };
