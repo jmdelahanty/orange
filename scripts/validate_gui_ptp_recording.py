@@ -1887,6 +1887,54 @@ def check_runtime_rolling_status(
     )
 
 
+def check_mp4_queue_overflow_payload(
+    reporter: Reporter,
+    prefix: str,
+    payload: dict[str, Any],
+) -> None:
+    if "mp4_queue_overflowed" in payload:
+        reporter.check(
+            payload.get("mp4_queue_overflowed") is not True,
+            f"{prefix} mp4_queue_overflowed=false",
+            f"{prefix} mp4_queue_overflowed={payload.get('mp4_queue_overflowed')!r}",
+        )
+    overflow_events = integer(payload.get("mp4_queue_overflow_events"))
+    if overflow_events is not None:
+        reporter.check(
+            overflow_events == 0,
+            f"{prefix} mp4_queue_overflow_events=0",
+            f"{prefix} mp4_queue_overflow_events={overflow_events}",
+        )
+
+
+def check_external_summary_mp4_queue_overflow(
+    reporter: Reporter,
+    prefix: str,
+    summary: dict[str, Any],
+) -> None:
+    external_encode = summary.get("external_encode")
+    if isinstance(external_encode, dict):
+        check_mp4_queue_overflow_payload(reporter, f"{prefix} external_encode", external_encode)
+    shards = summary.get("external_encode_shards")
+    if isinstance(shards, list):
+        for index, shard in enumerate(shards):
+            if not isinstance(shard, dict):
+                continue
+            shard_id = shard.get("assigned_shard_id", index)
+            check_mp4_queue_overflow_payload(
+                reporter,
+                f"{prefix} shard {shard_id}",
+                shard,
+            )
+    merged_output = summary.get("merged_output")
+    if isinstance(merged_output, dict):
+        check_mp4_queue_overflow_payload(
+            reporter,
+            f"{prefix} merged_output",
+            merged_output,
+        )
+
+
 def check_external_recorder_status_contract(
     reporter: Reporter,
     recording_folder: Path,
@@ -1981,6 +2029,7 @@ def check_external_recorder_status_contract(
         summary_frames_encoded = integer(summary.get("frames_encoded"))
         summary_acks_sent = integer(summary.get("acks_sent"))
         if summary:
+            check_external_summary_mp4_queue_overflow(reporter, prefix, summary)
             reporter.check(
                 frames_received == summary_frames_received,
                 f"{prefix} status frames_received matches summary ({frames_received})",
@@ -4070,6 +4119,12 @@ def check_crop_recording_artifacts(
             external_summary = read_json(summary_path) if summary_path and summary_path.exists() else {}
             external_encode = external_summary.get("external_encode")
             external_encode = external_encode if isinstance(external_encode, dict) else {}
+            if external_summary:
+                check_external_summary_mp4_queue_overflow(
+                    reporter,
+                    f"Cam{serial} external crop",
+                    external_summary,
+                )
             external_frames_received = integer(external_summary.get("frames_received"))
             external_frames_encoded = integer(external_summary.get("frames_encoded"))
             external_frames_dropped = integer(external_encode.get("frames_dropped"))

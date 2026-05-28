@@ -1050,6 +1050,24 @@ def write_external_recorder_status_fixture(
         "frames_received": rows,
         "frames_encoded": rows,
         "acks_sent": rows,
+        "external_encode": {
+            "mp4_queue_overflowed": False,
+            "mp4_queue_overflow_events": 0,
+        },
+        "external_encode_shards": [
+            {
+                "assigned_shard_id": 0,
+                "frames_encoded": rows,
+                "frames_dropped": 0,
+                "worker_failed": False,
+                "mp4_queue_overflowed": False,
+                "mp4_queue_overflow_events": 0,
+            }
+        ],
+        "merged_output": {
+            "mp4_queue_overflowed": False,
+            "mp4_queue_overflow_events": 0,
+        },
     }
     if rolling:
         summary_payload["rolling_output"] = {
@@ -1168,6 +1186,12 @@ def write_external_recorder_status_fixture(
         encoding="utf-8",
     )
     return summary_path, status_path
+
+
+def mutate_json_file(path: Path, mutator) -> None:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutator(payload)
+    path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
 def gui_fps_snapshot(
@@ -1540,6 +1564,41 @@ def test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime() -
             any("simulated failure" in failure for failure in reporter.failures),
             "status sidecar error should fail",
         )
+
+
+def test_external_recorder_status_validation_fails_on_mp4_queue_overflow() -> None:
+    cases = [
+        (
+            lambda payload: payload["external_encode"].update({"mp4_queue_overflowed": True}),
+            "external_encode mp4_queue_overflowed=True",
+        ),
+        (
+            lambda payload: payload["external_encode_shards"][0].update(
+                {"mp4_queue_overflow_events": 1}
+            ),
+            "shard 0 mp4_queue_overflow_events=1",
+        ),
+        (
+            lambda payload: payload["merged_output"].update({"mp4_queue_overflowed": True}),
+            "merged_output mp4_queue_overflowed=True",
+        ),
+    ]
+    for mutator, expected in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary_path, _status_path = write_external_recorder_status_fixture(
+                root,
+                "2010095",
+            )
+            mutate_json_file(summary_path, mutator)
+
+            reporter = validator.Reporter(verbose=False)
+            validator.check_external_recorder_status(reporter, root, True)
+
+            require(
+                any(expected in failure for failure in reporter.failures),
+                f"MP4 queue overflow should fail with {expected}: {reporter.failures}",
+            )
 
 
 def test_external_recorder_status_validation_requires_contract_flags() -> None:
@@ -3426,6 +3485,7 @@ def main() -> int:
         test_external_recorder_status_validation_checks_rolling_status,
         test_external_recorder_status_validation_fails_on_rolling_mismatch,
         test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime,
+        test_external_recorder_status_validation_fails_on_mp4_queue_overflow,
         test_external_recorder_status_validation_requires_contract_flags,
         test_external_recorder_status_validation_derives_status_path_from_summary,
         test_crop_recording_artifacts_pass_when_aligned,

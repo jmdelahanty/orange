@@ -86,6 +86,8 @@ The GUI validator now checks:
 - PTP config, PTP register-read decimation, and per-camera PTP counters,
 - full and crop external recorder status sidecars and runtime heartbeat
   snapshots,
+- external recorder MP4 writer queue overflow counters, which must report no
+  overflow,
 - full-frame main videos, packet counts, and decoded content sanity,
 - crop MP4, metadata, perf CSV, keyframe sidecar, and crop fanout counters,
 - external crop recorder GPU placement and queue depth/high-water telemetry,

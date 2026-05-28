@@ -2750,6 +2750,9 @@ private:
         mp4_queue_overflow_events_ = mp4_writer_->queue_overflow_events();
         mp4_peak_queued_packets_ = mp4_writer_->peak_queued_packets();
         mp4_peak_queued_bytes_ = mp4_writer_->peak_queued_bytes();
+        if (mp4_queue_overflowed_) {
+            failed_.store(true, std::memory_order_release);
+        }
         mp4_writer_.reset();
     }
 
@@ -3355,6 +3358,14 @@ void write_summary_json(const Options& options,
         out << "      \"prewarm_peer_copy\": "
             << (shard.prewarm_peer_copy ? "true" : "false") << ",\n";
         out << "      \"worker_failed\": " << (shard.failed ? "true" : "false") << ",\n";
+        out << "      \"mp4_queue_overflowed\": "
+            << (shard.mp4_queue_overflowed ? "true" : "false") << ",\n";
+        out << "      \"mp4_queue_overflow_events\": "
+            << shard.mp4_queue_overflow_events << ",\n";
+        out << "      \"mp4_peak_queued_packets\": "
+            << shard.mp4_peak_queued_packets << ",\n";
+        out << "      \"mp4_peak_queued_bytes\": "
+            << shard.mp4_peak_queued_bytes << ",\n";
         out << "      \"encode_csv\": \"" << json_escape(shard.encode_csv_path) << "\",\n";
         out << "      \"raw_bitstream\": \"" << json_escape(shard.bitstream_out_path) << "\",\n";
         out << "      \"mp4\": \"" << json_escape(shard.mp4_path) << "\",\n";

@@ -70,6 +70,7 @@ def write_summary(
         "external_encode_shards": [
             {
                 "assigned_gpu_id": 5,
+                "assigned_shard_id": 0,
                 "frames_encoded": 3,
                 "frames_dropped": 0,
                 "worker_failed": False,
@@ -209,6 +210,12 @@ def write_status(
     return status_path
 
 
+def rewrite_summary(summary_path: Path, mutator) -> None:
+    payload = json.loads(summary_path.read_text(encoding="utf-8"))
+    mutator(payload)
+    summary_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
 def write_runtime(
     root: Path,
     serial: str,
@@ -346,6 +353,38 @@ def test_queue_high_water_falls_back_to_detach_csv() -> None:
         )
         result = verify_one(root, summary_path, mp4_path, max_high_water=9)
         require(result["encode_queue_high_water"] == 9, "queue high-water should fall back to detach CSV")
+
+
+def test_mp4_queue_overflow_failures() -> None:
+    checks = [
+        (
+            lambda payload: payload["external_encode"].update({"mp4_queue_overflowed": True}),
+            "external_encode for 2010096 reports mp4_queue_overflowed=true",
+        ),
+        (
+            lambda payload: payload["external_encode"].update({"mp4_queue_overflow_events": 1}),
+            "external_encode for 2010096 mp4_queue_overflow_events=1",
+        ),
+        (
+            lambda payload: payload["external_encode_shards"][0].update({"mp4_queue_overflowed": True}),
+            "shard 0 for 2010096 reports mp4_queue_overflowed=true",
+        ),
+        (
+            lambda payload: payload["merged_output"].update({"mp4_queue_overflow_events": 1}),
+            "merged_output for 2010096 mp4_queue_overflow_events=1",
+        ),
+    ]
+    for mutator, expected in checks:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary_path, mp4_path = write_summary(root, "2010096")
+            rewrite_summary(summary_path, mutator)
+            try:
+                verify_one(root, summary_path, mp4_path)
+            except verifier.VerificationError as exc:
+                require(expected in str(exc), f"unexpected overflow failure: {exc}")
+            else:
+                raise AssertionError("expected MP4 queue overflow verification failure")
 
 
 def test_rolling_output_uses_summary_recording_control() -> None:
@@ -507,6 +546,7 @@ def main() -> int:
         test_queue_thresholds_pass_and_summarize,
         test_queue_threshold_failures,
         test_queue_high_water_falls_back_to_detach_csv,
+        test_mp4_queue_overflow_failures,
         test_rolling_output_uses_summary_recording_control,
         test_status_sidecar_passes_and_summarizes,
         test_status_sidecar_checks_rolling_progress,

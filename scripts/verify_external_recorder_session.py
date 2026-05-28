@@ -404,6 +404,14 @@ def detach_queue_high_water(summary: dict[str, Any], summary_path: Path, artifac
     return max(values) if values else None
 
 
+def require_no_mp4_queue_overflow(payload: dict[str, Any], label: str) -> None:
+    if payload.get("mp4_queue_overflowed") is True:
+        raise VerificationError(f"{label} reports mp4_queue_overflowed=true")
+    events = optional_int(payload.get("mp4_queue_overflow_events"), f"{label}.mp4_queue_overflow_events")
+    if events is not None:
+        require(events == 0, f"{label} mp4_queue_overflow_events={events}")
+
+
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
     fieldnames, rows = read_csv_rows(path)
     field_set = set(fieldnames)
@@ -853,6 +861,7 @@ def verify_summary(
         encode_queue_high_water = detach_queue_high_water(summary, summary_path, artifact_root)
     external_encode = summary.get("external_encode")
     external_encode = external_encode if isinstance(external_encode, dict) else {}
+    require_no_mp4_queue_overflow(external_encode, f"external_encode for {serial}")
     enqueue_age_p95_ms = optional_float(
         external_encode.get("enqueue_age_p95_ms"),
         "external_encode.enqueue_age_p95_ms",
@@ -923,9 +932,11 @@ def verify_summary(
         require(shard.get("worker_failed") is False, f"shard worker_failed=true for {serial}")
         require(as_int(shard.get("frames_dropped"), "shard frames_dropped") == 0, f"shard dropped frames for {serial}")
         require(as_int(shard.get("frames_encoded"), "shard frames_encoded") > 0, f"shard encoded no frames for {serial}")
+        require_no_mp4_queue_overflow(shard, f"shard {shard.get('assigned_shard_id')} for {serial}")
 
     merged = summary.get("merged_output")
     require(isinstance(merged, dict), f"summary missing merged_output in {summary_path}")
+    require_no_mp4_queue_overflow(merged, f"merged_output for {serial}")
     if bool(contract.get("require_merged_mp4", True)) and len(shards) > 1:
         require(merged.get("enabled") is True, f"merged output disabled for {serial}")
         require(merged.get("failed") is False, f"merged output failed for {serial}")

@@ -121,6 +121,11 @@ clip outcome. The normal GUI validator now supports full-frame rolling manifest
 discovery, per-clip continuity checks, and rolling status sidecar/runtime
 consistency checks when external summaries report rolling output. The remaining
 GUI full-frame work is positive-detection coverage and longer soak validation.
+External recorder MP4 writer queue overflow is now surfaced as recorder failure:
+single-shard workers promote `FFmpegWriter` queue overflow to `worker_failed`,
+per-shard summaries expose MP4 queue overflow counters, and
+`scripts/verify_external_recorder_session.py` fails if any full-frame recorder
+summary reports MP4 writer queue overflow.
 
 ## Implementation Plan
 
@@ -212,6 +217,9 @@ Refs:
 ## Phase 5: Backpressure and Failure Policy
 
 - [ ] Add explicit overflow/backpressure metrics at writer queue level.
+  External IPC full-frame summaries now expose and verify MP4 writer queue
+  overflow for aggregate, merged, and per-shard outputs; broader native writer
+  and GUI-facing policy remains open.
 - [ ] Add disk-space preflight and low-space runtime alarms.
 - [ ] Define failure fallback:
   - if new segment open fails, keep writing to current segment and retry,
