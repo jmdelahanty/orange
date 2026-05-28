@@ -89,6 +89,8 @@ struct VerifierHandoffArtifactOptions {
     std::string verifier_path = "scripts/verify_external_recorder_session.py";
     std::string status = "pending_runs_json_and_video_sanity";
     bool require_video_sanity = true;
+    bool require_status = true;
+    bool require_status_runtime = false;
 };
 
 struct FinalizationManifestOptions {

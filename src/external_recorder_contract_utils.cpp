@@ -275,6 +275,8 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
     set_json_default(&contract, "require_video_sanity", true);
     set_json_default(&contract, "require_merged_mp4", true);
     set_json_default(&contract, "require_gop_routing", true);
+    set_json_default(&contract, "require_status", true);
+    set_json_default(&contract, "require_status_runtime", true);
 
     contract["artifact_root"] = expand_path_template(
         contract.value("artifact_root", std::string()),
@@ -505,6 +507,18 @@ ArtifactWriteResult WriteExternalRecorderSupervisorRuntimeArtifact(
 nlohmann::json BuildExternalRecorderVerifierHandoff(
     const VerifierHandoffArtifactOptions& options)
 {
+    nlohmann::json command = nlohmann::json::array({
+        options.verifier_path,
+        options.artifact_root,
+        "--analytics-root",
+        options.analytics_root
+    });
+    if (options.require_status) {
+        command.push_back("--require-recorder-status");
+    }
+    if (options.require_status_runtime) {
+        command.push_back("--require-recorder-runtime-status");
+    }
     return {
         {"schema_id", "orange.external_recorder.verifier_handoff"},
         {"schema_version", 1},
@@ -512,13 +526,9 @@ nlohmann::json BuildExternalRecorderVerifierHandoff(
         {"artifact_root", options.artifact_root},
         {"analytics_root", options.analytics_root},
         {"requires_video_sanity", options.require_video_sanity},
-        {"command",
-         nlohmann::json::array({
-             options.verifier_path,
-             options.artifact_root,
-             "--analytics-root",
-             options.analytics_root
-         })}
+        {"requires_status", options.require_status},
+        {"requires_status_runtime", options.require_status_runtime},
+        {"command", command}
     };
 }
 

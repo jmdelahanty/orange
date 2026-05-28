@@ -169,6 +169,8 @@ This contract covers the current diagnostic external recorder path:
     "require_video_sanity": true,
     "require_merged_mp4": true,
     "require_gop_routing": true,
+    "require_status": true,
+    "require_status_runtime": false,
     "recording_control": {
       "record_for_seconds": 0,
       "clip_seconds": 0
@@ -233,6 +235,12 @@ Current semantics:
   part of the frame ACK protocol. Supervised Orange runs parse this sidecar
   into `external_recorder_supervisor_runtime.json` under
   `processes[].recorder_status`.
+- `require_status = true` asks
+  `scripts/verify_external_recorder_session.py` to fail if the status sidecar
+  is missing, unfinished, unhealthy, or inconsistent with the recorder summary.
+  `require_status_runtime = true` additionally requires supervised runtime
+  parsing in `external_recorder_supervisor_runtime.json`; use it only for
+  Orange-supervised runs, not shell-launched recorder processes.
 - Shell-launched diagnostic runs validate external recorder files after Orange
   exits through `scripts/verify_external_recorder_session.py`.
 - Supervised headless and GUI/session runs finalize the recorder lifecycle from

@@ -438,9 +438,14 @@ run after `runs.json` and any required video-sanity artifact exist.
 In the supervised path, the headless client now runs that finalization itself.
 It writes a provisional `runs.json`, runs `scripts/external_video_sanity.py` for
 each required stream MP4, then runs
-`scripts/verify_external_recorder_session.py`. The results are recorded in
-`external_recorder_finalization.json`; any failed decode sanity or verifier
-check fails the run with the concrete reason in `runs.json`.
+`scripts/verify_external_recorder_session.py`. Status sidecar validation is now
+part of that finalization path: `require_status` adds
+`--require-recorder-status`, and supervised contracts default
+`require_status_runtime` to true so the verifier also checks parsed heartbeat
+state in `external_recorder_supervisor_runtime.json`. The results are recorded
+in `external_recorder_finalization.json`; any failed decode sanity, recorder
+status, or verifier check fails the run with the concrete reason in
+`runs.json`.
 
 The first supervised smoke spec is:
 

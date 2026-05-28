@@ -164,6 +164,8 @@ struct HeadlessExternalRecorderContractConfig {
     bool require_video_sanity = true;
     bool require_merged_mp4 = true;
     bool require_gop_routing = true;
+    bool require_status = true;
+    bool require_status_runtime = false;
     nlohmann::json streams = nlohmann::json::object();
 
     bool enabled() const {
@@ -843,6 +845,8 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         {"require_video_sanity", config.require_video_sanity},
         {"require_merged_mp4", config.require_merged_mp4},
         {"require_gop_routing", config.require_gop_routing},
+        {"require_status", config.require_status},
+        {"require_status_runtime", config.require_status_runtime},
         {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
     if (recording_control) {
@@ -2434,6 +2438,13 @@ bool validate_headless_external_recorder_contract_config(
         }
         return true;
     }
+    if (config.require_status_runtime && !config.supervise_processes) {
+        if (error_out) {
+            *error_out =
+                prefix + "external_recorder_contract.require_status_runtime requires supervise_processes=true";
+        }
+        return false;
+    }
     if (config.artifact_root.empty()) {
         if (error_out) {
             *error_out = prefix + "external_recorder_contract.artifact_root is required";
@@ -2950,6 +2961,14 @@ bool parse_headless_external_recorder_contract_json(
             contract_node.value("require_merged_mp4", config.require_merged_mp4);
         config.require_gop_routing =
             contract_node.value("require_gop_routing", config.require_gop_routing);
+        config.require_status =
+            contract_node.value("require_status", config.require_status);
+        if (contract_node.contains("require_status_runtime")) {
+            config.require_status_runtime =
+                contract_node.value("require_status_runtime", config.require_status_runtime);
+        } else {
+            config.require_status_runtime = config.supervise_processes;
+        }
         config.streams = contract_node.value("streams", nlohmann::json::object());
     } else {
         if (error_out) {
@@ -5764,10 +5783,16 @@ bool run_supervised_external_recorder_verifier(
         resolve_headless_repo_relative_path(
             "scripts/verify_external_recorder_session.py",
             "ORANGE_EXTERNAL_RECORDER_VERIFY_SCRIPT");
-    const std::string command =
+    std::string command =
         "python3 " + shell_single_quote(script.string()) + " " +
         shell_single_quote(config.artifact_root) + " --analytics-root " +
         shell_single_quote(experiment_root.string());
+    if (config.require_status) {
+        command += " --require-recorder-status";
+    }
+    if (config.require_status_runtime) {
+        command += " --require-recorder-runtime-status";
+    }
 
     std::string output;
     const bool ok = run_headless_shell_command(

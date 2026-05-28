@@ -75,6 +75,8 @@ struct SupervisorPlan {
     bool require_video_sanity = true;
     bool require_merged_mp4 = true;
     bool require_gop_routing = true;
+    bool require_status = true;
+    bool require_status_runtime = false;
     std::vector<RecorderStreamPlan> streams;
 };
 

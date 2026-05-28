@@ -516,6 +516,7 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
     if (plan.session_id.empty()) {
         return set_error(error_out, "external_recorder_contract.session_id is required");
     }
+    plan.require_status_runtime = contract.value("supervise_processes", false);
     if (!read_bool_field(contract,
                          "require_summary",
                          &plan.require_summary,
@@ -534,6 +535,16 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         !read_bool_field(contract,
                          "require_gop_routing",
                          &plan.require_gop_routing,
+                         error_out,
+                         "external_recorder_contract") ||
+        !read_bool_field(contract,
+                         "require_status",
+                         &plan.require_status,
+                         error_out,
+                         "external_recorder_contract") ||
+        !read_bool_field(contract,
+                         "require_status_runtime",
+                         &plan.require_status_runtime,
                          error_out,
                          "external_recorder_contract")) {
         return false;
@@ -1043,6 +1054,8 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"require_video_sanity", plan.require_video_sanity},
         {"require_merged_mp4", plan.require_merged_mp4},
         {"require_gop_routing", plan.require_gop_routing},
+        {"require_status", plan.require_status},
+        {"require_status_runtime", plan.require_status_runtime},
         {"streams", streams},
     };
 }

@@ -744,6 +744,9 @@ verifier also has `--require-recorder-status` and
 `--require-recorder-runtime-status`; new diagnostic smoke-runner contracts set
 `require_status = true` and pass `--status-json` to the recorder so those
 artifacts are checked by default when verified from their generated contract.
+GUI materialized contracts now default to both `require_status = true` and
+`require_status_runtime = true`, while shell-launched diagnostics keep runtime
+status optional because no Orange supervisor runtime exists in that path.
 
 Detailed Stage 5 protocol and routing design:
 
