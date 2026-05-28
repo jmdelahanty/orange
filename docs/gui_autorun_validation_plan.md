@@ -385,6 +385,27 @@ readiness, set `ORANGE_GUI_AUTORUN_START_RECORDING=0`. That leaves the record
 camera selection intact while skipping the autorun record-button transition, so
 the external orchestrator can issue the opt-in `start_recording` request.
 
+The four-camera Orange/Citrus profile wrapper is:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh
+```
+
+It is dry-run by default and prints the exact process commands, display env,
+sockets, and local-control requests. The live version is:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh --execute
+```
+
+The profile launches Orange through
+`scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe` and
+launches `/home/jeremy/citrus/targets/citrus` with Citrus autorun envs only to
+load `omnifin0` / `shadow` / `good_cop_bad_cop_demo.json`. It sets a long
+Citrus autorun start delay, so the orchestrator still controls the actual
+experiment start after Orange recording is active. Use `--attach-orange` and
+`--attach-citrus` to control already-running GUI processes instead.
+
 During a live GUI run, query the endpoint with:
 
 ```bash

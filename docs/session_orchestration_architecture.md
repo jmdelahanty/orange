@@ -153,6 +153,12 @@ local-control sockets. Its default mode is dry-run so the run plan/request
 shape can be reviewed before any stimulus window or recording lifecycle is
 touched; `--execute` is required to send socket requests.
 
+For the local four-camera Citrus integration profile, use
+`scripts/run_orange_citrus_fourcam_orchestrator.sh`. That wrapper keeps the
+same dry-run-first boundary while composing the production-like Orange
+four-camera external-IPC launcher, the Citrus GUI binary, real-display env
+defaults, Citrus perf JSONL collection, and the Orange/Citrus socket paths.
+
 ### NodeExecutor
 
 The executor is the data-plane owner on each machine.

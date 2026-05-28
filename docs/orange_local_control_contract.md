@@ -371,3 +371,25 @@ can open cameras and start streaming while leaving recording start/stop to the
 orchestrator. It does not talk to Orange recorder sockets and does not delete
 data. Stop/finalization still goes through Orange `stop_recording` or
 `citrus_completion`, according to `--stop-policy`.
+
+Four-camera Citrus profile wrapper:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh
+```
+
+This wrapper is also dry-run by default. It composes the production-like
+four-camera Orange launcher, the local Citrus GUI binary, real-display defaults
+for tmux/ssh sessions, the Citrus-safe Orange display profile, Citrus perf
+JSONL requirement, and the same local-control sockets. Add `--execute` only
+for a live run.
+
+The wrapper uses Citrus autorun only as a setup loader: it loads
+`omnifin0` / `shadow` / `good_cop_bad_cop_demo.json`, then sets
+`CITRUS_GUI_AUTORUN_START_DELAY_SECONDS=86400` so Citrus does not race ahead of
+Orange recording start. The orchestrator still sends the real
+`start_experiment` local-control request after Orange reports
+`ready_for_citrus_experiment=true`. Citrus Orange-completion notification is
+disabled by default in this profile so the orchestrator remains the single
+recording-stop owner; use `--enable-citrus-orange-completion-notify` only for
+an explicit notifier integration test.
