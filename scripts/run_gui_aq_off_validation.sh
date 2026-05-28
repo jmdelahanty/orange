@@ -13,6 +13,11 @@ YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
 GUI_STREAM_DOWNSAMPLE="${ORANGE_GUI_STREAM_DOWNSAMPLE:-4}"
 DISPLAY_PREVIEW_MAX_FPS="${ORANGE_DISPLAY_PREVIEW_MAX_FPS:-15}"
 GUI_SHOW_SPEED_GRAPHS="${ORANGE_GUI_SHOW_SPEED_GRAPHS:-0}"
+GUI_AUTORUN="${ORANGE_GUI_AUTORUN:-0}"
+GUI_AUTORUN_STREAM_WARMUP_SECONDS="${ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS:-3}"
+GUI_AUTORUN_RECORD_SECONDS="${ORANGE_GUI_AUTORUN_RECORD_SECONDS:-10}"
+GUI_AUTORUN_EXIT_AFTER_FINALIZE="${ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE:-0}"
+GUI_AUTORUN_HIDE_CROP_PREVIEW="${ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW:-0}"
 CROP_PREVIEW_VALIDATION_MAX_FPS="${ORANGE_CROP_PREVIEW_MAX_FPS:-15}"
 CROP_RECORDING_SINK_MODE="${ORANGE_CROP_RECORDING_SINK_MODE:-in_process}"
 CROP_EXTERNAL_ENCODE_QUEUE_DEPTH="${ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH:-64}"
@@ -87,7 +92,12 @@ python3 - \
   "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" \
   "${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS}" \
   "${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}" \
-  "${CROP_RECORDING_SINK_MODE}" <<'PY'
+  "${CROP_RECORDING_SINK_MODE}" \
+  "${GUI_AUTORUN}" \
+  "${GUI_AUTORUN_STREAM_WARMUP_SECONDS}" \
+  "${GUI_AUTORUN_RECORD_SECONDS}" \
+  "${GUI_AUTORUN_EXIT_AFTER_FINALIZE}" \
+  "${GUI_AUTORUN_HIDE_CROP_PREVIEW}" <<'PY'
 import json
 import os
 import sys
@@ -105,6 +115,11 @@ crop_external_max_queue_high_water_raw = sys.argv[9]
 crop_external_max_enqueue_age_p95_ms_raw = sys.argv[10]
 crop_external_require_separate_gpu_raw = sys.argv[11]
 crop_recording_sink_mode = sys.argv[12]
+gui_autorun_raw = sys.argv[13]
+gui_autorun_stream_warmup_seconds_raw = sys.argv[14]
+gui_autorun_record_seconds_raw = sys.argv[15]
+gui_autorun_exit_after_finalize_raw = sys.argv[16]
+gui_autorun_hide_crop_preview_raw = sys.argv[17]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -180,6 +195,28 @@ if crop_external_max_enqueue_age_p95_ms_raw:
 
 if crop_external_require_separate_gpu_raw not in {"0", "1"}:
     errors.append("ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU must be 0 or 1")
+
+if gui_autorun_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN must be 0 or 1")
+if gui_autorun_exit_after_finalize_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE must be 0 or 1")
+if gui_autorun_hide_crop_preview_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW must be 0 or 1")
+try:
+    gui_autorun_stream_warmup_seconds = int(gui_autorun_stream_warmup_seconds_raw)
+    if gui_autorun_stream_warmup_seconds < 0:
+        errors.append("ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS must be >= 0")
+except ValueError:
+    errors.append("ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS must be an integer")
+try:
+    gui_autorun_record_seconds = int(gui_autorun_record_seconds_raw)
+    if gui_autorun_record_seconds < 1:
+        errors.append("ORANGE_GUI_AUTORUN_RECORD_SECONDS must be >= 1")
+except ValueError:
+    errors.append("ORANGE_GUI_AUTORUN_RECORD_SECONDS must be an integer")
+
+if gui_autorun_raw == "1" and not str(config_dir):
+    errors.append("ORANGE_GUI_CONFIG_DIR is required when ORANGE_GUI_AUTORUN=1")
 
 def validate_optional_gpu_env(name: str) -> None:
     raw = os.environ.get(name, "")
@@ -312,6 +349,11 @@ Validation environment:
   ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}
   ORANGE_DISPLAY_PREVIEW_MAX_FPS=${DISPLAY_PREVIEW_MAX_FPS}
   ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}
+  ORANGE_GUI_AUTORUN=${GUI_AUTORUN}
+  ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=${GUI_AUTORUN_STREAM_WARMUP_SECONDS}
+  ORANGE_GUI_AUTORUN_RECORD_SECONDS=${GUI_AUTORUN_RECORD_SECONDS}
+  ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=${GUI_AUTORUN_EXIT_AFTER_FINALIZE}
+  ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=${GUI_AUTORUN_HIDE_CROP_PREVIEW}
   ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS:-<camera config/default>}
   ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE:-0}
   ORANGE_CROP_FRAME_POOL_SIZE=${ORANGE_CROP_FRAME_POOL_SIZE:-<orange default>}
@@ -361,9 +403,15 @@ ENV_ARGS=(
   "ORANGE_YOLO_READY_EVENT_FASTPATH=${ORANGE_YOLO_READY_EVENT_FASTPATH:-1}"
   "ORANGE_PTP_REGISTER_READ_DECIMATE=${PTP_REGISTER_READ_DECIMATE}"
   "ORANGE_DEFAULT_DETECT_ENGINE=${DETECT_ENGINE}"
+  "ORANGE_GUI_CONFIG_DIR=${CONFIG_DIR}"
   "ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}"
   "ORANGE_DISPLAY_PREVIEW_MAX_FPS=${DISPLAY_PREVIEW_MAX_FPS}"
   "ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}"
+  "ORANGE_GUI_AUTORUN=${GUI_AUTORUN}"
+  "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=${GUI_AUTORUN_STREAM_WARMUP_SECONDS}"
+  "ORANGE_GUI_AUTORUN_RECORD_SECONDS=${GUI_AUTORUN_RECORD_SECONDS}"
+  "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=${GUI_AUTORUN_EXIT_AFTER_FINALIZE}"
+  "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=${GUI_AUTORUN_HIDE_CROP_PREVIEW}"
   "ORANGE_CROP_RECORDING_SINK_MODE=${CROP_RECORDING_SINK_MODE}"
   "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
   "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=${CROP_EXTERNAL_REQUIRE_SEPARATE_GPU}"

@@ -1,8 +1,8 @@
 # GUI Autorun Validation Plan
 
-Status: deferred. The current priority is crop-frame fanout and display timing
-diagnostics. GUI autorun is useful validation infrastructure, but it is not
-expected to explain the current four-camera GUI FPS collapse by itself.
+Status: first internal state-machine slice in progress. The immediate goal is
+to let an agent launch the real GUI, run the same open/stream/record/finalize
+lifecycle, and validate the artifact without manual clicks.
 
 Last updated: 2026-05-27.
 
@@ -36,33 +36,71 @@ variable.
 
 The existing launcher should forward these through the `sudo env` boundary.
 
+Current launcher defaults:
+
+- `ORANGE_GUI_AUTORUN=0`
+- `ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=3`
+- `ORANGE_GUI_AUTORUN_RECORD_SECONDS=10`
+- `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`
+- `ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=0`
+
+## Automation Research
+
+Dear ImGui applications can be automated through the upstream Dear ImGui Test
+Engine (`ocornut/imgui_test_engine`). That project is designed for Dear ImGui
+application/game/engine automation, injects inputs through ImGui IO, can run
+windowed or headless, and can export screenshots/videos.
+
+For Orange acquisition validation, the first slice should still be internal
+autorun rather than ImGui Test Engine integration. The reason is scope: the
+critical behavior is camera open, GPUDirect acquisition, CUDA/OpenGL display,
+external recorder supervision, crop fanout, and recording finalization. Calling
+the same internal lifecycle branches as the manual buttons is less fragile than
+label/click automation and keeps the hardware path representative. ImGui Test
+Engine remains useful later for UI-specific checks once the runtime lifecycle
+is scriptable.
+
 ## Implementation Sketch
 
 1. Resolve and select `ORANGE_GUI_CONFIG_DIR` during startup.
 2. Reuse the existing local-config load path to select cameras with JSON files.
-3. Extract the current button bodies into callable helpers:
+3. First slice: trigger the existing button bodies via internal request flags:
+   - open cameras
+   - start streaming
+   - start recording
+   - stop recording
+   - stop streaming and finalize
+4. Later cleanup: extract the current button bodies into callable helpers:
    - open selected cameras
    - start streaming
    - start recording
    - stop recording
    - stop streaming and finalize
-4. Add a small frame-tick state machine in `src/orange.cpp`.
-5. Stop on preflight failure and leave the GUI open unless
+5. Add a small frame-tick state machine in `src/orange.cpp`.
+6. Stop on preflight failure and leave the GUI open unless
    `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1` was explicitly set.
+
+First-slice state sequence:
+
+```text
+select_config
+  -> open_cameras
+  -> start_streaming
+  -> stream_warmup
+  -> start_recording
+  -> recording
+  -> stop_recording
+  -> wait_finalize
+  -> stop_streaming
+  -> done
+```
 
 ## Validation
 
 - `ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh` still only
   validates config and launcher environment.
-- `ORANGE_GUI_PRINT_EXEC_ENV_ONLY=1` prints the autorun env values when set.
+- `ORANGE_GUI_PRINT_EXEC_ENV_ONLY=1` prints the autorun env values and
+  `ORANGE_GUI_CONFIG_DIR` crossing the `sudo env` boundary.
 - A live autorun recording must produce the same artifacts as a manual GUI run:
   `recording_session.json`, full-frame external IPC outputs, crop outputs when
   enabled, GUI timing telemetry, and validator pass/fail output.
-
-## Deferred Reason
-
-The latest live runs were slow even with crop preview hidden and YOLO speed
-graphs disabled. That makes crop-frame fanout and GUI timing analysis higher
-yield than automation of the manual clicks. Autorun should come back after the
-recording/display pipeline shape is stable enough that repeatability, not
-architecture, is the main bottleneck.

@@ -120,6 +120,26 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show the default speed graph setting",
         )
         require(
+            "ORANGE_GUI_AUTORUN=0" in result.stdout,
+            "launcher output should show autorun disabled by default",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=3" in result.stdout,
+            "launcher output should show the default autorun stream warmup",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_RECORD_SECONDS=10" in result.stdout,
+            "launcher output should show the default autorun recording duration",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0" in result.stdout,
+            "launcher output should show autorun exit disabled by default",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=0" in result.stdout,
+            "launcher output should show autorun crop preview hiding disabled by default",
+        )
+        require(
             "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
             "launcher output should show the default external crop queue depth",
         )
@@ -276,6 +296,11 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
                 "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER": "many",
                 "ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS": "-1",
                 "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU": "yes",
+                "ORANGE_GUI_AUTORUN": "maybe",
+                "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS": "-1",
+                "ORANGE_GUI_AUTORUN_RECORD_SECONDS": "0",
+                "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "yes",
+                "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW": "nope",
             },
         )
 
@@ -295,6 +320,26 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
         require(
             "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU must be 0 or 1" in result.stderr,
             "external crop GPU separation gate should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN must be 0 or 1" in result.stderr,
+            "autorun enable flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS must be >= 0" in result.stderr,
+            "autorun warmup error should explain the nonnegative requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_RECORD_SECONDS must be >= 1" in result.stderr,
+            "autorun record duration error should explain the positive requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE must be 0 or 1" in result.stderr,
+            "autorun exit flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW must be 0 or 1" in result.stderr,
+            "autorun crop preview flag should explain the boolean requirement",
         )
 
 
@@ -572,6 +617,11 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_STREAM_DOWNSAMPLE": "8",
                 "ORANGE_DISPLAY_PREVIEW_MAX_FPS": "20",
                 "ORANGE_GUI_SHOW_SPEED_GRAPHS": "1",
+                "ORANGE_GUI_AUTORUN": "1",
+                "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS": "2",
+                "ORANGE_GUI_AUTORUN_RECORD_SECONDS": "7",
+                "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "1",
+                "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW": "1",
             },
         )
 
@@ -587,6 +637,30 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_SHOW_SPEED_GRAPHS=1" in result.stdout,
             "YOLO speed graph toggle should be forwarded through sudo env",
+        )
+        require(
+            f"ORANGE_GUI_CONFIG_DIR={config_dir}" in result.stdout,
+            "GUI config folder should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN=1" in result.stdout,
+            "GUI autorun enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=2" in result.stdout,
+            "GUI autorun warmup duration should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_RECORD_SECONDS=7" in result.stdout,
+            "GUI autorun recording duration should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1" in result.stdout,
+            "GUI autorun exit flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1" in result.stdout,
+            "GUI autorun crop-preview flag should be forwarded through sudo env",
         )
 
 
