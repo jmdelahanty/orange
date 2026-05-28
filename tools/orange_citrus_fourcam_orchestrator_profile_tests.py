@@ -122,6 +122,14 @@ def test_default_dry_run_builds_live_profile() -> None:
             "default validator should run the GUI PTP validator",
         )
         require(
+            "{orange_recording_folder}" in validation["command"],
+            "default validator should target the exact Orange recording folder placeholder",
+        )
+        require(
+            "--latest-complete" not in validation["command"],
+            "default validator should not rely on newest-artifact discovery",
+        )
+        require(
             "--expect-gui-frame-max-fps 30" in validation["command"],
             "default validator should match the Citrus-safe frame cap",
         )

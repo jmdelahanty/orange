@@ -378,7 +378,7 @@ Post-run validators are opt-in for the base orchestrator:
 scripts/orange_citrus_orchestrator.py \
   --execute \
   --orange-validation-command \
-    "scripts/validate_gui_ptp_recording.py --latest-complete --json-out /tmp/orange_validation.json"
+    "scripts/validate_gui_ptp_recording.py {orange_recording_folder} --json-out /tmp/orange_validation.json"
 ```
 
 Validation commands run after Citrus reaches a terminal state and after Orange
@@ -386,7 +386,9 @@ finalization, when `--stop-policy` waits for finalization. Non-zero exit status
 or timeout fails the orchestrator, and stdout/stderr tails plus return codes are
 written under `validations[]` in the combined summary. Commands may use
 `{operation_id}`, `{orange_recording_folder}`, and `{citrus_perf_jsonl_path}`
-placeholders.
+placeholders. Prefer `{orange_recording_folder}` for Orange validators so the
+orchestrator validates the exact run reported by Orange status instead of the
+newest artifact on disk.
 
 Four-camera Citrus profile wrapper:
 
@@ -415,7 +417,9 @@ four expected cameras, crop recording artifacts, hidden crop-preview counters,
 external recorder status/hello/storage preflight, separate crop-recorder GPU
 placement, source provenance, YOLO CPU affinity, active CPU isolation, and the
 Citrus-safe display profile (`swap_interval=1`, GUI frame cap `30`, display
-preview cap `10`). It intentionally does not enforce the old `45 fps` GUI p05
+preview cap `10`). The default command targets `{orange_recording_folder}`, not
+`--latest-complete`, so it validates the specific artifact from this
+orchestrated run. It intentionally does not enforce the old `45 fps` GUI p05
 threshold because Citrus-safe mode caps Orange's GUI loop at `30 fps`. Use
 `--skip-orange-validation` for lifecycle-only diagnostics or
 `--orange-validation-command` to replace the default.

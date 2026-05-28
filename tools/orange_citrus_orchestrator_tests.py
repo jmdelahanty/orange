@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -110,6 +111,23 @@ def test_request_builders_and_readiness_helpers() -> None:
     require(module.citrus_ready_to_start(citrus_status(False, False)), "citrus ready")
     require(module.citrus_is_terminal(citrus_status(True, True)), "citrus terminal")
     require(module.citrus_perf_jsonl_path_known(citrus_status(True, True)), "perf path known")
+
+    rendered = module.render_validation_command(
+        "validator {orange_recording_folder} {citrus_perf_jsonl_path} {operation_id}",
+        operation_id="op with spaces",
+        orange_status={"recording": {"folder": "/tmp/orange folder"}},
+        citrus_status={"output": {"perf_jsonl_path": "/tmp/citrus perf.jsonl"}},
+    )
+    require(
+        shlex.split(rendered)
+        == [
+            "validator",
+            "/tmp/orange folder",
+            "/tmp/citrus perf.jsonl",
+            "op with spaces",
+        ],
+        "validation placeholders should render as safely quoted argv tokens",
+    )
 
 
 def test_dry_run_default_does_not_open_sockets() -> None:

@@ -103,7 +103,14 @@ join_command() {
   local quoted=()
   local arg
   for arg in "$@"; do
-    quoted+=("$(printf '%q' "${arg}")")
+    case "${arg}" in
+      "{operation_id}"|"{orange_recording_folder}"|"{citrus_perf_jsonl_path}")
+        quoted+=("${arg}")
+        ;;
+      *)
+        quoted+=("$(printf '%q' "${arg}")")
+        ;;
+    esac
   done
   local IFS=" "
   printf '%s\n' "${quoted[*]}"
@@ -374,7 +381,7 @@ fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
   ORANGE_VALIDATION_COMMAND="$(join_command \
     "${REPO_ROOT}/scripts/validate_gui_ptp_recording.py" \
-    "--latest-complete" \
+    "{orange_recording_folder}" \
     "--expected-cameras" "2010093,2010094,2010095,2010096" \
     "--require-crop-recording-artifacts" \
     "--require-crop-preview-counters" \
