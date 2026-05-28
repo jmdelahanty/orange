@@ -532,6 +532,10 @@ def ipc_protocol_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "client_control_messages_received": int_value(
             protocol.get("client_control_messages_received")
         ),
+        "client_drain_messages_received": int_value(
+            protocol.get("client_drain_messages_received")
+        ),
+        "client_drain_received": protocol.get("client_drain_received"),
         "client_finalize_received": protocol.get("client_finalize_received"),
         "last_client_control_command": protocol.get("last_client_control_command"),
         "last_client_control_reason": protocol.get("last_client_control_reason"),
@@ -648,6 +652,10 @@ def summarize_external_recorder_status_contract(
             "client_control_messages_received": protocol.get(
                 "client_control_messages_received"
             ),
+            "client_drain_messages_received": protocol.get(
+                "client_drain_messages_received"
+            ),
+            "client_drain_received": protocol.get("client_drain_received"),
             "client_finalize_received": protocol.get("client_finalize_received"),
             "last_client_control_command": protocol.get("last_client_control_command"),
             "last_client_control_reason": protocol.get("last_client_control_reason"),
@@ -663,6 +671,12 @@ def summarize_external_recorder_status_contract(
             ),
             "runtime_client_control_messages_received": int_value(
                 runtime_status.get("client_control_messages_received")
+            ),
+            "runtime_client_drain_messages_received": int_value(
+                runtime_status.get("client_drain_messages_received")
+            ),
+            "runtime_client_drain_received": runtime_status.get(
+                "client_drain_received"
             ),
             "runtime_client_finalize_received": runtime_status.get(
                 "client_finalize_received"
@@ -1645,8 +1659,10 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"{int(status.get('client_hello_received') is True)} "
                     f"status_msgs={fmt_int(status.get('recorder_status_messages_sent'))}/"
                     f"{fmt_int(status.get('recorder_status_send_failures'))} "
-                    f"client_control={fmt_int(status.get('client_control_messages_received'))}/"
-                    f"{int(status.get('client_finalize_received') is True)} "
+                    f"client_control={fmt_int(status.get('client_control_messages_received'))} "
+                    f"drain={fmt_int(status.get('client_drain_messages_received'))}/"
+                    f"{int(status.get('client_drain_received') is True)} "
+                    f"finalize={int(status.get('client_finalize_received') is True)} "
                     f"storage={storage}"
                 )
     else:

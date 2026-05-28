@@ -60,6 +60,7 @@ hello before accepting frames:
 RECORDER_HELLO protocol=orange.external_recorder.ipc version=1 ...
 CLIENT_HELLO protocol=orange.external_recorder.ipc version=1 ...
 RECORDER_STATUS protocol=orange.external_recorder.ipc version=1 ...
+CLIENT_CONTROL protocol=orange.external_recorder.ipc version=1 command=drain ...
 CLIENT_CONTROL protocol=orange.external_recorder.ipc version=1 command=finalize ...
 ```
 
@@ -72,10 +73,18 @@ messages with the same heartbeat sequence and frame counters that are written
 to the status sidecar. Full-frame and crop handoff clients tolerate these
 messages while waiting for `ACK` / `RELEASE`, so status telemetry no longer
 depends only on the JSON sidecar path. The sidecar remains the durable
-operator-facing health artifact. On orderly drain, Orange sends
-`CLIENT_CONTROL command=finalize` before closing the socket, giving the recorder
-an explicit finalization boundary instead of relying only on EOF. The recorder
-records the observed client control state in `ipc_protocol`.
+operator-facing health artifact. On orderly recording-session shutdown, Orange
+sends `CLIENT_CONTROL command=drain` when it has stopped accepting new work for
+that session, then sends `CLIENT_CONTROL command=finalize` before closing the
+socket. These controls give the recorder explicit session boundaries instead of
+relying only on EOF. They do not mean the camera stream has stopped: the GUI can
+continue streaming and previewing while the recorded video, metadata, bounding
+box rows, clip index, and manifests are drained and finalized. Rolling clip
+boundaries are internal recorder writer rotations and do not require socket or
+camera stream teardown. `drain` is advisory and can precede descriptors that
+were already accepted into Orange's local recording queues; `finalize` is the
+point where descriptor intake should end. The recorder records the observed
+client control state in `ipc_protocol`.
 
 There are two source-lifetime modes:
 
@@ -278,9 +287,10 @@ Current semantics:
   summary/status JSON and, when runtime status is required, parsed runtime
   protocol fields. When present, `recorder_status_send_failures` must be zero.
   New recorder summaries/status sidecars also report
-  `client_control_messages_received` and `client_finalize_received`; when those
-  fields are present, strict validators require at least one control message
-  and a received finalize command.
+  `client_control_messages_received`, `client_drain_messages_received`,
+  `client_drain_received`, and `client_finalize_received`; when those fields
+  are present, strict validators require at least one control message, a
+  received drain command, and a received finalize command.
   Current generated full-frame and crop external IPC contracts set it by
   default.
 - Shell-launched diagnostic runs validate external recorder files after Orange

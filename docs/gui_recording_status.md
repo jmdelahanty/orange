@@ -543,9 +543,14 @@ Current GUI implication:
   also sends low-rate in-band `RECORDER_STATUS` protocol messages after the
   hello, and the full-frame/crop clients tolerate those messages while waiting
   for frame `ACK` / `RELEASE`. On orderly drain, the full-frame/crop clients
-  now send `CLIENT_CONTROL command=finalize` so the recorder has an explicit
-  finalization boundary. Remaining external-recorder health gaps are richer
-  stop/drain/finalize state machines rather than only a final finalize command.
+  now send `CLIENT_CONTROL command=drain` followed by
+  `CLIENT_CONTROL command=finalize` so the recorder has explicit
+  recording-session drain and finalization boundaries. This does not require
+  stopping the camera stream; rolling clip finalization is handled as internal
+  recorder writer rotation while the socket/session remains active. `drain` is
+  advisory and may be followed by already-queued descriptors; descriptor intake
+  ends at `finalize`. Remaining external-recorder health gaps are richer
+  stop/drain/finalize state machines rather than only final control commands.
   The PTP stack guard exists in the validation launcher/wrapper path, but
   manual GUI operation still depends on the Host PTP Stack panel or an operator
   shell command before streaming PTP-gated cameras.

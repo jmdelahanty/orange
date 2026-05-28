@@ -247,6 +247,10 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_u64(protocol, "recorder_status_send_failures");
             snapshot.client_control_messages_received =
                 optional_u64(protocol, "client_control_messages_received");
+            snapshot.client_drain_messages_received =
+                optional_u64(protocol, "client_drain_messages_received");
+            snapshot.client_drain_received =
+                optional_bool(protocol, "client_drain_received");
             snapshot.client_finalize_received =
                 optional_bool(protocol, "client_finalize_received");
             snapshot.last_client_control_command =
@@ -1508,6 +1512,9 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                  recorder_status.recorder_status_send_failures},
                 {"client_control_messages_received",
                  recorder_status.client_control_messages_received},
+                {"client_drain_messages_received",
+                 recorder_status.client_drain_messages_received},
+                {"client_drain_received", recorder_status.client_drain_received},
                 {"client_finalize_received", recorder_status.client_finalize_received},
                 {"last_client_control_command",
                  recorder_status.last_client_control_command},

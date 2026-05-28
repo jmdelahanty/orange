@@ -114,8 +114,14 @@ public:
 
     void Close()
     {
+        send_client_drain_control("crop_recording_drained");
         send_client_finalize_control("crop_recording_drained");
         close_socket();
+    }
+
+    void NotifyDrain(const char* reason)
+    {
+        send_client_drain_control(reason ? reason : "crop_recording_draining");
     }
 
     bool Submit(const CropFrameSnapshot& frame,
@@ -430,20 +436,48 @@ private:
         return true;
     }
 
-    void send_client_finalize_control(const char* reason)
+    bool send_client_control(const char* command, const char* reason)
     {
-        if (socket_fd_ < 0 || !client_hello_sent_ || client_finalize_sent_) {
-            return;
+        if (socket_fd_ < 0 || !client_hello_sent_) {
+            return false;
         }
         if (!send_all(orange::external_recorder::ipc::build_client_control_line(
                 camera_serial_,
                 session_id_,
                 stream_id_,
                 "orange_crop",
-                orange::external_recorder::ipc::kClientControlFinalize,
+                command ? command : "",
                 reason ? reason : "drained"))) {
-            log_limited("send crop client finalize control failed: " +
+            log_limited("send crop client control failed: " +
                         std::string(std::strerror(errno)));
+            return false;
+        }
+        return true;
+    }
+
+    void send_client_drain_control(const char* reason)
+    {
+        if (client_drain_sent_) {
+            return;
+        }
+        if (send_client_control(
+                orange::external_recorder::ipc::kClientControlDrain,
+                reason)) {
+            client_drain_sent_ = true;
+        }
+    }
+
+    void send_client_finalize_control(const char* reason)
+    {
+        if (client_finalize_sent_) {
+            return;
+        }
+        if (!client_drain_sent_) {
+            send_client_drain_control(reason);
+        }
+        if (!send_client_control(
+                orange::external_recorder::ipc::kClientControlFinalize,
+                reason)) {
             return;
         }
         client_finalize_sent_ = true;
@@ -480,6 +514,7 @@ private:
         }
         receive_buffer_.clear();
         client_hello_sent_ = false;
+        client_drain_sent_ = false;
         client_finalize_sent_ = false;
     }
 
@@ -502,6 +537,7 @@ private:
     std::string socket_path_;
     int socket_fd_ = -1;
     bool client_hello_sent_ = false;
+    bool client_drain_sent_ = false;
     bool client_finalize_sent_ = false;
     std::string receive_buffer_;
     std::unordered_map<unsigned char*, std::string> handle_cache_;
@@ -1130,6 +1166,10 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
     EnsureNppStream(m_stream);
 
     std::unique_ptr<CropEncodeJob> job(raw_job);
+    if (camera_control_ && !camera_control_->record_video && is_recording_ &&
+        external_crop_ipc_) {
+        external_crop_ipc_->NotifyDrain("crop_recording_draining");
+    }
     if (!job) {
         if (camera_control_ && !camera_control_->record_video && is_recording_) {
             if (!camera_control_->recording_draining || drain_ready()) {

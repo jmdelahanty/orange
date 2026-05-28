@@ -202,6 +202,9 @@ protected:
         std::cout << "Child Thread Start 0 (ExternalIpcRecorder_Cam_"
                   << camera_serial_ << ")" << std::endl;
         while (IsMachineOn() || GetCountQueueIn() > 0 || pending_release_count() > 0) {
+            if (!IsMachineOn()) {
+                send_client_drain_control("worker_draining");
+            }
             if (deferred_release_ || pending_release_count() > 0) {
                 poll_protocol_lines(false);
             }
@@ -214,6 +217,7 @@ protected:
         }
         std::cout << "Child Thread DONE 0 (ExternalIpcRecorder_Cam_"
                   << camera_serial_ << ")" << std::endl;
+        send_client_drain_control("worker_drained");
         send_client_finalize_control("worker_drained");
         close_socket();
     }
@@ -311,6 +315,7 @@ private:
         }
         receive_buffer_.clear();
         client_hello_sent_ = false;
+        client_drain_sent_ = false;
         client_finalize_sent_ = false;
     }
 
@@ -573,21 +578,49 @@ private:
         return true;
     }
 
-    void send_client_finalize_control(const char* reason)
+    bool send_client_control(const char* command, const char* reason)
     {
-        if (socket_fd_ < 0 || !client_hello_sent_ || client_finalize_sent_) {
-            return;
+        if (socket_fd_ < 0 || !client_hello_sent_) {
+            return false;
         }
         if (!send_all(orange::external_recorder::ipc::build_client_control_line(
                 camera_serial_,
                 session_id_,
                 stream_id_,
                 "orange_full_frame",
-                orange::external_recorder::ipc::kClientControlFinalize,
+                command ? command : "",
                 reason ? reason : "drained"))) {
             failures_.fetch_add(1, std::memory_order_relaxed);
-            log_limited("send client finalize control failed: " +
+            log_limited("send client control failed: " +
                         std::string(std::strerror(errno)));
+            return false;
+        }
+        return true;
+    }
+
+    void send_client_drain_control(const char* reason)
+    {
+        if (client_drain_sent_) {
+            return;
+        }
+        if (send_client_control(
+                orange::external_recorder::ipc::kClientControlDrain,
+                reason)) {
+            client_drain_sent_ = true;
+        }
+    }
+
+    void send_client_finalize_control(const char* reason)
+    {
+        if (client_finalize_sent_) {
+            return;
+        }
+        if (!client_drain_sent_) {
+            send_client_drain_control(reason);
+        }
+        if (!send_client_control(
+                orange::external_recorder::ipc::kClientControlFinalize,
+                reason)) {
             return;
         }
         client_finalize_sent_ = true;
@@ -796,6 +829,7 @@ private:
     int socket_fd_ = -1;
     bool deferred_release_ = false;
     bool client_hello_sent_ = false;
+    bool client_drain_sent_ = false;
     bool client_finalize_sent_ = false;
     std::string receive_buffer_;
     mutable std::mutex pending_release_mutex_;

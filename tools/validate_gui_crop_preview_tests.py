@@ -1050,7 +1050,9 @@ def external_ipc_protocol_payload() -> dict:
         "version": 1,
         "recorder_hello_sent": True,
         "client_hello_received": True,
-        "client_control_messages_received": 1,
+        "client_control_messages_received": 2,
+        "client_drain_messages_received": 1,
+        "client_drain_received": True,
         "client_finalize_received": True,
     }
 
@@ -1190,7 +1192,9 @@ def write_external_recorder_status_fixture(
         "ipc_protocol_version": 1,
         "recorder_hello_sent": True,
         "client_hello_received": True,
-        "client_control_messages_received": 1,
+        "client_control_messages_received": 2,
+        "client_drain_messages_received": 1,
+        "client_drain_received": True,
         "client_finalize_received": True,
     }
     if rolling:

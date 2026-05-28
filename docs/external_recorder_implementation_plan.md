@@ -733,11 +733,16 @@ that it writes to the status sidecar, records
 `recorder_status_messages_sent` / `recorder_status_send_failures` in
 `ipc_protocol`, and both full-frame and crop Orange clients skip those messages
 while preserving strict `ACK` / `RELEASE` ordering.
-Orderly full-frame and crop client shutdown now also sends an in-band
-`CLIENT_CONTROL command=finalize` message after local drain, and the diagnostic
-recorder treats that as an explicit request to leave descriptor intake and
-finalize outputs. Recorder status/summary artifacts report the received client
-control count and whether finalize was observed.
+Orderly full-frame and crop client shutdown now also sends in-band
+`CLIENT_CONTROL command=drain` and `CLIENT_CONTROL command=finalize` messages.
+`drain` marks the final recording-session boundary where no more frames should
+be accepted for that session; `finalize` asks the recorder to leave descriptor
+intake and finalize outputs. These controls do not stop the camera stream, and
+rolling clip finalization remains an internal recorder writer rotation rather
+than a socket teardown. `drain` is advisory and can be followed by descriptors
+that were already queued locally; descriptor intake ends at `finalize`.
+Recorder status/summary artifacts report the received client control count,
+drain count, and whether drain/finalize were observed.
 The first GUI PTP-stack guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to

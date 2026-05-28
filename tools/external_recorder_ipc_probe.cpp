@@ -140,6 +140,8 @@ struct IpcProtocolState {
     uint64_t recorder_status_messages_sent = 0;
     uint64_t recorder_status_send_failures = 0;
     uint64_t client_control_messages_received = 0;
+    uint64_t client_drain_messages_received = 0;
+    bool client_drain_received = false;
     bool client_finalize_received = false;
     std::string last_client_control_command;
     std::string last_client_control_reason;
@@ -801,6 +803,10 @@ void write_ipc_protocol_json(std::ostream& out,
         << state.recorder_status_send_failures << ",\n";
     out << indent << "  \"client_control_messages_received\": "
         << state.client_control_messages_received << ",\n";
+    out << indent << "  \"client_drain_messages_received\": "
+        << state.client_drain_messages_received << ",\n";
+    out << indent << "  \"client_drain_received\": "
+        << (state.client_drain_received ? "true" : "false") << ",\n";
     out << indent << "  \"client_finalize_received\": "
         << (state.client_finalize_received ? "true" : "false") << ",\n";
     out << indent << "  \"last_client_control_command\": \""
@@ -4081,6 +4087,13 @@ int main(int argc, char** argv)
                 protocol_state.client_control_messages_received++;
                 protocol_state.last_client_control_command = control.command;
                 protocol_state.last_client_control_reason = control.reason;
+                if (control.command ==
+                    orange::external_recorder::ipc::kClientControlDrain) {
+                    protocol_state.client_drain_messages_received++;
+                    protocol_state.client_drain_received = true;
+                    write_status("drain_requested", {}, false);
+                    continue;
+                }
                 if (control.command ==
                     orange::external_recorder::ipc::kClientControlFinalize) {
                     protocol_state.client_finalize_received = true;

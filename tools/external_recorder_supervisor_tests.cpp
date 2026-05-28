@@ -481,7 +481,9 @@ void test_process_poll_reads_status_sidecar()
             << "    \"client_hello_received\": true,\n"
             << "    \"recorder_status_messages_sent\": 3,\n"
             << "    \"recorder_status_send_failures\": 0,\n"
-            << "    \"client_control_messages_received\": 1,\n"
+            << "    \"client_control_messages_received\": 2,\n"
+            << "    \"client_drain_messages_received\": 1,\n"
+            << "    \"client_drain_received\": true,\n"
             << "    \"client_finalize_received\": true,\n"
             << "    \"last_client_control_command\": \"finalize\",\n"
             << "    \"last_client_control_reason\": \"worker_drained\"\n"
@@ -559,8 +561,12 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar recorder status message count should parse");
     require(runtime.processes[0].recorder_status.recorder_status_send_failures == 0,
             "status sidecar recorder status failure count should parse");
-    require(runtime.processes[0].recorder_status.client_control_messages_received == 1,
+    require(runtime.processes[0].recorder_status.client_control_messages_received == 2,
             "status sidecar client control count should parse");
+    require(runtime.processes[0].recorder_status.client_drain_messages_received == 1,
+            "status sidecar client drain count should parse");
+    require(runtime.processes[0].recorder_status.client_drain_received,
+            "status sidecar client drain flag should parse");
     require(runtime.processes[0].recorder_status.client_finalize_received,
             "status sidecar client finalize flag should parse");
     require(runtime.processes[0].recorder_status.last_client_control_command == "finalize",
@@ -577,6 +583,10 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed encoded count");
     require(summary["processes"][0]["recorder_status"]["recorder_status_messages_sent"] == 3,
             "runtime summary should include parsed recorder status message count");
+    require(summary["processes"][0]["recorder_status"]["client_drain_messages_received"] == 1,
+            "runtime summary should include parsed client drain count");
+    require(summary["processes"][0]["recorder_status"]["client_drain_received"].get<bool>(),
+            "runtime summary should include parsed client drain flag");
     require(summary["processes"][0]["recorder_status"]["client_finalize_received"].get<bool>(),
             "runtime summary should include parsed client finalize flag");
     require(summary["processes"][0]["recorder_status"]["rolling_enabled"].get<bool>(),

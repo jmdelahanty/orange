@@ -498,6 +498,17 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
     )
     if control_count is not None:
         require(control_count > 0, f"{label} client_control_messages_received={control_count}")
+    drain_count = optional_int(
+        protocol.get("client_drain_messages_received"),
+        f"{label} ipc_protocol.client_drain_messages_received",
+    )
+    if drain_count is not None:
+        require(drain_count > 0, f"{label} client_drain_messages_received={drain_count}")
+    if "client_drain_received" in protocol:
+        require(
+            protocol.get("client_drain_received") is True,
+            f"{label} client_drain_received is not true",
+        )
     if "client_finalize_received" in protocol:
         require(
             protocol.get("client_finalize_received") is True,
@@ -825,6 +836,16 @@ def verify_status_sidecar(
             if "client_finalize_received" in candidate:
                 require(candidate.get("client_finalize_received") is True,
                         f"runtime client_finalize_received is not true for {serial}")
+            runtime_drain_count = optional_int(
+                candidate.get("client_drain_messages_received"),
+                f"runtime client_drain_messages_received for {serial}",
+            )
+            if runtime_drain_count is not None:
+                require(runtime_drain_count > 0,
+                        f"runtime client_drain_messages_received={runtime_drain_count} for {serial}")
+            if "client_drain_received" in candidate:
+                require(candidate.get("client_drain_received") is True,
+                        f"runtime client_drain_received is not true for {serial}")
         runtime_status = candidate
 
     return {

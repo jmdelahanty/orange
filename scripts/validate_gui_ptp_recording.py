@@ -2060,6 +2060,10 @@ def check_ipc_protocol_payload(
         "client_control_messages_received": integer(
             protocol.get("client_control_messages_received")
         ),
+        "client_drain_messages_received": integer(
+            protocol.get("client_drain_messages_received")
+        ),
+        "client_drain_received": protocol.get("client_drain_received"),
         "client_finalize_received": protocol.get("client_finalize_received"),
     }
     reporter.check(
@@ -2095,6 +2099,19 @@ def check_ipc_protocol_payload(
             control_count > 0,
             f"{prefix} client control messages received",
             f"{prefix} client_control_messages_received={control_count}",
+        )
+    drain_count = integer(protocol.get("client_drain_messages_received"))
+    if drain_count is not None:
+        reporter.check(
+            drain_count > 0,
+            f"{prefix} client drain messages received",
+            f"{prefix} client_drain_messages_received={drain_count}",
+        )
+    if "client_drain_received" in protocol:
+        reporter.check(
+            protocol.get("client_drain_received") is True,
+            f"{prefix} client drain control received",
+            f"{prefix} client_drain_received={protocol.get('client_drain_received')!r}",
         )
     if "client_finalize_received" in protocol:
         reporter.check(
@@ -2442,6 +2459,27 @@ def check_external_recorder_status_contract(
                     (
                         f"{prefix} runtime client_control_messages_received="
                         f"{runtime_control_count}"
+                    ),
+                )
+            runtime_drain_count = integer(
+                runtime_status.get("client_drain_messages_received")
+            )
+            if runtime_drain_count is not None:
+                reporter.check(
+                    runtime_drain_count > 0,
+                    f"{prefix} runtime client drain messages received",
+                    (
+                        f"{prefix} runtime client_drain_messages_received="
+                        f"{runtime_drain_count}"
+                    ),
+                )
+            if "client_drain_received" in runtime_status:
+                reporter.check(
+                    runtime_status.get("client_drain_received") is True,
+                    f"{prefix} runtime client drain control received",
+                    (
+                        f"{prefix} runtime client_drain_received="
+                        f"{runtime_status.get('client_drain_received')!r}"
                     ),
                 )
             if "client_finalize_received" in runtime_status:

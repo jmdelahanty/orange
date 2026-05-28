@@ -16,6 +16,7 @@ inline constexpr const char* kRecorderHelloKind = "RECORDER_HELLO";
 inline constexpr const char* kClientHelloKind = "CLIENT_HELLO";
 inline constexpr const char* kRecorderStatusKind = "RECORDER_STATUS";
 inline constexpr const char* kClientControlKind = "CLIENT_CONTROL";
+inline constexpr const char* kClientControlDrain = "drain";
 inline constexpr const char* kClientControlFinalize = "finalize";
 
 struct HelloFields {
@@ -387,7 +388,7 @@ inline std::string build_recorder_hello_line(const std::string& session_id,
         << " role=recorder"
         << " session_id=" << token_value(session_id)
         << " stream_id=" << token_value(stream_id)
-        << " features=frame_ack_release,recorder_status,client_control_finalize,status_json,storage_preflight\n";
+        << " features=frame_ack_release,recorder_status,client_control_drain,client_control_finalize,status_json,storage_preflight\n";
     return out.str();
 }
 
@@ -404,7 +405,7 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
         << " camera_serial=" << token_value(camera_serial)
         << " session_id=" << token_value(session_id)
         << " stream_id=" << token_value(stream_id)
-        << " features=client_control_finalize"
+        << " features=client_control_drain,client_control_finalize"
         << "\n";
     return out.str();
 }
