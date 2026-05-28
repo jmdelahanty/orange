@@ -542,11 +542,13 @@ Current GUI implication:
   failed status sidecars are surfaced as status-line errors. The recorder now
   also sends low-rate in-band `RECORDER_STATUS` protocol messages after the
   hello, and the full-frame/crop clients tolerate those messages while waiting
-  for frame `ACK` / `RELEASE`. Remaining external-recorder health gaps are
-  explicit in-band control messages such as stop/drain/finalize. The PTP stack
-  guard exists in the validation launcher/wrapper path, but manual GUI
-  operation still depends on the Host PTP Stack panel or an operator shell
-  command before streaming PTP-gated cameras.
+  for frame `ACK` / `RELEASE`. On orderly drain, the full-frame/crop clients
+  now send `CLIENT_CONTROL command=finalize` so the recorder has an explicit
+  finalization boundary. Remaining external-recorder health gaps are richer
+  stop/drain/finalize state machines rather than only a final finalize command.
+  The PTP stack guard exists in the validation launcher/wrapper path, but
+  manual GUI operation still depends on the Host PTP Stack panel or an operator
+  shell command before streaming PTP-gated cameras.
 
 Earlier GUI external-recorder fail-fast artifact:
 

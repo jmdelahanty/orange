@@ -110,6 +110,32 @@ void parses_ipc_protocol_hello_lines()
     require(!status_fields.worker_failed,
             "recorder status worker failed flag mismatch");
 
+    const std::string client_control =
+        orange::external_recorder::ipc::build_client_control_line(
+            "2010095",
+            "session 001",
+            "2010095 crop",
+            "orange crop",
+            orange::external_recorder::ipc::kClientControlFinalize,
+            "recording drained");
+    orange::external_recorder::ipc::ClientControlFields control_fields;
+    require(orange::external_recorder::ipc::parse_client_control_line(
+                client_control,
+                &control_fields),
+            "client control should parse");
+    require(control_fields.protocol == orange::external_recorder::ipc::kProtocolName,
+            "client control protocol mismatch");
+    require(control_fields.role == "orange_crop",
+            "client control role should be tokenized");
+    require(control_fields.session_id == "session_001",
+            "client control session should be tokenized");
+    require(control_fields.stream_id == "2010095_crop",
+            "client control stream should be tokenized");
+    require(control_fields.command == orange::external_recorder::ipc::kClientControlFinalize,
+            "client control command mismatch");
+    require(control_fields.reason == "recording_drained",
+            "client control reason should be tokenized");
+
     orange::external_recorder::ipc::HelloFields bad_fields;
     require(!orange::external_recorder::ipc::parse_client_hello_line(
                 "CLIENT_HELLO protocol=wrong version=1 role=orange",

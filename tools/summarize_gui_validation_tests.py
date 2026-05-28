@@ -74,6 +74,10 @@ def write_external_recorder_status_fixture(
         "client_hello_received": True,
         "recorder_status_messages_sent": heartbeat_sequence,
         "recorder_status_send_failures": 0,
+        "client_control_messages_received": 1,
+        "client_finalize_received": True,
+        "last_client_control_command": "finalize",
+        "last_client_control_reason": "recording_drained",
     }
     write_text(
         summary_path,
@@ -142,6 +146,8 @@ def write_external_recorder_status_fixture(
                                 else heartbeat_sequence
                             ),
                             "recorder_status_send_failures": 0,
+                            "client_control_messages_received": 1,
+                            "client_finalize_received": True,
                         },
                     }
                 ],
@@ -574,6 +580,11 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
         require(
             full["runtime_recorder_status_messages_sent"] == 4,
             "full runtime recorder status count should parse",
+        )
+        require(full["client_finalize_received"] is True, "full client finalize should parse")
+        require(
+            full["runtime_client_finalize_received"] is True,
+            "full runtime client finalize should parse",
         )
         require(crop["frames_received"] == 2, "crop received count should parse")
         require(crop["frames_encoded"] == 2, "crop encoded count should parse")

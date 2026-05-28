@@ -58,6 +58,8 @@ def ipc_protocol_payload() -> dict:
         "version": 1,
         "recorder_hello_sent": True,
         "client_hello_received": True,
+        "client_control_messages_received": 1,
+        "client_finalize_received": True,
     }
 
 
@@ -283,6 +285,8 @@ def write_runtime(
         "ipc_protocol_version": 1,
         "recorder_hello_sent": True,
         "client_hello_received": True,
+        "client_control_messages_received": 1,
+        "client_finalize_received": True,
     }
     if rolling:
         recorder_status.update(

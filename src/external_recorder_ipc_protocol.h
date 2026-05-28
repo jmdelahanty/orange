@@ -15,6 +15,8 @@ inline constexpr int kProtocolVersion = 1;
 inline constexpr const char* kRecorderHelloKind = "RECORDER_HELLO";
 inline constexpr const char* kClientHelloKind = "CLIENT_HELLO";
 inline constexpr const char* kRecorderStatusKind = "RECORDER_STATUS";
+inline constexpr const char* kClientControlKind = "CLIENT_CONTROL";
+inline constexpr const char* kClientControlFinalize = "finalize";
 
 struct HelloFields {
     std::string kind;
@@ -42,6 +44,19 @@ struct RecorderStatusFields {
     uint64_t frames_encoded = 0;
     uint64_t encode_dropped = 0;
     bool worker_failed = false;
+    std::string error;
+};
+
+struct ClientControlFields {
+    std::string kind;
+    std::string protocol;
+    int version = 0;
+    std::string role;
+    std::string camera_serial;
+    std::string session_id;
+    std::string stream_id;
+    std::string command;
+    std::string reason;
     std::string error;
 };
 
@@ -312,6 +327,56 @@ inline bool parse_recorder_status_line(const std::string& line,
     return parsed.error.empty();
 }
 
+inline bool parse_client_control_line(const std::string& line,
+                                      ClientControlFields* control)
+{
+    ClientControlFields parsed;
+    std::istringstream in(line);
+    in >> parsed.kind;
+    if (!in || parsed.kind.empty()) {
+        parsed.error = "missing control kind";
+        if (control) {
+            *control = parsed;
+        }
+        return false;
+    }
+    if (parsed.kind != kClientControlKind) {
+        parsed.error = "unexpected control kind";
+        if (control) {
+            *control = parsed;
+        }
+        return false;
+    }
+
+    const std::unordered_map<std::string, std::string> values = parse_key_values(&in);
+    parsed.protocol = find_value(values, "protocol");
+    parsed.role = find_value(values, "role");
+    parsed.camera_serial = find_value(values, "camera_serial");
+    parsed.session_id = find_value(values, "session_id");
+    parsed.stream_id = find_value(values, "stream_id");
+    parsed.command = find_value(values, "command");
+    parsed.reason = find_value(values, "reason");
+
+    const std::string version_value = find_value(values, "version");
+    if (!version_value.empty() &&
+        !parse_int_value(version_value, &parsed.version)) {
+        parsed.error = "invalid protocol version";
+    } else if (parsed.protocol != kProtocolName) {
+        parsed.error = "unexpected protocol name";
+    } else if (parsed.version != kProtocolVersion) {
+        parsed.error = "unsupported protocol version";
+    } else if (parsed.role.empty()) {
+        parsed.error = "missing protocol role";
+    } else if (parsed.command.empty()) {
+        parsed.error = "missing control command";
+    }
+
+    if (control) {
+        *control = parsed;
+    }
+    return parsed.error.empty();
+}
+
 inline std::string build_recorder_hello_line(const std::string& session_id,
                                              const std::string& stream_id)
 {
@@ -322,7 +387,7 @@ inline std::string build_recorder_hello_line(const std::string& session_id,
         << " role=recorder"
         << " session_id=" << token_value(session_id)
         << " stream_id=" << token_value(stream_id)
-        << " features=frame_ack_release,recorder_status,status_json,storage_preflight\n";
+        << " features=frame_ack_release,recorder_status,client_control_finalize,status_json,storage_preflight\n";
     return out.str();
 }
 
@@ -339,6 +404,7 @@ inline std::string build_client_hello_line(const std::string& camera_serial,
         << " camera_serial=" << token_value(camera_serial)
         << " session_id=" << token_value(session_id)
         << " stream_id=" << token_value(stream_id)
+        << " features=client_control_finalize"
         << "\n";
     return out.str();
 }
@@ -367,6 +433,27 @@ inline std::string build_recorder_status_line(const std::string& session_id,
         << " frames_encoded=" << frames_encoded
         << " encode_dropped=" << encode_dropped
         << " worker_failed=" << (worker_failed ? "true" : "false")
+        << "\n";
+    return out.str();
+}
+
+inline std::string build_client_control_line(const std::string& camera_serial,
+                                             const std::string& session_id,
+                                             const std::string& stream_id,
+                                             const std::string& role,
+                                             const std::string& command,
+                                             const std::string& reason)
+{
+    std::ostringstream out;
+    out << kClientControlKind
+        << " protocol=" << kProtocolName
+        << " version=" << kProtocolVersion
+        << " role=" << token_value(role)
+        << " camera_serial=" << token_value(camera_serial)
+        << " session_id=" << token_value(session_id)
+        << " stream_id=" << token_value(stream_id)
+        << " command=" << token_value(command)
+        << " reason=" << token_value(reason)
         << "\n";
     return out.str();
 }

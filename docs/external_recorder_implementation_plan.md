@@ -733,6 +733,11 @@ that it writes to the status sidecar, records
 `recorder_status_messages_sent` / `recorder_status_send_failures` in
 `ipc_protocol`, and both full-frame and crop Orange clients skip those messages
 while preserving strict `ACK` / `RELEASE` ordering.
+Orderly full-frame and crop client shutdown now also sends an in-band
+`CLIENT_CONTROL command=finalize` message after local drain, and the diagnostic
+recorder treats that as an explicit request to leave descriptor intake and
+finalize outputs. Recorder status/summary artifacts report the received client
+control count and whether finalize was observed.
 The first GUI PTP-stack guard also exists in the
 validation launcher/wrapper path:
 `ORANGE_GUI_PTP_STACK_MODE` maps to
@@ -747,11 +752,12 @@ both strict and summary paths:
 `--require-external-recorder-protocol-hello` fail on missing/unhealthy
 sidecars, missing parsed runtime state, missing/unhealthy storage preflight, or
 missing versioned IPC hello telemetry, and fail if reported recorder-status
-protocol sends are nonzero failures; `compare_gui_crop_preview_validation.py`
+protocol sends are nonzero failures or if a reported client-finalize control is
+missing; `compare_gui_crop_preview_validation.py`
 carries those gates into visible/hidden comparisons; and
 `summarize_gui_validation.py` prints compact full-frame/crop recorder
-heartbeat, count, protocol status-message, and storage status for operator
-triage. The
+heartbeat, count, protocol status-message/control, and storage status for
+operator triage. The
 headless external-recorder session verifier also has
 `--require-recorder-status`, `--require-recorder-runtime-status`,
 `--require-recorder-storage-preflight`, and

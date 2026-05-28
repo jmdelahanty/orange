@@ -529,6 +529,12 @@ def ipc_protocol_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "recorder_status_send_failures": int_value(
             protocol.get("recorder_status_send_failures")
         ),
+        "client_control_messages_received": int_value(
+            protocol.get("client_control_messages_received")
+        ),
+        "client_finalize_received": protocol.get("client_finalize_received"),
+        "last_client_control_command": protocol.get("last_client_control_command"),
+        "last_client_control_reason": protocol.get("last_client_control_reason"),
     }
 
 
@@ -639,6 +645,12 @@ def summarize_external_recorder_status_contract(
             "recorder_status_send_failures": protocol.get(
                 "recorder_status_send_failures"
             ),
+            "client_control_messages_received": protocol.get(
+                "client_control_messages_received"
+            ),
+            "client_finalize_received": protocol.get("client_finalize_received"),
+            "last_client_control_command": protocol.get("last_client_control_command"),
+            "last_client_control_reason": protocol.get("last_client_control_reason"),
             "runtime_ipc_protocol_name": runtime_status.get("ipc_protocol_name"),
             "runtime_ipc_protocol_version": int_value(runtime_status.get("ipc_protocol_version")),
             "runtime_recorder_hello_sent": runtime_status.get("recorder_hello_sent"),
@@ -648,6 +660,12 @@ def summarize_external_recorder_status_contract(
             ),
             "runtime_recorder_status_send_failures": int_value(
                 runtime_status.get("recorder_status_send_failures")
+            ),
+            "runtime_client_control_messages_received": int_value(
+                runtime_status.get("client_control_messages_received")
+            ),
+            "runtime_client_finalize_received": runtime_status.get(
+                "client_finalize_received"
             ),
             "runtime_storage_checked": runtime_status.get("storage_checked"),
             "runtime_storage_ok": runtime_status.get("storage_ok"),
@@ -1627,6 +1645,8 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"{int(status.get('client_hello_received') is True)} "
                     f"status_msgs={fmt_int(status.get('recorder_status_messages_sent'))}/"
                     f"{fmt_int(status.get('recorder_status_send_failures'))} "
+                    f"client_control={fmt_int(status.get('client_control_messages_received'))}/"
+                    f"{int(status.get('client_finalize_received') is True)} "
                     f"storage={storage}"
                 )
     else:

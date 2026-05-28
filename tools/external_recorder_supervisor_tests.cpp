@@ -480,7 +480,11 @@ void test_process_poll_reads_status_sidecar()
             << "    \"recorder_hello_sent\": true,\n"
             << "    \"client_hello_received\": true,\n"
             << "    \"recorder_status_messages_sent\": 3,\n"
-            << "    \"recorder_status_send_failures\": 0\n"
+            << "    \"recorder_status_send_failures\": 0,\n"
+            << "    \"client_control_messages_received\": 1,\n"
+            << "    \"client_finalize_received\": true,\n"
+            << "    \"last_client_control_command\": \"finalize\",\n"
+            << "    \"last_client_control_reason\": \"worker_drained\"\n"
             << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
@@ -555,6 +559,12 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar recorder status message count should parse");
     require(runtime.processes[0].recorder_status.recorder_status_send_failures == 0,
             "status sidecar recorder status failure count should parse");
+    require(runtime.processes[0].recorder_status.client_control_messages_received == 1,
+            "status sidecar client control count should parse");
+    require(runtime.processes[0].recorder_status.client_finalize_received,
+            "status sidecar client finalize flag should parse");
+    require(runtime.processes[0].recorder_status.last_client_control_command == "finalize",
+            "status sidecar last client control command should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),
@@ -567,6 +577,8 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed encoded count");
     require(summary["processes"][0]["recorder_status"]["recorder_status_messages_sent"] == 3,
             "runtime summary should include parsed recorder status message count");
+    require(summary["processes"][0]["recorder_status"]["client_finalize_received"].get<bool>(),
+            "runtime summary should include parsed client finalize flag");
     require(summary["processes"][0]["recorder_status"]["rolling_enabled"].get<bool>(),
             "runtime summary should include parsed rolling enabled");
     require(summary["processes"][0]["recorder_status"]["rolling_current_clip_index"] == 1,

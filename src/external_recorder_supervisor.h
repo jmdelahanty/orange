@@ -143,6 +143,10 @@ struct RecorderStatusSnapshot {
     bool client_hello_received = false;
     uint64_t recorder_status_messages_sent = 0;
     uint64_t recorder_status_send_failures = 0;
+    uint64_t client_control_messages_received = 0;
+    bool client_finalize_received = false;
+    std::string last_client_control_command;
+    std::string last_client_control_reason;
     std::string error;
 };
 

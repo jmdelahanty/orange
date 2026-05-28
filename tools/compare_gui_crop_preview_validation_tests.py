@@ -31,6 +31,8 @@ def add_external_protocol(status: dict) -> dict:
             "ipc_protocol_version": 1,
             "recorder_hello_sent": True,
             "client_hello_received": True,
+            "client_control_messages_received": 1,
+            "client_finalize_received": True,
         }
     )
     return status

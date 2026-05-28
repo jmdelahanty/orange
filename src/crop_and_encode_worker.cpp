@@ -114,6 +114,7 @@ public:
 
     void Close()
     {
+        send_client_finalize_control("crop_recording_drained");
         close_socket();
     }
 
@@ -425,7 +426,27 @@ private:
                         std::string(std::strerror(errno)));
             return false;
         }
+        client_hello_sent_ = true;
         return true;
+    }
+
+    void send_client_finalize_control(const char* reason)
+    {
+        if (socket_fd_ < 0 || !client_hello_sent_ || client_finalize_sent_) {
+            return;
+        }
+        if (!send_all(orange::external_recorder::ipc::build_client_control_line(
+                camera_serial_,
+                session_id_,
+                stream_id_,
+                "orange_crop",
+                orange::external_recorder::ipc::kClientControlFinalize,
+                reason ? reason : "drained"))) {
+            log_limited("send crop client finalize control failed: " +
+                        std::string(std::strerror(errno)));
+            return;
+        }
+        client_finalize_sent_ = true;
     }
 
     bool handle_recorder_status_line(const std::string& line, bool* malformed)
@@ -458,6 +479,8 @@ private:
             socket_fd_ = -1;
         }
         receive_buffer_.clear();
+        client_hello_sent_ = false;
+        client_finalize_sent_ = false;
     }
 
     void log_limited(const std::string& message)
@@ -478,6 +501,8 @@ private:
     std::string stream_id_;
     std::string socket_path_;
     int socket_fd_ = -1;
+    bool client_hello_sent_ = false;
+    bool client_finalize_sent_ = false;
     std::string receive_buffer_;
     std::unordered_map<unsigned char*, std::string> handle_cache_;
     uint64_t failures_logged_ = 0;

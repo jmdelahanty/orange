@@ -2057,6 +2057,10 @@ def check_ipc_protocol_payload(
         "recorder_status_send_failures": integer(
             protocol.get("recorder_status_send_failures")
         ),
+        "client_control_messages_received": integer(
+            protocol.get("client_control_messages_received")
+        ),
+        "client_finalize_received": protocol.get("client_finalize_received"),
     }
     reporter.check(
         protocol.get("name") == "orange.external_recorder.ipc",
@@ -2084,6 +2088,19 @@ def check_ipc_protocol_payload(
             send_failures == 0,
             f"{prefix} recorder status protocol sends succeeded",
             f"{prefix} recorder_status_send_failures={send_failures}",
+        )
+    control_count = integer(protocol.get("client_control_messages_received"))
+    if control_count is not None:
+        reporter.check(
+            control_count > 0,
+            f"{prefix} client control messages received",
+            f"{prefix} client_control_messages_received={control_count}",
+        )
+    if "client_finalize_received" in protocol:
+        reporter.check(
+            protocol.get("client_finalize_received") is True,
+            f"{prefix} client finalize control received",
+            f"{prefix} client_finalize_received={protocol.get('client_finalize_received')!r}",
         )
     return summary
 
@@ -2413,6 +2430,27 @@ def check_external_recorder_status_contract(
                     (
                         f"{prefix} runtime recorder_status_send_failures="
                         f"{runtime_send_failures}"
+                    ),
+                )
+            runtime_control_count = integer(
+                runtime_status.get("client_control_messages_received")
+            )
+            if runtime_control_count is not None:
+                reporter.check(
+                    runtime_control_count > 0,
+                    f"{prefix} runtime client control messages received",
+                    (
+                        f"{prefix} runtime client_control_messages_received="
+                        f"{runtime_control_count}"
+                    ),
+                )
+            if "client_finalize_received" in runtime_status:
+                reporter.check(
+                    runtime_status.get("client_finalize_received") is True,
+                    f"{prefix} runtime client finalize control received",
+                    (
+                        f"{prefix} runtime client_finalize_received="
+                        f"{runtime_status.get('client_finalize_received')!r}"
                     ),
                 )
 

@@ -492,6 +492,17 @@ def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
             send_failures == 0,
             f"{label} recorder_status_send_failures={send_failures}",
         )
+    control_count = optional_int(
+        protocol.get("client_control_messages_received"),
+        f"{label} ipc_protocol.client_control_messages_received",
+    )
+    if control_count is not None:
+        require(control_count > 0, f"{label} client_control_messages_received={control_count}")
+    if "client_finalize_received" in protocol:
+        require(
+            protocol.get("client_finalize_received") is True,
+            f"{label} client_finalize_received is not true",
+        )
 
 
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
@@ -802,6 +813,18 @@ def verify_status_sidecar(
                     runtime_send_failures == 0,
                     f"runtime recorder_status_send_failures={runtime_send_failures} for {serial}",
                 )
+            runtime_control_count = optional_int(
+                candidate.get("client_control_messages_received"),
+                f"runtime client_control_messages_received for {serial}",
+            )
+            if runtime_control_count is not None:
+                require(
+                    runtime_control_count > 0,
+                    f"runtime client_control_messages_received={runtime_control_count} for {serial}",
+                )
+            if "client_finalize_received" in candidate:
+                require(candidate.get("client_finalize_received") is True,
+                        f"runtime client_finalize_received is not true for {serial}")
         runtime_status = candidate
 
     return {

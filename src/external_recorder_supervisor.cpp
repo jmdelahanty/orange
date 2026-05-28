@@ -245,6 +245,14 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_u64(protocol, "recorder_status_messages_sent");
             snapshot.recorder_status_send_failures =
                 optional_u64(protocol, "recorder_status_send_failures");
+            snapshot.client_control_messages_received =
+                optional_u64(protocol, "client_control_messages_received");
+            snapshot.client_finalize_received =
+                optional_bool(protocol, "client_finalize_received");
+            snapshot.last_client_control_command =
+                optional_string(protocol, "last_client_control_command");
+            snapshot.last_client_control_reason =
+                optional_string(protocol, "last_client_control_reason");
         }
         if (parsed.contains("rolling") && parsed["rolling"].is_object()) {
             const nlohmann::json& rolling = parsed["rolling"];
@@ -1498,6 +1506,13 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                  recorder_status.recorder_status_messages_sent},
                 {"recorder_status_send_failures",
                  recorder_status.recorder_status_send_failures},
+                {"client_control_messages_received",
+                 recorder_status.client_control_messages_received},
+                {"client_finalize_received", recorder_status.client_finalize_received},
+                {"last_client_control_command",
+                 recorder_status.last_client_control_command},
+                {"last_client_control_reason",
+                 recorder_status.last_client_control_reason},
                 {"error", recorder_status.error},
             }},
         });
