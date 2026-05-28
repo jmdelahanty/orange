@@ -617,6 +617,8 @@ def verify_status_sidecar(
                 f"status {field} does not match summary for {serial}",
             )
 
+    status_rolling_summary = verify_status_rolling_progress(serial, status, summary)
+
     runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
     runtime_present = runtime_path.exists()
     runtime_status: dict[str, Any] | None = None
@@ -645,12 +647,15 @@ def verify_status_sidecar(
                     as_int(status.get(field), f"status {field}"),
                     f"runtime {field} does not match status sidecar for {serial}",
                 )
+        if status_rolling_summary:
+            compare_runtime_rolling_status(serial, candidate, status_rolling_summary)
         runtime_status = candidate
 
     return {
         "status_path": str(status_path),
         "status": status.get("status"),
         "heartbeat_sequence": heartbeat_sequence,
+        **status_rolling_summary,
         "runtime_path": str(runtime_path) if runtime_present else "",
         "runtime_status": runtime_status.get("status") if runtime_status is not None else None,
         "runtime_heartbeat_sequence": (
@@ -658,6 +663,126 @@ def verify_status_sidecar(
             if runtime_status is not None else None
         ),
     }
+
+
+def verify_status_rolling_progress(
+    serial: str,
+    status: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    rolling = summary.get("rolling_output")
+    rolling = rolling if isinstance(rolling, dict) else {}
+    if rolling.get("enabled") is not True:
+        return {}
+
+    status_rolling = status.get("rolling")
+    require(isinstance(status_rolling, dict), f"status missing rolling progress for {serial}")
+    require(status_rolling.get("enabled") is True, f"status rolling progress disabled for {serial}")
+    require(
+        status_rolling.get("implementation") == "external_recorder_gop_boundary_writer_rotation",
+        f"unexpected status rolling implementation for {serial}: {status_rolling.get('implementation')!r}",
+    )
+    for field in (
+        "record_for_seconds",
+        "clip_seconds",
+        "clip_span_frames",
+        "target_frame_count",
+    ):
+        require(
+            as_int(status_rolling.get(field), f"status rolling {field}") ==
+            as_int(rolling.get(field), f"rolling_output {field}"),
+            f"status rolling {field} does not match summary for {serial}",
+        )
+
+    clips = rolling.get("clips")
+    require(isinstance(clips, list) and bool(clips), f"rolling_output has no clips for {serial}")
+    require(
+        as_int(status_rolling.get("completed_clip_count"), "status rolling completed_clip_count") ==
+        len(clips),
+        f"status rolling completed_clip_count does not match summary for {serial}",
+    )
+    last_clip = clips[-1]
+    require(isinstance(last_clip, dict), f"rolling_output final clip is invalid for {serial}")
+    expected_status = "failed" if last_clip.get("failed") is True else "completed"
+    checks = (
+        (
+            "last_completed_clip_index",
+            "clip_index",
+            "status rolling last_completed_clip_index",
+        ),
+        (
+            "last_completed_clip_last_recording_frame_id",
+            "last_recording_frame_id",
+            "status rolling last_completed_clip_last_recording_frame_id",
+        ),
+        (
+            "last_completed_clip_frame_count",
+            "frame_count",
+            "status rolling last_completed_clip_frame_count",
+        ),
+    )
+    for status_field, summary_field, label in checks:
+        require(
+            as_int(status_rolling.get(status_field), label) ==
+            as_int(last_clip.get(summary_field), f"rolling_output final {summary_field}"),
+            f"status rolling {status_field} does not match summary for {serial}",
+        )
+    require(
+        status_rolling.get("last_rollover_status") == expected_status,
+        f"status rolling last_rollover_status does not match summary for {serial}",
+    )
+
+    return {
+        "rolling_current_clip_index": as_int(
+            status_rolling.get("current_clip_index"),
+            "status rolling current_clip_index",
+        ),
+        "rolling_next_rollover_at_recording_frame_id": as_int(
+            status_rolling.get("next_rollover_at_recording_frame_id"),
+            "status rolling next_rollover_at_recording_frame_id",
+        ),
+        "rolling_frames_until_next_rollover": as_int(
+            status_rolling.get("frames_until_next_rollover"),
+            "status rolling frames_until_next_rollover",
+        ),
+        "rolling_completed_clip_count": as_int(
+            status_rolling.get("completed_clip_count"),
+            "status rolling completed_clip_count",
+        ),
+        "rolling_last_completed_clip_index": as_int(
+            status_rolling.get("last_completed_clip_index"),
+            "status rolling last_completed_clip_index",
+        ),
+        "rolling_last_rollover_status": status_rolling.get("last_rollover_status"),
+    }
+
+
+def compare_runtime_rolling_status(
+    serial: str,
+    runtime_status: dict[str, Any],
+    status_rolling_summary: dict[str, Any],
+) -> None:
+    require(
+        runtime_status.get("rolling_enabled") is True,
+        f"runtime rolling_enabled does not match status sidecar for {serial}",
+    )
+    for field in (
+        "rolling_current_clip_index",
+        "rolling_next_rollover_at_recording_frame_id",
+        "rolling_frames_until_next_rollover",
+        "rolling_completed_clip_count",
+        "rolling_last_completed_clip_index",
+    ):
+        require(
+            as_int(runtime_status.get(field), f"runtime {field}") ==
+            as_int(status_rolling_summary.get(field), f"status {field}"),
+            f"runtime {field} does not match status sidecar for {serial}",
+        )
+    require(
+        runtime_status.get("rolling_last_rollover_status") ==
+        status_rolling_summary.get("rolling_last_rollover_status"),
+        f"runtime rolling_last_rollover_status does not match status sidecar for {serial}",
+    )
 
 
 def verify_summary(

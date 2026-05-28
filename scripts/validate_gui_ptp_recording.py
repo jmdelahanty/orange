@@ -1296,6 +1296,151 @@ def runtime_processes_by_status_path(runtime: dict[str, Any]) -> dict[str, dict[
     return by_path
 
 
+def check_external_recorder_rolling_status(
+    reporter: Reporter,
+    prefix: str,
+    status: dict[str, Any],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    rolling = summary.get("rolling_output")
+    rolling = rolling if isinstance(rolling, dict) else {}
+    if rolling.get("enabled") is not True:
+        return {}
+
+    status_rolling = status.get("rolling")
+    status_rolling = status_rolling if isinstance(status_rolling, dict) else {}
+    reporter.check(
+        bool(status_rolling),
+        f"{prefix} rolling status sidecar present",
+        f"{prefix} rolling status sidecar missing",
+    )
+    if not status_rolling:
+        return {}
+
+    reporter.check(
+        status_rolling.get("enabled") is True,
+        f"{prefix} rolling status enabled=true",
+        f"{prefix} rolling status enabled={status_rolling.get('enabled')!r}",
+    )
+    reporter.check(
+        status_rolling.get("implementation") ==
+        "external_recorder_gop_boundary_writer_rotation",
+        f"{prefix} rolling status implementation valid",
+        f"{prefix} rolling status implementation={status_rolling.get('implementation')!r}",
+    )
+    for field in (
+        "record_for_seconds",
+        "clip_seconds",
+        "clip_span_frames",
+        "target_frame_count",
+    ):
+        reporter.check(
+            integer(status_rolling.get(field)) == integer(rolling.get(field)),
+            f"{prefix} rolling status {field} matches summary",
+            (
+                f"{prefix} rolling status {field}={status_rolling.get(field)!r}, "
+                f"summary={rolling.get(field)!r}"
+            ),
+        )
+
+    clips = rolling.get("clips")
+    clips = clips if isinstance(clips, list) else []
+    reporter.check(
+        bool(clips),
+        f"{prefix} rolling summary clips present",
+        f"{prefix} rolling summary clips missing",
+    )
+    if clips:
+        last_clip = clips[-1] if isinstance(clips[-1], dict) else {}
+        expected_status = "failed" if last_clip.get("failed") is True else "completed"
+        reporter.check(
+            integer(status_rolling.get("completed_clip_count")) == len(clips),
+            f"{prefix} rolling completed clip count matches summary",
+            (
+                f"{prefix} rolling completed_clip_count="
+                f"{status_rolling.get('completed_clip_count')!r}, summary={len(clips)}"
+            ),
+        )
+        checks = (
+            ("last_completed_clip_index", "clip_index"),
+            ("last_completed_clip_last_recording_frame_id", "last_recording_frame_id"),
+            ("last_completed_clip_frame_count", "frame_count"),
+        )
+        for status_field, summary_field in checks:
+            reporter.check(
+                integer(status_rolling.get(status_field)) ==
+                integer(last_clip.get(summary_field)),
+                f"{prefix} rolling {status_field} matches summary",
+                (
+                    f"{prefix} rolling {status_field}="
+                    f"{status_rolling.get(status_field)!r}, "
+                    f"summary {summary_field}={last_clip.get(summary_field)!r}"
+                ),
+            )
+        reporter.check(
+            status_rolling.get("last_rollover_status") == expected_status,
+            f"{prefix} rolling last rollover status matches summary",
+            (
+                f"{prefix} rolling last_rollover_status="
+                f"{status_rolling.get('last_rollover_status')!r}, "
+                f"expected={expected_status!r}"
+            ),
+        )
+
+    return {
+        "rolling_current_clip_index": integer(status_rolling.get("current_clip_index")),
+        "rolling_next_rollover_at_recording_frame_id": integer(
+            status_rolling.get("next_rollover_at_recording_frame_id")
+        ),
+        "rolling_frames_until_next_rollover": integer(
+            status_rolling.get("frames_until_next_rollover")
+        ),
+        "rolling_completed_clip_count": integer(status_rolling.get("completed_clip_count")),
+        "rolling_last_completed_clip_index": integer(
+            status_rolling.get("last_completed_clip_index")
+        ),
+        "rolling_last_rollover_status": status_rolling.get("last_rollover_status"),
+    }
+
+
+def check_runtime_rolling_status(
+    reporter: Reporter,
+    prefix: str,
+    runtime_status: dict[str, Any],
+    rolling_status_summary: dict[str, Any],
+) -> None:
+    reporter.check(
+        runtime_status.get("rolling_enabled") is True,
+        f"{prefix} runtime rolling enabled=true",
+        f"{prefix} runtime rolling_enabled={runtime_status.get('rolling_enabled')!r}",
+    )
+    for field in (
+        "rolling_current_clip_index",
+        "rolling_next_rollover_at_recording_frame_id",
+        "rolling_frames_until_next_rollover",
+        "rolling_completed_clip_count",
+        "rolling_last_completed_clip_index",
+    ):
+        reporter.check(
+            integer(runtime_status.get(field)) == rolling_status_summary.get(field),
+            f"{prefix} runtime {field} matches sidecar",
+            (
+                f"{prefix} runtime {field}={runtime_status.get(field)!r}, "
+                f"sidecar={rolling_status_summary.get(field)!r}"
+            ),
+        )
+    reporter.check(
+        runtime_status.get("rolling_last_rollover_status") ==
+        rolling_status_summary.get("rolling_last_rollover_status"),
+        f"{prefix} runtime rolling_last_rollover_status matches sidecar",
+        (
+            f"{prefix} runtime rolling_last_rollover_status="
+            f"{runtime_status.get('rolling_last_rollover_status')!r}, "
+            f"sidecar={rolling_status_summary.get('rolling_last_rollover_status')!r}"
+        ),
+    )
+
+
 def check_external_recorder_status_contract(
     reporter: Reporter,
     recording_folder: Path,
@@ -1412,6 +1557,13 @@ def check_external_recorder_status_contract(
                 f"{prefix} status acks_sent={acks_sent}, summary acks_sent={summary_acks_sent}",
             )
 
+        rolling_status_summary = check_external_recorder_rolling_status(
+            reporter,
+            prefix,
+            status,
+            summary,
+        )
+
         runtime_process = None
         if status_path is not None:
             runtime_process = runtime_by_status_path.get(str(status_path))
@@ -1451,6 +1603,13 @@ def check_external_recorder_status_contract(
                 f"sidecar heartbeat={heartbeat_sequence!r}"
             ),
         )
+        if rolling_status_summary:
+            check_runtime_rolling_status(
+                reporter,
+                prefix,
+                runtime_status,
+                rolling_status_summary,
+            )
 
         status_summary[serial] = {
             "status_json": str(status_path) if status_path is not None else "",
@@ -1463,6 +1622,7 @@ def check_external_recorder_status_contract(
             "runtime_present": runtime_process is not None,
             "runtime_valid": runtime_status.get("valid") is True,
         }
+        status_summary[serial].update(rolling_status_summary)
     return status_summary
 
 

@@ -33,6 +33,7 @@ def write_summary(
     queue_high_water: int | None = 12,
     enqueue_age_p95_ms: float = 2.5,
     detach_depths: list[int] | None = None,
+    rolling: bool = False,
 ) -> tuple[Path, Path]:
     mp4_path = root / f"Cam{serial}_external.mp4"
     mp4_path.write_bytes(b"not-a-real-mp4-but-ffprobe-is-stubbed")
@@ -80,6 +81,45 @@ def write_summary(
             "mp4": str(mp4_path),
         },
     }
+    if rolling:
+        summary["rolling_output"] = {
+            "enabled": True,
+            "implementation": "external_recorder_gop_boundary_writer_rotation",
+            "record_for_seconds": 6,
+            "clip_seconds": 2,
+            "clip_span_frames": 2,
+            "clip_span_gops": 2,
+            "target_frame_count": 3,
+            "terminal_tail_coalesce_frames": 1,
+            "terminal_tail_coalesced_frames": 0,
+            "clip_count": 2,
+            "clips": [
+                {
+                    "clip_index": 0,
+                    "clip_id": "clip_000000",
+                    "first_recording_frame_id": 1,
+                    "last_recording_frame_id": 2,
+                    "frame_count": 2,
+                    "packets_written": 2,
+                    "failed": False,
+                    "mp4": str(root / "clips" / "clip_000000" / f"Cam{serial}_external.mp4"),
+                    "metadata": str(root / "clips" / "clip_000000" / f"Cam{serial}_external_meta.csv"),
+                    "keyframes": str(root / "clips" / "clip_000000" / f"Cam{serial}_external_keyframe.json"),
+                },
+                {
+                    "clip_index": 1,
+                    "clip_id": "clip_000001",
+                    "first_recording_frame_id": 3,
+                    "last_recording_frame_id": 3,
+                    "frame_count": 1,
+                    "packets_written": 1,
+                    "failed": False,
+                    "mp4": str(root / "clips" / "clip_000001" / f"Cam{serial}_external.mp4"),
+                    "metadata": str(root / "clips" / "clip_000001" / f"Cam{serial}_external_meta.csv"),
+                    "keyframes": str(root / "clips" / "clip_000001" / f"Cam{serial}_external_keyframe.json"),
+                },
+            ],
+        }
     if queue_high_water is not None:
         summary["encode_queue_high_water"] = queue_high_water
     summary_path = root / f"Cam{serial}_external_summary.json"
@@ -97,6 +137,8 @@ def write_status(
     acks_sent: int = 3,
     frames_encoded: int = 3,
     worker_failed: bool = False,
+    rolling: bool = False,
+    rolling_last_completed_clip_index: int = 1,
 ) -> Path:
     status_path = root / f"Cam{serial}_external_status.json"
     payload = {
@@ -117,11 +159,57 @@ def write_status(
         "frames_encoded": frames_encoded,
         "worker_failed": worker_failed,
     }
+    if rolling:
+        payload["rolling"] = {
+            "enabled": True,
+            "implementation": "external_recorder_gop_boundary_writer_rotation",
+            "record_for_seconds": 6,
+            "clip_seconds": 2,
+            "clip_span_frames": 2,
+            "target_frame_count": 3,
+            "current_clip_index": 1,
+            "next_rollover_at_recording_frame_id": 5,
+            "frames_until_next_rollover": 1,
+            "completed_clip_count": 2,
+            "last_completed_clip_index": rolling_last_completed_clip_index,
+            "last_completed_clip_last_recording_frame_id": 3,
+            "last_completed_clip_frame_count": 1,
+            "last_rollover_status": "completed",
+        }
     status_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return status_path
 
 
-def write_runtime(root: Path, serial: str, status_path: Path, *, heartbeat_sequence: int = 7) -> Path:
+def write_runtime(
+    root: Path,
+    serial: str,
+    status_path: Path,
+    *,
+    heartbeat_sequence: int = 7,
+    rolling: bool = False,
+    rolling_current_clip_index: int = 1,
+) -> Path:
+    recorder_status = {
+        "present": True,
+        "valid": True,
+        "status": "completed",
+        "heartbeat_sequence": heartbeat_sequence,
+        "frames_received": 3,
+        "acks_sent": 3,
+        "frames_encoded": 3,
+    }
+    if rolling:
+        recorder_status.update(
+            {
+                "rolling_enabled": True,
+                "rolling_current_clip_index": rolling_current_clip_index,
+                "rolling_next_rollover_at_recording_frame_id": 5,
+                "rolling_frames_until_next_rollover": 1,
+                "rolling_completed_clip_count": 2,
+                "rolling_last_completed_clip_index": 1,
+                "rolling_last_rollover_status": "completed",
+            }
+        )
     runtime_path = root / "external_recorder_supervisor_runtime.json"
     payload = {
         "schema_id": "orange.external_recorder.supervisor_runtime",
@@ -131,15 +219,7 @@ def write_runtime(root: Path, serial: str, status_path: Path, *, heartbeat_seque
                 "stream_id": serial,
                 "camera_serial": serial,
                 "status_json_path": str(status_path),
-                "recorder_status": {
-                    "present": True,
-                    "valid": True,
-                    "status": "completed",
-                    "heartbeat_sequence": heartbeat_sequence,
-                    "frames_received": 3,
-                    "acks_sent": 3,
-                    "frames_encoded": 3,
-                },
+                "recorder_status": recorder_status,
             }
         ],
     }
@@ -250,6 +330,44 @@ def test_status_sidecar_passes_and_summarizes() -> None:
         require(recorder_status["heartbeat_sequence"] == 8, "heartbeat should be summarized")
 
 
+def test_status_sidecar_checks_rolling_progress() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
+        write_status(root, "2010096", heartbeat_sequence=8, rolling=True)
+        result = verify_one(root, summary_path, mp4_path, require_status=True)
+        recorder_status = result["recorder_status"]
+        require(
+            recorder_status["rolling_completed_clip_count"] == 2,
+            "rolling completed clip count should be summarized",
+        )
+        require(
+            recorder_status["rolling_last_completed_clip_index"] == 1,
+            "rolling last completed clip should be summarized",
+        )
+        require(
+            recorder_status["rolling_last_rollover_status"] == "completed",
+            "rolling last rollover status should be summarized",
+        )
+
+        write_status(
+            root,
+            "2010096",
+            heartbeat_sequence=9,
+            rolling=True,
+            rolling_last_completed_clip_index=0,
+        )
+        try:
+            verify_one(root, summary_path, mp4_path, require_status=True)
+        except verifier.VerificationError as exc:
+            require(
+                "last_completed_clip_index" in str(exc),
+                f"unexpected rolling status mismatch failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected rolling status mismatch to fail")
+
+
 def test_status_sidecar_failures() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -307,14 +425,47 @@ def test_runtime_status_is_checked_when_required() -> None:
             raise AssertionError("expected runtime heartbeat mismatch to fail")
 
 
+def test_runtime_status_checks_rolling_progress() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
+        status_path = write_status(root, "2010096", heartbeat_sequence=9, rolling=True)
+        write_runtime(root, "2010096", status_path, heartbeat_sequence=9, rolling=True)
+        result = verify_one(root, summary_path, mp4_path, require_runtime_status=True)
+        require(
+            result["recorder_status"]["runtime_heartbeat_sequence"] == 9,
+            "runtime heartbeat should still be summarized",
+        )
+
+        write_runtime(
+            root,
+            "2010096",
+            status_path,
+            heartbeat_sequence=9,
+            rolling=True,
+            rolling_current_clip_index=0,
+        )
+        try:
+            verify_one(root, summary_path, mp4_path, require_runtime_status=True)
+        except verifier.VerificationError as exc:
+            require(
+                "runtime rolling_current_clip_index" in str(exc),
+                f"unexpected runtime rolling mismatch failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected runtime rolling mismatch to fail")
+
+
 def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
         test_queue_threshold_failures,
         test_queue_high_water_falls_back_to_detach_csv,
         test_status_sidecar_passes_and_summarizes,
+        test_status_sidecar_checks_rolling_progress,
         test_status_sidecar_failures,
         test_runtime_status_is_checked_when_required,
+        test_runtime_status_checks_rolling_progress,
     ]
     for test in tests:
         test()

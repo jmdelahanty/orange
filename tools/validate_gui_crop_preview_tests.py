@@ -839,6 +839,9 @@ def write_external_recorder_status_fixture(
     worker_failed: bool = False,
     error: str = "",
     runtime_heartbeat_sequence: int | None = None,
+    rolling: bool = False,
+    rolling_last_completed_clip_index: int = 1,
+    runtime_rolling_current_clip_index: int = 1,
 ) -> tuple[Path, Path]:
     artifact_root = recording_folder / (
         "external_crop_recorder" if crop else "external_recorder"
@@ -855,17 +858,38 @@ def write_external_recorder_status_fixture(
     )
     runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
 
-    summary_path.write_text(
-        json.dumps(
-            {
-                "frames_received": rows,
-                "frames_encoded": rows,
-                "acks_sent": rows,
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
+    summary_payload = {
+        "frames_received": rows,
+        "frames_encoded": rows,
+        "acks_sent": rows,
+    }
+    if rolling:
+        summary_payload["rolling_output"] = {
+            "enabled": True,
+            "implementation": "external_recorder_gop_boundary_writer_rotation",
+            "record_for_seconds": 6,
+            "clip_seconds": 2,
+            "clip_span_frames": 2,
+            "target_frame_count": rows,
+            "clip_count": 2,
+            "clips": [
+                {
+                    "clip_index": 0,
+                    "first_recording_frame_id": 1,
+                    "last_recording_frame_id": 2,
+                    "frame_count": 2,
+                    "failed": False,
+                },
+                {
+                    "clip_index": 1,
+                    "first_recording_frame_id": 3,
+                    "last_recording_frame_id": rows,
+                    "frame_count": rows - 2,
+                    "failed": False,
+                },
+            ],
+        }
+    summary_path.write_text(json.dumps(summary_payload) + "\n", encoding="utf-8")
     status_payload = {
         "schema_id": "orange.external_recorder.status",
         "schema_version": 1,
@@ -878,7 +902,46 @@ def write_external_recorder_status_fixture(
     }
     if error:
         status_payload["error"] = error
+    if rolling:
+        status_payload["rolling"] = {
+            "enabled": True,
+            "implementation": "external_recorder_gop_boundary_writer_rotation",
+            "record_for_seconds": 6,
+            "clip_seconds": 2,
+            "clip_span_frames": 2,
+            "target_frame_count": rows,
+            "current_clip_index": 1,
+            "next_rollover_at_recording_frame_id": rows + 2,
+            "frames_until_next_rollover": 1,
+            "completed_clip_count": 2,
+            "last_completed_clip_index": rolling_last_completed_clip_index,
+            "last_completed_clip_last_recording_frame_id": rows,
+            "last_completed_clip_frame_count": rows - 2,
+            "last_rollover_status": "completed",
+        }
     status_path.write_text(json.dumps(status_payload) + "\n", encoding="utf-8")
+    runtime_recorder_status = {
+        "present": True,
+        "valid": True,
+        "status": status,
+        "heartbeat_sequence": (
+            runtime_heartbeat_sequence
+            if runtime_heartbeat_sequence is not None
+            else heartbeat_sequence
+        ),
+    }
+    if rolling:
+        runtime_recorder_status.update(
+            {
+                "rolling_enabled": True,
+                "rolling_current_clip_index": runtime_rolling_current_clip_index,
+                "rolling_next_rollover_at_recording_frame_id": rows + 2,
+                "rolling_frames_until_next_rollover": 1,
+                "rolling_completed_clip_count": 2,
+                "rolling_last_completed_clip_index": rolling_last_completed_clip_index,
+                "rolling_last_rollover_status": "completed",
+            }
+        )
     runtime_path.write_text(
         json.dumps(
             {
@@ -887,16 +950,7 @@ def write_external_recorder_status_fixture(
                 "processes": [
                     {
                         "status_json_path": str(status_path),
-                        "recorder_status": {
-                            "present": True,
-                            "valid": True,
-                            "status": status,
-                            "heartbeat_sequence": (
-                                runtime_heartbeat_sequence
-                                if runtime_heartbeat_sequence is not None
-                                else heartbeat_sequence
-                            ),
-                        },
+                        "recorder_status": runtime_recorder_status,
                     }
                 ],
             }
@@ -1192,6 +1246,68 @@ def test_external_recorder_status_validation_checks_full_and_crop_contracts() ->
         require(summary["full"]["2010095"]["heartbeat_sequence"] == 4, "full heartbeat should parse")
         require(summary["crop"]["2010095"]["heartbeat_sequence"] == 5, "crop heartbeat should parse")
         require(summary["crop"]["2010095"]["frames_encoded"] == 3, "crop encoded count should parse")
+
+
+def test_external_recorder_status_validation_checks_rolling_status() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            rolling=True,
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        summary = validator.check_external_recorder_status(reporter, root, True)
+
+        require(not reporter.failures, f"unexpected rolling failures: {reporter.failures}")
+        full = summary["full"]["2010095"]
+        require(
+            full["rolling_completed_clip_count"] == 2,
+            "rolling completed clip count should parse",
+        )
+        require(
+            full["rolling_last_completed_clip_index"] == 1,
+            "rolling last completed clip should parse",
+        )
+        require(
+            full["rolling_last_rollover_status"] == "completed",
+            "rolling last rollover status should parse",
+        )
+
+
+def test_external_recorder_status_validation_fails_on_rolling_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            rolling=True,
+            rolling_last_completed_clip_index=0,
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+        require(
+            any("last_completed_clip_index" in failure for failure in reporter.failures),
+            f"rolling sidecar mismatch should fail: {reporter.failures}",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            rolling=True,
+            runtime_rolling_current_clip_index=0,
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+        require(
+            any("runtime rolling_current_clip_index" in failure for failure in reporter.failures),
+            f"runtime rolling mismatch should fail: {reporter.failures}",
+        )
 
 
 def test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime() -> None:
@@ -2488,6 +2604,8 @@ def main() -> int:
         test_preview_sampling_fails_without_cadence_skips,
         test_preview_sampling_fails_when_preview_hidden,
         test_external_recorder_status_validation_checks_full_and_crop_contracts,
+        test_external_recorder_status_validation_checks_rolling_status,
+        test_external_recorder_status_validation_fails_on_rolling_mismatch,
         test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime,
         test_external_recorder_status_validation_requires_contract_flags,
         test_external_recorder_status_validation_derives_status_path_from_summary,
