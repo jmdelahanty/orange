@@ -82,6 +82,9 @@ with `ORANGE_GUI_CLIP_SECONDS` and either `ORANGE_GUI_RECORD_FOR_SECONDS` or
 autorun. If `ORANGE_GUI_AUTORUN=1`, `ORANGE_GUI_CLIP_SECONDS > 0`, and
 `ORANGE_GUI_RECORD_FOR_SECONDS` is unset, Orange uses
 `ORANGE_GUI_AUTORUN_RECORD_SECONDS` as `record_for_seconds`.
+After the run, validate the full-frame external recorder session and mirrored
+rolling manifest with
+`scripts/verify_external_recorder_session.py --analytics-root <recording_folder>`.
 
 ## Host PTP Stack Readiness
 

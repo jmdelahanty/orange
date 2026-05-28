@@ -464,6 +464,13 @@ Recorder summary schema:
 
 Verifier checks:
 
+`scripts/verify_external_recorder_session.py` accepts either an explicit
+external recorder artifact root or, for GUI/headless runs that wrote the
+contract/plan metadata, just `--analytics-root <recording_folder-or-run-root>`.
+When `artifact_root` is omitted, the verifier derives it from
+`external_recorder_contract.json`, `external_recorder_supervisor_plan.json`,
+`recording_session.json`, or the experiment spec.
+
 - analytics `runs.json` rows pass and report `recording_sink_mode =
   "external_ipc"`
 - external IPC failures and ACK timeouts are zero

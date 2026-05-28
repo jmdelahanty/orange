@@ -554,6 +554,9 @@ Or validate the newest real recording artifact with:
   scripts/validate_gui_ptp_recording.py --latest-complete
 For a compact artifact health, crop fanout, and GUI timing summary, use:
   scripts/summarize_gui_validation.py --latest-complete
+For full-frame GUI external IPC rolling runs, validate the external recorder
+session and mirrored rolling manifest with:
+  scripts/verify_external_recorder_session.py --analytics-root <recording_folder>
 
 For crop-recording plus crop-preview validation, use:
   scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} ${EXTERNAL_RECORDER_STATUS_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json

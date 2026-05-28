@@ -38,7 +38,17 @@ def parse_args() -> argparse.Namespace:
             "fixed.external_recorder_contract and analytics runs.json."
         )
     )
-    parser.add_argument("artifact_root", help="External recorder artifact root.")
+    parser.add_argument(
+        "artifact_root",
+        nargs="?",
+        help=(
+            "External recorder artifact root. May be omitted when "
+            "--analytics-root points at a folder containing "
+            "external_recorder_contract.json, external_recorder_supervisor_plan.json, "
+            "recording_session.json recording backend metadata, or an "
+            "experiment_spec.json with fixed.external_recorder_contract.artifact_root."
+        ),
+    )
     parser.add_argument(
         "--analytics-root",
         help="Analytics experiment root containing experiment_spec.json/runs.json or recording_session.json.",
@@ -192,6 +202,52 @@ def contract_from_spec(spec: dict[str, Any] | None) -> dict[str, Any] | None:
     if isinstance(recording_control, dict) and not isinstance(contract.get("recording_control"), dict):
         contract["recording_control"] = recording_control
     return contract
+
+
+def artifact_root_from_payload(payload: dict[str, Any], base: Path) -> Path | None:
+    value = payload.get("artifact_root")
+    if isinstance(value, str) and value:
+        return path_from(value, base)
+
+    backend = payload.get("recording_backend")
+    if isinstance(backend, dict):
+        value = backend.get("artifact_root")
+        if isinstance(value, str) and value:
+            return path_from(value, base)
+    return None
+
+
+def resolve_artifact_root(
+    args: argparse.Namespace,
+    analytics_root: Path | None,
+    contract: dict[str, Any] | None,
+) -> Path:
+    if args.artifact_root:
+        return Path(args.artifact_root).expanduser()
+
+    if analytics_root is not None:
+        for filename in (
+            "external_recorder_contract.json",
+            "external_recorder_supervisor_plan.json",
+            "recording_session.json",
+        ):
+            path = analytics_root / filename
+            if not path.exists():
+                continue
+            root = artifact_root_from_payload(read_json(path), analytics_root)
+            if root is not None:
+                return root.expanduser()
+
+    if contract is not None and analytics_root is not None:
+        root = artifact_root_from_payload(contract, analytics_root)
+        if root is not None:
+            return root.expanduser()
+    if contract is not None:
+        root = artifact_root_from_payload(contract, Path.cwd())
+        if root is not None:
+            return root.expanduser()
+
+    raise VerificationError("artifact_root is required unless it can be derived from --analytics-root")
 
 
 def synthesize_contract(artifact_root: Path, cameras: list[str] | None) -> dict[str, Any]:
@@ -1016,13 +1072,13 @@ def verify_analytics_recording_session_manifests(
 
 
 def verify(args: argparse.Namespace) -> None:
-    artifact_root = Path(args.artifact_root).expanduser()
-    require(artifact_root.exists(), f"artifact root does not exist: {artifact_root}")
     analytics_root = Path(args.analytics_root).expanduser() if args.analytics_root else None
     requested_cameras = args.camera
 
     spec = load_spec(args)
     contract = contract_from_spec(spec)
+    artifact_root = resolve_artifact_root(args, analytics_root, contract)
+    require(artifact_root.exists(), f"artifact root does not exist: {artifact_root}")
     if contract is None:
         contract = synthesize_contract(artifact_root, requested_cameras)
     require(contract.get("schema_id") in (None, CONTRACT_SCHEMA_ID), "unexpected external recorder contract schema_id")
