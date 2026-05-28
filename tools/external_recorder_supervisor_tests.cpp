@@ -393,6 +393,16 @@ void test_process_poll_reads_status_sidecar()
             << "  \"encode_queue_high_water\": 3,\n"
             << "  \"frames_encoded\": 8,\n"
             << "  \"frames_dropped\": 0,\n"
+            << "  \"rolling\": {\n"
+            << "    \"enabled\": true,\n"
+            << "    \"record_for_seconds\": 6,\n"
+            << "    \"clip_seconds\": 2,\n"
+            << "    \"clip_span_frames\": 200,\n"
+            << "    \"target_frame_count\": 600,\n"
+            << "    \"current_clip_index\": 1,\n"
+            << "    \"next_rollover_at_recording_frame_id\": 401,\n"
+            << "    \"frames_until_next_rollover\": 37\n"
+            << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
     }
@@ -421,6 +431,12 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar received count should parse");
     require(runtime.processes[0].recorder_status.frames_encoded == 8,
             "status sidecar encoded count should parse");
+    require(runtime.processes[0].recorder_status.rolling_enabled,
+            "status sidecar rolling enabled should parse");
+    require(runtime.processes[0].recorder_status.rolling_current_clip_index == 1,
+            "status sidecar rolling current clip should parse");
+    require(runtime.processes[0].recorder_status.rolling_frames_until_next_rollover == 37,
+            "status sidecar rolling frame countdown should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),
@@ -431,6 +447,12 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed heartbeat");
     require(summary["processes"][0]["recorder_status"]["frames_encoded"] == 8,
             "runtime summary should include parsed encoded count");
+    require(summary["processes"][0]["recorder_status"]["rolling_enabled"].get<bool>(),
+            "runtime summary should include parsed rolling enabled");
+    require(summary["processes"][0]["recorder_status"]["rolling_current_clip_index"] == 1,
+            "runtime summary should include parsed rolling clip index");
+    require(summary["processes"][0]["recorder_status"]["rolling_frames_until_next_rollover"] == 37,
+            "runtime summary should include parsed rolling countdown");
 
     std::filesystem::remove(status_path);
 }

@@ -235,6 +235,24 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
             optional_u64(parsed, "encode_queue_high_water");
         snapshot.frames_encoded = optional_u64(parsed, "frames_encoded");
         snapshot.frames_dropped = optional_u64(parsed, "frames_dropped");
+        if (parsed.contains("rolling") && parsed["rolling"].is_object()) {
+            const nlohmann::json& rolling = parsed["rolling"];
+            snapshot.rolling_enabled = optional_bool(rolling, "enabled");
+            snapshot.rolling_record_for_seconds =
+                optional_int(rolling, "record_for_seconds");
+            snapshot.rolling_clip_seconds =
+                optional_int(rolling, "clip_seconds");
+            snapshot.rolling_clip_span_frames =
+                optional_u64(rolling, "clip_span_frames");
+            snapshot.rolling_target_frame_count =
+                optional_u64(rolling, "target_frame_count");
+            snapshot.rolling_current_clip_index =
+                optional_int(rolling, "current_clip_index");
+            snapshot.rolling_next_rollover_at_recording_frame_id =
+                optional_u64(rolling, "next_rollover_at_recording_frame_id");
+            snapshot.rolling_frames_until_next_rollover =
+                optional_u64(rolling, "frames_until_next_rollover");
+        }
         snapshot.worker_failed = optional_bool(parsed, "worker_failed");
         snapshot.error = optional_string(parsed, "error");
         snapshot.valid =
@@ -1336,6 +1354,16 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                 {"encode_queue_high_water", recorder_status.encode_queue_high_water},
                 {"frames_encoded", recorder_status.frames_encoded},
                 {"frames_dropped", recorder_status.frames_dropped},
+                {"rolling_enabled", recorder_status.rolling_enabled},
+                {"rolling_record_for_seconds", recorder_status.rolling_record_for_seconds},
+                {"rolling_clip_seconds", recorder_status.rolling_clip_seconds},
+                {"rolling_clip_span_frames", recorder_status.rolling_clip_span_frames},
+                {"rolling_target_frame_count", recorder_status.rolling_target_frame_count},
+                {"rolling_current_clip_index", recorder_status.rolling_current_clip_index},
+                {"rolling_next_rollover_at_recording_frame_id",
+                 recorder_status.rolling_next_rollover_at_recording_frame_id},
+                {"rolling_frames_until_next_rollover",
+                 recorder_status.rolling_frames_until_next_rollover},
                 {"worker_failed", recorder_status.worker_failed},
                 {"error", recorder_status.error},
             }},

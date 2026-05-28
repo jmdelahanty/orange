@@ -2519,7 +2519,13 @@ struct GuiExternalRecorderStatusLine {
     int recorder_status_valid_count = 0;
     uint64_t frames_received = 0;
     uint64_t frames_encoded = 0;
+    int rolling_process_count = 0;
+    int rolling_current_clip_index = -1;
+    int rolling_clip_seconds = 0;
+    uint64_t rolling_frames_until_next_rollover = 0;
+    uint64_t rolling_next_rollover_at_recording_frame_id = 0;
     std::string recorder_status_detail;
+    std::string rolling_status_detail;
 };
 
 GuiExternalRecorderStatusLine gui_external_recorder_status_line(
@@ -2546,6 +2552,32 @@ GuiExternalRecorderStatusLine gui_external_recorder_status_line(
                 ++line.recorder_status_valid_count;
                 line.frames_received += recorder_status.frames_received;
                 line.frames_encoded += recorder_status.frames_encoded;
+                if (recorder_status.rolling_enabled) {
+                    ++line.rolling_process_count;
+                    if (line.rolling_status_detail.empty()) {
+                        line.rolling_current_clip_index =
+                            recorder_status.rolling_current_clip_index;
+                        line.rolling_clip_seconds =
+                            recorder_status.rolling_clip_seconds;
+                        line.rolling_frames_until_next_rollover =
+                            recorder_status.rolling_frames_until_next_rollover;
+                        line.rolling_next_rollover_at_recording_frame_id =
+                            recorder_status.rolling_next_rollover_at_recording_frame_id;
+                        const std::string camera =
+                            process.camera_serial.empty()
+                                ? process.stream_id
+                                : ("Cam" + process.camera_serial);
+                        std::ostringstream detail;
+                        detail << camera
+                               << " clip=" << recorder_status.rolling_current_clip_index
+                               << " clip_s=" << recorder_status.rolling_clip_seconds
+                               << " next_frame="
+                               << recorder_status.rolling_next_rollover_at_recording_frame_id
+                               << " frames_left="
+                               << recorder_status.rolling_frames_until_next_rollover;
+                        line.rolling_status_detail = detail.str();
+                    }
+                }
                 if (line.recorder_status_detail.empty()) {
                     const std::string camera =
                         process.camera_serial.empty()
@@ -2666,6 +2698,13 @@ void render_gui_external_recorder_status_line(
             line.recorder_status_detail.c_str(),
             static_cast<unsigned long long>(line.frames_received),
             static_cast<unsigned long long>(line.frames_encoded));
+    }
+    if (!line.rolling_status_detail.empty()) {
+        ImGui::TextDisabled(
+            "Rolling: %s (%d/%d streams)",
+            line.rolling_status_detail.c_str(),
+            line.rolling_process_count,
+            line.process_count);
     }
     if (!line.error.empty()) {
         ImGui::TextWrapped("%s", line.error.c_str());

@@ -584,6 +584,74 @@ uint64_t steady_clock_now_ns()
             std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
+struct RollingStatusSnapshot {
+    bool enabled = false;
+    uint32_t record_for_seconds = 0;
+    uint32_t clip_seconds = 0;
+    uint64_t clip_span_frames = 0;
+    uint64_t target_frame_count = 0;
+    int current_clip_index = 0;
+    uint64_t next_rollover_at_recording_frame_id = 0;
+    uint64_t frames_until_next_rollover = 0;
+};
+
+RollingStatusSnapshot rolling_status_from_progress(const Options& options,
+                                                   const uint64_t frames_received)
+{
+    RollingStatusSnapshot status;
+    status.enabled = options.clip_seconds > 0;
+    status.record_for_seconds = options.record_for_seconds;
+    status.clip_seconds = options.clip_seconds;
+    if (!status.enabled) {
+        return status;
+    }
+
+    const uint64_t fps = static_cast<uint64_t>(std::max<uint32_t>(1, options.fps));
+    const uint64_t gop = static_cast<uint64_t>(std::max<uint32_t>(1, options.gop));
+    const uint64_t requested_clip_frames =
+        static_cast<uint64_t>(std::max<uint32_t>(1, options.clip_seconds)) * fps;
+    status.clip_span_frames =
+        ((requested_clip_frames + gop - 1) / gop) * gop;
+    if (options.record_for_seconds > 0) {
+        status.target_frame_count =
+            static_cast<uint64_t>(options.record_for_seconds) * fps;
+    }
+    if (status.clip_span_frames == 0) {
+        return status;
+    }
+
+    const uint64_t zero_based_frame =
+        frames_received > 0 ? frames_received - 1 : 0;
+    status.current_clip_index =
+        static_cast<int>(zero_based_frame / status.clip_span_frames);
+    if (status.target_frame_count > 0) {
+        const uint64_t expected_clip_count =
+            (status.target_frame_count + status.clip_span_frames - 1) /
+            status.clip_span_frames;
+        const int final_clip_index =
+            static_cast<int>(expected_clip_count > 0 ? expected_clip_count - 1 : 0);
+        const uint64_t overrun_frames =
+            frames_received > status.target_frame_count
+                ? frames_received - status.target_frame_count
+                : 0;
+        if (status.current_clip_index > final_clip_index &&
+            overrun_frames > 0 &&
+            overrun_frames <= gop) {
+            status.current_clip_index = final_clip_index;
+        }
+    }
+
+    const uint64_t current_clip_end_frame =
+        (static_cast<uint64_t>(std::max(0, status.current_clip_index)) + 1) *
+        status.clip_span_frames;
+    status.next_rollover_at_recording_frame_id = current_clip_end_frame + 1;
+    status.frames_until_next_rollover =
+        frames_received < current_clip_end_frame
+            ? current_clip_end_frame - frames_received
+            : 0;
+    return status;
+}
+
 std::vector<int> effective_shard_gpu_ids(const Options& options);
 
 bool write_recorder_status_json(const Options& options,
@@ -601,7 +669,8 @@ bool write_recorder_status_json(const Options& options,
                                 const uint64_t frames_encoded,
                                 const uint64_t frames_dropped,
                                 const bool worker_failed,
-                                const std::string& error_message = {})
+                                const std::string& error_message = {},
+                                const RollingStatusSnapshot& rolling_status = {})
 {
     if (options.status_json_path.empty()) {
         return true;
@@ -639,6 +708,30 @@ bool write_recorder_status_json(const Options& options,
             }
             out << "],\n";
             out << "  \"routing_policy\": \"" << json_escape(options.routing_policy) << "\",\n";
+            out << "  \"recording_control\": {\n";
+            out << "    \"record_for_seconds\": " << options.record_for_seconds << ",\n";
+            out << "    \"clip_seconds\": " << options.clip_seconds << "\n";
+            out << "  },\n";
+            out << "  \"rolling\": {\n";
+            out << "    \"enabled\": " << (rolling_status.enabled ? "true" : "false") << ",\n";
+            out << "    \"implementation\": \""
+                << (rolling_status.enabled
+                        ? "external_recorder_gop_boundary_writer_rotation"
+                        : "none") << "\",\n";
+            out << "    \"record_for_seconds\": "
+                << rolling_status.record_for_seconds << ",\n";
+            out << "    \"clip_seconds\": " << rolling_status.clip_seconds << ",\n";
+            out << "    \"clip_span_frames\": "
+                << rolling_status.clip_span_frames << ",\n";
+            out << "    \"target_frame_count\": "
+                << rolling_status.target_frame_count << ",\n";
+            out << "    \"current_clip_index\": "
+                << rolling_status.current_clip_index << ",\n";
+            out << "    \"next_rollover_at_recording_frame_id\": "
+                << rolling_status.next_rollover_at_recording_frame_id << ",\n";
+            out << "    \"frames_until_next_rollover\": "
+                << rolling_status.frames_until_next_rollover << "\n";
+            out << "  },\n";
             out << "  \"frames_received\": " << frames_received << ",\n";
             out << "  \"acks_sent\": " << acks_sent << ",\n";
             out << "  \"detach_copied\": " << detach_copied << ",\n";
@@ -3406,7 +3499,9 @@ int main(int argc, char** argv)
             0,
             0,
             0,
-            false);
+            false,
+            {},
+            rolling_status_from_progress(options, 0));
 
         client_fd = accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) {
@@ -3433,7 +3528,9 @@ int main(int argc, char** argv)
             0,
             0,
             0,
-            false);
+            false,
+            {},
+            rolling_status_from_progress(options, 0));
 
         std::ofstream csv;
         if (!options.csv_path.empty()) {
@@ -3527,7 +3624,8 @@ int main(int argc, char** argv)
                     frames_encoded,
                     frames_dropped,
                     worker_failed,
-                    error_message);
+                    error_message,
+                    rolling_status_from_progress(options, frame_count));
             };
         auto last_status_write = std::chrono::steady_clock::now();
 
@@ -3831,7 +3929,8 @@ int main(int argc, char** argv)
             0,
             0,
             true,
-            ex.what());
+            ex.what(),
+            rolling_status_from_progress(options, 0));
         if (client_fd >= 0) {
             close(client_fd);
         }

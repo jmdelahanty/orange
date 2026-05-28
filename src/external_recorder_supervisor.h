@@ -106,6 +106,14 @@ struct RecorderStatusSnapshot {
     uint64_t encode_queue_high_water = 0;
     uint64_t frames_encoded = 0;
     uint64_t frames_dropped = 0;
+    bool rolling_enabled = false;
+    int rolling_record_for_seconds = 0;
+    int rolling_clip_seconds = 0;
+    uint64_t rolling_clip_span_frames = 0;
+    uint64_t rolling_target_frame_count = 0;
+    int rolling_current_clip_index = -1;
+    uint64_t rolling_next_rollover_at_recording_frame_id = 0;
+    uint64_t rolling_frames_until_next_rollover = 0;
     bool worker_failed = false;
     std::string error;
 };
