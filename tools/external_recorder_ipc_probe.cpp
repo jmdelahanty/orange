@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -75,6 +76,8 @@ struct Options {
     uint32_t record_for_seconds = 0;
     uint32_t clip_seconds = 0;
     uint64_t terminal_tail_coalesce_frames = 0;
+    uint64_t min_free_bytes = 0;
+    uint64_t low_space_warning_bytes = 0;
     int shard_id = 0;
     std::vector<int> shard_gpu_ids;
     std::string routing_policy = "single_shard";
@@ -175,6 +178,8 @@ void signal_handler(int)
         << "  --record-for-seconds <int> Session recording duration intent. Default 0.\n"
         << "  --clip-seconds <int>  Enable GOP-aligned rolling clip MP4 outputs. Default 0.\n"
         << "  --terminal-tail-coalesce-frames <int> Coalesce this many overrun frames into the final requested clip. Default GOP length.\n"
+        << "  --min-free-bytes <int> Require this much available storage before listening. Default 0.\n"
+        << "  --low-space-warning-bytes <int> Mark storage_preflight.low_space below this available-byte threshold. Default 0.\n"
         << "  --shard-id <int>      Recorder shard id for this process/lane. Default 0.\n"
         << "  --shard-gpu-ids <csv> Diagnostic multi-shard GPU ids, e.g. 5,6.\n"
         << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
@@ -264,6 +269,15 @@ bool env_flag_enabled(const char* name, bool default_value = false)
            normalized == "on";
 }
 
+uint64_t env_u64(const char* name, const uint64_t default_value)
+{
+    const char* value = std::getenv(name);
+    if (!value || !*value) {
+        return default_value;
+    }
+    return parse_u64(value, name);
+}
+
 Options parse_options(int argc, char** argv)
 {
     Options options;
@@ -271,6 +285,10 @@ Options parse_options(int argc, char** argv)
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DIRECT_INPUT", false);
     options.deferred_source_release =
         env_flag_enabled("ORANGE_EXTERNAL_RECORDER_DEFERRED_RELEASE", false);
+    options.min_free_bytes =
+        env_u64("ORANGE_EXTERNAL_RECORDER_MIN_FREE_BYTES", 0);
+    options.low_space_warning_bytes =
+        env_u64("ORANGE_EXTERNAL_RECORDER_LOW_SPACE_WARNING_BYTES", 0);
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         std::string inline_value;
@@ -359,6 +377,11 @@ Options parse_options(int argc, char** argv)
             options.clip_seconds = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--terminal-tail-coalesce-frames") {
             options.terminal_tail_coalesce_frames =
+                parse_u64(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--min-free-bytes") {
+            options.min_free_bytes = parse_u64(consume(arg.c_str()), arg.c_str());
+        } else if (arg == "--low-space-warning-bytes") {
+            options.low_space_warning_bytes =
                 parse_u64(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--shard-id") {
             options.shard_id = parse_i32(consume(arg.c_str()), arg.c_str());
@@ -563,6 +586,190 @@ uintmax_t file_size_or_zero(const std::string& path)
     return ec ? 0 : size;
 }
 
+struct StoragePathSnapshot {
+    std::string path;
+    bool ok = true;
+    bool meets_min_free = true;
+    bool below_warning = false;
+    uint64_t capacity_bytes = 0;
+    uint64_t free_bytes = 0;
+    uint64_t available_bytes = 0;
+    std::string error;
+};
+
+struct StoragePreflightSnapshot {
+    bool checked = false;
+    bool ok = true;
+    bool low_space = false;
+    uint64_t min_free_bytes = 0;
+    uint64_t low_space_warning_bytes = 0;
+    std::vector<StoragePathSnapshot> paths;
+};
+
+std::string storage_probe_path_for_output(const std::string& output_path)
+{
+    if (output_path.empty()) {
+        return {};
+    }
+    const std::filesystem::path path(output_path);
+    std::filesystem::path parent = path.parent_path();
+    if (parent.empty()) {
+        std::error_code ec;
+        parent = std::filesystem::current_path(ec);
+        if (ec) {
+            parent = ".";
+        }
+    }
+    return parent.string();
+}
+
+void append_storage_output_path(const std::string& output_path,
+                                std::set<std::string>* seen,
+                                std::vector<std::string>* probe_paths)
+{
+    if (output_path.empty() || !seen || !probe_paths) {
+        return;
+    }
+    const std::string probe_path = storage_probe_path_for_output(output_path);
+    if (probe_path.empty() || !seen->insert(probe_path).second) {
+        return;
+    }
+    probe_paths->push_back(probe_path);
+}
+
+std::vector<std::string> storage_probe_paths(const Options& options)
+{
+    std::set<std::string> seen;
+    std::vector<std::string> paths;
+    append_storage_output_path(options.csv_path, &seen, &paths);
+    append_storage_output_path(options.bitstream_out_path, &seen, &paths);
+    append_storage_output_path(options.mp4_out_path, &seen, &paths);
+    append_storage_output_path(options.mp4_keyframe_path, &seen, &paths);
+    append_storage_output_path(options.encode_csv_path, &seen, &paths);
+    append_storage_output_path(options.summary_json_path, &seen, &paths);
+    append_storage_output_path(options.status_json_path, &seen, &paths);
+    append_storage_output_path(options.gop_routing_csv_path, &seen, &paths);
+    return paths;
+}
+
+StoragePreflightSnapshot collect_storage_preflight(const Options& options)
+{
+    StoragePreflightSnapshot snapshot;
+    snapshot.min_free_bytes = options.min_free_bytes;
+    snapshot.low_space_warning_bytes = options.low_space_warning_bytes;
+
+    const std::vector<std::string> probe_paths = storage_probe_paths(options);
+    snapshot.checked = !probe_paths.empty();
+    for (const std::string& probe_path : probe_paths) {
+        StoragePathSnapshot path_snapshot;
+        path_snapshot.path = probe_path;
+        try {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            std::error_code create_error;
+            std::filesystem::create_directories(probe_path, create_error);
+            if (create_error) {
+                path_snapshot.ok = false;
+                path_snapshot.meets_min_free = false;
+                path_snapshot.error =
+                    "failed to create storage directory: " + create_error.message();
+            } else {
+                std::error_code space_error;
+                const std::filesystem::space_info info =
+                    std::filesystem::space(probe_path, space_error);
+                if (space_error) {
+                    path_snapshot.ok = false;
+                    path_snapshot.meets_min_free = false;
+                    path_snapshot.error =
+                        "failed to query storage space: " + space_error.message();
+                } else {
+                    path_snapshot.capacity_bytes =
+                        static_cast<uint64_t>(info.capacity);
+                    path_snapshot.free_bytes =
+                        static_cast<uint64_t>(info.free);
+                    path_snapshot.available_bytes =
+                        static_cast<uint64_t>(info.available);
+                    path_snapshot.meets_min_free =
+                        options.min_free_bytes == 0 ||
+                        path_snapshot.available_bytes >= options.min_free_bytes;
+                    path_snapshot.below_warning =
+                        options.low_space_warning_bytes > 0 &&
+                        path_snapshot.available_bytes <
+                            options.low_space_warning_bytes;
+                    path_snapshot.ok = path_snapshot.meets_min_free;
+                    if (!path_snapshot.meets_min_free) {
+                        path_snapshot.error =
+                            "available storage below required minimum";
+                    }
+                }
+            }
+        } catch (const std::exception& ex) {
+            path_snapshot.ok = false;
+            path_snapshot.meets_min_free = false;
+            path_snapshot.error = ex.what();
+        }
+
+        snapshot.ok = snapshot.ok && path_snapshot.ok;
+        snapshot.low_space = snapshot.low_space || path_snapshot.below_warning;
+        snapshot.paths.push_back(std::move(path_snapshot));
+    }
+
+    return snapshot;
+}
+
+std::string storage_preflight_error_message(const StoragePreflightSnapshot& snapshot)
+{
+    for (const StoragePathSnapshot& path : snapshot.paths) {
+        if (!path.ok) {
+            std::ostringstream out;
+            out << "storage preflight failed for " << path.path;
+            if (!path.error.empty()) {
+                out << ": " << path.error;
+            }
+            if (snapshot.min_free_bytes > 0) {
+                out << " (available_bytes=" << path.available_bytes
+                    << ", min_free_bytes=" << snapshot.min_free_bytes << ")";
+            }
+            return out.str();
+        }
+    }
+    return "storage preflight failed";
+}
+
+void write_storage_preflight_json(std::ostream& out,
+                                  const StoragePreflightSnapshot& snapshot,
+                                  const std::string& indent)
+{
+    out << indent << "\"storage_preflight\": {\n";
+    out << indent << "  \"checked\": " << (snapshot.checked ? "true" : "false") << ",\n";
+    out << indent << "  \"ok\": " << (snapshot.ok ? "true" : "false") << ",\n";
+    out << indent << "  \"low_space\": " << (snapshot.low_space ? "true" : "false") << ",\n";
+    out << indent << "  \"min_free_bytes\": " << snapshot.min_free_bytes << ",\n";
+    out << indent << "  \"low_space_warning_bytes\": "
+        << snapshot.low_space_warning_bytes << ",\n";
+    out << indent << "  \"paths\": [\n";
+    for (size_t i = 0; i < snapshot.paths.size(); ++i) {
+        const StoragePathSnapshot& path = snapshot.paths[i];
+        out << indent << "    {\n";
+        out << indent << "      \"path\": \"" << json_escape(path.path) << "\",\n";
+        out << indent << "      \"ok\": " << (path.ok ? "true" : "false") << ",\n";
+        out << indent << "      \"meets_min_free\": "
+            << (path.meets_min_free ? "true" : "false") << ",\n";
+        out << indent << "      \"below_warning\": "
+            << (path.below_warning ? "true" : "false") << ",\n";
+        out << indent << "      \"capacity_bytes\": "
+            << path.capacity_bytes << ",\n";
+        out << indent << "      \"free_bytes\": " << path.free_bytes << ",\n";
+        out << indent << "      \"available_bytes\": "
+            << path.available_bytes << ",\n";
+        out << indent << "      \"error\": \""
+            << json_escape(path.error) << "\"\n";
+        out << indent << "    }" << (i + 1 < snapshot.paths.size() ? "," : "") << "\n";
+    }
+    out << indent << "  ]\n";
+    out << indent << "}";
+}
+
 double percentile_ms(std::vector<double> values, double percentile)
 {
     if (values.empty()) {
@@ -680,7 +887,8 @@ bool write_recorder_status_json(const Options& options,
                                 const uint64_t frames_dropped,
                                 const bool worker_failed,
                                 const std::string& error_message = {},
-                                const RollingStatusSnapshot& rolling_status = {})
+                                const RollingStatusSnapshot& rolling_status = {},
+                                const StoragePreflightSnapshot* storage_override = nullptr)
 {
     if (options.status_json_path.empty()) {
         return true;
@@ -761,7 +969,10 @@ bool write_recorder_status_json(const Options& options,
             out << "  \"encode_queue_high_water\": " << encode_queue_high_water << ",\n";
             out << "  \"frames_encoded\": " << frames_encoded << ",\n";
             out << "  \"frames_dropped\": " << frames_dropped << ",\n";
-            out << "  \"worker_failed\": " << (worker_failed ? "true" : "false");
+            out << "  \"worker_failed\": " << (worker_failed ? "true" : "false") << ",\n";
+            const StoragePreflightSnapshot storage =
+                storage_override ? *storage_override : collect_storage_preflight(options);
+            write_storage_preflight_json(out, storage, "  ");
             if (!error_message.empty()) {
                 out << ",\n  \"error\": \"" << json_escape(error_message) << "\"\n";
             } else {
@@ -3454,7 +3665,10 @@ void write_summary_json(const Options& options,
     out << "    \"raw_bitstream_bytes\": " << file_size_or_zero(options.bitstream_out_path) << ",\n";
     out << "    \"mp4_bytes\": " << file_size_or_zero(output_mp4_path) << ",\n";
     out << "    \"mp4_keyframe_bytes\": " << file_size_or_zero(output_mp4_keyframe_path) << "\n";
-    out << "  }\n";
+    out << "  },\n";
+    const StoragePreflightSnapshot storage = collect_storage_preflight(options);
+    write_storage_preflight_json(out, storage, "  ");
+    out << "\n";
     out << "}\n";
 }
 
@@ -3470,6 +3684,38 @@ int main(int argc, char** argv)
         options = parse_options(argc, argv);
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
+
+        const StoragePreflightSnapshot initial_storage =
+            collect_storage_preflight(options);
+        if (!initial_storage.ok) {
+            const std::string message =
+                storage_preflight_error_message(initial_storage);
+            (void)write_recorder_status_json(
+                options,
+                options.session_id,
+                options.stream_id,
+                "failed",
+                ++status_heartbeat_sequence,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                true,
+                message,
+                rolling_status_from_progress(options, 0),
+                &initial_storage);
+            throw std::runtime_error(message);
+        }
+        if (initial_storage.low_space) {
+            std::cerr << "external_recorder_ipc_probe storage warning: available bytes "
+                         "below low-space threshold"
+                      << std::endl;
+        }
 
         check_cuda(cudaSetDevice(options.gpu_id), "cudaSetDevice");
         check_cuda(cudaFree(nullptr), "cudaFree(0)");

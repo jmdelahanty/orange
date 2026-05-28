@@ -264,6 +264,18 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
                 optional_string(rolling, "last_rollover_status");
         }
         snapshot.worker_failed = optional_bool(parsed, "worker_failed");
+        if (parsed.contains("storage_preflight") &&
+            parsed["storage_preflight"].is_object()) {
+            const nlohmann::json& storage = parsed["storage_preflight"];
+            snapshot.storage_checked = optional_bool(storage, "checked");
+            snapshot.storage_ok =
+                !storage.contains("ok") || optional_bool(storage, "ok");
+            snapshot.storage_low_space = optional_bool(storage, "low_space");
+            snapshot.storage_min_free_bytes =
+                optional_u64(storage, "min_free_bytes");
+            snapshot.storage_low_space_warning_bytes =
+                optional_u64(storage, "low_space_warning_bytes");
+        }
         snapshot.error = optional_string(parsed, "error");
         snapshot.valid =
             snapshot.schema_id == "orange.external_recorder.status" &&
@@ -642,6 +654,9 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         stream_plan.bitrate_bps = options.default_bitrate_bps;
         stream_plan.max_bitrate_bps = options.default_max_bitrate_bps;
         stream_plan.vbv_buffer_size = options.default_vbv_buffer_size;
+        stream_plan.min_free_bytes = options.default_min_free_bytes;
+        stream_plan.low_space_warning_bytes =
+            options.default_low_space_warning_bytes;
         stream_plan.record_for_seconds = contract_record_for_seconds;
         stream_plan.clip_seconds = contract_clip_seconds;
 
@@ -779,6 +794,16 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
             !read_u64_field(stream,
                             "vbv_buffer_size",
                             &stream_plan.vbv_buffer_size,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
+                            "min_free_bytes",
+                            &stream_plan.min_free_bytes,
+                            error_out,
+                            context) ||
+            !read_u64_field(stream,
+                            "low_space_warning_bytes",
+                            &stream_plan.low_space_warning_bytes,
                             error_out,
                             context)) {
             return false;
@@ -1018,6 +1043,14 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         argv.push_back("--terminal-tail-coalesce-frames");
         argv.push_back(std::to_string(stream.terminal_tail_coalesce_frames));
     }
+    if (stream.min_free_bytes > 0) {
+        argv.push_back("--min-free-bytes");
+        argv.push_back(std::to_string(stream.min_free_bytes));
+    }
+    if (stream.low_space_warning_bytes > 0) {
+        argv.push_back("--low-space-warning-bytes");
+        argv.push_back(std::to_string(stream.low_space_warning_bytes));
+    }
     if (stream.prewarm_bytes > 0) {
         argv.push_back("--prewarm-bytes");
         argv.push_back(std::to_string(stream.prewarm_bytes));
@@ -1072,6 +1105,8 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"bitrate_bps", stream.bitrate_bps},
             {"max_bitrate_bps", stream.max_bitrate_bps},
             {"vbv_buffer_size", stream.vbv_buffer_size},
+            {"min_free_bytes", stream.min_free_bytes},
+            {"low_space_warning_bytes", stream.low_space_warning_bytes},
             {"command", {
                 {"argv", BuildRecorderCommand(plan, stream)},
                 {"log_path", stream.recorder_log},
@@ -1393,6 +1428,12 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                  recorder_status.rolling_last_completed_clip_frame_count},
                 {"rolling_last_rollover_status", recorder_status.rolling_last_rollover_status},
                 {"worker_failed", recorder_status.worker_failed},
+                {"storage_checked", recorder_status.storage_checked},
+                {"storage_ok", recorder_status.storage_ok},
+                {"storage_low_space", recorder_status.storage_low_space},
+                {"storage_min_free_bytes", recorder_status.storage_min_free_bytes},
+                {"storage_low_space_warning_bytes",
+                 recorder_status.storage_low_space_warning_bytes},
                 {"error", recorder_status.error},
             }},
         });

@@ -252,6 +252,35 @@ void test_spec_recording_control_flows_to_command()
             "plan json should include terminal tail coalesce frame count");
 }
 
+void test_storage_thresholds_flow_to_command_and_plan()
+{
+    nlohmann::json contract = make_contract({5}, "single_shard");
+    contract["streams"]["2010096"]["min_free_bytes"] = 123456789ULL;
+    contract["streams"]["2010096"]["low_space_warning_bytes"] = 234567890ULL;
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "storage threshold contract should build: " + error);
+    require(plan.streams.size() == 1, "expected one stream");
+    require(plan.streams[0].min_free_bytes == 123456789ULL,
+            "min_free_bytes should flow to stream plan");
+    require(plan.streams[0].low_space_warning_bytes == 234567890ULL,
+            "low_space_warning_bytes should flow to stream plan");
+
+    const std::vector<std::string> argv = BuildRecorderCommand(plan, plan.streams[0]);
+    require(has_arg_pair(argv, "--min-free-bytes", "123456789"),
+            "command should include storage preflight hard minimum");
+    require(has_arg_pair(argv, "--low-space-warning-bytes", "234567890"),
+            "command should include storage low-space warning threshold");
+
+    const nlohmann::json json_plan = SupervisorPlanToJson(plan);
+    require(json_plan["streams"][0]["min_free_bytes"] == 123456789ULL,
+            "plan json should expose min free bytes");
+    require(json_plan["streams"][0]["low_space_warning_bytes"] == 234567890ULL,
+            "plan json should expose low-space warning bytes");
+}
+
 void test_invalid_shard_policy_fails()
 {
     SupervisorPlan plan;
@@ -416,6 +445,14 @@ void test_process_poll_reads_status_sidecar()
             << "    \"last_completed_clip_frame_count\": 200,\n"
             << "    \"last_rollover_status\": \"completed\"\n"
             << "  },\n"
+            << "  \"storage_preflight\": {\n"
+            << "    \"checked\": true,\n"
+            << "    \"ok\": true,\n"
+            << "    \"low_space\": false,\n"
+            << "    \"min_free_bytes\": 123456789,\n"
+            << "    \"low_space_warning_bytes\": 234567890,\n"
+            << "    \"paths\": []\n"
+            << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
     }
@@ -456,6 +493,16 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar rolling last completed clip should parse");
     require(runtime.processes[0].recorder_status.rolling_last_rollover_status == "completed",
             "status sidecar rolling last rollover status should parse");
+    require(runtime.processes[0].recorder_status.storage_checked,
+            "status sidecar storage checked should parse");
+    require(runtime.processes[0].recorder_status.storage_ok,
+            "status sidecar storage ok should parse");
+    require(!runtime.processes[0].recorder_status.storage_low_space,
+            "status sidecar storage low-space flag should parse");
+    require(runtime.processes[0].recorder_status.storage_min_free_bytes == 123456789ULL,
+            "status sidecar min free bytes should parse");
+    require(runtime.processes[0].recorder_status.storage_low_space_warning_bytes == 234567890ULL,
+            "status sidecar low-space warning bytes should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),
@@ -478,6 +525,17 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include parsed rolling last completed clip");
     require(summary["processes"][0]["recorder_status"]["rolling_last_rollover_status"] == "completed",
             "runtime summary should include parsed rolling last rollover status");
+    require(summary["processes"][0]["recorder_status"]["storage_checked"].get<bool>(),
+            "runtime summary should include parsed storage checked flag");
+    require(summary["processes"][0]["recorder_status"]["storage_ok"].get<bool>(),
+            "runtime summary should include parsed storage ok flag");
+    require(!summary["processes"][0]["recorder_status"]["storage_low_space"].get<bool>(),
+            "runtime summary should include parsed low-space flag");
+    require(summary["processes"][0]["recorder_status"]["storage_min_free_bytes"] == 123456789ULL,
+            "runtime summary should include parsed min free bytes");
+    require(summary["processes"][0]["recorder_status"]["storage_low_space_warning_bytes"] == 234567890ULL,
+            "runtime summary should include parsed low-space warning bytes");
+
 
     std::filesystem::remove(status_path);
 }
@@ -590,6 +648,7 @@ int main(int argc, char** argv)
         {"spec_requires_external_ipc_sink", test_spec_requires_external_ipc_sink},
         {"spec_requires_selected_stream", test_spec_requires_selected_stream},
         {"spec_recording_control_flows_to_command", test_spec_recording_control_flows_to_command},
+        {"storage_thresholds_flow_to_command_and_plan", test_storage_thresholds_flow_to_command_and_plan},
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},
         {"process_lifecycle_waits_socket_and_stops", test_process_lifecycle_waits_socket_and_stops},
         {"process_poll_detects_unexpected_signal_exit", test_process_poll_detects_unexpected_signal_exit},

@@ -412,6 +412,32 @@ def require_no_mp4_queue_overflow(payload: dict[str, Any], label: str) -> None:
         require(events == 0, f"{label} mp4_queue_overflow_events={events}")
 
 
+def require_storage_preflight_ok(payload: dict[str, Any], label: str) -> None:
+    storage = payload.get("storage_preflight")
+    if not isinstance(storage, dict):
+        return
+    require(storage.get("ok") is not False, f"{label} storage_preflight.ok=false")
+    require(storage.get("low_space") is not True, f"{label} storage_preflight.low_space=true")
+    paths = storage.get("paths")
+    if isinstance(paths, list):
+        for index, path in enumerate(paths):
+            if not isinstance(path, dict):
+                continue
+            path_label = path.get("path") or f"path[{index}]"
+            require(
+                path.get("ok") is not False,
+                f"{label} storage path {path_label} ok=false: {path.get('error')}",
+            )
+            require(
+                path.get("meets_min_free") is not False,
+                f"{label} storage path {path_label} below min_free_bytes",
+            )
+            require(
+                path.get("below_warning") is not True,
+                f"{label} storage path {path_label} below low_space_warning_bytes",
+            )
+
+
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
     fieldnames, rows = read_csv_rows(path)
     field_set = set(fieldnames)
@@ -622,6 +648,7 @@ def verify_status_sidecar(
     require(str(status.get("stream_id")) == str(stream.get("stream_id", serial)), f"status stream_id mismatch in {status_path}")
     require(status.get("status") == "completed", f"recorder status is not completed in {status_path}")
     require(status.get("worker_failed") is False, f"recorder status worker_failed=true in {status_path}")
+    require_storage_preflight_ok(status, f"status for {serial}")
     error = status.get("error")
     require(error in (None, ""), f"recorder status reports error in {status_path}: {error}")
 
@@ -848,6 +875,7 @@ def verify_summary(
     require(str(summary.get("stream_id")) == str(stream.get("stream_id", serial)), f"stream_id mismatch in {summary_path}")
     require(summary.get("encode") is True, f"summary encode=false in {summary_path}")
     require(summary.get("worker_failed") is False, f"recorder worker_failed=true in {summary_path}")
+    require_storage_preflight_ok(summary, f"summary for {serial}")
 
     frames_received = as_int(summary.get("frames_received"), "frames_received")
     acks_sent = as_int(summary.get("acks_sent"), "acks_sent")

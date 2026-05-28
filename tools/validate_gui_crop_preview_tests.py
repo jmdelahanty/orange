@@ -1016,6 +1016,33 @@ def write_external_crop_contract(
     )
 
 
+def external_storage_preflight_payload(
+    *,
+    ok: bool = True,
+    low_space: bool = False,
+    path_ok: bool = True,
+    meets_min_free: bool = True,
+    below_warning: bool = False,
+) -> dict:
+    return {
+        "checked": True,
+        "ok": ok,
+        "low_space": low_space,
+        "min_free_bytes": 1024,
+        "low_space_warning_bytes": 2048,
+        "paths": [
+            {
+                "path": "/tmp",
+                "ok": path_ok,
+                "meets_min_free": meets_min_free,
+                "below_warning": below_warning,
+                "available_bytes": 4096,
+                "error": "" if path_ok and meets_min_free else "low space",
+            }
+        ],
+    }
+
+
 def write_external_recorder_status_fixture(
     recording_folder: Path,
     serial: str,
@@ -1068,6 +1095,7 @@ def write_external_recorder_status_fixture(
             "mp4_queue_overflowed": False,
             "mp4_queue_overflow_events": 0,
         },
+        "storage_preflight": external_storage_preflight_payload(),
     }
     if rolling:
         summary_payload["rolling_output"] = {
@@ -1105,6 +1133,7 @@ def write_external_recorder_status_fixture(
         "frames_encoded": rows,
         "acks_sent": rows,
         "worker_failed": worker_failed,
+        "storage_preflight": external_storage_preflight_payload(),
     }
     if error:
         status_payload["error"] = error
@@ -1598,6 +1627,59 @@ def test_external_recorder_status_validation_fails_on_mp4_queue_overflow() -> No
             require(
                 any(expected in failure for failure in reporter.failures),
                 f"MP4 queue overflow should fail with {expected}: {reporter.failures}",
+            )
+
+
+def test_external_recorder_status_validation_fails_on_storage_preflight() -> None:
+    cases = [
+        (
+            "summary",
+            lambda payload: payload.update(
+                {"storage_preflight": external_storage_preflight_payload(ok=False)}
+            ),
+            "summary storage_preflight ok=False",
+        ),
+        (
+            "summary",
+            lambda payload: payload.update(
+                {"storage_preflight": external_storage_preflight_payload(low_space=True)}
+            ),
+            "summary storage_preflight low_space=True",
+        ),
+        (
+            "summary",
+            lambda payload: payload.update(
+                {
+                    "storage_preflight": external_storage_preflight_payload(
+                        meets_min_free=False
+                    )
+                }
+            ),
+            "summary storage path /tmp meets_min_free=False",
+        ),
+        (
+            "status",
+            lambda payload: payload.update(
+                {"storage_preflight": external_storage_preflight_payload(below_warning=True)}
+            ),
+            "status storage path /tmp below_warning=True",
+        ),
+    ]
+    for target, mutator, expected in cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary_path, status_path = write_external_recorder_status_fixture(
+                root,
+                "2010095",
+            )
+            mutate_json_file(summary_path if target == "summary" else status_path, mutator)
+
+            reporter = validator.Reporter(verbose=False)
+            validator.check_external_recorder_status(reporter, root, True)
+
+            require(
+                any(expected in failure for failure in reporter.failures),
+                f"storage preflight should fail with {expected}: {reporter.failures}",
             )
 
 
@@ -3486,6 +3568,7 @@ def main() -> int:
         test_external_recorder_status_validation_fails_on_rolling_mismatch,
         test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime,
         test_external_recorder_status_validation_fails_on_mp4_queue_overflow,
+        test_external_recorder_status_validation_fails_on_storage_preflight,
         test_external_recorder_status_validation_requires_contract_flags,
         test_external_recorder_status_validation_derives_status_path_from_summary,
         test_crop_recording_artifacts_pass_when_aligned,

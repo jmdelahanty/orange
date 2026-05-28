@@ -126,6 +126,12 @@ single-shard workers promote `FFmpegWriter` queue overflow to `worker_failed`,
 per-shard summaries expose MP4 queue overflow counters, and
 `scripts/verify_external_recorder_session.py` fails if any full-frame recorder
 summary reports MP4 writer queue overflow.
+External recorder storage safety now has a first implementation slice:
+`external_recorder_ipc_probe` accepts `--min-free-bytes` and
+`--low-space-warning-bytes`, reports `storage_preflight` in status/summary
+JSON, fails before listening when the hard minimum is not met, and the external
+session/GUI validators reject summaries or status sidecars that report failed
+storage preflight or low-space warnings.
 
 ## Implementation Plan
 
@@ -221,6 +227,10 @@ Refs:
   overflow for aggregate, merged, and per-shard outputs; broader native writer
   and GUI-facing policy remains open.
 - [ ] Add disk-space preflight and low-space runtime alarms.
+  External IPC recorders now have configurable hard-minimum storage preflight
+  plus status/summary low-space telemetry and validator gates. Remaining work
+  is choosing production thresholds, surfacing the alarm in the GUI/operator
+  status, and adding equivalent native in-process writer policy.
 - [ ] Define failure fallback:
   - if new segment open fails, keep writing to current segment and retry,
   - emit critical health state/telemetry.

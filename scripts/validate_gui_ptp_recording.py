@@ -1935,6 +1935,56 @@ def check_external_summary_mp4_queue_overflow(
         )
 
 
+def check_storage_preflight_payload(
+    reporter: Reporter,
+    prefix: str,
+    payload: dict[str, Any],
+) -> None:
+    storage = payload.get("storage_preflight")
+    if not isinstance(storage, dict):
+        return
+    reporter.check(
+        storage.get("ok") is not False,
+        f"{prefix} storage_preflight ok=true",
+        f"{prefix} storage_preflight ok={storage.get('ok')!r}",
+    )
+    reporter.check(
+        storage.get("low_space") is not True,
+        f"{prefix} storage_preflight low_space=false",
+        f"{prefix} storage_preflight low_space={storage.get('low_space')!r}",
+    )
+    paths = storage.get("paths")
+    if isinstance(paths, list):
+        for index, path in enumerate(paths):
+            if not isinstance(path, dict):
+                continue
+            path_label = path.get("path") or f"path[{index}]"
+            reporter.check(
+                path.get("ok") is not False,
+                f"{prefix} storage path {path_label} ok=true",
+                (
+                    f"{prefix} storage path {path_label} ok={path.get('ok')!r} "
+                    f"error={path.get('error')!r}"
+                ),
+            )
+            reporter.check(
+                path.get("meets_min_free") is not False,
+                f"{prefix} storage path {path_label} meets_min_free=true",
+                (
+                    f"{prefix} storage path {path_label} "
+                    f"meets_min_free={path.get('meets_min_free')!r}"
+                ),
+            )
+            reporter.check(
+                path.get("below_warning") is not True,
+                f"{prefix} storage path {path_label} below_warning=false",
+                (
+                    f"{prefix} storage path {path_label} "
+                    f"below_warning={path.get('below_warning')!r}"
+                ),
+            )
+
+
 def check_external_recorder_status_contract(
     reporter: Reporter,
     recording_folder: Path,
@@ -2016,6 +2066,7 @@ def check_external_recorder_status_contract(
             f"{prefix} recorder worker_failed=false",
             f"{prefix} recorder worker_failed={status.get('worker_failed')!r}",
         )
+        check_storage_preflight_payload(reporter, f"{prefix} status", status)
         reporter.check(
             not status.get("error"),
             f"{prefix} recorder status error empty",
@@ -2030,6 +2081,7 @@ def check_external_recorder_status_contract(
         summary_acks_sent = integer(summary.get("acks_sent"))
         if summary:
             check_external_summary_mp4_queue_overflow(reporter, prefix, summary)
+            check_storage_preflight_payload(reporter, f"{prefix} summary", summary)
             reporter.check(
                 frames_received == summary_frames_received,
                 f"{prefix} status frames_received matches summary ({frames_received})",
@@ -4123,6 +4175,11 @@ def check_crop_recording_artifacts(
                 check_external_summary_mp4_queue_overflow(
                     reporter,
                     f"Cam{serial} external crop",
+                    external_summary,
+                )
+                check_storage_preflight_payload(
+                    reporter,
+                    f"Cam{serial} external crop summary",
                     external_summary,
                 )
             external_frames_received = integer(external_summary.get("frames_received"))

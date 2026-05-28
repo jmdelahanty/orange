@@ -88,6 +88,8 @@ The GUI validator now checks:
   snapshots,
 - external recorder MP4 writer queue overflow counters, which must report no
   overflow,
+- external recorder storage preflight/low-space telemetry when present, which
+  must report `ok=true` and `low_space=false`,
 - full-frame main videos, packet counts, and decoded content sanity,
 - crop MP4, metadata, perf CSV, keyframe sidecar, and crop fanout counters,
 - external crop recorder GPU placement and queue depth/high-water telemetry,

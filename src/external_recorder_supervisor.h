@@ -25,6 +25,8 @@ struct SupervisorPlanOptions {
     uint64_t default_bitrate_bps = 150000000;
     uint64_t default_max_bitrate_bps = 150000000;
     uint64_t default_vbv_buffer_size = 150000000;
+    uint64_t default_min_free_bytes = 0;
+    uint64_t default_low_space_warning_bytes = 0;
 };
 
 struct RecorderStreamPlan {
@@ -61,6 +63,8 @@ struct RecorderStreamPlan {
     uint64_t bitrate_bps = 150000000;
     uint64_t max_bitrate_bps = 150000000;
     uint64_t vbv_buffer_size = 150000000;
+    uint64_t min_free_bytes = 0;
+    uint64_t low_space_warning_bytes = 0;
     int shard_id = 0;
 };
 
@@ -121,6 +125,11 @@ struct RecorderStatusSnapshot {
     uint64_t rolling_last_completed_clip_frame_count = 0;
     std::string rolling_last_rollover_status;
     bool worker_failed = false;
+    bool storage_checked = false;
+    bool storage_ok = true;
+    bool storage_low_space = false;
+    uint64_t storage_min_free_bytes = 0;
+    uint64_t storage_low_space_warning_bytes = 0;
     std::string error;
 };
 

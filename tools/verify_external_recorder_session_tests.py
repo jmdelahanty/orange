@@ -25,6 +25,33 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def storage_preflight_payload(
+    *,
+    ok: bool = True,
+    low_space: bool = False,
+    path_ok: bool = True,
+    meets_min_free: bool = True,
+    below_warning: bool = False,
+) -> dict:
+    return {
+        "checked": True,
+        "ok": ok,
+        "low_space": low_space,
+        "min_free_bytes": 1024,
+        "low_space_warning_bytes": 2048,
+        "paths": [
+            {
+                "path": "/tmp",
+                "ok": path_ok,
+                "meets_min_free": meets_min_free,
+                "below_warning": below_warning,
+                "available_bytes": 4096,
+                "error": "" if path_ok and meets_min_free else "low space",
+            }
+        ],
+    }
+
+
 def write_summary(
     root: Path,
     serial: str,
@@ -77,6 +104,7 @@ def write_summary(
             }
         ],
         "merged_output": {},
+        "storage_preflight": storage_preflight_payload(),
         "outputs": {
             "detach_csv": str(detach_path),
             "mp4": str(mp4_path),
@@ -188,6 +216,7 @@ def write_status(
         "encode_dropped": 0,
         "frames_encoded": frames_encoded,
         "worker_failed": worker_failed,
+        "storage_preflight": storage_preflight_payload(),
     }
     if rolling:
         payload["rolling"] = {
@@ -387,6 +416,64 @@ def test_mp4_queue_overflow_failures() -> None:
                 raise AssertionError("expected MP4 queue overflow verification failure")
 
 
+def test_storage_preflight_failures() -> None:
+    checks = [
+        (
+            lambda payload: payload.update({"storage_preflight": storage_preflight_payload(ok=False)}),
+            "summary for 2010096 storage_preflight.ok=false",
+        ),
+        (
+            lambda payload: payload.update(
+                {"storage_preflight": storage_preflight_payload(low_space=True)}
+            ),
+            "summary for 2010096 storage_preflight.low_space=true",
+        ),
+        (
+            lambda payload: payload.update(
+                {"storage_preflight": storage_preflight_payload(meets_min_free=False)}
+            ),
+            "summary for 2010096 storage path /tmp below min_free_bytes",
+        ),
+        (
+            lambda payload: payload.update(
+                {"storage_preflight": storage_preflight_payload(below_warning=True)}
+            ),
+            "summary for 2010096 storage path /tmp below low_space_warning_bytes",
+        ),
+    ]
+    for mutator, expected in checks:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            summary_path, mp4_path = write_summary(root, "2010096")
+            rewrite_summary(summary_path, mutator)
+            try:
+                verify_one(root, summary_path, mp4_path)
+            except verifier.VerificationError as exc:
+                require(expected in str(exc), f"unexpected storage failure: {exc}")
+            else:
+                raise AssertionError("expected storage preflight verification failure")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        status_path = write_status(root, "2010096")
+        rewrite_summary(
+            status_path,
+            lambda payload: payload.update(
+                {"storage_preflight": storage_preflight_payload(ok=False)}
+            ),
+        )
+        try:
+            verify_one(root, summary_path, mp4_path, require_status=True)
+        except verifier.VerificationError as exc:
+            require(
+                "status for 2010096 storage_preflight.ok=false" in str(exc),
+                f"unexpected status storage failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected status storage preflight failure")
+
+
 def test_rolling_output_uses_summary_recording_control() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -547,6 +634,7 @@ def main() -> int:
         test_queue_threshold_failures,
         test_queue_high_water_falls_back_to_detach_csv,
         test_mp4_queue_overflow_failures,
+        test_storage_preflight_failures,
         test_rolling_output_uses_summary_recording_control,
         test_status_sidecar_passes_and_summarizes,
         test_status_sidecar_checks_rolling_progress,

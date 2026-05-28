@@ -210,7 +210,9 @@ This contract covers the current diagnostic external recorder path:
         "gop": 25,
         "bitrate_bps": 150000000,
         "max_bitrate_bps": 150000000,
-        "vbv_buffer_size": 150000000
+        "vbv_buffer_size": 150000000,
+        "min_free_bytes": 0,
+        "low_space_warning_bytes": 0
       }
     }
   }
@@ -254,6 +256,14 @@ Current semantics:
 - `encode_queue_depth`, `prewarm_*`, codec, GOP, and bitrate fields are
   optional launch-plan fields. If a stream omits them, the dry-run supervisor
   plan tool fills in production-like defaults.
+- `min_free_bytes` is an optional hard recorder preflight threshold. When it is
+  greater than zero, `external_recorder_ipc_probe` checks available bytes on
+  the output directories before listening and exits failed if the minimum is
+  not met.
+- `low_space_warning_bytes` is an optional runtime/status warning threshold.
+  When it is greater than zero, recorder status/summary JSON marks
+  `storage_preflight.low_space = true` if available bytes fall below it; current
+  validators treat reported low-space as a failed validation gate.
 - `terminal_tail_coalesce_frames` is optional. If omitted, the recorder uses
   one configured GOP as the terminal-tail coalesce threshold. GUI external crop
   rolling sets this explicitly to the parent full-frame GOP while keeping crop
