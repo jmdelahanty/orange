@@ -13,6 +13,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "run_gui_aq_off_validation.sh"
+GUI_WRAPPER_SCRIPT = REPO_ROOT / "scripts" / "orange_gui_validation_wrapper.sh"
 
 
 def require(condition: bool, message: str) -> None:
@@ -154,6 +155,14 @@ def test_discovers_all_camera_json_files() -> None:
         require(
             "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=0" in result.stdout,
             "launcher output should show the default external crop GPU separation gate",
+        )
+        require(
+            "ORANGE_GUI_USE_PRIVILEGE_WRAPPER=auto" in result.stdout,
+            "launcher output should show privilege-wrapper auto mode by default",
+        )
+        require(
+            "ORANGE_GUI_PRIVILEGE_WRAPPER=/usr/local/bin/orange-gui-validation" in result.stdout,
+            "launcher output should show the default GUI privilege wrapper path",
         )
         require(
             "ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=<not set>" in result.stdout,
@@ -721,9 +730,54 @@ def test_live_launcher_fails_fast_without_display_env() -> None:
         )
 
 
+def test_invalid_gui_privilege_wrapper_mode_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            extra_env={
+                "ORANGE_GUI_USE_PRIVILEGE_WRAPPER": "sometimes",
+            },
+        )
+
+        require(result.returncode != 0, "bad GUI privilege-wrapper mode should fail")
+        require(
+            "ORANGE_GUI_USE_PRIVILEGE_WRAPPER must be auto, 0, or 1" in result.stderr,
+            "bad GUI privilege-wrapper mode should explain accepted values",
+        )
+
+
+def test_gui_privilege_wrapper_help_documents_contract() -> None:
+    result = subprocess.run(
+        [str(GUI_WRAPPER_SCRIPT), "--help"],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode == 0, f"wrapper help failed: {result.stderr}")
+    require("--orange-bin" in result.stdout, "wrapper help should document --orange-bin")
+    require("--env KEY=VALUE" in result.stdout, "wrapper help should document --env")
+    require(
+        "ORANGE_GUI_AUTORUN" in result.stdout,
+        "wrapper help should mention the GUI autorun env contract",
+    )
+
+
 def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
+        test_invalid_gui_privilege_wrapper_mode_fails,
+        test_gui_privilege_wrapper_help_documents_contract,
         test_external_crop_queue_validation_limits_are_printed,
         test_external_crop_queue_validation_rejects_bad_values,
         test_external_crop_recorder_gpu_validation_rejects_bad_values,

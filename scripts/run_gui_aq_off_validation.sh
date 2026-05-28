@@ -23,6 +23,8 @@ XAUTHORITY_ENV="${XAUTHORITY:-${HOME}/.Xauthority}"
 WAYLAND_DISPLAY_ENV="${WAYLAND_DISPLAY:-}"
 XDG_RUNTIME_DIR_ENV="${XDG_RUNTIME_DIR:-}"
 XDG_SESSION_TYPE_ENV="${XDG_SESSION_TYPE:-}"
+GUI_USE_PRIVILEGE_WRAPPER="${ORANGE_GUI_USE_PRIVILEGE_WRAPPER:-auto}"
+GUI_PRIVILEGE_WRAPPER="${ORANGE_GUI_PRIVILEGE_WRAPPER:-/usr/local/bin/orange-gui-validation}"
 CROP_PREVIEW_VALIDATION_MAX_FPS="${ORANGE_CROP_PREVIEW_MAX_FPS:-15}"
 CROP_RECORDING_SINK_MODE="${ORANGE_CROP_RECORDING_SINK_MODE:-in_process}"
 CROP_EXTERNAL_ENCODE_QUEUE_DEPTH="${ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH:-64}"
@@ -36,6 +38,15 @@ APP_CONFIG_PATH="${ORANGE_GUI_APP_CONFIG_PATH:-${HOME}/orange_data/config/app/de
 is_nonnegative_integer() {
   [[ "$1" =~ ^[0-9]+$ ]]
 }
+
+case "${GUI_USE_PRIVILEGE_WRAPPER}" in
+  auto|0|1)
+    ;;
+  *)
+    echo "ORANGE_GUI_USE_PRIVILEGE_WRAPPER must be auto, 0, or 1" >&2
+    exit 2
+    ;;
+esac
 
 EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS="--expect-external-crop-encode-queue-depth ${CROP_EXTERNAL_ENCODE_QUEUE_DEPTH}"
 PER_CAMERA_GPU_DISPLAY_ITEMS=()
@@ -370,12 +381,14 @@ Validation environment:
   ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER=${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER:-<not set>}
   ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS=${CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS:-<not set>}
 
-Display session environment forwarded to sudo env:
+Display session environment forwarded to the privileged GUI launch:
   DISPLAY=${DISPLAY_ENV:-<not set>}
   XAUTHORITY=${XAUTHORITY_ENV:-<not set>}
   WAYLAND_DISPLAY=${WAYLAND_DISPLAY_ENV:-<not set>}
   XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR_ENV:-<not set>}
   XDG_SESSION_TYPE=${XDG_SESSION_TYPE_ENV:-<not set>}
+  ORANGE_GUI_USE_PRIVILEGE_WRAPPER=${GUI_USE_PRIVILEGE_WRAPPER}
+  ORANGE_GUI_PRIVILEGE_WRAPPER=${GUI_PRIVILEGE_WRAPPER}
 
 After recording, validate the artifact with:
   scripts/validate_gui_ptp_recording.py <recording_folder>
@@ -489,6 +502,19 @@ Useful tmux refresh commands from the graphical terminal:
 Set ORANGE_GUI_ALLOW_NO_DISPLAY=1 only for non-performance smoke diagnostics.
 EOF
   exit 1
+fi
+
+if [[ "${GUI_USE_PRIVILEGE_WRAPPER}" == "1" || ( "${GUI_USE_PRIVILEGE_WRAPPER}" == "auto" && -x "${GUI_PRIVILEGE_WRAPPER}" ) ]]; then
+  if [[ ! -x "${GUI_PRIVILEGE_WRAPPER}" ]]; then
+    echo "Requested GUI privilege wrapper is not executable: ${GUI_PRIVILEGE_WRAPPER}" >&2
+    echo "Install it with: scripts/install_orange_gui_validation_wrapper.sh --install-sudoers" >&2
+    exit 1
+  fi
+  WRAPPER_ARGS=("--orange-bin" "${ORANGE_BIN}")
+  for env_arg in "${ENV_ARGS[@]}"; do
+    WRAPPER_ARGS+=("--env" "${env_arg}")
+  done
+  exec sudo -n "${GUI_PRIVILEGE_WRAPPER}" "${WRAPPER_ARGS[@]}"
 fi
 
 exec sudo env "${ENV_ARGS[@]}" "${ORANGE_BIN}"

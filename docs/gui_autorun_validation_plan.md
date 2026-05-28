@@ -82,6 +82,47 @@ tmux set-environment -g XDG_RUNTIME_DIR "$XDG_RUNTIME_DIR"
 tmux set-environment -g XDG_SESSION_TYPE "$XDG_SESSION_TYPE"
 ```
 
+On the current local GNOME/X11 setup, the SSH/tmux shell can use the physical
+display without forwarding GUI traffic to a laptop by setting:
+
+```bash
+export DISPLAY=:1
+export XAUTHORITY=/run/user/1000/gdm/Xauthority
+export XDG_RUNTIME_DIR=/run/user/1000
+export XDG_SESSION_TYPE=x11
+```
+
+## Privileged Launch Wrapper
+
+The GUI validation launcher supports a privileged wrapper, matching the
+headless `orange-local-benchmark` pattern. The wrapper source lives at
+`scripts/orange_gui_validation_wrapper.sh`, and the installer is
+`scripts/install_orange_gui_validation_wrapper.sh`.
+
+The intended installed command is:
+
+```text
+/usr/local/bin/orange-gui-validation
+```
+
+Install it and add the narrow sudoers entry once from an interactive shell:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
+```
+
+Then verify the non-interactive path:
+
+```bash
+sudo -n /usr/local/bin/orange-gui-validation --help
+```
+
+When the wrapper is installed, `scripts/run_gui_aq_off_validation.sh` uses it
+automatically (`ORANGE_GUI_USE_PRIVILEGE_WRAPPER=auto`). Set
+`ORANGE_GUI_USE_PRIVILEGE_WRAPPER=1` to require it, or `0` to force the older
+`sudo env` path.
+
 ## Automation Research
 
 Dear ImGui applications can be automated through the upstream Dear ImGui Test
