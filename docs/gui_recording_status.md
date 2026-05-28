@@ -562,6 +562,12 @@ Current GUI validation tooling:
 - `scripts/run_gui_aq_off_validation.sh` now prints the expected post-run
   validator commands, including expected `stream_downsample`,
   `display_preview_max_fps`, `swap_interval`, and `frame_max_fps`.
+- `scripts/summarize_gui_validation.py --latest-complete` now includes an
+  `External Recorder Status` section when recorder contracts are present. It
+  reads full-frame and crop `status_json` heartbeat sidecars, the corresponding
+  supervisor runtime JSON, and summary counts so compact run summaries expose
+  recorder completion, heartbeat, ACK/received/encoded totals, and count
+  mismatches.
 - `scripts/validate_gui_ptp_recording.py <recording_folder>` validates one
   explicit GUI recording artifact.
 - `scripts/validate_gui_ptp_recording.py --latest` validates the newest GUI

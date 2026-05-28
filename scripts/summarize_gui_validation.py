@@ -352,6 +352,7 @@ def descriptor_stream_config(details: dict[str, Any]) -> dict[str, Any]:
         "socket_path",
         "encode_queue_depth",
         "summary_json",
+        "status_json",
     )
     return {field: details[field] for field in fields if field in details}
 
@@ -365,6 +366,143 @@ def merge_stream_config_with_fallbacks(*configs: dict[str, Any]) -> dict[str, An
             if key not in merged and value not in (None, ""):
                 merged[key] = value
     return merged
+
+
+def stream_display_serial(stream_key: str, stream: dict[str, Any]) -> str:
+    for value in (stream.get("stream_id"), stream.get("camera_serial"), stream_key):
+        if not isinstance(value, str) or not value:
+            continue
+        if value.startswith("Cam"):
+            value = value[3:]
+        if value.endswith("_crop"):
+            value = value[: -len("_crop")]
+        return value
+    return stream_key
+
+
+def summary_path_from_stream(recording_folder: Path, stream: dict[str, Any]) -> Path | None:
+    summary_json = stream.get("summary_json")
+    if isinstance(summary_json, str) and summary_json:
+        return path_from_recording_folder(recording_folder, summary_json)
+    return None
+
+
+def status_path_from_stream(recording_folder: Path, stream: dict[str, Any]) -> Path | None:
+    status_json = stream.get("status_json")
+    if isinstance(status_json, str) and status_json:
+        return path_from_recording_folder(recording_folder, status_json)
+    summary_path = summary_path_from_stream(recording_folder, stream)
+    if summary_path is not None:
+        name = summary_path.name
+        if name.endswith("_summary.json"):
+            return summary_path.with_name(name[: -len("_summary.json")] + "_status.json")
+        return summary_path.with_name(summary_path.stem + "_status.json")
+    return None
+
+
+def runtime_processes_by_status_path(runtime: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    processes = runtime.get("processes")
+    processes = processes if isinstance(processes, list) else []
+    by_path: dict[str, dict[str, Any]] = {}
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        path = process.get("status_json_path")
+        if isinstance(path, str) and path:
+            process_path = Path(path)
+            by_path[str(process_path)] = process
+            by_path[str(process_path.resolve())] = process
+    return by_path
+
+
+def summarize_external_recorder_status_contract(
+    recording_folder: Path,
+    contract_path: Path,
+) -> dict[str, Any]:
+    contract = read_json(contract_path)
+    streams = nested_dict(contract, "streams")
+    if not streams:
+        return {}
+    artifact_root_value = contract.get("artifact_root")
+    artifact_root = (
+        path_from_recording_folder(recording_folder, artifact_root_value)
+        if isinstance(artifact_root_value, str) and artifact_root_value
+        else contract_path.parent
+    )
+    runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
+    runtime = read_json(runtime_path)
+    runtime_by_status_path = runtime_processes_by_status_path(runtime)
+    out: dict[str, Any] = {}
+    for stream_key, raw_stream in sorted(streams.items()):
+        stream = raw_stream if isinstance(raw_stream, dict) else {}
+        serial = stream_display_serial(str(stream_key), stream)
+        status_path = status_path_from_stream(recording_folder, stream)
+        summary_path = summary_path_from_stream(recording_folder, stream)
+        status = read_json(status_path) if status_path is not None else {}
+        summary = read_json(summary_path) if summary_path is not None else {}
+        runtime_process = None
+        if status_path is not None:
+            runtime_process = runtime_by_status_path.get(str(status_path))
+            if runtime_process is None:
+                runtime_process = runtime_by_status_path.get(str(status_path.resolve()))
+        runtime_status = (
+            runtime_process.get("recorder_status")
+            if isinstance(runtime_process, dict)
+            else {}
+        )
+        runtime_status = runtime_status if isinstance(runtime_status, dict) else {}
+        frames_received = int_value(status.get("frames_received"))
+        frames_encoded = int_value(status.get("frames_encoded"))
+        acks_sent = int_value(status.get("acks_sent"))
+        counts_match_summary = (
+            None if not summary else (
+                frames_received == int_value(summary.get("frames_received"))
+                and frames_encoded == int_value(summary.get("frames_encoded"))
+                and acks_sent == int_value(summary.get("acks_sent"))
+            )
+        )
+        out[serial] = {
+            "stream_id": stream.get("stream_id"),
+            "status_json": str(status_path) if status_path is not None else "",
+            "status_json_exists": status_path.exists() if status_path is not None else False,
+            "summary_json": str(summary_path) if summary_path is not None else "",
+            "summary_json_exists": summary_path.exists() if summary_path is not None else False,
+            "runtime_json": str(runtime_path),
+            "runtime_json_exists": runtime_path.exists(),
+            "schema_id": status.get("schema_id"),
+            "schema_version": int_value(status.get("schema_version")),
+            "status": status.get("status"),
+            "heartbeat_sequence": int_value(status.get("heartbeat_sequence")),
+            "frames_received": frames_received,
+            "frames_encoded": frames_encoded,
+            "acks_sent": acks_sent,
+            "worker_failed": status.get("worker_failed"),
+            "error": status.get("error"),
+            "summary_frames_received": int_value(summary.get("frames_received")),
+            "summary_frames_encoded": int_value(summary.get("frames_encoded")),
+            "summary_acks_sent": int_value(summary.get("acks_sent")),
+            "counts_match_summary": counts_match_summary,
+            "runtime_present": runtime_process is not None,
+            "runtime_valid": runtime_status.get("valid") is True,
+            "runtime_status": runtime_status.get("status"),
+            "runtime_heartbeat_sequence": int_value(runtime_status.get("heartbeat_sequence")),
+        }
+    return out
+
+
+def summarize_external_recorder_status(recording_folder: Path) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for label, filename in (
+        ("full", "external_recorder_contract.json"),
+        ("crop", "external_crop_recorder_contract.json"),
+    ):
+        contract_path = recording_folder / filename
+        if contract_path.exists():
+            out[label] = summarize_external_recorder_status_contract(
+                recording_folder,
+                contract_path,
+            )
+    return out
 
 
 def summarize_gui_timing_diagnosis(gui_display_frame_rate: dict[str, Any]) -> dict[str, Any]:
@@ -972,6 +1110,7 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
         "pipeline": summarize_pipeline(recording_folder),
         "videos": summarize_videos(recording_folder, ffprobe),
         "outputs": outputs,
+        "external_recorder_status": summarize_external_recorder_status(recording_folder),
         "crop": summarize_crop_recording(recording_folder, outputs, manifest),
         "pose_events": summarize_pose_events(recording_folder),
         "spatial_calibrations": summarize_spatial_calibrations(snapshot),
@@ -1141,6 +1280,40 @@ def print_human(summary: dict[str, Any]) -> None:
             print(f"  Cam{serial}: {'; '.join(parts)}")
     else:
         print("  no recording outputs found")
+
+    print("\nExternal Recorder Status")
+    recorder_status = summary.get("external_recorder_status")
+    recorder_status = recorder_status if isinstance(recorder_status, dict) else {}
+    if recorder_status:
+        for group_name, streams in sorted(recorder_status.items()):
+            streams = streams if isinstance(streams, dict) else {}
+            if not streams:
+                print(f"  {group_name}: no streams")
+                continue
+            for serial, status in sorted(streams.items()):
+                status = status if isinstance(status, dict) else {}
+                health_parts = []
+                if status.get("status") != "completed":
+                    health_parts.append(f"status={status.get('status') or 'missing'}")
+                if status.get("runtime_valid") is not True:
+                    health_parts.append("runtime=invalid")
+                if status.get("counts_match_summary") is False:
+                    health_parts.append("counts_mismatch")
+                if status.get("worker_failed") is True:
+                    health_parts.append("worker_failed")
+                if status.get("error"):
+                    health_parts.append(f"error={status.get('error')}")
+                health = "ok" if not health_parts else ",".join(health_parts)
+                print(
+                    f"  {group_name} Cam{serial}: {health} "
+                    f"heartbeat={fmt_int(status.get('heartbeat_sequence'))} "
+                    f"runtime_heartbeat={fmt_int(status.get('runtime_heartbeat_sequence'))} "
+                    f"received={fmt_int(status.get('frames_received'))} "
+                    f"encoded={fmt_int(status.get('frames_encoded'))} "
+                    f"acks={fmt_int(status.get('acks_sent'))}"
+                )
+    else:
+        print("  no external recorder contracts found")
 
     print("\nCrop Recording")
     if summary.get("crop"):

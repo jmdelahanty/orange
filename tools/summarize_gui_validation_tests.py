@@ -25,6 +25,102 @@ def write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def write_external_recorder_status_fixture(
+    recording_folder: Path,
+    serial: str,
+    *,
+    crop: bool = False,
+    rows: int = 3,
+    heartbeat_sequence: int = 4,
+    runtime_heartbeat_sequence: int | None = None,
+) -> None:
+    artifact_root = recording_folder / (
+        "external_crop_recorder" if crop else "external_recorder"
+    )
+    artifact_root.mkdir(exist_ok=True)
+    name_prefix = f"Cam{serial}_crop_external" if crop else f"Cam{serial}_external"
+    stream_id = f"{serial}_crop" if crop else serial
+    contract_path = recording_folder / (
+        "external_crop_recorder_contract.json"
+        if crop
+        else "external_recorder_contract.json"
+    )
+    summary_path = artifact_root / f"{name_prefix}_summary.json"
+    status_path = artifact_root / f"{name_prefix}_status.json"
+    runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
+    write_text(
+        summary_path,
+        json.dumps(
+            {
+                "frames_received": rows,
+                "frames_encoded": rows,
+                "acks_sent": rows,
+            }
+        )
+        + "\n",
+    )
+    write_text(
+        status_path,
+        json.dumps(
+            {
+                "schema_id": "orange.external_recorder.status",
+                "schema_version": 1,
+                "status": "completed",
+                "heartbeat_sequence": heartbeat_sequence,
+                "frames_received": rows,
+                "frames_encoded": rows,
+                "acks_sent": rows,
+                "worker_failed": False,
+            }
+        )
+        + "\n",
+    )
+    write_text(
+        runtime_path,
+        json.dumps(
+            {
+                "schema_id": "orange.external_recorder.supervisor_runtime",
+                "schema_version": 1,
+                "processes": [
+                    {
+                        "status_json_path": str(status_path),
+                        "recorder_status": {
+                            "present": True,
+                            "valid": True,
+                            "status": "completed",
+                            "heartbeat_sequence": (
+                                runtime_heartbeat_sequence
+                                if runtime_heartbeat_sequence is not None
+                                else heartbeat_sequence
+                            ),
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n",
+    )
+    write_text(
+        contract_path,
+        json.dumps(
+            {
+                "schema_id": "orange.external_recorder.contract",
+                "schema_version": 1,
+                "artifact_root": str(artifact_root),
+                "streams": {
+                    stream_id: {
+                        "stream_id": stream_id,
+                        "camera_serial": stream_id,
+                        "summary_json": str(summary_path),
+                        "status_json": str(status_path),
+                    }
+                },
+            }
+        )
+        + "\n",
+    )
+
+
 def test_crop_summary_reads_rows_preview_and_fanout() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -379,6 +475,43 @@ def test_crop_summary_uses_external_crop_contract_stream_config_fallback() -> No
         )
 
 
+def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_text(root / "recording_snapshot.json", "{}\n")
+        write_text(root / "recording_session.json", "{}\n")
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            crop=False,
+            rows=3,
+            heartbeat_sequence=4,
+        )
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            crop=True,
+            rows=2,
+            heartbeat_sequence=5,
+            runtime_heartbeat_sequence=6,
+        )
+
+        summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
+        full = summary["external_recorder_status"]["full"]["2010095"]
+        crop = summary["external_recorder_status"]["crop"]["2010095"]
+
+        require(full["status"] == "completed", "full recorder status should parse")
+        require(full["status_json_exists"] is True, "full status sidecar should be marked present")
+        require(full["runtime_valid"] is True, "full runtime status should parse")
+        require(full["counts_match_summary"] is True, "full status counts should match summary")
+        require(full["heartbeat_sequence"] == 4, "full heartbeat should parse")
+        require(full["runtime_heartbeat_sequence"] == 4, "full runtime heartbeat should parse")
+        require(crop["frames_received"] == 2, "crop received count should parse")
+        require(crop["frames_encoded"] == 2, "crop encoded count should parse")
+        require(crop["acks_sent"] == 2, "crop ACK count should parse")
+        require(crop["runtime_heartbeat_sequence"] == 6, "crop runtime heartbeat should parse")
+
+
 def test_latest_complete_selects_newest_complete_recording() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -423,6 +556,7 @@ def main() -> int:
     test_crop_summary_uses_recording_backend_external_fallbacks()
     test_crop_summary_marks_same_external_gpu_as_analytics()
     test_crop_summary_uses_external_crop_contract_stream_config_fallback()
+    test_external_recorder_status_summary_reads_full_and_crop_sidecars()
     test_latest_complete_selects_newest_complete_recording()
     test_latest_complete_accepts_external_camera_artifact_video()
     print("summarize_gui_validation_tests passed")

@@ -733,6 +733,14 @@ validation launcher/wrapper path:
 PTP-gated validation defaults to `auto` so `ptp4l`/`phc2sys` are started and
 rechecked before Orange opens cameras.
 
+The post-run tooling now checks the sidecar heartbeat in both strict and
+summary paths: `validate_gui_ptp_recording.py --require-external-recorder-status`
+fails on missing/unhealthy sidecars or missing parsed runtime state,
+`compare_gui_crop_preview_validation.py --require-external-recorder-status`
+carries that gate into visible/hidden comparisons, and
+`summarize_gui_validation.py` prints compact full-frame/crop recorder heartbeat
+and count status for operator triage.
+
 Detailed Stage 5 protocol and routing design:
 
 ```text
