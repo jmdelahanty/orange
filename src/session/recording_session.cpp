@@ -375,6 +375,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
             {"expected_shard_gpu_ids", nlohmann::json::array({recorder_gpu_id})},
             {"routing_policy", "single_shard"},
             {"summary_json", prefix + "_summary.json"},
+            {"status_json", prefix + "_status.json"},
             {"video_sanity_json", prefix + "_video_sanity.json"},
             {"mp4", prefix + ".mp4"},
             {"mp4_keyframe", prefix + "_keyframe.json"},

@@ -625,6 +625,8 @@ def write_external_crop_recording_session_manifest(
     analytics_gpu_id: int = 5,
     recorder_gpu_id: int = 5,
 ) -> None:
+    summary_json = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_summary.json"
+    status_json = recording_folder / "external_crop_recorder" / f"Cam{serial}_crop_external_status.json"
     (recording_folder / "recording_session.json").write_text(
         json.dumps(
             {
@@ -639,6 +641,8 @@ def write_external_crop_recording_session_manifest(
                                 "recorder_gpu_id": recorder_gpu_id,
                                 "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                                 "encode_queue_depth": queue_depth,
+                                "summary_json": str(summary_json),
+                                "status_json": str(status_json),
                             }
                         },
                         "frames_received": {serial: frames_received},
@@ -665,9 +669,15 @@ def write_external_crop_contract(
     analytics_gpu_id: int = 5,
     recorder_gpu_id: int = 6,
 ) -> None:
+    artifact_root = recording_folder / "external_crop_recorder"
+    summary_json = artifact_root / f"Cam{serial}_crop_external_summary.json"
+    status_json = artifact_root / f"Cam{serial}_crop_external_status.json"
     (recording_folder / "external_crop_recorder_contract.json").write_text(
         json.dumps(
             {
+                "schema_id": "orange.external_recorder.contract",
+                "schema_version": 1,
+                "artifact_root": str(artifact_root),
                 "streams": {
                     f"{serial}_crop": {
                         "stream_id": f"{serial}_crop",
@@ -676,6 +686,8 @@ def write_external_crop_contract(
                         "recorder_gpu_id": recorder_gpu_id,
                         "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                         "encode_queue_depth": queue_depth,
+                        "summary_json": str(summary_json),
+                        "status_json": str(status_json),
                     }
                 }
             }
@@ -683,6 +695,104 @@ def write_external_crop_contract(
         + "\n",
         encoding="utf-8",
     )
+
+
+def write_external_recorder_status_fixture(
+    recording_folder: Path,
+    serial: str,
+    *,
+    crop: bool = False,
+    rows: int = 3,
+    heartbeat_sequence: int = 4,
+    status: str = "completed",
+    worker_failed: bool = False,
+    error: str = "",
+    runtime_heartbeat_sequence: int | None = None,
+) -> tuple[Path, Path]:
+    artifact_root = recording_folder / (
+        "external_crop_recorder" if crop else "external_recorder"
+    )
+    artifact_root.mkdir(exist_ok=True)
+    name_prefix = f"Cam{serial}_crop_external" if crop else f"Cam{serial}_external"
+    stream_id = f"{serial}_crop" if crop else serial
+    summary_path = artifact_root / f"{name_prefix}_summary.json"
+    status_path = artifact_root / f"{name_prefix}_status.json"
+    contract_path = recording_folder / (
+        "external_crop_recorder_contract.json"
+        if crop
+        else "external_recorder_contract.json"
+    )
+    runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
+
+    summary_path.write_text(
+        json.dumps(
+            {
+                "frames_received": rows,
+                "frames_encoded": rows,
+                "acks_sent": rows,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    status_payload = {
+        "schema_id": "orange.external_recorder.status",
+        "schema_version": 1,
+        "status": status,
+        "heartbeat_sequence": heartbeat_sequence,
+        "frames_received": rows,
+        "frames_encoded": rows,
+        "acks_sent": rows,
+        "worker_failed": worker_failed,
+    }
+    if error:
+        status_payload["error"] = error
+    status_path.write_text(json.dumps(status_payload) + "\n", encoding="utf-8")
+    runtime_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "orange.external_recorder.supervisor_runtime",
+                "schema_version": 1,
+                "processes": [
+                    {
+                        "status_json_path": str(status_path),
+                        "recorder_status": {
+                            "present": True,
+                            "valid": True,
+                            "status": status,
+                            "heartbeat_sequence": (
+                                runtime_heartbeat_sequence
+                                if runtime_heartbeat_sequence is not None
+                                else heartbeat_sequence
+                            ),
+                        },
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    contract_path.write_text(
+        json.dumps(
+            {
+                "schema_id": "orange.external_recorder.contract",
+                "schema_version": 1,
+                "artifact_root": str(artifact_root),
+                "streams": {
+                    stream_id: {
+                        "stream_id": stream_id,
+                        "camera_serial": stream_id,
+                        "summary_json": str(summary_path),
+                        "status_json": str(status_path),
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return summary_path, status_path
 
 
 def gui_fps_snapshot(
@@ -924,6 +1034,102 @@ def test_preview_sampling_fails_when_preview_hidden() -> None:
         )
 
 
+def test_external_recorder_status_validation_checks_full_and_crop_contracts() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            crop=False,
+            rows=3,
+            heartbeat_sequence=4,
+        )
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            crop=True,
+            rows=3,
+            heartbeat_sequence=5,
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        summary = validator.check_external_recorder_status(reporter, root, True)
+
+        require(not reporter.failures, f"unexpected failures: {reporter.failures}")
+        require(summary["full"]["2010095"]["heartbeat_sequence"] == 4, "full heartbeat should parse")
+        require(summary["crop"]["2010095"]["heartbeat_sequence"] == 5, "crop heartbeat should parse")
+        require(summary["crop"]["2010095"]["frames_encoded"] == 3, "crop encoded count should parse")
+
+
+def test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            runtime_heartbeat_sequence=3,
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+
+        require(
+            any("runtime heartbeat" in failure for failure in reporter.failures),
+            "runtime heartbeat mismatch should fail",
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(
+            root,
+            "2010095",
+            status="failed",
+            worker_failed=True,
+            error="simulated failure",
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+
+        require(
+            any("expected completed" in failure for failure in reporter.failures),
+            "failed recorder status should fail",
+        )
+        require(
+            any("worker_failed=True" in failure for failure in reporter.failures),
+            "worker_failed=true should fail",
+        )
+        require(
+            any("simulated failure" in failure for failure in reporter.failures),
+            "status sidecar error should fail",
+        )
+
+
+def test_external_recorder_status_validation_derives_status_path_from_summary() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        write_external_recorder_status_fixture(root, "2010095")
+        contract_path = root / "external_recorder_contract.json"
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        del contract["streams"]["2010095"]["status_json"]
+        contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+
+        require(not reporter.failures, f"summary-derived status path should pass: {reporter.failures}")
+
+        del contract["streams"]["2010095"]["summary_json"]
+        contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
+        reporter = validator.Reporter(verbose=False)
+        validator.check_external_recorder_status(reporter, root, True)
+
+        require(
+            any("recorder status sidecar missing" in failure for failure in reporter.failures),
+            "missing status and summary paths should fail instead of resolving to cwd",
+        )
+
+
 def test_crop_recording_artifacts_pass_when_aligned() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -974,6 +1180,7 @@ def test_crop_recording_artifacts_use_recording_output_descriptor_paths() -> Non
                         "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                         "encode_queue_depth": 64,
                         "summary_json": str(external_summary),
+                        "status_json": str(external_summary).replace("_summary.json", "_status.json"),
                     },
                 }
             }
@@ -1042,6 +1249,7 @@ def test_crop_recording_artifacts_external_queue_expectations() -> None:
                         "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                         "encode_queue_depth": 64,
                         "summary_json": str(external_summary),
+                        "status_json": str(external_summary).replace("_summary.json", "_status.json"),
                     },
                 }
             }
@@ -1119,6 +1327,7 @@ def test_crop_recording_artifacts_external_queue_high_water_cannot_exceed_depth(
                         "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                         "encode_queue_depth": 64,
                         "summary_json": str(external_summary),
+                        "status_json": str(external_summary).replace("_summary.json", "_status.json"),
                     },
                 }
             }
@@ -1170,6 +1379,7 @@ def test_crop_recording_artifacts_require_external_backend_metadata() -> None:
                         "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                         "encode_queue_depth": 64,
                         "summary_json": str(external_summary),
+                        "status_json": str(external_summary).replace("_summary.json", "_status.json"),
                     },
                 }
             }
@@ -1319,6 +1529,7 @@ def test_crop_recording_artifacts_external_recorder_gpu_expectations() -> None:
                         "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",
                         "encode_queue_depth": 64,
                         "summary_json": str(external_summary),
+                        "status_json": str(external_summary).replace("_summary.json", "_status.json"),
                     },
                 }
             }
@@ -1930,6 +2141,9 @@ def main() -> int:
         test_preview_sampling_passes_when_visible_bounded_and_skipped,
         test_preview_sampling_fails_without_cadence_skips,
         test_preview_sampling_fails_when_preview_hidden,
+        test_external_recorder_status_validation_checks_full_and_crop_contracts,
+        test_external_recorder_status_validation_fails_on_bad_sidecar_or_runtime,
+        test_external_recorder_status_validation_derives_status_path_from_summary,
         test_crop_recording_artifacts_pass_when_aligned,
         test_crop_recording_artifacts_use_recording_output_descriptor_paths,
         test_crop_recording_artifacts_external_queue_expectations,

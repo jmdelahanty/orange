@@ -307,6 +307,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-recorder-status",
+        action="store_true",
+        help=(
+            "For full-frame and crop external_ipc recorder contracts present in "
+            "the artifact, require status_json heartbeat sidecars and parsed "
+            "external_recorder_supervisor_runtime.json recorder_status entries."
+        ),
+    )
+    parser.add_argument(
         "--require-crop-preview-counters",
         action="store_true",
         help="Fail if crop sidecar preview counters are missing for crop-enabled cameras.",
@@ -530,6 +539,7 @@ def descriptor_stream_config(details: dict[str, Any]) -> dict[str, Any]:
         "socket_path",
         "encode_queue_depth",
         "summary_json",
+        "status_json",
     )
     return {field: details[field] for field in fields if field in details}
 
@@ -548,6 +558,26 @@ def merge_stream_config_with_fallbacks(*configs: dict[str, Any]) -> dict[str, An
 def path_from_recording_folder(recording_folder: Path, value: Any) -> Path:
     path = Path(str(value or ""))
     return path if path.is_absolute() else recording_folder / path
+
+
+def summary_path_from_stream(recording_folder: Path, stream: dict[str, Any]) -> Path | None:
+    summary_json = stream.get("summary_json")
+    if isinstance(summary_json, str) and summary_json:
+        return path_from_recording_folder(recording_folder, summary_json)
+    return None
+
+
+def status_path_from_stream(recording_folder: Path, stream: dict[str, Any]) -> Path | None:
+    status_json = stream.get("status_json")
+    if isinstance(status_json, str) and status_json:
+        return path_from_recording_folder(recording_folder, status_json)
+    summary_path = summary_path_from_stream(recording_folder, stream)
+    if summary_path is not None:
+        name = summary_path.name
+        if name.endswith("_summary.json"):
+            return summary_path.with_name(name[: -len("_summary.json")] + "_status.json")
+        return summary_path.with_name(summary_path.stem + "_status.json")
+    return None
 
 
 def count_csv_data_rows(path: Path) -> int | None:
@@ -854,6 +884,221 @@ def check_recording_session_manifest(
             f"Cam{serial} recording_session packet_count_source={packet_source}",
             f"Cam{serial} recording_session packet_count_source={packet_source!r}",
         )
+
+
+def stream_display_serial(stream_key: str, stream: dict[str, Any]) -> str:
+    for value in (stream.get("stream_id"), stream.get("camera_serial"), stream_key):
+        if not isinstance(value, str) or not value:
+            continue
+        if value.startswith("Cam"):
+            value = value[3:]
+        if value.endswith("_crop"):
+            value = value[: -len("_crop")]
+        return value
+    return stream_key
+
+
+def runtime_processes_by_status_path(runtime: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    processes = runtime.get("processes")
+    processes = processes if isinstance(processes, list) else []
+    by_path: dict[str, dict[str, Any]] = {}
+    for process in processes:
+        if not isinstance(process, dict):
+            continue
+        path = process.get("status_json_path")
+        if isinstance(path, str) and path:
+            process_path = Path(path)
+            by_path[str(process_path)] = process
+            by_path[str(process_path.resolve())] = process
+    return by_path
+
+
+def check_external_recorder_status_contract(
+    reporter: Reporter,
+    recording_folder: Path,
+    contract_path: Path,
+    label: str,
+) -> dict[str, Any]:
+    contract = read_json(contract_path)
+    if not contract:
+        return {}
+    streams = contract.get("streams")
+    streams = streams if isinstance(streams, dict) else {}
+    if not streams:
+        reporter.fail(f"{label} external recorder contract has no streams: {contract_path}")
+        return {}
+
+    artifact_root_value = contract.get("artifact_root")
+    artifact_root = (
+        path_from_recording_folder(recording_folder, artifact_root_value)
+        if isinstance(artifact_root_value, str) and artifact_root_value
+        else contract_path.parent
+    )
+    runtime_path = artifact_root / "external_recorder_supervisor_runtime.json"
+    runtime = read_json(runtime_path)
+    reporter.check(
+        runtime.get("schema_id") == "orange.external_recorder.supervisor_runtime",
+        f"{label} external recorder runtime present",
+        f"{label} external recorder runtime missing or invalid: {runtime_path}",
+    )
+    runtime_by_status_path = runtime_processes_by_status_path(runtime)
+
+    status_summary: dict[str, Any] = {}
+    for stream_key, raw_stream in streams.items():
+        stream = raw_stream if isinstance(raw_stream, dict) else {}
+        serial = stream_display_serial(str(stream_key), stream)
+        status_path = status_path_from_stream(recording_folder, stream)
+        summary_path = summary_path_from_stream(recording_folder, stream)
+        status = read_json(status_path) if status_path is not None else {}
+        summary = read_json(summary_path) if summary_path is not None else {}
+
+        prefix = f"{label} Cam{serial}"
+        reporter.check(
+            status_path is not None and status_path.exists(),
+            f"{prefix} recorder status sidecar present",
+            f"{prefix} recorder status sidecar missing: {status_path}",
+        )
+        reporter.check(
+            status.get("schema_id") == "orange.external_recorder.status"
+            and integer(status.get("schema_version")) == 1,
+            f"{prefix} recorder status schema valid",
+            f"{prefix} recorder status schema invalid: {status_path}",
+        )
+        status_value = str(status.get("status", ""))
+        reporter.check(
+            status_value == "completed",
+            f"{prefix} recorder status completed",
+            f"{prefix} recorder status={status_value!r}; expected completed",
+        )
+        heartbeat_sequence = integer(status.get("heartbeat_sequence"))
+        reporter.check(
+            heartbeat_sequence is not None and heartbeat_sequence > 0,
+            f"{prefix} recorder heartbeat sequence={heartbeat_sequence}",
+            f"{prefix} recorder heartbeat sequence missing or zero ({heartbeat_sequence})",
+        )
+        reporter.check(
+            status.get("worker_failed") is False,
+            f"{prefix} recorder worker_failed=false",
+            f"{prefix} recorder worker_failed={status.get('worker_failed')!r}",
+        )
+        reporter.check(
+            not status.get("error"),
+            f"{prefix} recorder status error empty",
+            f"{prefix} recorder status error={status.get('error')!r}",
+        )
+
+        frames_received = integer(status.get("frames_received"))
+        frames_encoded = integer(status.get("frames_encoded"))
+        acks_sent = integer(status.get("acks_sent"))
+        summary_frames_received = integer(summary.get("frames_received"))
+        summary_frames_encoded = integer(summary.get("frames_encoded"))
+        summary_acks_sent = integer(summary.get("acks_sent"))
+        if summary:
+            reporter.check(
+                frames_received == summary_frames_received,
+                f"{prefix} status frames_received matches summary ({frames_received})",
+                (
+                    f"{prefix} status frames_received={frames_received}, "
+                    f"summary frames_received={summary_frames_received}"
+                ),
+            )
+            reporter.check(
+                frames_encoded == summary_frames_encoded,
+                f"{prefix} status frames_encoded matches summary ({frames_encoded})",
+                (
+                    f"{prefix} status frames_encoded={frames_encoded}, "
+                    f"summary frames_encoded={summary_frames_encoded}"
+                ),
+            )
+            reporter.check(
+                acks_sent == summary_acks_sent,
+                f"{prefix} status acks_sent matches summary ({acks_sent})",
+                f"{prefix} status acks_sent={acks_sent}, summary acks_sent={summary_acks_sent}",
+            )
+
+        runtime_process = None
+        if status_path is not None:
+            runtime_process = runtime_by_status_path.get(str(status_path))
+            if runtime_process is None:
+                # Runtime paths are absolute in current artifacts, but accept a resolved
+                # match when a test fixture writes equivalent relative paths.
+                runtime_process = runtime_by_status_path.get(str(status_path.resolve()))
+        reporter.check(
+            runtime_process is not None,
+            f"{prefix} runtime recorder_status process present",
+            f"{prefix} runtime recorder_status process missing for {status_path}",
+        )
+        runtime_status = (
+            runtime_process.get("recorder_status")
+            if isinstance(runtime_process, dict)
+            else {}
+        )
+        runtime_status = runtime_status if isinstance(runtime_status, dict) else {}
+        reporter.check(
+            runtime_status.get("present") is True and runtime_status.get("valid") is True,
+            f"{prefix} runtime recorder_status valid",
+            f"{prefix} runtime recorder_status invalid: {runtime_status}",
+        )
+        reporter.check(
+            runtime_status.get("status") == status_value,
+            f"{prefix} runtime recorder_status matches sidecar",
+            (
+                f"{prefix} runtime recorder_status={runtime_status.get('status')!r}, "
+                f"sidecar status={status_value!r}"
+            ),
+        )
+        reporter.check(
+            integer(runtime_status.get("heartbeat_sequence")) == heartbeat_sequence,
+            f"{prefix} runtime heartbeat matches sidecar",
+            (
+                f"{prefix} runtime heartbeat={runtime_status.get('heartbeat_sequence')!r}, "
+                f"sidecar heartbeat={heartbeat_sequence!r}"
+            ),
+        )
+
+        status_summary[serial] = {
+            "status_json": str(status_path) if status_path is not None else "",
+            "summary_json": str(summary_path) if summary_path is not None else "",
+            "status": status_value,
+            "heartbeat_sequence": heartbeat_sequence,
+            "frames_received": frames_received,
+            "acks_sent": acks_sent,
+            "frames_encoded": frames_encoded,
+            "runtime_present": runtime_process is not None,
+            "runtime_valid": runtime_status.get("valid") is True,
+        }
+    return status_summary
+
+
+def check_external_recorder_status(
+    reporter: Reporter,
+    recording_folder: Path,
+    require_status: bool,
+) -> dict[str, Any]:
+    if not require_status:
+        return {}
+    summary: dict[str, Any] = {}
+    contract_specs = (
+        ("full", recording_folder / "external_recorder_contract.json"),
+        ("crop", recording_folder / "external_crop_recorder_contract.json"),
+    )
+    found = False
+    for label, contract_path in contract_specs:
+        if not contract_path.exists():
+            continue
+        found = True
+        summary[label] = check_external_recorder_status_contract(
+            reporter,
+            recording_folder,
+            contract_path,
+            label,
+        )
+    reporter.check(
+        found,
+        "external recorder status contracts present",
+        "external recorder status required but no external recorder contract files were found",
+    )
+    return summary
 
 
 def metric(summary: dict[str, Any], serial: str, field: str) -> dict[str, Any]:
@@ -2341,6 +2586,30 @@ def check_crop_recording_artifacts(
                     backend_stream_config,
                     "socket_path",
                 )
+                summary_json = require_stream_config_string(
+                    reporter,
+                    serial,
+                    backend_stream_config,
+                    "summary_json",
+                )
+                status_json = require_stream_config_string(
+                    reporter,
+                    serial,
+                    backend_stream_config,
+                    "status_json",
+                )
+                if summary_path is not None and summary_json is not None:
+                    reporter.check(
+                        summary_json == str(summary_path),
+                        (
+                            f"Cam{serial} recording_backend.crop_recording.stream_config "
+                            "summary_json matches descriptor"
+                        ),
+                        (
+                            f"Cam{serial} recording_backend.crop_recording.stream_config "
+                            f"summary_json ({summary_json}) != descriptor summary ({summary_path})"
+                        ),
+                    )
                 for map_name in (
                     "frames_received",
                     "frames_encoded",
@@ -2404,14 +2673,20 @@ def check_crop_recording_artifacts(
                         "encode_queue_depth",
                         external_encode_queue_depth,
                     )
-                    if summary_path is not None:
-                        check_descriptor_detail_matches_string(
-                            reporter,
-                            serial,
-                            details,
-                            "summary_json",
-                            str(summary_path),
-                        )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "summary_json",
+                        summary_json,
+                    )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "status_json",
+                        status_json,
+                    )
             if backend_stream_config and external_encode_queue_depth is not None:
                 stream_config_queue_depth = integer(backend_stream_config.get("encode_queue_depth"))
                 reporter.check(
@@ -2734,6 +3009,11 @@ def main() -> int:
             args.skip_ptp_register_decimate_check,
         )
         check_recording_session_manifest(reporter, recording_folder, snapshot, cameras)
+        external_recorder_status_summary = check_external_recorder_status(
+            reporter,
+            recording_folder,
+            args.require_external_recorder_status,
+        )
         check_pipeline(
             reporter,
             summary,
@@ -2807,6 +3087,7 @@ def main() -> int:
         crop_preview_summary = {}
         crop_recording_summary = {}
         gui_display_frame_rate_summary = {}
+        external_recorder_status_summary = {}
 
     camera_summary = compact_camera_summary(summary, cameras, video_sanity)
     result = {
@@ -2819,6 +3100,7 @@ def main() -> int:
         "summary": camera_summary,
         "crop_preview": crop_preview_summary,
         "crop_recording": crop_recording_summary,
+        "external_recorder_status": external_recorder_status_summary,
         "gui_display_frame_rate": gui_display_frame_rate_summary,
     }
 
