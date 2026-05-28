@@ -1,10 +1,10 @@
 # GUI Autorun Validation Plan
 
-Status: first internal state-machine slice in progress. The immediate goal is
-to let an agent launch the real GUI, run the same open/stream/record/finalize
-lifecycle, and validate the artifact without manual clicks.
+Status: first internal state-machine slice is implemented. The immediate goal
+is live validation on the real display session with four cameras, external
+full-frame IPC recording, and external crop recording.
 
-Last updated: 2026-05-27.
+Last updated: 2026-05-28.
 
 ## Goal
 
@@ -43,6 +43,31 @@ Current launcher defaults:
 - `ORANGE_GUI_AUTORUN_RECORD_SECONDS=10`
 - `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`
 - `ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=0`
+
+## Display Session Requirements
+
+Live GUI autorun still needs a real desktop display. Xvfb or software rendering
+is useful only for smoke checks and is not evidence for GUI performance.
+
+The launcher forwards the display/session variables needed by common Linux
+desktop sessions through the `sudo env` boundary:
+
+- `DISPLAY`
+- `XAUTHORITY`
+- `WAYLAND_DISPLAY`
+- `XDG_RUNTIME_DIR`
+- `XDG_SESSION_TYPE`
+
+For X11 or XWayland sessions, the root-launched Orange process must also be
+allowed to connect to the user's display, for example from the graphical
+terminal:
+
+```bash
+xhost +SI:localuser:root
+```
+
+If a terminal has no `DISPLAY` and no `WAYLAND_DISPLAY`, it is not attached to
+the desktop session and cannot launch the live GUI validation directly.
 
 ## Automation Research
 
@@ -100,7 +125,8 @@ select_config
 - `ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh` still only
   validates config and launcher environment.
 - `ORANGE_GUI_PRINT_EXEC_ENV_ONLY=1` prints the autorun env values and
-  `ORANGE_GUI_CONFIG_DIR` crossing the `sudo env` boundary.
+  `ORANGE_GUI_CONFIG_DIR` crossing the `sudo env` boundary. It also prints
+  display/session variables that will be forwarded to the root-launched GUI.
 - A live autorun recording must produce the same artifacts as a manual GUI run:
   `recording_session.json`, full-frame external IPC outputs, crop outputs when
   enabled, GUI timing telemetry, and validator pass/fail output.

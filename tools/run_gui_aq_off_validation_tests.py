@@ -614,6 +614,11 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
             validate_only=False,
             print_exec_env=True,
             extra_env={
+                "DISPLAY": ":77",
+                "XAUTHORITY": "/tmp/orange_test.Xauthority",
+                "WAYLAND_DISPLAY": "wayland-test",
+                "XDG_RUNTIME_DIR": "/run/user/1000",
+                "XDG_SESSION_TYPE": "wayland",
                 "ORANGE_GUI_STREAM_DOWNSAMPLE": "8",
                 "ORANGE_DISPLAY_PREVIEW_MAX_FPS": "20",
                 "ORANGE_GUI_SHOW_SPEED_GRAPHS": "1",
@@ -661,6 +666,26 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1" in result.stdout,
             "GUI autorun crop-preview flag should be forwarded through sudo env",
+        )
+        require(
+            "DISPLAY=:77" in result.stdout,
+            "DISPLAY should be forwarded through sudo env",
+        )
+        require(
+            "XAUTHORITY=/tmp/orange_test.Xauthority" in result.stdout,
+            "XAUTHORITY should be forwarded through sudo env",
+        )
+        require(
+            "WAYLAND_DISPLAY=wayland-test" in result.stdout,
+            "WAYLAND_DISPLAY should be forwarded through sudo env when set",
+        )
+        require(
+            "XDG_RUNTIME_DIR=/run/user/1000" in result.stdout,
+            "XDG_RUNTIME_DIR should be forwarded through sudo env when set",
+        )
+        require(
+            "XDG_SESSION_TYPE=wayland" in result.stdout,
+            "XDG_SESSION_TYPE should be forwarded through sudo env when set",
         )
 
 
