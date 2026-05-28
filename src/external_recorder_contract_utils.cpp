@@ -365,10 +365,28 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         streams[serial] = std::move(stream);
     }
 
-    contract["streams"] = std::move(streams);
-    ApplyExternalRecorderRecordingControlToContract(
-        &contract,
-        input.recording_control);
+    if (input.recording_control.enabled() || !contract.contains("recording_control")) {
+        contract["streams"] = std::move(streams);
+        ApplyExternalRecorderRecordingControlToContract(
+            &contract,
+            input.recording_control);
+    } else {
+        const nlohmann::json control = contract["recording_control"];
+        const nlohmann::json rollover =
+            contract.contains("rollover") && contract["rollover"].is_object()
+                ? contract["rollover"]
+                : nlohmann::json::object();
+        for (auto it = streams.begin(); it != streams.end(); ++it) {
+            if (!it.value().is_object()) {
+                continue;
+            }
+            set_json_default(&it.value(), "recording_control", control);
+            if (!rollover.empty()) {
+                set_json_default(&it.value(), "rollover", rollover);
+            }
+        }
+        contract["streams"] = std::move(streams);
+    }
     return contract;
 }
 

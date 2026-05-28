@@ -117,6 +117,100 @@ void materializes_contract_and_supervisor_plan()
     require(plan.streams.size() == 2, "expected two supervisor streams");
 }
 
+void preserves_configured_recording_control_when_input_is_default()
+{
+    CameraParams cameras[1] = {
+        make_camera("2010096", 7, {7, 8}),
+    };
+    CameraEachSelect selected[1]{};
+    selected[0].record = true;
+
+    const nlohmann::json configured_rollover = {
+        {"requested", true},
+        {"status", "supported"},
+        {"implementation", orange::external_recorder::kExternalRecorderRollingImplementation}
+    };
+    nlohmann::json overrides = {
+        {"recording_control", {
+            {"record_for_seconds", 6},
+            {"clip_seconds", 2}
+        }},
+        {"rollover", configured_rollover}
+    };
+
+    orange::external_recorder::CameraContractMaterializationInput input;
+    input.contract_config = &overrides;
+    input.recording_folder = "/tmp/orange_contract_utils_recording_control";
+    input.recording_id = "session_recording_control";
+    input.cameras_params = cameras;
+    input.cameras_select = selected;
+    input.num_cameras = 1;
+
+    const nlohmann::json contract =
+        orange::external_recorder::MaterializeExternalRecorderContractForCameras(input);
+    require(contract["recording_control"]["record_for_seconds"] == 6,
+            "configured record_for_seconds should be preserved");
+    require(contract["recording_control"]["clip_seconds"] == 2,
+            "configured clip_seconds should be preserved");
+    require(contract["rollover"]["requested"] == true,
+            "configured rollover should be preserved");
+    require(contract["streams"]["2010096"]["recording_control"]["record_for_seconds"] == 6,
+            "configured record_for_seconds should propagate to materialized stream");
+    require(contract["streams"]["2010096"]["recording_control"]["clip_seconds"] == 2,
+            "configured clip_seconds should propagate to materialized stream");
+
+    orange::external_recorder::SupervisorPlan plan;
+    std::string error;
+    require(orange::external_recorder::BuildSupervisorPlanFromContract(
+                contract,
+                {},
+                &plan,
+                &error),
+            "supervisor plan failed for preserved recording control: " + error);
+    require(plan.streams.size() == 1, "expected one preserved-control stream");
+    require(plan.streams[0].record_for_seconds == 6,
+            "preserved record_for_seconds should flow into plan");
+    require(plan.streams[0].clip_seconds == 2,
+            "preserved clip_seconds should flow into plan");
+}
+
+void explicit_input_recording_control_overrides_config()
+{
+    CameraParams cameras[1] = {
+        make_camera("2010096", 7, {7, 8}),
+    };
+    CameraEachSelect selected[1]{};
+    selected[0].record = true;
+
+    nlohmann::json overrides = {
+        {"recording_control", {
+            {"record_for_seconds", 6},
+            {"clip_seconds", 2}
+        }}
+    };
+
+    orange::external_recorder::CameraContractMaterializationInput input;
+    input.contract_config = &overrides;
+    input.recording_folder = "/tmp/orange_contract_utils_recording_control";
+    input.recording_id = "session_recording_control";
+    input.cameras_params = cameras;
+    input.cameras_select = selected;
+    input.num_cameras = 1;
+    input.recording_control.record_for_seconds = 9;
+    input.recording_control.clip_seconds = 3;
+
+    const nlohmann::json contract =
+        orange::external_recorder::MaterializeExternalRecorderContractForCameras(input);
+    require(contract["recording_control"]["record_for_seconds"] == 9,
+            "explicit input record_for_seconds should override config");
+    require(contract["recording_control"]["clip_seconds"] == 3,
+            "explicit input clip_seconds should override config");
+    require(contract["streams"]["2010096"]["recording_control"]["record_for_seconds"] == 9,
+            "explicit input record_for_seconds should propagate to stream");
+    require(contract["streams"]["2010096"]["recording_control"]["clip_seconds"] == 3,
+            "explicit input clip_seconds should propagate to stream");
+}
+
 void writes_failfast_artifacts()
 {
     const std::filesystem::path root =
@@ -335,6 +429,10 @@ int main()
     try {
         materializes_contract_and_supervisor_plan();
         std::cout << "[PASS] materializes_contract_and_supervisor_plan\n";
+        preserves_configured_recording_control_when_input_is_default();
+        std::cout << "[PASS] preserves_configured_recording_control_when_input_is_default\n";
+        explicit_input_recording_control_overrides_config();
+        std::cout << "[PASS] explicit_input_recording_control_overrides_config\n";
         writes_failfast_artifacts();
         std::cout << "[PASS] writes_failfast_artifacts\n";
         writes_supervised_session_artifacts();

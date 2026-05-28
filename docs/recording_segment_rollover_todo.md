@@ -96,6 +96,11 @@ path: generated crop contracts and `recording_backend.crop_recording` declare
 `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`, and
 `rollover.rolling_supported = false`; validators fail if crop rolling is
 accidentally requested before the crop clip/index contract exists.
+GUI full-frame external-recorder contract materialization now preserves a
+configured `recording_control`/`rollover` object instead of silently overwriting
+it with `clip_seconds = 0`; the remaining GUI full-frame work is to mirror
+external rolling summaries into the GUI `recording_session.json` and snapshot
+indexes during finalization.
 
 ## Implementation Plan
 
