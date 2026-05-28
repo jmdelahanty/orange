@@ -182,6 +182,10 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show autorun crop recording enabled by default",
         )
         require(
+            "ORANGE_GUI_AUTORUN_START_RECORDING=1" in result.stdout,
+            "launcher output should show autorun recording lifecycle enabled by default",
+        )
+        require(
             "ORANGE_GUI_RECORD_FOR_SECONDS=<app config/disabled>" in result.stdout,
             "launcher output should show GUI recording control disabled by default",
         )
@@ -545,6 +549,7 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
                 "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "maybe",
                 "ORANGE_GUI_AUTORUN_ENABLE_YOLO": "maybe",
                 "ORANGE_GUI_AUTORUN_ENABLE_CROP": "maybe",
+                "ORANGE_GUI_AUTORUN_START_RECORDING": "maybe",
                 "ORANGE_GUI_RECORD_FOR_SECONDS": "-1",
                 "ORANGE_GUI_CLIP_SECONDS": "many",
             },
@@ -602,6 +607,10 @@ def test_external_crop_queue_validation_rejects_bad_values() -> None:
         require(
             "ORANGE_GUI_AUTORUN_ENABLE_CROP must be 0 or 1" in result.stderr,
             "autorun crop enable flag should explain the boolean requirement",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_START_RECORDING must be 0 or 1" in result.stderr,
+            "autorun recording lifecycle flag should explain the boolean requirement",
         )
         require(
             "ORANGE_GUI_RECORD_FOR_SECONDS must be >= 0" in result.stderr,
@@ -1000,6 +1009,7 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "ORANGE_GUI_AUTORUN_ENABLE_RECORD": "1",
                 "ORANGE_GUI_AUTORUN_ENABLE_YOLO": "1",
                 "ORANGE_GUI_AUTORUN_ENABLE_CROP": "1",
+                "ORANGE_GUI_AUTORUN_START_RECORDING": "0",
                 "ORANGE_GUI_RECORD_FOR_SECONDS": "7",
                 "ORANGE_GUI_CLIP_SECONDS": "2",
                 "ORANGE_GUI_LOCAL_CONTROL_SOCKET": "/tmp/orange_test_control.sock",
@@ -1071,6 +1081,10 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_GUI_AUTORUN_ENABLE_CROP=1" in result.stdout,
             "GUI autorun crop-enable flag should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_AUTORUN_START_RECORDING=0" in result.stdout,
+            "GUI autorun start-recording lifecycle flag should be forwarded through sudo env",
         )
         require(
             "ORANGE_GUI_RECORD_FOR_SECONDS=7" in result.stdout,
@@ -1158,6 +1172,7 @@ def test_default_autorun_enable_flags_are_forwarded_to_exec_env() -> None:
             "ORANGE_GUI_AUTORUN_ENABLE_RECORD=1",
             "ORANGE_GUI_AUTORUN_ENABLE_YOLO=1",
             "ORANGE_GUI_AUTORUN_ENABLE_CROP=1",
+            "ORANGE_GUI_AUTORUN_START_RECORDING=1",
         ]:
             require(expected in result.stdout, f"default exec env should include {expected}")
 

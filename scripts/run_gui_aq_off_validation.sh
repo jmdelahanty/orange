@@ -26,6 +26,7 @@ GUI_AUTORUN_ENABLE_STREAM="${ORANGE_GUI_AUTORUN_ENABLE_STREAM:-1}"
 GUI_AUTORUN_ENABLE_RECORD="${ORANGE_GUI_AUTORUN_ENABLE_RECORD:-1}"
 GUI_AUTORUN_ENABLE_YOLO="${ORANGE_GUI_AUTORUN_ENABLE_YOLO:-1}"
 GUI_AUTORUN_ENABLE_CROP="${ORANGE_GUI_AUTORUN_ENABLE_CROP:-1}"
+GUI_AUTORUN_START_RECORDING="${ORANGE_GUI_AUTORUN_START_RECORDING:-1}"
 GUI_RECORD_FOR_SECONDS="${ORANGE_GUI_RECORD_FOR_SECONDS:-}"
 GUI_CLIP_SECONDS="${ORANGE_GUI_CLIP_SECONDS:-}"
 if [[ -n "${ORANGE_GUI_PTP_STACK_MODE:-}" ]]; then
@@ -311,6 +312,7 @@ python3 - \
   "${GUI_AUTORUN_ENABLE_RECORD}" \
   "${GUI_AUTORUN_ENABLE_YOLO}" \
   "${GUI_AUTORUN_ENABLE_CROP}" \
+  "${GUI_AUTORUN_START_RECORDING}" \
   "${GUI_RECORD_FOR_SECONDS}" \
   "${GUI_CLIP_SECONDS}" <<'PY'
 import json
@@ -339,8 +341,9 @@ gui_autorun_enable_stream_raw = sys.argv[18]
 gui_autorun_enable_record_raw = sys.argv[19]
 gui_autorun_enable_yolo_raw = sys.argv[20]
 gui_autorun_enable_crop_raw = sys.argv[21]
-gui_record_for_seconds_raw = sys.argv[22]
-gui_clip_seconds_raw = sys.argv[23]
+gui_autorun_start_recording_raw = sys.argv[22]
+gui_record_for_seconds_raw = sys.argv[23]
+gui_clip_seconds_raw = sys.argv[24]
 expect_ptp_enabled = None
 if expect_ptp_enabled_raw:
     expect_ptp_enabled = expect_ptp_enabled_raw not in {"0", "false", "False", "no", "No"}
@@ -433,6 +436,8 @@ if gui_autorun_enable_yolo_raw not in {"0", "1"}:
     errors.append("ORANGE_GUI_AUTORUN_ENABLE_YOLO must be 0 or 1")
 if gui_autorun_enable_crop_raw not in {"0", "1"}:
     errors.append("ORANGE_GUI_AUTORUN_ENABLE_CROP must be 0 or 1")
+if gui_autorun_start_recording_raw not in {"0", "1"}:
+    errors.append("ORANGE_GUI_AUTORUN_START_RECORDING must be 0 or 1")
 try:
     gui_autorun_stream_warmup_seconds = int(gui_autorun_stream_warmup_seconds_raw)
     if gui_autorun_stream_warmup_seconds < 0:
@@ -658,6 +663,7 @@ Validation environment:
   ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}
   ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}
   ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}
+  ORANGE_GUI_AUTORUN_START_RECORDING=${GUI_AUTORUN_START_RECORDING}
   ORANGE_GUI_RECORD_FOR_SECONDS=${GUI_RECORD_FOR_SECONDS:-<app config/disabled>}
   ORANGE_GUI_CLIP_SECONDS=${GUI_CLIP_SECONDS:-<app config/disabled>}
   ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=${ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START:-${ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START:-0}}
@@ -781,6 +787,7 @@ ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_STREAM=${GUI_AUTORUN_ENABLE_STREAM}")
 ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_RECORD=${GUI_AUTORUN_ENABLE_RECORD}")
 ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_YOLO=${GUI_AUTORUN_ENABLE_YOLO}")
 ENV_ARGS+=("ORANGE_GUI_AUTORUN_ENABLE_CROP=${GUI_AUTORUN_ENABLE_CROP}")
+ENV_ARGS+=("ORANGE_GUI_AUTORUN_START_RECORDING=${GUI_AUTORUN_START_RECORDING}")
 if [[ -n "${WAYLAND_DISPLAY_ENV}" ]]; then
   ENV_ARGS+=("WAYLAND_DISPLAY=${WAYLAND_DISPLAY_ENV}")
 fi

@@ -211,6 +211,7 @@ struct GuiAutorunConfig {
     bool enable_record = true;
     bool enable_yolo = true;
     bool enable_crop = true;
+    bool start_recording = true;
     std::string config_dir;
 };
 
@@ -369,6 +370,8 @@ GuiAutorunConfig resolve_gui_autorun_config()
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_YOLO", true);
     config.enable_crop =
         gui_env_flag_enabled("ORANGE_GUI_AUTORUN_ENABLE_CROP", true);
+    config.start_recording =
+        gui_env_flag_enabled("ORANGE_GUI_AUTORUN_START_RECORDING", true);
     const char* config_dir = std::getenv("ORANGE_GUI_CONFIG_DIR");
     if (config_dir && *config_dir) {
         config.config_dir = config_dir;
@@ -521,7 +524,11 @@ GuiAutorunRequests gui_autorun_update(
                 gui_autorun_fail(state, "stream stopped during warmup");
             } else if (gui_autorun_stage_elapsed_s(*state) >=
                        static_cast<double>(config.stream_warmup_seconds)) {
-                gui_autorun_enter_stage(state, GuiAutorunStage::kStartRecording);
+                gui_autorun_enter_stage(
+                    state,
+                    config.start_recording
+                        ? GuiAutorunStage::kStartRecording
+                        : GuiAutorunStage::kDone);
             }
             break;
 
@@ -6503,6 +6510,7 @@ int main(int argc, char **args) {
                   << " enable_record=" << gui_autorun_config.enable_record
                   << " enable_yolo=" << gui_autorun_config.enable_yolo
                   << " enable_crop=" << gui_autorun_config.enable_crop
+                  << " start_recording=" << gui_autorun_config.start_recording
                   << std::endl;
     }
     

@@ -357,7 +357,6 @@ Optional process launch is explicit:
 scripts/orange_citrus_orchestrator.py \
   --execute \
   --orange-command "scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe" \
-  --orange-env ORANGE_GUI_AUTORUN_ENABLE_RECORD=0 \
   --citrus-command "/home/jeremy/citrus/targets/citrus" \
   --citrus-env DISPLAY=:1 \
   --citrus-env XAUTHORITY=/run/user/1000/gdm/Xauthority \
@@ -365,6 +364,10 @@ scripts/orange_citrus_orchestrator.py \
 ```
 
 The process-launch path injects Orange local-control start/stop gates and the
-Citrus local-control socket env. It does not talk to Orange recorder sockets and
-does not delete data. Stop/finalization still goes through Orange
-`stop_recording` or `citrus_completion`, according to `--stop-policy`.
+Citrus local-control socket env. It also sets
+`ORANGE_GUI_AUTORUN_START_RECORDING=0` and
+`ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`, so an Orange GUI autorun launcher
+can open cameras and start streaming while leaving recording start/stop to the
+orchestrator. It does not talk to Orange recorder sockets and does not delete
+data. Stop/finalization still goes through Orange `stop_recording` or
+`citrus_completion`, according to `--stop-policy`.

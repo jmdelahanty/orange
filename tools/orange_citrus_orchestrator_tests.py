@@ -122,7 +122,7 @@ def test_dry_run_default_does_not_open_sockets() -> None:
             "--citrus-socket",
             "/tmp/missing_citrus_dry.sock",
             "--orange-env",
-            "ORANGE_GUI_AUTORUN_ENABLE_RECORD=0",
+            "ORANGE_GUI_SHOW_SPEED_GRAPHS=0",
             "--require-citrus-perf-jsonl",
         ]
     )
@@ -143,8 +143,16 @@ def test_dry_run_default_does_not_open_sockets() -> None:
         "dry-run should show perf JSONL env overlay when required",
     )
     require(
-        payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_ENABLE_RECORD"] == "0",
+        payload["orange"]["env_overlay"]["ORANGE_GUI_SHOW_SPEED_GRAPHS"] == "0",
         "dry-run should include extra Orange env overrides",
+    )
+    require(
+        payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_START_RECORDING"] == "0",
+        "orchestrator should leave Orange autorun in stream-only mode",
+    )
+    require(
+        payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE"] == "0",
+        "orchestrator should keep launched Orange alive for socket control",
     )
 
 

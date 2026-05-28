@@ -351,6 +351,8 @@ class Orchestrator:
                 "ORANGE_GUI_LOCAL_CONTROL_SOCKET": self.args.orange_socket,
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
+                "ORANGE_GUI_AUTORUN_START_RECORDING": "0",
+                "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "0",
             },
             self.args.orange_log,
         )
@@ -608,6 +610,8 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 "ORANGE_GUI_LOCAL_CONTROL_SOCKET": args.orange_socket,
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
                 "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
+                "ORANGE_GUI_AUTORUN_START_RECORDING": "0",
+                "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "0",
             },
             "start_request": build_orange_start_request(
                 args.operation_id,

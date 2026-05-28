@@ -273,6 +273,7 @@ def test_print_exec_env_only_contains_profile_env() -> None:
         "ORANGE_GUI_AUTORUN_ENABLE_RECORD=1",
         "ORANGE_GUI_AUTORUN_ENABLE_YOLO=1",
         "ORANGE_GUI_AUTORUN_ENABLE_CROP=1",
+        "ORANGE_GUI_AUTORUN_START_RECORDING=1",
         "ORANGE_GUI_RECORDING_SINK_MODE=external_ipc",
         "ORANGE_CROP_RECORDING_SINK_MODE=external_ipc",
         "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1",

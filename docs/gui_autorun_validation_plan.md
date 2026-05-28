@@ -380,6 +380,11 @@ Citrus status also reports the exact performance JSONL artifact fields under
 configuration/readiness check and wait for `perf_jsonl_path_known=true` after
 experiment start before collecting the path.
 
+For orchestrated runs where Orange should use autorun only to reach streaming
+readiness, set `ORANGE_GUI_AUTORUN_START_RECORDING=0`. That leaves the record
+camera selection intact while skipping the autorun record-button transition, so
+the external orchestrator can issue the opt-in `start_recording` request.
+
 During a live GUI run, query the endpoint with:
 
 ```bash
