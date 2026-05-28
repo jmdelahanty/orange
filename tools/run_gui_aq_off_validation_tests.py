@@ -1458,6 +1458,77 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
     )
 
 
+def test_gui_privilege_wrapper_accepts_app_config_envs() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        app_config_path = root / "default.json"
+        app_config_path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.app.config",
+                    "schema_version": 1,
+                    "gui": {
+                        "display": {
+                            "profile": "citrus_safe",
+                        }
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = subprocess.run(
+            [
+                str(GUI_WRAPPER_SCRIPT),
+                "--dry-run",
+                "--env",
+                f"ORANGE_GUI_APP_CONFIG_PATH={app_config_path}",
+                "--env",
+                f"ORANGE_APP_CONFIG_PATH={app_config_path}",
+            ],
+            cwd=REPO_ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+        require(result.returncode == 0, f"wrapper should accept app config envs: {result.stderr}")
+        require(
+            f"ORANGE_GUI_APP_CONFIG_PATH={app_config_path}" in result.stdout,
+            "wrapper dry-run should include GUI app config path env",
+        )
+        require(
+            f"ORANGE_APP_CONFIG_PATH={app_config_path}" in result.stdout,
+            "wrapper dry-run should include generic app config path env",
+        )
+
+
+def test_gui_privilege_wrapper_rejects_missing_app_config_env() -> None:
+    missing_path = Path("/tmp/orange_missing_app_config_for_wrapper_test.json")
+    result = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            f"ORANGE_GUI_APP_CONFIG_PATH={missing_path}",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode != 0, "wrapper should reject a missing app config path")
+    require(
+        "App config path is outside allowed roots or missing" in result.stderr,
+        "wrapper should explain app config path validation failures",
+    )
+
+
 def main() -> int:
     tests = [
         test_discovers_all_camera_json_files,
@@ -1469,6 +1540,8 @@ def main() -> int:
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_gui_privilege_wrapper_accepts_recording_control_envs,
+        test_gui_privilege_wrapper_accepts_app_config_envs,
+        test_gui_privilege_wrapper_rejects_missing_app_config_env,
         test_external_crop_queue_validation_limits_are_printed,
         test_source_version_validation_flags_are_printed,
         test_main_video_content_failure_validation_flags_are_printed,
