@@ -167,6 +167,7 @@ struct HeadlessExternalRecorderContractConfig {
     bool require_status = true;
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
+    bool require_protocol_hello = true;
     nlohmann::json streams = nlohmann::json::object();
 
     bool enabled() const {
@@ -849,6 +850,7 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         {"require_status", config.require_status},
         {"require_status_runtime", config.require_status_runtime},
         {"require_storage_preflight", config.require_storage_preflight},
+        {"require_protocol_hello", config.require_protocol_hello},
         {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
     if (recording_control) {
@@ -2969,6 +2971,10 @@ bool parse_headless_external_recorder_contract_json(
             contract_node.value(
                 "require_storage_preflight",
                 config.require_storage_preflight);
+        config.require_protocol_hello =
+            contract_node.value(
+                "require_protocol_hello",
+                config.require_protocol_hello);
         if (contract_node.contains("require_status_runtime")) {
             config.require_status_runtime =
                 contract_node.value("require_status_runtime", config.require_status_runtime);
@@ -5801,6 +5807,9 @@ bool run_supervised_external_recorder_verifier(
     }
     if (config.require_storage_preflight) {
         command += " --require-recorder-storage-preflight";
+    }
+    if (config.require_protocol_hello) {
+        command += " --require-recorder-protocol-hello";
     }
 
     std::string output;

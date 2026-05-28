@@ -83,6 +83,7 @@ struct SupervisorPlan {
     bool require_status = true;
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
+    bool require_protocol_hello = true;
     std::vector<RecorderStreamPlan> streams;
 };
 
@@ -136,6 +137,10 @@ struct RecorderStatusSnapshot {
     uint64_t storage_paths_low_space_count = 0;
     bool storage_has_min_available_bytes = false;
     uint64_t storage_min_available_bytes = 0;
+    std::string ipc_protocol_name;
+    int ipc_protocol_version = 0;
+    bool recorder_hello_sent = false;
+    bool client_hello_received = false;
     std::string error;
 };
 

@@ -92,6 +92,7 @@ struct VerifierHandoffArtifactOptions {
     bool require_status = true;
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
+    bool require_protocol_hello = true;
 };
 
 struct FinalizationManifestOptions {

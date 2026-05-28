@@ -77,6 +77,7 @@ nlohmann::json make_contract(const std::vector<int>& shard_gpu_ids,
         {"require_status", true},
         {"require_status_runtime", true},
         {"require_storage_preflight", true},
+        {"require_protocol_hello", true},
         {"streams", {
             {"2010096", {
                 {"stream_id", "2010096"},
@@ -115,6 +116,8 @@ void test_single_shard_plan_builds_command()
     require(plan.require_status_runtime, "plan should require runtime recorder status parsing");
     require(plan.require_storage_preflight,
             "plan should require recorder storage preflight telemetry");
+    require(plan.require_protocol_hello,
+            "plan should require IPC protocol hello telemetry");
     const auto& stream = plan.streams[0];
     require(stream.socket_path == "/tmp/orange_external_recorder_2010096.sock",
             "default socket path should use camera serial");
@@ -168,6 +171,8 @@ void test_two_shard_plan_builds_gop_modulo_command()
             "plan json should expose runtime status requirement");
     require(json_plan.value("require_storage_preflight", false),
             "plan json should expose storage preflight requirement");
+    require(json_plan.value("require_protocol_hello", false),
+            "plan json should expose IPC protocol hello requirement");
     require(json_plan["streams"][0].value("status_json", "").find(
                 "Cam2010096_external_status.json") != std::string::npos,
             "plan json should expose status sidecar path");
@@ -469,6 +474,12 @@ void test_process_poll_reads_status_sidecar()
             << "      }\n"
             << "    ]\n"
             << "  },\n"
+            << "  \"ipc_protocol\": {\n"
+            << "    \"name\": \"orange.external_recorder.ipc\",\n"
+            << "    \"version\": 1,\n"
+            << "    \"recorder_hello_sent\": true,\n"
+            << "    \"client_hello_received\": true\n"
+            << "  },\n"
             << "  \"worker_failed\": false\n"
             << "}\n";
     }
@@ -529,6 +540,15 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar storage min available flag should parse");
     require(runtime.processes[0].recorder_status.storage_min_available_bytes == 800000000ULL,
             "status sidecar storage min available bytes should parse");
+    require(runtime.processes[0].recorder_status.ipc_protocol_name ==
+                "orange.external_recorder.ipc",
+            "status sidecar IPC protocol name should parse");
+    require(runtime.processes[0].recorder_status.ipc_protocol_version == 1,
+            "status sidecar IPC protocol version should parse");
+    require(runtime.processes[0].recorder_status.recorder_hello_sent,
+            "status sidecar recorder hello flag should parse");
+    require(runtime.processes[0].recorder_status.client_hello_received,
+            "status sidecar client hello flag should parse");
 
     const nlohmann::json summary = SupervisorRuntimeStateToJson(runtime);
     require(summary["processes"][0]["status_json_path"] == status_path.string(),

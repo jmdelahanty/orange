@@ -20,6 +20,7 @@
 #include <utility>
 
 #include "encoder_preprocess_worker.h"
+#include "external_recorder_ipc_protocol.h"
 #include "threadworker.h"
 
 namespace {
@@ -343,6 +344,10 @@ private:
         }
         std::cout << "[ExternalIpcRecorder] Connected camera " << camera_serial_
                   << " to " << socket_path_ << std::endl;
+        if (!read_recorder_hello()) {
+            close_socket();
+            return false;
+        }
         return true;
     }
 
@@ -516,6 +521,35 @@ private:
                 return true;
             }
         }
+    }
+
+    bool read_recorder_hello()
+    {
+        std::string line;
+        bool timed_out = false;
+        if (!read_protocol_line(&line, true, &timed_out)) {
+            log_limited(
+                timed_out
+                    ? "timed out waiting for external recorder protocol hello"
+                    : "failed waiting for external recorder protocol hello");
+            return false;
+        }
+        orange::external_recorder::ipc::HelloFields hello;
+        if (!orange::external_recorder::ipc::parse_recorder_hello_line(line, &hello)) {
+            log_limited("invalid external recorder protocol hello: " +
+                        hello.error + " line='" + line + "'");
+            return false;
+        }
+        if (!send_all(orange::external_recorder::ipc::build_client_hello_line(
+                camera_serial_,
+                session_id_,
+                stream_id_,
+                "orange_full_frame"))) {
+            log_limited("send client protocol hello failed: " +
+                        std::string(std::strerror(errno)));
+            return false;
+        }
+        return true;
     }
 
     bool detach_frame(WORKER_ENTRY* entry, bool* release_entry_now)

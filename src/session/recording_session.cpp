@@ -532,6 +532,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_status", true},
         {"require_status_runtime", true},
         {"require_storage_preflight", true},
+        {"require_protocol_hello", true},
         {"recording_control", crop_recording_control},
         {"rollover", crop_rollover},
         {"require_recorder_gpu_separate_from_analytics",

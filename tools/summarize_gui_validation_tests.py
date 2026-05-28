@@ -67,6 +67,12 @@ def write_external_recorder_status_fixture(
             }
         ],
     }
+    ipc_protocol = {
+        "name": "orange.external_recorder.ipc",
+        "version": 1,
+        "recorder_hello_sent": True,
+        "client_hello_received": True,
+    }
     write_text(
         summary_path,
         json.dumps(
@@ -75,6 +81,7 @@ def write_external_recorder_status_fixture(
                 "frames_encoded": rows,
                 "acks_sent": rows,
                 "storage_preflight": storage_preflight,
+                "ipc_protocol": ipc_protocol,
             }
         )
         + "\n",
@@ -92,6 +99,7 @@ def write_external_recorder_status_fixture(
                 "acks_sent": rows,
                 "worker_failed": False,
                 "storage_preflight": storage_preflight,
+                "ipc_protocol": ipc_protocol,
             }
         )
         + "\n",
@@ -122,6 +130,10 @@ def write_external_recorder_status_fixture(
                             "storage_paths_low_space_count": 0,
                             "storage_has_min_available_bytes": True,
                             "storage_min_available_bytes": 4096,
+                            "ipc_protocol_name": "orange.external_recorder.ipc",
+                            "ipc_protocol_version": 1,
+                            "recorder_hello_sent": True,
+                            "client_hello_received": True,
                         },
                     }
                 ],
@@ -548,10 +560,13 @@ def test_external_recorder_status_summary_reads_full_and_crop_sidecars() -> None
             full["runtime_storage_min_available_bytes"] == 4096,
             "full runtime storage min available bytes should parse",
         )
+        require(full["ipc_protocol_name"] == "orange.external_recorder.ipc", "full protocol should parse")
+        require(full["client_hello_received"] is True, "full client hello should parse")
         require(crop["frames_received"] == 2, "crop received count should parse")
         require(crop["frames_encoded"] == 2, "crop encoded count should parse")
         require(crop["acks_sent"] == 2, "crop ACK count should parse")
         require(crop["runtime_heartbeat_sequence"] == 6, "crop runtime heartbeat should parse")
+        require(crop["runtime_client_hello_received"] is True, "crop runtime client hello should parse")
 
 
 def test_latest_complete_selects_newest_complete_recording() -> None:

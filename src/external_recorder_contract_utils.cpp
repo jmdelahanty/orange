@@ -278,6 +278,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
     set_json_default(&contract, "require_status", true);
     set_json_default(&contract, "require_status_runtime", true);
     set_json_default(&contract, "require_storage_preflight", true);
+    set_json_default(&contract, "require_protocol_hello", true);
 
     contract["artifact_root"] = expand_path_template(
         contract.value("artifact_root", std::string()),
@@ -541,6 +542,9 @@ nlohmann::json BuildExternalRecorderVerifierHandoff(
     if (options.require_storage_preflight) {
         command.push_back("--require-recorder-storage-preflight");
     }
+    if (options.require_protocol_hello) {
+        command.push_back("--require-recorder-protocol-hello");
+    }
     return {
         {"schema_id", "orange.external_recorder.verifier_handoff"},
         {"schema_version", 1},
@@ -551,6 +555,7 @@ nlohmann::json BuildExternalRecorderVerifierHandoff(
         {"requires_status", options.require_status},
         {"requires_status_runtime", options.require_status_runtime},
         {"requires_storage_preflight", options.require_storage_preflight},
+        {"requires_protocol_hello", options.require_protocol_hello},
         {"command", command}
     };
 }

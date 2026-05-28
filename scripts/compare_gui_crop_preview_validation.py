@@ -143,6 +143,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-recorder-protocol-hello",
+        action="store_true",
+        help=(
+            "Exit nonzero if external recorder status summaries are missing "
+            "the versioned IPC hello handshake telemetry."
+        ),
+    )
+    parser.add_argument(
         "--max-external-crop-queue-high-water",
         type=nonnegative_int,
         help="Exit nonzero if any compared run exceeds this external crop encode queue high-water.",
@@ -538,6 +546,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
     external_recorder_status_values: set[str] = set()
     external_recorder_status_failed_streams: list[str] = []
     external_recorder_storage_failed_streams: list[str] = []
+    external_recorder_protocol_failed_streams: list[str] = []
     external_recorder_heartbeat_values: list[int] = []
     external_recorder_frames_received_total = 0
     external_recorder_frames_encoded_total = 0
@@ -571,6 +580,13 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
             or status.get("runtime_storage_low_space") is True
         ):
             external_recorder_storage_failed_streams.append(f"{group_name}:{stream_name}")
+        if (
+            status.get("ipc_protocol_name") != "orange.external_recorder.ipc"
+            or finite_int(status.get("ipc_protocol_version")) != 1
+            or status.get("recorder_hello_sent") is not True
+            or status.get("client_hello_received") is not True
+        ):
+            external_recorder_protocol_failed_streams.append(f"{group_name}:{stream_name}")
 
     preview_offered_total = 0
     preview_updated_total = 0
@@ -700,6 +716,7 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "external_recorder_status_values": sorted(external_recorder_status_values),
         "external_recorder_status_failed_streams": external_recorder_status_failed_streams,
         "external_recorder_storage_failed_streams": external_recorder_storage_failed_streams,
+        "external_recorder_protocol_failed_streams": external_recorder_protocol_failed_streams,
         "external_recorder_heartbeat_min": (
             min(external_recorder_heartbeat_values)
             if external_recorder_heartbeat_values else None
@@ -957,6 +974,15 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
                 else fmt_list(item.get("external_recorder_status_failed_streams"))
             )
         )),
+        ("ext proto", lambda item: (
+            "-"
+            if finite_int(item.get("external_recorder_status_streams_total")) <= 0
+            else (
+                "ok"
+                if not item.get("external_recorder_protocol_failed_streams")
+                else fmt_list(item.get("external_recorder_protocol_failed_streams"))
+            )
+        )),
         ("ext hb min", lambda item: fmt_optional_int(item.get("external_recorder_heartbeat_min"))),
         ("detect rows", lambda item: fmt_int(item.get("crop_metadata_detection_rows_total"))),
         ("rec fanout", lambda item: fmt_ratio(
@@ -1156,6 +1182,18 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
             if failed_streams:
                 failures.append(
                     f"{item.get('label')}: external recorder storage preflight "
+                    f"not healthy for {failed_streams}"
+                )
+    if getattr(args, "require_external_recorder_protocol_hello", False):
+        for item in summaries:
+            streams_total = finite_int(item.get("external_recorder_status_streams_total"))
+            failed_streams = item.get("external_recorder_protocol_failed_streams")
+            failed_streams = failed_streams if isinstance(failed_streams, list) else []
+            if streams_total <= 0:
+                failures.append(f"{item.get('label')}: external recorder status missing")
+            if failed_streams:
+                failures.append(
+                    f"{item.get('label')}: external recorder protocol hello "
                     f"not healthy for {failed_streams}"
                 )
 

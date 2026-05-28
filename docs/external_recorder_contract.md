@@ -53,6 +53,19 @@ The actual image pixels are not sent through the socket. They remain in GPU
 memory. The `cuda_ipc_handle` is a temporary cross-process handle that lets the
 recorder import the source GPU allocation.
 
+When the Unix socket connects, the recorder now sends a versioned protocol
+hello before accepting frames:
+
+```text
+RECORDER_HELLO protocol=orange.external_recorder.ipc version=1 ...
+CLIENT_HELLO protocol=orange.external_recorder.ipc version=1 ...
+```
+
+This is intentionally separate from per-frame ACK/RELEASE. It proves the peer
+is the expected recorder protocol before Orange starts handing out CUDA IPC
+frame descriptors, and the recorder writes the observed handshake into
+`ipc_protocol` fields in both `status_json` and summary JSON.
+
 There are two source-lifetime modes:
 
 1. Detached-copy mode:
@@ -171,6 +184,8 @@ This contract covers the current diagnostic external recorder path:
     "require_gop_routing": true,
     "require_status": true,
     "require_status_runtime": false,
+    "require_storage_preflight": true,
+    "require_protocol_hello": true,
     "recording_control": {
       "record_for_seconds": 0,
       "clip_seconds": 0
@@ -246,6 +261,11 @@ Current semantics:
 - `require_storage_preflight = true` requires `storage_preflight` payloads in
   recorder summary/status JSON and, when runtime status is required, parsed
   runtime storage fields. Current generated full-frame and crop external IPC
+  contracts set it by default.
+- `require_protocol_hello = true` requires `ipc_protocol` payloads showing
+  `recorder_hello_sent = true` and `client_hello_received = true` in recorder
+  summary/status JSON and, when runtime status is required, parsed runtime
+  protocol fields. Current generated full-frame and crop external IPC
   contracts set it by default.
 - Shell-launched diagnostic runs validate external recorder files after Orange
   exits through `scripts/verify_external_recorder_session.py`.

@@ -1044,6 +1044,15 @@ def external_storage_preflight_payload(
     }
 
 
+def external_ipc_protocol_payload() -> dict:
+    return {
+        "name": "orange.external_recorder.ipc",
+        "version": 1,
+        "recorder_hello_sent": True,
+        "client_hello_received": True,
+    }
+
+
 def write_external_recorder_status_fixture(
     recording_folder: Path,
     serial: str,
@@ -1097,6 +1106,7 @@ def write_external_recorder_status_fixture(
             "mp4_queue_overflow_events": 0,
         },
         "storage_preflight": external_storage_preflight_payload(),
+        "ipc_protocol": external_ipc_protocol_payload(),
     }
     if rolling:
         summary_payload["rolling_output"] = {
@@ -1135,6 +1145,7 @@ def write_external_recorder_status_fixture(
         "acks_sent": rows,
         "worker_failed": worker_failed,
         "storage_preflight": external_storage_preflight_payload(),
+        "ipc_protocol": external_ipc_protocol_payload(),
     }
     if error:
         status_payload["error"] = error
@@ -1173,6 +1184,10 @@ def write_external_recorder_status_fixture(
         "storage_paths_low_space_count": 0,
         "storage_has_min_available_bytes": True,
         "storage_min_available_bytes": 4096,
+        "ipc_protocol_name": "orange.external_recorder.ipc",
+        "ipc_protocol_version": 1,
+        "recorder_hello_sent": True,
+        "client_hello_received": True,
     }
     if rolling:
         runtime_recorder_status.update(
@@ -1211,6 +1226,7 @@ def write_external_recorder_status_fixture(
                 "require_status": True,
                 "require_status_runtime": True,
                 "require_storage_preflight": True,
+                "require_protocol_hello": True,
                 "streams": {
                     stream_id: {
                         "stream_id": stream_id,
@@ -1707,6 +1723,7 @@ def test_external_recorder_status_validation_requires_contract_flags() -> None:
         contract["require_status"] = False
         del contract["require_status_runtime"]
         del contract["require_storage_preflight"]
+        del contract["require_protocol_hello"]
         contract_path.write_text(json.dumps(contract) + "\n", encoding="utf-8")
 
         reporter = validator.Reporter(verbose=False)
@@ -1726,10 +1743,15 @@ def test_external_recorder_status_validation_requires_contract_flags() -> None:
             root,
             True,
             require_storage_preflight=True,
+            require_protocol_hello=True,
         )
         require(
             any("require_storage_preflight=None" in failure for failure in reporter.failures),
             "strict storage validation should fail when contract omits require_storage_preflight",
+        )
+        require(
+            any("require_protocol_hello=None" in failure for failure in reporter.failures),
+            "strict protocol validation should fail when contract omits require_protocol_hello",
         )
 
 

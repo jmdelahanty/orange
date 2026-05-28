@@ -24,6 +24,18 @@ def require(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def add_external_protocol(status: dict) -> dict:
+    status.update(
+        {
+            "ipc_protocol_name": "orange.external_recorder.ipc",
+            "ipc_protocol_version": 1,
+            "recorder_hello_sent": True,
+            "client_hello_received": True,
+        }
+    )
+    return status
+
+
 def sample_payload(
     *,
     status: str = "pass",
@@ -31,7 +43,7 @@ def sample_payload(
     drops: int = 0,
     external_drops: int = 0,
 ) -> dict:
-    return {
+    payload = {
         "status": status,
         "recording_folder": "/tmp/run",
         "failures": [] if status == "pass" else ["failure"],
@@ -248,6 +260,10 @@ def sample_payload(
             },
         },
     }
+    for group in payload["external_recorder_status"].values():
+        for status_payload in group.values():
+            add_external_protocol(status_payload)
+    return payload
 
 
 def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
@@ -273,6 +289,10 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
     require(
         summary["external_recorder_status_failed_streams"] == [],
         "healthy external status streams should not be marked failed",
+    )
+    require(
+        summary["external_recorder_protocol_failed_streams"] == [],
+        "healthy external protocol streams should not be marked failed",
     )
     require(summary["external_recorder_heartbeat_min"] == 4, "external heartbeat min should aggregate")
     require(summary["external_recorder_heartbeat_max"] == 7, "external heartbeat max should aggregate")

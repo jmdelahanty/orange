@@ -120,6 +120,15 @@ def parse_args() -> argparse.Namespace:
             "New contracts can also set require_storage_preflight=true."
         ),
     )
+    parser.add_argument(
+        "--require-recorder-protocol-hello",
+        action="store_true",
+        help=(
+            "Require the recorder summary/status to show the versioned "
+            "RECORDER_HELLO/CLIENT_HELLO IPC handshake. New contracts can "
+            "also set require_protocol_hello=true."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -458,6 +467,24 @@ def require_storage_preflight_ok(
             )
 
 
+def require_ipc_protocol_hello(payload: dict[str, Any], label: str) -> None:
+    protocol = payload.get("ipc_protocol")
+    require(isinstance(protocol, dict), f"{label} missing ipc_protocol")
+    require(
+        protocol.get("name") == "orange.external_recorder.ipc",
+        f"{label} ipc_protocol.name={protocol.get('name')!r}",
+    )
+    require(protocol.get("version") == 1, f"{label} ipc_protocol.version={protocol.get('version')!r}")
+    require(
+        protocol.get("recorder_hello_sent") is True,
+        f"{label} recorder_hello_sent is not true",
+    )
+    require(
+        protocol.get("client_hello_received") is True,
+        f"{label} client_hello_received is not true",
+    )
+
+
 def read_metadata_frame_rows(path: Path) -> list[dict[str, int]]:
     fieldnames, rows = read_csv_rows(path)
     field_set = set(fieldnames)
@@ -652,6 +679,7 @@ def verify_status_sidecar(
     require_status: bool,
     require_runtime_status: bool,
     require_storage_preflight: bool,
+    require_protocol_hello: bool,
 ) -> dict[str, Any] | None:
     status_path = path_from(
         stream.get("status_json") or derive_status_path(summary_path),
@@ -674,6 +702,8 @@ def verify_status_sidecar(
         f"status for {serial}",
         require_storage_preflight,
     )
+    if require_protocol_hello:
+        require_ipc_protocol_hello(status, f"status for {serial}")
     error = status.get("error")
     require(error in (None, ""), f"recorder status reports error in {status_path}: {error}")
 
@@ -741,6 +771,19 @@ def verify_status_sidecar(
                 as_int(candidate.get("storage_path_count"), "runtime storage_path_count"),
                 f"runtime storage path ok count mismatch for {serial}",
             )
+        if require_protocol_hello:
+            require(
+                candidate.get("ipc_protocol_name") == "orange.external_recorder.ipc",
+                f"runtime ipc_protocol_name mismatch for {serial}",
+            )
+            require(
+                candidate.get("ipc_protocol_version") == 1,
+                f"runtime ipc_protocol_version mismatch for {serial}",
+            )
+            require(candidate.get("recorder_hello_sent") is True,
+                    f"runtime recorder_hello_sent is not true for {serial}")
+            require(candidate.get("client_hello_received") is True,
+                    f"runtime client_hello_received is not true for {serial}")
         runtime_status = candidate
 
     return {
@@ -890,12 +933,16 @@ def verify_summary(
     require_recorder_status: bool,
     require_recorder_runtime_status: bool,
     require_recorder_storage_preflight: bool,
+    require_recorder_protocol_hello: bool,
 ) -> dict[str, Any]:
     summary_path = path_from(
         stream.get("summary_json") or artifact_root / f"Cam{serial}_external_summary.json",
         artifact_root,
     )
     summary = read_json(summary_path)
+    protocol_hello_required = (
+        require_recorder_protocol_hello or bool(contract.get("require_protocol_hello", False))
+    )
     status_summary = verify_status_sidecar(
         artifact_root,
         serial,
@@ -905,6 +952,7 @@ def verify_summary(
         require_recorder_status or bool(contract.get("require_status", False)),
         require_recorder_runtime_status or bool(contract.get("require_status_runtime", False)),
         require_recorder_storage_preflight or bool(contract.get("require_storage_preflight", False)),
+        protocol_hello_required,
     )
     schema_id = summary.get("schema_id")
     require(
@@ -921,6 +969,8 @@ def verify_summary(
         f"summary for {serial}",
         require_recorder_storage_preflight or bool(contract.get("require_storage_preflight", False)),
     )
+    if protocol_hello_required:
+        require_ipc_protocol_hello(summary, f"summary for {serial}")
 
     frames_received = as_int(summary.get("frames_received"), "frames_received")
     acks_sent = as_int(summary.get("acks_sent"), "acks_sent")
@@ -1327,6 +1377,7 @@ def verify(args: argparse.Namespace) -> None:
             args.require_recorder_status,
             args.require_recorder_runtime_status,
             args.require_recorder_storage_preflight,
+            args.require_recorder_protocol_hello,
         )
         for serial, stream in streams.items()
     ]

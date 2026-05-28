@@ -3,6 +3,7 @@
 #include "crop_and_encode_worker.h"
 #include "crop_preview_worker.h"
 #include "crop_producer_worker.h"
+#include "external_recorder_ipc_protocol.h"
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include "project.h" // Add this include
@@ -302,6 +303,10 @@ private:
         }
         std::cout << "[ExternalCropIpcRecorder] Connected crop stream "
                   << camera_serial_ << " to " << socket_path_ << std::endl;
+        if (!read_recorder_hello()) {
+            close_socket();
+            return false;
+        }
         return true;
     }
 
@@ -375,6 +380,31 @@ private:
         frame_id = 0;
         release_in >> kind >> frame_id;
         return kind == "RELEASE" && frame_id == recording_frame_id;
+    }
+
+    bool read_recorder_hello()
+    {
+        std::string line;
+        if (!read_protocol_line(&line)) {
+            log_limited("failed waiting for external crop recorder protocol hello");
+            return false;
+        }
+        orange::external_recorder::ipc::HelloFields hello;
+        if (!orange::external_recorder::ipc::parse_recorder_hello_line(line, &hello)) {
+            log_limited("invalid external crop recorder protocol hello: " +
+                        hello.error + " line='" + line + "'");
+            return false;
+        }
+        if (!send_all(orange::external_recorder::ipc::build_client_hello_line(
+                camera_serial_,
+                session_id_,
+                stream_id_,
+                "orange_crop"))) {
+            log_limited("send crop client protocol hello failed: " +
+                        std::string(std::strerror(errno)));
+            return false;
+        }
+        return true;
     }
 
     void close_socket()

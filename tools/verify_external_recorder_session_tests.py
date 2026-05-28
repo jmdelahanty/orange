@@ -52,6 +52,15 @@ def storage_preflight_payload(
     }
 
 
+def ipc_protocol_payload() -> dict:
+    return {
+        "name": "orange.external_recorder.ipc",
+        "version": 1,
+        "recorder_hello_sent": True,
+        "client_hello_received": True,
+    }
+
+
 def write_summary(
     root: Path,
     serial: str,
@@ -105,6 +114,7 @@ def write_summary(
         ],
         "merged_output": {},
         "storage_preflight": storage_preflight_payload(),
+        "ipc_protocol": ipc_protocol_payload(),
         "outputs": {
             "detach_csv": str(detach_path),
             "mp4": str(mp4_path),
@@ -217,6 +227,7 @@ def write_status(
         "frames_encoded": frames_encoded,
         "worker_failed": worker_failed,
         "storage_preflight": storage_preflight_payload(),
+        "ipc_protocol": ipc_protocol_payload(),
     }
     if rolling:
         payload["rolling"] = {
@@ -268,6 +279,10 @@ def write_runtime(
         "storage_path_count": 1,
         "storage_paths_ok_count": 1,
         "storage_paths_low_space_count": 0,
+        "ipc_protocol_name": "orange.external_recorder.ipc",
+        "ipc_protocol_version": 1,
+        "recorder_hello_sent": True,
+        "client_hello_received": True,
     }
     if rolling:
         recorder_status.update(
@@ -309,6 +324,7 @@ def verify_one(
     require_status: bool = False,
     require_runtime_status: bool = False,
     require_storage_preflight: bool = False,
+    require_protocol_hello: bool = False,
 ) -> dict:
     serial = "2010096"
     stream = {
@@ -339,6 +355,7 @@ def verify_one(
             require_status,
             require_runtime_status,
             require_storage_preflight,
+            require_protocol_hello,
         )
     finally:
         verifier.ffprobe_video = original_ffprobe

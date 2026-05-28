@@ -1,4 +1,5 @@
 #include "external_recorder_contract_utils.h"
+#include "external_recorder_ipc_protocol.h"
 #include "external_recorder_supervisor.h"
 #include "video_capture.h"
 
@@ -38,6 +39,47 @@ CameraParams make_camera(const std::string& serial,
     camera.recording.strategy.split_gop.enabled = true;
     camera.recording.strategy.split_gop.encoder_gpu_ids = std::move(shard_gpus);
     return camera;
+}
+
+void parses_ipc_protocol_hello_lines()
+{
+    const std::string recorder_hello =
+        orange::external_recorder::ipc::build_recorder_hello_line(
+            "session 001",
+            "2010095");
+    orange::external_recorder::ipc::HelloFields recorder_fields;
+    require(orange::external_recorder::ipc::parse_recorder_hello_line(
+                recorder_hello,
+                &recorder_fields),
+            "recorder hello should parse");
+    require(recorder_fields.protocol == orange::external_recorder::ipc::kProtocolName,
+            "recorder hello protocol mismatch");
+    require(recorder_fields.version == orange::external_recorder::ipc::kProtocolVersion,
+            "recorder hello version mismatch");
+    require(recorder_fields.role == "recorder",
+            "recorder hello role mismatch");
+
+    const std::string client_hello =
+        orange::external_recorder::ipc::build_client_hello_line(
+            "2010095",
+            "session 001",
+            "2010095_crop",
+            "orange crop");
+    orange::external_recorder::ipc::HelloFields client_fields;
+    require(orange::external_recorder::ipc::parse_client_hello_line(
+                client_hello,
+                &client_fields),
+            "client hello should parse");
+    require(client_fields.role == "orange_crop",
+            "client hello role should be tokenized");
+    require(client_fields.session_id == "session_001",
+            "client hello session should be tokenized");
+
+    orange::external_recorder::ipc::HelloFields bad_fields;
+    require(!orange::external_recorder::ipc::parse_client_hello_line(
+                "CLIENT_HELLO protocol=wrong version=1 role=orange",
+                &bad_fields),
+            "invalid protocol should fail");
 }
 
 void materializes_contract_and_supervisor_plan()
@@ -92,6 +134,8 @@ void materializes_contract_and_supervisor_plan()
             "materialized contract should require supervised runtime status");
     require(contract.value("require_storage_preflight", false),
             "materialized contract should require storage preflight telemetry");
+    require(contract.value("require_protocol_hello", false),
+            "materialized contract should require IPC protocol hello telemetry");
     require(contract["streams"].size() == 2, "expected two contract streams");
     require(contract["streams"]["2010095"].value("routing_policy", "") == "gop_modulo",
             "2010095 should route by GOP modulo");
@@ -233,6 +277,7 @@ void writes_failfast_artifacts()
         {"require_status", true},
         {"require_status_runtime", true},
         {"require_storage_preflight", true},
+        {"require_protocol_hello", true},
         {"streams", {
             {"2010095", {
                 {"stream_id", "2010095"},
@@ -368,6 +413,7 @@ void writes_runtime_handoff_and_finalization_artifacts()
     handoff_options.require_status = true;
     handoff_options.require_status_runtime = true;
     handoff_options.require_storage_preflight = true;
+    handoff_options.require_protocol_hello = true;
     const nlohmann::json handoff =
         orange::external_recorder::BuildExternalRecorderVerifierHandoff(handoff_options);
     require(handoff.value("schema_id", "") == "orange.external_recorder.verifier_handoff",
@@ -379,7 +425,8 @@ void writes_runtime_handoff_and_finalization_artifacts()
                 "/tmp/orange_analytics_root",
                 "--require-recorder-status",
                 "--require-recorder-runtime-status",
-                "--require-recorder-storage-preflight"}),
+                "--require-recorder-storage-preflight",
+                "--require-recorder-protocol-hello"}),
             "handoff command mismatch");
     require(handoff.value("requires_status", false),
             "handoff should record status requirement");
@@ -387,6 +434,8 @@ void writes_runtime_handoff_and_finalization_artifacts()
             "handoff should record runtime status requirement");
     require(handoff.value("requires_storage_preflight", false),
             "handoff should record storage preflight requirement");
+    require(handoff.value("requires_protocol_hello", false),
+            "handoff should record IPC protocol hello requirement");
     const orange::external_recorder::ArtifactWriteResult handoff_result =
         orange::external_recorder::WriteExternalRecorderVerifierHandoffArtifact(
             handoff_options);
@@ -434,6 +483,8 @@ void writes_runtime_handoff_and_finalization_artifacts()
 int main()
 {
     try {
+        parses_ipc_protocol_hello_lines();
+        std::cout << "[PASS] parses_ipc_protocol_hello_lines\n";
         materializes_contract_and_supervisor_plan();
         std::cout << "[PASS] materializes_contract_and_supervisor_plan\n";
         preserves_configured_recording_control_when_input_is_default();

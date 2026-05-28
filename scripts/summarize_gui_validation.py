@@ -514,6 +514,18 @@ def storage_preflight_summary(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def ipc_protocol_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    protocol = nested_dict(payload, "ipc_protocol")
+    if not protocol:
+        return {}
+    return {
+        "name": protocol.get("name"),
+        "version": int_value(protocol.get("version")),
+        "recorder_hello_sent": protocol.get("recorder_hello_sent"),
+        "client_hello_received": protocol.get("client_hello_received"),
+    }
+
+
 def runtime_processes_by_status_path(runtime: dict[str, Any]) -> dict[str, dict[str, Any]]:
     processes = runtime.get("processes")
     processes = processes if isinstance(processes, list) else []
@@ -569,6 +581,7 @@ def summarize_external_recorder_status_contract(
         frames_encoded = int_value(status.get("frames_encoded"))
         acks_sent = int_value(status.get("acks_sent"))
         storage = storage_preflight_summary(status)
+        protocol = ipc_protocol_summary(status)
         counts_match_summary = (
             None if not summary else (
                 frames_received == int_value(summary.get("frames_received"))
@@ -610,6 +623,14 @@ def summarize_external_recorder_status_contract(
             "storage_paths_ok_count": storage.get("paths_ok_count"),
             "storage_paths_low_space_count": storage.get("paths_low_space_count"),
             "storage_min_available_bytes": storage.get("min_available_bytes"),
+            "ipc_protocol_name": protocol.get("name"),
+            "ipc_protocol_version": protocol.get("version"),
+            "recorder_hello_sent": protocol.get("recorder_hello_sent"),
+            "client_hello_received": protocol.get("client_hello_received"),
+            "runtime_ipc_protocol_name": runtime_status.get("ipc_protocol_name"),
+            "runtime_ipc_protocol_version": int_value(runtime_status.get("ipc_protocol_version")),
+            "runtime_recorder_hello_sent": runtime_status.get("recorder_hello_sent"),
+            "runtime_client_hello_received": runtime_status.get("client_hello_received"),
             "runtime_storage_checked": runtime_status.get("storage_checked"),
             "runtime_storage_ok": runtime_status.get("storage_ok"),
             "runtime_storage_low_space": runtime_status.get("storage_low_space"),
@@ -1582,6 +1603,10 @@ def print_human(summary: dict[str, Any]) -> None:
                     f"received={fmt_int(status.get('frames_received'))} "
                     f"encoded={fmt_int(status.get('frames_encoded'))} "
                     f"acks={fmt_int(status.get('acks_sent'))} "
+                    f"protocol={status.get('ipc_protocol_name') or 'n/a'}:"
+                    f"{fmt_int(status.get('ipc_protocol_version'))} "
+                    f"hello={int(status.get('recorder_hello_sent') is True)}/"
+                    f"{int(status.get('client_hello_received') is True)} "
                     f"storage={storage}"
                 )
     else:

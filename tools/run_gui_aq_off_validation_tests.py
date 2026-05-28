@@ -328,6 +328,10 @@ def test_external_crop_queue_validation_limits_are_printed() -> None:
             "external recorder validation commands should require storage preflight telemetry",
         )
         require(
+            "--require-external-recorder-protocol-hello" in result.stdout,
+            "external recorder validation commands should require protocol hello telemetry",
+        )
+        require(
             "--expect-external-crop-recorder-gpu-id 8" in result.stdout,
             "launcher validation commands should include the global crop recorder GPU expectation",
         )

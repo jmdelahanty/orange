@@ -235,6 +235,13 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
             optional_u64(parsed, "encode_queue_high_water");
         snapshot.frames_encoded = optional_u64(parsed, "frames_encoded");
         snapshot.frames_dropped = optional_u64(parsed, "frames_dropped");
+        if (parsed.contains("ipc_protocol") && parsed["ipc_protocol"].is_object()) {
+            const nlohmann::json& protocol = parsed["ipc_protocol"];
+            snapshot.ipc_protocol_name = optional_string(protocol, "name");
+            snapshot.ipc_protocol_version = optional_int(protocol, "version");
+            snapshot.recorder_hello_sent = optional_bool(protocol, "recorder_hello_sent");
+            snapshot.client_hello_received = optional_bool(protocol, "client_hello_received");
+        }
         if (parsed.contains("rolling") && parsed["rolling"].is_object()) {
             const nlohmann::json& rolling = parsed["rolling"];
             snapshot.rolling_enabled = optional_bool(rolling, "enabled");
@@ -615,6 +622,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         !read_bool_field(contract,
                          "require_storage_preflight",
                          &plan.require_storage_preflight,
+                         error_out,
+                         "external_recorder_contract") ||
+        !read_bool_field(contract,
+                         "require_protocol_hello",
+                         &plan.require_protocol_hello,
                          error_out,
                          "external_recorder_contract")) {
         return false;
@@ -1160,6 +1172,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"require_status", plan.require_status},
         {"require_status_runtime", plan.require_status_runtime},
         {"require_storage_preflight", plan.require_storage_preflight},
+        {"require_protocol_hello", plan.require_protocol_hello},
         {"streams", streams},
     };
 }
@@ -1473,6 +1486,10 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                  recorder_status.storage_has_min_available_bytes},
                 {"storage_min_available_bytes",
                  recorder_status.storage_min_available_bytes},
+                {"ipc_protocol_name", recorder_status.ipc_protocol_name},
+                {"ipc_protocol_version", recorder_status.ipc_protocol_version},
+                {"recorder_hello_sent", recorder_status.recorder_hello_sent},
+                {"client_hello_received", recorder_status.client_hello_received},
                 {"error", recorder_status.error},
             }},
         });

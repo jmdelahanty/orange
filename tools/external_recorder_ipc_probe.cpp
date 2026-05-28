@@ -1,5 +1,6 @@
 #include "NvEncoder/NvEncoderCuda.h"
 #include "FFmpegWriter.h"
+#include "external_recorder_ipc_protocol.h"
 #include "fsuid_guard.h"
 
 #include <cuda.h>
@@ -131,6 +132,11 @@ struct Sample {
     bool encode_skipped = false;
     bool encode_dropped = false;
     uint64_t encode_queue_depth = 0;
+};
+
+struct IpcProtocolState {
+    bool recorder_hello_sent = false;
+    bool client_hello_received = false;
 };
 
 void signal_handler(int)
@@ -770,6 +776,22 @@ void write_storage_preflight_json(std::ostream& out,
     out << indent << "}";
 }
 
+void write_ipc_protocol_json(std::ostream& out,
+                             const IpcProtocolState& state,
+                             const std::string& indent)
+{
+    out << indent << "\"ipc_protocol\": {\n";
+    out << indent << "  \"name\": \""
+        << json_escape(orange::external_recorder::ipc::kProtocolName) << "\",\n";
+    out << indent << "  \"version\": "
+        << orange::external_recorder::ipc::kProtocolVersion << ",\n";
+    out << indent << "  \"recorder_hello_sent\": "
+        << (state.recorder_hello_sent ? "true" : "false") << ",\n";
+    out << indent << "  \"client_hello_received\": "
+        << (state.client_hello_received ? "true" : "false") << "\n";
+    out << indent << "}";
+}
+
 double percentile_ms(std::vector<double> values, double percentile)
 {
     if (values.empty()) {
@@ -886,8 +908,9 @@ bool write_recorder_status_json(const Options& options,
                                 const uint64_t frames_encoded,
                                 const uint64_t frames_dropped,
                                 const bool worker_failed,
-                                const std::string& error_message = {},
-                                const RollingStatusSnapshot& rolling_status = {},
+                                const std::string& error_message,
+                                const RollingStatusSnapshot& rolling_status,
+                                const IpcProtocolState& protocol_state,
                                 const StoragePreflightSnapshot* storage_override = nullptr)
 {
     if (options.status_json_path.empty()) {
@@ -970,6 +993,8 @@ bool write_recorder_status_json(const Options& options,
             out << "  \"frames_encoded\": " << frames_encoded << ",\n";
             out << "  \"frames_dropped\": " << frames_dropped << ",\n";
             out << "  \"worker_failed\": " << (worker_failed ? "true" : "false") << ",\n";
+            write_ipc_protocol_json(out, protocol_state, "  ");
+            out << ",\n";
             const StoragePreflightSnapshot storage =
                 storage_override ? *storage_override : collect_storage_preflight(options);
             write_storage_preflight_json(out, storage, "  ");
@@ -3433,7 +3458,8 @@ void write_summary_json(const Options& options,
                         const std::vector<double>& detach_copy_samples,
                         const EncodeSummary* encode_summary,
                         const std::vector<EncodeSummary>& shard_summaries,
-                        const MergedOutputSummary* merged_summary)
+                        const MergedOutputSummary* merged_summary,
+                        const IpcProtocolState& protocol_state)
 {
     if (options.summary_json_path.empty()) {
         return;
@@ -3476,6 +3502,8 @@ void write_summary_json(const Options& options,
         << (options.direct_input_source ? "true" : "false") << ",\n";
     out << "  \"deferred_source_release\": "
         << (options.deferred_source_release ? "true" : "false") << ",\n";
+    write_ipc_protocol_json(out, protocol_state, "  ");
+    out << ",\n";
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
     out << "  \"preset\": \"" << json_escape(options.preset) << "\",\n";
     out << "  \"tuning\": \"" << json_escape(options.tuning) << "\",\n";
@@ -3679,6 +3707,7 @@ int main(int argc, char** argv)
     int listen_fd = -1;
     int client_fd = -1;
     Options options;
+    IpcProtocolState protocol_state;
     uint64_t status_heartbeat_sequence = 0;
     try {
         options = parse_options(argc, argv);
@@ -3708,6 +3737,7 @@ int main(int argc, char** argv)
                 true,
                 message,
                 rolling_status_from_progress(options, 0),
+                protocol_state,
                 &initial_storage);
             throw std::runtime_error(message);
         }
@@ -3781,13 +3811,23 @@ int main(int argc, char** argv)
             0,
             false,
             {},
-            rolling_status_from_progress(options, 0));
+            rolling_status_from_progress(options, 0),
+            protocol_state);
 
         client_fd = accept(listen_fd, nullptr, nullptr);
         if (client_fd < 0) {
             throw std::runtime_error("accept() failed: " + std::string(std::strerror(errno)));
         }
         std::cout << "external_recorder_ipc_probe connected" << std::endl;
+        if (!write_protocol_line(
+                client_fd,
+                &protocol_write_mutex,
+                orange::external_recorder::ipc::build_recorder_hello_line(
+                    options.session_id,
+                    options.stream_id))) {
+            throw std::runtime_error("failed to send external recorder protocol hello");
+        }
+        protocol_state.recorder_hello_sent = true;
         for (auto& worker : encode_workers) {
             if (worker) {
                 worker->set_protocol_writer(client_fd, &protocol_write_mutex);
@@ -3810,7 +3850,8 @@ int main(int argc, char** argv)
             0,
             false,
             {},
-            rolling_status_from_progress(options, 0));
+            rolling_status_from_progress(options, 0),
+            protocol_state);
 
         std::ofstream csv;
         if (!options.csv_path.empty()) {
@@ -3924,7 +3965,8 @@ int main(int argc, char** argv)
                     frames_dropped,
                     worker_failed,
                     error_message,
-                    rolling_status);
+                    rolling_status,
+                    protocol_state);
             };
         auto last_status_write = std::chrono::steady_clock::now();
 
@@ -3933,6 +3975,21 @@ int main(int argc, char** argv)
             std::string line;
             if (!read_line(client_fd, &line)) {
                 break;
+            }
+            if (orange::external_recorder::ipc::starts_with_kind(
+                    line,
+                    orange::external_recorder::ipc::kClientHelloKind)) {
+                orange::external_recorder::ipc::HelloFields client_hello;
+                if (!orange::external_recorder::ipc::parse_client_hello_line(
+                        line,
+                        &client_hello)) {
+                    throw std::runtime_error(
+                        "invalid external recorder client protocol hello: " +
+                        client_hello.error);
+                }
+                protocol_state.client_hello_received = true;
+                write_status("connected");
+                continue;
             }
 
             FrameDescriptor desc;
@@ -4163,7 +4220,8 @@ int main(int argc, char** argv)
             detach_copy_samples,
             encode_workers.empty() ? nullptr : &encode_summary,
             shard_summaries,
-            merged_output ? &merged_summary : nullptr);
+            merged_output ? &merged_summary : nullptr,
+            protocol_state);
         bool any_worker_failed = false;
         if (merged_output && merged_summary.failed) {
             any_worker_failed = true;
@@ -4229,7 +4287,8 @@ int main(int argc, char** argv)
             0,
             true,
             ex.what(),
-            rolling_status_from_progress(options, 0));
+            rolling_status_from_progress(options, 0),
+            protocol_state);
         if (client_fd >= 0) {
             close(client_fd);
         }

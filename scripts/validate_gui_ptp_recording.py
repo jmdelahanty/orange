@@ -415,6 +415,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-external-recorder-protocol-hello",
+        action="store_true",
+        help=(
+            "For full-frame and crop external_ipc recorder contracts present in "
+            "the artifact, require recorder status/summary/runtime evidence of "
+            "the versioned IPC hello handshake."
+        ),
+    )
+    parser.add_argument(
         "--require-source-version",
         action="store_true",
         help=(
@@ -2026,6 +2035,46 @@ def check_storage_preflight_payload(
     return summary
 
 
+def check_ipc_protocol_payload(
+    reporter: Reporter,
+    prefix: str,
+    payload: dict[str, Any],
+    required: bool,
+) -> dict[str, Any]:
+    protocol = payload.get("ipc_protocol")
+    if not isinstance(protocol, dict):
+        if required:
+            reporter.fail(f"{prefix} ipc_protocol missing")
+        return {}
+    summary = {
+        "ipc_protocol_name": protocol.get("name"),
+        "ipc_protocol_version": integer(protocol.get("version")),
+        "recorder_hello_sent": protocol.get("recorder_hello_sent"),
+        "client_hello_received": protocol.get("client_hello_received"),
+    }
+    reporter.check(
+        protocol.get("name") == "orange.external_recorder.ipc",
+        f"{prefix} ipc_protocol name valid",
+        f"{prefix} ipc_protocol name={protocol.get('name')!r}",
+    )
+    reporter.check(
+        integer(protocol.get("version")) == 1,
+        f"{prefix} ipc_protocol version=1",
+        f"{prefix} ipc_protocol version={protocol.get('version')!r}",
+    )
+    reporter.check(
+        protocol.get("recorder_hello_sent") is True,
+        f"{prefix} recorder_hello_sent=true",
+        f"{prefix} recorder_hello_sent={protocol.get('recorder_hello_sent')!r}",
+    )
+    reporter.check(
+        protocol.get("client_hello_received") is True,
+        f"{prefix} client_hello_received=true",
+        f"{prefix} client_hello_received={protocol.get('client_hello_received')!r}",
+    )
+    return summary
+
+
 def require_storage_preflight_summary(
     reporter: Reporter,
     prefix: str,
@@ -2070,6 +2119,7 @@ def check_external_recorder_status_contract(
     contract_path: Path,
     label: str,
     require_storage_preflight: bool,
+    require_protocol_hello: bool,
 ) -> dict[str, Any]:
     contract = read_json(contract_path)
     if not contract:
@@ -2101,8 +2151,20 @@ def check_external_recorder_status_contract(
                 f"require_storage_preflight={contract.get('require_storage_preflight')!r}"
             ),
         )
+    if require_protocol_hello:
+        reporter.check(
+            contract.get("require_protocol_hello") is True,
+            f"{label} external recorder contract require_protocol_hello=true",
+            (
+                f"{label} external recorder contract "
+                f"require_protocol_hello={contract.get('require_protocol_hello')!r}"
+            ),
+        )
     storage_preflight_required = (
         require_storage_preflight or contract.get("require_storage_preflight") is True
+    )
+    protocol_hello_required = (
+        require_protocol_hello or contract.get("require_protocol_hello") is True
     )
 
     artifact_root_value = contract.get("artifact_root")
@@ -2163,6 +2225,12 @@ def check_external_recorder_status_contract(
             f"{prefix} status",
             status,
         )
+        status_protocol_summary = check_ipc_protocol_payload(
+            reporter,
+            f"{prefix} status",
+            status,
+            protocol_hello_required,
+        )
         if storage_preflight_required:
             require_storage_preflight_summary(
                 reporter,
@@ -2193,6 +2261,13 @@ def check_external_recorder_status_contract(
                     reporter,
                     f"{prefix} summary",
                     summary_storage_summary,
+                )
+            if protocol_hello_required:
+                check_ipc_protocol_payload(
+                    reporter,
+                    f"{prefix} summary",
+                    summary,
+                    True,
                 )
             reporter.check(
                 frames_received == summary_frames_received,
@@ -2282,6 +2357,39 @@ def check_external_recorder_status_contract(
                 f"{prefix} runtime",
                 runtime_storage_summary,
             )
+        if protocol_hello_required:
+            reporter.check(
+                runtime_status.get("ipc_protocol_name") == "orange.external_recorder.ipc",
+                f"{prefix} runtime ipc_protocol_name valid",
+                (
+                    f"{prefix} runtime ipc_protocol_name="
+                    f"{runtime_status.get('ipc_protocol_name')!r}"
+                ),
+            )
+            reporter.check(
+                integer(runtime_status.get("ipc_protocol_version")) == 1,
+                f"{prefix} runtime ipc_protocol_version=1",
+                (
+                    f"{prefix} runtime ipc_protocol_version="
+                    f"{runtime_status.get('ipc_protocol_version')!r}"
+                ),
+            )
+            reporter.check(
+                runtime_status.get("recorder_hello_sent") is True,
+                f"{prefix} runtime recorder_hello_sent=true",
+                (
+                    f"{prefix} runtime recorder_hello_sent="
+                    f"{runtime_status.get('recorder_hello_sent')!r}"
+                ),
+            )
+            reporter.check(
+                runtime_status.get("client_hello_received") is True,
+                f"{prefix} runtime client_hello_received=true",
+                (
+                    f"{prefix} runtime client_hello_received="
+                    f"{runtime_status.get('client_hello_received')!r}"
+                ),
+            )
 
         status_summary[serial] = {
             "status_json": str(status_path) if status_path is not None else "",
@@ -2295,6 +2403,7 @@ def check_external_recorder_status_contract(
             "runtime_valid": runtime_status.get("valid") is True,
         }
         status_summary[serial].update(status_storage_summary)
+        status_summary[serial].update(status_protocol_summary)
         status_summary[serial].update(
             {
                 "runtime_storage_checked": runtime_status.get("storage_checked"),
@@ -2316,6 +2425,7 @@ def check_external_recorder_status(
     recording_folder: Path,
     require_status: bool,
     require_storage_preflight: bool = False,
+    require_protocol_hello: bool = False,
 ) -> dict[str, Any]:
     if not require_status:
         return {}
@@ -2335,6 +2445,7 @@ def check_external_recorder_status(
             contract_path,
             label,
             require_storage_preflight,
+            require_protocol_hello,
         )
     reporter.check(
         found,
@@ -5185,6 +5296,7 @@ def main() -> int:
             recording_folder,
             args.require_external_recorder_status,
             args.require_external_recorder_storage_preflight,
+            args.require_external_recorder_protocol_hello,
         )
         check_pipeline(
             reporter,
