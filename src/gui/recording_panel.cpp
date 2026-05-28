@@ -277,17 +277,45 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
                                                   CameraEachSelect* cameras_select,
                                                   const int num_cameras)
 {
-    ImGui::SeparatorText("Advanced Recording Validation");
-
     if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        ImGui::SeparatorText("Advanced Recording Validation");
         ImGui::TextDisabled("Open cameras to inspect advanced recording validation.");
+        return;
+    }
+
+    int record_enabled_count = 0;
+    int record_enabled_split_gop_count = 0;
+    for (int i = 0; i < num_cameras; ++i) {
+        if (cameras_select[i].record) {
+            ++record_enabled_count;
+            if (cameras_params[i].recording.strategy.split_gop_enabled()) {
+                ++record_enabled_split_gop_count;
+            }
+        }
+    }
+
+    if (record_enabled_count == 0) {
+        ImGui::SeparatorText("Advanced Recording Validation");
+        ImGui::TextDisabled("No cameras are currently selected for recording.");
+        return;
+    }
+
+    if (record_enabled_split_gop_count == 0) {
+        ImGui::SeparatorText("Advanced Recording Validation");
+        ImGui::TextDisabled("No record-enabled cameras are currently using split-GOP recording.");
+        return;
+    }
+
+    if (!ImGui::TreeNode("Advanced Recording Validation")) {
+        ImGui::TextDisabled(
+            "Split-GOP validation is available for %d record-enabled camera(s). "
+            "Expand to run topology and peer-access checks.",
+            record_enabled_split_gop_count);
         return;
     }
 
     std::vector<RecordingValidationCameraInput> validation_inputs;
     validation_inputs.reserve(static_cast<std::size_t>(num_cameras));
-    int record_enabled_count = 0;
-    int record_enabled_split_gop_count = 0;
     for (int i = 0; i < num_cameras; ++i) {
         RecordingValidationCameraInput input;
         input.camera_index = i;
@@ -297,12 +325,6 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
         input.strategy = cameras_params[i].recording.strategy;
         input.constraints = cameras_params[i].recording.constraints;
         validation_inputs.push_back(std::move(input));
-        if (cameras_select[i].record) {
-            ++record_enabled_count;
-            if (cameras_params[i].recording.strategy.split_gop_enabled()) {
-                ++record_enabled_split_gop_count;
-            }
-        }
     }
 
     const std::vector<CameraRecordingValidationSummary> summaries =
@@ -311,16 +333,6 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
             [](const int source_gpu_id, const int helper_gpu_id) {
                 return build_recording_validation_gpu_path_info(source_gpu_id, helper_gpu_id);
             });
-
-    if (record_enabled_count == 0) {
-        ImGui::TextDisabled("No cameras are currently selected for recording.");
-        return;
-    }
-
-    if (record_enabled_split_gop_count == 0) {
-        ImGui::TextDisabled("No record-enabled cameras are currently using split-GOP recording.");
-        return;
-    }
 
     int invalid_camera_count = 0;
     for (const auto& summary : summaries) {
@@ -348,6 +360,7 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
     }
 
     if (!ImGui::TreeNode("Per-camera split-GOP summary")) {
+        ImGui::TreePop();
         return;
     }
 
@@ -417,6 +430,7 @@ void render_advanced_recording_validation_summary(CameraParams* cameras_params,
         ImGui::TreePop();
     }
 
+    ImGui::TreePop();
     ImGui::TreePop();
 }
 

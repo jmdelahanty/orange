@@ -76,10 +76,12 @@ void test_sampling_only_during_active_recording()
     timing.crop_texture_upload_count = 2;
     orange::gui::gui_sample_frame_timings(&stats, true, timing);
 
-    const nlohmann::json payload = orange::gui::gui_display_frame_rate_json(stats, 4, 30, true);
+    const nlohmann::json payload = orange::gui::gui_display_frame_rate_json(stats, 4, 30, 0, 60, true);
     require(payload["overall"].value("sample_count", 0) == 3, "overall sample count");
     require(payload.value("stream_downsample", 0) == 4, "stream downsample should be recorded");
     require(payload.value("display_preview_max_fps", 0) == 30, "display preview cap should be recorded");
+    require(payload.value("swap_interval", -1) == 0, "swap interval should be recorded");
+    require(payload.value("frame_max_fps", -1) == 60, "frame cap should be recorded");
     require(payload.value("yolo_speed_graphs_enabled", false), "speed graph visibility should be recorded");
     require(payload["crop_preview_visible"].value("sample_count", 0) == 1, "visible sample count");
     require(payload["crop_preview_hidden"].value("sample_count", 0) == 1, "hidden sample count");

@@ -242,6 +242,8 @@ inline void gui_sample_frame_timings(GuiDisplayFrameRateStats* stats,
 inline nlohmann::json gui_display_frame_rate_json(const GuiDisplayFrameRateStats& stats,
                                                   const int stream_downsample = 0,
                                                   const int display_preview_max_fps = -1,
+                                                  const int swap_interval = -1,
+                                                  const int frame_max_fps = -1,
                                                   const bool yolo_speed_graphs_enabled = false)
 {
     return {
@@ -249,6 +251,8 @@ inline nlohmann::json gui_display_frame_rate_json(const GuiDisplayFrameRateStats
         {"source", "imgui_io_delta_time"},
         {"stream_downsample", stream_downsample},
         {"display_preview_max_fps", display_preview_max_fps},
+        {"swap_interval", swap_interval},
+        {"frame_max_fps", frame_max_fps},
         {"yolo_speed_graphs_enabled", yolo_speed_graphs_enabled},
         {"saw_crop_preview_enabled", stats.saw_crop_preview_enabled},
         {"saw_crop_preview_hidden", stats.saw_crop_preview_hidden},

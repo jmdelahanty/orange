@@ -692,6 +692,8 @@ def gui_fps_snapshot(
     hidden_p05: float = 70.0,
     stream_downsample: int = 4,
     display_preview_max_fps: int = 30,
+    swap_interval: int = 0,
+    frame_max_fps: int = 60,
     yolo_speed_graphs_enabled: bool = False,
 ) -> dict:
     return {
@@ -701,6 +703,8 @@ def gui_fps_snapshot(
                 "source": "imgui_io_delta_time",
                 "stream_downsample": stream_downsample,
                 "display_preview_max_fps": display_preview_max_fps,
+                "swap_interval": swap_interval,
+                "frame_max_fps": frame_max_fps,
                 "yolo_speed_graphs_enabled": yolo_speed_graphs_enabled,
                 "overall": {"sample_count": 100, "p05_fps": overall_p05},
                 "crop_preview_visible": {"sample_count": 80, "p05_fps": visible_p05},
@@ -729,6 +733,8 @@ def check_gui_fps(
     min_hidden: float | None = None,
     expected_stream_downsample: int | None = None,
     expected_display_preview_max_fps: int | None = None,
+    expected_swap_interval: int | None = None,
+    expected_frame_max_fps: int | None = None,
     expected_yolo_speed_graphs_enabled: int | None = None,
     require_timing_telemetry: bool = False,
 ) -> tuple[validator.Reporter, dict]:
@@ -741,6 +747,8 @@ def check_gui_fps(
         min_hidden,
         expected_stream_downsample,
         expected_display_preview_max_fps,
+        expected_swap_interval,
+        expected_frame_max_fps,
         expected_yolo_speed_graphs_enabled,
         require_timing_telemetry,
     )
@@ -773,11 +781,15 @@ def test_gui_display_frame_rate_threshold_passes() -> None:
         min_hidden=45.0,
         expected_stream_downsample=4,
         expected_display_preview_max_fps=30,
+        expected_swap_interval=0,
+        expected_frame_max_fps=60,
         expected_yolo_speed_graphs_enabled=0,
         require_timing_telemetry=True,
     )
     require(not reporter.failures, f"unexpected failures: {reporter.failures}")
     require(summary["crop_preview_visible"]["p05_fps"] == 55.0, "visible p05 should be summarized")
+    require(summary["swap_interval"] == 0, "swap interval should be summarized")
+    require(summary["frame_max_fps"] == 60, "GUI frame cap should be summarized")
     require(summary["yolo_speed_graphs_enabled"] is False, "speed graph state should be summarized")
     require(summary["timings"]["frame_total_ms"]["sample_count"] == 100, "timing samples should be summarized")
     diagnosis = summary["timing_diagnosis"]
@@ -812,9 +824,11 @@ def test_gui_display_frame_rate_missing_fails_when_required() -> None:
 
 def test_gui_display_frame_rate_display_config_mismatch_fails() -> None:
     reporter, _ = check_gui_fps(
-        gui_fps_snapshot(stream_downsample=1, display_preview_max_fps=60),
+        gui_fps_snapshot(stream_downsample=1, display_preview_max_fps=60, swap_interval=1, frame_max_fps=120),
         expected_stream_downsample=4,
         expected_display_preview_max_fps=30,
+        expected_swap_interval=0,
+        expected_frame_max_fps=60,
     )
     require(
         any("stream downsample=1" in failure for failure in reporter.failures),
@@ -823,6 +837,14 @@ def test_gui_display_frame_rate_display_config_mismatch_fails() -> None:
     require(
         any("display preview max FPS=60" in failure for failure in reporter.failures),
         "display preview max FPS mismatch should fail",
+    )
+    require(
+        any("swap interval=1" in failure for failure in reporter.failures),
+        "swap interval mismatch should fail",
+    )
+    require(
+        any("frame max FPS=120" in failure for failure in reporter.failures),
+        "GUI frame cap mismatch should fail",
     )
 
 

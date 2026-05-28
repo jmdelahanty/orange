@@ -117,6 +117,14 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show the default display preview FPS cap",
         )
         require(
+            "ORANGE_GUI_SWAP_INTERVAL=0" in result.stdout,
+            "launcher output should show the default GUI swap interval",
+        )
+        require(
+            "ORANGE_GUI_FRAME_MAX_FPS=60" in result.stdout,
+            "launcher output should show the default GUI frame cap",
+        )
+        require(
             "ORANGE_GUI_SHOW_SPEED_GRAPHS=0" in result.stdout,
             "launcher output should show the default speed graph setting",
         )
@@ -716,6 +724,8 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
                 "XDG_SESSION_TYPE": "wayland",
                 "ORANGE_GUI_STREAM_DOWNSAMPLE": "8",
                 "ORANGE_DISPLAY_PREVIEW_MAX_FPS": "20",
+                "ORANGE_GUI_SWAP_INTERVAL": "1",
+                "ORANGE_GUI_FRAME_MAX_FPS": "30",
                 "ORANGE_GUI_SHOW_SPEED_GRAPHS": "1",
                 "ORANGE_GUI_AUTORUN": "1",
                 "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS": "2",
@@ -737,6 +747,14 @@ def test_display_env_controls_are_forwarded_to_exec_env() -> None:
         require(
             "ORANGE_DISPLAY_PREVIEW_MAX_FPS=20" in result.stdout,
             "display preview FPS cap should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_SWAP_INTERVAL=1" in result.stdout,
+            "GUI swap interval should be forwarded through sudo env",
+        )
+        require(
+            "ORANGE_GUI_FRAME_MAX_FPS=30" in result.stdout,
+            "GUI frame cap should be forwarded through sudo env",
         )
         require(
             "ORANGE_GUI_SHOW_SPEED_GRAPHS=1" in result.stdout,

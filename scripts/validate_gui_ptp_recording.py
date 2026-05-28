@@ -181,6 +181,18 @@ def parse_args() -> argparse.Namespace:
         help="Optional expected main-camera display preview FPS cap from snapshot and pipeline perf.",
     )
     parser.add_argument(
+        "--expect-gui-swap-interval",
+        type=int,
+        default=None,
+        help="Optional expected recording_snapshot session.gui_display_frame_rate.swap_interval value.",
+    )
+    parser.add_argument(
+        "--expect-gui-frame-max-fps",
+        type=int,
+        default=None,
+        help="Optional expected recording_snapshot session.gui_display_frame_rate.frame_max_fps value.",
+    )
+    parser.add_argument(
         "--expect-yolo-speed-graphs-enabled",
         type=int,
         choices=[0, 1],
@@ -1744,6 +1756,8 @@ def check_gui_display_frame_rate(
     min_hidden_p05: float | None,
     expected_stream_downsample: int | None,
     expected_display_preview_max_fps: int | None,
+    expected_swap_interval: int | None,
+    expected_frame_max_fps: int | None,
     expected_yolo_speed_graphs_enabled: int | None,
     require_timing_telemetry: bool,
 ) -> dict[str, Any]:
@@ -1753,6 +1767,8 @@ def check_gui_display_frame_rate(
         and min_hidden_p05 is None
         and expected_stream_downsample is None
         and expected_display_preview_max_fps is None
+        and expected_swap_interval is None
+        and expected_frame_max_fps is None
         and expected_yolo_speed_graphs_enabled is None
         and not require_timing_telemetry
     ):
@@ -1783,6 +1799,20 @@ def check_gui_display_frame_rate(
                 f"GUI display preview max FPS={display_preview_max_fps}, "
                 f"expected {expected_display_preview_max_fps}"
             ),
+        )
+    if expected_swap_interval is not None:
+        swap_interval = integer(metrics.get("swap_interval"))
+        reporter.check(
+            swap_interval == expected_swap_interval,
+            f"GUI swap interval={swap_interval}",
+            f"GUI swap interval={swap_interval}, expected {expected_swap_interval}",
+        )
+    if expected_frame_max_fps is not None:
+        frame_max_fps = integer(metrics.get("frame_max_fps"))
+        reporter.check(
+            frame_max_fps == expected_frame_max_fps,
+            f"GUI frame max FPS={frame_max_fps}",
+            f"GUI frame max FPS={frame_max_fps}, expected {expected_frame_max_fps}",
         )
     if expected_yolo_speed_graphs_enabled is not None:
         yolo_speed_graphs_enabled = integer(metrics.get("yolo_speed_graphs_enabled"))
@@ -2622,6 +2652,10 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
         return "n/a" if value is None else f"{float(value) * 100.0:.0f}%"
 
     print("\nGUI FPS")
+    if "swap_interval" in gui_fps:
+        print(f"  swap-interval: {gui_fps.get('swap_interval')}")
+    if "frame_max_fps" in gui_fps:
+        print(f"  frame-max-fps: {gui_fps.get('frame_max_fps')}")
     if "yolo_speed_graphs_enabled" in gui_fps:
         print(f"  yolo-speed-graphs-enabled: {gui_fps.get('yolo_speed_graphs_enabled')}")
     print(f"  overall: {bucket_text('overall')}")
@@ -2763,6 +2797,8 @@ def main() -> int:
             args.min_gui_crop_preview_hidden_fps_p05,
             args.expect_gui_stream_downsample,
             args.expect_display_preview_max_fps,
+            args.expect_gui_swap_interval,
+            args.expect_gui_frame_max_fps,
             args.expect_yolo_speed_graphs_enabled,
             args.require_gui_timing_telemetry,
         )

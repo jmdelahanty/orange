@@ -12,6 +12,8 @@ PTP_REGISTER_READ_DECIMATE="${ORANGE_PTP_REGISTER_READ_DECIMATE:-100}"
 YOLO_DETACH_INPUT="${ORANGE_YOLO_DETACH_INPUT:-1}"
 GUI_STREAM_DOWNSAMPLE="${ORANGE_GUI_STREAM_DOWNSAMPLE:-4}"
 DISPLAY_PREVIEW_MAX_FPS="${ORANGE_DISPLAY_PREVIEW_MAX_FPS:-15}"
+GUI_SWAP_INTERVAL="${ORANGE_GUI_SWAP_INTERVAL:-0}"
+GUI_FRAME_MAX_FPS="${ORANGE_GUI_FRAME_MAX_FPS:-60}"
 GUI_SHOW_SPEED_GRAPHS="${ORANGE_GUI_SHOW_SPEED_GRAPHS:-0}"
 GUI_AUTORUN="${ORANGE_GUI_AUTORUN:-0}"
 GUI_AUTORUN_STREAM_WARMUP_SECONDS="${ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS:-3}"
@@ -73,6 +75,14 @@ if [[ -n "${CROP_FRAME_POOL_SIZE}" ]]; then
     echo "ORANGE_CROP_FRAME_POOL_SIZE must be an integer in [1,512]" >&2
     exit 2
   fi
+fi
+if ! is_nonnegative_integer "${GUI_SWAP_INTERVAL}" || (( GUI_SWAP_INTERVAL > 4 )); then
+  echo "ORANGE_GUI_SWAP_INTERVAL must be an integer in [0,4]" >&2
+  exit 2
+fi
+if ! is_nonnegative_integer "${GUI_FRAME_MAX_FPS}" || (( GUI_FRAME_MAX_FPS > 1000 )); then
+  echo "ORANGE_GUI_FRAME_MAX_FPS must be an integer in [0,1000]" >&2
+  exit 2
 fi
 
 CROP_FRAME_POOL_SIZE_DISPLAY="${CROP_FRAME_POOL_SIZE:-<orange default>}"
@@ -427,6 +437,8 @@ Validation environment:
   ORANGE_GUI_RECORDING_SINK_MODE=${ORANGE_GUI_RECORDING_SINK_MODE:-<app config/default>}
   ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}
   ORANGE_DISPLAY_PREVIEW_MAX_FPS=${DISPLAY_PREVIEW_MAX_FPS}
+  ORANGE_GUI_SWAP_INTERVAL=${GUI_SWAP_INTERVAL}
+  ORANGE_GUI_FRAME_MAX_FPS=${GUI_FRAME_MAX_FPS}
   ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}
   ORANGE_GUI_AUTORUN=${GUI_AUTORUN}
   ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=${GUI_AUTORUN_STREAM_WARMUP_SECONDS}
@@ -468,11 +480,11 @@ For a compact artifact health, crop fanout, and GUI timing summary, use:
   scripts/summarize_gui_validation.py --latest-complete
 
 For crop-recording plus crop-preview validation, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --require-crop-preview-sampling --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-visible-fps-p05 45 --json-out /tmp/orange_gui_crop_visible_validation.json
 For a run where crop preview windows were hidden at finalization, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 0 --expect-crop-preview-display-enabled 0 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --min-gui-crop-preview-hidden-fps-p05 45 --json-out /tmp/orange_gui_crop_hidden_validation.json
 For a run with ORANGE_CROP_PREVIEW_DISABLE=1, use:
-  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
+  scripts/validate_gui_ptp_recording.py --latest-complete --require-crop-recording-artifacts --require-crop-preview-counters --expect-crop-preview-max-fps ${CROP_PREVIEW_VALIDATION_MAX_FPS} --expect-crop-preview-disabled 1 --min-crop-frame-pool-size ${CROP_FRAME_POOL_VALIDATION_MIN} ${EXTERNAL_CROP_QUEUE_VALIDATION_FLAGS} --expect-gui-stream-downsample ${GUI_STREAM_DOWNSAMPLE} --expect-display-preview-max-fps ${DISPLAY_PREVIEW_MAX_FPS} --expect-gui-swap-interval ${GUI_SWAP_INTERVAL} --expect-gui-frame-max-fps ${GUI_FRAME_MAX_FPS} --expect-yolo-speed-graphs-enabled ${GUI_SHOW_SPEED_GRAPHS} --require-gui-timing-telemetry --json-out /tmp/orange_gui_crop_disabled_validation.json
 Then compare visible and hidden runs with:
   scripts/compare_gui_crop_preview_validation.py visible=/tmp/orange_gui_crop_visible_validation.json hidden=/tmp/orange_gui_crop_hidden_validation.json ${COMPARE_VALIDATION_FLAGS}
 EOF
@@ -499,6 +511,8 @@ ENV_ARGS=(
   "ORANGE_GUI_CONFIG_DIR=${CONFIG_DIR}"
   "ORANGE_GUI_STREAM_DOWNSAMPLE=${GUI_STREAM_DOWNSAMPLE}"
   "ORANGE_DISPLAY_PREVIEW_MAX_FPS=${DISPLAY_PREVIEW_MAX_FPS}"
+  "ORANGE_GUI_SWAP_INTERVAL=${GUI_SWAP_INTERVAL}"
+  "ORANGE_GUI_FRAME_MAX_FPS=${GUI_FRAME_MAX_FPS}"
   "ORANGE_GUI_SHOW_SPEED_GRAPHS=${GUI_SHOW_SPEED_GRAPHS}"
   "ORANGE_GUI_AUTORUN=${GUI_AUTORUN}"
   "ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=${GUI_AUTORUN_STREAM_WARMUP_SECONDS}"

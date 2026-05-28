@@ -1091,6 +1091,8 @@ def print_human(summary: dict[str, Any]) -> None:
         print(
             f"  stream_downsample={fmt_int(gui_fps.get('stream_downsample'))} "
             f"display_preview_max_fps={fmt_int(gui_fps.get('display_preview_max_fps'))} "
+            f"swap_interval={fmt_int(gui_fps.get('swap_interval'))} "
+            f"frame_max_fps={fmt_int(gui_fps.get('frame_max_fps'))} "
             f"speed_graphs={gui_fps.get('yolo_speed_graphs_enabled', 'n/a')}"
         )
         print(f"  fps overall: {fps_bucket_text('overall')}")

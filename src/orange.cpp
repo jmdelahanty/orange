@@ -60,6 +60,7 @@
 #include <cctype>
 #include <filesystem>
 #include <system_error>
+#include <thread>
 
 std::vector<YoloWorker*> yolo_workers; // For managing YOLO workers
 ENetPeer* external_data_consumer_peer = nullptr; // Store the peer for YOLO data
@@ -4186,7 +4187,8 @@ int main(int argc, char **args) {
 
     gx_context *window = (gx_context *) malloc(sizeof(gx_context));
     *window = (gx_context){
-        .swap_interval = 1,
+        .swap_interval = gx_resolve_swap_interval(1),
+        .frame_max_fps = gx_resolve_frame_max_fps(0),
         .width = 1920,
         .height = 1080,
         .render_target_title = (char *) "Orange",
@@ -4385,8 +4387,18 @@ int main(int argc, char **args) {
         gui_autorun_enter_stage(&gui_autorun_state, GuiAutorunStage::kSelectConfig);
     }
 
+    auto previous_gui_frame_start = std::chrono::steady_clock::now();
+    const auto gui_frame_min_interval =
+        window->frame_max_fps > 0
+            ? std::chrono::microseconds(1000000 / window->frame_max_fps)
+            : std::chrono::microseconds(0);
+
     while (!glfwWindowShouldClose(window->render_target)) {
+        if (gui_frame_min_interval.count() > 0) {
+            std::this_thread::sleep_until(previous_gui_frame_start + gui_frame_min_interval);
+        }
         const auto gui_frame_start = std::chrono::steady_clock::now();
+        previous_gui_frame_start = gui_frame_start;
         GuiFrameTimingSample gui_frame_timing;
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         join_aperture_worker_if_finished(&aperture_ui_state);
@@ -5702,6 +5714,8 @@ int main(int argc, char **args) {
                                     resolve_gui_display_preview_max_fps_snapshot(
                                         cameras_select,
                                         num_cameras),
+                                    static_cast<int>(window->swap_interval),
+                                    static_cast<int>(window->frame_max_fps),
                                     show_yolo_speed_graphs))) {
                             gui_display_frame_rate_stats.Finish();
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
@@ -5894,6 +5908,8 @@ int main(int argc, char **args) {
                         resolve_gui_display_preview_max_fps_snapshot(
                             cameras_select,
                             num_cameras),
+                        static_cast<int>(window->swap_interval),
+                        static_cast<int>(window->frame_max_fps),
                         show_yolo_speed_graphs))) {
                 gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);

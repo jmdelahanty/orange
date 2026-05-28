@@ -474,6 +474,8 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "gui_hidden_p05_fps": nested_float(gui_fps, "crop_preview_hidden", "p05_fps"),
         "gui_stream_downsample": finite_int(gui_fps.get("stream_downsample")),
         "display_preview_max_fps": finite_int(gui_fps.get("display_preview_max_fps")),
+        "gui_swap_interval": finite_int(gui_fps.get("swap_interval")),
+        "gui_frame_max_fps": finite_int(gui_fps.get("frame_max_fps")),
         "yolo_speed_graphs_enabled": finite_int(gui_fps.get("yolo_speed_graphs_enabled")),
         "gui_frame_total_p95_ms": nested_float(gui_fps, "timings", "frame_total_ms", "p95_ms"),
         "gui_main_texture_upload_p95_ms": nested_float(
@@ -601,6 +603,8 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("hidden p05", lambda item: fmt_float(item.get("gui_hidden_p05_fps"))),
         ("stream ds", lambda item: fmt_int(item.get("gui_stream_downsample"))),
         ("display fps", lambda item: fmt_int(item.get("display_preview_max_fps"))),
+        ("swap", lambda item: fmt_int(item.get("gui_swap_interval"))),
+        ("frame cap", lambda item: fmt_int(item.get("gui_frame_max_fps"))),
         ("speed graphs", lambda item: fmt_int(item.get("yolo_speed_graphs_enabled"))),
         ("frame p95", lambda item: fmt_float(item.get("gui_frame_total_p95_ms"), 2)),
         ("main upload p95", lambda item: fmt_float(item.get("gui_main_texture_upload_p95_ms"), 2)),
@@ -733,6 +737,8 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
         display_fields = [
             "gui_stream_downsample",
             "display_preview_max_fps",
+            "gui_swap_interval",
+            "gui_frame_max_fps",
             "yolo_speed_graphs_enabled",
         ]
         expected_display = {field: summaries[0].get(field) for field in display_fields}

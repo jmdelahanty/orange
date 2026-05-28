@@ -112,6 +112,8 @@ def sample_payload(
         "gui_display_frame_rate": {
             "stream_downsample": 4,
             "display_preview_max_fps": 30,
+            "swap_interval": 0,
+            "frame_max_fps": 60,
             "yolo_speed_graphs_enabled": False,
             "overall": {"sample_count": 120, "p05_fps": 57.0},
             "crop_preview_visible": {"sample_count": 80, "p05_fps": visible_p05},
@@ -180,6 +182,8 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
     require(summary["gui_visible_p05_fps"] == 58.0, "visible GUI p05 should parse")
     require(summary["gui_stream_downsample"] == 4, "stream downsample should parse")
     require(summary["display_preview_max_fps"] == 30, "display preview FPS should parse")
+    require(summary["gui_swap_interval"] == 0, "GUI swap interval should parse")
+    require(summary["gui_frame_max_fps"] == 60, "GUI frame cap should parse")
     require(summary["yolo_speed_graphs_enabled"] == 0, "speed graph state should parse")
     require(summary["gui_frame_total_p95_ms"] == 18.5, "GUI frame timing p95 should parse")
     require(summary["gui_main_texture_upload_p95_ms"] == 2.25, "GUI upload timing p95 should parse")

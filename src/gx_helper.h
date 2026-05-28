@@ -1,6 +1,7 @@
 #ifndef GX_HELPER
 #define GX_HELPER
 
+#include <cstdlib>
 #include <stdio.h>
 #include <cstdio>
 #include <GL/glew.h>
@@ -17,6 +18,7 @@
 typedef struct gx_context
 {
     u32 swap_interval;
+    u32 frame_max_fps;
     u32 width;
     u32 height;
     GLFWwindow *render_target;
@@ -38,12 +40,58 @@ static void gx_glew_error_callback(GLenum glew_error)
     }
 }
 
+static u32 gx_resolve_swap_interval(u32 default_value)
+{
+    const char* env = std::getenv("ORANGE_GUI_SWAP_INTERVAL");
+    if (!env || !*env) {
+        return default_value;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || parsed < 0 || parsed > 4) {
+        std::fprintf(
+            stderr,
+            "[GUI][display] Ignoring invalid ORANGE_GUI_SWAP_INTERVAL='%s'; using %u\n",
+            env,
+            default_value);
+        return default_value;
+    }
+
+    return static_cast<u32>(parsed);
+}
+
+static u32 gx_resolve_frame_max_fps(u32 default_value)
+{
+    const char* env = std::getenv("ORANGE_GUI_FRAME_MAX_FPS");
+    if (!env || !*env) {
+        return default_value;
+    }
+
+    char* end = nullptr;
+    const long parsed = std::strtol(env, &end, 10);
+    if (end == env || *end != '\0' || parsed < 0 || parsed > 1000) {
+        std::fprintf(
+            stderr,
+            "[GUI][display] Ignoring invalid ORANGE_GUI_FRAME_MAX_FPS='%s'; using %u\n",
+            env,
+            default_value);
+        return default_value;
+    }
+
+    return static_cast<u32>(parsed);
+}
+
 void gx_init(gx_context *context, GLFWwindow *render_target)
 {
     context->render_target = render_target;
     glfwMakeContextCurrent(render_target);
     gx_glew_error_callback(glewInit());
-    glfwSwapInterval(1); // Enable vsync
+    glfwSwapInterval(static_cast<int>(context->swap_interval));
+    std::printf(
+        "[GUI][display] GLFW swap interval=%u frame_max_fps=%u\n",
+        context->swap_interval,
+        context->frame_max_fps);
 }
 
 GLFWwindow *gx_glfw_init_render_target(u32 marjor_version, u32 minor_version, u32 width, u32 height, const char *title, char *glsl_version)
