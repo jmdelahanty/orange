@@ -90,7 +90,7 @@ The headless in-process full-frame encoder path now satisfies the first
 a short two-camera PTP real-YOLO smoke. Supervised headless external IPC rolling
 also writes verified clip manifests, parent indexes, and packet counts.
 Remaining production gaps are GUI/session rolling adoption, external-recorder
-GUI rolling supervision, crop rolling, broader failure policy, and long soak
+GUI rolling controls, crop rolling, broader failure policy, and long soak
 testing. GUI external crop IPC is currently an explicit `single_clip` sidecar
 path: generated crop contracts and `recording_backend.crop_recording` declare
 `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`, and
@@ -98,9 +98,12 @@ path: generated crop contracts and `recording_backend.crop_recording` declare
 accidentally requested before the crop clip/index contract exists.
 GUI full-frame external-recorder contract materialization now preserves a
 configured `recording_control`/`rollover` object instead of silently overwriting
-it with `clip_seconds = 0`; the remaining GUI full-frame work is to mirror
-external rolling summaries into the GUI `recording_session.json` and snapshot
-indexes during finalization.
+it with `clip_seconds = 0`. GUI full-frame external-recorder finalization now
+mirrors external `rolling_output.clips[]` summaries into the GUI
+`recording_session.json`, per-clip `clip_manifest.json`, session
+`recording_clip_index.json/csv`, and `recording_snapshot.json` session
+pointers. The remaining GUI full-frame work is operator-facing controls and
+live validation/soak coverage.
 
 ## Implementation Plan
 
@@ -152,7 +155,8 @@ indexes during finalization.
   - `EncoderHwWorker` main recording path (headless full-frame path is now
     implemented; GUI/session validation still needed),
   - external recorder production/GUI supervision path (headless diagnostic
-    external IPC path is now implemented),
+    external IPC and GUI finalization bridge are now implemented; live GUI
+    rolling validation still needed),
   - `CropAndEncodeWorker` crop recording path,
   - `GPUVideoEncoder` path (headless / legacy path where used).
 - [x] Keep headless full-frame `recording_frame_id` continuity across segments.

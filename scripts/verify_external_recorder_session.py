@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("artifact_root", help="External recorder artifact root.")
     parser.add_argument(
         "--analytics-root",
-        help="Headless analytics experiment root containing experiment_spec.json and runs.json.",
+        help="Analytics experiment root containing experiment_spec.json/runs.json or recording_session.json.",
     )
     parser.add_argument(
         "--spec",
@@ -782,6 +782,14 @@ def verify_summary(
 
 def verify_analytics_root(analytics_root: Path, serials: list[str]) -> list[Path]:
     runs_path = analytics_root / "runs.json"
+    if not runs_path.exists():
+        manifest_path = analytics_root / "recording_session.json"
+        require(
+            manifest_path.exists(),
+            f"analytics root has neither runs.json nor recording_session.json: {analytics_root}",
+        )
+        return [analytics_root]
+
     runs_json = read_json(runs_path)
     rows: list[dict[str, Any]] = []
     recording_folders: list[Path] = []
@@ -948,7 +956,7 @@ def verify_analytics_recording_session_manifests(
         manifest = read_json(manifest_path)
         require(manifest.get("mode") == "rolling_clips", f"analytics recording_session.json is not rolling_clips: {manifest_path}")
         require(
-            manifest.get("producer") == "orange_headless_external_ipc",
+            manifest.get("producer") in ("orange_headless_external_ipc", "orange_gui_external_ipc"),
             f"unexpected recording_session producer for external IPC rolling: {manifest.get('producer')!r}",
         )
         rollover = manifest.get("rollover")

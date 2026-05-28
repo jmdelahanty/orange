@@ -55,7 +55,9 @@
 #include <chrono>
 #include <fstream>
 #include <array>
+#include <iomanip>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <cctype>
 #include <filesystem>
@@ -747,6 +749,584 @@ bool gui_read_json_file(const std::string& path, nlohmann::json* out, std::strin
         }
         return false;
     }
+}
+
+double gui_elapsed_seconds_between(const std::chrono::steady_clock::time_point& start,
+                                   const std::chrono::steady_clock::time_point& finish);
+
+std::string gui_external_recorder_clip_id(const int clip_index)
+{
+    std::ostringstream out;
+    out << "clip_" << std::setw(6) << std::setfill('0') << clip_index;
+    return out.str();
+}
+
+std::string gui_json_string_or(const nlohmann::json& object,
+                               const char* key,
+                               const std::string& fallback)
+{
+    if (object.is_object()) {
+        const auto it = object.find(key);
+        if (it != object.end() && it->is_string()) {
+            const std::string value = it->get<std::string>();
+            if (!value.empty()) {
+                return value;
+            }
+        }
+    }
+    return fallback;
+}
+
+uint64_t gui_json_u64_or(const nlohmann::json& object,
+                         const char* key,
+                         const uint64_t fallback)
+{
+    if (object.is_object()) {
+        const auto it = object.find(key);
+        if (it != object.end() && it->is_number_unsigned()) {
+            return it->get<uint64_t>();
+        }
+        if (it != object.end() && it->is_number_integer()) {
+            const int64_t value = it->get<int64_t>();
+            return value > 0 ? static_cast<uint64_t>(value) : 0;
+        }
+    }
+    return fallback;
+}
+
+bool gui_external_recorder_plan_requests_rolling(
+    const orange::external_recorder::SupervisorPlan& plan)
+{
+    for (const auto& stream : plan.streams) {
+        if (stream.clip_seconds > 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool gui_external_recorder_recording_control_from_plan(
+    const orange::external_recorder::SupervisorPlan& plan,
+    orange::session::RecordingControlConfig* recording_control_out,
+    std::string* error_out)
+{
+    orange::session::RecordingControlConfig resolved;
+    bool found = false;
+    for (const auto& stream : plan.streams) {
+        if (stream.record_for_seconds <= 0 && stream.clip_seconds <= 0) {
+            continue;
+        }
+        if (stream.clip_seconds > 0 && stream.record_for_seconds <= 0) {
+            if (error_out) {
+                *error_out =
+                    "GUI external rolling requires record_for_seconds when clip_seconds is set";
+            }
+            return false;
+        }
+        if (!found) {
+            resolved.record_for_seconds = stream.record_for_seconds;
+            resolved.clip_seconds = stream.clip_seconds;
+            found = true;
+            continue;
+        }
+        if (resolved.record_for_seconds != stream.record_for_seconds ||
+            resolved.clip_seconds != stream.clip_seconds) {
+            if (error_out) {
+                *error_out =
+                    "GUI external rolling requires consistent recording_control across streams";
+            }
+            return false;
+        }
+    }
+    if (recording_control_out) {
+        *recording_control_out = resolved;
+    }
+    return true;
+}
+
+nlohmann::json gui_build_rolling_recording_session_snapshot_update(
+    const std::string& recording_folder,
+    const nlohmann::json& manifest,
+    const orange::session::RecordingSessionIndexArtifacts& index_artifacts,
+    const nlohmann::json& gui_display_frame_rate)
+{
+    nlohmann::json indexes =
+        manifest.value("indexes", nlohmann::json::object());
+    if (indexes.is_object()) {
+        if (!index_artifacts.clip_index_json_path.empty()) {
+            indexes["clip_index_json_path"] = index_artifacts.clip_index_json_path;
+        }
+        if (!index_artifacts.clip_index_csv_path.empty()) {
+            indexes["clip_index_csv_path"] = index_artifacts.clip_index_csv_path;
+        }
+    }
+
+    nlohmann::json update = {
+        {"recording_mode", manifest.value("mode", std::string())},
+        {"recording_session_manifest_path",
+         (std::filesystem::path(recording_folder) / "recording_session.json").string()},
+        {"recording_session_status", manifest.value("status", std::string("incomplete"))},
+        {"recording_session_camera_count",
+         manifest.value("cameras", nlohmann::json::array()).size()},
+        {"recording_session_index", indexes},
+        {"rolling_clip_count", manifest.value("clips", nlohmann::json::array()).size()},
+        {"rolling_index_row_count", indexes.value("row_count", 0)},
+        {"gui_display_frame_rate", gui_display_frame_rate}
+    };
+    if (manifest.contains("recording_backend")) {
+        update["recording_backend"] = manifest["recording_backend"];
+    }
+    return update;
+}
+
+bool gui_write_external_rolling_recording_session_manifest(
+    const GuiRecordingRunState& run,
+    const orange::external_recorder::SupervisorPlan& plan,
+    const nlohmann::json& recording_backend,
+    const bool recording_session_ok,
+    const nlohmann::json& gui_display_frame_rate,
+    nlohmann::json* manifest_out,
+    nlohmann::json* bridge_out,
+    std::string* error_out)
+{
+    orange::session::RecordingControlConfig recording_control;
+    if (!gui_external_recorder_recording_control_from_plan(
+            plan,
+            &recording_control,
+            error_out)) {
+        return false;
+    }
+    if (recording_control.clip_seconds <= 0) {
+        if (error_out) {
+            *error_out = "GUI external rolling manifest requested without clip_seconds";
+        }
+        return false;
+    }
+
+    const std::string session_id =
+        std::filesystem::path(run.recording_folder).filename().string();
+    std::map<int, orange::session::RollingClipManifestOptions> clips_by_index;
+    std::vector<std::string> camera_serials;
+    nlohmann::json summary_paths = nlohmann::json::object();
+    bool full_frame_clips_ok = true;
+
+    for (const auto& stream : plan.streams) {
+        const std::string serial = stream.camera_serial.empty()
+            ? stream.stream_id
+            : stream.camera_serial;
+        if (serial.empty() || stream.summary_json.empty()) {
+            if (error_out) {
+                *error_out =
+                    "GUI external rolling manifest bridge missing camera serial or summary_json";
+            }
+            return false;
+        }
+
+        nlohmann::json summary;
+        std::string read_error;
+        if (!gui_read_json_file(stream.summary_json, &summary, &read_error)) {
+            if (error_out) {
+                *error_out = read_error;
+            }
+            return false;
+        }
+        const nlohmann::json rolling =
+            summary.value("rolling_output", nlohmann::json::object());
+        if (!rolling.is_object() || !rolling.value("enabled", false)) {
+            if (error_out) {
+                *error_out =
+                    "external recorder summary missing enabled rolling_output for camera " +
+                    serial;
+            }
+            return false;
+        }
+        const nlohmann::json summary_clips =
+            rolling.value("clips", nlohmann::json::array());
+        if (!summary_clips.is_array() || summary_clips.empty()) {
+            if (error_out) {
+                *error_out =
+                    "external recorder rolling_output has no clips for camera " + serial;
+            }
+            return false;
+        }
+
+        camera_serials.push_back(serial);
+        summary_paths[serial] = stream.summary_json;
+        const int fps = std::max(
+            1,
+            summary.value("fps", stream.encode_fps > 0 ? stream.encode_fps : 100));
+
+        for (const nlohmann::json& clip : summary_clips) {
+            if (!clip.is_object()) {
+                continue;
+            }
+            const int clip_index = clip.value("clip_index", -1);
+            if (clip_index < 0) {
+                if (error_out) {
+                    *error_out =
+                        "external recorder rolling clip missing clip_index for camera " +
+                        serial;
+                }
+                return false;
+            }
+            orange::session::RollingClipManifestOptions& manifest_clip =
+                clips_by_index[clip_index];
+            if (manifest_clip.clip_id.empty()) {
+                manifest_clip.producer = "orange_gui_external_ipc";
+                manifest_clip.session_id = session_id;
+                manifest_clip.clip_index = clip_index;
+                manifest_clip.clip_id =
+                    gui_json_string_or(
+                        clip,
+                        "clip_id",
+                        gui_external_recorder_clip_id(clip_index));
+                manifest_clip.directory =
+                    clip.value("directory", std::string());
+                manifest_clip.recording_folder = manifest_clip.directory;
+                manifest_clip.status = "completed";
+                manifest_clip.drain_completed = true;
+            }
+
+            const bool clip_failed = clip.value("failed", false);
+            full_frame_clips_ok = full_frame_clips_ok && !clip_failed;
+            if (clip_failed) {
+                manifest_clip.status = "incomplete";
+                manifest_clip.drain_completed = false;
+            }
+
+            const uint64_t frame_count =
+                gui_json_u64_or(clip, "frame_count", 0ULL);
+            const uint64_t first_frame =
+                gui_json_u64_or(clip, "first_recording_frame_id", 0ULL);
+            const uint64_t last_frame =
+                gui_json_u64_or(clip, "last_recording_frame_id", 0ULL);
+            const uint64_t packets_written =
+                gui_json_u64_or(clip, "packets_written", 0ULL);
+            const std::string mp4 =
+                clip.value("mp4", std::string());
+            const std::string metadata =
+                clip.value("metadata", std::string());
+            const std::string keyframes =
+                clip.value("keyframes", std::string());
+            const bool clip_artifacts_ok =
+                frame_count > 0 &&
+                packets_written > 0 &&
+                !mp4.empty() &&
+                std::filesystem::exists(mp4) &&
+                !metadata.empty() &&
+                std::filesystem::exists(metadata) &&
+                !keyframes.empty() &&
+                std::filesystem::exists(keyframes);
+            if (!clip_artifacts_ok) {
+                full_frame_clips_ok = false;
+                manifest_clip.status = "incomplete";
+                manifest_clip.drain_completed = false;
+            }
+
+            if (first_frame > 0 &&
+                (manifest_clip.first_recording_frame_id == 0 ||
+                 first_frame < manifest_clip.first_recording_frame_id)) {
+                manifest_clip.first_recording_frame_id = first_frame;
+            }
+            if (last_frame > manifest_clip.last_recording_frame_id) {
+                manifest_clip.last_recording_frame_id = last_frame;
+            }
+            manifest_clip.actual_duration_s =
+                std::max(
+                    manifest_clip.actual_duration_s,
+                    static_cast<double>(frame_count) / static_cast<double>(fps));
+
+            orange::session::RecordingSessionCameraArtifact camera_artifact;
+            camera_artifact.camera_serial = serial;
+            camera_artifact.video_path = mp4;
+            camera_artifact.metadata_path = metadata;
+            camera_artifact.keyframe_path = keyframes;
+            camera_artifact.frame_count = frame_count;
+            camera_artifact.first_recording_frame_id = first_frame;
+            camera_artifact.last_recording_frame_id = last_frame;
+            camera_artifact.recording_frame_id_gaps = 0;
+            camera_artifact.packet_count = packets_written;
+            camera_artifact.packet_count_source =
+                "external_recorder_summary.packets_written";
+            manifest_clip.cameras.push_back(camera_artifact);
+
+            orange::session::RecordingOutputDescriptor output;
+            output.camera_serial = serial;
+            output.output_kind = "full";
+            output.role = "ingest_authoritative";
+            output.backend = "external_ipc";
+            output.status = clip_artifacts_ok && !clip_failed
+                ? "completed"
+                : "incomplete";
+            output.video_path = mp4;
+            output.metadata_path = metadata;
+            output.keyframe_path = keyframes;
+            output.summary_path = stream.summary_json;
+            output.frame_count = frame_count;
+            output.first_recording_frame_id = first_frame;
+            output.last_recording_frame_id = last_frame;
+            output.recording_frame_id_gaps = 0;
+            output.packet_count = packets_written;
+            output.packet_count_source =
+                "external_recorder_summary.packets_written";
+            output.frame_rate = fps;
+            output.codec = stream.codec;
+            output.container = "mp4";
+            output.tuning = stream.tuning;
+            output.pixel_source_format = "mono8";
+            output.encoded_format = "nv12";
+            output.coordinate_space = "full_frame_pixels";
+            output.details = {
+                {"clip_index", clip_index},
+                {"clip_id", manifest_clip.clip_id},
+                {"stream_id", stream.stream_id},
+                {"analytics_gpu_id", stream.analytics_gpu_id},
+                {"recorder_gpu_id", stream.recorder_gpu_id},
+                {"recording_control",
+                 orange::session::build_recording_control_json(recording_control)},
+                {"rollover",
+                 {
+                     {"requested", true},
+                     {"status", "completed"},
+                     {"implementation",
+                      orange::external_recorder::kExternalRecorderRollingImplementation},
+                     {"seamless_writer_switch", true},
+                     {"records_during_rollover", true},
+                     {"boundary", "gop_first_frame_id"}
+                 }}
+            };
+            manifest_clip.recording_outputs.push_back(std::move(output));
+        }
+    }
+
+    if (clips_by_index.empty()) {
+        if (error_out) {
+            *error_out = "GUI external rolling manifest bridge found no clips";
+        }
+        return false;
+    }
+    std::sort(camera_serials.begin(), camera_serials.end());
+    camera_serials.erase(
+        std::unique(camera_serials.begin(), camera_serials.end()),
+        camera_serials.end());
+
+    std::vector<orange::session::RollingClipManifestOptions> clip_options;
+    clip_options.reserve(clips_by_index.size());
+    double sum_clip_actual_duration_s = 0.0;
+    for (auto it = clips_by_index.begin(); it != clips_by_index.end(); ++it) {
+        orange::session::RollingClipManifestOptions clip = std::move(it->second);
+        if (clip.recording_folder.empty()) {
+            if (error_out) {
+                *error_out =
+                    "GUI external rolling clip missing output directory for clip " +
+                    std::to_string(clip.clip_index);
+            }
+            return false;
+        }
+        if (clip.cameras.size() != camera_serials.size()) {
+            full_frame_clips_ok = false;
+            clip.status = "incomplete";
+            clip.drain_completed = false;
+        }
+        const bool final_clip = std::next(it) == clips_by_index.end();
+        clip.start_reason = it == clips_by_index.begin() ? "recording_start" : "rollover";
+        clip.stop_reason = final_clip ? run.stop_reason : "clip_seconds_elapsed";
+        clip.final_clip = final_clip;
+        clip.timed_stop_hit =
+            final_clip && clip.stop_reason == "record_for_seconds_elapsed";
+        clip.requested_duration_s =
+            final_clip
+                ? clip.actual_duration_s
+                : static_cast<double>(recording_control.clip_seconds);
+        clip.rollover_request_id = 0;
+        if (!final_clip) {
+            clip.rollover_at_recording_frame_id =
+                std::next(it)->second.first_recording_frame_id;
+        } else if (it != clips_by_index.begin()) {
+            clip.rollover_at_recording_frame_id = clip.first_recording_frame_id;
+        }
+        clip.pending_next_clip = false;
+        if (it == clips_by_index.begin()) {
+            clip.started_at_utc = run.recording_started_at_utc;
+            clip.started_at_elapsed_s = 0.0;
+        }
+        if (final_clip) {
+            clip.stop_requested_at_utc = run.recording_stop_requested_at_utc;
+            clip.stop_requested_at_elapsed_s =
+                gui_elapsed_seconds_between(
+                    run.recording_started_at,
+                    run.recording_stop_requested_at);
+        }
+        clip.finalized_at_utc = run.recording_drained_at_utc;
+        clip.finalized_at_elapsed_s =
+            gui_elapsed_seconds_between(
+                run.recording_started_at,
+                run.recording_drained_at);
+        clip.drain_duration_s =
+            final_clip
+                ? gui_elapsed_seconds_between(
+                      run.recording_stop_requested_at,
+                      run.recording_drained_at)
+                : 0.0;
+        sum_clip_actual_duration_s += clip.actual_duration_s;
+
+        std::string clip_manifest_error;
+        if (!orange::session::write_recording_session_manifest(
+                (std::filesystem::path(clip.recording_folder) /
+                 "clip_manifest.json").string(),
+                orange::session::build_recording_clip_manifest(clip),
+                &clip_manifest_error)) {
+            if (error_out) {
+                *error_out = clip_manifest_error;
+            }
+            return false;
+        }
+        clip_options.push_back(std::move(clip));
+    }
+
+    nlohmann::json rolling_recording_backend = recording_backend;
+    if (!rolling_recording_backend.is_object()) {
+        rolling_recording_backend = nlohmann::json::object();
+    }
+    if (!full_frame_clips_ok) {
+        rolling_recording_backend["status"] = "incomplete";
+    }
+    rolling_recording_backend["recording_control"] =
+        orange::session::build_recording_control_json(recording_control);
+    rolling_recording_backend["rollover"] = {
+        {"requested", true},
+        {"status", full_frame_clips_ok ? "completed" : "incomplete"},
+        {"implementation",
+         orange::external_recorder::kExternalRecorderRollingImplementation},
+        {"seamless_writer_switch", true},
+        {"records_during_rollover", true},
+        {"boundary", "gop_first_frame_id"},
+        {"next_writer_preopened", false}
+    };
+    rolling_recording_backend["summary_json"] = summary_paths;
+
+    orange::session::RollingRecordingSessionManifestOptions manifest_options;
+    manifest_options.producer = "orange_gui_external_ipc";
+    manifest_options.session_id = session_id;
+    manifest_options.created_at_utc = run.recording_started_at_utc;
+    manifest_options.updated_at_utc = run.recording_drained_at_utc;
+    manifest_options.recording_folder = run.recording_folder;
+    manifest_options.status =
+        recording_session_ok && full_frame_clips_ok ? "completed" : "incomplete";
+    manifest_options.requested_stream_duration_seconds =
+        recording_control.record_for_seconds;
+    manifest_options.stream_started_at_utc = run.recording_started_at_utc;
+    manifest_options.stream_finished_at_utc = run.recording_drained_at_utc;
+    manifest_options.stream_actual_elapsed_s =
+        gui_elapsed_seconds_between(
+            run.recording_started_at,
+            run.recording_drained_at);
+    manifest_options.recording_control = recording_control;
+    manifest_options.recording_started = true;
+    manifest_options.recording_started_at_utc = run.recording_started_at_utc;
+    manifest_options.recording_started_at_elapsed_s = 0.0;
+    manifest_options.recording_stop_requested = true;
+    manifest_options.recording_stop_requested_at_utc =
+        run.recording_stop_requested_at_utc;
+    manifest_options.recording_stop_requested_at_elapsed_s =
+        gui_elapsed_seconds_between(
+            run.recording_started_at,
+            run.recording_stop_requested_at);
+    manifest_options.recording_stop_reason = run.stop_reason;
+    manifest_options.recording_drain_completed = true;
+    manifest_options.recording_drained_at_utc = run.recording_drained_at_utc;
+    manifest_options.recording_drained_at_elapsed_s =
+        gui_elapsed_seconds_between(
+            run.recording_started_at,
+            run.recording_drained_at);
+    manifest_options.actual_recording_duration_s =
+        gui_elapsed_seconds_between(
+            run.recording_started_at,
+            run.recording_stop_requested_at);
+    manifest_options.drain_duration_s =
+        gui_elapsed_seconds_between(
+            run.recording_stop_requested_at,
+            run.recording_drained_at);
+    manifest_options.sum_clip_actual_duration_s = sum_clip_actual_duration_s;
+    manifest_options.rollover_implementation =
+        orange::external_recorder::kExternalRecorderRollingImplementation;
+    manifest_options.rollover_next_writer_preopened = false;
+    manifest_options.recording_backend = std::move(rolling_recording_backend);
+    manifest_options.camera_serials = std::move(camera_serials);
+    manifest_options.clips = std::move(clip_options);
+
+    const nlohmann::json manifest =
+        orange::session::build_rolling_clip_recording_session_manifest(
+            manifest_options);
+    const std::filesystem::path manifest_path =
+        std::filesystem::path(run.recording_folder) / "recording_session.json";
+    orange::session::RecordingSessionIndexArtifacts index_artifacts;
+    if (!orange::session::write_rolling_clip_index_artifacts(
+            run.recording_folder,
+            manifest,
+            &index_artifacts,
+            error_out)) {
+        return false;
+    }
+    std::string manifest_error;
+    if (!orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            manifest,
+            &manifest_error)) {
+        if (error_out) {
+            *error_out = manifest_error;
+        }
+        return false;
+    }
+
+    const nlohmann::json snapshot_update =
+        gui_build_rolling_recording_session_snapshot_update(
+            run.recording_folder,
+            manifest,
+            index_artifacts,
+            gui_display_frame_rate);
+    if (!update_recording_snapshot_session_artifacts(
+            run.recording_folder,
+            snapshot_update)) {
+        if (error_out) {
+            *error_out =
+                "failed to update recording_snapshot.json with GUI external IPC rolling index";
+        }
+        return false;
+    }
+    if (manifest.contains("recording_outputs") &&
+        manifest["recording_outputs"].is_object() &&
+        !update_recording_snapshot_recording_outputs(
+            run.recording_folder,
+            manifest["recording_outputs"])) {
+        if (error_out) {
+            *error_out =
+                "failed to update recording_snapshot.json with GUI external IPC recording outputs";
+        }
+        return false;
+    }
+
+    if (manifest_out) {
+        *manifest_out = manifest;
+    }
+    if (bridge_out) {
+        *bridge_out = {
+            {"pass", recording_session_ok && full_frame_clips_ok},
+            {"full_frame_pass", full_frame_clips_ok},
+            {"path", manifest_path.string()},
+            {"mode", "rolling_clips"},
+            {"producer", "orange_gui_external_ipc"},
+            {"clip_count", manifest_options.clips.size()},
+            {"camera_count", manifest_options.camera_serials.size()},
+            {"indexes",
+             {
+                 {"clip_index_json", index_artifacts.clip_index_json_path},
+                 {"clip_index_csv", index_artifacts.clip_index_csv_path}
+             }},
+            {"summary_json", summary_paths}
+        };
+    }
+    return true;
 }
 
 bool has_gui_timepoint(const std::chrono::steady_clock::time_point& timepoint)
@@ -1488,132 +2068,174 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         external_recorder_ok &&
         (!crop_external_recorder_active || crop_external_recorder_ok);
 
-    orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
-    manifest_options.producer = external_ipc ? "orange_gui_external_ipc" : "orange_gui";
-    manifest_options.session_id =
-        std::filesystem::path(run->recording_folder).filename().string();
-    manifest_options.created_at_utc = run->recording_started_at_utc;
-    manifest_options.updated_at_utc = run->recording_drained_at_utc;
-    manifest_options.recording_folder = run->recording_folder;
-    manifest_options.status = recording_session_ok ? "completed" : "incomplete";
-    manifest_options.stream_started_at_utc = run->recording_started_at_utc;
-    manifest_options.stream_finished_at_utc = run->recording_drained_at_utc;
-    manifest_options.stream_actual_elapsed_s =
-        gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
-    manifest_options.recording_started = true;
-    manifest_options.recording_started_at_utc = run->recording_started_at_utc;
-    manifest_options.recording_started_at_elapsed_s = 0.0;
-    manifest_options.recording_stop_requested = true;
-    manifest_options.recording_stop_requested_at_utc = run->recording_stop_requested_at_utc;
-    manifest_options.recording_stop_requested_at_elapsed_s =
-        gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
-    manifest_options.recording_stop_reason = run->stop_reason;
-    manifest_options.recording_drain_completed = true;
-    manifest_options.recording_drained_at_utc = run->recording_drained_at_utc;
-    manifest_options.recording_drained_at_elapsed_s =
-        gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
-    manifest_options.actual_recording_duration_s =
-        gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
-    manifest_options.drain_duration_s =
-        gui_elapsed_seconds_between(run->recording_stop_requested_at, run->recording_drained_at);
-    manifest_options.timed_stop_hit = false;
-    manifest_options.recording_backend = recording_backend;
-    manifest_options.cameras = std::move(camera_artifacts);
-    if (cameras_params && cameras_select) {
-        const int resolved_crop_size =
-            CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
-        for (int i = 0; i < num_cameras; ++i) {
-            if (!cameras_select[i].crop_and_encode) {
-                continue;
-            }
-            std::string camera_serial = cameras_params[i].camera_serial;
-            if (camera_serial.empty()) {
-                camera_serial = std::to_string(cameras_params[i].camera_id);
-            }
-            auto external_crop_it = std::find_if(
-                external_crop_outputs.begin(),
-                external_crop_outputs.end(),
-                [&](const orange::session::RecordingOutputDescriptor& output) {
-                    return output.camera_serial == camera_serial;
-                });
-            if (external_crop_it != external_crop_outputs.end()) {
-                manifest_options.recording_outputs.push_back(*external_crop_it);
-            } else if (crop_external_recorder_active) {
-                const std::filesystem::path external_crop_root =
-                    recording_session
-                        ? std::filesystem::path(
-                              recording_session->external_crop_recorder_lifecycle.plan.artifact_root)
-                        : std::filesystem::path(run->recording_folder) / "external_crop_recorder";
-                const std::string external_crop_prefix =
-                    (external_crop_root / ("Cam" + camera_serial + "_crop_external")).string();
-                orange::session::RecordingOutputDescriptor output;
-                output.camera_serial = camera_serial;
-                output.output_kind = "crop";
-                output.role = "sidecar";
-                output.backend = "external_ipc";
-                output.status = "incomplete";
-                output.video_path = external_crop_prefix + ".mp4";
-                output.metadata_path = "Cam" + camera_serial + "_crop_meta.csv";
-                output.keyframe_path = external_crop_prefix + "_keyframe.json";
-                output.perf_path = "Cam" + camera_serial + "_crop_perf.csv";
-                output.sidecar_perf_path =
-                    "Cam" + camera_serial + "_crop_sidecar_perf.csv";
-                output.width = resolved_crop_size;
-                output.height = resolved_crop_size;
-                output.frame_rate = cameras_params[i].frame_rate;
-                output.codec = "hevc";
-                output.container = "mp4";
-                output.tuning = "lossless";
-                output.pixel_source_format = "mono8";
-                output.encoded_format = "nv12";
-                output.coordinate_space = "full_frame_pixels";
-                output.details = {
-                    {"video_backend", "external_ipc"},
-                    {"metadata_backend", "orange_gui"},
-                    {"status_reason", "external crop recorder output missing from supervisor plan"},
-                    {"recording_control", {
-                        {"record_for_seconds", 0},
-                        {"clip_seconds", 0}
-                    }},
-                    {"rollover", {
-                        {"requested", false},
-                        {"status", "not_requested"},
-                        {"implementation", "none"},
-                        {"seamless_writer_switch", false},
-                        {"records_during_rollover", false},
-                        {"output_kind", "crop"},
-                        {"supported_mode", "single_clip"},
-                        {"rolling_supported", false}
-                    }},
-                    {"selection_policy", "largest_detection_by_confidence"},
-                    {"blank_frame_policy", "encode_black_frame_when_no_detection"}
-                };
-                manifest_options.recording_outputs.push_back(std::move(output));
-            } else {
-                manifest_options.recording_outputs.push_back(
-                    orange::session::build_crop_recording_output_descriptor(
-                        camera_serial,
-                        run->recording_folder,
-                        true,
-                        resolved_crop_size,
-                        cameras_params[i].frame_rate,
-                        manifest_options.status));
-            }
-        }
-    }
-
-    const nlohmann::json manifest =
-        orange::session::build_single_clip_recording_session_manifest(manifest_options);
-    std::string manifest_error;
     const std::filesystem::path manifest_path =
         std::filesystem::path(run->recording_folder) / "recording_session.json";
-    if (!orange::session::write_recording_session_manifest(
-            manifest_path.string(),
-            manifest,
-            &manifest_error)) {
-        std::cerr << "[GUI][recording] Failed to write recording_session.json: "
-                  << manifest_error << std::endl;
-        return false;
+    nlohmann::json manifest = nlohmann::json::object();
+    nlohmann::json recording_session_bridge = nlohmann::json::object();
+    std::string manifest_mode = "single_clip";
+    const std::string manifest_producer =
+        external_ipc ? "orange_gui_external_ipc" : "orange_gui";
+    const bool external_rolling_requested =
+        external_ipc &&
+        recording_session &&
+        gui_external_recorder_plan_requests_rolling(
+            recording_session->external_recorder_lifecycle.plan);
+
+    if (external_rolling_requested) {
+        std::string rolling_error;
+        if (!gui_write_external_rolling_recording_session_manifest(
+                *run,
+                recording_session->external_recorder_lifecycle.plan,
+                recording_backend,
+                recording_session_ok,
+                gui_display_frame_rate,
+                &manifest,
+                &recording_session_bridge,
+                &rolling_error)) {
+            std::cerr << "[GUI][recording] Failed to write GUI external IPC rolling manifest: "
+                      << rolling_error << std::endl;
+            return false;
+        }
+        if (!recording_session_bridge.value("full_frame_pass", true)) {
+            external_recorder_ok = false;
+            append_error_message(
+                external_recorder_error,
+                "GUI external rolling full-frame clip manifest marked incomplete");
+        }
+        manifest_mode = "rolling_clips";
+    } else {
+        orange::session::SingleClipRecordingSessionManifestOptions manifest_options;
+        manifest_options.producer = manifest_producer;
+        manifest_options.session_id =
+            std::filesystem::path(run->recording_folder).filename().string();
+        manifest_options.created_at_utc = run->recording_started_at_utc;
+        manifest_options.updated_at_utc = run->recording_drained_at_utc;
+        manifest_options.recording_folder = run->recording_folder;
+        manifest_options.status = recording_session_ok ? "completed" : "incomplete";
+        manifest_options.stream_started_at_utc = run->recording_started_at_utc;
+        manifest_options.stream_finished_at_utc = run->recording_drained_at_utc;
+        manifest_options.stream_actual_elapsed_s =
+            gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
+        manifest_options.recording_started = true;
+        manifest_options.recording_started_at_utc = run->recording_started_at_utc;
+        manifest_options.recording_started_at_elapsed_s = 0.0;
+        manifest_options.recording_stop_requested = true;
+        manifest_options.recording_stop_requested_at_utc = run->recording_stop_requested_at_utc;
+        manifest_options.recording_stop_requested_at_elapsed_s =
+            gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
+        manifest_options.recording_stop_reason = run->stop_reason;
+        manifest_options.recording_drain_completed = true;
+        manifest_options.recording_drained_at_utc = run->recording_drained_at_utc;
+        manifest_options.recording_drained_at_elapsed_s =
+            gui_elapsed_seconds_between(run->recording_started_at, run->recording_drained_at);
+        manifest_options.actual_recording_duration_s =
+            gui_elapsed_seconds_between(run->recording_started_at, run->recording_stop_requested_at);
+        manifest_options.drain_duration_s =
+            gui_elapsed_seconds_between(run->recording_stop_requested_at, run->recording_drained_at);
+        manifest_options.timed_stop_hit = false;
+        manifest_options.recording_backend = recording_backend;
+        manifest_options.cameras = std::move(camera_artifacts);
+        if (cameras_params && cameras_select) {
+            const int resolved_crop_size =
+                CropAndEncodeWorker::SanitizeCropSize(crop_size_px);
+            for (int i = 0; i < num_cameras; ++i) {
+                if (!cameras_select[i].crop_and_encode) {
+                    continue;
+                }
+                std::string camera_serial = cameras_params[i].camera_serial;
+                if (camera_serial.empty()) {
+                    camera_serial = std::to_string(cameras_params[i].camera_id);
+                }
+                auto external_crop_it = std::find_if(
+                    external_crop_outputs.begin(),
+                    external_crop_outputs.end(),
+                    [&](const orange::session::RecordingOutputDescriptor& output) {
+                        return output.camera_serial == camera_serial;
+                    });
+                if (external_crop_it != external_crop_outputs.end()) {
+                    manifest_options.recording_outputs.push_back(*external_crop_it);
+                } else if (crop_external_recorder_active) {
+                    const std::filesystem::path external_crop_root =
+                        recording_session
+                            ? std::filesystem::path(
+                                  recording_session->external_crop_recorder_lifecycle.plan.artifact_root)
+                            : std::filesystem::path(run->recording_folder) / "external_crop_recorder";
+                    const std::string external_crop_prefix =
+                        (external_crop_root / ("Cam" + camera_serial + "_crop_external")).string();
+                    orange::session::RecordingOutputDescriptor output;
+                    output.camera_serial = camera_serial;
+                    output.output_kind = "crop";
+                    output.role = "sidecar";
+                    output.backend = "external_ipc";
+                    output.status = "incomplete";
+                    output.video_path = external_crop_prefix + ".mp4";
+                    output.metadata_path = "Cam" + camera_serial + "_crop_meta.csv";
+                    output.keyframe_path = external_crop_prefix + "_keyframe.json";
+                    output.perf_path = "Cam" + camera_serial + "_crop_perf.csv";
+                    output.sidecar_perf_path =
+                        "Cam" + camera_serial + "_crop_sidecar_perf.csv";
+                    output.width = resolved_crop_size;
+                    output.height = resolved_crop_size;
+                    output.frame_rate = cameras_params[i].frame_rate;
+                    output.codec = "hevc";
+                    output.container = "mp4";
+                    output.tuning = "lossless";
+                    output.pixel_source_format = "mono8";
+                    output.encoded_format = "nv12";
+                    output.coordinate_space = "full_frame_pixels";
+                    output.details = {
+                        {"video_backend", "external_ipc"},
+                        {"metadata_backend", "orange_gui"},
+                        {"status_reason", "external crop recorder output missing from supervisor plan"},
+                        {"recording_control", {
+                            {"record_for_seconds", 0},
+                            {"clip_seconds", 0}
+                        }},
+                        {"rollover", {
+                            {"requested", false},
+                            {"status", "not_requested"},
+                            {"implementation", "none"},
+                            {"seamless_writer_switch", false},
+                            {"records_during_rollover", false},
+                            {"output_kind", "crop"},
+                            {"supported_mode", "single_clip"},
+                            {"rolling_supported", false}
+                        }},
+                        {"selection_policy", "largest_detection_by_confidence"},
+                        {"blank_frame_policy", "encode_black_frame_when_no_detection"}
+                    };
+                    manifest_options.recording_outputs.push_back(std::move(output));
+                } else {
+                    manifest_options.recording_outputs.push_back(
+                        orange::session::build_crop_recording_output_descriptor(
+                            camera_serial,
+                            run->recording_folder,
+                            true,
+                            resolved_crop_size,
+                            cameras_params[i].frame_rate,
+                            manifest_options.status));
+                }
+            }
+        }
+
+        manifest =
+            orange::session::build_single_clip_recording_session_manifest(manifest_options);
+        std::string manifest_error;
+        if (!orange::session::write_recording_session_manifest(
+                manifest_path.string(),
+                manifest,
+                &manifest_error)) {
+            std::cerr << "[GUI][recording] Failed to write recording_session.json: "
+                      << manifest_error << std::endl;
+            return false;
+        }
+        recording_session_bridge = {
+            {"pass", recording_session_ok},
+            {"path", manifest_path.string()},
+            {"mode", manifest_mode},
+            {"producer", manifest_producer},
+            {"camera_count", camera_serials.size()}
+        };
     }
 
     if (external_ipc && recording_session) {
@@ -1630,13 +2252,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         nlohmann::json finalization =
             orange::external_recorder::BuildExternalRecorderFinalizationManifest(
                 finalization_options);
-        finalization["recording_session_manifest"] = {
-            {"pass", recording_session_ok},
-            {"path", manifest_path.string()},
-            {"mode", "single_clip"},
-            {"producer", "orange_gui_external_ipc"},
-            {"camera_count", camera_serials.size()}
-        };
+        finalization["recording_session_manifest"] = recording_session_bridge;
         const orange::external_recorder::ArtifactWriteResult finalization_write =
             orange::external_recorder::WriteExternalRecorderFinalizationArtifact(
                 recording_session->external_recorder_lifecycle.plan.artifact_root,
@@ -1663,9 +2279,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         finalization["recording_session_manifest"] = {
             {"pass", crop_external_recorder_ok},
             {"path", manifest_path.string()},
-            {"mode", "single_clip"},
-            {"producer", manifest_options.producer},
+            {"mode", manifest_mode},
+            {"producer", manifest_producer},
             {"output_kind", "crop"},
+            {"crop_mode", "single_clip"},
             {"camera_count", external_crop_outputs.size()}
         };
         const orange::external_recorder::ArtifactWriteResult finalization_write =
@@ -1678,28 +2295,30 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         }
     }
 
-    const nlohmann::json snapshot_update = {
-        {"recording_mode", "single_clip"},
-        {"recording_session_manifest_path", manifest_path.string()},
-        {"recording_session_status", recording_session_ok ? "completed" : "incomplete"},
-        {"recording_session_camera_count", camera_serials.size()},
-        {"gui_display_frame_rate", gui_display_frame_rate}
-    };
-    if (!update_recording_snapshot_session_artifacts(
-            run->recording_folder,
-            snapshot_update)) {
-        std::cerr << "[GUI][recording] Failed to update recording_snapshot.json session pointers."
-                  << std::endl;
-        return false;
-    }
-    if (manifest.contains("recording_outputs") &&
-        manifest["recording_outputs"].is_object() &&
-        !update_recording_snapshot_recording_outputs(
-            run->recording_folder,
-            manifest["recording_outputs"])) {
-        std::cerr << "[GUI][recording] Failed to update recording_snapshot.json recording outputs."
-                  << std::endl;
-        return false;
+    if (!external_rolling_requested) {
+        const nlohmann::json snapshot_update = {
+            {"recording_mode", "single_clip"},
+            {"recording_session_manifest_path", manifest_path.string()},
+            {"recording_session_status", recording_session_ok ? "completed" : "incomplete"},
+            {"recording_session_camera_count", camera_serials.size()},
+            {"gui_display_frame_rate", gui_display_frame_rate}
+        };
+        if (!update_recording_snapshot_session_artifacts(
+                run->recording_folder,
+                snapshot_update)) {
+            std::cerr << "[GUI][recording] Failed to update recording_snapshot.json session pointers."
+                      << std::endl;
+            return false;
+        }
+        if (manifest.contains("recording_outputs") &&
+            manifest["recording_outputs"].is_object() &&
+            !update_recording_snapshot_recording_outputs(
+                run->recording_folder,
+                manifest["recording_outputs"])) {
+            std::cerr << "[GUI][recording] Failed to update recording_snapshot.json recording outputs."
+                      << std::endl;
+            return false;
+        }
     }
 
     if (camera_control) {

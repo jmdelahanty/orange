@@ -25,14 +25,20 @@ Current implementation rule:
   recorder path: the GUI launches supervised recorder processes on record
   start, drains/finalizes them, and writes an
   `orange_gui_external_ipc` single-clip `recording_session.json`.
+- GUI external IPC full-frame rolling finalization is now wired for supervised
+  recorder contracts that request `clip_seconds > 0`: after recorder shutdown,
+  the GUI mirrors each external `rolling_output.clips[]` list into an
+  `orange_gui_external_ipc` `rolling_clips` manifest, writes per-clip
+  `clip_manifest.json`, writes `recording_clip_index.json/csv`, and updates
+  `recording_snapshot.json` session pointers.
 - GUI external crop IPC is also single-clip only today. Its contract and
   `recording_backend.crop_recording` metadata explicitly declare
   `recording_control.clip_seconds = 0`, `rollover.status = "not_requested"`,
   and `rollover.rolling_supported = false` so downstream readers do not infer
   cropped clip rollover from the full-frame external recorder support.
-- GUI/session rolling supervision remains future work. GUI manifests carry
-  `recording_control` and `rollover` metadata, but rolling clip control is not
-  yet wired through the session UI.
+- GUI/session rolling controls and live UI affordances remain future work. The
+  current GUI rolling path depends on a materialized supervised external
+  recorder contract/config that already carries valid `recording_control`.
 
 The current headless rolling implementation keeps acquisition and recording
 active during clip rollover:
@@ -527,7 +533,8 @@ Latest terminal-tail coalescing validation:
 ## Remaining Work
 
 - Add GUI/session controls and validation for rolling clips.
-- Carry external-recorder rolling supervision into the GUI/session lifecycle.
+- Add live GUI validation/soak coverage for external-recorder rolling
+  finalization.
 - Add direct muxer-reported packet counters if they become available; current
   native indexes use ffprobe after finalization and external IPC indexes use
   recorder summary `packets_written`.

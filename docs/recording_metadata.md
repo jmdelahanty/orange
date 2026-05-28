@@ -786,6 +786,13 @@ Notes:
   JSON instead of a per-frame `Cam*_meta.csv`. Consumers should compare
   `camera_artifacts.<serial>.frame_count` to external summary fields such as
   `frames_received`, `acks_sent`, and `frames_encoded`.
+- If the supervised GUI full-frame external recorder contract requests
+  `clip_seconds > 0`, GUI finalization writes an
+  `orange_gui_external_ipc` `rolling_clips` manifest instead of the single-clip
+  shape. The GUI mirrors external `rolling_output.clips[]` into per-clip
+  `clip_manifest.json`, `recording_clip_index.json/csv`, and
+  `recording_snapshot.json` session pointers. The external recorder summaries
+  remain the per-stream truth for encoded clip counts and packet counts.
 - GUI external crop recordings add `recording_backend.crop_recording` and keep
   the crop output under `recording_outputs[serial].crop`. The crop backend
   block includes per-camera maps for recorder `stream_config`,
