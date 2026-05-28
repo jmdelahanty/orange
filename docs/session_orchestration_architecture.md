@@ -146,6 +146,13 @@ contract rather than inventing a second stop/start mechanism. See
 same contract is also the intended target for Citrus experiment-completion
 notifications.
 
+The first diagnostic local coordinator is
+`scripts/orange_citrus_orchestrator.py`. It coordinates already-running or
+explicitly-launched Orange/Citrus GUI processes through their Unix-domain JSON
+local-control sockets. Its default mode is dry-run so the run plan/request
+shape can be reviewed before any stimulus window or recording lifecycle is
+touched; `--execute` is required to send socket requests.
+
 ### NodeExecutor
 
 The executor is the data-plane owner on each machine.

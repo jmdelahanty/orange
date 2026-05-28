@@ -325,3 +325,46 @@ A future orchestrator should use this same Orange endpoint. It should:
 
 The orchestrator must not kill recorder/camera processes to end a run. Orange
 owns that lifecycle.
+
+First diagnostic tool:
+
+```bash
+scripts/orange_citrus_orchestrator.py \
+  --operation-id fourcam-goodcop-smoke-001 \
+  --require-citrus-perf-jsonl
+```
+
+The default mode is dry-run: it prints the exact Orange/Citrus socket paths,
+environment overlays, and mutating request shapes but does not open sockets or
+launch GUI processes. Add `--execute` only when Orange and Citrus are ready to
+be controlled or when explicit launch commands were provided.
+
+Attach to already-running GUI processes:
+
+```bash
+scripts/orange_citrus_orchestrator.py \
+  --execute \
+  --operation-id fourcam-goodcop-smoke-001 \
+  --orange-socket /tmp/orange_local_control.sock \
+  --citrus-socket /tmp/citrus_local_control.sock \
+  --require-citrus-perf-jsonl \
+  --summary-json /tmp/orange_citrus_run_summary.json
+```
+
+Optional process launch is explicit:
+
+```bash
+scripts/orange_citrus_orchestrator.py \
+  --execute \
+  --orange-command "scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe" \
+  --orange-env ORANGE_GUI_AUTORUN_ENABLE_RECORD=0 \
+  --citrus-command "/home/jeremy/citrus/targets/citrus" \
+  --citrus-env DISPLAY=:1 \
+  --citrus-env XAUTHORITY=/run/user/1000/gdm/Xauthority \
+  --require-citrus-perf-jsonl
+```
+
+The process-launch path injects Orange local-control start/stop gates and the
+Citrus local-control socket env. It does not talk to Orange recorder sockets and
+does not delete data. Stop/finalization still goes through Orange
+`stop_recording` or `citrus_completion`, according to `--stop-policy`.
