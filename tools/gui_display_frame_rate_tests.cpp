@@ -61,6 +61,11 @@ void test_sampling_only_during_active_recording()
     orange::gui::gui_sample_display_frame_rate(&stats, 0.016f, true, false, true);
     orange::gui::GuiFrameTimingSample timing;
     timing.frame_total_ms = 12.0;
+    timing.pre_frame_maintenance_ms = 0.2;
+    timing.imgui_new_frame_ms = 0.3;
+    timing.orange_window_draw_ms = 4.0;
+    timing.recording_panel_draw_ms = 1.25;
+    timing.camera_properties_draw_ms = 0.6;
     timing.main_texture_upload_ms = 1.5;
     timing.crop_texture_upload_ms = 0.25;
     timing.camera_window_draw_ms = 2.0;
@@ -85,6 +90,16 @@ void test_sampling_only_during_active_recording()
         1.5,
         0.001,
         "main texture upload p50");
+    require_near(
+        timings["orange_window_draw_ms"].value("p50_ms", 0.0),
+        4.0,
+        0.001,
+        "orange window draw p50");
+    require_near(
+        timings["recording_panel_draw_ms"].value("p50_ms", 0.0),
+        1.25,
+        0.001,
+        "recording panel draw p50");
     require(timings.value("main_texture_upload_count", 0) == 4, "main texture upload count");
     require(timings.value("crop_texture_upload_count", 0) == 2, "crop texture upload count");
     require(payload.value("saw_crop_preview_enabled", false), "crop preview enabled flag");

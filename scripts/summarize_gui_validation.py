@@ -18,6 +18,11 @@ from recording_output_validation import build_recording_output_summary
 DEFAULT_FFPROBE = Path("/opt/orange/lib/ffmpeg-nvidia/bin/ffprobe")
 DEFAULT_GUI_RECORDING_ROOT = Path("/home/jeremy/orange_data/exp/unsorted")
 GUI_TIMING_BREAKDOWN_BUCKETS = [
+    ("pre_frame_maintenance_ms", "pre-frame-maintenance"),
+    ("imgui_new_frame_ms", "imgui-new-frame"),
+    ("orange_window_draw_ms", "orange-window-draw"),
+    ("recording_panel_draw_ms", "recording-panel-draw"),
+    ("camera_properties_draw_ms", "camera-properties-draw"),
     ("main_texture_upload_ms", "main-texture-upload"),
     ("crop_texture_upload_ms", "crop-texture-upload"),
     ("camera_window_draw_ms", "camera-window-draw"),
@@ -1096,6 +1101,11 @@ def print_human(summary: dict[str, Any]) -> None:
             diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
             print("  timings:")
             print(f"    frame-total: {timing_text('frame_total_ms')}")
+            print(f"    pre-frame-maintenance: {timing_text('pre_frame_maintenance_ms')}")
+            print(f"    imgui-new-frame: {timing_text('imgui_new_frame_ms')}")
+            print(f"    orange-window-draw: {timing_text('orange_window_draw_ms')}")
+            print(f"    recording-panel-draw: {timing_text('recording_panel_draw_ms')}")
+            print(f"    camera-properties-draw: {timing_text('camera_properties_draw_ms')}")
             print(f"    main-texture-upload: {timing_text('main_texture_upload_ms')}")
             print(f"    crop-texture-upload: {timing_text('crop_texture_upload_ms')}")
             print(f"    camera-window-draw: {timing_text('camera_window_draw_ms')}")

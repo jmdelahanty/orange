@@ -44,6 +44,11 @@ struct GuiDurationBucket {
 
 struct GuiFrameTimingSample {
     double frame_total_ms = 0.0;
+    double pre_frame_maintenance_ms = 0.0;
+    double imgui_new_frame_ms = 0.0;
+    double orange_window_draw_ms = 0.0;
+    double recording_panel_draw_ms = 0.0;
+    double camera_properties_draw_ms = 0.0;
     double main_texture_upload_ms = 0.0;
     double crop_texture_upload_ms = 0.0;
     double camera_window_draw_ms = 0.0;
@@ -63,6 +68,11 @@ struct GuiDisplayFrameRateStats {
     GuiFrameRateBucket crop_preview_hidden;
     GuiFrameRateBucket crop_preview_visible;
     GuiDurationBucket frame_total_ms;
+    GuiDurationBucket pre_frame_maintenance_ms;
+    GuiDurationBucket imgui_new_frame_ms;
+    GuiDurationBucket orange_window_draw_ms;
+    GuiDurationBucket recording_panel_draw_ms;
+    GuiDurationBucket camera_properties_draw_ms;
     GuiDurationBucket main_texture_upload_ms;
     GuiDurationBucket crop_texture_upload_ms;
     GuiDurationBucket camera_window_draw_ms;
@@ -82,6 +92,11 @@ struct GuiDisplayFrameRateStats {
         crop_preview_hidden.Reset();
         crop_preview_visible.Reset();
         frame_total_ms.Reset();
+        pre_frame_maintenance_ms.Reset();
+        imgui_new_frame_ms.Reset();
+        orange_window_draw_ms.Reset();
+        recording_panel_draw_ms.Reset();
+        camera_properties_draw_ms.Reset();
         main_texture_upload_ms.Reset();
         crop_texture_upload_ms.Reset();
         camera_window_draw_ms.Reset();
@@ -209,6 +224,11 @@ inline void gui_sample_frame_timings(GuiDisplayFrameRateStats* stats,
         return;
     }
     stats->frame_total_ms.Add(sample.frame_total_ms);
+    stats->pre_frame_maintenance_ms.Add(sample.pre_frame_maintenance_ms);
+    stats->imgui_new_frame_ms.Add(sample.imgui_new_frame_ms);
+    stats->orange_window_draw_ms.Add(sample.orange_window_draw_ms);
+    stats->recording_panel_draw_ms.Add(sample.recording_panel_draw_ms);
+    stats->camera_properties_draw_ms.Add(sample.camera_properties_draw_ms);
     stats->main_texture_upload_ms.Add(sample.main_texture_upload_ms);
     stats->crop_texture_upload_ms.Add(sample.crop_texture_upload_ms);
     stats->camera_window_draw_ms.Add(sample.camera_window_draw_ms);
@@ -238,6 +258,11 @@ inline nlohmann::json gui_display_frame_rate_json(const GuiDisplayFrameRateStats
         {"crop_preview_visible", gui_frame_rate_bucket_json(stats.crop_preview_visible)},
         {"timings", {
             {"frame_total_ms", gui_duration_bucket_json(stats.frame_total_ms)},
+            {"pre_frame_maintenance_ms", gui_duration_bucket_json(stats.pre_frame_maintenance_ms)},
+            {"imgui_new_frame_ms", gui_duration_bucket_json(stats.imgui_new_frame_ms)},
+            {"orange_window_draw_ms", gui_duration_bucket_json(stats.orange_window_draw_ms)},
+            {"recording_panel_draw_ms", gui_duration_bucket_json(stats.recording_panel_draw_ms)},
+            {"camera_properties_draw_ms", gui_duration_bucket_json(stats.camera_properties_draw_ms)},
             {"main_texture_upload_ms", gui_duration_bucket_json(stats.main_texture_upload_ms)},
             {"crop_texture_upload_ms", gui_duration_bucket_json(stats.crop_texture_upload_ms)},
             {"camera_window_draw_ms", gui_duration_bucket_json(stats.camera_window_draw_ms)},

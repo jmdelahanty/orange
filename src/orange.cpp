@@ -4387,6 +4387,7 @@ int main(int argc, char **args) {
 
     while (!glfwWindowShouldClose(window->render_target)) {
         const auto gui_frame_start = std::chrono::steady_clock::now();
+        GuiFrameTimingSample gui_frame_timing;
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         join_aperture_worker_if_finished(&aperture_ui_state);
         join_alignment_worker_if_finished(&aperture_ui_state);
@@ -4410,8 +4411,17 @@ int main(int argc, char **args) {
         if (gui_autorun_requests.close_window) {
             glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
         }
+        const auto pre_frame_done = std::chrono::steady_clock::now();
+        gui_frame_timing.pre_frame_maintenance_ms = gui_elapsed_ms(
+            gui_frame_start,
+            pre_frame_done);
+        const auto new_frame_start = std::chrono::steady_clock::now();
         create_new_frame();
+        gui_frame_timing.imgui_new_frame_ms = gui_elapsed_ms(
+            new_frame_start,
+            std::chrono::steady_clock::now());
         
+        const auto orange_window_draw_start = std::chrono::steady_clock::now();
         if (ImGui::Begin("Orange", nullptr, ImGuiWindowFlags_MenuBar)) {
             ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / ImGui::GetIO().Framerate,
                        ImGui::GetIO().Framerate);
@@ -4486,6 +4496,7 @@ int main(int argc, char **args) {
                 // ImGui::BeginDisabled();
             }
 
+            const auto recording_panel_draw_start = std::chrono::steady_clock::now();
             const orange::gui::RecordingPanelActions recording_panel_actions =
                 orange::gui::render_recording_config_panel(
                     &input_folder,
@@ -4498,6 +4509,9 @@ int main(int argc, char **args) {
                     &recording_config_defaults_status,
                     recording_config_defaults_status_warning,
                     &recording_preflight_errors);
+            gui_frame_timing.recording_panel_draw_ms += gui_elapsed_ms(
+                recording_panel_draw_start,
+                std::chrono::steady_clock::now());
             if (recording_panel_actions.choose_recording_dir_requested) {
                 IGFD::FileDialogConfig config;
                 config.countSelectionMax = 1;
@@ -4631,12 +4645,16 @@ int main(int argc, char **args) {
                      local_config_select < static_cast<int>(local_config_folders.size()))
                         ? local_config_folders[local_config_select]
                         : std::string();
+                const auto camera_properties_draw_start = std::chrono::steady_clock::now();
                 orange::gui::render_camera_properties_panel(
                     ecams,
                     cameras_params,
                     num_cameras,
                     color_temps,
                     selected_local_config_folder);
+                gui_frame_timing.camera_properties_draw_ms += gui_elapsed_ms(
+                    camera_properties_draw_start,
+                    std::chrono::steady_clock::now());
 
                 if (camera_control->record_video) {
                     // ImGui::EndDisabled();
@@ -5894,9 +5912,11 @@ int main(int argc, char **args) {
             ImGui::PopStyleColor(1);
         }
         ImGui::End();
+        gui_frame_timing.orange_window_draw_ms = gui_elapsed_ms(
+            orange_window_draw_start,
+            std::chrono::steady_clock::now());
 
 
-        GuiFrameTimingSample gui_frame_timing;
         if (camera_control->subscribe) {
             // Upload the texture data from the PBOs to the GPU textures
             for (int i = 0; i < num_cameras; i++) {
