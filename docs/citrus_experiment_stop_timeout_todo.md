@@ -5,14 +5,19 @@ Scope: When a Citrus experiment ends, emit a control signal to `orange-jeremy`
 so recording stops automatically after a grace period (default 10 seconds),
 using the same safe drain/finalize behavior as manual stop.
 
-## Transport Decision (Recommended)
+## Transport Decision
 
-Use local SHM/IPC (Shaman-style) for this control path, not ENet, because the
-current Citrus <-> Orange deployment is local and already centered on IPC.
+Updated 2026-05-28: use the Orange local control socket contract for this path,
+not SHAMAN/shared-memory queues. See
+[orange_local_control_contract.md](./orange_local_control_contract.md).
 
-- Add a dedicated control IPC queue for commands.
-- Do not reuse per-camera frame/detection queues for control messages.
-- Keep ENet as optional future fallback only for remote/multi-host deployments.
+The reason is boundary control: SHAMAN queues are live stimulus-state transport,
+while experiment completion is a lifecycle command. Citrus and a future external
+orchestrator should both talk to the same Orange-owned local control endpoint.
+Orange remains responsible for translating any accepted request into its safe
+recording stop/drain/finalize path.
+
+Keep ENet as optional future fallback only for remote/multi-host deployments.
 
 ## Is This Possible?
 
@@ -44,8 +49,8 @@ Refs:
 
 Explicit limitation note (current state):
 
-- Citrus currently does not emit any dedicated "experiment ended, stop orange
-  recording" signal.
+- Citrus currently does not emit any dedicated "experiment ended" request to
+  Orange's local control endpoint.
 
 Refs:
 
@@ -66,24 +71,26 @@ Refs:
 
 ## Desired Behavior
 
-1. Citrus emits one "experiment ended" stop request to `orange-jeremy`.
-2. `orange-jeremy` accepts request and starts a 10-second grace timer.
-3. After timer expiry, `orange-jeremy` triggers recording stop.
-4. Encoders drain and finalize.
-5. If drain exceeds timeout, `orange-jeremy` escalates with explicit error
+1. Citrus emits one `citrus_completion` request to Orange.
+2. Orange validates, deduplicates, logs, and ACKs the request.
+3. Once stop control is explicitly enabled, Orange starts a 10-second grace
+   timer.
+4. After timer expiry, Orange triggers recording stop through the same path as
+   the GUI/operator stop.
+5. Encoders and external recorders drain and finalize.
+6. If drain exceeds timeout, Orange escalates with explicit error
    handling and telemetry.
 
 ## Implementation Plan
 
 ## Phase 0: Contract and Semantics
 
-- [ ] Define control message contract in shared schema (or equivalent control
-  payload):
-  - `request_id` (idempotency),
-  - `reason` (manual stop, protocol finish, abort),
-  - `grace_seconds` (default 10),
-  - `emitted_time_ns`.
-- [ ] Define replay and dedup policy:
+- [x] Define the first local control request/response contract:
+  - `request_id` for idempotency,
+  - `operation_id` for the Citrus experiment or orchestrator phase,
+  - `method = citrus_completion`,
+  - `params.reason`, `params.terminal_state`, and `params.grace_seconds`.
+- [x] Define replay and dedup policy:
   - same `request_id` must be ignored after first accept.
 - [ ] Define repeated request policy while countdown active:
   - either keep earliest deadline or replace with latest, but pick one.
@@ -92,24 +99,26 @@ Refs:
 
 ## Phase 1: Citrus Emission Hook
 
-- [ ] Add IPC command emission at experiment terminal boundary in Citrus:
+- [ ] Add local-control request emission at experiment terminal boundary in Citrus:
   - arena stop command path,
   - protocol-finish path that leads to `Arena::Stop()`.
 - [ ] Ensure emission happens once per experiment end event.
-- [ ] Write command into dedicated control queue (for example
-  `/shm_orange_control_v1`) with idempotent `request_id`.
+- [ ] Write command to Orange's Unix-domain JSON control socket with idempotent
+      `request_id`.
 
 Candidate hook points:
 
 - `citrus/src/core/arena.cpp:459`
 - `citrus/src/ui/arena_view_ui.cpp:1305`
 
-## Phase 2: Orange Control Ingress (IPC)
+## Phase 2: Orange Control Ingress
 
-- [ ] Add control IPC reader in `orange-jeremy` for stop-control messages.
-- [ ] Do not mutate `CameraControl` directly from IPC reader context.
-- [ ] Introduce a thread-safe "pending control command" bridge consumed by the
-  main/UI thread.
+- [x] Add opt-in diagnostic Orange GUI local-control socket.
+- [x] Accept, validate, log, and ACK `status` and `citrus_completion`.
+- [x] Keep `start_recording` / `stop_recording` unsupported in diagnostic mode.
+- [ ] Do not mutate `CameraControl` directly from socket-reader context.
+- [ ] Introduce a thread-safe pending command bridge consumed by the main/UI
+      thread before wiring recording stop.
 
 Candidate hook points:
 

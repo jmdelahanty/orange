@@ -342,6 +342,25 @@ label/click automation and keeps the hardware path representative. ImGui Test
 Engine remains useful later for UI-specific checks once the runtime lifecycle
 is scriptable.
 
+## Orange/Citrus Control Plane
+
+GUI autorun remains a useful validation driver, but Citrus completion and a
+future Orange/Citrus orchestrator should share one Orange-owned local control
+plane. The v1 contract is documented in
+[orange_local_control_contract.md](./orange_local_control_contract.md).
+
+Current GUI support is diagnostic-only and opt-in:
+
+```bash
+ORANGE_GUI_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock \
+  ./scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe
+```
+
+The endpoint accepts `status` and `citrus_completion` requests over a Unix-domain
+JSON socket, logs/ACKs completion requests, and deliberately does not start or
+stop recording yet. Future stop wiring must translate an accepted request into
+the same safe GUI/operator stop path used by the recording button.
+
 ## Implementation Sketch
 
 1. Resolve and select `ORANGE_GUI_CONFIG_DIR` during startup.

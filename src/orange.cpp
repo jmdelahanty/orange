@@ -43,6 +43,7 @@
 #include "image_canvas.h"
 #include "recording_output_utils.h"
 #include "recording_validation.h"
+#include "orange_local_control.h"
 #include "session/crop_rolling_sidecars.h"
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
@@ -203,6 +204,19 @@ std::string gui_lower_ascii(std::string text)
         return static_cast<char>(std::tolower(c));
     });
     return text;
+}
+
+std::string gui_trim_ascii_whitespace(const std::string& input)
+{
+    size_t start = 0;
+    while (start < input.size() && std::isspace(static_cast<unsigned char>(input[start]))) {
+        ++start;
+    }
+    size_t end = input.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(input[end - 1]))) {
+        --end;
+    }
+    return input.substr(start, end - start);
 }
 
 bool gui_env_flag_enabled(const char* name, const bool default_value = false)
@@ -3267,6 +3281,131 @@ void gui_refresh_external_recorder_lifecycles(
         &recording_session->external_crop_recorder_last_error);
 }
 
+std::vector<std::string> gui_split_expected_camera_serials()
+{
+    const char* raw = std::getenv("ORANGE_GUI_EXPECT_CAMERAS");
+    if (!raw || !*raw) {
+        return {};
+    }
+    std::vector<std::string> out;
+    for (std::string token : string_split(raw, ",")) {
+        token = gui_trim_ascii_whitespace(token);
+        if (!token.empty()) {
+            out.push_back(token);
+        }
+    }
+    return out;
+}
+
+std::vector<std::string> gui_camera_serials_for_selection(
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const char* selection)
+{
+    std::vector<std::string> serials;
+    if (!cameras_params || num_cameras <= 0) {
+        return serials;
+    }
+    serials.reserve(static_cast<std::size_t>(num_cameras));
+    for (int i = 0; i < num_cameras; ++i) {
+        bool selected = true;
+        if (cameras_select) {
+            if (std::strcmp(selection, "stream") == 0) {
+                selected = cameras_select[i].stream_on;
+            } else if (std::strcmp(selection, "record") == 0) {
+                selected = cameras_select[i].record;
+            } else if (std::strcmp(selection, "yolo") == 0) {
+                selected = cameras_select[i].yolo;
+            } else if (std::strcmp(selection, "crop") == 0) {
+                selected = cameras_select[i].crop_and_encode;
+            }
+        }
+        if (selected && !cameras_params[i].camera_serial.empty()) {
+            serials.push_back(cameras_params[i].camera_serial);
+        }
+    }
+    return serials;
+}
+
+orange::control::RecorderReadinessSnapshot gui_control_recorder_readiness(
+    const orange::external_recorder::SupervisedRecorderLifecycleState& lifecycle,
+    const bool external_ipc_enabled)
+{
+    orange::control::RecorderReadinessSnapshot snapshot;
+    snapshot.external_ipc_enabled = external_ipc_enabled;
+    snapshot.lifecycle_started = lifecycle.started;
+    snapshot.process_count = static_cast<int>(lifecycle.runtime.processes.size());
+    for (const auto& process : lifecycle.runtime.processes) {
+        if (process.active) {
+            ++snapshot.running_process_count;
+        }
+        if (process.socket_ready) {
+            ++snapshot.socket_ready_count;
+        }
+    }
+    snapshot.supervisors_ready =
+        !external_ipc_enabled ||
+        (lifecycle.started &&
+         snapshot.process_count > 0 &&
+         snapshot.running_process_count == snapshot.process_count &&
+         snapshot.socket_ready_count == snapshot.process_count);
+    return snapshot;
+}
+
+orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
+    CameraControl* camera_control,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    const orange::session::RecordingSessionState& recording_session,
+    const GuiRecordingRunState& recording_run,
+    const GuiAutorunState& autorun_state)
+{
+    orange::control::LocalControlStatusSnapshot snapshot;
+    snapshot.updated_at_utc = get_current_utc_timestamp();
+    snapshot.autorun_stage = gui_autorun_stage_name(autorun_state.stage);
+    if (camera_control) {
+        snapshot.cameras_open = camera_control->open;
+        snapshot.streaming_active = camera_control->subscribe;
+        snapshot.recording_active = camera_control->record_video;
+        snapshot.recording_finalizing =
+            camera_control->recording_draining || recording_run.finalizing;
+        snapshot.active_recorders =
+            camera_control->active_recorders.load(std::memory_order_relaxed);
+        snapshot.recording_folder =
+            orange::session::current_recording_folder(camera_control);
+        if (snapshot.recording_folder.empty()) {
+            snapshot.recording_folder = recording_run.recording_folder;
+        }
+    }
+    snapshot.recording_sink_mode = recording_session.recording_sink_mode;
+    snapshot.expected_camera_serials = gui_split_expected_camera_serials();
+    snapshot.open_camera_serials =
+        snapshot.cameras_open
+            ? gui_camera_serials_for_selection(
+                  cameras_params,
+                  nullptr,
+                  num_cameras,
+                  "open")
+            : std::vector<std::string>{};
+    snapshot.stream_selected_camera_serials =
+        gui_camera_serials_for_selection(cameras_params, cameras_select, num_cameras, "stream");
+    snapshot.record_selected_camera_serials =
+        gui_camera_serials_for_selection(cameras_params, cameras_select, num_cameras, "record");
+    snapshot.yolo_selected_camera_serials =
+        gui_camera_serials_for_selection(cameras_params, cameras_select, num_cameras, "yolo");
+    snapshot.crop_selected_camera_serials =
+        gui_camera_serials_for_selection(cameras_params, cameras_select, num_cameras, "crop");
+    snapshot.full_frame_recorder = gui_control_recorder_readiness(
+        recording_session.external_recorder_lifecycle,
+        recording_session.recording_sink_mode == "external_ipc");
+    snapshot.crop_recorder = gui_control_recorder_readiness(
+        recording_session.external_crop_recorder_lifecycle,
+        recording_session.crop_recording_sink_mode == "external_ipc");
+    return snapshot;
+}
+
 struct ApertureCharacterizationUiState {
     bool show_window = false;
     int selected_camera = 0;
@@ -5758,6 +5897,28 @@ int main(int argc, char **args) {
     GuiSessionTimingState gui_session_timing;
     GuiRecordingRunState gui_recording_run;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
+    orange::control::LocalControlServer gui_local_control_server;
+    const char* gui_local_control_socket_env = std::getenv("ORANGE_GUI_LOCAL_CONTROL_SOCKET");
+    if (!gui_local_control_socket_env || !*gui_local_control_socket_env) {
+        gui_local_control_socket_env = std::getenv("ORANGE_LOCAL_CONTROL_SOCKET");
+    }
+    if (gui_local_control_socket_env && *gui_local_control_socket_env) {
+        const char* log_env = std::getenv("ORANGE_GUI_LOCAL_CONTROL_LOG");
+        if (!log_env || !*log_env) {
+            log_env = std::getenv("ORANGE_LOCAL_CONTROL_LOG");
+        }
+        orange::control::LocalControlServerOptions control_options;
+        control_options.socket_path = gui_local_control_socket_env;
+        control_options.event_log_path =
+            log_env && *log_env
+                ? std::string(log_env)
+                : (control_options.socket_path + ".events.jsonl");
+        std::string control_error;
+        if (!gui_local_control_server.Start(control_options, &control_error)) {
+            std::cerr << "[GUI][local_control] failed to start: "
+                      << control_error << std::endl;
+        }
+    }
     std::vector<std::unique_ptr<FrameIPCManager>> frame_ipc_managers;
     std::vector<std::string> frame_ipc_init_errors;
     std::vector<std::string> recording_preflight_errors;
@@ -5893,6 +6054,17 @@ int main(int argc, char **args) {
             camera_control,
             &gui_recording_run,
             calibration_tool_busy);
+        if (gui_local_control_server.running()) {
+            gui_local_control_server.UpdateStatus(
+                gui_build_local_control_status(
+                    camera_control,
+                    cameras_params,
+                    cameras_select,
+                    num_cameras,
+                    recording_session,
+                    gui_recording_run,
+                    gui_autorun_state));
+        }
         if (gui_autorun_requests.close_window) {
             glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
         }
@@ -7635,6 +7807,7 @@ int main(int argc, char **args) {
     clear_usaf_preview_texture(&usaf_ui_state);
     clear_usaf_captured_texture(&usaf_ui_state);
     clear_spatial_layout_texture(&spatial_layout_ui_state);
+    gui_local_control_server.Stop();
 
     if (camera_control->open) {
         for (int i = 0; i < num_cameras; i++) {

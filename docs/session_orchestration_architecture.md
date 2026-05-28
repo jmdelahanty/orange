@@ -140,6 +140,12 @@ The coordinator may be:
 - a headless orchestration host
 - a future experiment manager
 
+For local Orange/Citrus runs, the coordinator should use Orange's local control
+contract rather than inventing a second stop/start mechanism. See
+[orange_local_control_contract.md](./orange_local_control_contract.md). That
+same contract is also the intended target for Citrus experiment-completion
+notifications.
+
 ### NodeExecutor
 
 The executor is the data-plane owner on each machine.

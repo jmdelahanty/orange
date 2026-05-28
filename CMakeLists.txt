@@ -106,6 +106,7 @@ endif()
 set(OPENGL_GL_PREFERENCE GLVND)
 find_package(OpenGL REQUIRED)
 find_package(PkgConfig REQUIRED)
+find_package(Threads REQUIRED)
 pkg_check_modules(GLFW3 REQUIRED glfw3)
 
 if(EXISTS "${ORANGE_OPENCV_ROOT}/lib/cmake/opencv4")
@@ -233,6 +234,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/recording_output_descriptor.cpp"
     "${SRC_DIR}/video_encode_profile.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
+    "${SRC_DIR}/orange_local_control.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
@@ -533,6 +535,15 @@ if(BUILD_TESTING)
     target_include_directories(external_recorder_supervisor_socket_stub PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(external_recorder_supervisor_socket_stub PRIVATE cxx_std_17)
     add_dependencies(external_recorder_supervisor_tests external_recorder_supervisor_socket_stub)
+
+    add_executable(orange_local_control_tests
+        "tools/orange_local_control_tests.cpp"
+        "${SRC_DIR}/orange_local_control.cpp"
+    )
+    target_include_directories(orange_local_control_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)
+    target_link_libraries(orange_local_control_tests PRIVATE Threads::Threads)
+    add_test(NAME orange_local_control_tests COMMAND orange_local_control_tests)
 endif()
 
 function(orange_configure_target target_name)
