@@ -541,6 +541,8 @@ def write_rolling_full_frame_manifest(
     serial: str,
     *,
     clip_frame_counts: tuple[int, ...] = (2, 3),
+    record_for_seconds: int = 5,
+    clip_seconds: int = 2,
 ) -> dict:
     clips = []
     next_frame = 1
@@ -599,6 +601,10 @@ def write_rolling_full_frame_manifest(
         "mode": "rolling_clips",
         "status": "completed",
         "recording_backend": {"mode": "external_ipc", "status": "completed"},
+        "recording_control": {
+            "record_for_seconds": record_for_seconds,
+            "clip_seconds": clip_seconds,
+        },
         "rollover": {"implementation": "external_recorder_gop_boundary_writer_rotation"},
         "indexes": {
             "clip_index_json": "recording_clip_index.json",
@@ -2271,6 +2277,79 @@ def test_recording_session_manifest_accepts_rolling_clips() -> None:
         require(not reporter.failures, f"rolling recording_session should pass: {reporter.failures}")
 
 
+def test_recording_session_manifest_checks_expected_rolling_control() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(
+            root,
+            serial,
+            record_for_seconds=6,
+            clip_seconds=2,
+        )
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_recording_mode="rolling_clips",
+            expected_record_for_seconds=6,
+            expected_clip_seconds=2,
+        )
+        require(not reporter.failures, f"expected rolling control should pass: {reporter.failures}")
+
+
+def test_recording_session_manifest_fails_on_expected_recording_mode_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        manifest_path = root / "recording_session.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["mode"] = "single_clip"
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_recording_mode="rolling_clips",
+        )
+        require(
+            any("expected 'rolling_clips'" in failure for failure in reporter.failures),
+            f"expected recording mode mismatch should fail: {reporter.failures}",
+        )
+
+
+def test_recording_session_manifest_fails_on_expected_control_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(
+            root,
+            serial,
+            record_for_seconds=6,
+            clip_seconds=2,
+        )
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_recording_mode="rolling_clips",
+            expected_record_for_seconds=12,
+            expected_clip_seconds=2,
+        )
+        require(
+            any("record_for_seconds=6; expected 12" in failure for failure in reporter.failures),
+            f"expected recording control mismatch should fail: {reporter.failures}",
+        )
+
+
 def test_recording_session_manifest_fails_on_rolling_frame_gap() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -2428,6 +2507,9 @@ def main() -> int:
         test_recording_output_contract_allows_external_crop_video_paths,
         test_recording_output_contract_allows_external_crop_sidecar_failure,
         test_recording_session_manifest_accepts_rolling_clips,
+        test_recording_session_manifest_checks_expected_rolling_control,
+        test_recording_session_manifest_fails_on_expected_recording_mode_mismatch,
+        test_recording_session_manifest_fails_on_expected_control_mismatch,
         test_recording_session_manifest_fails_on_rolling_frame_gap,
         test_rolling_clip_videos_are_complete_recording_candidates,
         test_crop_recording_artifacts_fail_on_perf_row_mismatch,

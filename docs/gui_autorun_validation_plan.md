@@ -92,8 +92,11 @@ rolling manifest with
 The normal GUI validator also understands `recording_session.json` with
 `mode = "rolling_clips"`: it checks per-clip full-frame video, metadata,
 keyframe sidecars, packet counts, and cross-clip `recording_frame_id`
-continuity. Use the external recorder verifier as the stricter recorder-summary
-contract check.
+continuity. For a rolling-specific GUI gate, add
+`--expect-recording-mode rolling_clips`, `--expect-record-for-seconds <N>`, and
+`--expect-clip-seconds <N>` so validation fails if the run silently falls back
+to single-clip recording or uses the wrong control values. Use the external
+recorder verifier as the stricter recorder-summary contract check.
 
 ## Host PTP Stack Readiness
 

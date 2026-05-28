@@ -536,9 +536,10 @@ Latest terminal-tail coalescing validation:
 
 ## Remaining Work
 
-- Add GUI/session controls and validation for rolling clips.
 - Add live GUI validation/soak coverage for external-recorder rolling
   finalization.
+- Add broader GUI runtime status for rolling clips, including current clip
+  index, next rollover ETA, and last rollover outcome.
 - Add direct muxer-reported packet counters if they become available; current
   native indexes use ffprobe after finalization and external IPC indexes use
   recorder summary `packets_written`.

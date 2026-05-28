@@ -101,6 +101,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-sync-mode", default="ptp_gate")
     parser.add_argument("--expected-ptp-mode", default="TwoStep")
     parser.add_argument(
+        "--expect-recording-mode",
+        choices=("single_clip", "rolling_clips"),
+        help=(
+            "Optional expected recording_session.json mode. Use rolling_clips "
+            "for GUI external IPC rollover validation."
+        ),
+    )
+    parser.add_argument(
+        "--expect-record-for-seconds",
+        type=int,
+        help="Optional expected recording_control.record_for_seconds value.",
+    )
+    parser.add_argument(
+        "--expect-clip-seconds",
+        type=int,
+        help="Optional expected recording_control.clip_seconds value.",
+    )
+    parser.add_argument(
         "--expect-ptp-register-read-decimate",
         type=int,
         default=100,
@@ -822,6 +840,9 @@ def check_recording_session_manifest(
     recording_folder: Path,
     snapshot: dict[str, Any],
     cameras: list[str],
+    expected_recording_mode: str | None = None,
+    expected_record_for_seconds: int | None = None,
+    expected_clip_seconds: int | None = None,
 ) -> None:
     manifest_path = recording_folder / "recording_session.json"
     manifest = read_json(manifest_path)
@@ -843,10 +864,28 @@ def check_recording_session_manifest(
         f"recording_session producer={manifest.get('producer')!r}",
     )
     mode = str(manifest.get("mode", ""))
-    reporter.check(
-        mode in {"single_clip", "rolling_clips"},
-        f"recording_session mode is {mode}",
-        f"recording_session mode={manifest.get('mode')!r}",
+    if expected_recording_mode:
+        reporter.check(
+            mode == expected_recording_mode,
+            f"recording_session mode is expected {expected_recording_mode}",
+            (
+                f"recording_session mode={manifest.get('mode')!r}; "
+                f"expected {expected_recording_mode!r}"
+            ),
+        )
+    else:
+        reporter.check(
+            mode in {"single_clip", "rolling_clips"},
+            f"recording_session mode is {mode}",
+            f"recording_session mode={manifest.get('mode')!r}",
+        )
+
+    check_recording_control_expectations(
+        reporter,
+        manifest,
+        mode,
+        expected_record_for_seconds,
+        expected_clip_seconds,
     )
 
     snapshot_session = snapshot.get("session")
@@ -976,6 +1015,70 @@ def index_path_from_session(
     if not isinstance(value, str) or not value:
         return recording_folder / f"__missing_{relative_key}"
     return path_from_recording_folder(recording_folder, value)
+
+
+def check_recording_control_expectations(
+    reporter: Reporter,
+    manifest: dict[str, Any],
+    mode: str,
+    expected_record_for_seconds: int | None,
+    expected_clip_seconds: int | None,
+) -> None:
+    control = manifest.get("recording_control")
+    control = control if isinstance(control, dict) else None
+    requires_control = (
+        mode == "rolling_clips"
+        or expected_record_for_seconds is not None
+        or expected_clip_seconds is not None
+    )
+    if not requires_control:
+        return
+
+    reporter.check(
+        control is not None,
+        "recording_session recording_control present",
+        "recording_session recording_control missing",
+    )
+    if control is None:
+        return
+
+    record_for_seconds = integer(control.get("record_for_seconds"))
+    clip_seconds = integer(control.get("clip_seconds"))
+    if mode == "rolling_clips":
+        reporter.check(
+            record_for_seconds is not None and record_for_seconds > 0,
+            f"recording_session record_for_seconds={record_for_seconds}",
+            (
+                "recording_session rolling_clips requires positive "
+                f"record_for_seconds, got {record_for_seconds}"
+            ),
+        )
+        reporter.check(
+            clip_seconds is not None and clip_seconds > 0,
+            f"recording_session clip_seconds={clip_seconds}",
+            (
+                "recording_session rolling_clips requires positive "
+                f"clip_seconds, got {clip_seconds}"
+            ),
+        )
+    if expected_record_for_seconds is not None:
+        reporter.check(
+            record_for_seconds == expected_record_for_seconds,
+            f"recording_session record_for_seconds={expected_record_for_seconds}",
+            (
+                f"recording_session record_for_seconds={record_for_seconds}; "
+                f"expected {expected_record_for_seconds}"
+            ),
+        )
+    if expected_clip_seconds is not None:
+        reporter.check(
+            clip_seconds == expected_clip_seconds,
+            f"recording_session clip_seconds={expected_clip_seconds}",
+            (
+                f"recording_session clip_seconds={clip_seconds}; "
+                f"expected {expected_clip_seconds}"
+            ),
+        )
 
 
 def sorted_rolling_artifacts_for_camera(
@@ -3302,6 +3405,10 @@ def main() -> int:
         and args.expect_external_crop_recorder_gpu_id < 0
     ):
         raise SystemExit("--expect-external-crop-recorder-gpu-id must be >= 0")
+    if args.expect_record_for_seconds is not None and args.expect_record_for_seconds < 0:
+        raise SystemExit("--expect-record-for-seconds must be >= 0")
+    if args.expect_clip_seconds is not None and args.expect_clip_seconds < 0:
+        raise SystemExit("--expect-clip-seconds must be >= 0")
     expected_external_recorder_gpu_by_serial = parse_expected_serial_int_map(
         args.expect_external_crop_recorder_gpu,
         "--expect-external-crop-recorder-gpu",
@@ -3336,7 +3443,15 @@ def main() -> int:
             args.expect_ptp_register_read_decimate,
             args.skip_ptp_register_decimate_check,
         )
-        check_recording_session_manifest(reporter, recording_folder, snapshot, cameras)
+        check_recording_session_manifest(
+            reporter,
+            recording_folder,
+            snapshot,
+            cameras,
+            args.expect_recording_mode,
+            args.expect_record_for_seconds,
+            args.expect_clip_seconds,
+        )
         external_recorder_status_summary = check_external_recorder_status(
             reporter,
             recording_folder,
