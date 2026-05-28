@@ -1,14 +1,27 @@
 # Crop Preview Decoupling Checklist
 
-Status: crop recording and crop-preview decoupling are implemented. Live GUI
-validation showed the remaining frame pacing issue also occurs with crop
-preview hidden and after main-display downsampling, so the current follow-up is
-process isolation for crop video output rather than more crop preview work.
+Status: crop recording and crop-preview decoupling are implemented. The
+hidden-preview GUI frame-pacing collapse is resolved in the latest measured
+no-vsync run after moving advanced split-GOP validation off the per-frame hot
+path. The current follow-up is a capped no-vsync live run that records
+`frame_max_fps`, followed by the still-missing visible crop-preview comparison.
 
-Last updated: 2026-05-27.
+Last updated: 2026-05-28.
 
 Latest live validation note:
 
+- Artifact `/home/jeremy/orange_data/exp/unsorted/2026_05_28_01_05_07`
+  validated the hidden-preview four-camera external full-frame/crop IPC path
+  after the recording-panel hot-path fix and `swap_interval=0`. Full-frame and
+  crop artifacts were healthy, with `0` PTP gaps, `0` GetFrame errors,
+  `0` encode/crop drops, and GUI hidden p05 `66.3 fps`. This artifact predates
+  `frame_max_fps` telemetry, so the next live artifact should assert
+  `--expect-gui-frame-max-fps 60`.
+- Artifact `/home/jeremy/orange_data/exp/unsorted/2026_05_28_00_34_27`
+  validated four-camera GUI autorun external full-frame IPC plus external crop
+  IPC with crop preview hidden. All four full-frame and crop streams were
+  healthy with `0` warnings; the later timing run above isolated and fixed the
+  remaining GUI hot path.
 - Artifact `/home/jeremy/orange_data/exp/unsorted/2026_05_27_16_17_49`
   validated the crop drain/finalization fix in the default in-process crop
   path. All four crop MP4/keyframe/meta/perf artifacts aligned at `1335` rows,
