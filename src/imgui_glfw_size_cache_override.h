@@ -1,0 +1,9 @@
+#ifndef ORANGE_IMGUI_GLFW_SIZE_CACHE_OVERRIDE_H
+#define ORANGE_IMGUI_GLFW_SIZE_CACHE_OVERRIDE_H
+
+#include "imgui_glfw_size_cache.h"
+
+#define glfwGetWindowSize orange_imgui_glfw_get_window_size
+#define glfwGetFramebufferSize orange_imgui_glfw_get_framebuffer_size
+
+#endif

@@ -12,21 +12,9 @@
 #include "IconsForkAwesome.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "gx_context.h"
+#include "imgui_glfw_size_cache.h"
 #include "types.h"
-
-
-typedef struct gx_context
-{
-    u32 swap_interval;
-    u32 frame_max_fps;
-    u32 width;
-    u32 height;
-    int framebuffer_width;
-    int framebuffer_height;
-    GLFWwindow *render_target;
-    char *render_target_title;
-    char *glsl_version;
-} gx_context;
 
 
 static void gx_glfw_error_callback(int error, const char *description)
@@ -84,6 +72,17 @@ static u32 gx_resolve_frame_max_fps(u32 default_value)
     return static_cast<u32>(parsed);
 }
 
+static void gx_window_size_callback(GLFWwindow *render_target, int width, int height)
+{
+    gx_context *context =
+        static_cast<gx_context *>(glfwGetWindowUserPointer(render_target));
+    if (!context) {
+        return;
+    }
+    context->window_width = width > 0 ? width : static_cast<int>(context->width);
+    context->window_height = height > 0 ? height : static_cast<int>(context->height);
+}
+
 static void gx_framebuffer_size_callback(GLFWwindow *render_target, int width, int height)
 {
     gx_context *context =
@@ -99,6 +98,16 @@ void gx_init(gx_context *context, GLFWwindow *render_target)
 {
     context->render_target = render_target;
     glfwSetWindowUserPointer(render_target, context);
+    glfwGetWindowSize(
+        render_target,
+        &context->window_width,
+        &context->window_height);
+    if (context->window_width <= 0) {
+        context->window_width = static_cast<int>(context->width);
+    }
+    if (context->window_height <= 0) {
+        context->window_height = static_cast<int>(context->height);
+    }
     glfwGetFramebufferSize(
         render_target,
         &context->framebuffer_width,
@@ -109,6 +118,8 @@ void gx_init(gx_context *context, GLFWwindow *render_target)
     if (context->framebuffer_height <= 0) {
         context->framebuffer_height = static_cast<int>(context->height);
     }
+    orange_imgui_glfw_set_size_cache_context(render_target, context);
+    glfwSetWindowSizeCallback(render_target, gx_window_size_callback);
     glfwSetFramebufferSizeCallback(render_target, gx_framebuffer_size_callback);
     glfwMakeContextCurrent(render_target);
     gx_glew_error_callback(glewInit());
@@ -310,6 +321,7 @@ void gx_cleanup(gx_context *window)
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    orange_imgui_glfw_set_size_cache_context(nullptr, nullptr);
     glfwDestroyWindow(window->render_target);
     glfwTerminate();
 }

@@ -197,6 +197,14 @@ set(IMGUI_SOURCES
     "${DIR_IMGUI_BACKEND}/imgui_impl_opengl3.cpp"
 )
 
+# Keep the vendored backend source untouched, but compile its main-window
+# size queries through Orange's callback-updated cache.
+set_property(
+    SOURCE "${DIR_IMGUI_BACKEND}/imgui_impl_glfw.cpp"
+    APPEND PROPERTY COMPILE_OPTIONS
+    "-include" "${SRC_DIR}/imgui_glfw_size_cache_override.h"
+)
+
 set(IMPLOT_SOURCES
     "${DIR_IMPLOT}/implot.cpp"
     "${DIR_IMPLOT}/implot_items.cpp"
@@ -225,6 +233,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/offthreadmachine.cpp"
     "${SRC_DIR}/opengldisplay.cpp"
     "${SRC_DIR}/gpu_video_encoder.cpp"
+    "${SRC_DIR}/imgui_glfw_size_cache.cpp"
     "${SRC_DIR}/yolov8_det.cpp"
     "${SRC_DIR}/yolo_worker.cpp"
     "${SRC_DIR}/yolo_event_log.cpp"

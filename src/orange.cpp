@@ -6529,6 +6529,8 @@ int main(int argc, char **args) {
         .frame_max_fps = gx_resolve_frame_max_fps(gui_frame_max_fps_default),
         .width = 1920,
         .height = 1080,
+        .window_width = 0,
+        .window_height = 0,
         .framebuffer_width = 0,
         .framebuffer_height = 0,
         .render_target_title = (char *) "Orange",

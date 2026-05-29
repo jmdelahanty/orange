@@ -88,6 +88,10 @@ and crop sidecar continuity.
 - Orange's render helper now caches the main GLFW framebuffer size and updates
   it through the framebuffer-size callback, removing Orange's duplicate
   per-frame `glfwGetFramebufferSize(...)` query from `render_a_frame(...)`.
+- Orange also compiles the Dear ImGui GLFW backend with a main-window
+  size-cache shim, so `ImGui_ImplGlfw_NewFrame()` reads Orange's cached
+  window/framebuffer dimensions instead of calling `glfwGetWindowSize(...)` and
+  `glfwGetFramebufferSize(...)` every frame.
 - Validation now checks source provenance, dirty tracked-worktree state,
   external recorder status/storage/protocol telemetry, CPU isolation, YOLO
   affinity, GUI display pacing, and the full crop/full-frame artifact surface.

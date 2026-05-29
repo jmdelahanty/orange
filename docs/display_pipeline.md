@@ -82,8 +82,9 @@ scripts/update_app_config_display_profile.py \
 - Orange's own render helper caches the main window framebuffer size after
   initialization and updates it through the GLFW framebuffer-size callback, so
   `render_a_frame(...)` no longer calls `glfwGetFramebufferSize(...)` every
-  frame. The Dear ImGui GLFW backend still performs its normal per-frame
-  window/framebuffer query inside `ImGui_ImplGlfw_NewFrame()`.
+  frame. The Dear ImGui GLFW backend is compiled with Orange's size-cache shim,
+  so its main-window `ImGui_ImplGlfw_NewFrame()` display-size path reads cached
+  window/framebuffer dimensions instead of polling GLFW every frame.
 - Display preview cadence is enforced before a frame is offered to the display
   worker. Skipped display frames are preview skips, not acquisition or
   recording drops.

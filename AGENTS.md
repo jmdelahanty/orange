@@ -674,5 +674,7 @@ multi-GPU split-GOP throughput.
   `ORANGE_CROP_COPY_TIMING=0`.
 - Orange's own render helper now caches the main GLFW framebuffer size and
   updates it through the framebuffer-size callback. `render_a_frame(...)` no
-  longer calls `glfwGetFramebufferSize(...)` every frame, though the Dear ImGui
-  GLFW backend still performs its normal per-frame window/framebuffer query.
+  longer calls `glfwGetFramebufferSize(...)` every frame. The Dear ImGui GLFW
+  backend is compiled with Orange's size-cache shim, so the main-window
+  `ImGui_ImplGlfw_NewFrame()` display-size path reads cached window/framebuffer
+  dimensions instead of polling GLFW every frame.
