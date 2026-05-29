@@ -101,6 +101,19 @@ def test_cache_context_registered_during_gx_init() -> None:
     )
 
 
+def test_imgui_backend_does_not_own_main_window_size_callbacks() -> None:
+    imgui_glfw = read("third_party/imgui/backends/imgui_impl_glfw.cpp")
+    body = function_body(imgui_glfw, "ImGui_ImplGlfw_InstallCallbacks")
+    require(
+        "glfwSetWindowSizeCallback" not in body,
+        "ImGui GLFW main-window callback install must not replace Orange's window-size callback",
+    )
+    require(
+        "glfwSetFramebufferSizeCallback" not in body,
+        "ImGui GLFW main-window callback install must not replace Orange's framebuffer-size callback",
+    )
+
+
 def test_recording_start_resets_size_cache_stats() -> None:
     orange = read("src/orange.cpp")
     body = function_body(orange, "gui_request_recording_start_through_operator_path")
@@ -125,6 +138,7 @@ def main() -> int:
         test_cmake_force_includes_override_for_imgui_glfw_backend,
         test_render_a_frame_uses_cached_framebuffer_size,
         test_cache_context_registered_during_gx_init,
+        test_imgui_backend_does_not_own_main_window_size_callbacks,
         test_recording_start_resets_size_cache_stats,
     ]
     for test in tests:
