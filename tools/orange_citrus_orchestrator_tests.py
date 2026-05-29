@@ -411,6 +411,52 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
         )
 
 
+def test_failure_summary_uses_last_known_status_for_artifacts() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording_folder = root / "recording"
+        recording_folder.mkdir()
+        orange_log = root / "orange.log"
+        citrus_log = root / "citrus.log"
+        orange_log.write_text("orange-log\n", encoding="utf-8")
+        citrus_log.write_text("citrus-log\n", encoding="utf-8")
+        args = module.parse_args(
+            [
+                "--execute",
+                "--operation-id",
+                "op-failure-artifacts",
+                "--orange-log",
+                str(orange_log),
+                "--citrus-log",
+                str(citrus_log),
+            ]
+        )
+        orchestrator = module.Orchestrator(args)
+        orchestrator.last_orange_status = {
+            "phase": "recording",
+            "readiness": {"recording_finalized": False},
+            "recording": {"folder": str(recording_folder)},
+        }
+        orchestrator.last_citrus_status = citrus_status(True, True)
+
+        summary = orchestrator.summary("fail", error="synthetic failure")
+        orchestrator.persist_artifacts(summary)
+
+        require(
+            summary["orange"]["recording_folder"] == str(recording_folder),
+            "failure summary should retain the last known Orange recording folder",
+        )
+        require(
+            summary["citrus"]["perf_jsonl_path"] == "/tmp/citrus_perf.jsonl",
+            "failure summary should retain the last known Citrus perf path",
+        )
+        require(
+            (recording_folder / "orchestrator" / "orange.log").exists(),
+            "failure artifact persistence should copy logs when a recording folder was observed",
+        )
+
+
 def test_wait_reports_launched_process_exit() -> None:
     module = load_module()
     args = module.parse_args(
@@ -537,6 +583,7 @@ def main() -> int:
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
         test_persist_artifacts_copies_logs_into_recording_folder,
+        test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
         test_launch_socket_preflight_refuses_live_socket,

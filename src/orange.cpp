@@ -6572,6 +6572,8 @@ int main(int argc, char **args) {
         gui_local_control_recording_stop_enabled();
     const bool gui_local_control_exit_after_finalize =
         gui_local_control_exit_after_finalize_enabled();
+    bool gui_local_control_exit_pending_after_finalize = false;
+    bool gui_local_control_exit_stream_stop_requested = false;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::control::LocalControlServer gui_local_control_server;
     if (!gui_local_control_disabled()) {
@@ -6728,6 +6730,29 @@ int main(int argc, char **args) {
             camera_control,
             &gui_recording_run,
             calibration_tool_busy);
+        if (gui_local_control_exit_pending_after_finalize &&
+            !camera_control->record_video &&
+            !camera_control->recording_draining) {
+            if (camera_control->subscribe) {
+                if (!gui_local_control_exit_stream_stop_requested) {
+                    gui_autorun_requests.toggle_streaming = true;
+                    gui_local_control_exit_stream_stop_requested = true;
+                    gui_note_local_control_stop_event(
+                        &gui_local_control_stop_scheduler,
+                        "finalized_stream_stop_requested");
+                    std::cout << "[GUI][local_control] requesting stream stop before GUI exit"
+                              << std::endl;
+                }
+            } else {
+                gui_note_local_control_stop_event(
+                    &gui_local_control_stop_scheduler,
+                    "finalized_exit_requested");
+                std::cout << "[GUI][local_control] requesting GUI exit after stream stop"
+                          << std::endl;
+                glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
+                gui_local_control_exit_pending_after_finalize = false;
+            }
+        }
         if (gui_local_control_server.running()) {
             gui_local_control_server.UpdateStatus(
                 gui_build_local_control_status(
@@ -8191,12 +8216,15 @@ int main(int argc, char **args) {
                 gui_mark_recording_finished(&gui_session_timing);
                 if (gui_local_control_exit_after_finalize &&
                     gui_local_control_stop_scheduler.stop_triggered) {
+                    gui_local_control_exit_pending_after_finalize = true;
+                    gui_local_control_exit_stream_stop_requested = false;
                     gui_note_local_control_stop_event(
                         &gui_local_control_stop_scheduler,
-                        "finalized_exit_requested");
-                    std::cout << "[GUI][local_control] requesting GUI exit after local-control finalize"
+                        camera_control->subscribe
+                            ? "finalized_exit_pending_stream_stop"
+                            : "finalized_exit_pending");
+                    std::cout << "[GUI][local_control] recording finalized; GUI exit pending"
                               << std::endl;
-                    glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
                 }
             }
 

@@ -356,6 +356,8 @@ class Orchestrator:
         self.validation_results: list[dict[str, Any]] = []
         self.orange_recording_started = False
         self.citrus_control_complete = False
+        self.last_orange_status: dict[str, Any] = {}
+        self.last_citrus_status: dict[str, Any] = {}
 
     def step(self, name: str) -> StepLog:
         item = StepLog(name=name)
@@ -376,6 +378,10 @@ class Orchestrator:
         status = response.get("status", {})
         if not isinstance(status, dict):
             raise OrchestratorError(f"{label} status response did not include object status")
+        if label == "orange":
+            self.last_orange_status = status
+        elif label == "citrus":
+            self.last_citrus_status = status
         return response, status
 
     def preflight_launch_socket(
@@ -919,8 +925,8 @@ class Orchestrator:
         final_citrus_status: dict[str, Any] | None = None,
         failure_stop_response: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        citrus_status = final_citrus_status or {}
-        orange_status = final_orange_status or {}
+        citrus_status = final_citrus_status or self.last_citrus_status or {}
+        orange_status = final_orange_status or self.last_orange_status or {}
         self.refresh_started_processes()
         return {
             "schema_id": SUMMARY_SCHEMA_ID,
