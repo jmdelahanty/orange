@@ -13,15 +13,17 @@ work on `exp/gop-split-a16`.
   `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview`.
 - The current Orange/Citrus co-run profile is:
   `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute`.
-- Latest strict Orange/Citrus artifact:
+- Latest strict Orange/Citrus single-clip artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
 - Latest strict Orange/Citrus rolling artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_44_43`.
+- Previous strict Orange/Citrus rolling artifact (orchestrator-owned stop):
   `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_26_12`.
-- Previous strict Orange/Citrus rolling artifact:
+- Earlier strict Orange/Citrus rolling artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25`.
 - The latest strict Orange/Citrus artifact passed with `0` failures and
   `0` warnings, strict main-video content validation for all four cameras, and
-  persisted local-control stop ACK state `executed`.
+  persisted Citrus-owned local-control stop ACK state `executed`.
 - Earlier GUI-only single-clip hardware artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
 - Earlier GUI-only rolling-clip hardware artifact:
@@ -54,8 +56,8 @@ baseline is:
 
 The larger four-camera crop external queue is a load absorber, not a throughput
 fix. The current co-run profile uses crop queue depth `128`; the latest strict
-rolling run peaked at `66/54/39/65`, with crop external
-`enqueue_age_p95_ms` about `110/167/138/180 ms`. That is healthy for the short
+rolling run peaked at `64/76/78/64`, with crop external
+`enqueue_age_p95_ms` about `27/121/124/95 ms`. That is healthy for the short
 validated profile because drops stayed at `0`, but long soaks should keep
 gating on queue high-water, `enqueue_age_p95_ms`, recorder drops, and crop
 sidecar continuity.
@@ -109,6 +111,35 @@ sidecar continuity.
   GUI-thread lifecycle evidence for the current operation.
 
 Healthy metrics from the latest Orange/Citrus rolling co-run:
+
+- Operation id: `orange_citrus_fourcam_20260529T064431Z`.
+- Command shape:
+  `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute --record-seconds 6 --warmup-seconds 2 --clip-seconds 2 --stop-policy citrus_completion_notify`.
+- Orange artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_44_43`.
+- Orchestrator summary:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_44_43/orchestrator/orchestrator_summary.json`.
+- Result: `PASS (0 warnings)` with `recording_session.json` mode
+  `rolling_clips`, persisted `recording.control.method="citrus_completion"`,
+  `command_source="citrus"`, `grace_seconds=10`, and
+  `ack_state="executed"`.
+- Citrus completed `good_cop_bad_cop_demo.json` with terminal state
+  `completed` and reason `protocol_finished`, then sent Orange the completion
+  request itself.
+- Full-frame external IPC: all four cameras wrote `3179` valid `4512x4512`
+  frames at about `150.4-151.7 Mbps`.
+- Crop external IPC: all four crop streams received/encoded `3179/3179` frames
+  with `0` drops and `16` rolling crop clips per camera. Queue depth was `128`;
+  high-water was `64/76/78/64`.
+- YOLO steady detect p95 was `3.968/3.959/3.951/3.960 ms`; YOLO queue p95 was
+  `0.016/0.017/0.014/0.016 ms`.
+- GUI Citrus-safe profile stayed near its cap: hidden-preview p05 `29.8`,
+  p50 `30.0`, mean `30.0`, with `swap_interval=1`, GUI frame cap `30`, and
+  display preview cap `10`.
+- ImGui/GLFW size-cache telemetry reported `941` window-size cache hits,
+  `941` framebuffer-size cache hits, and `0` fallback/null-window size calls.
+
+Healthy metrics from the previous orchestrator-owned Orange stop rolling co-run:
 
 - Operation id: `orange_citrus_fourcam_20260529T062559Z`.
 - Command shape:
@@ -429,7 +460,7 @@ without sending its own Orange stop request, and validates that
   discriminator, not a 24-hour stability proof.
 - The four-camera crop recorder queue depth of `128` is validated for the short
   Orange/Citrus profile. The latest strict rolling run peaked at
-  `66/54/39/65` queue high-water and roughly `110/167/138/180 ms`
+  `64/76/78/64` queue high-water and roughly `27/121/124/95 ms`
   `enqueue_age_p95_ms`, so this should stay under explicit high-water,
   enqueue-age, and drop gates before being treated as a long-run production
   value.

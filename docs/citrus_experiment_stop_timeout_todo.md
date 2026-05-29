@@ -54,9 +54,10 @@ Refs:
 Explicit limitation note (current state):
 
 - Citrus completion emission is opt-in, not enabled by default.
-- Orange/Citrus orchestrator live validation has passed for the
-  orchestrator-owned `stop_recording` path. Direct Citrus completion emission
-  into Orange's delayed stop path is still pending live validation.
+- Orange/Citrus orchestrator live validation has passed for both the
+  orchestrator-owned `stop_recording` path and the Citrus-owned
+  `citrus_completion` notifier path. Manual Citrus STOP ALL and induced drain
+  timeout validation remain open.
 
 Refs:
 
@@ -93,9 +94,16 @@ Refs:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_26_12`. Citrus reached
   `completed/protocol_finished`, Orange finalized with
   `recording.control.ack_state="executed"`, and the Orange GUI validator passed
-  with `0` failures and `0` warnings. The direct Citrus
-  `citrus_completion` notifier path remains an explicit remaining validation
-  item.
+  with `0` failures and `0` warnings.
+- Integrated Orange/Citrus validation also passed on 2026-05-29 for the direct
+  Citrus `citrus_completion` notifier path:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_44_43`. Citrus reached
+  `completed/protocol_finished`, sent Orange
+  `request_id=citrus_completion:orange_citrus_fourcam_20260529T064431Z:completed:protocol_finished`,
+  Orange waited the default `10` second grace, triggered stop/finalize through
+  the normal GUI path, persisted `recording.control.command_source="citrus"`
+  and `ack_state="executed"`, and the Orange GUI validator passed with
+  `0` failures and `0` warnings.
 - Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
 
 ## Desired Behavior
@@ -256,14 +264,14 @@ Refs:
   - 2026-05-29 four-camera rolling run completed
     `good_cop_bad_cop_demo.json`, then the orchestrator stopped Orange through
     local control and observed/persisted `ack_state="executed"`.
-- [ ] Test manual STOP ALL in Citrus and direct Citrus completion notifier after
-      protocol natural finish.
-  - Dry-run/test support exists through
-    `scripts/run_orange_citrus_fourcam_orchestrator.sh --stop-policy citrus_completion_notify`.
-    That profile enables `CITRUS_ORANGE_COMPLETION_NOTIFY=1`, passes the
-    10-second default completion grace to Citrus, waits for Orange finalization
-    without sending an orchestrator-owned stop, and validates
-    `command_source=citrus`.
+- [x] Test direct Citrus completion notifier after protocol natural finish:
+  - 2026-05-29 four-camera rolling run used
+    `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute --record-seconds 6 --warmup-seconds 2 --clip-seconds 2 --stop-policy citrus_completion_notify`.
+  - Citrus sent Orange `citrus_completion`; the orchestrator did not send its
+    own Orange stop request.
+  - Orange persisted `method=citrus_completion`, `command_source=citrus`,
+    `grace_seconds=10`, and `ack_state=executed`.
+- [ ] Test manual STOP ALL in Citrus.
 - [x] Test duplicate stop-control packets:
   - socket-layer duplicate `request_id`,
   - socket-layer duplicate `method + operation_id`,
@@ -271,18 +279,19 @@ Refs:
 - [x] Test stop-control while not recording:
   - GUI-thread command drain records `ignored_not_recording`,
   - no stop schedule is created.
-- [ ] Test delayed Citrus-completion stop during high-throughput recording.
-  Immediate orchestrator `stop_recording` during four-camera rolling external IPC
-  recording passed on 2026-05-29; the default 10-second Citrus completion grace
-  path now has dry-run/unit coverage but still needs its own live gate.
+- [x] Test delayed Citrus-completion stop during high-throughput recording:
+  - 2026-05-29 direct-notifier run recorded four-camera full-frame and crop
+    external IPC at about `100 fps`, waited the default `10` second completion
+    grace, then drained/finalized with `0` drops and `0` validator warnings.
 - [ ] Test forced-timeout path with induced writer stall.
 
 ## Definition of Done
 
-- [ ] Citrus experiment end causes `orange-jeremy` delayed stop automatically.
-- [ ] Delay is configurable and defaults to 10 seconds.
-- [x] Stop uses existing safe drain/finalize behavior for the orchestrator-owned
-      `stop_recording` path.
+- [x] Citrus experiment end causes `orange-jeremy` delayed stop automatically
+      for protocol natural finish.
+- [x] Delay is configurable and defaults to 10 seconds.
+- [x] Stop uses existing safe drain/finalize behavior for orchestrator-owned
+      `stop_recording` and Citrus-owned `citrus_completion` paths.
 - [ ] Drain timeout path is bounded and observable.
 - [x] Duplicate/out-of-order control packets do not cause inconsistent state in
       the local-control scheduler tests.
