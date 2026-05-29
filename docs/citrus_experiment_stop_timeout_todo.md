@@ -79,6 +79,10 @@ Refs:
 - Orange local-control status now exposes telemetry for delayed-stop drain
   progress and timeout reporting. The timeout is observable only; forced-safe
   finalize policy is not implemented yet.
+- Orange local-control status now also derives machine-readable stop
+  `state`, `health`, and `error_code` fields, so an active drain timeout is
+  reported as `health=critical` without clients inferring that from scheduler
+  event strings.
 - Full integrated validation is still pending.
 - Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
 
@@ -175,7 +179,8 @@ Candidate hook points:
 - [ ] Add bounded drain timeout after delayed stop trigger (for example 30-60s).
 - [x] Monitor `active_recorders` and drain progress for status/log telemetry.
 - [ ] Use drain progress monitoring for bounded forced-finalize policy.
-- [ ] On timeout, emit critical status and execute forced-safe finalize path.
+- [x] On timeout, emit critical status.
+- [ ] On timeout, execute forced-safe finalize path.
 - [ ] Ensure this path is idempotent and does not deadlock queues.
 
 Refs:

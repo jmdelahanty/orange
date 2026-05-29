@@ -147,11 +147,66 @@ std::string local_control_phase(const LocalControlStatusSnapshot& snapshot)
     return "idle";
 }
 
+bool recording_stop_has_drain_completed(
+    const LocalControlRecordingStopSnapshot& snapshot)
+{
+    return !snapshot.drain_completed_at_utc.empty();
+}
+
+std::string recording_stop_state(
+    const LocalControlRecordingStopSnapshot& snapshot)
+{
+    if (!snapshot.enabled) {
+        return "disabled";
+    }
+    if (snapshot.drain_timed_out &&
+        recording_stop_has_drain_completed(snapshot)) {
+        return "finalized_after_drain_timeout";
+    }
+    if (snapshot.drain_timed_out) {
+        return "drain_timeout";
+    }
+    if (recording_stop_has_drain_completed(snapshot)) {
+        return "finalized";
+    }
+    if (snapshot.drain_active) {
+        return "draining";
+    }
+    if (snapshot.stop_triggered) {
+        return "stop_triggered";
+    }
+    if (snapshot.scheduled) {
+        return "scheduled";
+    }
+    return "idle";
+}
+
+std::string recording_stop_health(
+    const LocalControlRecordingStopSnapshot& snapshot)
+{
+    const std::string state = recording_stop_state(snapshot);
+    if (state == "drain_timeout") {
+        return "critical";
+    }
+    if (state == "finalized_after_drain_timeout") {
+        return "warning";
+    }
+    return "ok";
+}
+
 nlohmann::json recording_stop_to_json(
     const LocalControlRecordingStopSnapshot& snapshot)
 {
+    const std::string state = recording_stop_state(snapshot);
     return {
         {"enabled", snapshot.enabled},
+        {"state", state},
+        {"health", recording_stop_health(snapshot)},
+        {"error_code",
+         (state == "drain_timeout" ||
+          state == "finalized_after_drain_timeout")
+             ? "drain_timeout"
+             : ""},
         {"scheduled", snapshot.scheduled},
         {"stop_triggered", snapshot.stop_triggered},
         {"drain_active", snapshot.drain_active},

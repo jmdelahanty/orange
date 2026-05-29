@@ -48,6 +48,13 @@ def orange_status(started: bool, stopped: bool, *, drain_timed_out: bool = False
         "local_control": {
             "recording_stop": {
                 "enabled": True,
+                "state": (
+                    "finalized_after_drain_timeout"
+                    if drain_timed_out
+                    else ("finalized" if stopped else "idle")
+                ),
+                "health": "warning" if drain_timed_out else "ok",
+                "error_code": "drain_timeout" if drain_timed_out else "",
                 "stop_triggered": stopped,
                 "drain_active": False,
                 "drain_timed_out": drain_timed_out,
@@ -372,6 +379,14 @@ def test_execute_against_fake_local_control_servers() -> None:
             payload["orange"]["local_control_recording_stop"]["last_event"] == "finalized",
             "summary should include Orange local-control stop status",
         )
+        require(
+            payload["orange"]["local_control_stop_state"] == "finalized",
+            "summary should include Orange stop state",
+        )
+        require(
+            payload["orange"]["local_control_stop_health"] == "ok",
+            "summary should include Orange stop health",
+        )
         require(payload["citrus"]["terminal_state"] == "completed", "summary should report Citrus terminal")
         require(payload["citrus"]["perf_jsonl_path"] == "/tmp/citrus_perf.jsonl", "summary should carry perf path")
         require(len(payload["validations"]) == 1, "summary should carry validation results")
@@ -605,6 +620,15 @@ def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
         require(
             module.orange_recording_stop_drain_timed_out(allowed_status),
             "allowed path should still return timeout status",
+        )
+        require(
+            module.orange_recording_stop_state(allowed_status)
+            == "finalized_after_drain_timeout",
+            "allowed path should expose finalized-after-timeout state",
+        )
+        require(
+            module.orange_recording_stop_health(allowed_status) == "warning",
+            "allowed path should expose warning health after timeout finalizes",
         )
     finally:
         module.send_unix_json = original_send

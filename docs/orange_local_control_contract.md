@@ -151,8 +151,9 @@ Orange readiness means more than process started. Status reports:
 - `local_control.recording_stop`: whether local-control recording stop is
   enabled, whether a stop is scheduled, whether one has triggered, the current
   method/request/operation/experiment ids, terminal state/reason, remaining
-  deadline seconds, drain telemetry, and the latest scheduler event. Drain
-  telemetry includes `drain_active`, `drain_timed_out`,
+  deadline seconds, drain telemetry, derived stop `state`, derived `health`,
+  `error_code`, and the latest scheduler event. Drain telemetry includes
+  `drain_active`, `drain_timed_out`,
   `drain_timeout_seconds`, `drain_elapsed_seconds`,
   `stop_triggered_at_utc`, and `drain_completed_at_utc`.
 - `local_control.citrus_completion_stop`: compatibility alias for the same
@@ -239,9 +240,12 @@ falling back to `ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS`; the default is
 `60` seconds and `0` disables timeout reporting. When the threshold is exceeded
 while the GUI is still finalizing, Orange sets
 `local_control.recording_stop.drain_timed_out=true`, logs a
-`drain_timeout` event, and keeps using the normal safe drain/finalize path.
-This is telemetry only; forced-safe finalize behavior is a separate future
-policy.
+`drain_timeout` event, reports `state=drain_timeout`, `health=critical`, and
+`error_code=drain_timeout`, then keeps using the normal safe drain/finalize
+path. If finalization later succeeds after the timeout, the stop status becomes
+`state=finalized_after_drain_timeout` and `health=warning` while retaining the
+same error code. This is status/telemetry only; forced-safe finalize behavior is
+a separate future policy.
 
 When start triggers, it routes through the same GUI/operator start path:
 

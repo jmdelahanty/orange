@@ -324,6 +324,12 @@ void test_status_reports_local_control_drain_timeout_telemetry()
         orange::control::LocalControlStatusSnapshotToJson(status);
     const auto& stop = json["local_control"]["recording_stop"];
     require(stop["enabled"].get<bool>(), "recording stop control should be enabled");
+    require(stop["state"].get<std::string>() == "drain_timeout",
+            "active timed-out drain should report drain_timeout state");
+    require(stop["health"].get<std::string>() == "critical",
+            "active timed-out drain should report critical health");
+    require(stop["error_code"].get<std::string>() == "drain_timeout",
+            "timed-out drain should report drain_timeout error code");
     require(stop["stop_triggered"].get<bool>(), "stop should be marked triggered");
     require(stop["drain_active"].get<bool>(), "drain should be marked active");
     require(stop["drain_timed_out"].get<bool>(), "drain timeout should be visible");
@@ -343,8 +349,40 @@ void test_status_reports_local_control_drain_timeout_telemetry()
         json["local_control"]["citrus_completion_stop"];
     require(completion_alias["drain_timed_out"].get<bool>(),
             "compatibility alias should expose drain timeout");
+    require(completion_alias["health"].get<std::string>() == "critical",
+            "compatibility alias should expose critical health");
     require(completion_alias["request_id"].get<std::string>() == "stop-req-1",
             "compatibility alias should mirror stop request id");
+}
+
+void test_status_reports_finalized_after_drain_timeout_as_warning()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.local_control_recording_stop.enabled = true;
+    status.local_control_recording_stop.stop_triggered = true;
+    status.local_control_recording_stop.drain_active = false;
+    status.local_control_recording_stop.drain_timed_out = true;
+    status.local_control_recording_stop.drain_timeout_seconds = 60.0;
+    status.local_control_recording_stop.drain_elapsed_seconds = 62.0;
+    status.local_control_recording_stop.method = "stop_recording";
+    status.local_control_recording_stop.request_id = "stop-req-2";
+    status.local_control_recording_stop.operation_id = "stop-op-2";
+    status.local_control_recording_stop.stop_triggered_at_utc =
+        "2026-05-29T00:00:01Z";
+    status.local_control_recording_stop.drain_completed_at_utc =
+        "2026-05-29T00:01:03Z";
+    status.local_control_recording_stop.last_event =
+        "finalized_after_drain_timeout";
+
+    const nlohmann::json json =
+        orange::control::LocalControlStatusSnapshotToJson(status);
+    const auto& stop = json["local_control"]["recording_stop"];
+    require(stop["state"].get<std::string>() == "finalized_after_drain_timeout",
+            "completed timed-out drain should report finalized-after-timeout state");
+    require(stop["health"].get<std::string>() == "warning",
+            "completed timed-out drain should report warning health");
+    require(stop["error_code"].get<std::string>() == "drain_timeout",
+            "completed timed-out drain should retain drain_timeout error code");
 }
 
 void test_citrus_completion_is_diagnostic_ack_and_logged()
@@ -619,6 +657,8 @@ int main()
          test_status_reports_completed_recording_after_streaming_stop_path},
         {"status_reports_local_control_drain_timeout_telemetry",
          test_status_reports_local_control_drain_timeout_telemetry},
+        {"status_reports_finalized_after_drain_timeout_as_warning",
+         test_status_reports_finalized_after_drain_timeout_as_warning},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",

@@ -317,6 +317,14 @@ def orange_recording_stop_drain_timed_out(status: dict[str, Any]) -> bool:
     return bool(orange_local_control_recording_stop(status).get("drain_timed_out", False))
 
 
+def orange_recording_stop_state(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("state", ""))
+
+
+def orange_recording_stop_health(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("health", ""))
+
+
 def citrus_ready_to_start(status: dict[str, Any]) -> bool:
     return bool(json_path(status, ["readiness", "ready_to_start"], False))
 
@@ -1127,6 +1135,8 @@ class Orchestrator:
                 "recording_finalized": orange_recording_finalized(orange_status),
                 "local_control_recording_stop": orange_local_control_recording_stop(orange_status),
                 "local_control_stop_drain_timed_out": orange_recording_stop_drain_timed_out(orange_status),
+                "local_control_stop_state": orange_recording_stop_state(orange_status),
+                "local_control_stop_health": orange_recording_stop_health(orange_status),
                 "allow_drain_timeout": self.args.allow_orange_drain_timeout,
             },
             "citrus": {
