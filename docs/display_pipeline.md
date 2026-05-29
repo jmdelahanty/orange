@@ -168,6 +168,10 @@ When the source is color, or YOLO detection overlays are enabled and available:
   `recording_snapshot.json session.gui_display_frame_rate.timings` and includes
   frame total, main/crop texture upload, camera/crop window draw, speed graph
   draw, and render/present buckets.
+- The ImGui GLFW size-cache shim writes recording-scoped counters under
+  `recording_snapshot.json session.gui_display_frame_rate.imgui_glfw_size_cache`.
+  Validation can require cache hits with no fallback size polling via
+  `scripts/validate_gui_ptp_recording.py --require-imgui-glfw-size-cache`.
 
 ## Optimization ideas (incremental)
 
@@ -202,6 +206,9 @@ When the source is color, or YOLO detection overlays are enabled and available:
 - Confirm `recording_snapshot.json` `session.gui_display_frame_rate` reports
   the intended `stream_downsample`, `display_preview_max_fps`,
   `swap_interval`, and `frame_max_fps`.
+- Confirm `session.gui_display_frame_rate.imgui_glfw_size_cache` reports
+  window/framebuffer cache hits and zero fallback calls when validating the
+  ImGui backend size-cache optimization.
 - Inspect `session.gui_display_frame_rate.timings` first:
   - high `main_texture_upload_ms` points at PBO upload/texture transfer,
   - high `camera_window_draw_ms` points at ImGui image/window drawing,

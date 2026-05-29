@@ -230,6 +230,14 @@ Current emitted top-level fields:
       `p95_ms`, `max_ms`, and `mean_ms`.
     - `main_texture_upload_count` and `crop_texture_upload_count` count total
       texture uploads sampled during active recording.
+  - `imgui_glfw_size_cache: object` (optional, GUI recordings after the
+    ImGui GLFW size-cache shim)
+    - `schema_version: integer`
+    - `source: string`
+    - `cache_context_registered: boolean`
+    - `window_size_cache_hits`, `window_size_fallbacks`,
+      `framebuffer_size_cache_hits`, `framebuffer_size_fallbacks`,
+      `null_window_requests`, and `total_size_requests`
   - `timing_diagnosis` is not persisted in `recording_snapshot.json`. It is a
     derived field produced by `scripts/validate_gui_ptp_recording.py --json-out`
     and `scripts/summarize_gui_validation.py` from the timing buckets. It names
@@ -976,6 +984,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
   --require-gui-timing-telemetry \
+  --require-imgui-glfw-size-cache \
   --min-gui-crop-preview-visible-fps-p05 45
 ```
 
@@ -1079,6 +1088,12 @@ buckets:
   `gui_display_frame_rate.timing_diagnosis`.
 - `scripts/summarize_gui_validation.py --json` writes it under
   `gui_display_diagnosis`.
+
+For runs intended to prove the ImGui GLFW backend display-size cache, also use
+`--require-imgui-glfw-size-cache`. That gate requires
+`session.gui_display_frame_rate.imgui_glfw_size_cache` to show cached
+window/framebuffer size hits, zero fallback GLFW size calls, and zero
+null-window requests during active recording.
 
 This derived diagnosis is intentionally script-owned. It should not be treated
 as a persisted Orange snapshot schema field.

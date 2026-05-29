@@ -1670,6 +1670,18 @@ def print_human(summary: dict[str, Any]) -> None:
             f"frame_max_fps={fmt_int(gui_fps.get('frame_max_fps'))} "
             f"speed_graphs={gui_fps.get('yolo_speed_graphs_enabled', 'n/a')}"
         )
+        size_cache = gui_fps.get("imgui_glfw_size_cache")
+        size_cache = size_cache if isinstance(size_cache, dict) else {}
+        if size_cache:
+            print(
+                "  imgui-glfw-size-cache: "
+                f"registered={size_cache.get('cache_context_registered')} "
+                f"window_hits={fmt_int(size_cache.get('window_size_cache_hits'))} "
+                f"framebuffer_hits={fmt_int(size_cache.get('framebuffer_size_cache_hits'))} "
+                f"fallbacks={fmt_int(size_cache.get('window_size_fallbacks'))}/"
+                f"{fmt_int(size_cache.get('framebuffer_size_fallbacks'))} "
+                f"null_requests={fmt_int(size_cache.get('null_window_requests'))}"
+            )
         print(f"  fps overall: {fps_bucket_text('overall')}")
         print(f"  fps crop-preview-visible: {fps_bucket_text('crop_preview_visible')}")
         print(f"  fps crop-preview-hidden: {fps_bucket_text('crop_preview_hidden')}")

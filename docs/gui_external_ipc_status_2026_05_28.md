@@ -91,7 +91,10 @@ and crop sidecar continuity.
 - Orange also compiles the Dear ImGui GLFW backend with a main-window
   size-cache shim, so `ImGui_ImplGlfw_NewFrame()` reads Orange's cached
   window/framebuffer dimensions instead of calling `glfwGetWindowSize(...)` and
-  `glfwGetFramebufferSize(...)` every frame.
+  `glfwGetFramebufferSize(...)` every frame. New runs persist
+  `session.gui_display_frame_rate.imgui_glfw_size_cache`, and
+  `--require-imgui-glfw-size-cache` validates hits with no fallback size
+  polling.
 - Validation now checks source provenance, dirty tracked-worktree state,
   external recorder status/storage/protocol telemetry, CPU isolation, YOLO
   affinity, GUI display pacing, and the full crop/full-frame artifact surface.
@@ -310,6 +313,7 @@ scripts/validate_gui_ptp_recording.py \
   --expect-gui-frame-max-fps 60 \
   --expect-yolo-speed-graphs-enabled 0 \
   --require-gui-timing-telemetry \
+  --require-imgui-glfw-size-cache \
   --min-gui-crop-preview-hidden-fps-p05 45
 ```
 

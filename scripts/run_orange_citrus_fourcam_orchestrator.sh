@@ -520,6 +520,7 @@ if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}"
     "--expect-gui-frame-max-fps" "30" \
     "--expect-yolo-speed-graphs-enabled" "0" \
     "--require-gui-timing-telemetry" \
+    "--require-imgui-glfw-size-cache" \
     "--json-out" "${ORANGE_VALIDATION_JSON}")"
 fi
 

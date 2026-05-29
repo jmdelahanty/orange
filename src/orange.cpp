@@ -6269,6 +6269,7 @@ bool gui_request_recording_start_through_operator_path(
     if (display_frame_rate_stats) {
         display_frame_rate_stats->Reset();
     }
+    orange_imgui_glfw_reset_size_cache_stats();
     gui_note_recording_started(
         recording_run,
         camera_control,
@@ -8155,7 +8156,8 @@ int main(int argc, char **args) {
                                         num_cameras),
                                     static_cast<int>(window->swap_interval),
                                     static_cast<int>(window->frame_max_fps),
-                                    show_yolo_speed_graphs))) {
+                                    show_yolo_speed_graphs,
+                                    orange_imgui_glfw_size_cache_stats()))) {
                             gui_display_frame_rate_stats.Finish();
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                                       << std::endl;
@@ -8265,7 +8267,8 @@ int main(int argc, char **args) {
                             num_cameras),
                         static_cast<int>(window->swap_interval),
                         static_cast<int>(window->frame_max_fps),
-                        show_yolo_speed_graphs))) {
+                        show_yolo_speed_graphs,
+                        orange_imgui_glfw_size_cache_stats()))) {
                 gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);
                 if (gui_local_control_exit_after_finalize &&

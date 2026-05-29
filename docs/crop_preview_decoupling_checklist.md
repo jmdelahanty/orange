@@ -711,6 +711,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
   --require-gui-timing-telemetry \
+  --require-imgui-glfw-size-cache \
   --require-crop-recording-artifacts \
   --require-crop-preview-sampling \
   --require-crop-preview-counters \
@@ -737,6 +738,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
   --require-gui-timing-telemetry \
+  --require-imgui-glfw-size-cache \
   --require-crop-recording-artifacts \
   --require-crop-preview-counters \
   --min-gui-crop-preview-hidden-fps-p05 45 \
@@ -761,6 +763,7 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-display-preview-max-fps 15 \
   --expect-yolo-speed-graphs-enabled 0 \
   --require-gui-timing-telemetry \
+  --require-imgui-glfw-size-cache \
   --require-crop-recording-artifacts \
   --require-crop-preview-counters \
   --json-out /tmp/orange_gui_crop_disabled_validation.json

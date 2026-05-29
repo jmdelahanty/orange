@@ -853,7 +853,10 @@ Notes:
   timing buckets. `scripts/validate_gui_ptp_recording.py --json-out` and
   `scripts/summarize_gui_validation.py --json` derive a dominant-p95 GUI timing
   diagnosis from those buckets; that diagnosis is script output, not a persisted
-  snapshot field.
+  snapshot field. Runs after the ImGui GLFW size-cache shim also include
+  `session.gui_display_frame_rate.imgui_glfw_size_cache` with recording-scoped
+  cache-hit, fallback, and null-window counters for the backend display-size
+  path.
 - `clip_seconds = 0` means no rollover and keeps the current flat folder
   layout.
 - `clip_seconds > 0` is implemented for headless experimental specs as

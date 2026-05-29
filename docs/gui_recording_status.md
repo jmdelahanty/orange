@@ -609,8 +609,9 @@ Current GUI validation tooling:
   external recorder summaries, and decodes the external MP4s referenced by
   `recording_session.json`.
 - For GUI refresh checks, use the printed validator commands with
-  `--require-gui-timing-telemetry`, `--expect-gui-swap-interval`, and
-  `--expect-gui-frame-max-fps`. The four-camera validation launcher defaults
+  `--require-gui-timing-telemetry`, `--require-imgui-glfw-size-cache`,
+  `--expect-gui-swap-interval`, and `--expect-gui-frame-max-fps`. The
+  four-camera validation launcher defaults
   to its fast display profile, `ORANGE_GUI_SWAP_INTERVAL=0`,
   `ORANGE_GUI_FRAME_MAX_FPS=60`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=15`. If
   Citrus is actively using the same display GPU for `120 Hz` stimulus

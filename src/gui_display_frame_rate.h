@@ -1,6 +1,7 @@
 #ifndef ORANGE_GUI_DISPLAY_FRAME_RATE_H
 #define ORANGE_GUI_DISPLAY_FRAME_RATE_H
 
+#include "imgui_glfw_size_cache.h"
 #include "json.hpp"
 
 #include <algorithm>
@@ -192,6 +193,28 @@ inline nlohmann::json gui_frame_rate_bucket_json(const GuiFrameRateBucket& bucke
     return out;
 }
 
+inline nlohmann::json gui_imgui_glfw_size_cache_stats_json(
+    const OrangeImguiGlfwSizeCacheStats& stats)
+{
+    const uint64_t total_size_requests =
+        stats.window_size_cache_hits +
+        stats.window_size_fallbacks +
+        stats.framebuffer_size_cache_hits +
+        stats.framebuffer_size_fallbacks +
+        stats.null_window_requests;
+    return {
+        {"schema_version", 1},
+        {"source", "orange_imgui_glfw_size_cache"},
+        {"cache_context_registered", stats.cache_context_registered},
+        {"window_size_cache_hits", stats.window_size_cache_hits},
+        {"window_size_fallbacks", stats.window_size_fallbacks},
+        {"framebuffer_size_cache_hits", stats.framebuffer_size_cache_hits},
+        {"framebuffer_size_fallbacks", stats.framebuffer_size_fallbacks},
+        {"null_window_requests", stats.null_window_requests},
+        {"total_size_requests", total_size_requests}
+    };
+}
+
 inline void gui_sample_display_frame_rate(GuiDisplayFrameRateStats* stats,
                                           const float delta_time_s,
                                           const bool recording_active,
@@ -244,7 +267,9 @@ inline nlohmann::json gui_display_frame_rate_json(const GuiDisplayFrameRateStats
                                                   const int display_preview_max_fps = -1,
                                                   const int swap_interval = -1,
                                                   const int frame_max_fps = -1,
-                                                  const bool yolo_speed_graphs_enabled = false)
+                                                  const bool yolo_speed_graphs_enabled = false,
+                                                  const OrangeImguiGlfwSizeCacheStats& imgui_glfw_size_cache_stats =
+                                                      OrangeImguiGlfwSizeCacheStats{})
 {
     return {
         {"schema_version", 1},
@@ -260,6 +285,8 @@ inline nlohmann::json gui_display_frame_rate_json(const GuiDisplayFrameRateStats
         {"overall", gui_frame_rate_bucket_json(stats.overall)},
         {"crop_preview_hidden", gui_frame_rate_bucket_json(stats.crop_preview_hidden)},
         {"crop_preview_visible", gui_frame_rate_bucket_json(stats.crop_preview_visible)},
+        {"imgui_glfw_size_cache", gui_imgui_glfw_size_cache_stats_json(
+            imgui_glfw_size_cache_stats)},
         {"timings", {
             {"frame_total_ms", gui_duration_bucket_json(stats.frame_total_ms)},
             {"pre_frame_maintenance_ms", gui_duration_bucket_json(stats.pre_frame_maintenance_ms)},

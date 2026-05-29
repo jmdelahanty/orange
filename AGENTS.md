@@ -677,4 +677,7 @@ multi-GPU split-GOP throughput.
   longer calls `glfwGetFramebufferSize(...)` every frame. The Dear ImGui GLFW
   backend is compiled with Orange's size-cache shim, so the main-window
   `ImGui_ImplGlfw_NewFrame()` display-size path reads cached window/framebuffer
-  dimensions instead of polling GLFW every frame.
+  dimensions instead of polling GLFW every frame. New GUI artifacts record
+  `session.gui_display_frame_rate.imgui_glfw_size_cache`; use
+  `--require-imgui-glfw-size-cache` once a fresh run should prove cache hits and
+  zero fallback size polling.

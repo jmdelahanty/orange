@@ -301,6 +301,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-imgui-glfw-size-cache",
+        action="store_true",
+        help=(
+            "Require recording_snapshot session.gui_display_frame_rate."
+            "imgui_glfw_size_cache telemetry showing cached main-window "
+            "size queries with no fallback GLFW polling."
+        ),
+    )
+    parser.add_argument(
         "--expect-crop-preview-max-fps",
         type=int,
         default=None,
@@ -3978,6 +3987,7 @@ def check_gui_display_frame_rate(
     expected_frame_max_fps: int | None,
     expected_yolo_speed_graphs_enabled: int | None,
     require_timing_telemetry: bool,
+    require_imgui_glfw_size_cache: bool,
 ) -> dict[str, Any]:
     if (
         min_overall_p05 is None
@@ -3989,6 +3999,7 @@ def check_gui_display_frame_rate(
         and expected_frame_max_fps is None
         and expected_yolo_speed_graphs_enabled is None
         and not require_timing_telemetry
+        and not require_imgui_glfw_size_cache
     ):
         return {}
 
@@ -4079,6 +4090,68 @@ def check_gui_display_frame_rate(
             crop_upload_count is not None,
             f"GUI timing crop texture upload count={crop_upload_count}",
             "GUI timing crop_texture_upload_count missing",
+        )
+
+    if require_imgui_glfw_size_cache:
+        size_cache = metrics.get("imgui_glfw_size_cache")
+        size_cache = size_cache if isinstance(size_cache, dict) else {}
+        reporter.check(
+            bool(size_cache),
+            "GUI ImGui GLFW size-cache telemetry present",
+            "GUI ImGui GLFW size-cache telemetry missing",
+        )
+        reporter.check(
+            integer(size_cache.get("schema_version")) == 1,
+            "GUI ImGui GLFW size-cache schema_version=1",
+            (
+                "GUI ImGui GLFW size-cache "
+                f"schema_version={size_cache.get('schema_version')!r}"
+            ),
+        )
+        cache_context_registered = size_cache.get("cache_context_registered")
+        reporter.check(
+            cache_context_registered is True,
+            "GUI ImGui GLFW size-cache context registered",
+            (
+                "GUI ImGui GLFW size-cache context not registered "
+                f"({cache_context_registered!r})"
+            ),
+        )
+        window_hits = integer(size_cache.get("window_size_cache_hits"))
+        framebuffer_hits = integer(size_cache.get("framebuffer_size_cache_hits"))
+        window_fallbacks = integer(size_cache.get("window_size_fallbacks"))
+        framebuffer_fallbacks = integer(size_cache.get("framebuffer_size_fallbacks"))
+        null_requests = integer(size_cache.get("null_window_requests"))
+        reporter.check(
+            window_hits is not None and window_hits > 0,
+            f"GUI ImGui GLFW window-size cache hits={window_hits}",
+            f"GUI ImGui GLFW window-size cache hits missing or zero ({window_hits})",
+        )
+        reporter.check(
+            framebuffer_hits is not None and framebuffer_hits > 0,
+            f"GUI ImGui GLFW framebuffer-size cache hits={framebuffer_hits}",
+            (
+                "GUI ImGui GLFW framebuffer-size cache hits missing or zero "
+                f"({framebuffer_hits})"
+            ),
+        )
+        reporter.check(
+            window_fallbacks == 0,
+            "GUI ImGui GLFW window-size fallback calls=0",
+            f"GUI ImGui GLFW window-size fallback calls={window_fallbacks}",
+        )
+        reporter.check(
+            framebuffer_fallbacks == 0,
+            "GUI ImGui GLFW framebuffer-size fallback calls=0",
+            (
+                "GUI ImGui GLFW framebuffer-size fallback calls="
+                f"{framebuffer_fallbacks}"
+            ),
+        )
+        reporter.check(
+            null_requests == 0,
+            "GUI ImGui GLFW null-window size requests=0",
+            f"GUI ImGui GLFW null-window size requests={null_requests}",
         )
 
     def check_bucket(bucket_name: str, label: str, threshold: float | None) -> None:
@@ -5454,6 +5527,18 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
         print(f"  frame-max-fps: {gui_fps.get('frame_max_fps')}")
     if "yolo_speed_graphs_enabled" in gui_fps:
         print(f"  yolo-speed-graphs-enabled: {gui_fps.get('yolo_speed_graphs_enabled')}")
+    size_cache = gui_fps.get("imgui_glfw_size_cache")
+    size_cache = size_cache if isinstance(size_cache, dict) else {}
+    if size_cache:
+        print(
+            "  imgui-glfw-size-cache: "
+            f"registered={size_cache.get('cache_context_registered')} "
+            f"window_hits={size_cache.get('window_size_cache_hits')} "
+            f"framebuffer_hits={size_cache.get('framebuffer_size_cache_hits')} "
+            f"fallbacks={size_cache.get('window_size_fallbacks')}/"
+            f"{size_cache.get('framebuffer_size_fallbacks')} "
+            f"null_requests={size_cache.get('null_window_requests')}"
+        )
     print(f"  overall: {bucket_text('overall')}")
     print(f"  crop-preview-visible: {bucket_text('crop_preview_visible')}")
     print(f"  crop-preview-hidden: {bucket_text('crop_preview_hidden')}")
@@ -5665,6 +5750,7 @@ def main() -> int:
             args.expect_gui_frame_max_fps,
             args.expect_yolo_speed_graphs_enabled,
             args.require_gui_timing_telemetry,
+            args.require_imgui_glfw_size_cache,
         )
     if not cameras:
         video_sanity = {}
