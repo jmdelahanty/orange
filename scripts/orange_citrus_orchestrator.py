@@ -535,6 +535,13 @@ class Orchestrator:
                 self.args.orange_socket,
                 self.args.allow_preexisting_orange_socket,
             )
+        if self.args.citrus_command:
+            self.preflight_launch_socket(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                self.args.allow_preexisting_citrus_socket,
+            )
         self.start_process(
             "orange",
             self.args.orange_command,
@@ -558,13 +565,6 @@ class Orchestrator:
             "ready_for_recording_request",
         )
 
-        if self.args.citrus_command:
-            self.preflight_launch_socket(
-                "citrus",
-                CITRUS_REQUEST_SCHEMA_ID,
-                self.args.citrus_socket,
-                self.args.allow_preexisting_citrus_socket,
-            )
         citrus_env = {
             **parse_env_items(self.args.citrus_env),
             "CITRUS_GUI_LOCAL_CONTROL_SOCKET": self.args.citrus_socket,

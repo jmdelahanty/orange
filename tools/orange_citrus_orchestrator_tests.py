@@ -344,6 +344,57 @@ def test_execute_against_fake_local_control_servers() -> None:
         require(json.loads(summary_path.read_text())["result"] == "pass", "summary file should match")
 
 
+def test_launch_preflights_all_sockets_before_starting_processes() -> None:
+    module = load_module()
+    args = module.parse_args(
+        [
+            "--execute",
+            "--operation-id",
+            "op-preflight-before-start",
+            "--orange-command",
+            "/bin/true",
+            "--citrus-command",
+            "/bin/true",
+        ]
+    )
+    orchestrator = module.Orchestrator(args)
+    calls: list[tuple[str, str]] = []
+
+    def fake_preflight(
+        label: str,
+        schema_id: str,
+        socket_path: str,
+        allow_preexisting: bool,
+    ) -> None:
+        calls.append(("preflight", label))
+        if label == "citrus":
+            raise module.OrchestratorError("synthetic stale Citrus socket")
+
+    def fake_start(
+        label: str,
+        command: str,
+        env_overlay: dict[str, str],
+        log_path: str,
+    ) -> None:
+        calls.append(("start", label))
+        raise AssertionError("processes must not start after a failed launch preflight")
+
+    orchestrator.preflight_launch_socket = fake_preflight
+    orchestrator.start_process = fake_start
+
+    try:
+        orchestrator.run()
+    except module.OrchestratorError as exc:
+        require("synthetic stale Citrus socket" in str(exc), "run should report the preflight failure")
+    else:
+        raise AssertionError("expected stale Citrus preflight to fail")
+
+    require(
+        calls == [("preflight", "orange"), ("preflight", "citrus")],
+        "orchestrator should preflight both launch sockets before starting any process",
+    )
+
+
 def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -582,6 +633,7 @@ def main() -> int:
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
+        test_launch_preflights_all_sockets_before_starting_processes,
         test_persist_artifacts_copies_logs_into_recording_folder,
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
