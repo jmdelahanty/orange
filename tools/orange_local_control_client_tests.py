@@ -79,6 +79,31 @@ def test_citrus_completion_dry_run_defaults_operation_id() -> None:
     require(params["grace_seconds"] == 7.5, "grace seconds")
 
 
+def test_citrus_completion_dry_run_defaults_grace_seconds() -> None:
+    result = run_client(
+        [
+            "--dry-run",
+            "citrus-completion",
+            "--request-id",
+            "completion-default-grace",
+            "--experiment-id",
+            "citrus-exp-default-grace",
+            "--terminal-state",
+            "completed",
+            "--reason",
+            "protocol_finished",
+        ]
+    )
+
+    require(result.returncode == 0, f"dry-run failed: {result.stderr}")
+    payload = parse_stdout_json(result)
+    require(payload["method"] == "citrus_completion", "completion method")
+    require(
+        payload["params"]["grace_seconds"] == 10.0,
+        "completion client should default to 10s Orange stop grace",
+    )
+
+
 def test_start_stop_dry_run_include_operation_ids() -> None:
     start = run_client(
         [
@@ -140,6 +165,7 @@ def main() -> int:
     tests = [
         test_status_dry_run_builds_schema_request,
         test_citrus_completion_dry_run_defaults_operation_id,
+        test_citrus_completion_dry_run_defaults_grace_seconds,
         test_start_stop_dry_run_include_operation_ids,
         test_citrus_completion_requires_experiment_id,
         test_missing_socket_fails_before_connect,

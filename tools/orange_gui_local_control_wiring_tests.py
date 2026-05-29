@@ -100,10 +100,30 @@ def test_stop_commands_keep_gui_thread_lifecycle_authority() -> None:
     )
 
 
+def test_completion_and_stop_grace_defaults_are_distinct() -> None:
+    orange = read("src/orange.cpp")
+    body = function_body(orange, "gui_drain_local_control_commands")
+    require(
+        'const double default_grace_seconds =\n'
+        '            command.method == "stop_recording" ? 0.0 : 10.0;' in body,
+        "citrus_completion must default to 10s grace while stop_recording defaults to 0s",
+    )
+    require(
+        '"grace_seconds",\n'
+        "                default_grace_seconds" in body,
+        "GUI stop scheduler must use the default when params.grace_seconds is omitted",
+    )
+    require(
+        '{"grace_seconds", stop_scheduler->grace_seconds}' in body,
+        "scheduled stop event must log the resolved grace seconds",
+    )
+
+
 def main() -> int:
     tests = [
         test_drain_timeout_requests_forced_stream_shutdown,
         test_stop_commands_keep_gui_thread_lifecycle_authority,
+        test_completion_and_stop_grace_defaults_are_distinct,
     ]
     for test in tests:
         test()

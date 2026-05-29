@@ -76,9 +76,11 @@ Refs:
 - Orange has an opt-in local-control recording stop scheduler for
   `citrus_completion` and `stop_recording`.
 - Citrus has opt-in automatic completion emission to Orange.
-- Orange local-control status now exposes telemetry for delayed-stop drain
-  progress and timeout reporting. The timeout is observable only; forced-safe
-  finalize policy is not implemented yet.
+- Orange local-control status exposes delayed-stop drain progress, timeout
+  reporting, and forced-finalize request telemetry. If a local-control drain
+  exceeds its timeout, Orange requests forced-safe finalization through the
+  existing stream-shutdown path, which stops acquisition, stops/joins workers,
+  and then runs the normal session finalizer.
 - Orange local-control status now also derives machine-readable stop
   `state`, `health`, and `error_code` fields, so an active drain timeout is
   reported as `health=critical` without clients inferring that from scheduler
@@ -90,8 +92,9 @@ Refs:
 
 1. Citrus emits one `citrus_completion` request to Orange.
 2. Orange validates, deduplicates, logs, and ACKs the request.
-3. Once stop control is explicitly enabled, Orange starts a 10-second grace
-   timer.
+3. Once stop control is explicitly enabled, Orange starts a configurable grace
+   timer. `citrus_completion` defaults to 10 seconds when the request omits
+   `params.grace_seconds`; explicit `stop_recording` defaults to 0 seconds.
 4. After timer expiry, Orange triggers recording stop through the same path as
    the GUI/operator stop.
 5. Encoders and external recorders drain and finalize.

@@ -72,6 +72,9 @@ thread-safe bridge, and drained by the GUI thread. With the recording-stop gate 
 completion requests are logged only and `stop_recording` is rejected. With the
 gate enabled and Orange actively recording, both `citrus_completion` and
 `stop_recording` schedule a delayed stop using `params.grace_seconds`.
+If that field is omitted, Orange resolves `citrus_completion` to a 10-second
+grace period and `stop_recording` to an immediate `0`-second stop. The client
+utility also defaults `citrus-completion --grace-seconds` to `10.0`.
 With the recording-start gate enabled, when Orange is streaming but not already
 recording or finalizing, `start_recording` goes through the same GUI-thread
 recording preflight and operator start path as the record button.
@@ -247,11 +250,11 @@ falling back to `ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS`; the default is
 while the GUI is still finalizing, Orange sets
 `local_control.recording_stop.drain_timed_out=true`, logs a
 `drain_timeout` event, reports `state=drain_timeout`, `health=critical`, and
-`error_code=drain_timeout`, then keeps using the normal safe drain/finalize
-path. If finalization later succeeds after the timeout, the stop status becomes
+`error_code=drain_timeout`, and requests forced-safe finalization through the
+same stream-shutdown path used by the operator. If finalization later succeeds
+after the timeout, the stop status becomes
 `state=finalized_after_drain_timeout` and `health=warning` while retaining the
-same error code. This is status/telemetry only; forced-safe finalize behavior is
-a separate future policy.
+same error code.
 
 When start triggers, it routes through the same GUI/operator start path:
 
