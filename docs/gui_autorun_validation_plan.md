@@ -432,7 +432,8 @@ By default, the profile runs Orange validation after finalization and writes
 the validator JSON to `/tmp/<operation_id>_orange_gui_validation.json`. The
 default validator targets the exact `{orange_recording_folder}` reported by
 Orange status, matches the Citrus-safe display profile, expects the
-four-camera crop external queue depth of `128`, and does not require `45 fps`
+four-camera crop external queue depth of `128`, requires GUI timing telemetry,
+requires clean ImGui GLFW size-cache telemetry, and does not require `45 fps`
 GUI p05. Disable it with `--skip-orange-validation` for lifecycle-only smokes,
 or replace it with `--orange-validation-command`.
 

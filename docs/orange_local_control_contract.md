@@ -449,12 +449,15 @@ four expected cameras, crop recording artifacts, hidden crop-preview counters,
 external recorder status/hello/storage preflight, separate crop-recorder GPU
 placement, source provenance, YOLO CPU affinity, active CPU isolation, and the
 Citrus-safe display profile (`swap_interval=1`, GUI frame cap `30`, display
-preview cap `10`). The default command targets `{orange_recording_folder}`, not
-`--latest-complete`, so it validates the specific artifact from this
-orchestrated run. It intentionally does not enforce the old `45 fps` GUI p05
-threshold because Citrus-safe mode caps Orange's GUI loop at `30 fps`. Use
-`--skip-orange-validation` for lifecycle-only diagnostics or
-`--orange-validation-command` to replace the default.
+preview cap `10`). It also requires GUI timing telemetry and clean ImGui GLFW
+size-cache telemetry, so a fresh orchestrated run must show cached
+window/framebuffer size hits with no fallback/null-window calls. The default
+command targets `{orange_recording_folder}`, not `--latest-complete`, so it
+validates the specific artifact from this orchestrated run. It intentionally
+does not enforce the old `45 fps` GUI p05 threshold because Citrus-safe mode
+caps Orange's GUI loop at `30 fps`. Use `--skip-orange-validation` for
+lifecycle-only diagnostics or `--orange-validation-command` to replace the
+default.
 
 The wrapper also forwards rolling-control options to the launched Orange
 profile:
