@@ -71,6 +71,25 @@ def test_cmake_force_includes_override_for_imgui_glfw_backend() -> None:
     )
 
 
+def test_cmake_limits_override_to_imgui_glfw_backend() -> None:
+    cmake = read("CMakeLists.txt")
+    require(
+        cmake.count("imgui_glfw_size_cache_override.h") == 1,
+        "size-cache override header must only be referenced by the imgui_impl_glfw.cpp source property",
+    )
+    for forbidden in (
+        "add_compile_options",
+        "target_compile_options(orange",
+        "target_compile_options(orange_client",
+    ):
+        require(
+            "imgui_glfw_size_cache_override.h" not in "\n".join(
+                line for line in cmake.splitlines() if forbidden in line
+            ),
+            "size-cache override must not be applied as a broad compile option",
+        )
+
+
 def test_render_a_frame_uses_cached_framebuffer_size() -> None:
     gx_helper = read("src/gx_helper.h")
     body = function_body(gx_helper, "render_a_frame")
@@ -180,6 +199,7 @@ def main() -> int:
     tests = [
         test_override_header_maps_glfw_size_queries,
         test_cmake_force_includes_override_for_imgui_glfw_backend,
+        test_cmake_limits_override_to_imgui_glfw_backend,
         test_render_a_frame_uses_cached_framebuffer_size,
         test_imgui_new_frame_size_queries_are_intercepted,
         test_cache_context_registered_during_gx_init,
