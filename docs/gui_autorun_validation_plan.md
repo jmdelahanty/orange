@@ -31,6 +31,10 @@ variable.
   record start.
 - `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1`: close the GUI after the recording
   session finalizes.
+- `ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=1`: close the GUI after a
+  local-control stop/completion request drains and finalizes the recording
+  session. This is separate from autorun exit because orchestrated runs use
+  autorun to open cameras/start streaming, then local control owns recording.
 - `ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=1`: disable crop preview display before
   streaming starts while leaving crop recording enabled.
 - `ORANGE_GUI_AUTORUN_ENABLE_STREAM=1`: enable streaming for all opened cameras.
@@ -56,6 +60,7 @@ Current launcher defaults:
 - `ORANGE_GUI_AUTORUN_STREAM_WARMUP_SECONDS=3`
 - `ORANGE_GUI_AUTORUN_RECORD_SECONDS=10`
 - `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`
+- `ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0`
 - `ORANGE_GUI_AUTORUN_HIDE_CROP_PREVIEW=0`
 - `ORANGE_GUI_AUTORUN_ENABLE_STREAM=1`
 - `ORANGE_GUI_AUTORUN_ENABLE_RECORD=1`
@@ -441,8 +446,10 @@ scripts/orange_local_control_client.py \
    - stop recording
    - stop streaming and finalize
 5. Add a small frame-tick state machine in `src/orange.cpp`.
-6. Stop on preflight failure and leave the GUI open unless
-   `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1` was explicitly set.
+6. Stop on preflight failure and leave the GUI open unless an explicit
+   finalize-exit flag was set. Autorun uses
+   `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=1`; orchestrated local-control runs
+   use `ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=1`.
 
 First-slice state sequence:
 

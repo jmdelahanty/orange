@@ -55,6 +55,7 @@ protected:
 
 private:
     bool ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_source_entry);
+    bool ForwardRecordingDrainIfReady();
 
     CameraParams* camera_params_ = nullptr;
     SafeQueue<WORKER_ENTRY*>& recycle_queue_;
@@ -81,6 +82,7 @@ private:
     std::atomic<uint64_t> run_dropped_jobs_offered_{0};
     std::atomic<uint64_t> run_dropped_jobs_enqueued_{0};
     std::string current_recording_folder_;
+    bool recording_drain_forwarded_ = false;
     std::mutex process_mutex_;
 };
 

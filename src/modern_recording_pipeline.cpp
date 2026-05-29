@@ -294,6 +294,11 @@ void ModernRecordingPipeline::request_recording_drain()
 {
     refresh_split_gop_runtime_topology_snapshot();
 
+    if (recording_ingress_ && recording_ingress_->uses_external_ipc()) {
+        recording_ingress_->request_recording_drain();
+        return;
+    }
+
     for (auto& helper_target : helper_encode_targets_) {
         if (helper_target.preprocess_worker) {
             helper_target.preprocess_worker->PutObjectToQueueIn(nullptr);

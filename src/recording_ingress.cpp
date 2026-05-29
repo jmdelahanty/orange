@@ -188,6 +188,15 @@ public:
     uint64_t frames_acked() const { return frames_acked_.load(std::memory_order_relaxed); }
     uint64_t failures() const { return failures_.load(std::memory_order_relaxed); }
     uint64_t ack_timeouts() const { return ack_timeouts_.load(std::memory_order_relaxed); }
+    void RequestRecordingDrain(const char* reason)
+    {
+        {
+            std::lock_guard<std::mutex> lock(drain_request_mutex_);
+            drain_requested_ = true;
+            drain_reason_ = reason && *reason ? reason : "recording_draining";
+        }
+        PutObjectToQueueIn(nullptr);
+    }
     void ResetConnection()
     {
         release_all_pending("connection reset");
@@ -213,6 +222,10 @@ protected:
                 WorkerFunction(entry);
                 continue;
             }
+            if (drain_requested_) {
+                WorkerFunction(nullptr);
+                continue;
+            }
             usleep(1000);
         }
         std::cout << "Child Thread DONE 0 (ExternalIpcRecorder_Cam_"
@@ -227,6 +240,26 @@ protected:
         if (!entry) {
             if (deferred_release_) {
                 poll_protocol_lines(false);
+            }
+            if (drain_requested_) {
+                if (pending_release_count() > 0 ||
+                    in_flight_.load(std::memory_order_relaxed) > 0 ||
+                    GetCountQueueIn() > 0) {
+                    usleep(1000);
+                    PutObjectToQueueIn(nullptr);
+                    return false;
+                }
+
+                std::string reason;
+                {
+                    std::lock_guard<std::mutex> lock(drain_request_mutex_);
+                    reason = drain_reason_.empty()
+                        ? "recording_drained"
+                        : drain_reason_;
+                    drain_requested_ = false;
+                }
+                send_client_drain_control(reason.c_str());
+                send_client_finalize_control(reason.c_str());
             }
             return false;
         }
@@ -831,6 +864,9 @@ private:
     bool client_hello_sent_ = false;
     bool client_drain_sent_ = false;
     bool client_finalize_sent_ = false;
+    std::atomic<bool> drain_requested_{false};
+    std::mutex drain_request_mutex_;
+    std::string drain_reason_;
     std::string receive_buffer_;
     mutable std::mutex pending_release_mutex_;
     std::unordered_map<uint64_t, WORKER_ENTRY*> pending_release_entries_;
@@ -1228,6 +1264,18 @@ void RecordingIngress::start()
     if (external_ipc_handoff_worker_) {
         external_ipc_handoff_worker_->SetMaxQueueSize(240);
         external_ipc_handoff_worker_->StartThread();
+    }
+}
+
+bool RecordingIngress::uses_external_ipc() const
+{
+    return recording_sink_mode_ == "external_ipc";
+}
+
+void RecordingIngress::request_recording_drain()
+{
+    if (external_ipc_handoff_worker_) {
+        external_ipc_handoff_worker_->RequestRecordingDrain("recording_draining");
     }
 }
 

@@ -86,7 +86,11 @@ def test_default_dry_run_builds_live_profile() -> None:
         )
         require(
             orange_env["ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE"] == "0",
-            "orchestrator should keep launched Orange alive for control",
+            "orchestrator should not use autorun finalize as its exit trigger",
+        )
+        require(
+            orange_env["ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE"] == "1",
+            "orchestrator should close launched Orange after local-control finalization",
         )
         require(
             citrus_env["CITRUS_GUI_AUTORUN"] == "1",

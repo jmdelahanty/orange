@@ -186,7 +186,11 @@ def test_dry_run_default_does_not_open_sockets() -> None:
     )
     require(
         payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE"] == "0",
-        "orchestrator should keep launched Orange alive for socket control",
+        "orchestrator should not use autorun finalize as its exit trigger",
+    )
+    require(
+        payload["orange"]["env_overlay"]["ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE"] == "1",
+        "orchestrator should close launched Orange after local-control finalization",
     )
     require(
         not payload["orange"]["preflight_existing_socket"],

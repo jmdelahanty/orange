@@ -63,8 +63,10 @@ public:
     void SubmitFrame(WORKER_ENTRY* entry);
     RecordingIngressStats GetStats() const;
     bool IsDrained() const;
+    bool uses_external_ipc() const;
     void RegisterHelperPreprocessWorker(int encode_gpu_id, EncoderPreprocessWorker* preprocess_worker);
     void start();
+    void request_recording_drain();
     void request_stop();
     void shutdown();
     void reset_external_ipc_connection();

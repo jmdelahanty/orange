@@ -295,6 +295,12 @@ bool gui_local_control_recording_start_enabled()
            gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START", false);
 }
 
+bool gui_local_control_exit_after_finalize_enabled()
+{
+    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE", false) ||
+           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE", false);
+}
+
 std::string gui_local_control_socket_path()
 {
     std::string path = gui_env_string_or_empty("ORANGE_GUI_LOCAL_CONTROL_SOCKET");
@@ -6559,6 +6565,8 @@ int main(int argc, char **args) {
     GuiLocalControlStopSchedulerState gui_local_control_stop_scheduler;
     gui_local_control_stop_scheduler.enabled =
         gui_local_control_recording_stop_enabled();
+    const bool gui_local_control_exit_after_finalize =
+        gui_local_control_exit_after_finalize_enabled();
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::control::LocalControlServer gui_local_control_server;
     if (!gui_local_control_disabled()) {
@@ -8176,6 +8184,15 @@ int main(int argc, char **args) {
                         show_yolo_speed_graphs))) {
                 gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);
+                if (gui_local_control_exit_after_finalize &&
+                    gui_local_control_stop_scheduler.stop_triggered) {
+                    gui_note_local_control_stop_event(
+                        &gui_local_control_stop_scheduler,
+                        "finalized_exit_requested");
+                    std::cout << "[GUI][local_control] requesting GUI exit after local-control finalize"
+                              << std::endl;
+                    glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
+                }
             }
 
             if (camera_control->open) {

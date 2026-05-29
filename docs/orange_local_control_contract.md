@@ -210,6 +210,7 @@ path:
 
 - mark GUI recording stop requested
 - call `request_drain_recording_run(...)`
+- keep camera streaming and YOLO/crop processing alive while recording drains
 - wait for `gui_finalize_recording_session_if_ready(...)`
 - validate `recording_session.json`, `recording_snapshot.json`, and external
   recorder finalization artifacts
@@ -368,9 +369,12 @@ Citrus local-control socket env. It also sets
 `ORANGE_GUI_AUTORUN_START_RECORDING=0` and
 `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`, so an Orange GUI autorun launcher
 can open cameras and start streaming while leaving recording start/stop to the
-orchestrator. It does not talk to Orange recorder sockets and does not delete
-data. Stop/finalization still goes through Orange `stop_recording` or
-`citrus_completion`, according to `--stop-policy`.
+orchestrator. Launched orchestrator runs also set
+`ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=1`, which closes Orange only
+after a local-control `stop_recording`/`citrus_completion` request has drained
+and finalized the recording session. It does not talk to Orange recorder
+sockets and does not delete data. Stop/finalization still goes through Orange
+`stop_recording` or `citrus_completion`, according to `--stop-policy`.
 
 Post-run validators are opt-in for the base orchestrator:
 
