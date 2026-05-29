@@ -1138,10 +1138,17 @@ def test_orange_local_control_event_log_summary() -> None:
         rows = [
             {
                 "received_at_utc": "2026-05-29T00:00:00Z",
-                "request": {"method": "stop_recording"},
+                "request": {
+                    "method": "stop_recording",
+                    "request_id": "stop-req",
+                    "source": "orange_citrus_orchestrator",
+                },
                 "response": {
+                    "method": "stop_recording",
                     "request_id": "stop-req",
                     "operation_id": "op-log",
+                    "ok": True,
+                    "accepted": True,
                 },
             },
             {
@@ -1199,6 +1206,11 @@ def test_orange_local_control_event_log_summary() -> None:
         require(summary["invalid_row_count"] == 1, "invalid row count should parse")
         require(summary["events"]["recording_start_triggered"] == 1, "start trigger event should count")
         require(summary["events"]["recording_stop_triggered"] == 1, "stop trigger event should count")
+        require(len(summary["socket_request_events"]) == 1, "socket request event should summarize")
+        require(
+            summary["socket_request_events"][0]["source"] == "orange_citrus_orchestrator",
+            "socket request event should preserve source",
+        )
         require(
             summary["events"]["recording_drain_forced_finalize_requested"] == 1,
             "forced-finalize event should count",
@@ -1241,6 +1253,24 @@ def test_orange_local_control_event_log_required_check() -> None:
             "op-log:orange:stop_recording",
         ],
         "operation_ids": ["op-log"],
+        "socket_request_events": [
+            {
+                "request_id": "op-log:orange:start_recording",
+                "operation_id": "op-log",
+                "method": "start_recording",
+                "source": "orange_citrus_orchestrator",
+                "ok": True,
+                "accepted": True,
+            },
+            {
+                "request_id": "op-log:orange:stop_recording",
+                "operation_id": "op-log",
+                "method": "stop_recording",
+                "source": "orange_citrus_orchestrator",
+                "ok": True,
+                "accepted": True,
+            },
+        ],
         "has_start_triggered": True,
         "has_stop_triggered": True,
         "has_drain_timeout": False,
@@ -1278,6 +1308,26 @@ def test_orange_local_control_event_log_required_check() -> None:
         orange_status=status,
     )
     require(ok_check["ok"], f"valid event log should pass: {ok_check}")
+
+    missing_socket_event_log = dict(event_log)
+    missing_socket_event_log["socket_request_events"] = [
+        dict(event_log["socket_request_events"][0])
+    ]
+    missing_socket_check = module.check_orange_local_control_event_log(
+        missing_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_socket_check["ok"],
+        "event log should fail when final stop request has no socket row",
+    )
+    require(
+        any("socket request/response" in failure for failure in missing_socket_check["failures"]),
+        "missing stop socket row failure should name socket request/response",
+    )
 
     bad_stop_event_log = dict(event_log)
     bad_stop_event_log["gui_lifecycle_events"] = [
@@ -1379,6 +1429,24 @@ def test_orange_local_control_event_log_required_check() -> None:
     notify_event_log["request_ids"] = [
         "op-log:orange:start_recording",
         "citrus_completion:op-log:stopped:stopped_by_local_control",
+    ]
+    notify_event_log["socket_request_events"] = [
+        {
+            "request_id": "op-log:orange:start_recording",
+            "operation_id": "op-log",
+            "method": "start_recording",
+            "source": "orange_citrus_orchestrator",
+            "ok": True,
+            "accepted": True,
+        },
+        {
+            "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
+            "operation_id": "op-log",
+            "method": "citrus_completion",
+            "source": "citrus",
+            "ok": True,
+            "accepted": True,
+        },
     ]
     notify_event_log["gui_lifecycle_events"] = [
         {

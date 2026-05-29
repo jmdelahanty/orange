@@ -686,6 +686,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         "gui_event_count": 0,
         "invalid_row_count": 0,
         "events": {},
+        "socket_request_events": [],
         "gui_lifecycle_events": [],
         "request_ids": [],
         "operation_ids": [],
@@ -708,6 +709,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     request_ids: set[str] = set()
     operation_ids: set[str] = set()
     events: dict[str, int] = {}
+    socket_request_events: list[dict[str, Any]] = []
     gui_lifecycle_events: list[dict[str, Any]] = []
     try:
         with log_path.open("r", encoding="utf-8") as handle:
@@ -723,10 +725,22 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
                     continue
                 if isinstance(row, dict) and "request" in row and "response" in row:
                     summary["socket_event_count"] += 1
+                    request = row.get("request")
+                    request = request if isinstance(request, dict) else {}
                     response = row.get("response")
                     response = response if isinstance(response, dict) else {}
-                    request_id = response.get("request_id")
-                    operation_id = response.get("operation_id")
+                    request_id = response.get("request_id") or request.get("request_id")
+                    operation_id = response.get("operation_id") or request.get("operation_id")
+                    socket_request_events.append(
+                        {
+                            "request_id": request_id or "",
+                            "operation_id": operation_id or "",
+                            "method": response.get("method") or request.get("method", ""),
+                            "source": request.get("source", ""),
+                            "ok": bool(response.get("ok", False)),
+                            "accepted": bool(response.get("accepted", False)),
+                        }
+                    )
                 elif (
                     isinstance(row, dict)
                     and row.get("schema_id") == "orange.local_control.gui_event"
@@ -760,6 +774,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         summary["read_error"] = str(exc)
 
     summary["events"] = dict(sorted(events.items()))
+    summary["socket_request_events"] = socket_request_events
     summary["gui_lifecycle_events"] = gui_lifecycle_events
     summary["request_ids"] = sorted(request_ids)
     summary["operation_ids"] = sorted(operation_ids)
@@ -794,6 +809,22 @@ def event_log_lifecycle_events_for_request(
     return matches
 
 
+def event_log_socket_events_for_request(
+    event_log: dict[str, Any],
+    request_id: str,
+) -> list[dict[str, Any]]:
+    rows = event_log.get("socket_request_events", [])
+    if not isinstance(rows, list):
+        return []
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("request_id", "")) == request_id:
+            matches.append(row)
+    return matches
+
+
 def check_stop_lifecycle_event_details(
     event_log: dict[str, Any],
     *,
@@ -812,6 +843,7 @@ def check_stop_lifecycle_event_details(
     expected_operation_id = str(stop_status.get("operation_id", ""))
     expected_terminal_state = str(stop_status.get("terminal_state", ""))
     expected_reason = str(stop_status.get("reason", ""))
+    socket_events = event_log_socket_events_for_request(event_log, stop_request_id)
     trigger_events = event_log_lifecycle_events_for_request(
         event_log,
         stop_request_id,
@@ -832,6 +864,29 @@ def check_stop_lifecycle_event_details(
             "Orange local-control event log missing recording_drain_finalized "
             f"for request_id={stop_request_id}"
         )
+    if not socket_events:
+        failures.append(
+            "Orange local-control event log missing socket request/response "
+            f"for request_id={stop_request_id}"
+        )
+
+    for row in socket_events:
+        if expected_method and str(row.get("method", "")) != expected_method:
+            failures.append(
+                "Orange local-control event log socket request "
+                f"method={row.get('method', '')!r}; expected {expected_method!r}"
+            )
+        if expected_source and str(row.get("source", "")) != expected_source:
+            failures.append(
+                "Orange local-control event log socket request "
+                f"source={row.get('source', '')!r}; expected {expected_source!r}"
+            )
+        if expected_operation_id and str(row.get("operation_id", "")) != expected_operation_id:
+            failures.append(
+                "Orange local-control event log socket request "
+                f"operation_id={row.get('operation_id', '')!r}; "
+                f"expected {expected_operation_id!r}"
+            )
 
     for event_name, rows in (
         ("recording_stop_triggered", trigger_events),
