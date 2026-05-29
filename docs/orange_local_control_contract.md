@@ -465,7 +465,11 @@ the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
 fails the orchestrator before post-run validators execute. Use
 `--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
-expected observation rather than a pass/fail gate.
+expected observation rather than a pass/fail gate. That flag does not allow an
+inconsistent timeout status: if `drain_timed_out=true`, the orchestrator still
+requires `forced_finalize_requested=true`, and once Orange reports
+`finalized_after_drain_timeout` it also requires
+`forced_finalize_stream_stop_requested=true`.
 
 When Orange itself sees a local-control drain exceed
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` /

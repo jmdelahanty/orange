@@ -223,6 +223,9 @@ Refs:
       local-control drain timeout.
 - [x] Expose whether the forced-finalize path has requested Orange's existing
       stream-shutdown path in `local_control.recording_stop`.
+- [x] Keep `--allow-orange-drain-timeout` diagnostic-only: the orchestrator
+      still fails inconsistent timeout status that lacks forced-finalize or
+      stream-stop-request evidence.
 
 ## Phase 6: Validation
 

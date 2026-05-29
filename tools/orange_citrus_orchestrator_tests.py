@@ -58,6 +58,8 @@ def orange_status(started: bool, stopped: bool, *, drain_timed_out: bool = False
                 "stop_triggered": stopped,
                 "drain_active": False,
                 "drain_timed_out": drain_timed_out,
+                "forced_finalize_requested": drain_timed_out,
+                "forced_finalize_stream_stop_requested": drain_timed_out,
                 "drain_timeout_seconds": 60.0,
                 "drain_elapsed_seconds": 61.25 if drain_timed_out else 0.0,
                 "request_id": "stop-req",
@@ -644,6 +646,40 @@ def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
         require(
             module.orange_recording_stop_health(allowed_status) == "warning",
             "allowed path should expose warning health after timeout finalizes",
+        )
+        broken_status = orange_status(True, True, drain_timed_out=True)
+        broken_status["local_control"]["recording_stop"]["forced_finalize_requested"] = False
+        broken_status["local_control"]["recording_stop"][
+            "forced_finalize_stream_stop_requested"
+        ] = False
+        broken_failures = module.check_orange_drain_timeout_status(broken_status)
+        require(
+            any("forced_finalize_requested" in failure for failure in broken_failures),
+            "timeout status check should require forced finalize request",
+        )
+        try:
+            module.Orchestrator(args_allow).require_orange_drain_not_timed_out(
+                broken_status
+            )
+        except module.OrchestratorError as exc:
+            require(
+                "timeout status is inconsistent" in str(exc),
+                "allow-orange-drain-timeout must not allow inconsistent timeout status",
+            )
+        else:
+            raise AssertionError("expected inconsistent timeout status to fail")
+
+        partial_status = orange_status(True, True, drain_timed_out=True)
+        partial_status["local_control"]["recording_stop"][
+            "forced_finalize_stream_stop_requested"
+        ] = False
+        partial_failures = module.check_orange_drain_timeout_status(partial_status)
+        require(
+            any(
+                "forced_finalize_stream_stop_requested" in failure
+                for failure in partial_failures
+            ),
+            "finalized timeout status check should require forced stream-stop request",
         )
     finally:
         module.send_unix_json = original_send

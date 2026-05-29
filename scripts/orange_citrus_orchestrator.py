@@ -349,6 +349,47 @@ def orange_recording_stop_health(status: dict[str, Any]) -> str:
     return str(orange_local_control_recording_stop(status).get("health", ""))
 
 
+def orange_recording_stop_forced_finalize_requested(status: dict[str, Any]) -> bool:
+    return bool(
+        orange_local_control_recording_stop(status).get(
+            "forced_finalize_requested",
+            False,
+        )
+    )
+
+
+def orange_recording_stop_forced_finalize_stream_stop_requested(
+    status: dict[str, Any],
+) -> bool:
+    return bool(
+        orange_local_control_recording_stop(status).get(
+            "forced_finalize_stream_stop_requested",
+            False,
+        )
+    )
+
+
+def check_orange_drain_timeout_status(status: dict[str, Any]) -> list[str]:
+    if not orange_recording_stop_drain_timed_out(status):
+        return []
+    failures: list[str] = []
+    if not orange_recording_stop_forced_finalize_requested(status):
+        failures.append(
+            "Orange status reports drain timeout but "
+            "local_control.recording_stop.forced_finalize_requested is not true"
+        )
+    if (
+        orange_recording_finalized(status)
+        or orange_recording_stop_state(status) == "finalized_after_drain_timeout"
+    ) and not orange_recording_stop_forced_finalize_stream_stop_requested(status):
+        failures.append(
+            "Orange status reports finalized-after-drain-timeout but "
+            "local_control.recording_stop.forced_finalize_stream_stop_requested "
+            "is not true"
+        )
+    return failures
+
+
 def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "path": path,
@@ -1184,6 +1225,13 @@ class Orchestrator:
         raise OrchestratorError(f"Orange local-control event-log check failed: {failure_text}")
 
     def require_orange_drain_not_timed_out(self, status: dict[str, Any]) -> None:
+        timeout_status_failures = check_orange_drain_timeout_status(status)
+        if timeout_status_failures:
+            failure_text = "; ".join(timeout_status_failures)
+            raise OrchestratorError(
+                "Orange recording drain timeout status is inconsistent: "
+                f"{failure_text}"
+            )
         if self.args.allow_orange_drain_timeout or not orange_recording_stop_drain_timed_out(status):
             return
         stop_status = orange_local_control_recording_stop(status)

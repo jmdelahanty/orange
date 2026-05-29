@@ -466,7 +466,11 @@ workers and runs the normal session finalizer. Status also reports
 `recording_stop.forced_finalize_stream_stop_requested=true` after that
 stream-stop request is issued. When the event-log gate is
 enabled, timeout status requires both `recording_drain_timeout` and
-`recording_drain_forced_finalize_requested` evidence.
+`recording_drain_forced_finalize_requested` evidence. Even when
+`--allow-orange-drain-timeout` is used for diagnostic timeout runs, the
+orchestrator still requires the timeout status to show that forced finalization
+was armed and that the stream-stop path was requested after
+`finalized_after_drain_timeout`.
 
 The profile also defaults Orange/Citrus stdout logs to operation-specific
 `/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so
