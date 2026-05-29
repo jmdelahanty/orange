@@ -7,6 +7,7 @@ import argparse
 import errno
 import json
 import os
+import signal
 import shlex
 import shutil
 import socket
@@ -478,6 +479,85 @@ class Orchestrator:
                 f"pid={pid} returncode={returncode} log_path={log_path}"
             )
 
+    def cleanup_started_processes(
+        self,
+        *,
+        labels: set[str] | None = None,
+        terminate_timeout_seconds: float = 5.0,
+    ) -> None:
+        self.refresh_started_processes()
+        for info in self.started_processes:
+            label = str(info.get("label", ""))
+            if labels is not None and label not in labels:
+                continue
+            process = self.processes.get(label)
+            if process is None or process.poll() is not None:
+                if process is not None:
+                    info["returncode"] = process.returncode
+                continue
+
+            step = self.step(f"cleanup_{label}_process")
+            pid = process.pid
+            action = "none"
+            try:
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                    action = "terminate_process_group"
+                except ProcessLookupError:
+                    action = "already_exited"
+                except OSError:
+                    process.terminate()
+                    action = "terminate_process"
+
+                try:
+                    process.wait(timeout=terminate_timeout_seconds)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                        action = f"{action}_then_kill_process_group"
+                    except ProcessLookupError:
+                        action = f"{action}_then_already_exited"
+                    except OSError:
+                        process.kill()
+                        action = f"{action}_then_kill_process"
+                    process.wait(timeout=terminate_timeout_seconds)
+                info["returncode"] = process.returncode
+                info["cleanup_action"] = action
+                step.finish(ok=True, pid=pid, action=action, returncode=process.returncode)
+            except Exception as exc:  # pragma: no cover - best-effort process cleanup.
+                info["cleanup_action"] = action
+                info["cleanup_error"] = str(exc)
+                info["returncode"] = process.poll()
+                step.finish(ok=False, pid=pid, action=action, error=str(exc))
+
+    def cleanup_launched_socket_files(self) -> None:
+        launched_labels = {
+            str(info.get("label", ""))
+            for info in self.started_processes
+            if (
+                self.processes.get(str(info.get("label", ""))) is not None
+                and self.processes[str(info.get("label", ""))].poll() is not None
+            )
+        }
+        socket_by_label = {
+            "orange": self.args.orange_socket,
+            "citrus": self.args.citrus_socket,
+        }
+        for label in sorted(launched_labels):
+            socket_path = socket_by_label.get(label, "")
+            if not socket_path:
+                continue
+            step = self.step(f"cleanup_{label}_socket")
+            path = Path(socket_path)
+            try:
+                if not path.exists():
+                    step.finish(ok=True, socket_path=socket_path, removed=False, reason="absent")
+                    continue
+                path.unlink()
+                step.finish(ok=True, socket_path=socket_path, removed=True)
+            except Exception as exc:  # pragma: no cover - filesystem permissions detail only.
+                step.finish(ok=False, socket_path=socket_path, removed=False, error=str(exc))
+
     def start_process(
         self,
         label: str,
@@ -655,6 +735,8 @@ class Orchestrator:
             final_orange_status,
             final_citrus_status,
         )
+        self.cleanup_started_processes()
+        self.cleanup_launched_socket_files()
 
         return self.summary(
             "pass",
@@ -1137,6 +1219,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     except Exception as exc:
         failure_stop_response = orchestrator.best_effort_stop_after_failure()
+        cleanup_labels = {"citrus"}
+        if (
+            not orchestrator.orange_recording_started
+            or orange_recording_finalized(orchestrator.last_orange_status)
+        ):
+            cleanup_labels.add("orange")
+        orchestrator.cleanup_started_processes(labels=cleanup_labels)
+        orchestrator.cleanup_launched_socket_files()
         summary = orchestrator.summary(
             "fail",
             error=str(exc),

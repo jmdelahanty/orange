@@ -571,6 +571,44 @@ def test_post_terminal_citrus_exit_is_not_an_orange_wait_failure() -> None:
     )
 
 
+def test_cleanup_started_processes_terminates_launched_children() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        citrus_socket = root / "citrus.sock"
+        citrus_socket.touch()
+        args = module.parse_args(
+            [
+                "--execute",
+                "--operation-id",
+                "op-cleanup-child",
+                "--citrus-socket",
+                str(citrus_socket),
+            ]
+        )
+        orchestrator = module.Orchestrator(args)
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import time; time.sleep(60)')}"
+        orchestrator.start_process("citrus", command, {}, "")
+        try:
+            orchestrator.cleanup_started_processes(labels={"citrus"}, terminate_timeout_seconds=1.0)
+            orchestrator.cleanup_launched_socket_files()
+            process = orchestrator.processes["citrus"]
+            require(process.poll() is not None, "cleanup should terminate the launched process")
+            require(
+                orchestrator.started_processes[0]["returncode"] is not None,
+                "cleanup should record the launched process return code",
+            )
+            require(
+                "cleanup_action" in orchestrator.started_processes[0],
+                "cleanup should record its action",
+            )
+            require(not citrus_socket.exists(), "cleanup should remove launched stale socket")
+        finally:
+            process = orchestrator.processes.get("citrus")
+            if process is not None and process.poll() is None:
+                process.kill()
+
+
 def test_launch_socket_preflight_refuses_live_socket() -> None:
     module = load_module()
     args = module.parse_args(
@@ -638,6 +676,7 @@ def main() -> int:
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
+        test_cleanup_started_processes_terminates_launched_children,
         test_launch_socket_preflight_refuses_live_socket,
         test_launch_socket_preflight_allows_absent_socket,
     ]
