@@ -203,6 +203,51 @@ def test_attach_mode_does_not_launch_processes() -> None:
     require(payload["validations"] == [], "skip validation should avoid profile validation commands")
 
 
+def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-rolling",
+            "--record-seconds",
+            "6",
+            "--warmup-seconds",
+            "2",
+            "--clip-seconds",
+            "2",
+        ]
+    )
+    require(result.returncode == 0, f"profile rolling dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+
+    require(
+        payload["orange"]["command"]
+        == [
+            str(REPO_ROOT / "scripts" / "run_gui_fourcam_external_ipc_validation.sh"),
+            "--citrus-display-safe",
+            "--record-seconds",
+            "6",
+            "--warmup-seconds",
+            "2",
+            "--clip-seconds",
+            "2",
+        ],
+        "rolling profile should pass record/warmup/clip options to the Orange launcher",
+    )
+    validation = payload["validations"][0]
+    require(
+        "--expect-recording-mode rolling_clips" in validation["command"],
+        "rolling profile should validate rolling recording mode",
+    )
+    require(
+        "--expect-record-for-seconds 6" in validation["command"],
+        "rolling profile should validate recording duration",
+    )
+    require(
+        "--expect-clip-seconds 2" in validation["command"],
+        "rolling profile should validate clip duration",
+    )
+
+
 def test_allow_preexisting_sockets_disables_launch_preflight() -> None:
     result = run_profile(
         [
@@ -228,6 +273,7 @@ def main() -> int:
     tests = [
         test_default_dry_run_builds_live_profile,
         test_attach_mode_does_not_launch_processes,
+        test_rolling_profile_passes_orange_clip_options_to_validation,
         test_allow_preexisting_sockets_disables_launch_preflight,
     ]
     for test in tests:

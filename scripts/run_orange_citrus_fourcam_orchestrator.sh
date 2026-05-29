@@ -32,6 +32,9 @@ Options:
   --summary-json <path>          Combined orchestrator summary path.
   --orange-command <command>     Override Orange launch command.
   --citrus-command <command>     Override Citrus launch command.
+  --record-seconds <seconds>     Orange recording duration for the launched profile.
+  --warmup-seconds <seconds>     Orange stream warmup before recording.
+  --clip-seconds <seconds>       Enable Orange rolling clips with this duration.
   --attach-orange                Do not launch Orange; attach to its socket.
   --attach-citrus                Do not launch Citrus; attach to its socket.
   --allow-preexisting-sockets    Permit launch mode when default sockets already answer.
@@ -129,13 +132,25 @@ require_value() {
   fi
 }
 
+is_positive_integer() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+is_nonnegative_integer() {
+  [[ "$1" =~ ^[0-9]+$ ]]
+}
+
 EXECUTE=0
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OPERATION_ID="${ORANGE_CITRUS_OPERATION_ID:-orange_citrus_fourcam_${STAMP}}"
 SUMMARY_JSON="${ORANGE_CITRUS_SUMMARY_JSON:-}"
 ORANGE_SOCKET="${ORANGE_GUI_LOCAL_CONTROL_SOCKET:-${ORANGE_LOCAL_CONTROL_SOCKET:-/tmp/orange_local_control.sock}}"
 CITRUS_SOCKET="${CITRUS_GUI_LOCAL_CONTROL_SOCKET:-${CITRUS_LOCAL_CONTROL_SOCKET:-/tmp/citrus_local_control.sock}}"
-ORANGE_COMMAND="${ORANGE_CITRUS_ORANGE_COMMAND:-${REPO_ROOT}/scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe}"
+ORANGE_COMMAND="${ORANGE_CITRUS_ORANGE_COMMAND:-}"
+ORANGE_COMMAND_MODE="default"
+if [[ -n "${ORANGE_COMMAND}" ]]; then
+  ORANGE_COMMAND_MODE="override"
+fi
 CITRUS_COMMAND="${ORANGE_CITRUS_CITRUS_COMMAND:-/home/jeremy/citrus/targets/citrus}"
 ORANGE_LOG="${ORANGE_CITRUS_ORANGE_LOG:-}"
 CITRUS_LOG="${ORANGE_CITRUS_CITRUS_LOG:-}"
@@ -162,6 +177,9 @@ CITRUS_TERMINAL_TIMEOUT_SECONDS="${ORANGE_CITRUS_TERMINAL_TIMEOUT_SECONDS:-600}"
 ORANGE_FINALIZE_TIMEOUT_SECONDS="${ORANGE_CITRUS_ORANGE_FINALIZE_TIMEOUT_SECONDS:-240}"
 ORANGE_STOP_GRACE_SECONDS="${ORANGE_CITRUS_ORANGE_STOP_GRACE_SECONDS:-0}"
 VALIDATION_TIMEOUT_SECONDS="${ORANGE_CITRUS_VALIDATION_TIMEOUT_SECONDS:-300}"
+ORANGE_RECORD_SECONDS="${ORANGE_CITRUS_ORANGE_RECORD_SECONDS:-}"
+ORANGE_WARMUP_SECONDS="${ORANGE_CITRUS_ORANGE_WARMUP_SECONDS:-}"
+ORANGE_CLIP_SECONDS="${ORANGE_CITRUS_ORANGE_CLIP_SECONDS:-}"
 ORANGE_EXTRA_ENV=()
 CITRUS_EXTRA_ENV=()
 
@@ -187,6 +205,7 @@ while [[ $# -gt 0 ]]; do
       shift
       require_value "--orange-command" "$#"
       ORANGE_COMMAND="$1"
+      ORANGE_COMMAND_MODE="override"
       shift
       ;;
     --citrus-command)
@@ -197,6 +216,28 @@ while [[ $# -gt 0 ]]; do
       ;;
     --attach-orange)
       ORANGE_COMMAND=""
+      ORANGE_COMMAND_MODE="attach"
+      shift
+      ;;
+    --record-seconds)
+      shift
+      require_value "--record-seconds" "$#"
+      is_positive_integer "$1" || { echo "--record-seconds must be a positive integer" >&2; exit 2; }
+      ORANGE_RECORD_SECONDS="$1"
+      shift
+      ;;
+    --warmup-seconds)
+      shift
+      require_value "--warmup-seconds" "$#"
+      is_nonnegative_integer "$1" || { echo "--warmup-seconds must be a non-negative integer" >&2; exit 2; }
+      ORANGE_WARMUP_SECONDS="$1"
+      shift
+      ;;
+    --clip-seconds)
+      shift
+      require_value "--clip-seconds" "$#"
+      is_positive_integer "$1" || { echo "--clip-seconds must be a positive integer" >&2; exit 2; }
+      ORANGE_CLIP_SECONDS="$1"
       shift
       ;;
     --attach-citrus)
@@ -381,6 +422,42 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
+  is_positive_integer "${ORANGE_RECORD_SECONDS}" || {
+    echo "ORANGE_CITRUS_ORANGE_RECORD_SECONDS must be a positive integer" >&2
+    exit 2
+  }
+fi
+if [[ -n "${ORANGE_WARMUP_SECONDS}" ]]; then
+  is_nonnegative_integer "${ORANGE_WARMUP_SECONDS}" || {
+    echo "ORANGE_CITRUS_ORANGE_WARMUP_SECONDS must be a non-negative integer" >&2
+    exit 2
+  }
+fi
+if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
+  is_positive_integer "${ORANGE_CLIP_SECONDS}" || {
+    echo "ORANGE_CITRUS_ORANGE_CLIP_SECONDS must be a positive integer" >&2
+    exit 2
+  }
+fi
+
+if [[ "${ORANGE_COMMAND_MODE}" == "default" ]]; then
+  ORANGE_COMMAND_ARGS=(
+    "${REPO_ROOT}/scripts/run_gui_fourcam_external_ipc_validation.sh"
+    "--citrus-display-safe"
+  )
+  if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
+    ORANGE_COMMAND_ARGS+=("--record-seconds" "${ORANGE_RECORD_SECONDS}")
+  fi
+  if [[ -n "${ORANGE_WARMUP_SECONDS}" ]]; then
+    ORANGE_COMMAND_ARGS+=("--warmup-seconds" "${ORANGE_WARMUP_SECONDS}")
+  fi
+  if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
+    ORANGE_COMMAND_ARGS+=("--clip-seconds" "${ORANGE_CLIP_SECONDS}")
+  fi
+  ORANGE_COMMAND="$(join_command "${ORANGE_COMMAND_ARGS[@]}")"
+fi
+
 if [[ -z "${SUMMARY_JSON}" ]]; then
   SUMMARY_JSON="/tmp/${OPERATION_ID}_orchestrator_summary.json"
 fi
@@ -394,11 +471,22 @@ fi
 if [[ -z "${ORANGE_VALIDATION_JSON}" ]]; then
   ORANGE_VALIDATION_JSON="/tmp/${OPERATION_ID}_orange_gui_validation.json"
 fi
+ORANGE_VALIDATION_MODE_ARGS=()
+if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
+  ORANGE_VALIDATION_MODE_ARGS+=("--expect-recording-mode" "rolling_clips")
+fi
+if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
+  ORANGE_VALIDATION_MODE_ARGS+=("--expect-record-for-seconds" "${ORANGE_RECORD_SECONDS}")
+fi
+if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
+  ORANGE_VALIDATION_MODE_ARGS+=("--expect-clip-seconds" "${ORANGE_CLIP_SECONDS}")
+fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
   ORANGE_VALIDATION_COMMAND="$(join_command \
     "${REPO_ROOT}/scripts/validate_gui_ptp_recording.py" \
     "{orange_recording_folder}" \
     "--expected-cameras" "2010093,2010094,2010095,2010096" \
+    "${ORANGE_VALIDATION_MODE_ARGS[@]}" \
     "--require-crop-recording-artifacts" \
     "--require-crop-preview-counters" \
     "--expect-crop-preview-max-fps" "15" \
