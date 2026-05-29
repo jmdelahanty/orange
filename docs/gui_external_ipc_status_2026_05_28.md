@@ -16,9 +16,12 @@ work on `exp/gop-split-a16`.
 - Latest strict Orange/Citrus artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
 - Latest strict Orange/Citrus rolling artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_26_12`.
+- Previous strict Orange/Citrus rolling artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25`.
-- Both strict Orange/Citrus artifacts passed with `0` warnings and strict
-  main-video content validation for all four cameras.
+- The latest strict Orange/Citrus artifact passed with `0` failures and
+  `0` warnings, strict main-video content validation for all four cameras, and
+  persisted local-control stop ACK state `executed`.
 - Earlier GUI-only single-clip hardware artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
 - Earlier GUI-only rolling-clip hardware artifact:
@@ -51,10 +54,11 @@ baseline is:
 
 The larger four-camera crop external queue is a load absorber, not a throughput
 fix. The current co-run profile uses crop queue depth `128`; the latest strict
-single-clip run peaked at `52/52/51/47`, and the latest rolling run peaked at
-`22/44/40/42`. That is healthy for the short validated profile, but long soaks
-should keep gating on queue high-water, `enqueue_age_p95_ms`, recorder drops,
-and crop sidecar continuity.
+rolling run peaked at `66/54/39/65`, with crop external
+`enqueue_age_p95_ms` about `110/167/138/180 ms`. That is healthy for the short
+validated profile because drops stayed at `0`, but long soaks should keep
+gating on queue high-water, `enqueue_age_p95_ms`, recorder drops, and crop
+sidecar continuity.
 
 ## Accomplished In This Slice
 
@@ -98,6 +102,38 @@ and crop sidecar continuity.
 - Validation now checks source provenance, dirty tracked-worktree state,
   external recorder status/storage/protocol telemetry, CPU isolation, YOLO
   affinity, GUI display pacing, and the full crop/full-frame artifact surface.
+- The four-camera Orange/Citrus wrapper now uses an operation-scoped Orange
+  local-control event log by default:
+  `/tmp/<operation_id>_orange_local_control.events.jsonl`. That avoids copying
+  stale rows from the shared socket log while preserving socket-thread and
+  GUI-thread lifecycle evidence for the current operation.
+
+Healthy metrics from the latest Orange/Citrus rolling co-run:
+
+- Operation id: `orange_citrus_fourcam_20260529T062559Z`.
+- Command shape:
+  `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute --record-seconds 6 --warmup-seconds 2 --clip-seconds 2`.
+- Orange artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_26_12`.
+- Orchestrator summary:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_26_12/orchestrator/orchestrator_summary.json`.
+- Result: `PASS (0 warnings)` with `recording_session.json` mode
+  `rolling_clips`, `record_for_seconds=6`, `clip_seconds=2`, and persisted
+  `recording.control.ack_state="executed"`.
+- Citrus completed `good_cop_bad_cop_demo.json` with terminal state
+  `completed` and reason `protocol_finished`.
+- Full-frame external IPC: all four cameras wrote `2199` valid `4512x4512`
+  frames at about `150.3-152.4 Mbps`.
+- Crop external IPC: all four crop streams received/encoded `2199/2199` frames
+  with `0` drops and `11` rolling crop clips per camera. Queue depth was `128`;
+  high-water was `66/54/39/65`.
+- YOLO steady detect p95 was `3.965/3.931/3.962/3.966 ms`; YOLO queue p95 was
+  `0.018/0.017/0.018/0.016 ms`.
+- GUI Citrus-safe profile stayed near its cap: hidden-preview p05 `29.8`,
+  p50 `30.0`, mean `30.2`, with `swap_interval=1`, GUI frame cap `30`, and
+  display preview cap `10`.
+- ImGui/GLFW size-cache telemetry reported `647` window-size cache hits,
+  `647` framebuffer-size cache hits, and `0` fallback/null-window size calls.
 
 Healthy metrics from the Orange/Citrus co-run:
 
@@ -373,7 +409,9 @@ Expected validation shape:
   cameras with `0` warnings.
 - Long soak coverage is still open. The current validation is a short hardware
   discriminator, not a 24-hour stability proof.
-- The four-camera crop recorder queue depth of `128` is validated for the
-  short Orange/Citrus profile, but it should stay under explicit queue
-  high-water and `enqueue_age_p95_ms` gates before being treated as a long-run
-  production value.
+- The four-camera crop recorder queue depth of `128` is validated for the short
+  Orange/Citrus profile. The latest strict rolling run peaked at
+  `66/54/39/65` queue high-water and roughly `110/167/138/180 ms`
+  `enqueue_age_p95_ms`, so this should stay under explicit high-water,
+  enqueue-age, and drop gates before being treated as a long-run production
+  value.
