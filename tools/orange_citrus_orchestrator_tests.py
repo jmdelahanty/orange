@@ -1329,6 +1329,48 @@ def test_orange_local_control_event_log_required_check() -> None:
         "missing stop socket row failure should name socket request/response",
     )
 
+    rejected_socket_event_log = dict(event_log)
+    rejected_socket_event_log["socket_request_events"] = [
+        dict(row) for row in event_log["socket_request_events"]
+    ]
+    rejected_socket_event_log["socket_request_events"][1]["accepted"] = False
+    rejected_socket_check = module.check_orange_local_control_event_log(
+        rejected_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not rejected_socket_check["ok"],
+        "event log should fail when final stop socket row was not accepted",
+    )
+    require(
+        any("accepted" in failure for failure in rejected_socket_check["failures"]),
+        "rejected stop socket row failure should name accepted state",
+    )
+
+    failed_socket_event_log = dict(event_log)
+    failed_socket_event_log["socket_request_events"] = [
+        dict(row) for row in event_log["socket_request_events"]
+    ]
+    failed_socket_event_log["socket_request_events"][1]["ok"] = False
+    failed_socket_check = module.check_orange_local_control_event_log(
+        failed_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not failed_socket_check["ok"],
+        "event log should fail when final stop socket row was not ok",
+    )
+    require(
+        any("ok" in failure for failure in failed_socket_check["failures"]),
+        "failed stop socket row failure should name ok state",
+    )
+
     bad_stop_event_log = dict(event_log)
     bad_stop_event_log["gui_lifecycle_events"] = [
         dict(row) for row in event_log["gui_lifecycle_events"]

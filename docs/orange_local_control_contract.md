@@ -509,7 +509,7 @@ finalization events were observed. When
 the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
 fails the orchestrator before post-run validators execute. Required event-log
-checks are request-specific: the accepted socket request/response row,
+checks are request-specific: the accepted `ok=true` socket request/response row,
 stop-trigger GUI lifecycle row, and drain-finalized GUI lifecycle row must
 match the final Orange stop request id and the final stop metadata reported by
 Orange: method, command source, operation id, terminal state, and reason when

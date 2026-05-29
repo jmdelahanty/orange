@@ -871,6 +871,16 @@ def check_stop_lifecycle_event_details(
         )
 
     for row in socket_events:
+        if not bool(row.get("ok", False)):
+            failures.append(
+                "Orange local-control event log socket request "
+                f"ok={row.get('ok', False)!r}; expected True"
+            )
+        if not bool(row.get("accepted", False)):
+            failures.append(
+                "Orange local-control event log socket request "
+                f"accepted={row.get('accepted', False)!r}; expected True"
+            )
         if expected_method and str(row.get("method", "")) != expected_method:
             failures.append(
                 "Orange local-control event log socket request "
