@@ -1288,32 +1288,46 @@ def gui_fps_snapshot(
     swap_interval: int = 0,
     frame_max_fps: int = 60,
     yolo_speed_graphs_enabled: bool = False,
+    include_size_cache: bool = False,
 ) -> dict:
+    display_frame_rate = {
+        "schema_version": 1,
+        "source": "imgui_io_delta_time",
+        "stream_downsample": stream_downsample,
+        "display_preview_max_fps": display_preview_max_fps,
+        "swap_interval": swap_interval,
+        "frame_max_fps": frame_max_fps,
+        "yolo_speed_graphs_enabled": yolo_speed_graphs_enabled,
+        "overall": {"sample_count": 100, "p05_fps": overall_p05},
+        "crop_preview_visible": {"sample_count": 80, "p05_fps": visible_p05},
+        "crop_preview_hidden": {"sample_count": 20, "p05_fps": hidden_p05},
+        "timings": {
+            "frame_total_ms": {"sample_count": 100, "p50_ms": 12.0, "p95_ms": 18.0},
+            "main_texture_upload_ms": {"sample_count": 100, "p50_ms": 1.0, "p95_ms": 2.0},
+            "crop_texture_upload_ms": {"sample_count": 100, "p50_ms": 0.1, "p95_ms": 0.2},
+            "camera_window_draw_ms": {"sample_count": 100, "p50_ms": 2.0, "p95_ms": 3.0},
+            "crop_window_draw_ms": {"sample_count": 100, "p50_ms": 0.0, "p95_ms": 0.0},
+            "speed_graph_draw_ms": {"sample_count": 100, "p50_ms": 0.0, "p95_ms": 0.0},
+            "render_present_ms": {"sample_count": 100, "p50_ms": 4.0, "p95_ms": 5.0},
+            "main_texture_upload_count": 50,
+            "crop_texture_upload_count": 10,
+        },
+    }
+    if include_size_cache:
+        display_frame_rate["imgui_glfw_size_cache"] = {
+            "schema_version": 1,
+            "source": "orange_imgui_glfw_size_cache",
+            "cache_context_registered": True,
+            "window_size_cache_hits": 100,
+            "window_size_fallbacks": 0,
+            "framebuffer_size_cache_hits": 100,
+            "framebuffer_size_fallbacks": 0,
+            "null_window_requests": 0,
+            "total_size_requests": 200,
+        }
     return {
         "session": {
-            "gui_display_frame_rate": {
-                "schema_version": 1,
-                "source": "imgui_io_delta_time",
-                "stream_downsample": stream_downsample,
-                "display_preview_max_fps": display_preview_max_fps,
-                "swap_interval": swap_interval,
-                "frame_max_fps": frame_max_fps,
-                "yolo_speed_graphs_enabled": yolo_speed_graphs_enabled,
-                "overall": {"sample_count": 100, "p05_fps": overall_p05},
-                "crop_preview_visible": {"sample_count": 80, "p05_fps": visible_p05},
-                "crop_preview_hidden": {"sample_count": 20, "p05_fps": hidden_p05},
-                "timings": {
-                    "frame_total_ms": {"sample_count": 100, "p50_ms": 12.0, "p95_ms": 18.0},
-                    "main_texture_upload_ms": {"sample_count": 100, "p50_ms": 1.0, "p95_ms": 2.0},
-                    "crop_texture_upload_ms": {"sample_count": 100, "p50_ms": 0.1, "p95_ms": 0.2},
-                    "camera_window_draw_ms": {"sample_count": 100, "p50_ms": 2.0, "p95_ms": 3.0},
-                    "crop_window_draw_ms": {"sample_count": 100, "p50_ms": 0.0, "p95_ms": 0.0},
-                    "speed_graph_draw_ms": {"sample_count": 100, "p50_ms": 0.0, "p95_ms": 0.0},
-                    "render_present_ms": {"sample_count": 100, "p50_ms": 4.0, "p95_ms": 5.0},
-                    "main_texture_upload_count": 50,
-                    "crop_texture_upload_count": 10,
-                },
-            }
+            "gui_display_frame_rate": display_frame_rate
         }
     }
 
@@ -1330,6 +1344,7 @@ def check_gui_fps(
     expected_frame_max_fps: int | None = None,
     expected_yolo_speed_graphs_enabled: int | None = None,
     require_timing_telemetry: bool = False,
+    require_imgui_glfw_size_cache: bool = False,
 ) -> tuple[validator.Reporter, dict]:
     reporter = validator.Reporter(verbose=False)
     summary = validator.check_gui_display_frame_rate(
@@ -1344,6 +1359,7 @@ def check_gui_fps(
         expected_frame_max_fps,
         expected_yolo_speed_graphs_enabled,
         require_timing_telemetry,
+        require_imgui_glfw_size_cache,
     )
     return reporter, summary
 
@@ -1459,6 +1475,92 @@ def test_gui_display_frame_rate_missing_timing_fails_when_required() -> None:
     require(
         any("timing telemetry missing" in failure for failure in reporter.failures),
         "missing GUI timing telemetry should fail when required",
+    )
+
+
+def test_gui_display_frame_rate_imgui_size_cache_passes() -> None:
+    reporter, summary = check_gui_fps(
+        gui_fps_snapshot(include_size_cache=True),
+        require_imgui_glfw_size_cache=True,
+    )
+    require(not reporter.failures, f"unexpected failures: {reporter.failures}")
+    size_cache = summary["imgui_glfw_size_cache"]
+    require(
+        size_cache["source"] == "orange_imgui_glfw_size_cache",
+        "size-cache source should be summarized",
+    )
+    require(
+        size_cache["window_size_cache_hits"] == 100,
+        "window-size cache hits should be summarized",
+    )
+    require(
+        size_cache["framebuffer_size_cache_hits"] == 100,
+        "framebuffer-size cache hits should be summarized",
+    )
+    require(size_cache["total_size_requests"] == 200, "total size requests should be summarized")
+
+
+def test_gui_display_frame_rate_imgui_size_cache_missing_fails_when_required() -> None:
+    reporter, _ = check_gui_fps(
+        gui_fps_snapshot(),
+        require_imgui_glfw_size_cache=True,
+    )
+    require(
+        any("size-cache telemetry missing" in failure for failure in reporter.failures),
+        "missing ImGui GLFW size-cache telemetry should fail when required",
+    )
+
+
+def test_gui_display_frame_rate_imgui_size_cache_fallbacks_fail() -> None:
+    snapshot = gui_fps_snapshot(include_size_cache=True)
+    size_cache = snapshot["session"]["gui_display_frame_rate"]["imgui_glfw_size_cache"]
+    size_cache["window_size_fallbacks"] = 1
+    size_cache["framebuffer_size_fallbacks"] = 2
+    size_cache["null_window_requests"] = 3
+    size_cache["total_size_requests"] = 206
+    reporter, _ = check_gui_fps(
+        snapshot,
+        require_imgui_glfw_size_cache=True,
+    )
+    require(
+        any("window-size fallback calls=1" in failure for failure in reporter.failures),
+        "window-size fallback calls should fail",
+    )
+    require(
+        any("framebuffer-size fallback calls=2" in failure for failure in reporter.failures),
+        "framebuffer-size fallback calls should fail",
+    )
+    require(
+        any("null-window size requests=3" in failure for failure in reporter.failures),
+        "null-window size requests should fail",
+    )
+
+
+def test_gui_display_frame_rate_imgui_size_cache_bad_total_fails() -> None:
+    snapshot = gui_fps_snapshot(include_size_cache=True)
+    size_cache = snapshot["session"]["gui_display_frame_rate"]["imgui_glfw_size_cache"]
+    size_cache["total_size_requests"] = 199
+    reporter, _ = check_gui_fps(
+        snapshot,
+        require_imgui_glfw_size_cache=True,
+    )
+    require(
+        any("total size requests 199 != expected 200" in failure for failure in reporter.failures),
+        "bad total size request count should fail",
+    )
+
+
+def test_gui_display_frame_rate_imgui_size_cache_bad_source_fails() -> None:
+    snapshot = gui_fps_snapshot(include_size_cache=True)
+    size_cache = snapshot["session"]["gui_display_frame_rate"]["imgui_glfw_size_cache"]
+    size_cache["source"] = "glfw"
+    reporter, _ = check_gui_fps(
+        snapshot,
+        require_imgui_glfw_size_cache=True,
+    )
+    require(
+        any("size-cache source='glfw'" in failure for failure in reporter.failures),
+        "bad size-cache source should fail",
     )
 
 
@@ -3686,6 +3788,11 @@ def main() -> int:
         test_gui_display_frame_rate_display_config_mismatch_fails,
         test_gui_display_frame_rate_speed_graph_mismatch_fails,
         test_gui_display_frame_rate_missing_timing_fails_when_required,
+        test_gui_display_frame_rate_imgui_size_cache_passes,
+        test_gui_display_frame_rate_imgui_size_cache_missing_fails_when_required,
+        test_gui_display_frame_rate_imgui_size_cache_fallbacks_fail,
+        test_gui_display_frame_rate_imgui_size_cache_bad_total_fails,
+        test_gui_display_frame_rate_imgui_size_cache_bad_source_fails,
         test_preview_sampling_passes_when_visible_bounded_and_skipped,
         test_preview_sampling_fails_without_cadence_skips,
         test_preview_sampling_fails_when_preview_hidden,

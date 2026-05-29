@@ -123,12 +123,44 @@ void test_sampling_only_during_active_recording()
     require(stats.overall.samples.size() == 3, "sampling should stop after Finish()");
 }
 
+void test_imgui_glfw_size_cache_json()
+{
+    OrangeImguiGlfwSizeCacheStats stats;
+    stats.cache_context_registered = true;
+    stats.window_size_cache_hits = 11;
+    stats.window_size_fallbacks = 1;
+    stats.framebuffer_size_cache_hits = 13;
+    stats.framebuffer_size_fallbacks = 2;
+    stats.null_window_requests = 3;
+
+    const nlohmann::json payload = orange::gui::gui_imgui_glfw_size_cache_stats_json(stats);
+    require(payload.value("schema_version", 0) == 1, "size-cache schema version");
+    require(
+        payload.value("source", std::string{}) == "orange_imgui_glfw_size_cache",
+        "size-cache source");
+    require(payload.value("cache_context_registered", false), "size-cache context registered");
+    require(payload.value("window_size_cache_hits", 0) == 11, "window-size cache hits");
+    require(payload.value("window_size_fallbacks", 0) == 1, "window-size fallback count");
+    require(payload.value("framebuffer_size_cache_hits", 0) == 13, "framebuffer-size cache hits");
+    require(payload.value("framebuffer_size_fallbacks", 0) == 2, "framebuffer-size fallback count");
+    require(payload.value("null_window_requests", 0) == 3, "null-window request count");
+    require(payload.value("total_size_requests", 0) == 30, "size-cache total count");
+
+    orange::gui::GuiDisplayFrameRateStats frame_rate_stats;
+    const nlohmann::json frame_rate_payload =
+        orange::gui::gui_display_frame_rate_json(frame_rate_stats, 4, 30, 1, 60, false, stats);
+    require(
+        frame_rate_payload["imgui_glfw_size_cache"].value("total_size_requests", 0) == 30,
+        "display frame-rate JSON should include size-cache stats");
+}
+
 }  // namespace
 
 int main()
 {
     test_percentile_bucket_json();
     test_sampling_only_during_active_recording();
+    test_imgui_glfw_size_cache_json();
     std::cout << "gui_display_frame_rate_tests passed" << std::endl;
     return 0;
 }
