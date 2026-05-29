@@ -75,6 +75,9 @@ and crop sidecar continuity.
 - The four-camera Orange/Citrus profile now uses a larger crop external queue
   (`128`) to absorb short NVENC completion stalls when crop recorders and
   full-frame split-GOP shards share A16 encoder resources.
+- App config now covers the stable GUI profile defaults used by validation:
+  `gui.stream.downsample`, `gui.display.*`, and
+  `gui.telemetry.show_speed_graphs`.
 - Validation now checks source provenance, dirty tracked-worktree state,
   external recorder status/storage/protocol telemetry, CPU isolation, YOLO
   affinity, GUI display pacing, and the full crop/full-frame artifact surface.

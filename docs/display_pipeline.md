@@ -31,10 +31,11 @@ interaction work.
 
 ## Display Resolution And Cadence
 
-- GUI stream downsample defaults to `4` in `src/orange.cpp`.
-- `ORANGE_GUI_STREAM_DOWNSAMPLE=<1|2|4|8|16>` overrides the default for the
-  GUI display preview. `ORANGE_DISPLAY_DOWNSAMPLE` is accepted as a legacy
-  alias.
+- GUI stream downsample defaults to `4`. Persistent direct-launch defaults can
+  be set with `gui.stream.downsample` in app config.
+- `ORANGE_GUI_STREAM_DOWNSAMPLE=<1|2|4|8|16>` overrides the app-config/default
+  value for the GUI display preview. `ORANGE_DISPLAY_DOWNSAMPLE` is accepted as
+  a legacy alias.
 - The `downsample streaming` combo controls display preview size only. It does
   not change acquisition, YOLO input, full-frame recording, or crop recording.
 - The downsample value is fixed while streaming because GL textures and display
@@ -53,14 +54,22 @@ interaction work.
   That profile defaults Orange to `ORANGE_GUI_SWAP_INTERVAL=1`,
   `ORANGE_GUI_FRAME_MAX_FPS=30`, and `ORANGE_DISPLAY_PREVIEW_MAX_FPS=10`.
 - Persistent workstation defaults can live in
-  `~/orange_data/config/app/default.json` under `gui.display`. Supported
-  profiles are `default`, `fast`, and `citrus_safe`; explicit
-  `display_preview_max_fps`, `swap_interval`, and `frame_max_fps` values
-  override the profile. Runtime env/launcher values still take precedence over
-  app config for one-off validation runs. Use
-  `scripts/update_app_config_display_profile.py --profile citrus_safe` to apply
-  the current Orange/Citrus co-run default.
-- `ORANGE_GUI_SHOW_SPEED_GRAPHS=0` is the four-camera launcher default. Set it
+  `~/orange_data/config/app/default.json` under `gui.display`, `gui.stream`,
+  and `gui.telemetry`. Supported display profiles are `default`, `fast`, and
+  `citrus_safe`; explicit `display_preview_max_fps`, `swap_interval`, and
+  `frame_max_fps` values override the profile. Runtime env/launcher values
+  still take precedence over app config for one-off validation runs. Use this
+  to apply the current Orange/Citrus co-run default:
+
+```bash
+scripts/update_app_config_display_profile.py \
+  --profile citrus_safe \
+  --stream-downsample 4 \
+  --hide-speed-graphs
+```
+
+- `gui.telemetry.show_speed_graphs=false` is the recommended performance
+  default. `ORANGE_GUI_SHOW_SPEED_GRAPHS` overrides it for a single run. Set it
   to `1` only when live per-camera ImPlot speed graphs are needed during
   recording.
 - Display preview cadence is enforced before a frame is offered to the display

@@ -87,6 +87,46 @@ def test_explicit_values_override_profile_defaults() -> None:
         require(display["frame_max_fps"] == 20, "explicit frame cap")
 
 
+def test_stream_and_telemetry_options_update_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.app.config",
+                    "schema_version": 1,
+                    "gui": {
+                        "stream": {"downsample": 2},
+                        "telemetry": {"show_speed_graphs": True},
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--stream-downsample",
+                "4",
+                "--hide-speed-graphs",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        gui = json.loads(path.read_text(encoding="utf-8"))["gui"]
+        require(gui["stream"]["downsample"] == 4, "stream downsample should update")
+        require(
+            gui["telemetry"]["show_speed_graphs"] is False,
+            "speed graphs should be hidden",
+        )
+
+
 def test_dry_run_does_not_write() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "default.json"
@@ -120,12 +160,36 @@ def test_invalid_value_fails() -> None:
         require("must be in [0,4]" in result.stderr, "failure should explain range")
 
 
+def test_invalid_stream_downsample_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--stream-downsample",
+                "3",
+            ]
+        )
+
+        require(result.returncode != 0, "invalid downsample should fail")
+        require(
+            "must be one of 1, 2, 4, 8, or 16" in result.stderr,
+            "failure should explain allowed values",
+        )
+
+
 def main() -> int:
     tests = [
         test_citrus_safe_profile_updates_existing_config,
         test_explicit_values_override_profile_defaults,
+        test_stream_and_telemetry_options_update_config,
         test_dry_run_does_not_write,
         test_invalid_value_fails,
+        test_invalid_stream_downsample_fails,
     ]
     for test in tests:
         test()

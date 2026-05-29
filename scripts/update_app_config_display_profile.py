@@ -47,6 +47,16 @@ def nonnegative_int_in_range(max_value: int):
     return parse
 
 
+def gui_stream_downsample(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be an integer") from exc
+    if parsed not in {1, 2, 4, 8, 16}:
+        raise argparse.ArgumentTypeError("must be one of 1, 2, 4, 8, or 16")
+    return parsed
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -78,6 +88,26 @@ def parse_args() -> argparse.Namespace:
         type=nonnegative_int_in_range(1000),
         default=None,
         help="Optional explicit GUI frame cap; 0 disables the cap.",
+    )
+    parser.add_argument(
+        "--stream-downsample",
+        type=gui_stream_downsample,
+        default=None,
+        help="Optional gui.stream.downsample value; must be one of 1, 2, 4, 8, or 16.",
+    )
+    speed_group = parser.add_mutually_exclusive_group()
+    speed_group.add_argument(
+        "--show-speed-graphs",
+        dest="show_speed_graphs",
+        action="store_true",
+        default=None,
+        help="Set gui.telemetry.show_speed_graphs=true.",
+    )
+    speed_group.add_argument(
+        "--hide-speed-graphs",
+        dest="show_speed_graphs",
+        action="store_false",
+        help="Set gui.telemetry.show_speed_graphs=false.",
     )
     parser.add_argument(
         "--dry-run",
@@ -135,6 +165,27 @@ def update_display_config(payload: dict[str, Any], args: argparse.Namespace) -> 
 
     gui = dict(gui)
     gui["display"] = display
+
+    if args.stream_downsample is not None:
+        stream = gui.get("stream")
+        if stream is None:
+            stream = {}
+        if not isinstance(stream, dict):
+            raise SystemExit("gui.stream must be a JSON object")
+        stream = dict(stream)
+        stream["downsample"] = args.stream_downsample
+        gui["stream"] = stream
+
+    if args.show_speed_graphs is not None:
+        telemetry = gui.get("telemetry")
+        if telemetry is None:
+            telemetry = {}
+        if not isinstance(telemetry, dict):
+            raise SystemExit("gui.telemetry must be a JSON object")
+        telemetry = dict(telemetry)
+        telemetry["show_speed_graphs"] = args.show_speed_graphs
+        gui["telemetry"] = telemetry
+
     out["gui"] = gui
     return out
 

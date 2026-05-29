@@ -951,6 +951,53 @@ static bool read_optional_bounded_int_field(const nlohmann::json& object,
     return true;
 }
 
+static bool read_optional_bool_field(const nlohmann::json& object,
+                                     const char* field_name,
+                                     bool* value_out,
+                                     std::string* error_out,
+                                     const std::string& context)
+{
+    if (!value_out || !object.contains(field_name) || object[field_name].is_null()) {
+        return true;
+    }
+    if (!object[field_name].is_boolean()) {
+        if (error_out) {
+            *error_out = context + "." + field_name + " must be a boolean";
+        }
+        return false;
+    }
+    *value_out = object[field_name].get<bool>();
+    return true;
+}
+
+static bool read_optional_gui_stream_downsample_field(const nlohmann::json& object,
+                                                      const char* field_name,
+                                                      int* value_out,
+                                                      std::string* error_out,
+                                                      const std::string& context)
+{
+    if (!value_out || !object.contains(field_name) || object[field_name].is_null()) {
+        return true;
+    }
+    if (!object[field_name].is_number_integer()) {
+        if (error_out) {
+            *error_out = context + "." + field_name + " must be an integer";
+        }
+        return false;
+    }
+    const int value = object[field_name].get<int>();
+    static constexpr std::array<int, 5> kAllowed = {1, 2, 4, 8, 16};
+    if (std::find(kAllowed.begin(), kAllowed.end(), value) == kAllowed.end()) {
+        if (error_out) {
+            *error_out =
+                context + "." + field_name + " must be one of 1, 2, 4, 8, or 16";
+        }
+        return false;
+    }
+    *value_out = value;
+    return true;
+}
+
 static bool apply_app_config_display_profile(AppStorageConfig* config,
                                              const std::string& profile,
                                              std::string* error_out,
@@ -1012,10 +1059,12 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
     config.gui_ptp_register_read_decimate = 1;
+    config.gui_stream_downsample = -1;
     config.gui_display_profile.clear();
     config.gui_display_preview_max_fps = -1;
     config.gui_swap_interval = -1;
     config.gui_frame_max_fps = -1;
+    config.gui_show_speed_graphs = false;
     config.write_local_pointer = true;
     config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
     config.write_run_pointer = true;
@@ -1218,6 +1267,26 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
             return false;
         }
         const nlohmann::json& gui = root["gui"];
+        if (gui.contains("stream")) {
+            if (!gui["stream"].is_object()) {
+                if (error_out) {
+                    *error_out = "gui.stream must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& stream = gui["stream"];
+            if (!read_optional_gui_stream_downsample_field(
+                    stream,
+                    "downsample",
+                    &config.gui_stream_downsample,
+                    error_out,
+                    "gui.stream")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+        }
         if (gui.contains("display")) {
             if (!gui["display"].is_object()) {
                 if (error_out) {
@@ -1276,6 +1345,26 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                     1000,
                     error_out,
                     "gui.display")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+        }
+        if (gui.contains("telemetry")) {
+            if (!gui["telemetry"].is_object()) {
+                if (error_out) {
+                    *error_out = "gui.telemetry must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& telemetry = gui["telemetry"];
+            if (!read_optional_bool_field(
+                    telemetry,
+                    "show_speed_graphs",
+                    &config.gui_show_speed_graphs,
+                    error_out,
+                    "gui.telemetry")) {
                 if (error_out && error_out->find(config_path.string()) == std::string::npos) {
                     *error_out += " in " + config_path.string();
                 }

@@ -14,11 +14,17 @@
     "external_recorder_contract_path": ""
   },
   "gui": {
+    "stream": {
+      "downsample": 4
+    },
     "display": {
       "profile": "default",
       "display_preview_max_fps": null,
       "swap_interval": null,
       "frame_max_fps": null
+    },
+    "telemetry": {
+      "show_speed_graphs": false
     }
   },
   "storage": {

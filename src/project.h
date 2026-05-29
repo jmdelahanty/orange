@@ -34,10 +34,12 @@ struct AppStorageConfig {
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();
     int gui_ptp_register_read_decimate = 1;
+    int gui_stream_downsample = -1;
     std::string gui_display_profile;
     int gui_display_preview_max_fps = -1;
     int gui_swap_interval = -1;
     int gui_frame_max_fps = -1;
+    bool gui_show_speed_graphs = false;
     bool write_local_pointer = true;
     std::string canonical_pointer_root;
     bool write_run_pointer = true;

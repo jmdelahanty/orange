@@ -328,8 +328,10 @@ Environment variables can still override those values for a specific run, and
 the four-camera launcher exposes `--gui-frame-max-fps`,
 `--display-preview-max-fps`, and `--swap-interval` for run-local tuning. For a
 persistent workstation default, set `gui.display.profile = "citrus_safe"` in
-`~/orange_data/config/app/default.json`; env/launcher values remain the highest
-precedence.
+`~/orange_data/config/app/default.json`. The same app config can also set
+`gui.stream.downsample = 4` and
+`gui.telemetry.show_speed_graphs = false`; env/launcher values remain the
+highest precedence.
 
 The four-camera external-IPC launcher now defaults
 `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128`, which auto-sizes

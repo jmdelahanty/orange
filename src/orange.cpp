@@ -786,17 +786,9 @@ int resolve_gui_display_preview_max_fps_snapshot(const CameraEachSelect* cameras
     return sanitize_gui_display_preview_max_fps(resolved);
 }
 
-bool resolve_gui_yolo_speed_graphs_enabled()
+bool resolve_gui_yolo_speed_graphs_enabled(const bool default_value)
 {
-    const char* env = std::getenv("ORANGE_GUI_SHOW_SPEED_GRAPHS");
-    if (!env || !*env) {
-        return false;
-    }
-    return std::strcmp(env, "0") != 0 &&
-           std::strcmp(env, "false") != 0 &&
-           std::strcmp(env, "False") != 0 &&
-           std::strcmp(env, "no") != 0 &&
-           std::strcmp(env, "No") != 0;
+    return gui_env_flag_enabled("ORANGE_GUI_SHOW_SPEED_GRAPHS", default_value);
 }
 
 bool gui_any_crop_recording_enabled(const CameraEachSelect* cameras_select, const int num_cameras)
@@ -6533,7 +6525,11 @@ int main(int argc, char **args) {
     GL_Texture *tex = nullptr;
     GL_Texture* crop_tex = nullptr;
     int num_cameras = 0;
-    int stream_downsample = resolve_gui_stream_downsample(4);
+    const int gui_stream_downsample_default =
+        app_storage_config.gui_stream_downsample > 0
+            ? app_storage_config.gui_stream_downsample
+            : 4;
+    int stream_downsample = resolve_gui_stream_downsample(gui_stream_downsample_default);
     const int gui_display_preview_max_fps_default =
         app_storage_config.gui_display_preview_max_fps >= 0
             ? app_storage_config.gui_display_preview_max_fps
@@ -6543,7 +6539,8 @@ int main(int argc, char **args) {
     bool crop_size_config_status_warning = false;
     int crop_preview_max_fps = CameraCropPipelineConfig::kDefaultPreviewMaxFps;
     bool show_crop_preview_windows = !gui_autorun_config.hide_crop_preview;
-    bool show_yolo_speed_graphs = resolve_gui_yolo_speed_graphs_enabled();
+    bool show_yolo_speed_graphs =
+        resolve_gui_yolo_speed_graphs_enabled(app_storage_config.gui_show_speed_graphs);
     std::string crop_preview_config_status;
     bool crop_preview_config_status_warning = false;
     CameraControl *camera_control = new CameraControl();

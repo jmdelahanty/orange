@@ -91,11 +91,17 @@ Missing-file behavior should remain non-fatal:
     "external_recorder_contract_path": ""
   },
   "gui": {
+    "stream": {
+      "downsample": 4
+    },
     "display": {
       "profile": "default",
       "display_preview_max_fps": null,
       "swap_interval": null,
       "frame_max_fps": null
+    },
+    "telemetry": {
+      "show_speed_graphs": false
     }
   },
   "storage": {
@@ -165,8 +171,63 @@ validation launcher values still take precedence over app config. For the
 current Orange/Citrus co-run workstation default:
 
 ```bash
-scripts/update_app_config_display_profile.py --profile citrus_safe
+scripts/update_app_config_display_profile.py \
+  --profile citrus_safe \
+  --stream-downsample 4 \
+  --hide-speed-graphs
 ```
+
+### `gui.stream`
+
+Type:
+
+- object
+
+Meaning:
+
+- optional GUI display-stream defaults for direct Orange launches
+
+Fields:
+
+- `downsample`: one of `1`, `2`, `4`, `8`, or `16`
+
+Recommended default:
+
+- `4`
+
+This controls only the GUI preview stream size. It does not change acquisition,
+YOLO input, full-frame recording, crop recording, or crop/pose ROI generation.
+
+Environment precedence:
+
+- `ORANGE_GUI_STREAM_DOWNSAMPLE` wins when set.
+- `ORANGE_DISPLAY_DOWNSAMPLE` is accepted as the legacy alias.
+
+### `gui.telemetry`
+
+Type:
+
+- object
+
+Meaning:
+
+- optional GUI telemetry-rendering defaults
+
+Fields:
+
+- `show_speed_graphs`: boolean
+
+Recommended default:
+
+- `false`
+
+The live YOLO speed graphs are useful for operator diagnostics but can add GUI
+rendering work during four-camera validation. Keep them disabled for
+performance runs unless the graphs are the thing being inspected.
+
+Environment precedence:
+
+- `ORANGE_GUI_SHOW_SPEED_GRAPHS` wins when set.
 
 ### `storage.default_recording_root`
 
@@ -450,6 +511,8 @@ Current implementation status:
 - `recording.sink_mode`, `recording.recording_control.*`, and
   `recording.ptp_register_read_decimate` are used by the GUI unless overridden
   by environment or launcher values
+- `gui.stream.downsample` and `gui.telemetry.show_speed_graphs` are used by the
+  GUI unless overridden by environment or launcher values
 - `storage.latest_recording.*` now controls the local, canonical, and `/run`
   pointer writes emitted by the recording snapshot path
 - `gui.display` controls direct GUI display pacing defaults, and
@@ -547,6 +610,14 @@ intended as workstation defaults:
   - use `citrus_safe` on a workstation that shares the display GPU with Citrus
   - use `fast` for Orange-only GUI validation when display-GPU contention is
     not a concern
+- `gui.stream.downsample`
+  - environment override: `ORANGE_GUI_STREAM_DOWNSAMPLE`
+  - built-in default should remain `4`
+  - the current four-camera validation profile uses `4`
+- `gui.telemetry.show_speed_graphs`
+  - environment override: `ORANGE_GUI_SHOW_SPEED_GRAPHS`
+  - built-in default should remain `false`
+  - enable only for operator diagnostics that need live per-camera graphs
 - `models.default_detect_engine`
   - environment override: `ORANGE_DEFAULT_DETECT_ENGINE`
   - once model quality is accepted, the A16 high-effort detect engine should
@@ -577,12 +648,6 @@ experimental.
 These are currently launcher-only but should become schema fields if they are
 needed for routine operator runs:
 
-- GUI stream decimation:
-  - current env: `ORANGE_GUI_STREAM_DOWNSAMPLE`
-  - likely schema location: `gui.stream.downsample`
-- GUI speed graph visibility:
-  - current env: `ORANGE_GUI_SHOW_SPEED_GRAPHS`
-  - likely schema location: `gui.telemetry.show_speed_graphs`
 - crop recording sink mode:
   - current env: `ORANGE_CROP_RECORDING_SINK_MODE`
   - likely schema location: `recording.crop.sink_mode`
