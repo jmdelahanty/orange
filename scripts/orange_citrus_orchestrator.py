@@ -208,6 +208,30 @@ def parse_env_items(items: list[str]) -> dict[str, str]:
     return parsed
 
 
+def resolve_orange_local_control_log_path(args: argparse.Namespace) -> str:
+    if args.orange_local_control_log:
+        return args.orange_local_control_log
+    orange_env = parse_env_items(args.orange_env)
+    for key in ("ORANGE_GUI_LOCAL_CONTROL_LOG", "ORANGE_LOCAL_CONTROL_LOG"):
+        value = orange_env.get(key) or os.environ.get(key, "")
+        if value:
+            return value
+    return f"{args.orange_socket}.events.jsonl"
+
+
+def orange_process_env_overlay(args: argparse.Namespace) -> dict[str, str]:
+    return {
+        **parse_env_items(args.orange_env),
+        "ORANGE_GUI_LOCAL_CONTROL_SOCKET": args.orange_socket,
+        "ORANGE_GUI_LOCAL_CONTROL_LOG": resolve_orange_local_control_log_path(args),
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
+        "ORANGE_GUI_AUTORUN_START_RECORDING": "0",
+        "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "0",
+        "ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE": "1",
+    }
+
+
 def parse_labeled_command_items(items: list[str]) -> list[dict[str, str]]:
     parsed: list[dict[str, str]] = []
     for item in items:
@@ -323,6 +347,83 @@ def orange_recording_stop_state(status: dict[str, Any]) -> str:
 
 def orange_recording_stop_health(status: dict[str, Any]) -> str:
     return str(orange_local_control_recording_stop(status).get("health", ""))
+
+
+def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "path": path,
+        "exists": False,
+        "row_count": 0,
+        "socket_event_count": 0,
+        "gui_event_count": 0,
+        "invalid_row_count": 0,
+        "events": {},
+        "request_ids": [],
+        "operation_ids": [],
+        "last_gui_event": "",
+        "has_stop_triggered": False,
+        "has_drain_timeout": False,
+        "has_drain_finalized": False,
+    }
+    if not path:
+        summary["reason"] = "empty_path"
+        return summary
+    log_path = Path(path)
+    if not log_path.exists():
+        summary["reason"] = "missing"
+        return summary
+
+    summary["exists"] = True
+    request_ids: set[str] = set()
+    operation_ids: set[str] = set()
+    events: dict[str, int] = {}
+    try:
+        with log_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                summary["row_count"] += 1
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    summary["invalid_row_count"] += 1
+                    continue
+                if isinstance(row, dict) and "request" in row and "response" in row:
+                    summary["socket_event_count"] += 1
+                    response = row.get("response")
+                    response = response if isinstance(response, dict) else {}
+                    request_id = response.get("request_id")
+                    operation_id = response.get("operation_id")
+                elif (
+                    isinstance(row, dict)
+                    and row.get("schema_id") == "orange.local_control.gui_event"
+                ):
+                    summary["gui_event_count"] += 1
+                    event = str(row.get("event", ""))
+                    if event:
+                        events[event] = events.get(event, 0) + 1
+                        summary["last_gui_event"] = event
+                    request_id = row.get("request_id")
+                    operation_id = row.get("operation_id")
+                else:
+                    request_id = None
+                    operation_id = None
+
+                if isinstance(request_id, str) and request_id:
+                    request_ids.add(request_id)
+                if isinstance(operation_id, str) and operation_id:
+                    operation_ids.add(operation_id)
+    except OSError as exc:
+        summary["read_error"] = str(exc)
+
+    summary["events"] = dict(sorted(events.items()))
+    summary["request_ids"] = sorted(request_ids)
+    summary["operation_ids"] = sorted(operation_ids)
+    summary["has_stop_triggered"] = events.get("recording_stop_triggered", 0) > 0
+    summary["has_drain_timeout"] = events.get("recording_drain_timeout", 0) > 0
+    summary["has_drain_finalized"] = events.get("recording_drain_finalized", 0) > 0
+    return summary
 
 
 def citrus_ready_to_start(status: dict[str, Any]) -> bool:
@@ -711,15 +812,7 @@ class Orchestrator:
         self.start_process(
             "orange",
             self.args.orange_command,
-            {
-                **parse_env_items(self.args.orange_env),
-                "ORANGE_GUI_LOCAL_CONTROL_SOCKET": self.args.orange_socket,
-                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
-                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
-                "ORANGE_GUI_AUTORUN_START_RECORDING": "0",
-                "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "0",
-                "ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE": "1",
-            },
+            orange_process_env_overlay(self.args),
             self.args.orange_log,
         )
         final_orange_status = self.wait_for_status(
@@ -1030,6 +1123,10 @@ class Orchestrator:
             self.args.orange_log,
             artifact_dir / "orange.log",
         )
+        artifacts["logs"]["orange_local_control"] = self.copy_artifact_file(
+            resolve_orange_local_control_log_path(self.args),
+            artifact_dir / "orange_local_control.events.jsonl",
+        )
         artifacts["logs"]["citrus"] = self.copy_artifact_file(
             self.args.citrus_log,
             artifact_dir / "citrus.log",
@@ -1128,6 +1225,10 @@ class Orchestrator:
             "orange": {
                 "socket": self.args.orange_socket,
                 "log_path": self.args.orange_log,
+                "local_control_event_log_path": resolve_orange_local_control_log_path(self.args),
+                "local_control_event_log": summarize_orange_local_control_event_log(
+                    resolve_orange_local_control_log_path(self.args)
+                ),
                 "recording_folder": json_path(orange_status, ["recording", "folder"], ""),
                 "phase": orange_status.get("phase", ""),
                 "ready_for_recording_request": orange_ready_for_recording(orange_status),
@@ -1173,6 +1274,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--orange-env", action="append", default=[], help="Extra Orange process env override, KEY=VALUE. Repeatable.")
     parser.add_argument("--citrus-env", action="append", default=[], help="Extra Citrus process env override, KEY=VALUE. Repeatable.")
     parser.add_argument("--orange-log", default="/tmp/orange_citrus_orchestrator_orange.log")
+    parser.add_argument(
+        "--orange-local-control-log",
+        default="",
+        help=(
+            "Orange local-control JSONL event log path. Defaults to "
+            "ORANGE_GUI_LOCAL_CONTROL_LOG / ORANGE_LOCAL_CONTROL_LOG if set, "
+            "otherwise <orange-socket>.events.jsonl."
+        ),
+    )
     parser.add_argument("--citrus-log", default="/tmp/orange_citrus_orchestrator_citrus.log")
     parser.add_argument("--summary-json", default="", help="Optional path for the combined run summary JSON.")
     parser.add_argument(
@@ -1271,16 +1381,9 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         "orange": {
             "socket": args.orange_socket,
             "log_path": args.orange_log,
+            "local_control_event_log_path": resolve_orange_local_control_log_path(args),
             "command": shlex.split(args.orange_command) if args.orange_command else [],
-            "env_overlay": {
-                **parse_env_items(args.orange_env),
-                "ORANGE_GUI_LOCAL_CONTROL_SOCKET": args.orange_socket,
-                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
-                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP": "1",
-                "ORANGE_GUI_AUTORUN_START_RECORDING": "0",
-                "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE": "0",
-                "ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE": "1",
-            },
+            "env_overlay": orange_process_env_overlay(args),
             "start_request": build_orange_start_request(
                 args.operation_id,
                 f"{args.operation_id}:orange:start_recording",

@@ -183,6 +183,8 @@ def test_dry_run_default_does_not_open_sockets() -> None:
             "op-dry",
             "--orange-socket",
             "/tmp/missing_orange_dry.sock",
+            "--orange-local-control-log",
+            "/tmp/missing_orange_dry.sock.events.jsonl",
             "--citrus-socket",
             "/tmp/missing_citrus_dry.sock",
             "--orange-env",
@@ -221,6 +223,11 @@ def test_dry_run_default_does_not_open_sockets() -> None:
     require(
         payload["orange"]["log_path"] == "/tmp/orange_citrus_orchestrator_orange.log",
         "dry-run should expose the Orange process log path",
+    )
+    require(
+        payload["orange"]["local_control_event_log_path"]
+        == "/tmp/missing_orange_dry.sock.events.jsonl",
+        "dry-run should expose the Orange local-control event log path",
     )
     require(
         payload["citrus"]["log_path"] == "/tmp/orange_citrus_orchestrator_citrus.log",
@@ -642,9 +649,24 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
         recording_folder.mkdir()
         orange_log = root / "orange.log"
         citrus_log = root / "citrus.log"
+        orange_control_log = root / "orange_local_control.events.jsonl"
         validation_json = root / "validation.json"
         orange_log.write_text("orange-log\n", encoding="utf-8")
         citrus_log.write_text("citrus-log\n", encoding="utf-8")
+        orange_control_log.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.local_control.gui_event",
+                    "schema_version": 1,
+                    "event": "recording_stop_triggered",
+                    "event_at_utc": "2026-05-29T00:00:01Z",
+                    "request_id": "stop-req",
+                    "operation_id": "op-artifacts",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         validation_json.write_text("{\"ok\": true}\n", encoding="utf-8")
         args = module.parse_args(
             [
@@ -653,6 +675,8 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
                 "op-artifacts",
                 "--orange-log",
                 str(orange_log),
+                "--orange-local-control-log",
+                str(orange_control_log),
                 "--citrus-log",
                 str(citrus_log),
                 "--validation-artifact",
@@ -680,6 +704,11 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
         require((artifact_dir / "orange.log").read_text(encoding="utf-8") == "orange-log\n", "Orange log should be copied")
         require((artifact_dir / "citrus.log").read_text(encoding="utf-8") == "citrus-log\n", "Citrus log should be copied")
         require(
+            (artifact_dir / "orange_local_control.events.jsonl").read_text(encoding="utf-8")
+            == orange_control_log.read_text(encoding="utf-8"),
+            "Orange local-control event log should be copied",
+        )
+        require(
             (artifact_dir / "orange_validation_1_validation.json").read_text(encoding="utf-8")
             == "{\"ok\": true}\n",
             "validation JSON should be copied",
@@ -696,9 +725,65 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
             "artifact summary should report copied Orange log",
         )
         require(
+            payload["artifacts"]["logs"]["orange_local_control"]["copied"],
+            "artifact summary should report copied Orange local-control event log",
+        )
+        require(
             payload["artifacts"]["validations"]["orange_validation_1"][0]["copied"],
             "artifact summary should report copied validation artifact",
         )
+
+
+def test_orange_local_control_event_log_summary() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        log_path = root / "orange.events.jsonl"
+        rows = [
+            {
+                "received_at_utc": "2026-05-29T00:00:00Z",
+                "request": {"method": "stop_recording"},
+                "response": {
+                    "request_id": "stop-req",
+                    "operation_id": "op-log",
+                },
+            },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
+                "event": "recording_stop_triggered",
+                "event_at_utc": "2026-05-29T00:00:01Z",
+                "request_id": "stop-req",
+                "operation_id": "op-log",
+            },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
+                "event": "recording_drain_finalized",
+                "event_at_utc": "2026-05-29T00:00:02Z",
+                "request_id": "stop-req",
+                "operation_id": "op-log",
+            },
+            "not json",
+        ]
+        with log_path.open("w", encoding="utf-8") as handle:
+            for row in rows:
+                if isinstance(row, str):
+                    handle.write(row + "\n")
+                else:
+                    handle.write(json.dumps(row) + "\n")
+
+        summary = module.summarize_orange_local_control_event_log(str(log_path))
+        require(summary["exists"], "event log should exist")
+        require(summary["row_count"] == 4, "event log row count should parse")
+        require(summary["socket_event_count"] == 1, "socket event count should parse")
+        require(summary["gui_event_count"] == 2, "GUI event count should parse")
+        require(summary["invalid_row_count"] == 1, "invalid row count should parse")
+        require(summary["events"]["recording_stop_triggered"] == 1, "stop trigger event should count")
+        require(summary["has_stop_triggered"], "stop-trigger flag should be true")
+        require(summary["has_drain_finalized"], "drain-finalized flag should be true")
+        require(summary["request_ids"] == ["stop-req"], "request ids should summarize")
+        require(summary["operation_ids"] == ["op-log"], "operation ids should summarize")
 
 
 def test_failure_summary_uses_last_known_status_for_artifacts() -> None:
@@ -914,6 +999,7 @@ def main() -> int:
         test_launch_preflights_all_sockets_before_starting_processes,
         test_orchestrator_fails_on_orange_drain_timeout_by_default,
         test_persist_artifacts_copies_logs_into_recording_folder,
+        test_orange_local_control_event_log_summary,
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,

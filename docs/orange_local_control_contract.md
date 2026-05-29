@@ -403,7 +403,12 @@ scripts/orange_citrus_orchestrator.py \
 ```
 
 The process-launch path injects Orange local-control start/stop gates and the
-Citrus local-control socket env. It also sets
+Citrus local-control socket env. It also sets/preserves the Orange
+local-control JSONL event log path (`--orange-local-control-log`, or
+`<orange-socket>.events.jsonl` by default), summarizes that log under
+`orange.local_control_event_log`, and copies it into the Orange recording
+folder's orchestrator artifact directory when artifact copying is enabled. It
+also sets
 `ORANGE_GUI_AUTORUN_START_RECORDING=0` and
 `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`, so an Orange GUI autorun launcher
 can open cameras and start streaming while leaving recording start/stop to the
@@ -439,7 +444,9 @@ After Orange finalization, the orchestrator also inspects
 orchestrator by default even if Orange eventually finalized, because it means
 the run crossed the configured drain observability threshold. The combined
 summary records `orange.local_control_recording_stop` and
-`orange.local_control_stop_drain_timed_out`. Use
+`orange.local_control_stop_drain_timed_out`; the event-log summary records
+whether GUI-thread stop trigger, drain timeout, and drain finalization events
+were observed. Use
 `--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
 expected observation rather than a pass/fail gate.
 

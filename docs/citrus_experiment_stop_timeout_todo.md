@@ -209,6 +209,8 @@ Refs:
   - socket-thread request/response rows,
   - GUI-thread start/stop scheduling rows,
   - stop trigger, drain timeout, and drain finalization rows.
+- [x] Make the orchestrator preserve and summarize the Orange local-control
+      JSONL event log as a run artifact.
 
 ## Phase 6: Validation
 
