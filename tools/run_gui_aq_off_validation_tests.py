@@ -122,6 +122,14 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher validation commands should check default YOLO affinity telemetry",
         )
         require(
+            result.stdout.count("--require-imgui-glfw-size-cache") == 4,
+            "launcher should require ImGui GLFW size-cache telemetry in all printed validation/compare commands",
+        )
+        require(
+            "--require-gui-timing-telemetry --require-imgui-glfw-size-cache" in result.stdout,
+            "launcher validation commands should require size-cache telemetry with GUI timing telemetry",
+        )
+        require(
             "--require-isolated-cpus" not in result.stdout,
             "launcher validation commands should not require isolated CPUs by default",
         )
@@ -288,6 +296,21 @@ def test_discovers_all_camera_json_files() -> None:
         require(
             "--require-matching-yolo-runtime-config" in result.stdout,
             "launcher comparison command should require matching YOLO runtime config",
+        )
+        compare_command_prefix = (
+            "scripts/compare_gui_crop_preview_validation.py "
+            "visible=/tmp/orange_gui_crop_visible_validation.json "
+            "hidden=/tmp/orange_gui_crop_hidden_validation.json"
+        )
+        compare_command_index = result.stdout.find(compare_command_prefix)
+        require(
+            compare_command_index >= 0,
+            "launcher output should include the GUI crop-preview comparison command",
+        )
+        compare_command_line = result.stdout[compare_command_index:].splitlines()[0]
+        require(
+            "--require-imgui-glfw-size-cache" in compare_command_line,
+            "launcher comparison command should require clean ImGui GLFW size-cache telemetry",
         )
         require(
             "--min-gui-hidden-p05-fps 45" in result.stdout,
