@@ -8,6 +8,7 @@ import errno
 import json
 import os
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -466,7 +467,7 @@ class Orchestrator:
         if log_path:
             path = Path(log_path)
             path.parent.mkdir(parents=True, exist_ok=True)
-            log_file = path.open("ab")
+            log_file = path.open("wb")
             stdout = log_file
         try:
             process = subprocess.Popen(
@@ -783,6 +784,69 @@ class Orchestrator:
             "recording_finalized",
         )
 
+    def persist_artifacts(self, summary: dict[str, Any]) -> None:
+        artifacts: dict[str, Any] = {
+            "copy_to_recording_enabled": bool(self.args.copy_artifacts_to_recording),
+            "recording_folder": json_path(summary, ["orange", "recording_folder"], ""),
+            "artifact_dir": "",
+            "logs": {},
+        }
+        summary["artifacts"] = artifacts
+        if not self.args.copy_artifacts_to_recording:
+            artifacts["reason"] = "disabled"
+            return
+
+        recording_folder = str(artifacts["recording_folder"] or "")
+        if not recording_folder:
+            artifacts["reason"] = "missing_orange_recording_folder"
+            return
+
+        artifact_dir = Path(recording_folder) / self.args.artifact_dir_name
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        artifacts["artifact_dir"] = str(artifact_dir)
+        artifacts["logs"]["orange"] = self.copy_artifact_file(
+            self.args.orange_log,
+            artifact_dir / "orange.log",
+        )
+        artifacts["logs"]["citrus"] = self.copy_artifact_file(
+            self.args.citrus_log,
+            artifact_dir / "citrus.log",
+        )
+        artifact_summary = artifact_dir / "orchestrator_summary.json"
+        artifacts["summary_json_artifact"] = str(artifact_summary)
+        artifact_summary.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def copy_artifact_file(source: str, target: Path) -> dict[str, Any]:
+        if not source:
+            return {"source": source, "path": str(target), "copied": False, "reason": "empty_source"}
+        source_path = Path(source)
+        result: dict[str, Any] = {
+            "source": str(source_path),
+            "path": str(target),
+            "copied": False,
+        }
+        if not source_path.exists():
+            result["reason"] = "missing_source"
+            return result
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            if source_path.resolve() == target.resolve():
+                result["reason"] = "source_is_target"
+            else:
+                shutil.copy2(source_path, target)
+                result["copied"] = True
+        except Exception as exc:  # pragma: no cover - filesystem detail only.
+            result["reason"] = "copy_failed"
+            result["error"] = str(exc)
+            return result
+        if target.exists():
+            result["bytes"] = target.stat().st_size
+        return result
+
     def best_effort_stop_after_failure(self) -> dict[str, Any] | None:
         if not self.args.stop_orange_on_failure or not self.orange_recording_started:
             return None
@@ -820,6 +884,7 @@ class Orchestrator:
             "mode": "execute" if self.args.execute else "dry_run",
             "orange": {
                 "socket": self.args.orange_socket,
+                "log_path": self.args.orange_log,
                 "recording_folder": json_path(orange_status, ["recording", "folder"], ""),
                 "phase": orange_status.get("phase", ""),
                 "ready_for_recording_request": orange_ready_for_recording(orange_status),
@@ -828,6 +893,7 @@ class Orchestrator:
             },
             "citrus": {
                 "socket": self.args.citrus_socket,
+                "log_path": self.args.citrus_log,
                 "terminal_state": citrus_terminal_state(citrus_status),
                 "terminal_reason": citrus_terminal_reason(citrus_status),
                 "perf_jsonl_enabled": citrus_perf_jsonl_enabled(citrus_status),
@@ -860,6 +926,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--orange-log", default="/tmp/orange_citrus_orchestrator_orange.log")
     parser.add_argument("--citrus-log", default="/tmp/orange_citrus_orchestrator_citrus.log")
     parser.add_argument("--summary-json", default="", help="Optional path for the combined run summary JSON.")
+    parser.add_argument(
+        "--artifact-dir-name",
+        default="orchestrator",
+        help="Subdirectory name under the Orange recording folder for orchestrator logs/summaries.",
+    )
+    parser.add_argument(
+        "--no-copy-artifacts-to-recording",
+        dest="copy_artifacts_to_recording",
+        action="store_false",
+        help="Do not copy orchestrator process logs and summary into the Orange recording folder.",
+    )
+    parser.set_defaults(copy_artifacts_to_recording=True)
     parser.add_argument("--poll-interval-seconds", type=positive_float, default=0.25)
     parser.add_argument("--socket-timeout-seconds", type=positive_float, default=2.0)
     parser.add_argument("--launch-socket-preflight-timeout-seconds", type=positive_float, default=0.2)
@@ -920,6 +998,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         "execute_required": True,
         "orange": {
             "socket": args.orange_socket,
+            "log_path": args.orange_log,
             "command": shlex.split(args.orange_command) if args.orange_command else [],
             "env_overlay": {
                 **parse_env_items(args.orange_env),
@@ -941,6 +1020,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
         },
         "citrus": {
             "socket": args.citrus_socket,
+            "log_path": args.citrus_log,
             "command": shlex.split(args.citrus_command) if args.citrus_command else [],
             "env_overlay": {
                 **parse_env_items(args.citrus_env),
@@ -990,6 +1070,7 @@ def main(argv: list[str] | None = None) -> int:
     orchestrator = Orchestrator(args)
     try:
         summary = orchestrator.run()
+        orchestrator.persist_artifacts(summary)
         write_summary(args.summary_json, summary)
         print(json.dumps(summary, indent=2, sort_keys=True))
         return 0
@@ -1000,6 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
             error=str(exc),
             failure_stop_response=failure_stop_response,
         )
+        orchestrator.persist_artifacts(summary)
         write_summary(args.summary_json, summary)
         print(json.dumps(summary, indent=2, sort_keys=True), file=sys.stderr)
         return 1

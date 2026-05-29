@@ -185,6 +185,14 @@ def test_dry_run_default_does_not_open_sockets() -> None:
         "orchestrator should leave Orange autorun in stream-only mode",
     )
     require(
+        payload["orange"]["log_path"] == "/tmp/orange_citrus_orchestrator_orange.log",
+        "dry-run should expose the Orange process log path",
+    )
+    require(
+        payload["citrus"]["log_path"] == "/tmp/orange_citrus_orchestrator_citrus.log",
+        "dry-run should expose the Citrus process log path",
+    )
+    require(
         payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE"] == "0",
         "orchestrator should not use autorun finalize as its exit trigger",
     )
@@ -330,6 +338,54 @@ def test_execute_against_fake_local_control_servers() -> None:
         require(json.loads(summary_path.read_text())["result"] == "pass", "summary file should match")
 
 
+def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording_folder = root / "recording"
+        recording_folder.mkdir()
+        orange_log = root / "orange.log"
+        citrus_log = root / "citrus.log"
+        orange_log.write_text("orange-log\n", encoding="utf-8")
+        citrus_log.write_text("citrus-log\n", encoding="utf-8")
+        args = module.parse_args(
+            [
+                "--execute",
+                "--operation-id",
+                "op-artifacts",
+                "--orange-log",
+                str(orange_log),
+                "--citrus-log",
+                str(citrus_log),
+            ]
+        )
+        orchestrator = module.Orchestrator(args)
+        summary = {
+            "schema_id": module.SUMMARY_SCHEMA_ID,
+            "schema_version": module.SUMMARY_SCHEMA_VERSION,
+            "result": "pass",
+            "orange": {"recording_folder": str(recording_folder)},
+            "citrus": {},
+        }
+
+        orchestrator.persist_artifacts(summary)
+
+        artifact_dir = recording_folder / "orchestrator"
+        require((artifact_dir / "orange.log").read_text(encoding="utf-8") == "orange-log\n", "Orange log should be copied")
+        require((artifact_dir / "citrus.log").read_text(encoding="utf-8") == "citrus-log\n", "Citrus log should be copied")
+        artifact_summary = artifact_dir / "orchestrator_summary.json"
+        require(artifact_summary.exists(), "artifact summary should be written")
+        payload = json.loads(artifact_summary.read_text(encoding="utf-8"))
+        require(
+            payload["artifacts"]["artifact_dir"] == str(artifact_dir),
+            "artifact summary should record artifact directory",
+        )
+        require(
+            payload["artifacts"]["logs"]["orange"]["copied"],
+            "artifact summary should report copied Orange log",
+        )
+
+
 def test_wait_reports_launched_process_exit() -> None:
     module = load_module()
     args = module.parse_args(
@@ -455,6 +511,7 @@ def main() -> int:
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
+        test_persist_artifacts_copies_logs_into_recording_folder,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
         test_launch_socket_preflight_refuses_live_socket,

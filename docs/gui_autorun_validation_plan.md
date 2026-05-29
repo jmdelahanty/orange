@@ -421,6 +421,12 @@ Orange status, matches the Citrus-safe display profile, and does not require
 `45 fps` GUI p05. Disable it with `--skip-orange-validation` for lifecycle-only
 smokes, or replace it with `--orange-validation-command`.
 
+The profile also defaults Orange/Citrus stdout logs to operation-specific
+`/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so
+later attempts do not overwrite the previous run. When Orange reports a
+recording folder, the orchestrator copies those process logs and a combined
+summary into `<recording_folder>/orchestrator/`.
+
 During a live GUI run, query the endpoint with:
 
 ```bash

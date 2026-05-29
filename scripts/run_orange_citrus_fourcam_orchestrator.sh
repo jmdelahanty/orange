@@ -38,7 +38,9 @@ Options:
   --orange-socket <path>         Override Orange local-control socket.
   --citrus-socket <path>         Override Citrus local-control socket.
   --orange-log <path>            Orange process stdout/stderr log.
+                                  Default: /tmp/<operation_id>_orange.log
   --citrus-log <path>            Citrus process stdout/stderr log.
+                                  Default: /tmp/<operation_id>_citrus.log
   --display <value>              DISPLAY to pass to launched GUIs.
   --xauthority <path>            XAUTHORITY to pass to launched GUIs.
   --xdg-runtime-dir <path>       XDG_RUNTIME_DIR to pass to launched GUIs.
@@ -134,8 +136,8 @@ ORANGE_SOCKET="${ORANGE_GUI_LOCAL_CONTROL_SOCKET:-${ORANGE_LOCAL_CONTROL_SOCKET:
 CITRUS_SOCKET="${CITRUS_GUI_LOCAL_CONTROL_SOCKET:-${CITRUS_LOCAL_CONTROL_SOCKET:-/tmp/citrus_local_control.sock}}"
 ORANGE_COMMAND="${ORANGE_CITRUS_ORANGE_COMMAND:-${REPO_ROOT}/scripts/run_gui_fourcam_external_ipc_validation.sh --citrus-display-safe}"
 CITRUS_COMMAND="${ORANGE_CITRUS_CITRUS_COMMAND:-/home/jeremy/citrus/targets/citrus}"
-ORANGE_LOG="${ORANGE_CITRUS_ORANGE_LOG:-/tmp/orange_citrus_fourcam_orange.log}"
-CITRUS_LOG="${ORANGE_CITRUS_CITRUS_LOG:-/tmp/orange_citrus_fourcam_citrus.log}"
+ORANGE_LOG="${ORANGE_CITRUS_ORANGE_LOG:-}"
+CITRUS_LOG="${ORANGE_CITRUS_CITRUS_LOG:-}"
 DISPLAY_VALUE="${ORANGE_CITRUS_DISPLAY:-${DISPLAY:-:1}}"
 XAUTHORITY_VALUE="${ORANGE_CITRUS_XAUTHORITY:-$(default_xauthority)}"
 XDG_RUNTIME_DIR_VALUE="${ORANGE_CITRUS_XDG_RUNTIME_DIR:-$(default_xdg_runtime_dir)}"
@@ -380,6 +382,13 @@ done
 
 if [[ -z "${SUMMARY_JSON}" ]]; then
   SUMMARY_JSON="/tmp/${OPERATION_ID}_orchestrator_summary.json"
+fi
+LOG_STEM="${OPERATION_ID//[^A-Za-z0-9_.-]/_}"
+if [[ -z "${ORANGE_LOG}" ]]; then
+  ORANGE_LOG="/tmp/${LOG_STEM}_orange.log"
+fi
+if [[ -z "${CITRUS_LOG}" ]]; then
+  CITRUS_LOG="/tmp/${LOG_STEM}_citrus.log"
 fi
 if [[ -z "${ORANGE_VALIDATION_JSON}" ]]; then
   ORANGE_VALIDATION_JSON="/tmp/${OPERATION_ID}_orange_gui_validation.json"

@@ -58,6 +58,14 @@ def test_default_dry_run_builds_live_profile() -> None:
         orange = payload["orange"]
         citrus = payload["citrus"]
         require(
+            orange["log_path"] == "/tmp/profile-dry_orange.log",
+            "profile should default Orange log to an operation-specific path",
+        )
+        require(
+            citrus["log_path"] == "/tmp/profile-dry_citrus.log",
+            "profile should default Citrus log to an operation-specific path",
+        )
+        require(
             orange["command"]
             == [
                 str(REPO_ROOT / "scripts" / "run_gui_fourcam_external_ipc_validation.sh"),
