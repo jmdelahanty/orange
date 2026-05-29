@@ -622,3 +622,51 @@ multi-GPU split-GOP throughput.
   and `sudo -n ./scripts/ptp_stack.sh status` before GUI PTP validation.
 - Keep `100_cam4_ptp` as the default GUI validation folder for two-camera
   production-like runs on this host.
+- Current four-camera GUI/Orange-Citrus status is summarized in
+  `docs/gui_external_ipc_status_2026_05_28.md`. The strict Orange/Citrus
+  single-clip artifact
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48` and rolling
+  artifact `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25` both
+  passed with `0` warnings and strict main-video content validation for all
+  four cameras. Use
+  `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute` for the
+  single-clip profile, and add `--record-seconds 6 --warmup-seconds 2
+  --clip-seconds 2` for the short rolling profile.
+- Current four-camera Orange/Citrus performance baseline: full-frame external
+  IPC and crop external IPC both work in single-clip and rolling modes; all
+  four full-frame streams encode valid `4512x4512 @ 100 fps` content at about
+  `150-153 Mbps`; crop external recorders received/encoded every offered crop
+  frame in the strict runs with `0` drops; steady YOLO p95 is about
+  `3.95-3.96 ms` across all four cameras and YOLO queue p95 is about
+  `0.014-0.017 ms`.
+- Orange/Citrus display pacing intentionally uses the Citrus-safe GUI profile:
+  `swap_interval=1`, GUI frame cap `30`, and display preview cap `10`, so
+  Orange stays near `30 fps` and avoids burning display-GPU budget while
+  Citrus renders at `120 Hz`. Orange-only GUI validation can use the fast
+  profile: `swap_interval=0`, GUI frame cap `60`, and display preview cap
+  `15`.
+- Four-camera crop external queue depth `128` is validated only as a short-run
+  load absorber. The strict single-clip run peaked at crop queue high-water
+  `52/52/51/47`; the strict rolling run peaked at `22/44/40/42`. Keep longer
+  soaks gated on queue high-water, `enqueue_age_p95_ms`, recorder drops, and
+  crop sidecar continuity.
+- App config now covers the stable workstation defaults under
+  `~/orange_data/config/app/default.json`: `gui.stream.downsample`,
+  `gui.display.*`, `gui.telemetry.show_speed_graphs`,
+  `recording.crop.sink_mode`, `recording.crop.frame_pool_size`,
+  `recording.crop.external_ipc.encode_queue_depth`, and crop external recorder
+  GPU placement via `recording.crop.external_ipc.recorder_gpu_id` plus
+  `recording.crop.external_ipc.recorder_gpu_ids_by_serial`. Env overrides
+  still win for validation one-offs. The local four-camera crop recorder GPU
+  mapping is `2010093=4`, `2010094=2`, `2010095=8`, and `2010096=6`.
+- The former experimental hot-path flags are now code defaults with env
+  opt-outs for diagnostics, not app-config operator preferences:
+  `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`,
+  `ORANGE_YOLO_DETACH_INPUT=1`,
+  `ORANGE_YOLO_READY_EVENT_FASTPATH=1`,
+  `ORANGE_CROP_STAGE_SOURCE=1`, and
+  `ORANGE_CROP_COPY_TIMING=0`.
+- Orange's own render helper now caches the main GLFW framebuffer size and
+  updates it through the framebuffer-size callback. `render_a_frame(...)` no
+  longer calls `glfwGetFramebufferSize(...)` every frame, though the Dear ImGui
+  GLFW backend still performs its normal per-frame window/framebuffer query.
