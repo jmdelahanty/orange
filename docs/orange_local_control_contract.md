@@ -256,8 +256,10 @@ path:
 
 For local-control stops, finalized GUI `recording_session.json` manifests also
 persist stop provenance under `recording.control`: method, request id,
-operation id, source, Citrus experiment fields when present, receive timestamp,
-trigger timestamp, grace seconds, and the configured drain-timeout threshold.
+operation id, `source="orange_gui_local_control"`, `command_source` for the
+caller that sent the local-control command, Citrus experiment fields when
+present, receive timestamp, trigger timestamp, grace seconds, and the
+configured drain-timeout threshold.
 This makes the artifact self-describing even after the socket server and
 orchestrator process have exited.
 The GUI validator can require this provenance with

@@ -381,7 +381,7 @@ def orange_recording_stop_operation_id(status: dict[str, Any]) -> str:
 
 def orange_recording_stop_source(status: dict[str, Any]) -> str:
     stop = orange_local_control_recording_stop(status)
-    return str(stop.get("source", stop.get("command_source", "")))
+    return str(stop.get("command_source", stop.get("source", "")))
 
 
 def orange_recording_stop_terminal_state(status: dict[str, Any]) -> str:
@@ -808,7 +808,7 @@ def check_stop_lifecycle_event_details(
 
     failures: list[str] = []
     expected_method = str(stop_status.get("method", ""))
-    expected_source = str(stop_status.get("source", stop_status.get("command_source", "")))
+    expected_source = str(stop_status.get("command_source", stop_status.get("source", "")))
     expected_operation_id = str(stop_status.get("operation_id", ""))
     expected_terminal_state = str(stop_status.get("terminal_state", ""))
     expected_reason = str(stop_status.get("reason", ""))

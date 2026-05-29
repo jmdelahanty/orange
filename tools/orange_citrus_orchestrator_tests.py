@@ -1703,6 +1703,58 @@ def test_clean_orange_exit_after_manifest_finalization_is_accepted() -> None:
         )
 
 
+def test_manifest_inferred_status_prefers_command_source() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording_folder = root / "recording"
+        recording_folder.mkdir()
+        operation_id = "op-manifest-source"
+        (recording_folder / "recording_session.json").write_text(
+            json.dumps(
+                {
+                    "recording": {
+                        "control": {
+                            "ack_state": "executed",
+                            "command_source": "citrus",
+                            "drain_completed": True,
+                            "last_event": "finalized",
+                            "method": "citrus_completion",
+                            "operation_id": operation_id,
+                            "reason": "protocol_finished",
+                            "request_id": "citrus_completion:op-manifest-source:completed:protocol_finished",
+                            "source": "orange_gui_local_control",
+                            "terminal_state": "completed",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        inferred = module.infer_orange_finalized_status_from_session(
+            {
+                "recording": {"folder": str(recording_folder)},
+                "readiness": {"recording_finalized": False},
+            },
+            operation_id=operation_id,
+        )
+        require(inferred is not None, "manifest should infer finalized status")
+        require(
+            module.orange_recording_stop_source(inferred) == "citrus",
+            "manifest-backed stop source should prefer recording.control.command_source",
+        )
+        check = module.summarize_orange_citrus_notify_stop_status(
+            inferred,
+            citrus_status(True, True),
+            stop_policy="citrus_completion_notify",
+            operation_id=operation_id,
+        )
+        require(
+            check["ok"],
+            f"manifest-backed Citrus-notify stop status should pass: {check}",
+        )
+
+
 def test_cleanup_started_processes_terminates_launched_children() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1817,6 +1869,7 @@ def main() -> int:
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
         test_clean_orange_exit_after_manifest_finalization_is_accepted,
+        test_manifest_inferred_status_prefers_command_source,
         test_cleanup_started_processes_terminates_launched_children,
         test_launch_socket_preflight_refuses_live_socket,
         test_launch_socket_preflight_allows_absent_socket,
