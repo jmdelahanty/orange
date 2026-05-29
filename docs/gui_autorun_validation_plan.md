@@ -462,7 +462,9 @@ now requests forced-safe finalization through the same stream-shutdown path used
 by the operator. The status surface reports
 `recording_stop.forced_finalize_requested=true`, and the event log records
 `recording_drain_forced_finalize_requested` before the stream-stop path joins
-workers and runs the normal session finalizer. When the event-log gate is
+workers and runs the normal session finalizer. Status also reports
+`recording_stop.forced_finalize_stream_stop_requested=true` after that
+stream-stop request is issued. When the event-log gate is
 enabled, timeout status requires both `recording_drain_timeout` and
 `recording_drain_forced_finalize_requested` evidence.
 

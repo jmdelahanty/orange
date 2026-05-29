@@ -214,6 +214,8 @@ nlohmann::json recording_stop_to_json(
         {"drain_active", snapshot.drain_active},
         {"drain_timed_out", snapshot.drain_timed_out},
         {"forced_finalize_requested", snapshot.forced_finalize_requested},
+        {"forced_finalize_stream_stop_requested",
+         snapshot.forced_finalize_stream_stop_requested},
         {"grace_seconds", snapshot.grace_seconds},
         {"seconds_until_deadline", snapshot.seconds_until_deadline},
         {"drain_timeout_seconds", snapshot.drain_timeout_seconds},

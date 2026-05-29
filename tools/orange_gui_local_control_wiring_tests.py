@@ -47,6 +47,12 @@ def test_drain_timeout_requests_forced_stream_shutdown() -> None:
         'recording_run->stop_control["forced_finalize_requested"] = true' in timeout_body,
         "drain-timeout path must preserve forced-finalize provenance in stop control",
     )
+    snapshot_body = function_body(orange, "gui_control_stop_snapshot")
+    require(
+        "snapshot.forced_finalize_stream_stop_requested =\n"
+        "        scheduler.forced_finalize_stream_stop_requested;" in snapshot_body,
+        "local-control status must expose whether forced finalize requested stream shutdown",
+    )
     force_body = function_body(orange, "gui_request_local_control_forced_finalize_if_needed")
     require(
         "gui_autorun_requests->toggle_streaming = true" in force_body,

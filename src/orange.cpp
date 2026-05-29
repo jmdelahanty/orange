@@ -3563,6 +3563,8 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     snapshot.grace_seconds = scheduler.grace_seconds;
     snapshot.drain_timed_out = scheduler.drain_timed_out;
     snapshot.forced_finalize_requested = scheduler.forced_finalize_requested;
+    snapshot.forced_finalize_stream_stop_requested =
+        scheduler.forced_finalize_stream_stop_requested;
     snapshot.drain_timeout_seconds = scheduler.drain_timeout_seconds;
     snapshot.method = scheduler.method;
     snapshot.request_id = scheduler.request_id;

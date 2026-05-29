@@ -163,6 +163,7 @@ Orange readiness means more than process started. Status reports:
   deadline seconds, drain telemetry, derived stop `state`, derived `health`,
   `error_code`, and the latest scheduler event. Drain telemetry includes
   `drain_active`, `drain_timed_out`,
+  `forced_finalize_requested`, `forced_finalize_stream_stop_requested`,
   `drain_timeout_seconds`, `drain_elapsed_seconds`,
   `stop_triggered_at_utc`, and `drain_completed_at_utc`.
 - `local_control.citrus_completion_stop`: compatibility alias for the same
@@ -472,10 +473,12 @@ When Orange itself sees a local-control drain exceed
 `recording_stop.drain_timed_out=true`,
 `recording_stop.forced_finalize_requested=true`, emits a
 `recording_drain_timeout` GUI event, and requests forced-safe finalization by
-taking the existing stream-shutdown path. That path stops acquisition, stops
-and joins workers, shuts down recording pipelines, and then calls the normal
-recording-session finalizer. The forced request is idempotent; repeated GUI
-ticks do not re-request stream shutdown.
+taking the existing stream-shutdown path. Once that stream-shutdown request has
+been issued, status also reports
+`recording_stop.forced_finalize_stream_stop_requested=true`. That path stops
+acquisition, stops and joins workers, shuts down recording pipelines, and then
+calls the normal recording-session finalizer. The forced request is
+idempotent; repeated GUI ticks do not re-request stream shutdown.
 
 When the orchestrator launches Orange or Citrus itself, readiness waits also
 poll those child processes. If a launched GUI exits before its relevant

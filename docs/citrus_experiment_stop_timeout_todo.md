@@ -221,6 +221,8 @@ Refs:
       evidence before validators can pass.
 - [x] Require forced-finalize event-log evidence when Orange status reports a
       local-control drain timeout.
+- [x] Expose whether the forced-finalize path has requested Orange's existing
+      stream-shutdown path in `local_control.recording_stop`.
 
 ## Phase 6: Validation
 

@@ -309,6 +309,7 @@ void test_status_reports_local_control_drain_timeout_telemetry()
     status.local_control_recording_stop.drain_active = true;
     status.local_control_recording_stop.drain_timed_out = true;
     status.local_control_recording_stop.forced_finalize_requested = true;
+    status.local_control_recording_stop.forced_finalize_stream_stop_requested = true;
     status.local_control_recording_stop.drain_timeout_seconds = 60.0;
     status.local_control_recording_stop.drain_elapsed_seconds = 61.25;
     status.local_control_recording_stop.method = "stop_recording";
@@ -339,6 +340,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
     require(stop["drain_timed_out"].get<bool>(), "drain timeout should be visible");
     require(stop["forced_finalize_requested"].get<bool>(),
             "timed-out drain should report forced finalize request");
+    require(stop["forced_finalize_stream_stop_requested"].get<bool>(),
+            "timed-out drain should report forced stream-stop request");
     require(stop["drain_timeout_seconds"].get<double>() == 60.0,
             "drain timeout threshold should be visible");
     require(stop["drain_elapsed_seconds"].get<double>() == 61.25,
@@ -360,6 +363,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
             "compatibility alias should expose drain timeout");
     require(completion_alias["forced_finalize_requested"].get<bool>(),
             "compatibility alias should expose forced finalize request");
+    require(completion_alias["forced_finalize_stream_stop_requested"].get<bool>(),
+            "compatibility alias should expose forced stream-stop request");
     require(completion_alias["health"].get<std::string>() == "critical",
             "compatibility alias should expose critical health");
     require(completion_alias["request_id"].get<std::string>() == "stop-req-1",

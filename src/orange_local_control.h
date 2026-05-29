@@ -33,6 +33,7 @@ struct LocalControlRecordingStopSnapshot {
     bool drain_active = false;
     bool drain_timed_out = false;
     bool forced_finalize_requested = false;
+    bool forced_finalize_stream_stop_requested = false;
     double grace_seconds = 0.0;
     double seconds_until_deadline = 0.0;
     double drain_timeout_seconds = 0.0;
