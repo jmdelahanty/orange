@@ -145,6 +145,15 @@ def read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def keyframe_frames(path: Path) -> list[int]:
+    payload = read_json(path)
+    frames = payload.get("keyframe_frames")
+    require(isinstance(frames, list), f"keyframe sidecar missing keyframe_frames: {path}")
+    out = [as_int(frame, f"keyframe frame in {path}") for frame in frames]
+    require(bool(out), f"keyframe sidecar has no keyframes: {path}")
+    return out
+
+
 def require(condition: bool, message: str) -> None:
     if not condition:
         raise VerificationError(message)
@@ -675,6 +684,11 @@ def verify_rolling_output(
         require(metadata_path.exists() and metadata_path.stat().st_size > 0, f"missing rolling metadata for {serial}: {metadata_path}")
         require(keyframe_path.exists() and keyframe_path.stat().st_size > 0, f"missing rolling keyframe sidecar for {serial}: {keyframe_path}")
         ffprobe_video(mp4_path, ffprobe)
+        keyframes = keyframe_frames(keyframe_path)
+        require(
+            keyframes[0] == 0,
+            f"rolling clip {expected_index} for {serial} does not start on keyframe 0: {keyframes[:3]}",
+        )
 
         frame_count = as_int(clip.get("frame_count"), "rolling clip frame_count")
         packet_count = as_int(clip.get("packets_written"), "rolling clip packets_written")

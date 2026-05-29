@@ -485,7 +485,10 @@ def write_crop_recording_artifacts(
 ) -> None:
     (recording_folder / f"Cam{serial}_crop.mp4").write_bytes(b"not-a-real-mp4")
     (recording_folder / f"Cam{serial}_crop_keyframe.json").write_text(
-        json.dumps({"total_frames": rows if keyframe_total_frames is None else keyframe_total_frames}) + "\n",
+        json.dumps({
+            "total_frames": rows if keyframe_total_frames is None else keyframe_total_frames,
+            "keyframe_frames": [0],
+        }) + "\n",
         encoding="utf-8",
     )
 
@@ -552,7 +555,10 @@ def write_crop_clip_artifacts(
     metadata = clip_dir / f"Cam{serial}_crop_meta.csv"
     perf = clip_dir / f"Cam{serial}_crop_perf.csv"
     video.write_bytes(b"external-crop-clip-mp4")
-    keyframes.write_text(json.dumps({"total_frames": frame_count}) + "\n", encoding="utf-8")
+    keyframes.write_text(
+        json.dumps({"total_frames": frame_count, "keyframe_frames": [0]}) + "\n",
+        encoding="utf-8",
+    )
 
     metadata_last = (
         first_frame + metadata_rows_override - 1
@@ -650,7 +656,10 @@ def write_rolling_full_frame_manifest(
         metadata = clip_dir / f"Cam{serial}_meta.csv"
         keyframes = clip_dir / f"Cam{serial}_keyframe.json"
         video.write_bytes(b"fake mp4 payload\n")
-        keyframes.write_text(json.dumps({"total_frames": frame_count}) + "\n", encoding="utf-8")
+        keyframes.write_text(
+            json.dumps({"total_frames": frame_count, "keyframe_frames": [0]}) + "\n",
+            encoding="utf-8",
+        )
         with metadata.open("w", encoding="utf-8") as handle:
             handle.write("recording_frame_id\n")
             for frame_id in range(first_frame, last_frame + 1):
@@ -3093,6 +3102,25 @@ def test_recording_session_manifest_fails_on_rolling_frame_gap() -> None:
         )
 
 
+def test_recording_session_manifest_fails_on_rolling_keyframe_not_zero() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        keyframes = root / "clips" / "clip_000000" / f"Cam{serial}_keyframe.json"
+        keyframes.write_text(
+            json.dumps({"total_frames": 2, "keyframe_frames": [1]}) + "\n",
+            encoding="utf-8",
+        )
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
+        require(
+            any("first keyframe frame 1 != 0" in failure for failure in reporter.failures),
+            f"rolling full-frame keyframe offset should fail: {reporter.failures}",
+        )
+
+
 def test_recording_session_manifest_accepts_rolling_crop_outputs() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -3111,6 +3139,35 @@ def test_recording_session_manifest_accepts_rolling_crop_outputs() -> None:
         reporter = validator.Reporter(verbose=False)
         validator.check_recording_session_manifest(reporter, root, snapshot, [serial])
         require(not reporter.failures, f"rolling crop outputs should pass: {reporter.failures}")
+
+
+def test_recording_session_manifest_fails_on_rolling_crop_keyframe_not_zero() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        write_crop_recording_artifacts(root, serial, rows=2)
+        crop_clip = write_crop_clip_artifacts(root / "clips" / "clip_000000", serial, 1, 2)
+        crop_clips = {serial: [crop_clip]}
+        snapshot = crop_snapshot(serial)
+        snapshot.update(
+            write_rolling_full_frame_manifest(
+                root,
+                serial,
+                clip_frame_counts=[2],
+                crop_rolling_clips=crop_clips,
+            )
+        )
+        keyframes = Path(crop_clip["keyframes"])
+        keyframes.write_text(
+            json.dumps({"total_frames": 2, "keyframe_frames": [1]}) + "\n",
+            encoding="utf-8",
+        )
+
+        reporter, _ = check_crop_recording(root, snapshot, [serial], yolo_rows=2)
+        require(
+            any("first keyframe frame 1 != 0" in failure for failure in reporter.failures),
+            f"rolling crop keyframe offset should fail: {reporter.failures}",
+        )
 
 
 def test_recording_session_manifest_fails_when_rolling_crop_output_missing() -> None:
@@ -3663,7 +3720,9 @@ def main() -> int:
         test_recording_session_manifest_fails_on_expected_recording_mode_mismatch,
         test_recording_session_manifest_fails_on_expected_control_mismatch,
         test_recording_session_manifest_fails_on_rolling_frame_gap,
+        test_recording_session_manifest_fails_on_rolling_keyframe_not_zero,
         test_recording_session_manifest_accepts_rolling_crop_outputs,
+        test_recording_session_manifest_fails_on_rolling_crop_keyframe_not_zero,
         test_recording_session_manifest_fails_when_rolling_crop_output_missing,
         test_rolling_clip_videos_are_complete_recording_candidates,
         test_crop_recording_artifacts_fail_on_perf_row_mismatch,

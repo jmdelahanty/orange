@@ -208,12 +208,13 @@ When the source is color, or YOLO detection overlays are enabled and available:
 - GPU profiling:
   - Use Nsight Systems to identify sync points and device↔host transfers.
 
-## TODO: Recording toggle behavior
+## Recording toggle behavior
 
-- Recording restart within a live stream can yield an output file with no visible frames in some players.
-  This does not happen if the stream is fully stopped and restarted.
-- Suspected cause: the encoder/file pipeline does not force an IDR/keyframe on the first frame of a new recording,
-  so the resulting file lacks an initial decodeable frame.
-- Follow‑ups to investigate:
-  - Force IDR on recording start (per stream).
-  - Consider reinitializing the encoder on each record start.
+- Recording restart within a live stream previously risked an output file whose
+  first decodable picture depended on frames from the prior recording.
+- The current encoder path forces IDR/SPS/PPS on recording start and on each
+  rolling clip boundary, so each new MP4 should start with keyframe frame `0`
+  without requiring the stream to stop.
+- GUI/external rolling validation now checks each full-frame and crop clip
+  keyframe sidecar for `keyframe_frames[0] == 0`, in addition to frame-count
+  and `recording_frame_id` continuity checks.

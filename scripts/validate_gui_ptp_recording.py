@@ -496,6 +496,40 @@ def json_file_parses_as_object(path: Path) -> bool:
     return isinstance(payload, dict)
 
 
+def keyframe_frame_values(payload: dict[str, Any]) -> list[int] | None:
+    frames = payload.get("keyframe_frames")
+    if not isinstance(frames, list):
+        return None
+    out: list[int] = []
+    for frame in frames:
+        value = integer(frame)
+        if value is None:
+            return None
+        out.append(value)
+    return out
+
+
+def check_keyframe_sidecar_starts_at_zero(
+    reporter: Reporter,
+    payload: dict[str, Any],
+    path: Path,
+    label: str,
+) -> list[int] | None:
+    frames = keyframe_frame_values(payload)
+    reporter.check(
+        frames is not None and bool(frames),
+        f"{label} keyframe frames present",
+        f"{label} keyframe sidecar missing keyframe_frames or has no keyframes: {path}",
+    )
+    if frames:
+        reporter.check(
+            frames[0] == 0,
+            f"{label} starts with keyframe frame 0",
+            f"{label} first keyframe frame {frames[0]} != 0",
+        )
+    return frames
+
+
 def camera_serials_with_complete_artifacts(recording_folder: Path) -> set[str]:
     videos = {
         serial
@@ -1652,6 +1686,8 @@ def check_rolling_recording_session_manifest(
             packet_count = integer(artifact.get("packet_count"))
             packet_source = str(artifact.get("packet_count_source", ""))
             metadata_rows = count_csv_data_rows(metadata_path)
+            keyframes = read_json(keyframe_path) if keyframe_path.exists() else {}
+            keyframe_total_frames = integer(keyframes.get("total_frames"))
 
             reporter.check(
                 video_path.exists() and video_path.stat().st_size > 0,
@@ -1668,6 +1704,25 @@ def check_rolling_recording_session_manifest(
                 f"Cam{serial} rolling clip {clip_index} keyframe present",
                 f"Cam{serial} rolling clip {clip_index} keyframe missing: {keyframe_path}",
             )
+            if keyframe_path.exists():
+                check_keyframe_sidecar_starts_at_zero(
+                    reporter,
+                    keyframes,
+                    keyframe_path,
+                    f"Cam{serial} rolling clip {clip_index}",
+                )
+                reporter.check(
+                    keyframe_total_frames == frame_count,
+                    (
+                        f"Cam{serial} rolling clip {clip_index} "
+                        f"keyframe total_frames matches frame_count ({keyframe_total_frames})"
+                    ),
+                    (
+                        f"Cam{serial} rolling clip {clip_index} "
+                        f"keyframe total_frames ({keyframe_total_frames}) != "
+                        f"frame_count ({frame_count})"
+                    ),
+                )
             reporter.check(
                 frame_count is not None and frame_count > 0,
                 f"Cam{serial} rolling clip {clip_index} frame_count={frame_count}",
@@ -4174,6 +4229,13 @@ def check_crop_rolling_clip_artifacts(
         f"Cam{serial} {label} keyframe sidecar parses as JSON",
         f"Cam{serial} {label} keyframe sidecar missing or invalid JSON: {keyframes_path}",
     )
+    if keyframes_valid and keyframes_path is not None:
+        check_keyframe_sidecar_starts_at_zero(
+            reporter,
+            keyframes,
+            keyframes_path,
+            f"Cam{serial} {label}",
+        )
 
     crop_rows = read_csv_rows(metadata_path) if metadata_path is not None else []
     crop_perf_rows = read_csv_rows(perf_path) if perf_path is not None else []

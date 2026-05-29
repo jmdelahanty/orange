@@ -154,8 +154,14 @@ def write_summary(
             "3,300,3000\n",
             encoding="utf-8",
         )
-        first_clip_keyframes.write_text('{"total_frames":2}\n', encoding="utf-8")
-        second_clip_keyframes.write_text('{"total_frames":1}\n', encoding="utf-8")
+        first_clip_keyframes.write_text(
+            '{"total_frames":2,"keyframe_frames":[0]}\n',
+            encoding="utf-8",
+        )
+        second_clip_keyframes.write_text(
+            '{"total_frames":1,"keyframe_frames":[0]}\n',
+            encoding="utf-8",
+        )
         summary["recording_control"] = {
             "record_for_seconds": 6,
             "clip_seconds": 2,
@@ -598,6 +604,26 @@ def test_rolling_output_uses_summary_recording_control() -> None:
         )
 
 
+def test_rolling_output_requires_keyframe_zero() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096", rolling=True)
+        keyframes = root / "clips" / "clip_000000" / "Cam2010096_external_keyframe.json"
+        keyframes.write_text(
+            '{"total_frames":2,"keyframe_frames":[1]}\n',
+            encoding="utf-8",
+        )
+        try:
+            verify_one(root, summary_path, mp4_path)
+        except verifier.VerificationError as exc:
+            require(
+                "does not start on keyframe 0" in str(exc),
+                f"unexpected keyframe-zero failure: {exc}",
+            )
+        else:
+            raise AssertionError("expected rolling keyframe-zero verification failure")
+
+
 def test_status_sidecar_passes_and_summarizes() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -744,6 +770,7 @@ def main() -> int:
         test_mp4_queue_overflow_failures,
         test_storage_preflight_failures,
         test_rolling_output_uses_summary_recording_control,
+        test_rolling_output_requires_keyframe_zero,
         test_status_sidecar_passes_and_summarizes,
         test_status_sidecar_checks_rolling_progress,
         test_status_sidecar_failures,
