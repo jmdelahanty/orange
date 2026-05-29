@@ -152,6 +152,12 @@ explicitly-launched Orange/Citrus GUI processes through their Unix-domain JSON
 local-control sockets. Its default mode is dry-run so the run plan/request
 shape can be reviewed before any stimulus window or recording lifecycle is
 touched; `--execute` is required to send socket requests.
+The orchestrator consumes Orange's pollable stop ACK state from
+`local_control.recording_stop.ack_state`, preserves it as
+`orange.local_control_stop_ack_state` in the combined summary, and fails
+inconsistent terminal states by default. Clean finalized stops must report
+`executed`; drain-timeout paths must report `failed_timeout` and pass the
+forced-finalize telemetry checks.
 
 For the local four-camera Citrus integration profile, use
 `scripts/run_orange_citrus_fourcam_orchestrator.sh`. That wrapper keeps the

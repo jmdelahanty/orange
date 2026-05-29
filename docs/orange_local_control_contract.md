@@ -2,7 +2,7 @@
 
 Status: v1 contract, Orange GUI endpoint, and opt-in recording start/stop
 control slices.
-Last updated: 2026-05-28.
+Last updated: 2026-05-29.
 
 ## Purpose
 
@@ -176,6 +176,13 @@ after the stop has triggered and drain/finalization is in progress, `executed`
 after clean finalization, `failed_timeout` after the drain timeout threshold is
 crossed, `ignored` for accepted commands that cannot affect recording, and
 `idle`/`disabled` when no stop request is active.
+
+The Orange/Citrus orchestrator records this as
+`orange.local_control_stop_ack_state` and validates it after stop. A clean
+finalized recording must end as `executed`; a drain-timeout path must end as
+`failed_timeout` and still satisfy the separate forced-finalize consistency
+checks. This gives Citrus and external run supervisors a pollable ACK surface
+without adding a second callback transport.
 
 Camera-set comparisons are order-insensitive. If no expected serials are
 configured, match fields are reported as `null` and readiness falls back to the

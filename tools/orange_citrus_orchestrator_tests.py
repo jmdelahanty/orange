@@ -54,6 +54,11 @@ def orange_status(started: bool, stopped: bool, *, drain_timed_out: bool = False
                     else ("finalized" if stopped else "idle")
                 ),
                 "health": "warning" if drain_timed_out else "ok",
+                "ack_state": (
+                    "failed_timeout"
+                    if drain_timed_out
+                    else ("executed" if stopped else "idle")
+                ),
                 "error_code": "drain_timeout" if drain_timed_out else "",
                 "stop_triggered": stopped,
                 "drain_active": False,
@@ -141,6 +146,17 @@ def test_request_builders_and_readiness_helpers() -> None:
             orange_status(True, True, drain_timed_out=True)
         ),
         "orange drain timeout helper should read local-control status",
+    )
+    require(
+        module.orange_recording_stop_ack_state(orange_status(True, True)) == "executed",
+        "orange stop ACK-state helper should read local-control status",
+    )
+    require(
+        module.orange_recording_stop_ack_state(
+            orange_status(True, True, drain_timed_out=True)
+        )
+        == "failed_timeout",
+        "orange stop ACK-state helper should report drain timeout",
     )
     require(module.citrus_ready_to_start(citrus_status(False, False)), "citrus ready")
     require(module.citrus_is_terminal(citrus_status(True, True)), "citrus terminal")
@@ -397,6 +413,14 @@ def test_execute_against_fake_local_control_servers() -> None:
             "summary should include Orange stop state",
         )
         require(
+            payload["orange"]["local_control_stop_ack_state"] == "executed",
+            "summary should include Orange stop ACK state",
+        )
+        require(
+            payload["orange"]["local_control_stop_ack_status_check"]["ok"],
+            "summary should include passing Orange stop ACK-state check",
+        )
+        require(
             payload["orange"]["local_control_stop_health"] == "ok",
             "summary should include Orange stop health",
         )
@@ -651,11 +675,19 @@ def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
             module.orange_recording_stop_health(allowed_status) == "warning",
             "allowed path should expose warning health after timeout finalizes",
         )
+        require(
+            module.orange_recording_stop_ack_state(allowed_status) == "failed_timeout",
+            "allowed path should expose failed-timeout ACK state",
+        )
         allowed_check = module.summarize_orange_drain_timeout_status(
             allowed_status,
             allow_drain_timeout=True,
         )
         require(allowed_check["ok"], f"allowed timeout status should pass: {allowed_check}")
+        require(
+            allowed_check["ack_state"] == "failed_timeout",
+            "timeout status summary should carry failed-timeout ACK state",
+        )
         require(
             allowed_check["drain_timed_out"],
             "allowed timeout status summary should report timeout",
@@ -700,6 +732,78 @@ def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
         )
     finally:
         module.send_unix_json = original_send
+
+
+def test_orchestrator_checks_orange_stop_ack_state() -> None:
+    module = load_module()
+
+    clean_status = orange_status(True, True)
+    clean_check = module.summarize_orange_stop_ack_status(
+        clean_status,
+        stop_policy="stop_recording",
+        finalized_wait_skipped=False,
+    )
+    require(clean_check["ok"], f"clean finalized ACK status should pass: {clean_check}")
+    require(clean_check["ack_state"] == "executed", "clean ACK summary should report executed")
+
+    timeout_status = orange_status(True, True, drain_timed_out=True)
+    timeout_check = module.summarize_orange_stop_ack_status(
+        timeout_status,
+        stop_policy="stop_recording",
+        finalized_wait_skipped=False,
+    )
+    require(timeout_check["ok"], f"timeout ACK status should pass: {timeout_check}")
+    require(
+        timeout_check["ack_state"] == "failed_timeout",
+        "timeout ACK summary should report failed_timeout",
+    )
+
+    skipped_status = orange_status(True, False)
+    skipped_status["local_control"]["recording_stop"]["ack_state"] = "executing"
+    skipped_check = module.summarize_orange_stop_ack_status(
+        skipped_status,
+        stop_policy="stop_recording",
+        finalized_wait_skipped=True,
+    )
+    require(
+        skipped_check["ok"],
+        f"skip-wait ACK status should allow in-progress state: {skipped_check}",
+    )
+
+    missing_status = orange_status(True, True)
+    del missing_status["local_control"]["recording_stop"]["ack_state"]
+    missing_check = module.summarize_orange_stop_ack_status(
+        missing_status,
+        stop_policy="stop_recording",
+        finalized_wait_skipped=False,
+    )
+    require(not missing_check["ok"], "missing ACK state should fail")
+    require(
+        "missing" in missing_check["failures"][0],
+        "missing ACK failure should explain missing field",
+    )
+
+    inconsistent_status = orange_status(True, True)
+    inconsistent_status["local_control"]["recording_stop"]["ack_state"] = "executing"
+    inconsistent_check = module.summarize_orange_stop_ack_status(
+        inconsistent_status,
+        stop_policy="stop_recording",
+        finalized_wait_skipped=False,
+    )
+    require(not inconsistent_check["ok"], "finalized but executing ACK state should fail")
+    require(
+        "finalized cleanly" in inconsistent_check["failures"][0],
+        "inconsistent ACK failure should explain finalized-state mismatch",
+    )
+
+    ignored_status = orange_status(True, False)
+    ignored_status["local_control"]["recording_stop"]["ack_state"] = "ignored"
+    ignored_check = module.summarize_orange_stop_ack_status(
+        ignored_status,
+        stop_policy="stop_recording",
+        finalized_wait_skipped=True,
+    )
+    require(not ignored_check["ok"], "ignored stop ACK state should fail for a stop policy")
 
 
 def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
@@ -1256,6 +1360,7 @@ def main() -> int:
         test_execute_stops_citrus_after_run_seconds,
         test_launch_preflights_all_sockets_before_starting_processes,
         test_orchestrator_fails_on_orange_drain_timeout_by_default,
+        test_orchestrator_checks_orange_stop_ack_state,
         test_persist_artifacts_copies_logs_into_recording_folder,
         test_orange_local_control_event_log_summary,
         test_orange_local_control_event_log_required_check,

@@ -349,6 +349,10 @@ def orange_recording_stop_health(status: dict[str, Any]) -> str:
     return str(orange_local_control_recording_stop(status).get("health", ""))
 
 
+def orange_recording_stop_ack_state(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("ack_state", ""))
+
+
 def orange_recording_stop_forced_finalize_requested(status: dict[str, Any]) -> bool:
     return bool(
         orange_local_control_recording_stop(status).get(
@@ -373,6 +377,12 @@ def check_orange_drain_timeout_status(status: dict[str, Any]) -> list[str]:
     if not orange_recording_stop_drain_timed_out(status):
         return []
     failures: list[str] = []
+    ack_state = orange_recording_stop_ack_state(status)
+    if ack_state and ack_state != "failed_timeout":
+        failures.append(
+            "Orange status reports drain timeout but "
+            f"local_control.recording_stop.ack_state={ack_state!r}"
+        )
     if not orange_recording_stop_forced_finalize_requested(status):
         failures.append(
             "Orange status reports drain timeout but "
@@ -405,6 +415,7 @@ def summarize_orange_drain_timeout_status(
         "drain_timed_out": timed_out,
         "allow_drain_timeout": bool(allow_drain_timeout),
         "state": orange_recording_stop_state(status),
+        "ack_state": orange_recording_stop_ack_state(status),
         "health": orange_recording_stop_health(status),
         "forced_finalize_requested": (
             orange_recording_stop_forced_finalize_requested(status)
@@ -417,6 +428,56 @@ def summarize_orange_drain_timeout_status(
         "policy_ok": not policy_failures,
         "policy_failures": policy_failures,
         "failures": [*consistency_failures, *policy_failures],
+    }
+
+
+def check_orange_stop_ack_status(
+    status: dict[str, Any],
+    *,
+    stop_policy: str,
+    finalized_wait_skipped: bool,
+) -> list[str]:
+    if stop_policy == "none":
+        return []
+    ack_state = orange_recording_stop_ack_state(status)
+    if not ack_state:
+        return ["Orange status missing local_control.recording_stop.ack_state"]
+    if orange_recording_stop_drain_timed_out(status):
+        return [] if ack_state == "failed_timeout" else [
+            "Orange drain timed out but "
+            f"local_control.recording_stop.ack_state={ack_state!r}"
+        ]
+    if orange_recording_finalized(status):
+        return [] if ack_state == "executed" else [
+            "Orange recording finalized cleanly but "
+            f"local_control.recording_stop.ack_state={ack_state!r}"
+        ]
+    if finalized_wait_skipped and ack_state in {"accepted", "executing"}:
+        return []
+    if ack_state == "ignored":
+        return ["Orange stop request was ignored"]
+    return []
+
+
+def summarize_orange_stop_ack_status(
+    status: dict[str, Any],
+    *,
+    stop_policy: str,
+    finalized_wait_skipped: bool,
+) -> dict[str, Any]:
+    failures = check_orange_stop_ack_status(
+        status,
+        stop_policy=stop_policy,
+        finalized_wait_skipped=finalized_wait_skipped,
+    )
+    return {
+        "ok": not failures,
+        "stop_policy": stop_policy,
+        "finalized_wait_skipped": bool(finalized_wait_skipped),
+        "ack_state": orange_recording_stop_ack_state(status),
+        "recording_finalized": orange_recording_finalized(status),
+        "drain_timed_out": orange_recording_stop_drain_timed_out(status),
+        "failures": failures,
     }
 
 
@@ -1224,6 +1285,7 @@ class Orchestrator:
         if self.args.skip_wait_orange_finalized:
             _, status = self.status("orange", ORANGE_REQUEST_SCHEMA_ID, self.args.orange_socket)
             self.require_orange_drain_not_timed_out(status)
+            self.require_orange_stop_ack_status(status)
             return status
         status = self.wait_for_status(
             "orange",
@@ -1234,6 +1296,7 @@ class Orchestrator:
             "recording_finalized",
         )
         self.require_orange_drain_not_timed_out(status)
+        self.require_orange_stop_ack_status(status)
         return status
 
     def require_orange_local_control_event_log(self, status: dict[str, Any]) -> None:
@@ -1279,6 +1342,19 @@ class Orchestrator:
             f"timeout_seconds={stop_status.get('drain_timeout_seconds', '')} "
             f"last_event={stop_status.get('last_event', '')}"
         )
+
+    def require_orange_stop_ack_status(self, status: dict[str, Any]) -> None:
+        ack_check = summarize_orange_stop_ack_status(
+            status,
+            stop_policy=self.args.stop_policy,
+            finalized_wait_skipped=self.args.skip_wait_orange_finalized,
+        )
+        step = self.step("orange_stop_ack_status_check")
+        step.finish(ok=ack_check["ok"], check=ack_check)
+        if ack_check["ok"]:
+            return
+        failure_text = "; ".join(str(item) for item in ack_check["failures"])
+        raise OrchestratorError(f"Orange stop ACK-state check failed: {failure_text}")
 
     def persist_artifacts(self, summary: dict[str, Any]) -> None:
         artifacts: dict[str, Any] = {
@@ -1409,6 +1485,11 @@ class Orchestrator:
             orange_status,
             allow_drain_timeout=self.args.allow_orange_drain_timeout,
         )
+        orange_stop_ack_status_check = summarize_orange_stop_ack_status(
+            orange_status,
+            stop_policy=self.args.stop_policy,
+            finalized_wait_skipped=self.args.skip_wait_orange_finalized,
+        )
         self.refresh_started_processes()
         return {
             "schema_id": SUMMARY_SCHEMA_ID,
@@ -1432,7 +1513,11 @@ class Orchestrator:
                 "local_control_recording_stop": orange_local_control_recording_stop(orange_status),
                 "local_control_stop_drain_timed_out": orange_recording_stop_drain_timed_out(orange_status),
                 "local_control_stop_state": orange_recording_stop_state(orange_status),
+                "local_control_stop_ack_state": orange_recording_stop_ack_state(orange_status),
                 "local_control_stop_health": orange_recording_stop_health(orange_status),
+                "local_control_stop_ack_status_check": (
+                    orange_stop_ack_status_check
+                ),
                 "local_control_stop_timeout_status_check": (
                     orange_drain_timeout_status_check
                 ),
