@@ -788,6 +788,71 @@ def test_system_cpu_summary_reports_isolation() -> None:
         )
 
 
+def test_recording_session_summary_reports_local_control_stop() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        snapshot = {"recording_id": "run-local-control-stop", "session": {}}
+        manifest = {
+            "schema_id": "orange.recording_session",
+            "schema_version": 1,
+            "producer": "orange_gui_external_ipc",
+            "mode": "rolling_clips",
+            "status": "completed",
+            "recording_control": {
+                "record_for_seconds": 12,
+                "clip_seconds": 3,
+            },
+            "recording": {
+                "control": {
+                    "source": "orange_gui_local_control",
+                    "method": "stop_recording",
+                    "request_id": "op-001:orange:stop_recording",
+                    "operation_id": "op-001",
+                    "command_source": "orange_citrus_fourcam_profile",
+                    "experiment_id": "citrus-exp-001",
+                    "terminal_state": "completed",
+                    "reason": "protocol_finished",
+                    "received_at_utc": "2026-05-29T00:40:53Z",
+                    "grace_seconds": 0.0,
+                    "stop_triggered_at_utc": "2026-05-29T00:40:55Z",
+                    "drain_timeout_seconds": 60.0,
+                }
+            },
+        }
+        write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
+        write_text(root / "recording_session.json", json.dumps(manifest) + "\n")
+
+        summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
+        session = summary["recording_session"]
+        require(session["producer"] == "orange_gui_external_ipc", "producer should be summarized")
+        require(session["mode"] == "rolling_clips", "recording mode should be summarized")
+        require(
+            session["recording_control"]["record_for_seconds"] == 12,
+            "recording control duration should be summarized",
+        )
+        local_control_stop = session["local_control_stop"]
+        require(
+            local_control_stop["source"] == "orange_gui_local_control",
+            "local-control stop source should be summarized",
+        )
+        require(
+            local_control_stop["method"] == "stop_recording",
+            "local-control stop method should be summarized",
+        )
+        require(
+            local_control_stop["operation_id"] == "op-001",
+            "local-control stop operation_id should be summarized",
+        )
+        require(
+            local_control_stop["command_source"] == "orange_citrus_fourcam_profile",
+            "local-control stop command source should be summarized",
+        )
+        require(
+            local_control_stop["drain_timeout_seconds"] == 60.0,
+            "local-control stop drain timeout should be summarized",
+        )
+
+
 def main() -> int:
     test_crop_summary_reads_rows_preview_and_fanout()
     test_crop_summary_uses_recording_backend_external_fallbacks()
@@ -798,6 +863,7 @@ def main() -> int:
     test_latest_complete_accepts_external_camera_artifact_video()
     test_yolo_summary_reports_affinity()
     test_system_cpu_summary_reports_isolation()
+    test_recording_session_summary_reports_local_control_stop()
     print("summarize_gui_validation_tests passed")
     return 0
 

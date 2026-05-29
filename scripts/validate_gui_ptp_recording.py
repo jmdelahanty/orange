@@ -5725,6 +5725,35 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
         )
 
 
+def print_recording_session_summary(recording_session: dict[str, Any]) -> None:
+    if not recording_session:
+        return
+    print("\nRecording Session")
+    print(
+        f"  producer={recording_session.get('producer', 'unknown')} "
+        f"mode={recording_session.get('mode', 'unknown')} "
+        f"status={recording_session.get('status', 'unknown')}"
+    )
+    recording_control = recording_session.get("recording_control")
+    recording_control = recording_control if isinstance(recording_control, dict) else {}
+    if recording_control:
+        print(
+            "  recording-control: "
+            f"record_for_seconds={recording_control.get('record_for_seconds')} "
+            f"clip_seconds={recording_control.get('clip_seconds')}"
+        )
+    local_control_stop = recording_session.get("local_control_stop")
+    local_control_stop = local_control_stop if isinstance(local_control_stop, dict) else {}
+    if local_control_stop:
+        print(
+            "  local-control-stop: "
+            f"method={local_control_stop.get('method', 'unknown')} "
+            f"operation_id={local_control_stop.get('operation_id', 'unknown')} "
+            f"source={local_control_stop.get('command_source', 'unknown')} "
+            f"reason={local_control_stop.get('reason', 'unknown')}"
+        )
+
+
 def main() -> int:
     args = parse_args()
     if (
@@ -5915,6 +5944,11 @@ def main() -> int:
         external_recorder_status_summary = {}
 
     camera_summary = compact_camera_summary(summary, cameras, video_sanity)
+    recording_session_summary = (
+        summary.get("recording_session")
+        if isinstance(summary.get("recording_session"), dict)
+        else {}
+    )
     result = {
         "schema_version": 1,
         "recording_folder": str(recording_folder),
@@ -5935,6 +5969,7 @@ def main() -> int:
         "passes": reporter.passes,
         "warnings": reporter.warnings,
         "failures": reporter.failures,
+        "recording_session": recording_session_summary,
         "summary": camera_summary,
         "crop_preview": crop_preview_summary,
         "crop_recording": crop_recording_summary,
@@ -5950,6 +5985,7 @@ def main() -> int:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:
         print_system_cpu_summary(system_cpu_summary)
+        print_recording_session_summary(recording_session_summary)
         print_camera_summary(camera_summary)
         print_crop_preview_summary(crop_preview_summary)
         print_crop_recording_summary(crop_recording_summary)

@@ -1102,6 +1102,14 @@ Those counters are reset at GUI recording start. A clean run should report
 counts are diagnostic: they usually mean the ImGui GLFW backend asked about a
 non-main platform window or the compile-time shim scope changed.
 
+GUI local-control stop provenance is stored in `recording_session.json` under
+`recording.control` and summarized by `scripts/summarize_gui_validation.py` with
+`--json` plus `scripts/validate_gui_ptp_recording.py --json-out` under
+`recording_session.local_control_stop`. That summary carries the stop method,
+request/operation identity, command source, optional Citrus terminal fields,
+receive/trigger timestamps, grace seconds, and configured drain-timeout
+threshold when present.
+
 This derived diagnosis is intentionally script-owned. It should not be treated
 as a persisted Orange snapshot schema field.
 

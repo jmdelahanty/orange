@@ -228,7 +228,10 @@ The GUI validator can require this provenance with
 `--expect-local-control-stop-method`,
 `--expect-local-control-stop-operation-id`, and
 `--expect-local-control-stop-command-source`; the four-camera Orange/Citrus
-profile passes those checks by default.
+profile passes those checks by default. `scripts/summarize_gui_validation.py`
+and `scripts/validate_gui_ptp_recording.py --json-out` also surface the same
+fields under `recording_session.local_control_stop` so saved validation JSON can
+be audited without reopening the manifest.
 
 Orange also records local-control drain observability after a triggered stop.
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` sets the telemetry threshold,

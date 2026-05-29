@@ -1456,6 +1456,47 @@ def summarize_videos(recording_folder: Path, ffprobe: str) -> dict[str, Any]:
     return out
 
 
+def summarize_recording_session(manifest: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(manifest, dict) or not manifest:
+        return {}
+
+    summary: dict[str, Any] = {
+        "schema_id": manifest.get("schema_id"),
+        "schema_version": manifest.get("schema_version"),
+        "producer": manifest.get("producer"),
+        "mode": manifest.get("mode"),
+        "status": manifest.get("status"),
+    }
+    recording_control = manifest.get("recording_control")
+    if isinstance(recording_control, dict):
+        summary["recording_control"] = dict(recording_control)
+
+    recording = manifest.get("recording")
+    recording = recording if isinstance(recording, dict) else {}
+    control = recording.get("control")
+    if isinstance(control, dict):
+        keys = (
+            "source",
+            "method",
+            "request_id",
+            "operation_id",
+            "command_source",
+            "experiment_id",
+            "terminal_state",
+            "reason",
+            "received_at_utc",
+            "grace_seconds",
+            "stop_triggered_at_utc",
+            "drain_timeout_seconds",
+        )
+        summary["local_control_stop"] = {
+            key: control.get(key)
+            for key in keys
+            if key in control
+        }
+    return summary
+
+
 def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> dict[str, Any]:
     recording_folder = resolve_recording_folder(recording_folder)
     snapshot = read_json(recording_folder / "recording_snapshot.json")
@@ -1472,6 +1513,7 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
         "recording_folder": str(recording_folder),
         "recording_id": snapshot.get("recording_id"),
         "timestamp_utc": snapshot.get("timestamp_utc"),
+        "recording_session": summarize_recording_session(manifest),
         "sync": snapshot.get("sync") if isinstance(snapshot.get("sync"), dict) else {},
         "system_cpu": system_cpu,
         "system_cpu_kernel_cmdline_cpu_option_values": normalized_kernel_cpu_options(system_cpu),
@@ -1535,6 +1577,33 @@ def fmt_percent(value: Any, digits: int = 0) -> str:
 
 def print_human(summary: dict[str, Any]) -> None:
     print(f"Recording: {summary['recording_folder']}")
+    recording_session = summary.get("recording_session")
+    recording_session = recording_session if isinstance(recording_session, dict) else {}
+    if recording_session:
+        print(
+            "Session: "
+            f"producer={recording_session.get('producer', 'unknown')} "
+            f"mode={recording_session.get('mode', 'unknown')} "
+            f"status={recording_session.get('status', 'unknown')}"
+        )
+        recording_control = recording_session.get("recording_control")
+        recording_control = recording_control if isinstance(recording_control, dict) else {}
+        if recording_control:
+            print(
+                "Recording Control: "
+                f"record_for_seconds={fmt_int(recording_control.get('record_for_seconds'))} "
+                f"clip_seconds={fmt_int(recording_control.get('clip_seconds'))}"
+            )
+        local_control_stop = recording_session.get("local_control_stop")
+        local_control_stop = local_control_stop if isinstance(local_control_stop, dict) else {}
+        if local_control_stop:
+            print(
+                "Local-Control Stop: "
+                f"method={local_control_stop.get('method', 'unknown')} "
+                f"operation_id={local_control_stop.get('operation_id', 'unknown')} "
+                f"source={local_control_stop.get('command_source', 'unknown')} "
+                f"reason={local_control_stop.get('reason', 'unknown')}"
+            )
     sync = summary.get("sync", {})
     print(f"Sync: mode={sync.get('mode', 'unknown')} camera_sync_enabled={sync.get('camera_sync_enabled', 'unknown')}")
 
