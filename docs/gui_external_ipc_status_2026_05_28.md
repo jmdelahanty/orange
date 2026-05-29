@@ -352,6 +352,18 @@ This leaves recording start operator-owned in the GUI, enables Orange
 finalization. Use this mode for the manual Citrus STOP ALL validation; a plain
 manual GUI launch leaves those stop gates disabled.
 
+After clicking STOP ALL in Citrus and waiting for Orange finalization, validate
+the stopped-terminal control metadata with:
+
+```bash
+scripts/validate_gui_ptp_recording.py --latest-complete \
+  --expect-local-control-stop-method citrus_completion \
+  --expect-local-control-stop-command-source citrus \
+  --expect-local-control-stop-terminal-state stopped \
+  --expect-local-control-stop-reason stopped_by_local_control \
+  --expect-local-control-stop-ack-state executed
+```
+
 Earlier GUI-only no-lens-safe single-clip run:
 
 ```bash

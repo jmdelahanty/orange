@@ -133,6 +133,19 @@ def parse_args() -> argparse.Namespace:
         help="Optional expected recording.control.command_source in recording_session.json.",
     )
     parser.add_argument(
+        "--expect-local-control-stop-terminal-state",
+        help="Optional expected recording.control.terminal_state in recording_session.json.",
+    )
+    parser.add_argument(
+        "--expect-local-control-stop-reason",
+        help="Optional expected recording.control.reason in recording_session.json.",
+    )
+    parser.add_argument(
+        "--expect-local-control-stop-ack-state",
+        choices=("idle", "accepted", "executing", "executed", "failed_timeout", "ignored", "disabled"),
+        help="Optional expected recording.control.ack_state in recording_session.json.",
+    )
+    parser.add_argument(
         "--expect-ptp-register-read-decimate",
         type=int,
         default=100,
@@ -1160,6 +1173,9 @@ def check_recording_session_manifest(
     expected_local_control_stop_method: str | None = None,
     expected_local_control_stop_operation_id: str | None = None,
     expected_local_control_stop_command_source: str | None = None,
+    expected_local_control_stop_terminal_state: str | None = None,
+    expected_local_control_stop_reason: str | None = None,
+    expected_local_control_stop_ack_state: str | None = None,
 ) -> None:
     manifest_path = recording_folder / "recording_session.json"
     manifest = read_json(manifest_path)
@@ -1210,6 +1226,9 @@ def check_recording_session_manifest(
         expected_local_control_stop_method,
         expected_local_control_stop_operation_id,
         expected_local_control_stop_command_source,
+        expected_local_control_stop_terminal_state,
+        expected_local_control_stop_reason,
+        expected_local_control_stop_ack_state,
     )
 
     snapshot_session = snapshot.get("session")
@@ -1538,6 +1557,9 @@ def check_local_control_stop_expectations(
     expected_method: str | None,
     expected_operation_id: str | None,
     expected_command_source: str | None,
+    expected_terminal_state: str | None,
+    expected_reason: str | None,
+    expected_ack_state: str | None,
 ) -> None:
     requires_control = any(
         value is not None
@@ -1545,6 +1567,9 @@ def check_local_control_stop_expectations(
             expected_method,
             expected_operation_id,
             expected_command_source,
+            expected_terminal_state,
+            expected_reason,
+            expected_ack_state,
         )
     )
     if not requires_control:
@@ -1782,6 +1807,37 @@ def check_local_control_stop_expectations(
                 "recording_session recording.control command_source="
                 f"{control.get('command_source')!r}; "
                 f"expected {expected_command_source!r}"
+            ),
+        )
+    if expected_terminal_state is not None:
+        reporter.check(
+            control.get("terminal_state") == expected_terminal_state,
+            (
+                "recording_session recording.control "
+                f"terminal_state={expected_terminal_state}"
+            ),
+            (
+                "recording_session recording.control terminal_state="
+                f"{control.get('terminal_state')!r}; "
+                f"expected {expected_terminal_state!r}"
+            ),
+        )
+    if expected_reason is not None:
+        reporter.check(
+            control.get("reason") == expected_reason,
+            f"recording_session recording.control reason={expected_reason}",
+            (
+                "recording_session recording.control reason="
+                f"{control.get('reason')!r}; expected {expected_reason!r}"
+            ),
+        )
+    if expected_ack_state is not None:
+        reporter.check(
+            control.get("ack_state") == expected_ack_state,
+            f"recording_session recording.control ack_state={expected_ack_state}",
+            (
+                "recording_session recording.control ack_state="
+                f"{control.get('ack_state')!r}; expected {expected_ack_state!r}"
             ),
         )
 
@@ -6008,6 +6064,9 @@ def main() -> int:
             args.expect_local_control_stop_method,
             args.expect_local_control_stop_operation_id,
             args.expect_local_control_stop_command_source,
+            args.expect_local_control_stop_terminal_state,
+            args.expect_local_control_stop_reason,
+            args.expect_local_control_stop_ack_state,
         )
         external_recorder_status_summary = check_external_recorder_status(
             reporter,

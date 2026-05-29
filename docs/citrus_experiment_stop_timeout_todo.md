@@ -297,6 +297,8 @@ Refs:
     `recording.control.reason="stopped_by_local_control"` or equivalent Citrus
     terminal reason, `recording.control.command_source="citrus"`, and
     `recording.control.ack_state="executed"`.
+  - Validation command shape:
+    `scripts/validate_gui_ptp_recording.py --latest-complete --expect-local-control-stop-method citrus_completion --expect-local-control-stop-command-source citrus --expect-local-control-stop-terminal-state stopped --expect-local-control-stop-reason stopped_by_local_control --expect-local-control-stop-ack-state executed`.
 - [x] Test duplicate stop-control packets:
   - socket-layer duplicate `request_id`,
   - socket-layer duplicate `method + operation_id`,
