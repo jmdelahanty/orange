@@ -84,6 +84,19 @@ def test_render_a_frame_uses_cached_framebuffer_size() -> None:
     )
 
 
+def test_imgui_new_frame_size_queries_are_intercepted() -> None:
+    imgui_glfw = read("third_party/imgui/backends/imgui_impl_glfw.cpp")
+    body = function_body(imgui_glfw, "ImGui_ImplGlfw_NewFrame")
+    require(
+        "glfwGetWindowSize(bd->Window, &w, &h)" in body,
+        "ImGui_ImplGlfw_NewFrame must still expose the main-window size query that Orange intercepts",
+    )
+    require(
+        "glfwGetFramebufferSize(bd->Window, &display_w, &display_h)" in body,
+        "ImGui_ImplGlfw_NewFrame must still expose the main-framebuffer size query that Orange intercepts",
+    )
+
+
 def test_cache_context_registered_during_gx_init() -> None:
     gx_helper = read("src/gx_helper.h")
     body = function_body(gx_helper, "gx_init")
@@ -155,6 +168,7 @@ def main() -> int:
         test_override_header_maps_glfw_size_queries,
         test_cmake_force_includes_override_for_imgui_glfw_backend,
         test_render_a_frame_uses_cached_framebuffer_size,
+        test_imgui_new_frame_size_queries_are_intercepted,
         test_cache_context_registered_during_gx_init,
         test_cache_context_cleared_before_window_destroy,
         test_imgui_backend_does_not_own_main_window_size_callbacks,
