@@ -47,6 +47,7 @@ def test_status_dry_run_builds_schema_request() -> None:
     require(payload["schema_version"] == 1, "schema version")
     require(payload["method"] == "status", "status method")
     require(payload["request_id"] == "status-req", "request id")
+    require(payload["source"] == "orange_local_control_client", "status default source")
     require("operation_id" not in payload, "status request should not need operation_id")
 
 
@@ -71,6 +72,7 @@ def test_citrus_completion_dry_run_defaults_operation_id() -> None:
     require(result.returncode == 0, f"dry-run failed: {result.stderr}")
     payload = parse_stdout_json(result)
     require(payload["method"] == "citrus_completion", "completion method")
+    require(payload["source"] == "citrus", "completion should default to Citrus source")
     require(payload["operation_id"] == "citrus-exp-1", "operation defaults to experiment id")
     params = payload["params"]
     require(params["experiment_id"] == "citrus-exp-1", "experiment id")
@@ -104,6 +106,26 @@ def test_citrus_completion_dry_run_defaults_grace_seconds() -> None:
     )
 
 
+def test_citrus_completion_source_can_be_overridden() -> None:
+    result = run_client(
+        [
+            "--dry-run",
+            "--source",
+            "diagnostic_tool",
+            "citrus-completion",
+            "--request-id",
+            "completion-source",
+            "--experiment-id",
+            "citrus-exp-source",
+        ]
+    )
+
+    require(result.returncode == 0, f"dry-run failed: {result.stderr}")
+    payload = parse_stdout_json(result)
+    require(payload["method"] == "citrus_completion", "completion method")
+    require(payload["source"] == "diagnostic_tool", "explicit source should win")
+
+
 def test_start_stop_dry_run_include_operation_ids() -> None:
     start = run_client(
         [
@@ -134,6 +156,8 @@ def test_start_stop_dry_run_include_operation_ids() -> None:
     stop_payload = parse_stdout_json(stop)
     require(start_payload["method"] == "start_recording", "start method")
     require(stop_payload["method"] == "stop_recording", "stop method")
+    require(start_payload["source"] == "orange_local_control_client", "start default source")
+    require(stop_payload["source"] == "orange_local_control_client", "stop default source")
     require(start_payload["operation_id"] == "run-42", "start operation id")
     require(stop_payload["operation_id"] == "run-42", "stop operation id")
     require(stop_payload["params"]["grace_seconds"] == 3.0, "stop grace seconds")
@@ -166,6 +190,7 @@ def main() -> int:
         test_status_dry_run_builds_schema_request,
         test_citrus_completion_dry_run_defaults_operation_id,
         test_citrus_completion_dry_run_defaults_grace_seconds,
+        test_citrus_completion_source_can_be_overridden,
         test_start_stop_dry_run_include_operation_ids,
         test_citrus_completion_requires_experiment_id,
         test_missing_socket_fails_before_connect,

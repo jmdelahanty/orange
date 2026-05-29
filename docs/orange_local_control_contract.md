@@ -83,7 +83,8 @@ gate enabled and Orange actively recording, both `citrus_completion` and
 `stop_recording` schedule a delayed stop using `params.grace_seconds`.
 If that field is omitted, Orange resolves `citrus_completion` to a 10-second
 grace period and `stop_recording` to an immediate `0`-second stop. The client
-utility also defaults `citrus-completion --grace-seconds` to `10.0`.
+utility also defaults `citrus-completion --grace-seconds` to `10.0` and uses
+`source=citrus` for that subcommand unless `--source` is explicitly supplied.
 With the recording-start gate enabled, when Orange is streaming but not already
 recording or finalizing, `start_recording` goes through the same GUI-thread
 recording preflight and operator start path as the record button.

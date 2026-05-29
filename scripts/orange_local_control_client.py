@@ -75,8 +75,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--source",
-        default="orange_local_control_client",
-        help="Request source label.",
+        default=None,
+        help=(
+            "Request source label. Default: citrus for citrus-completion, "
+            "orange_local_control_client otherwise."
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -172,12 +175,15 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
         "stop-recording": "stop_recording",
     }
     method = method_by_command[args.command]
+    source = args.source
+    if source is None:
+        source = "citrus" if args.command == "citrus-completion" else "orange_local_control_client"
     payload: dict[str, Any] = {
         "schema_id": REQUEST_SCHEMA_ID,
         "schema_version": REQUEST_SCHEMA_VERSION,
         "method": method,
         "request_id": request_id,
-        "source": args.source,
+        "source": source,
         "sent_at_utc": utc_now(),
         "params": {},
     }

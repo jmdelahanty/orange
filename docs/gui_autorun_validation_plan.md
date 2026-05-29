@@ -489,6 +489,11 @@ scripts/orange_local_control_client.py \
   status
 ```
 
+For diagnostic Citrus-completion requests, use the client
+`citrus-completion` subcommand. It defaults to `source=citrus`, so artifacts
+and validators see the same command source as the real Citrus notifier unless
+`--source` is intentionally overridden.
+
 ## Implementation Sketch
 
 1. Resolve and select `ORANGE_GUI_CONFIG_DIR` during startup.
