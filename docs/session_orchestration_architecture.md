@@ -173,6 +173,16 @@ older shared socket log. For bounded local-control smokes,
 `--citrus-run-seconds <seconds>` is owned by the orchestrator: it starts Citrus
 through local control, waits for active/armed state, sends `stop_experiment`
 after that active runtime, and only then asks Orange to stop/drain/finalize.
+The wrapper now has three stop-policy modes:
+
+- `stop_recording`: the orchestrator sends Orange `stop_recording`; default
+  grace is `0` seconds.
+- `citrus_completion`: the orchestrator sends Orange `citrus_completion` after
+  Citrus reaches terminal state; default grace is `10` seconds.
+- `citrus_completion_notify`: Citrus sends Orange `citrus_completion` itself,
+  and the orchestrator only waits for Orange to finalize and validates that
+  Orange persisted `method=citrus_completion`, `command_source=citrus`, and
+  terminal ACK state.
 
 ### NodeExecutor
 

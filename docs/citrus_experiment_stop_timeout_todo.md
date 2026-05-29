@@ -258,6 +258,12 @@ Refs:
     local control and observed/persisted `ack_state="executed"`.
 - [ ] Test manual STOP ALL in Citrus and direct Citrus completion notifier after
       protocol natural finish.
+  - Dry-run/test support exists through
+    `scripts/run_orange_citrus_fourcam_orchestrator.sh --stop-policy citrus_completion_notify`.
+    That profile enables `CITRUS_ORANGE_COMPLETION_NOTIFY=1`, passes the
+    10-second default completion grace to Citrus, waits for Orange finalization
+    without sending an orchestrator-owned stop, and validates
+    `command_source=citrus`.
 - [x] Test duplicate stop-control packets:
   - socket-layer duplicate `request_id`,
   - socket-layer duplicate `method + operation_id`,
@@ -268,7 +274,7 @@ Refs:
 - [ ] Test delayed Citrus-completion stop during high-throughput recording.
   Immediate orchestrator `stop_recording` during four-camera rolling external IPC
   recording passed on 2026-05-29; the default 10-second Citrus completion grace
-  path still needs its own live gate.
+  path now has dry-run/unit coverage but still needs its own live gate.
 - [ ] Test forced-timeout path with induced writer stall.
 
 ## Definition of Done

@@ -396,6 +396,24 @@ Expected validation shape:
   session totals.
 - No camera gaps, recorder drops, crop drops, or GUI hidden-FPS regression.
 
+To test the direct Citrus completion notifier instead of the orchestrator-owned
+Orange stop, use:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh \
+  --execute \
+  --record-seconds 6 \
+  --warmup-seconds 2 \
+  --clip-seconds 2 \
+  --stop-policy citrus_completion_notify
+```
+
+That profile enables `CITRUS_ORANGE_COMPLETION_NOTIFY=1`, passes
+`CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`, waits for Orange to finalize
+without sending its own Orange stop request, and validates that
+`recording.control.method` is `citrus_completion` with
+`command_source=citrus`.
+
 ## Remaining Risks
 
 - The latest strict Orange/Citrus runs did include real positive YOLO rows:

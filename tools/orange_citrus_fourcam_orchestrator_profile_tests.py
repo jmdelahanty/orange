@@ -308,6 +308,54 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
     )
 
 
+def test_citrus_completion_notify_profile_waits_for_citrus_owned_stop() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-notify",
+            "--record-seconds",
+            "6",
+            "--warmup-seconds",
+            "2",
+            "--clip-seconds",
+            "2",
+            "--stop-policy",
+            "citrus_completion_notify",
+        ]
+    )
+    require(result.returncode == 0, f"profile notify dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    orange = payload["orange"]
+    citrus = payload["citrus"]
+    citrus_env = citrus["env_overlay"]
+
+    require(
+        orange["stop_policy"] == "citrus_completion_notify",
+        "notify profile should use the Citrus-owned completion stop policy",
+    )
+    require(
+        orange["stop_grace_seconds"] == 10.0,
+        "Citrus completion notify should default to the 10-second grace contract",
+    )
+    require(
+        citrus_env["CITRUS_ORANGE_COMPLETION_NOTIFY"] == "1",
+        "notify profile should enable Citrus's Orange completion notifier",
+    )
+    require(
+        citrus_env["CITRUS_ORANGE_COMPLETION_GRACE_SECONDS"] == "10",
+        "notify profile should pass the completion grace to Citrus",
+    )
+    validation = payload["validations"][0]
+    require(
+        "--expect-local-control-stop-method citrus_completion" in validation["command"],
+        "notify profile should validate Orange saw a citrus_completion stop",
+    )
+    require(
+        "--expect-local-control-stop-command-source citrus" in validation["command"],
+        "notify profile should validate Citrus owned the stop request",
+    )
+
+
 def test_allow_preexisting_sockets_disables_launch_preflight() -> None:
     result = run_profile(
         [
@@ -368,6 +416,7 @@ def main() -> int:
         test_default_dry_run_builds_live_profile,
         test_attach_mode_does_not_launch_processes,
         test_rolling_profile_passes_orange_clip_options_to_validation,
+        test_citrus_completion_notify_profile_waits_for_citrus_owned_stop,
         test_allow_preexisting_sockets_disables_launch_preflight,
         test_allow_orange_drain_timeout_passes_through,
         test_allow_missing_orange_event_log_passes_through,

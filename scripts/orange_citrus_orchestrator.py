@@ -143,6 +143,18 @@ def build_orange_citrus_completion_request(
     )
 
 
+def effective_orange_stop_grace_seconds(args: argparse.Namespace) -> float:
+    explicit = getattr(args, "orange_stop_grace_seconds", None)
+    if explicit is not None:
+        return float(explicit)
+    if getattr(args, "stop_policy", "") in {
+        "citrus_completion",
+        "citrus_completion_notify",
+    }:
+        return 10.0
+    return 0.0
+
+
 def build_citrus_start_request(operation_id: str, request_id: str, source: str) -> dict[str, Any]:
     return build_request(
         CITRUS_REQUEST_SCHEMA_ID,
@@ -1120,7 +1132,10 @@ class Orchestrator:
             )
         self.citrus_control_complete = True
 
-        if self.args.stop_policy != "none":
+        if self.args.stop_policy == "citrus_completion_notify":
+            final_orange_status = self.wait_for_orange_citrus_notify_stop()
+            self.orange_recording_started = False
+        elif self.args.stop_policy != "none":
             final_orange_status = self.request_orange_stop(final_citrus_status)
             self.orange_recording_started = False
 
@@ -1258,7 +1273,7 @@ class Orchestrator:
                 f"{self.args.operation_id}:orange:stop_recording",
                 self.args.source,
                 "orchestrator_stop",
-                self.args.orange_stop_grace_seconds,
+                effective_orange_stop_grace_seconds(self.args),
             )
         elif self.args.stop_policy == "citrus_completion":
             terminal_state = citrus_terminal_state(citrus_status) or "completed"
@@ -1270,7 +1285,7 @@ class Orchestrator:
                 self.args.operation_id,
                 terminal_state,
                 terminal_reason,
-                self.args.orange_stop_grace_seconds,
+                effective_orange_stop_grace_seconds(self.args),
             )
         else:
             raise OrchestratorError(f"unsupported stop policy: {self.args.stop_policy}")
@@ -1294,6 +1309,29 @@ class Orchestrator:
             orange_recording_finalized,
             self.args.orange_finalize_timeout_seconds,
             "recording_finalized",
+        )
+        self.require_orange_drain_not_timed_out(status)
+        self.require_orange_stop_ack_status(status)
+        return status
+
+    def wait_for_orange_citrus_notify_stop(self) -> dict[str, Any]:
+        if self.args.skip_wait_orange_finalized:
+            _, status = self.status(
+                "orange",
+                ORANGE_REQUEST_SCHEMA_ID,
+                self.args.orange_socket,
+            )
+            self.require_orange_drain_not_timed_out(status)
+            self.require_orange_stop_ack_status(status)
+            return status
+
+        status = self.wait_for_status(
+            "orange",
+            ORANGE_REQUEST_SCHEMA_ID,
+            self.args.orange_socket,
+            orange_recording_finalized,
+            self.args.orange_finalize_timeout_seconds,
+            "recording_finalized_after_citrus_completion_notify",
         )
         self.require_orange_drain_not_timed_out(status)
         self.require_orange_stop_ack_status(status)
@@ -1595,7 +1633,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--orange-finalize-timeout-seconds", type=positive_float, default=180.0)
-    parser.add_argument("--orange-stop-grace-seconds", type=nonnegative_float, default=0.0)
+    parser.add_argument("--orange-stop-grace-seconds", type=nonnegative_float, default=None)
     parser.add_argument(
         "--allow-orange-drain-timeout",
         action="store_true",
@@ -1654,9 +1692,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.set_defaults(stop_orange_on_failure=True)
     parser.add_argument(
         "--stop-policy",
-        choices=("stop_recording", "citrus_completion", "none"),
+        choices=(
+            "stop_recording",
+            "citrus_completion",
+            "citrus_completion_notify",
+            "none",
+        ),
         default="stop_recording",
-        help="How to ask Orange to stop after Citrus terminal state.",
+        help=(
+            "How Orange stops after Citrus terminal state. "
+            "citrus_completion_notify waits for Citrus to send Orange "
+            "citrus_completion itself."
+        ),
     )
     return parser.parse_args(argv)
 
@@ -1682,6 +1729,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 args.source,
             ),
             "stop_policy": args.stop_policy,
+            "stop_grace_seconds": effective_orange_stop_grace_seconds(args),
             "allow_drain_timeout": args.allow_orange_drain_timeout,
             "require_local_control_event_log": args.require_orange_local_control_event_log,
             "preflight_existing_socket": bool(args.orange_command)

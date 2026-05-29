@@ -74,7 +74,8 @@ Options:
                                   Copied into <recording_folder>/orchestrator/.
   --validation-timeout-seconds <seconds>
   --orange-stop-grace-seconds <seconds>
-  --stop-policy <policy>         stop_recording, citrus_completion, or none.
+  --stop-policy <policy>         stop_recording, citrus_completion,
+                                  citrus_completion_notify, or none.
   --timeout-seconds <seconds>    Orange/Citrus readiness timeout.
   --citrus-terminal-timeout-seconds <seconds>
   --orange-finalize-timeout-seconds <seconds>
@@ -190,7 +191,7 @@ STOP_POLICY="${ORANGE_CITRUS_STOP_POLICY:-stop_recording}"
 TIMEOUT_SECONDS="${ORANGE_CITRUS_TIMEOUT_SECONDS:-180}"
 CITRUS_TERMINAL_TIMEOUT_SECONDS="${ORANGE_CITRUS_TERMINAL_TIMEOUT_SECONDS:-600}"
 ORANGE_FINALIZE_TIMEOUT_SECONDS="${ORANGE_CITRUS_ORANGE_FINALIZE_TIMEOUT_SECONDS:-240}"
-ORANGE_STOP_GRACE_SECONDS="${ORANGE_CITRUS_ORANGE_STOP_GRACE_SECONDS:-0}"
+ORANGE_STOP_GRACE_SECONDS="${ORANGE_CITRUS_ORANGE_STOP_GRACE_SECONDS:-}"
 ALLOW_ORANGE_DRAIN_TIMEOUT="${ORANGE_CITRUS_ALLOW_ORANGE_DRAIN_TIMEOUT:-0}"
 REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG="${ORANGE_CITRUS_REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG:-1}"
 VALIDATION_TIMEOUT_SECONDS="${ORANGE_CITRUS_VALIDATION_TIMEOUT_SECONDS:-300}"
@@ -485,6 +486,27 @@ if [[ -n "${CITRUS_RUN_SECONDS}" ]]; then
     exit 2
   }
 fi
+case "${STOP_POLICY}" in
+  stop_recording|citrus_completion|citrus_completion_notify|none)
+    ;;
+  *)
+    echo "--stop-policy must be stop_recording, citrus_completion, citrus_completion_notify, or none" >&2
+    exit 2
+    ;;
+esac
+if [[ -z "${ORANGE_STOP_GRACE_SECONDS}" ]]; then
+  case "${STOP_POLICY}" in
+    citrus_completion|citrus_completion_notify)
+      ORANGE_STOP_GRACE_SECONDS=10
+      ;;
+    *)
+      ORANGE_STOP_GRACE_SECONDS=0
+      ;;
+  esac
+fi
+if [[ "${STOP_POLICY}" == "citrus_completion_notify" ]]; then
+  CITRUS_ORANGE_COMPLETION_NOTIFY=1
+fi
 if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
   ORANGE_PROFILE_ENV+=("ORANGE_GUI_RECORD_FOR_SECONDS=${ORANGE_RECORD_SECONDS}")
 fi
@@ -533,11 +555,25 @@ if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
   ORANGE_VALIDATION_MODE_ARGS+=("--expect-clip-seconds" "${ORANGE_CLIP_SECONDS}")
 fi
 ORANGE_VALIDATION_LOCAL_CONTROL_ARGS=()
-if [[ "${STOP_POLICY}" != "none" ]]; then
+ORANGE_VALIDATION_STOP_METHOD=""
+ORANGE_VALIDATION_STOP_SOURCE="orange_citrus_fourcam_profile"
+case "${STOP_POLICY}" in
+  stop_recording)
+    ORANGE_VALIDATION_STOP_METHOD="stop_recording"
+    ;;
+  citrus_completion)
+    ORANGE_VALIDATION_STOP_METHOD="citrus_completion"
+    ;;
+  citrus_completion_notify)
+    ORANGE_VALIDATION_STOP_METHOD="citrus_completion"
+    ORANGE_VALIDATION_STOP_SOURCE="citrus"
+    ;;
+esac
+if [[ -n "${ORANGE_VALIDATION_STOP_METHOD}" ]]; then
   ORANGE_VALIDATION_LOCAL_CONTROL_ARGS+=(
-    "--expect-local-control-stop-method" "${STOP_POLICY}"
+    "--expect-local-control-stop-method" "${ORANGE_VALIDATION_STOP_METHOD}"
     "--expect-local-control-stop-operation-id" "{operation_id}"
-    "--expect-local-control-stop-command-source" "orange_citrus_fourcam_profile"
+    "--expect-local-control-stop-command-source" "${ORANGE_VALIDATION_STOP_SOURCE}"
   )
 fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
@@ -671,6 +707,9 @@ if (( CITRUS_AUTORUN_LOADER )) && [[ -n "${CITRUS_COMMAND}" ]]; then
     "CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=${ORANGE_SOCKET}"
     "CITRUS_THREADING_SUMMARY_LOG=1"
   )
+  if (( CITRUS_ORANGE_COMPLETION_NOTIFY )); then
+    CITRUS_EXTRA_ENV+=("CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=${ORANGE_STOP_GRACE_SECONDS}")
+  fi
   if [[ -n "${CITRUS_PROTOCOL_PATH}" ]]; then
     CITRUS_EXTRA_ENV+=("CITRUS_GUI_AUTORUN_PROTOCOL_PATH=${CITRUS_PROTOCOL_PATH}")
   fi

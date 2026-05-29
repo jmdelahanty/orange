@@ -158,6 +158,28 @@ def test_request_builders_and_readiness_helpers() -> None:
         == "failed_timeout",
         "orange stop ACK-state helper should report drain timeout",
     )
+    stop_args = module.parse_args(["--stop-policy", "stop_recording"])
+    require(
+        module.effective_orange_stop_grace_seconds(stop_args) == 0.0,
+        "stop_recording should default to immediate stop",
+    )
+    citrus_args = module.parse_args(["--stop-policy", "citrus_completion"])
+    require(
+        module.effective_orange_stop_grace_seconds(citrus_args) == 10.0,
+        "orchestrator-sent citrus_completion should default to 10 seconds",
+    )
+    notify_args = module.parse_args(["--stop-policy", "citrus_completion_notify"])
+    require(
+        module.effective_orange_stop_grace_seconds(notify_args) == 10.0,
+        "Citrus-notified completion should default to 10 seconds",
+    )
+    explicit_args = module.parse_args(
+        ["--stop-policy", "citrus_completion", "--orange-stop-grace-seconds", "2.5"]
+    )
+    require(
+        module.effective_orange_stop_grace_seconds(explicit_args) == 2.5,
+        "explicit Orange stop grace should override policy defaults",
+    )
     require(module.citrus_ready_to_start(citrus_status(False, False)), "citrus ready")
     require(module.citrus_is_terminal(citrus_status(True, True)), "citrus terminal")
     require(module.citrus_perf_jsonl_path_known(citrus_status(True, True)), "perf path known")
@@ -439,6 +461,105 @@ def test_execute_against_fake_local_control_servers() -> None:
         require("validation-ok" in payload["validations"][0]["stdout"], "validation stdout should be captured")
         require(summary_path.exists(), "summary JSON should be written")
         require(json.loads(summary_path.read_text())["result"] == "pass", "summary file should match")
+
+
+def test_execute_waits_for_citrus_completion_notify_stop() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path = root / "summary.json"
+        orange_state = {
+            "started": False,
+            "stopped": False,
+            "orchestrator_stop_requests": 0,
+        }
+        citrus_state = {"started": False, "status_polls_after_start": 0}
+
+        def handle_orange(request: dict[str, Any]) -> dict[str, Any]:
+            method = request.get("method")
+            if method == "start_recording":
+                orange_state["started"] = True
+            elif method in {"stop_recording", "citrus_completion"}:
+                orange_state["orchestrator_stop_requests"] += 1
+                orange_state["stopped"] = True
+            return response_for(
+                request,
+                orange_status(orange_state["started"], orange_state["stopped"]),
+            )
+
+        def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
+            method = request.get("method")
+            if method == "start_experiment":
+                citrus_state["started"] = True
+            elif method == "status" and citrus_state["started"]:
+                citrus_state["status_polls_after_start"] += 1
+            terminal = citrus_state["status_polls_after_start"] >= 1
+            if terminal:
+                # Simulate Citrus's own Orange completion notifier. The
+                # orchestrator should wait for Orange finalization, not send its
+                # own Orange stop request for this policy.
+                orange_state["stopped"] = True
+            return response_for(
+                request,
+                citrus_status(citrus_state["started"], terminal),
+            )
+
+        def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+            if socket_path == "orange-test.sock":
+                return handle_orange(request)
+            if socket_path == "citrus-test.sock":
+                return handle_citrus(request)
+            raise AssertionError(f"unexpected socket path: {socket_path}")
+
+        original_send = module.send_unix_json
+        module.send_unix_json = fake_send
+        try:
+            args = module.parse_args(
+                [
+                    "--execute",
+                    "--operation-id",
+                    "op-notify",
+                    "--orange-socket",
+                    "orange-test.sock",
+                    "--citrus-socket",
+                    "citrus-test.sock",
+                    "--poll-interval-seconds",
+                    "0.01",
+                    "--timeout-seconds",
+                    "2",
+                    "--citrus-terminal-timeout-seconds",
+                    "2",
+                    "--orange-finalize-timeout-seconds",
+                    "2",
+                    "--stop-policy",
+                    "citrus_completion_notify",
+                    "--validation-command",
+                    f"quick={sys.executable} -c \"print('validation-ok')\"",
+                    "--summary-json",
+                    str(summary_path),
+                ]
+            )
+            payload = module.Orchestrator(args).run()
+            module.write_summary(args.summary_json, payload)
+        finally:
+            module.send_unix_json = original_send
+
+        require(payload["result"] == "pass", "notify-stop orchestrator should pass fake run")
+        require(
+            orange_state["orchestrator_stop_requests"] == 0,
+            "notify-stop policy must not send an Orange stop request itself",
+        )
+        require(payload["orange"]["recording_finalized"], "Orange should finalize after Citrus notification")
+        require(
+            payload["orange"]["local_control_stop_ack_state"] == "executed",
+            "summary should include executed ACK state for Citrus-notified stop",
+        )
+        require(
+            payload["orange"]["local_control_stop_ack_status_check"]["stop_policy"]
+            == "citrus_completion_notify",
+            "ACK-state check should preserve notify stop policy",
+        )
+        require(summary_path.exists(), "summary JSON should be written")
 
 
 def test_execute_stops_citrus_after_run_seconds() -> None:
@@ -1357,6 +1478,7 @@ def main() -> int:
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
+        test_execute_waits_for_citrus_completion_notify_stop,
         test_execute_stops_citrus_after_run_seconds,
         test_launch_preflights_all_sockets_before_starting_processes,
         test_orchestrator_fails_on_orange_drain_timeout_by_default,
