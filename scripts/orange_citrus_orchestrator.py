@@ -221,6 +221,20 @@ def parse_labeled_command_items(items: list[str]) -> list[dict[str, str]]:
     return parsed
 
 
+def parse_labeled_path_items(items: list[str]) -> dict[str, list[str]]:
+    parsed: dict[str, list[str]] = {}
+    for item in items:
+        if "=" not in item:
+            raise OrchestratorError(f"validation artifact must be LABEL=PATH: {item}")
+        label, path = item.split("=", 1)
+        if not label:
+            raise OrchestratorError(f"validation artifact has empty label: {item}")
+        if not path.strip():
+            raise OrchestratorError(f"validation artifact has empty path: {item}")
+        parsed.setdefault(label, []).append(path)
+    return parsed
+
+
 def validation_commands_from_args(args: argparse.Namespace) -> list[dict[str, str]]:
     commands = parse_labeled_command_items(args.validation_command)
     for index, command in enumerate(args.orange_validation_command, start=1):
@@ -234,10 +248,22 @@ def validation_commands_from_args(args: argparse.Namespace) -> list[dict[str, st
     return commands
 
 
+def validation_artifacts_from_args(args: argparse.Namespace) -> dict[str, list[str]]:
+    return parse_labeled_path_items(args.validation_artifact)
+
+
 def tail_text(value: str, max_chars: int) -> tuple[str, bool]:
     if max_chars <= 0 or len(value) <= max_chars:
         return value, False
     return value[-max_chars:], True
+
+
+def safe_artifact_name(value: str) -> str:
+    safe = "".join(
+        char if char.isalnum() or char in "._-" else "_"
+        for char in value
+    ).strip("._-")
+    return safe or "artifact"
 
 
 def render_validation_command(
@@ -636,6 +662,7 @@ class Orchestrator:
         citrus_status: dict[str, Any],
     ) -> list[dict[str, Any]]:
         commands = validation_commands_from_args(self.args)
+        validation_artifacts = validation_artifacts_from_args(self.args)
         if not commands:
             return []
 
@@ -667,6 +694,7 @@ class Orchestrator:
                 "stderr": "",
                 "stdout_truncated": False,
                 "stderr_truncated": False,
+                "artifact_paths": validation_artifacts.get(label, []),
             }
             try:
                 completed = subprocess.run(
@@ -790,6 +818,7 @@ class Orchestrator:
             "recording_folder": json_path(summary, ["orange", "recording_folder"], ""),
             "artifact_dir": "",
             "logs": {},
+            "validations": {},
         }
         summary["artifacts"] = artifacts
         if not self.args.copy_artifacts_to_recording:
@@ -812,6 +841,25 @@ class Orchestrator:
             self.args.citrus_log,
             artifact_dir / "citrus.log",
         )
+        for validation in summary.get("validations", []):
+            if not isinstance(validation, dict):
+                continue
+            label = str(validation.get("label") or "validation")
+            safe_label = safe_artifact_name(label)
+            copied_items: list[dict[str, Any]] = []
+            for path in validation.get("artifact_paths", []):
+                if not isinstance(path, str):
+                    continue
+                source_path = Path(path)
+                target_name = f"{safe_label}_{source_path.name}" if source_path.name else safe_label
+                copied_items.append(
+                    self.copy_artifact_file(
+                        str(source_path),
+                        artifact_dir / target_name,
+                    )
+                )
+            if copied_items:
+                artifacts["validations"][label] = copied_items
         artifact_summary = artifact_dir / "orchestrator_summary.json"
         artifacts["summary_json_artifact"] = str(artifact_summary)
         artifact_summary.write_text(
@@ -953,6 +1001,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Post-run validation command as LABEL=COMMAND. Repeatable. Non-zero exits fail the orchestrator.",
     )
     parser.add_argument(
+        "--validation-artifact",
+        action="append",
+        default=[],
+        help="Validation output artifact as LABEL=PATH. Repeatable. Copied into the Orange recording folder.",
+    )
+    parser.add_argument(
         "--orange-validation-command",
         action="append",
         default=[],
@@ -1041,6 +1095,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 **item,
                 "cwd": args.validation_cwd,
                 "timeout_seconds": args.validation_timeout_seconds,
+                "artifact_paths": validation_artifacts_from_args(args).get(item["label"], []),
             }
             for item in validation_commands_from_args(args)
         ],

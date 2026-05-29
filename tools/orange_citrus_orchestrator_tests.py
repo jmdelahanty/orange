@@ -158,6 +158,8 @@ def test_dry_run_default_does_not_open_sockets() -> None:
             "--require-citrus-perf-jsonl",
             "--validation-command",
             f"quick={sys.executable} -c \"print('dry-run-validation')\"",
+            "--validation-artifact",
+            "quick=/tmp/quick_validation.json",
         ]
     )
     require(result.returncode == 0, f"dry-run failed: {result.stderr}")
@@ -208,6 +210,10 @@ def test_dry_run_default_does_not_open_sockets() -> None:
     require(
         payload["validations"][0]["command"] == f"{sys.executable} -c \"print('dry-run-validation')\"",
         "dry-run should show validation command text",
+    )
+    require(
+        payload["validations"][0]["artifact_paths"] == ["/tmp/quick_validation.json"],
+        "dry-run should show validation artifact paths",
     )
 
 
@@ -346,8 +352,10 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
         recording_folder.mkdir()
         orange_log = root / "orange.log"
         citrus_log = root / "citrus.log"
+        validation_json = root / "validation.json"
         orange_log.write_text("orange-log\n", encoding="utf-8")
         citrus_log.write_text("citrus-log\n", encoding="utf-8")
+        validation_json.write_text("{\"ok\": true}\n", encoding="utf-8")
         args = module.parse_args(
             [
                 "--execute",
@@ -357,6 +365,8 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
                 str(orange_log),
                 "--citrus-log",
                 str(citrus_log),
+                "--validation-artifact",
+                f"orange_validation_1={validation_json}",
             ]
         )
         orchestrator = module.Orchestrator(args)
@@ -366,6 +376,12 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
             "result": "pass",
             "orange": {"recording_folder": str(recording_folder)},
             "citrus": {},
+            "validations": [
+                {
+                    "label": "orange_validation_1",
+                    "artifact_paths": [str(validation_json)],
+                }
+            ],
         }
 
         orchestrator.persist_artifacts(summary)
@@ -373,6 +389,11 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
         artifact_dir = recording_folder / "orchestrator"
         require((artifact_dir / "orange.log").read_text(encoding="utf-8") == "orange-log\n", "Orange log should be copied")
         require((artifact_dir / "citrus.log").read_text(encoding="utf-8") == "citrus-log\n", "Citrus log should be copied")
+        require(
+            (artifact_dir / "orange_validation_1_validation.json").read_text(encoding="utf-8")
+            == "{\"ok\": true}\n",
+            "validation JSON should be copied",
+        )
         artifact_summary = artifact_dir / "orchestrator_summary.json"
         require(artifact_summary.exists(), "artifact summary should be written")
         payload = json.loads(artifact_summary.read_text(encoding="utf-8"))
@@ -383,6 +404,10 @@ def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
         require(
             payload["artifacts"]["logs"]["orange"]["copied"],
             "artifact summary should report copied Orange log",
+        )
+        require(
+            payload["artifacts"]["validations"]["orange_validation_1"][0]["copied"],
+            "artifact summary should report copied validation artifact",
         )
 
 

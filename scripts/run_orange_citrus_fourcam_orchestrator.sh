@@ -61,6 +61,7 @@ Options:
   --orange-validation-command <command>
                                   Override the default Orange validator command.
   --orange-validation-json <path> Orange validator JSON output path.
+                                  Copied into <recording_folder>/orchestrator/.
   --validation-timeout-seconds <seconds>
   --orange-stop-grace-seconds <seconds>
   --stop-policy <policy>         stop_recording, citrus_completion, or none.
@@ -469,6 +470,7 @@ if (( ALLOW_PREEXISTING_SOCKETS )); then
 fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" ]]; then
   ARGS+=("--orange-validation-command" "${ORANGE_VALIDATION_COMMAND}")
+  ARGS+=("--validation-artifact" "orange_validation_1=${ORANGE_VALIDATION_JSON}")
 fi
 
 DISPLAY_ENV_ITEMS=()

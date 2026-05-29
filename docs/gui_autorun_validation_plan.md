@@ -425,7 +425,8 @@ The profile also defaults Orange/Citrus stdout logs to operation-specific
 `/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so
 later attempts do not overwrite the previous run. When Orange reports a
 recording folder, the orchestrator copies those process logs and a combined
-summary into `<recording_folder>/orchestrator/`.
+summary into `<recording_folder>/orchestrator/`. The default Orange validator
+JSON is registered as a validation artifact and copied into the same directory.
 
 During a live GUI run, query the endpoint with:
 

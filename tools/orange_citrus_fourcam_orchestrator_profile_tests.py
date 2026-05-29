@@ -132,6 +132,10 @@ def test_default_dry_run_builds_live_profile() -> None:
         validation = payload["validations"][0]
         require(validation["label"] == "orange_validation_1", "default validator should be Orange labeled")
         require(
+            validation["artifact_paths"] == ["/tmp/profile-dry_orange_gui_validation.json"],
+            "profile should preserve Orange validator JSON as an orchestrator artifact",
+        )
+        require(
             "validate_gui_ptp_recording.py" in validation["command"],
             "default validator should run the GUI PTP validator",
         )
