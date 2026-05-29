@@ -15,6 +15,8 @@ work on `exp/gop-split-a16`.
   `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute`.
 - Latest strict Orange/Citrus artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
+- Latest strict Orange/Citrus rolling artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25`.
 - The latest single-clip hardware artifact is:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
 - The latest rolling-clip hardware artifact is:
@@ -51,6 +53,32 @@ Healthy metrics from the Orange/Citrus co-run:
 - The orchestrator copied Orange/Citrus logs, validation JSON, and the combined
   summary into the recording folder, then cleaned up the launched Citrus
   process group and removed the local-control sockets.
+
+Healthy metrics from the Orange/Citrus rolling co-run:
+
+- Operation id: `orange-citrus-rolling-live-011`.
+- Command shape:
+  `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute --record-seconds 6 --warmup-seconds 2 --clip-seconds 2`.
+- Orange artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25`.
+- Orchestrator summary:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25/orchestrator/orchestrator_summary.json`.
+- Citrus perf JSONL:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25/citrus/2026-05-29T01-55-28Z_citrus_perf_129108.jsonl`.
+- Result: `PASS (0 warnings)` with `recording_session.json` mode
+  `rolling_clips`, `record_for_seconds=6`, and `clip_seconds=2`.
+- Full-frame external IPC: all four cameras wrote `2183` frames, rolling clip
+  artifacts, and valid high-bitrate `4512x4512` MP4 content.
+- Crop external IPC: all four crop streams received/encoded `2183/2183`
+  frames with `0` drops and `11` rolling crop clips per camera. Queue depth was
+  `128`; high-water was `22/44/40/42`.
+- YOLO steady detect p95 was `3.964/3.959/3.964/3.957 ms`; YOLO queue p95 was
+  `0.014/0.016/0.014/0.014 ms`.
+- GUI Citrus-safe profile stayed near its cap: hidden-preview p05 `27.5`,
+  p50 `29.9`, mean `30.5`.
+- Citrus completed `good_cop_bad_cop_demo.json` with terminal state
+  `completed` and reason `protocol_finished`; the orchestrator cleaned up the
+  launched Citrus process group and local-control sockets.
 
 Healthy metrics from the single-clip run:
 

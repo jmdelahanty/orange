@@ -700,6 +700,14 @@ Orange/Citrus co-run queue-pressure update, 2026-05-28:
   four-camera co-run queue as sufficient for the short Citrus profile, while
   preserving the need to monitor `enqueue_age_p95_ms` and high-water in longer
   soaks.
+- The short rolling Orange/Citrus profile is also live-proven:
+  `orange-citrus-rolling-live-011` at
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25` used
+  `record_for_seconds=6` and `clip_seconds=2`, passed with `0` warnings, and
+  validated both full-frame and crop rolling artifacts. All four crop streams
+  received/encoded `2183/2183` frames with `0` drops, wrote `11` rolling crop
+  clips per camera, and reported crop queue high-water `22/44/40/42` at depth
+  `128`.
 
 Earlier two-camera GUI validation:
 

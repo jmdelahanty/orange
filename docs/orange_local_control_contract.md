@@ -455,3 +455,18 @@ orchestrated run. It intentionally does not enforce the old `45 fps` GUI p05
 threshold because Citrus-safe mode caps Orange's GUI loop at `30 fps`. Use
 `--skip-orange-validation` for lifecycle-only diagnostics or
 `--orange-validation-command` to replace the default.
+
+The wrapper also forwards rolling-control options to the launched Orange
+profile:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh \
+  --execute \
+  --record-seconds 6 \
+  --warmup-seconds 2 \
+  --clip-seconds 2
+```
+
+When `--clip-seconds` is present, the default validator expects
+`recording_session.json` mode `rolling_clips` and checks both the requested
+recording duration and clip duration.
