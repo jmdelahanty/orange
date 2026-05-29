@@ -686,6 +686,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         "gui_event_count": 0,
         "invalid_row_count": 0,
         "events": {},
+        "gui_lifecycle_events": [],
         "request_ids": [],
         "operation_ids": [],
         "last_gui_event": "",
@@ -707,6 +708,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     request_ids: set[str] = set()
     operation_ids: set[str] = set()
     events: dict[str, int] = {}
+    gui_lifecycle_events: list[dict[str, Any]] = []
     try:
         with log_path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -734,6 +736,16 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
                     if event:
                         events[event] = events.get(event, 0) + 1
                         summary["last_gui_event"] = event
+                    lifecycle_event = {
+                        "event": event,
+                        "request_id": row.get("request_id", ""),
+                        "operation_id": row.get("operation_id", ""),
+                        "method": row.get("method", ""),
+                        "command_source": row.get("command_source", ""),
+                        "terminal_state": row.get("terminal_state", ""),
+                        "reason": row.get("reason", ""),
+                    }
+                    gui_lifecycle_events.append(lifecycle_event)
                     request_id = row.get("request_id")
                     operation_id = row.get("operation_id")
                 else:
@@ -748,6 +760,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         summary["read_error"] = str(exc)
 
     summary["events"] = dict(sorted(events.items()))
+    summary["gui_lifecycle_events"] = gui_lifecycle_events
     summary["request_ids"] = sorted(request_ids)
     summary["operation_ids"] = sorted(operation_ids)
     summary["has_start_triggered"] = events.get("recording_start_triggered", 0) > 0
@@ -758,6 +771,107 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     )
     summary["has_drain_finalized"] = events.get("recording_drain_finalized", 0) > 0
     return summary
+
+
+def event_log_lifecycle_events_for_request(
+    event_log: dict[str, Any],
+    request_id: str,
+    *,
+    event_name: str | None = None,
+) -> list[dict[str, Any]]:
+    rows = event_log.get("gui_lifecycle_events", [])
+    if not isinstance(rows, list):
+        return []
+    matches: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("request_id", "")) != request_id:
+            continue
+        if event_name is not None and str(row.get("event", "")) != event_name:
+            continue
+        matches.append(row)
+    return matches
+
+
+def check_stop_lifecycle_event_details(
+    event_log: dict[str, Any],
+    *,
+    stop_status: dict[str, Any],
+    stop_policy: str,
+) -> list[str]:
+    if stop_policy == "none":
+        return []
+    stop_request_id = str(stop_status.get("request_id", ""))
+    if not stop_request_id:
+        return []
+
+    failures: list[str] = []
+    trigger_events = event_log_lifecycle_events_for_request(
+        event_log,
+        stop_request_id,
+        event_name="recording_stop_triggered",
+    )
+    finalize_events = event_log_lifecycle_events_for_request(
+        event_log,
+        stop_request_id,
+        event_name="recording_drain_finalized",
+    )
+    if not trigger_events:
+        failures.append(
+            "Orange local-control event log missing recording_stop_triggered "
+            f"for request_id={stop_request_id}"
+        )
+    if not finalize_events:
+        failures.append(
+            "Orange local-control event log missing recording_drain_finalized "
+            f"for request_id={stop_request_id}"
+        )
+
+    if stop_policy != "citrus_completion_notify":
+        return failures
+
+    expected_method = "citrus_completion"
+    expected_source = "citrus"
+    expected_operation_id = str(stop_status.get("operation_id", ""))
+    expected_terminal_state = str(stop_status.get("terminal_state", ""))
+    expected_reason = str(stop_status.get("reason", ""))
+    for event_name, rows in (
+        ("recording_stop_triggered", trigger_events),
+        ("recording_drain_finalized", finalize_events),
+    ):
+        for row in rows:
+            if str(row.get("method", "")) != expected_method:
+                failures.append(
+                    "Orange local-control event log "
+                    f"{event_name} method={row.get('method', '')!r}; "
+                    f"expected {expected_method!r}"
+                )
+            if str(row.get("command_source", "")) != expected_source:
+                failures.append(
+                    "Orange local-control event log "
+                    f"{event_name} command_source={row.get('command_source', '')!r}; "
+                    f"expected {expected_source!r}"
+                )
+            if expected_operation_id and str(row.get("operation_id", "")) != expected_operation_id:
+                failures.append(
+                    "Orange local-control event log "
+                    f"{event_name} operation_id={row.get('operation_id', '')!r}; "
+                    f"expected {expected_operation_id!r}"
+                )
+            if expected_terminal_state and str(row.get("terminal_state", "")) != expected_terminal_state:
+                failures.append(
+                    "Orange local-control event log "
+                    f"{event_name} terminal_state={row.get('terminal_state', '')!r}; "
+                    f"expected {expected_terminal_state!r}"
+                )
+            if expected_reason and str(row.get("reason", "")) != expected_reason:
+                failures.append(
+                    "Orange local-control event log "
+                    f"{event_name} reason={row.get('reason', '')!r}; "
+                    f"expected {expected_reason!r}"
+                )
+    return failures
 
 
 def check_orange_local_control_event_log(
@@ -807,6 +921,13 @@ def check_orange_local_control_event_log(
             failures.append("Orange local-control event log missing recording_stop_triggered")
         if not event_log.get("has_drain_finalized", False):
             failures.append("Orange local-control event log missing recording_drain_finalized")
+        failures.extend(
+            check_stop_lifecycle_event_details(
+                event_log,
+                stop_status=stop_status,
+                stop_policy=stop_policy,
+            )
+        )
     if orange_recording_stop_drain_timed_out(orange_status):
         if not event_log.get("has_drain_timeout", False):
             failures.append("Orange status reports drain timeout but event log lacks recording_drain_timeout")

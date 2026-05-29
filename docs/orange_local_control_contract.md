@@ -505,7 +505,12 @@ finalization events were observed. When
 `--require-orange-local-control-event-log` is enabled,
 the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
-fails the orchestrator before post-run validators execute. Use
+fails the orchestrator before post-run validators execute. Required event-log
+checks are request-specific: stop-trigger and drain-finalized GUI lifecycle
+events must match the final Orange stop request id, and
+`citrus_completion_notify` runs must show `method=citrus_completion`,
+`command_source=citrus`, and matching Citrus terminal state/reason in those
+events. Use
 `--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
 expected observation rather than a pass/fail gate. That flag does not allow an
 inconsistent timeout status: if `drain_timed_out=true`, the orchestrator still

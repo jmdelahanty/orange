@@ -1159,6 +1159,9 @@ def test_orange_local_control_event_log_summary() -> None:
                 "event_at_utc": "2026-05-29T00:00:01Z",
                 "request_id": "stop-req",
                 "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_stop",
             },
             {
                 "schema_id": "orange.local_control.gui_event",
@@ -1167,6 +1170,9 @@ def test_orange_local_control_event_log_summary() -> None:
                 "event_at_utc": "2026-05-29T00:00:02Z",
                 "request_id": "stop-req",
                 "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_stop",
             },
             {
                 "schema_id": "orange.local_control.gui_event",
@@ -1206,6 +1212,16 @@ def test_orange_local_control_event_log_summary() -> None:
         require(summary["has_drain_finalized"], "drain-finalized flag should be true")
         require(summary["request_ids"] == ["start-req", "stop-req"], "request ids should summarize")
         require(summary["operation_ids"] == ["op-log"], "operation ids should summarize")
+        stop_events = module.event_log_lifecycle_events_for_request(
+            summary,
+            "stop-req",
+            event_name="recording_stop_triggered",
+        )
+        require(len(stop_events) == 1, "stop trigger lifecycle event should summarize")
+        require(
+            stop_events[0]["method"] == "stop_recording",
+            "lifecycle event should preserve stop method",
+        )
 
 
 def test_orange_local_control_event_log_required_check() -> None:
@@ -1230,6 +1246,27 @@ def test_orange_local_control_event_log_required_check() -> None:
         "has_drain_timeout": False,
         "has_forced_finalize_requested": False,
         "has_drain_finalized": True,
+        "gui_lifecycle_events": [
+            {
+                "event": "recording_start_triggered",
+                "request_id": "op-log:orange:start_recording",
+                "operation_id": "op-log",
+            },
+            {
+                "event": "recording_stop_triggered",
+                "request_id": "op-log:orange:stop_recording",
+                "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+            },
+            {
+                "event": "recording_drain_finalized",
+                "request_id": "op-log:orange:stop_recording",
+                "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+            },
+        ],
     }
     ok_check = module.check_orange_local_control_event_log(
         event_log,
@@ -1301,6 +1338,81 @@ def test_orange_local_control_event_log_required_check() -> None:
     require(
         timeout_ok_check["ok"],
         f"timeout event log with forced-finalize evidence should pass: {timeout_ok_check}",
+    )
+
+    notify_status = orange_status(
+        True,
+        True,
+        stop_method="citrus_completion",
+        stop_source="citrus",
+        operation_id="op-log",
+        terminal_state="stopped",
+        reason="stopped_by_local_control",
+    )
+    notify_status["local_control"]["recording_stop"][
+        "request_id"
+    ] = "citrus_completion:op-log:stopped:stopped_by_local_control"
+    notify_event_log = dict(event_log)
+    notify_event_log["request_ids"] = [
+        "op-log:orange:start_recording",
+        "citrus_completion:op-log:stopped:stopped_by_local_control",
+    ]
+    notify_event_log["gui_lifecycle_events"] = [
+        {
+            "event": "recording_start_triggered",
+            "request_id": "op-log:orange:start_recording",
+            "operation_id": "op-log",
+        },
+        {
+            "event": "recording_stop_triggered",
+            "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
+            "operation_id": "op-log",
+            "method": "citrus_completion",
+            "command_source": "citrus",
+            "terminal_state": "stopped",
+            "reason": "stopped_by_local_control",
+        },
+        {
+            "event": "recording_drain_finalized",
+            "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
+            "operation_id": "op-log",
+            "method": "citrus_completion",
+            "command_source": "citrus",
+            "terminal_state": "stopped",
+            "reason": "stopped_by_local_control",
+        },
+    ]
+    notify_ok_check = module.check_orange_local_control_event_log(
+        notify_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="citrus_completion_notify",
+        orange_status=notify_status,
+    )
+    require(
+        notify_ok_check["ok"],
+        f"Citrus notify event log should prove method/source/terminal: {notify_ok_check}",
+    )
+
+    notify_bad_event_log = dict(notify_event_log)
+    notify_bad_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in notify_event_log["gui_lifecycle_events"]
+    ]
+    notify_bad_event_log["gui_lifecycle_events"][1]["command_source"] = "orange_citrus_orchestrator"
+    notify_bad_check = module.check_orange_local_control_event_log(
+        notify_bad_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="citrus_completion_notify",
+        orange_status=notify_status,
+    )
+    require(
+        not notify_bad_check["ok"],
+        "Citrus notify event log should fail when trigger event source is not Citrus",
+    )
+    require(
+        any("command_source" in failure for failure in notify_bad_check["failures"]),
+        "Citrus notify event-log failure should name command_source",
     )
 
 

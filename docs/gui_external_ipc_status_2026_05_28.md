@@ -485,6 +485,10 @@ without sending its own Orange stop request, and validates that
 `command_source=citrus` and `ack_state=executed`. The orchestrator also checks
 the final Orange status before artifact validation and records
 `orange.local_control_citrus_notify_stop_status_check` in the combined summary.
+When Orange local-control event-log evidence is required, the event-log gate
+also verifies that the stop-trigger and drain-finalized GUI lifecycle events for
+that request id carry the Citrus completion method/source and terminal
+metadata.
 
 To run the same path as a STOP ALL-like diagnostic where Citrus stops itself
 before notifying Orange, add a finite Citrus run duration:
