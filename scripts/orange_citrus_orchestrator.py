@@ -947,6 +947,75 @@ def check_stop_lifecycle_event_details(
     return failures
 
 
+def check_start_lifecycle_event_details(
+    event_log: dict[str, Any],
+    *,
+    operation_id: str,
+) -> list[str]:
+    if not operation_id:
+        return []
+
+    start_request_id = f"{operation_id}:orange:start_recording"
+    failures: list[str] = []
+    socket_events = event_log_socket_events_for_request(event_log, start_request_id)
+    trigger_events = event_log_lifecycle_events_for_request(
+        event_log,
+        start_request_id,
+        event_name="recording_start_triggered",
+    )
+    if not socket_events:
+        failures.append(
+            "Orange local-control event log missing start socket request/response "
+            f"for request_id={start_request_id}"
+        )
+    if not trigger_events:
+        failures.append(
+            "Orange local-control event log missing recording_start_triggered "
+            f"for request_id={start_request_id}"
+        )
+
+    expected_source = ""
+    for row in socket_events:
+        if not bool(row.get("ok", False)):
+            failures.append(
+                "Orange local-control event log start socket request "
+                f"ok={row.get('ok', False)!r}; expected True"
+            )
+        if not bool(row.get("accepted", False)):
+            failures.append(
+                "Orange local-control event log start socket request "
+                f"accepted={row.get('accepted', False)!r}; expected True"
+            )
+        if str(row.get("method", "")) != "start_recording":
+            failures.append(
+                "Orange local-control event log start socket request "
+                f"method={row.get('method', '')!r}; expected 'start_recording'"
+            )
+        if str(row.get("operation_id", "")) != operation_id:
+            failures.append(
+                "Orange local-control event log start socket request "
+                f"operation_id={row.get('operation_id', '')!r}; "
+                f"expected {operation_id!r}"
+            )
+        if not expected_source and str(row.get("source", "")):
+            expected_source = str(row.get("source", ""))
+
+    for row in trigger_events:
+        if str(row.get("operation_id", "")) != operation_id:
+            failures.append(
+                "Orange local-control event log recording_start_triggered "
+                f"operation_id={row.get('operation_id', '')!r}; "
+                f"expected {operation_id!r}"
+            )
+        if expected_source and str(row.get("command_source", "")) != expected_source:
+            failures.append(
+                "Orange local-control event log recording_start_triggered "
+                f"command_source={row.get('command_source', '')!r}; "
+                f"expected {expected_source!r}"
+            )
+    return failures
+
+
 def check_orange_local_control_event_log(
     event_log: dict[str, Any],
     *,
@@ -987,6 +1056,12 @@ def check_orange_local_control_event_log(
         failures.append("Orange local-control event log has no GUI-thread lifecycle rows")
     if not event_log.get("has_start_triggered", False):
         failures.append("Orange local-control event log missing recording_start_triggered")
+    failures.extend(
+        check_start_lifecycle_event_details(
+            event_log,
+            operation_id=operation_id,
+        )
+    )
     if stop_policy != "none":
         if not stop_request_id:
             failures.append("Orange status missing local_control.recording_stop.request_id")

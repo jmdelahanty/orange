@@ -1281,6 +1281,8 @@ def test_orange_local_control_event_log_required_check() -> None:
                 "event": "recording_start_triggered",
                 "request_id": "op-log:orange:start_recording",
                 "operation_id": "op-log",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_start",
             },
             {
                 "event": "recording_stop_triggered",
@@ -1308,6 +1310,68 @@ def test_orange_local_control_event_log_required_check() -> None:
         orange_status=status,
     )
     require(ok_check["ok"], f"valid event log should pass: {ok_check}")
+
+    missing_start_socket_event_log = dict(event_log)
+    missing_start_socket_event_log["socket_request_events"] = [
+        dict(event_log["socket_request_events"][1])
+    ]
+    missing_start_socket_check = module.check_orange_local_control_event_log(
+        missing_start_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_start_socket_check["ok"],
+        "event log should fail when start request has no socket row",
+    )
+    require(
+        any("start socket request/response" in failure for failure in missing_start_socket_check["failures"]),
+        "missing start socket row failure should name start socket request/response",
+    )
+
+    rejected_start_socket_event_log = dict(event_log)
+    rejected_start_socket_event_log["socket_request_events"] = [
+        dict(row) for row in event_log["socket_request_events"]
+    ]
+    rejected_start_socket_event_log["socket_request_events"][0]["accepted"] = False
+    rejected_start_socket_check = module.check_orange_local_control_event_log(
+        rejected_start_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not rejected_start_socket_check["ok"],
+        "event log should fail when start socket row was not accepted",
+    )
+    require(
+        any("start socket request" in failure and "accepted" in failure for failure in rejected_start_socket_check["failures"]),
+        "rejected start socket row failure should name accepted state",
+    )
+
+    bad_start_source_event_log = dict(event_log)
+    bad_start_source_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in event_log["gui_lifecycle_events"]
+    ]
+    bad_start_source_event_log["gui_lifecycle_events"][0]["command_source"] = "unexpected"
+    bad_start_source_check = module.check_orange_local_control_event_log(
+        bad_start_source_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_start_source_check["ok"],
+        "event log should fail when start trigger source mismatches socket source",
+    )
+    require(
+        any("recording_start_triggered" in failure and "command_source" in failure for failure in bad_start_source_check["failures"]),
+        "bad start trigger source failure should name command_source",
+    )
 
     missing_socket_event_log = dict(event_log)
     missing_socket_event_log["socket_request_events"] = [
@@ -1495,6 +1559,8 @@ def test_orange_local_control_event_log_required_check() -> None:
             "event": "recording_start_triggered",
             "request_id": "op-log:orange:start_recording",
             "operation_id": "op-log",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_start",
         },
         {
             "event": "recording_stop_triggered",

@@ -509,10 +509,12 @@ finalization events were observed. When
 the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
 fails the orchestrator before post-run validators execute. Required event-log
-checks are request-specific: the accepted `ok=true` socket request/response row,
-stop-trigger GUI lifecycle row, and drain-finalized GUI lifecycle row must
-match the final Orange stop request id and the final stop metadata reported by
-Orange: method, command source, operation id, terminal state, and reason when
+checks are request-specific. The start request must have an accepted `ok=true`
+socket request/response row and a matching `recording_start_triggered` GUI
+lifecycle row. The stop request must have an accepted `ok=true` socket
+request/response row, a stop-trigger GUI lifecycle row, and a drain-finalized
+GUI lifecycle row matching the final Orange stop request id and final stop
+metadata: method, command source, operation id, terminal state, and reason when
 present. `citrus_completion_notify` runs additionally require the final stop
 metadata and those socket/lifecycle events to show `method=citrus_completion`
 and `command_source=citrus` / socket `source=citrus`. Use
