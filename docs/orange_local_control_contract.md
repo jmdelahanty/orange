@@ -61,6 +61,15 @@ Local-control recording start is disabled by default; enable it only for
 orchestrator tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1` or
 `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START=1`.
 
+For a hands-on four-camera Orange GUI session that should still accept Citrus
+STOP ALL / completion-stop requests, use the four-camera launcher option
+`--manual-local-control`. It sets `ORANGE_GUI_AUTORUN=0`, keeps
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START` disabled so the operator owns
+recording start, and enables `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`
+plus `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`. It also keeps
+`ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0` so the GUI remains open after
+manual validation.
+
 The GUI validation launcher and installed sudo wrapper forward these variables
 when paths point under `/tmp`, `/run/user/1000`, or
 `/home/jeremy/orange_data`.

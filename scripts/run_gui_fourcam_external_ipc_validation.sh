@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREVIEW_MODE="${ORANGE_GUI_FOURCAM_PREVIEW_MODE:-hidden}"
 DISPLAY_PROFILE="${ORANGE_GUI_FOURCAM_DISPLAY_PROFILE:-fast}"
+MANUAL_LOCAL_CONTROL=0
 
 usage() {
   cat <<'EOF'
@@ -34,6 +35,8 @@ Options:
   --record-seconds <seconds>  Override autorun recording duration.
   --warmup-seconds <seconds>  Override autorun stream warmup duration.
   --clip-seconds <seconds>    Enable GUI rolling clips with this clip duration.
+  --manual-local-control      Disable autorun, keep the GUI operator-owned,
+                              and enable local-control/Citrus stop requests.
   --allow-main-video-content-failure <serials>
                              Treat listed no-lens/invalid-content cameras as
                              allowed main-video content failures in printed
@@ -127,6 +130,10 @@ while [[ $# -gt 0 ]]; do
       export ORANGE_GUI_CLIP_SECONDS="$1"
       shift
       ;;
+    --manual-local-control)
+      MANUAL_LOCAL_CONTROL=1
+      shift
+      ;;
     --allow-main-video-content-failure)
       shift
       [[ $# -gt 0 ]] || { echo "--allow-main-video-content-failure requires a value" >&2; exit 2; }
@@ -188,6 +195,15 @@ case "${DISPLAY_PROFILE}" in
     exit 2
     ;;
 esac
+
+if (( MANUAL_LOCAL_CONTROL )); then
+  export ORANGE_GUI_AUTORUN=0
+  export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0
+  export ORANGE_GUI_LOCAL_CONTROL_DISABLE=0
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1
+  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1
+  export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
+fi
 
 export ORANGE_GUI_CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam}"
 export ORANGE_GUI_EXPECT_CAMERAS="${ORANGE_GUI_EXPECT_CAMERAS:-2010093,2010094,2010095,2010096}"

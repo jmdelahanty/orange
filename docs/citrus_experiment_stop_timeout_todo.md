@@ -286,6 +286,17 @@ Refs:
   - Orange persisted `method=citrus_completion`, `command_source=citrus`,
     `grace_seconds=10`, and `ack_state=executed`.
 - [ ] Test manual STOP ALL in Citrus.
+  - Launch Orange with
+    `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --citrus-display-safe --manual-local-control`
+    so the GUI remains operator-owned but Citrus completion/stop requests are
+    enabled.
+  - Start recording manually in Orange, start the Citrus experiment, then click
+    STOP ALL in Citrus.
+  - Expected Orange artifact: `recording.control.method="citrus_completion"`,
+    `recording.control.terminal_state="stopped"`,
+    `recording.control.reason="stopped_by_local_control"` or equivalent Citrus
+    terminal reason, `recording.control.command_source="citrus"`, and
+    `recording.control.ack_state="executed"`.
 - [x] Test duplicate stop-control packets:
   - socket-layer duplicate `request_id`,
   - socket-layer duplicate `method + operation_id`,

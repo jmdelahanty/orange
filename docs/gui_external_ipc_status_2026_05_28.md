@@ -333,6 +333,25 @@ scripts/run_orange_citrus_fourcam_orchestrator.sh \
   --citrus-run-seconds 6
 ```
 
+Manual Orange GUI session with Citrus/STOP ALL local-control stop enabled:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+DISPLAY=:1 \
+  XAUTHORITY=/run/user/1000/gdm/Xauthority \
+  XDG_RUNTIME_DIR=/run/user/1000 \
+  XDG_SESSION_TYPE=x11 \
+  ./scripts/run_gui_fourcam_external_ipc_validation.sh \
+    --hidden-crop-preview \
+    --citrus-display-safe \
+    --manual-local-control
+```
+
+This leaves recording start operator-owned in the GUI, enables Orange
+`citrus_completion` / recording-stop local control, and keeps Orange open after
+finalization. Use this mode for the manual Citrus STOP ALL validation; a plain
+manual GUI launch leaves those stop gates disabled.
+
 Earlier GUI-only no-lens-safe single-clip run:
 
 ```bash
