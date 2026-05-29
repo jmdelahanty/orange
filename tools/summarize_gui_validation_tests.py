@@ -822,6 +822,7 @@ def test_recording_session_summary_reports_local_control_stop() -> None:
                     "forced_finalize_requested": True,
                     "forced_finalize_stream_stop_requested": True,
                     "forced_finalize_requested_at_utc": "2026-05-29T00:41:03Z",
+                    "ack_state": "failed_timeout",
                     "health": "warning",
                     "error_code": "drain_timeout",
                     "last_event": "finalized_after_drain_timeout",
@@ -868,6 +869,10 @@ def test_recording_session_summary_reports_local_control_stop() -> None:
         require(
             local_control_stop["forced_finalize_stream_stop_requested"],
             "local-control stop forced stream-stop request should be summarized",
+        )
+        require(
+            local_control_stop["ack_state"] == "failed_timeout",
+            "local-control stop ACK state should be summarized",
         )
         require(
             local_control_stop["last_event"] == "finalized_after_drain_timeout",

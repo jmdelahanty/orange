@@ -1494,6 +1494,7 @@ def summarize_recording_session(manifest: dict[str, Any]) -> dict[str, Any]:
             "forced_finalize_requested",
             "forced_finalize_stream_stop_requested",
             "forced_finalize_requested_at_utc",
+            "ack_state",
             "health",
             "error_code",
             "last_event",
@@ -1613,6 +1614,7 @@ def print_human(summary: dict[str, Any]) -> None:
                 f"operation_id={local_control_stop.get('operation_id', 'unknown')} "
                 f"source={local_control_stop.get('command_source', 'unknown')} "
                 f"reason={local_control_stop.get('reason', 'unknown')} "
+                f"ack_state={local_control_stop.get('ack_state', 'unknown')} "
                 f"drain_timed_out={local_control_stop.get('drain_timed_out', 'unknown')} "
                 "forced_stream_stop="
                 f"{local_control_stop.get('forced_finalize_stream_stop_requested', 'unknown')}"
