@@ -218,6 +218,13 @@ path:
 - validate `recording_session.json`, `recording_snapshot.json`, and external
   recorder finalization artifacts
 
+For local-control stops, finalized GUI `recording_session.json` manifests also
+persist stop provenance under `recording.control`: method, request id,
+operation id, source, Citrus experiment fields when present, receive timestamp,
+trigger timestamp, grace seconds, and the configured drain-timeout threshold.
+This makes the artifact self-describing even after the socket server and
+orchestrator process have exited.
+
 Orange also records local-control drain observability after a triggered stop.
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` sets the telemetry threshold,
 falling back to `ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS`; the default is

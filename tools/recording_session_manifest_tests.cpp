@@ -83,6 +83,13 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
     options.recording_folder = "/tmp/orange_session_manifest_single";
     options.status = "completed";
     options.recording_backend = {{"mode", "external_ipc"}, {"status", "completed"}};
+    options.recording_stop_control = {
+        {"source", "orange_gui_local_control"},
+        {"method", "stop_recording"},
+        {"request_id", "req-stop-1"},
+        {"operation_id", "op-stop-1"},
+        {"received_at_utc", "2026-05-29T00:00:00Z"}
+    };
     options.cameras.push_back(make_camera_artifact("2010096", 300));
     options.recording_outputs.push_back(
         make_external_crop_output("2010096", "single_clip", 300));
@@ -109,6 +116,12 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
             "single-clip compatibility clip should include full output");
     require(clip_outputs.value("2010096", nlohmann::json::object()).contains("crop"),
             "single-clip compatibility clip should include crop output");
+    require(
+        manifest["recording"]["control"].value("request_id", std::string()) == "req-stop-1",
+        "single-clip manifest should preserve local-control stop request id");
+    require(
+        manifest["recording"]["control"].value("operation_id", std::string()) == "op-stop-1",
+        "single-clip manifest should preserve local-control stop operation id");
 }
 
 void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
@@ -121,6 +134,14 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
     options.recording_control.record_for_seconds = 6;
     options.recording_control.clip_seconds = 2;
     options.recording_backend = {{"mode", "external_ipc"}, {"status", "completed"}};
+    options.recording_stop_control = {
+        {"source", "orange_gui_local_control"},
+        {"method", "citrus_completion"},
+        {"request_id", "req-completion-1"},
+        {"operation_id", "op-completion-1"},
+        {"terminal_state", "completed"},
+        {"received_at_utc", "2026-05-29T00:01:00Z"}
+    };
     options.camera_serials.push_back("2010096");
     options.recording_outputs.push_back(
         make_external_crop_output("2010096", "session_aggregate", 601));
@@ -166,6 +187,12 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
             "rolling clip should include clip-scoped crop output");
     require(clip_camera_outputs["crop"]["details"].value("scope", std::string()) == "clip",
             "rolling clip crop output should remain clip-scoped");
+    require(
+        manifest["recording"]["control"].value("method", std::string()) == "citrus_completion",
+        "rolling manifest should preserve local-control stop method");
+    require(
+        manifest["recording"]["control"].value("operation_id", std::string()) == "op-completion-1",
+        "rolling manifest should preserve local-control stop operation id");
 }
 
 }  // namespace

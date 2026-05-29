@@ -744,6 +744,12 @@ Current schema:
   "recording": {
     "started": true,
     "stop_reason": "record_for_seconds_elapsed",
+    "control": {
+      "source": "orange_gui_local_control",
+      "method": "stop_recording",
+      "request_id": "run-42:orange:stop_recording",
+      "operation_id": "run-42"
+    },
     "drain_completed": true,
     "actual_recording_duration_s": 6.0,
     "drain_duration_s": 0.1

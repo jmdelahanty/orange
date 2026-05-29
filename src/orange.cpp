@@ -152,6 +152,7 @@ struct GuiRecordingRunState {
     std::string recording_stop_requested_at_utc;
     std::string recording_drained_at_utc;
     std::string stop_reason = "manual_stop";
+    nlohmann::json stop_control = nlohmann::json::object();
     std::chrono::steady_clock::time_point recording_started_at{};
     std::chrono::steady_clock::time_point recording_stop_requested_at{};
     std::chrono::steady_clock::time_point recording_drained_at{};
@@ -1548,6 +1549,7 @@ bool gui_write_external_rolling_recording_session_manifest(
     manifest_options.rollover_implementation =
         orange::external_recorder::kExternalRecorderRollingImplementation;
     manifest_options.rollover_next_writer_preopened = false;
+    manifest_options.recording_stop_control = run.stop_control;
     manifest_options.recording_backend = std::move(rolling_recording_backend);
     manifest_options.recording_outputs = session_recording_outputs;
     manifest_options.camera_serials = std::move(camera_serials);
@@ -1687,13 +1689,15 @@ void gui_note_recording_started(GuiRecordingRunState* run,
     run->recording_drained_at = {};
     run->recording_drained_at_utc.clear();
     run->stop_reason = "manual_stop";
+    run->stop_control = nlohmann::json::object();
     if (camera_control) {
         camera_control->preserve_recording_session_state = true;
     }
 }
 
 void gui_note_recording_stop_requested(GuiRecordingRunState* run,
-                                       const std::string& stop_reason)
+                                       const std::string& stop_reason,
+                                       nlohmann::json stop_control = nlohmann::json::object())
 {
     if (!run || !run->active) {
         return;
@@ -1701,6 +1705,8 @@ void gui_note_recording_stop_requested(GuiRecordingRunState* run,
     if (!run->finalizing) {
         run->recording_stop_requested_at = std::chrono::steady_clock::now();
         run->recording_stop_requested_at_utc = get_current_utc_timestamp();
+        run->stop_control =
+            stop_control.is_object() ? std::move(stop_control) : nlohmann::json::object();
     }
     run->finalizing = true;
     run->stop_reason = stop_reason.empty() ? "manual_stop" : stop_reason;
@@ -2617,6 +2623,7 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         manifest_options.drain_duration_s =
             gui_elapsed_seconds_between(run->recording_stop_requested_at, run->recording_drained_at);
         manifest_options.timed_stop_hit = false;
+        manifest_options.recording_stop_control = run->stop_control;
         manifest_options.recording_backend = recording_backend;
         manifest_options.cameras = std::move(camera_artifacts);
         if (cameras_params && cameras_select) {
@@ -2903,9 +2910,13 @@ void gui_request_recording_stop_through_operator_path(
     CameraControl* camera_control,
     GuiRecordingRunState* recording_run,
     GuiSessionTimingState* timing,
-    const std::string& stop_reason)
+    const std::string& stop_reason,
+    nlohmann::json stop_control = nlohmann::json::object())
 {
-    gui_note_recording_stop_requested(recording_run, stop_reason);
+    gui_note_recording_stop_requested(
+        recording_run,
+        stop_reason,
+        std::move(stop_control));
     orange::session::request_drain_recording_run(recording_session, camera_control);
     gui_mark_recording_finalizing(timing);
     try_stop_timer();
@@ -3584,6 +3595,26 @@ void gui_note_local_control_stop_event(
     scheduler->last_event_at_utc = get_current_utc_timestamp();
 }
 
+nlohmann::json gui_local_control_stop_manifest_control(
+    const GuiLocalControlStopSchedulerState& scheduler)
+{
+    nlohmann::json control = {
+        {"source", "orange_gui_local_control"},
+        {"method", scheduler.method},
+        {"request_id", scheduler.request_id},
+        {"operation_id", scheduler.operation_id},
+        {"command_source", scheduler.source},
+        {"experiment_id", scheduler.experiment_id},
+        {"terminal_state", scheduler.terminal_state},
+        {"reason", scheduler.reason},
+        {"received_at_utc", scheduler.received_at_utc},
+        {"grace_seconds", scheduler.grace_seconds},
+        {"stop_triggered_at_utc", scheduler.stop_triggered_at_utc},
+        {"drain_timeout_seconds", scheduler.drain_timeout_seconds}
+    };
+    return control;
+}
+
 void gui_clear_local_control_stop_schedule(
     GuiLocalControlStopSchedulerState* scheduler)
 {
@@ -3872,7 +3903,8 @@ void gui_poll_local_control_stop_scheduler(
         camera_control,
         recording_run,
         timing,
-        stop_reason);
+        stop_reason,
+        gui_local_control_stop_manifest_control(*stop_scheduler));
     std::cout << "[GUI][local_control] triggered recording stop"
               << " method=" << stop_scheduler->method
               << " request_id=" << stop_scheduler->request_id

@@ -79,6 +79,7 @@ struct SingleClipRecordingSessionManifestOptions {
     double actual_recording_duration_s = 0.0;
     double drain_duration_s = 0.0;
     bool timed_stop_hit = false;
+    nlohmann::json recording_stop_control = nlohmann::json::object();
     nlohmann::json recording_backend = nlohmann::json::object();
     std::vector<RecordingSessionCameraArtifact> cameras;
     std::vector<RecordingOutputDescriptor> recording_outputs;
@@ -144,6 +145,7 @@ struct RollingRecordingSessionManifestOptions {
     double sum_clip_actual_duration_s = 0.0;
     std::string rollover_implementation = "headless_gop_boundary_writer_switch";
     bool rollover_next_writer_preopened = true;
+    nlohmann::json recording_stop_control = nlohmann::json::object();
     nlohmann::json recording_backend = nlohmann::json::object();
     std::vector<RecordingOutputDescriptor> recording_outputs;
     std::vector<std::string> camera_serials;

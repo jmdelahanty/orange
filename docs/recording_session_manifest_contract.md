@@ -228,6 +228,14 @@ The top-level rolling manifest uses this shape:
     "started": true,
     "stop_requested": true,
     "stop_reason": "record_for_seconds_elapsed",
+    "control": {
+      "source": "orange_gui_local_control",
+      "method": "stop_recording",
+      "request_id": "run-42:orange:stop_recording",
+      "operation_id": "run-42",
+      "received_at_utc": "2026-05-29T00:00:00Z",
+      "stop_triggered_at_utc": "2026-05-29T00:00:00Z"
+    },
     "drain_completed": true,
     "actual_recording_duration_s": 18.0,
     "sum_clip_actual_duration_s": 18.0

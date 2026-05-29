@@ -1215,6 +1215,10 @@ nlohmann::json build_single_clip_recording_session_manifest(
     if (options.recording_backend.is_object() && !options.recording_backend.empty()) {
         manifest["recording_backend"] = options.recording_backend;
     }
+    if (options.recording_stop_control.is_object() &&
+        !options.recording_stop_control.empty()) {
+        manifest["recording"]["control"] = options.recording_stop_control;
+    }
     return manifest;
 }
 
@@ -1297,6 +1301,10 @@ nlohmann::json build_rolling_clip_recording_session_manifest(
     };
     if (options.recording_backend.is_object() && !options.recording_backend.empty()) {
         manifest["recording_backend"] = options.recording_backend;
+    }
+    if (options.recording_stop_control.is_object() &&
+        !options.recording_stop_control.empty()) {
+        manifest["recording"]["control"] = options.recording_stop_control;
     }
     if (!options.recording_outputs.empty()) {
         manifest["recording_outputs"] =
