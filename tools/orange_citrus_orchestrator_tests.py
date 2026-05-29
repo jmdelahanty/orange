@@ -1258,6 +1258,7 @@ def test_orange_local_control_event_log_required_check() -> None:
                 "operation_id": "op-log",
                 "method": "stop_recording",
                 "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_stop",
             },
             {
                 "event": "recording_drain_finalized",
@@ -1265,6 +1266,7 @@ def test_orange_local_control_event_log_required_check() -> None:
                 "operation_id": "op-log",
                 "method": "stop_recording",
                 "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_stop",
             },
         ],
     }
@@ -1276,6 +1278,27 @@ def test_orange_local_control_event_log_required_check() -> None:
         orange_status=status,
     )
     require(ok_check["ok"], f"valid event log should pass: {ok_check}")
+
+    bad_stop_event_log = dict(event_log)
+    bad_stop_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in event_log["gui_lifecycle_events"]
+    ]
+    bad_stop_event_log["gui_lifecycle_events"][1]["method"] = "citrus_completion"
+    bad_stop_check = module.check_orange_local_control_event_log(
+        bad_stop_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_stop_check["ok"],
+        "stop_recording event log should fail when trigger method mismatches final status",
+    )
+    require(
+        any("method" in failure for failure in bad_stop_check["failures"]),
+        "stop_recording event-log failure should name method mismatch",
+    )
 
     missing_check = module.check_orange_local_control_event_log(
         {"path": "/tmp/missing.events.jsonl", "exists": False},

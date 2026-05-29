@@ -807,6 +807,11 @@ def check_stop_lifecycle_event_details(
         return []
 
     failures: list[str] = []
+    expected_method = str(stop_status.get("method", ""))
+    expected_source = str(stop_status.get("source", stop_status.get("command_source", "")))
+    expected_operation_id = str(stop_status.get("operation_id", ""))
+    expected_terminal_state = str(stop_status.get("terminal_state", ""))
+    expected_reason = str(stop_status.get("reason", ""))
     trigger_events = event_log_lifecycle_events_for_request(
         event_log,
         stop_request_id,
@@ -828,26 +833,18 @@ def check_stop_lifecycle_event_details(
             f"for request_id={stop_request_id}"
         )
 
-    if stop_policy != "citrus_completion_notify":
-        return failures
-
-    expected_method = "citrus_completion"
-    expected_source = "citrus"
-    expected_operation_id = str(stop_status.get("operation_id", ""))
-    expected_terminal_state = str(stop_status.get("terminal_state", ""))
-    expected_reason = str(stop_status.get("reason", ""))
     for event_name, rows in (
         ("recording_stop_triggered", trigger_events),
         ("recording_drain_finalized", finalize_events),
     ):
         for row in rows:
-            if str(row.get("method", "")) != expected_method:
+            if expected_method and str(row.get("method", "")) != expected_method:
                 failures.append(
                     "Orange local-control event log "
                     f"{event_name} method={row.get('method', '')!r}; "
                     f"expected {expected_method!r}"
                 )
-            if str(row.get("command_source", "")) != expected_source:
+            if expected_source and str(row.get("command_source", "")) != expected_source:
                 failures.append(
                     "Orange local-control event log "
                     f"{event_name} command_source={row.get('command_source', '')!r}; "
@@ -871,6 +868,17 @@ def check_stop_lifecycle_event_details(
                     f"{event_name} reason={row.get('reason', '')!r}; "
                     f"expected {expected_reason!r}"
                 )
+    if stop_policy == "citrus_completion_notify":
+        if expected_method != "citrus_completion":
+            failures.append(
+                "Orange local-control event log expected final stop method "
+                f"'citrus_completion' for notify policy, got {expected_method!r}"
+            )
+        if expected_source != "citrus":
+            failures.append(
+                "Orange local-control event log expected final stop source "
+                f"'citrus' for notify policy, got {expected_source!r}"
+            )
     return failures
 
 
