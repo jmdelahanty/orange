@@ -62,6 +62,11 @@ def test_default_dry_run_builds_live_profile() -> None:
             "profile should default Orange log to an operation-specific path",
         )
         require(
+            orange["local_control_event_log_path"]
+            == "/tmp/profile-dry_orange_local_control.events.jsonl",
+            "profile should default Orange local-control events to an operation-specific path",
+        )
+        require(
             citrus["log_path"] == "/tmp/profile-dry_citrus.log",
             "profile should default Citrus log to an operation-specific path",
         )
@@ -107,6 +112,11 @@ def test_default_dry_run_builds_live_profile() -> None:
         require(
             orange_env["ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE"] == "1",
             "orchestrator should close launched Orange after local-control finalization",
+        )
+        require(
+            orange_env["ORANGE_GUI_LOCAL_CONTROL_LOG"]
+            == "/tmp/profile-dry_orange_local_control.events.jsonl",
+            "profile should pass the operation-scoped local-control event log to Orange",
         )
         require(
             citrus_env["CITRUS_GUI_AUTORUN"] == "1",

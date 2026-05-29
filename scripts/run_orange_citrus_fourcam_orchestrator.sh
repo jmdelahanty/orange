@@ -43,6 +43,10 @@ Options:
   --citrus-socket <path>         Override Citrus local-control socket.
   --orange-log <path>            Orange process stdout/stderr log.
                                   Default: /tmp/<operation_id>_orange.log
+  --orange-local-control-log <path>
+                                  Orange local-control JSONL event log.
+                                  Default:
+                                  /tmp/<operation_id>_orange_local_control.events.jsonl
   --citrus-log <path>            Citrus process stdout/stderr log.
                                   Default: /tmp/<operation_id>_citrus.log
   --display <value>              DISPLAY to pass to launched GUIs.
@@ -162,6 +166,7 @@ if [[ -n "${ORANGE_COMMAND}" ]]; then
 fi
 CITRUS_COMMAND="${ORANGE_CITRUS_CITRUS_COMMAND:-/home/jeremy/citrus/targets/citrus}"
 ORANGE_LOG="${ORANGE_CITRUS_ORANGE_LOG:-}"
+ORANGE_LOCAL_CONTROL_LOG="${ORANGE_CITRUS_ORANGE_LOCAL_CONTROL_LOG:-}"
 CITRUS_LOG="${ORANGE_CITRUS_CITRUS_LOG:-}"
 DISPLAY_VALUE="${ORANGE_CITRUS_DISPLAY:-${DISPLAY:-:1}}"
 XAUTHORITY_VALUE="${ORANGE_CITRUS_XAUTHORITY:-$(default_xauthority)}"
@@ -278,6 +283,12 @@ while [[ $# -gt 0 ]]; do
       shift
       require_value "--orange-log" "$#"
       ORANGE_LOG="$1"
+      shift
+      ;;
+    --orange-local-control-log)
+      shift
+      require_value "--orange-local-control-log" "$#"
+      ORANGE_LOCAL_CONTROL_LOG="$1"
       shift
       ;;
     --citrus-log)
@@ -502,6 +513,9 @@ LOG_STEM="${OPERATION_ID//[^A-Za-z0-9_.-]/_}"
 if [[ -z "${ORANGE_LOG}" ]]; then
   ORANGE_LOG="/tmp/${LOG_STEM}_orange.log"
 fi
+if [[ -z "${ORANGE_LOCAL_CONTROL_LOG}" ]]; then
+  ORANGE_LOCAL_CONTROL_LOG="/tmp/${LOG_STEM}_orange_local_control.events.jsonl"
+fi
 if [[ -z "${CITRUS_LOG}" ]]; then
   CITRUS_LOG="/tmp/${LOG_STEM}_citrus.log"
 fi
@@ -577,6 +591,7 @@ ARGS=(
   "--orange-socket" "${ORANGE_SOCKET}"
   "--citrus-socket" "${CITRUS_SOCKET}"
   "--orange-log" "${ORANGE_LOG}"
+  "--orange-local-control-log" "${ORANGE_LOCAL_CONTROL_LOG}"
   "--citrus-log" "${CITRUS_LOG}"
   "--summary-json" "${SUMMARY_JSON}"
   "--stop-policy" "${STOP_POLICY}"
