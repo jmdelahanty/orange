@@ -477,6 +477,25 @@ if(BUILD_TESTING)
     target_compile_features(camera_config_validation_tests PRIVATE cxx_std_17)
     add_test(NAME camera_config_validation_tests COMMAND camera_config_validation_tests)
 
+    add_executable(app_storage_config_tests
+        "tools/app_storage_config_tests.cpp"
+        "${SRC_DIR}/project.cpp"
+        "${SRC_DIR}/camera.cpp"
+        "${SRC_DIR}/spatial_calibration_snapshot.cpp"
+        "${SRC_DIR}/spatial_layout_schema.cpp"
+    )
+    target_include_directories(app_storage_config_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(app_storage_config_tests PRIVATE cxx_std_17)
+    target_link_libraries(app_storage_config_tests PRIVATE
+        ${ENET_LIBRARY}
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+        ${CUDA_DRIVER_LIBRARY}
+    )
+    add_test(NAME app_storage_config_tests COMMAND app_storage_config_tests)
+
     add_executable(spatial_calibration_snapshot_tests
         "tools/spatial_calibration_snapshot_tests.cpp"
         "${SRC_DIR}/spatial_calibration_snapshot.cpp"
