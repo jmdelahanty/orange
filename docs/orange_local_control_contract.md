@@ -400,6 +400,15 @@ generic socket timeout. Once Citrus terminal/perf-path evidence has been
 captured, a later Citrus process exit is recorded in `started_processes[]` but
 does not make Orange finalization fail.
 
+Launch mode also preflights the target local-control socket before starting a
+new GUI process. If `/tmp/orange_local_control.sock` or
+`/tmp/citrus_local_control.sock` is already answering, the orchestrator refuses
+to launch over it so a stale/running GUI cannot be mistaken for the new run.
+Use attach mode for already-running GUIs, or
+`--allow-preexisting-orange-socket` / `--allow-preexisting-citrus-socket` only
+for explicit diagnostics. The four-camera wrapper exposes this as
+`--allow-preexisting-sockets`.
+
 Four-camera Citrus profile wrapper:
 
 ```bash

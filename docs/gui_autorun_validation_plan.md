@@ -404,7 +404,10 @@ launches `/home/jeremy/citrus/targets/citrus` with Citrus autorun envs only to
 load `omnifin0` / `shadow` / `good_cop_bad_cop_demo.json`. It sets a long
 Citrus autorun start delay, so the orchestrator still controls the actual
 experiment start after Orange recording is active. Use `--attach-orange` and
-`--attach-citrus` to control already-running GUI processes instead.
+`--attach-citrus` to control already-running GUI processes instead. In launch
+mode, the wrapper refuses to proceed if the default Orange/Citrus local-control
+sockets are already answering; use `--allow-preexisting-sockets` only for an
+intentional diagnostic.
 
 By default, the profile runs Orange validation after finalization and writes
 the validator JSON to `/tmp/<operation_id>_orange_gui_validation.json`. The

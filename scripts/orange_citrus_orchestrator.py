@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import shlex
@@ -177,6 +178,16 @@ def send_unix_json(socket_path: str, payload: dict[str, Any], timeout_seconds: f
     return json.loads(b"".join(chunks).decode("utf-8"))
 
 
+def socket_absent_or_stale_error(exc: OSError) -> bool:
+    if isinstance(exc, (FileNotFoundError, ConnectionRefusedError)):
+        return True
+    return exc.errno in {
+        errno.ENOENT,
+        errno.ECONNREFUSED,
+        errno.ENOTSOCK,
+    }
+
+
 def response_accepted(response: dict[str, Any]) -> bool:
     return bool(response.get("ok")) and (
         bool(response.get("accepted")) or bool(response.get("duplicate"))
@@ -340,6 +351,50 @@ class Orchestrator:
             raise OrchestratorError(f"{label} status response did not include object status")
         return response, status
 
+    def preflight_launch_socket(
+        self,
+        label: str,
+        schema_id: str,
+        socket_path: str,
+        allow_preexisting: bool,
+    ) -> None:
+        if allow_preexisting or not socket_path:
+            return
+        step = self.step(f"preflight_{label}_launch_socket")
+        request_id = f"{self.args.operation_id}:{label}:prelaunch_status:{uuid.uuid4()}"
+        try:
+            response = send_unix_json(
+                socket_path,
+                build_status_request(schema_id, request_id, self.args.source),
+                self.args.launch_socket_preflight_timeout_seconds,
+            )
+        except OSError as exc:
+            if socket_absent_or_stale_error(exc):
+                step.finish(
+                    ok=True,
+                    socket_path=socket_path,
+                    existing_server=False,
+                    error=str(exc),
+                )
+                return
+            step.finish(ok=False, socket_path=socket_path, existing_server=True, error=str(exc))
+            raise OrchestratorError(
+                f"{label} local-control socket {socket_path} exists before launch "
+                f"but could not be preflighted safely: {exc}"
+            ) from exc
+        except (json.JSONDecodeError, TimeoutError) as exc:
+            step.finish(ok=False, socket_path=socket_path, existing_server=True, error=str(exc))
+            raise OrchestratorError(
+                f"{label} local-control socket {socket_path} answered before launch "
+                f"but did not return a clean status response; refusing to launch over it"
+            ) from exc
+
+        step.finish(ok=False, socket_path=socket_path, existing_server=True, response=response)
+        raise OrchestratorError(
+            f"{label} local-control socket {socket_path} is already answering before launch; "
+            f"use attach mode or --allow-preexisting-{label}-socket if this is intentional"
+        )
+
     def wait_for_status(
         self,
         label: str,
@@ -440,6 +495,13 @@ class Orchestrator:
         final_citrus_status: dict[str, Any] = {}
         final_orange_status: dict[str, Any] = {}
 
+        if self.args.orange_command:
+            self.preflight_launch_socket(
+                "orange",
+                ORANGE_REQUEST_SCHEMA_ID,
+                self.args.orange_socket,
+                self.args.allow_preexisting_orange_socket,
+            )
         self.start_process(
             "orange",
             self.args.orange_command,
@@ -462,6 +524,13 @@ class Orchestrator:
             "ready_for_recording_request",
         )
 
+        if self.args.citrus_command:
+            self.preflight_launch_socket(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                self.args.allow_preexisting_citrus_socket,
+            )
         citrus_env = {
             **parse_env_items(self.args.citrus_env),
             "CITRUS_GUI_LOCAL_CONTROL_SOCKET": self.args.citrus_socket,
@@ -792,6 +861,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--summary-json", default="", help="Optional path for the combined run summary JSON.")
     parser.add_argument("--poll-interval-seconds", type=positive_float, default=0.25)
     parser.add_argument("--socket-timeout-seconds", type=positive_float, default=2.0)
+    parser.add_argument("--launch-socket-preflight-timeout-seconds", type=positive_float, default=0.2)
     parser.add_argument("--timeout-seconds", type=positive_float, default=120.0)
     parser.add_argument("--citrus-terminal-timeout-seconds", type=positive_float, default=300.0)
     parser.add_argument("--orange-finalize-timeout-seconds", type=positive_float, default=180.0)
@@ -825,6 +895,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--validation-timeout-seconds", type=positive_float, default=120.0)
     parser.add_argument("--validation-output-max-chars", type=int, default=20000)
     parser.add_argument("--skip-wait-orange-finalized", action="store_true")
+    parser.add_argument("--allow-preexisting-orange-socket", action="store_true")
+    parser.add_argument("--allow-preexisting-citrus-socket", action="store_true")
     parser.add_argument("--no-stop-orange-on-failure", dest="stop_orange_on_failure", action="store_false")
     parser.set_defaults(stop_orange_on_failure=True)
     parser.add_argument(
@@ -862,6 +934,8 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 args.source,
             ),
             "stop_policy": args.stop_policy,
+            "preflight_existing_socket": bool(args.orange_command)
+            and not args.allow_preexisting_orange_socket,
         },
         "citrus": {
             "socket": args.citrus_socket,
@@ -877,6 +951,8 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 args.source,
             ),
             "require_perf_jsonl": args.require_citrus_perf_jsonl,
+            "preflight_existing_socket": bool(args.citrus_command)
+            and not args.allow_preexisting_citrus_socket,
         },
         "validations": [
             {

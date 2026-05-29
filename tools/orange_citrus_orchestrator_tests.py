@@ -188,10 +188,60 @@ def test_dry_run_default_does_not_open_sockets() -> None:
         payload["orange"]["env_overlay"]["ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE"] == "0",
         "orchestrator should keep launched Orange alive for socket control",
     )
+    require(
+        not payload["orange"]["preflight_existing_socket"],
+        "attach-mode dry-run should not preflight an Orange launch socket",
+    )
     require(payload["validations"][0]["label"] == "quick", "dry-run should show validation labels")
     require(
         payload["validations"][0]["command"] == f"{sys.executable} -c \"print('dry-run-validation')\"",
         "dry-run should show validation command text",
+    )
+
+
+def test_dry_run_launch_socket_preflight_flags() -> None:
+    result = run_script(
+        [
+            "--operation-id",
+            "op-dry-launch",
+            "--orange-command",
+            "/bin/true",
+            "--citrus-command",
+            "/bin/true",
+        ]
+    )
+    require(result.returncode == 0, f"launch dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    require(
+        payload["orange"]["preflight_existing_socket"],
+        "launch dry-run should preflight Orange socket by default",
+    )
+    require(
+        payload["citrus"]["preflight_existing_socket"],
+        "launch dry-run should preflight Citrus socket by default",
+    )
+
+    allowed = run_script(
+        [
+            "--operation-id",
+            "op-dry-launch-allowed",
+            "--orange-command",
+            "/bin/true",
+            "--citrus-command",
+            "/bin/true",
+            "--allow-preexisting-orange-socket",
+            "--allow-preexisting-citrus-socket",
+        ]
+    )
+    require(allowed.returncode == 0, f"allowed launch dry-run failed: {allowed.stderr}")
+    allowed_payload = json.loads(allowed.stdout)
+    require(
+        not allowed_payload["orange"]["preflight_existing_socket"],
+        "Orange preflight should be disabled by override",
+    )
+    require(
+        not allowed_payload["citrus"]["preflight_existing_socket"],
+        "Citrus preflight should be disabled by override",
     )
 
 
@@ -339,13 +389,72 @@ def test_post_terminal_citrus_exit_is_not_an_orange_wait_failure() -> None:
     )
 
 
+def test_launch_socket_preflight_refuses_live_socket() -> None:
+    module = load_module()
+    args = module.parse_args(
+        [
+            "--execute",
+            "--operation-id",
+            "op-live-socket",
+            "--launch-socket-preflight-timeout-seconds",
+            "0.01",
+        ]
+    )
+    orchestrator = module.Orchestrator(args)
+
+    def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        return response_for(request, orange_status(False, False))
+
+    original_send = module.send_unix_json
+    module.send_unix_json = fake_send
+    try:
+        try:
+            orchestrator.preflight_launch_socket(
+                "orange",
+                module.ORANGE_REQUEST_SCHEMA_ID,
+                "/tmp/already-live.sock",
+                False,
+            )
+        except module.OrchestratorError as exc:
+            require("already answering before launch" in str(exc), "preflight should reject live socket")
+        else:
+            raise AssertionError("expected live socket preflight to fail")
+    finally:
+        module.send_unix_json = original_send
+
+
+def test_launch_socket_preflight_allows_absent_socket() -> None:
+    module = load_module()
+    args = module.parse_args(["--execute", "--operation-id", "op-missing-socket"])
+    orchestrator = module.Orchestrator(args)
+
+    def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        raise FileNotFoundError("missing")
+
+    original_send = module.send_unix_json
+    module.send_unix_json = fake_send
+    try:
+        orchestrator.preflight_launch_socket(
+            "orange",
+            module.ORANGE_REQUEST_SCHEMA_ID,
+            "/tmp/missing.sock",
+            False,
+        )
+    finally:
+        module.send_unix_json = original_send
+    require(orchestrator.steps[-1].ok, "missing socket preflight should pass")
+
+
 def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
         test_dry_run_default_does_not_open_sockets,
+        test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
+        test_launch_socket_preflight_refuses_live_socket,
+        test_launch_socket_preflight_allows_absent_socket,
     ]
     for test in tests:
         test()

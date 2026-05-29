@@ -69,6 +69,8 @@ def test_default_dry_run_builds_live_profile() -> None:
             citrus["command"] == ["/home/jeremy/citrus/targets/citrus"],
             "profile should launch the local Citrus GUI binary by default",
         )
+        require(orange["preflight_existing_socket"], "profile should preflight Orange launch socket")
+        require(citrus["preflight_existing_socket"], "profile should preflight Citrus launch socket")
 
         orange_env = orange["env_overlay"]
         citrus_env = citrus["env_overlay"]
@@ -177,10 +179,32 @@ def test_attach_mode_does_not_launch_processes() -> None:
     require(payload["validations"] == [], "skip validation should avoid profile validation commands")
 
 
+def test_allow_preexisting_sockets_disables_launch_preflight() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-allow-preexisting",
+            "--allow-preexisting-sockets",
+            "--skip-orange-validation",
+        ]
+    )
+    require(result.returncode == 0, f"profile allow-preexisting dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    require(
+        not payload["orange"]["preflight_existing_socket"],
+        "profile override should disable Orange socket preflight",
+    )
+    require(
+        not payload["citrus"]["preflight_existing_socket"],
+        "profile override should disable Citrus socket preflight",
+    )
+
+
 def main() -> int:
     tests = [
         test_default_dry_run_builds_live_profile,
         test_attach_mode_does_not_launch_processes,
+        test_allow_preexisting_sockets_disables_launch_preflight,
     ]
     for test in tests:
         test()

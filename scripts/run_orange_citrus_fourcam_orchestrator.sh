@@ -34,6 +34,7 @@ Options:
   --citrus-command <command>     Override Citrus launch command.
   --attach-orange                Do not launch Orange; attach to its socket.
   --attach-citrus                Do not launch Citrus; attach to its socket.
+  --allow-preexisting-sockets    Permit launch mode when default sockets already answer.
   --orange-socket <path>         Override Orange local-control socket.
   --citrus-socket <path>         Override Citrus local-control socket.
   --orange-log <path>            Orange process stdout/stderr log.
@@ -147,6 +148,7 @@ CITRUS_PROTOCOL_PATH="${ORANGE_CITRUS_CITRUS_PROTOCOL_PATH:-}"
 CITRUS_AUTORUN_START_DELAY_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_START_DELAY_SECONDS:-86400}"
 CITRUS_AUTORUN_LOADER=1
 CITRUS_ORANGE_COMPLETION_NOTIFY=0
+ALLOW_PREEXISTING_SOCKETS=0
 REQUIRE_CITRUS_PERF_JSONL=1
 ORANGE_VALIDATION_ENABLED="${ORANGE_CITRUS_ORANGE_VALIDATION_ENABLED:-1}"
 ORANGE_VALIDATION_COMMAND="${ORANGE_CITRUS_ORANGE_VALIDATION_COMMAND:-}"
@@ -197,6 +199,10 @@ while [[ $# -gt 0 ]]; do
     --attach-citrus)
       CITRUS_COMMAND=""
       CITRUS_AUTORUN_LOADER=0
+      shift
+      ;;
+    --allow-preexisting-sockets)
+      ALLOW_PREEXISTING_SOCKETS=1
       shift
       ;;
     --orange-socket)
@@ -448,6 +454,9 @@ if [[ -n "${CITRUS_COMMAND}" ]]; then
 fi
 if (( REQUIRE_CITRUS_PERF_JSONL )); then
   ARGS+=("--require-citrus-perf-jsonl")
+fi
+if (( ALLOW_PREEXISTING_SOCKETS )); then
+  ARGS+=("--allow-preexisting-orange-socket" "--allow-preexisting-citrus-socket")
 fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" ]]; then
   ARGS+=("--orange-validation-command" "${ORANGE_VALIDATION_COMMAND}")
