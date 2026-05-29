@@ -87,6 +87,7 @@ Missing-file behavior should remain non-fatal:
       "record_for_seconds": 0,
       "clip_seconds": 0
     },
+    "ptp_register_read_decimate": 1,
     "external_recorder_contract_path": ""
   },
   "gui": {
@@ -446,6 +447,9 @@ Current implementation status:
 - `storage.default_recording_root` is used for the GUI default recording root
 - headless CLI and experiment-spec flows still choose their recording folders
   explicitly
+- `recording.sink_mode`, `recording.recording_control.*`, and
+  `recording.ptp_register_read_decimate` are used by the GUI unless overridden
+  by environment or launcher values
 - `storage.latest_recording.*` now controls the local, canonical, and `/run`
   pointer writes emitted by the recording snapshot path
 - `gui.display` controls direct GUI display pacing defaults, and
@@ -510,6 +514,129 @@ should still point at:
 
 That is what makes it a stable lookup location rather than just a mirror of the
 default root.
+
+## Runtime Flag Disposition
+
+The four-camera GUI/Orange-Citrus validation profile still uses many
+environment variables because the launcher is a convenient integration harness.
+Those variables should not all become durable application settings.
+
+### Already App Config
+
+These should be set in `~/orange_data/config/app/default.json` when they are
+intended as workstation defaults:
+
+- `recording.sink_mode`
+  - environment override: `ORANGE_GUI_RECORDING_SINK_MODE`
+  - built-in default should remain `real`
+  - production-like four-camera GUI validation should use `external_ipc`
+- `recording.recording_control.record_for_seconds`
+  - environment override: `ORANGE_GUI_RECORD_FOR_SECONDS`
+  - built-in default should remain `0`
+- `recording.recording_control.clip_seconds`
+  - environment override: `ORANGE_GUI_CLIP_SECONDS`
+  - built-in default should remain `0`; set a positive value only for
+    timed/rolling profiles
+- `recording.ptp_register_read_decimate`
+  - environment override: `ORANGE_PTP_REGISTER_READ_DECIMATE`
+  - built-in default should remain `1` for diagnostic compatibility
+  - the local PTP validation profile should set this to `100`
+- `gui.display.profile`
+  - launcher overrides: `ORANGE_DISPLAY_PREVIEW_MAX_FPS`,
+    `ORANGE_GUI_SWAP_INTERVAL`, and `ORANGE_GUI_FRAME_MAX_FPS`
+  - use `citrus_safe` on a workstation that shares the display GPU with Citrus
+  - use `fast` for Orange-only GUI validation when display-GPU contention is
+    not a concern
+- `models.default_detect_engine`
+  - environment override: `ORANGE_DEFAULT_DETECT_ENGINE`
+  - once model quality is accepted, the A16 high-effort detect engine should
+    move here instead of living only in launcher env
+
+### Candidate Built-In Defaults
+
+These have been part of the healthy external-IPC validation profile and are
+good candidates to make default-on after one more positive-detection/soak
+validation pass:
+
+- `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`
+  - keeps analytics input lifetime management off the fragile old ring path
+- `ORANGE_YOLO_DETACH_INPUT=1`
+  - decouples YOLO input ownership from source-frame reuse
+- `ORANGE_YOLO_READY_EVENT_FASTPATH=1`
+  - keeps the common ready-event path cheap in the validated profile
+- `ORANGE_CROP_STAGE_SOURCE=1`
+  - keeps crop source staging aligned with the validated external crop path
+
+Do not turn these into app-config fields just to preserve the old env spelling.
+If they remain necessary, prefer code defaults with opt-out diagnostics, or a
+small explicit runtime/performance profile once the flags stop being
+experimental.
+
+### Candidate App Config Extensions
+
+These are currently launcher-only but should become schema fields if they are
+needed for routine operator runs:
+
+- GUI stream decimation:
+  - current env: `ORANGE_GUI_STREAM_DOWNSAMPLE`
+  - likely schema location: `gui.stream.downsample`
+- GUI speed graph visibility:
+  - current env: `ORANGE_GUI_SHOW_SPEED_GRAPHS`
+  - likely schema location: `gui.telemetry.show_speed_graphs`
+- crop recording sink mode:
+  - current env: `ORANGE_CROP_RECORDING_SINK_MODE`
+  - likely schema location: `recording.crop.sink_mode`
+- crop external recorder queue depth:
+  - current env: `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
+  - likely schema location: `recording.crop.external_ipc.encode_queue_depth`
+  - the current four-camera Orange/Citrus profile uses `128`
+- crop frame pool sizing:
+  - current env: `ORANGE_CROP_FRAME_POOL_SIZE`
+  - likely schema location: `recording.crop.frame_pool_size`
+  - if unset, the launcher currently derives this from crop queue depth
+- crop external recorder placement:
+  - current envs: `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID` and
+    `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>`
+  - likely schema location: a rig/camera profile, not global app config
+
+### Keep As Launch Or Diagnostic Flags
+
+These should stay outside durable app config unless a separate operator product
+surface is designed for them:
+
+- GUI automation and validation control:
+  - `ORANGE_GUI_AUTORUN*`
+  - `ORANGE_GUI_VALIDATE_ONLY`
+  - `ORANGE_GUI_PRINT_EXEC_ENV_ONLY`
+  - `ORANGE_GUI_ALLOW_NO_DISPLAY`
+- local-control mutating gates:
+  - `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START`
+  - `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP`
+  - `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP`
+  - the read-only local-control socket can stay default-on, but mutating
+    commands should remain explicit opt-in for orchestrator/profile runs
+- run-specific camera/config selection:
+  - `ORANGE_GUI_CONFIG_DIR`
+  - `ORANGE_GUI_EXPECT_CAMERAS`
+- validation thresholds and exceptions:
+  - `ORANGE_CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER`
+  - `ORANGE_CROP_EXTERNAL_MAX_ENQUEUE_AGE_P95_MS`
+  - `ORANGE_GUI_MAX_YOLO_*`
+  - `ORANGE_GUI_ALLOW_MAIN_VIDEO_CONTENT_FAILURE_CAMERAS`
+  - source-version and dirty-worktree expectation flags
+- diagnostics:
+  - `ORANGE_YOLO_PERF_LOG`
+  - `ORANGE_YOLO_PERF_SAMPLE`
+  - `ORANGE_CROP_COPY_TIMING`
+- scheduling experiments:
+  - `ORANGE_YOLO_AFFINITY`
+  - `ORANGE_YOLO_AFFINITY_CAM_<serial>`
+  - `ORANGE_YOLO_RT_*`
+
+The current good four-camera CPU affinity is `2010093->6`, `2010094->8`,
+`2010095->10`, and `2010096->12`. That should become a rig-local performance
+profile only after the CPU-isolation and Citrus CPU budget remain stable; it
+should not become a global app default.
 
 ## What This Schema Does Not Cover
 

@@ -17,15 +17,67 @@ work on `exp/gop-split-a16`.
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
 - Latest strict Orange/Citrus rolling artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25`.
-- The latest single-clip hardware artifact is:
+- Both strict Orange/Citrus artifacts passed with `0` warnings and strict
+  main-video content validation for all four cameras.
+- Earlier GUI-only single-clip hardware artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
-- The latest rolling-clip hardware artifact is:
+- Earlier GUI-only rolling-clip hardware artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_16_08_46`.
-- `Cam2010093` had no lens attached for those runs. Validation now supports an
-  explicit opt-in for this case:
+- `Cam2010093` had no lens attached for those earlier GUI-only runs.
+  Validation supports an explicit opt-in for that diagnostic case:
   `--allow-main-video-content-failure 2010093`.
-- With that opt-in, both strict validations passed with two warnings, both for
-  the expected `Cam2010093` low-bitrate/black main-video content.
+- With that opt-in, both earlier GUI-only validations passed with two warnings,
+  both for the expected `Cam2010093` low-bitrate/black main-video content.
+
+## Current Performance Baseline
+
+For the current four-camera Orange/Citrus profile, the important production
+baseline is:
+
+- full-frame external IPC and crop external IPC both work in single-clip and
+  rolling modes;
+- all four full-frame streams encode valid `4512x4512 @ 100 fps` content at
+  about `150-153 Mbps`;
+- crop recorders have received/encoded every offered crop frame in the current
+  strict runs, with `0` drops;
+- steady YOLO p95 is about `3.95-3.96 ms` across all four cameras, and YOLO
+  queue p95 is about `0.014-0.017 ms`;
+- Orange's Citrus-safe GUI profile intentionally runs near `30 fps`
+  (`swap_interval=1`, GUI frame cap `30`, display preview cap `10`) so it does
+  not burn display-GPU budget while Citrus renders at `120 Hz`;
+- the Orange-only GUI validation profile can still run near `60 fps`
+  (`swap_interval=0`, GUI frame cap `60`, display preview cap `15`) when Citrus
+  is not sharing the display GPU.
+
+The larger four-camera crop external queue is a load absorber, not a throughput
+fix. The current co-run profile uses crop queue depth `128`; the latest strict
+single-clip run peaked at `52/52/51/47`, and the latest rolling run peaked at
+`22/44/40/42`. That is healthy for the short validated profile, but long soaks
+should keep gating on queue high-water, `enqueue_age_p95_ms`, recorder drops,
+and crop sidecar continuity.
+
+## Accomplished In This Slice
+
+- Orange can now run on the real display through the installed validation
+  wrapper without manual GUI interaction.
+- Orange exposes a local JSON control socket with status plus opt-in recording
+  start/stop and Citrus completion handling.
+- The Orange/Citrus wrapper can launch both applications, wait for readiness,
+  start Orange recording, start Citrus, stop/drain/finalize Orange, preserve
+  logs and validation JSON, and clean up launched process groups/sockets.
+- GUI exit-after-finalize now stops streaming before closing the process, which
+  avoids leaving camera streams and recorder children behind after automated
+  runs.
+- Full-frame external IPC is validated in the GUI for both single-clip and
+  rolling clip sessions.
+- Crop external IPC is validated in the GUI for both single-clip and rolling
+  clip sessions, including per-clip sidecars and session-level manifests.
+- The four-camera Orange/Citrus profile now uses a larger crop external queue
+  (`128`) to absorb short NVENC completion stalls when crop recorders and
+  full-frame split-GOP shards share A16 encoder resources.
+- Validation now checks source provenance, dirty tracked-worktree state,
+  external recorder status/storage/protocol telemetry, CPU isolation, YOLO
+  affinity, GUI display pacing, and the full crop/full-frame artifact surface.
 
 Healthy metrics from the Orange/Citrus co-run:
 
@@ -167,7 +219,25 @@ Known intentionally opt-in exception:
 
 ## Commands
 
-Current four-camera no-lens-safe single-clip run:
+Current Orange/Citrus single-clip run:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_orange_citrus_fourcam_orchestrator.sh --execute
+```
+
+Current Orange/Citrus rolling run:
+
+```bash
+cd /home/jeremy/orange-gop-split-a16
+scripts/run_orange_citrus_fourcam_orchestrator.sh \
+  --execute \
+  --record-seconds 6 \
+  --warmup-seconds 2 \
+  --clip-seconds 2
+```
+
+Earlier GUI-only no-lens-safe single-clip run:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16
@@ -182,7 +252,7 @@ DISPLAY=:1 \
     --allow-main-video-content-failure 2010093
 ```
 
-Strict validation command for the current rolling no-lens artifact:
+Strict validation command for the earlier rolling no-lens artifact:
 
 ```bash
 scripts/validate_gui_ptp_recording.py \
@@ -244,7 +314,7 @@ run above. The implemented surface includes:
 - validator coverage for external crop rolling clip artifacts.
 
 The four-camera profile has `--clip-seconds <seconds>` as a convenience switch.
-To repeat the short rolling gate:
+To repeat the short GUI-only rolling gate with strict main-video validation:
 
 ```bash
 DISPLAY=:1 \
@@ -255,8 +325,7 @@ DISPLAY=:1 \
     --hidden-crop-preview \
     --record-seconds 6 \
     --warmup-seconds 2 \
-    --clip-seconds 2 \
-    --allow-main-video-content-failure 2010093
+    --clip-seconds 2
 ```
 
 Expected validation shape:
@@ -273,7 +342,12 @@ Expected validation shape:
 
 - The latest run had no positive detections; crop infrastructure was validated
   with blank crop recording rows, not fish/positive detection crops.
-- `Cam2010093` needs a lens before production video-content validation can be
-  strict for all four cameras again.
+- Older no-lens artifacts remain documented above, but the current strict
+  Orange/Citrus artifacts passed main-video content validation for all four
+  cameras with `0` warnings.
 - Long soak coverage is still open. The current validation is a short hardware
   discriminator, not a 24-hour stability proof.
+- The four-camera crop recorder queue depth of `128` is validated for the
+  short Orange/Citrus profile, but it should stay under explicit queue
+  high-water and `enqueue_age_p95_ms` gates before being treated as a long-run
+  production value.
