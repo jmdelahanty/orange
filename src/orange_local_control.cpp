@@ -266,9 +266,10 @@ nlohmann::json LocalControlStatusSnapshotToJson(
         expected_open &&
         selections_match_expected;
     const bool recording_finalized =
-        !snapshot.recording_active &&
-        !snapshot.recording_finalizing &&
-        !snapshot.recording_folder.empty();
+        snapshot.recording_finalized ||
+        (!snapshot.recording_active &&
+         !snapshot.recording_finalizing &&
+         !snapshot.recording_folder.empty());
 
     return {
         {"process", snapshot.process},

@@ -64,6 +64,7 @@ struct LocalControlStatusSnapshot {
     bool streaming_active = false;
     bool recording_active = false;
     bool recording_finalizing = false;
+    bool recording_finalized = false;
     int active_recorders = 0;
     std::string recording_folder;
     std::string recording_sink_mode = "real";

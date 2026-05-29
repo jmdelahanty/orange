@@ -145,6 +145,7 @@ struct GuiSessionTimingSnapshot {
 struct GuiRecordingRunState {
     bool active = false;
     bool finalizing = false;
+    bool finalized = false;
     std::string recording_folder;
     std::string recording_sink_mode = "real";
     std::string recording_started_at_utc;
@@ -1650,6 +1651,7 @@ void gui_note_recording_started(GuiRecordingRunState* run,
     }
     run->active = true;
     run->finalizing = false;
+    run->finalized = false;
     run->recording_folder = recording_folder;
     run->recording_sink_mode = recording_sink_mode.empty() ? "real" : recording_sink_mode;
     run->recording_started_at = std::chrono::steady_clock::now();
@@ -2801,7 +2803,9 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
         recording_session->external_crop_recorder_supervisor_plan_path.clear();
         recording_session->external_crop_recorder_last_error = crop_external_recorder_error;
     }
-    *run = GuiRecordingRunState{};
+    run->active = false;
+    run->finalizing = false;
+    run->finalized = true;
     return true;
 }
 
@@ -3601,6 +3605,7 @@ orange::control::LocalControlStatusSnapshot gui_build_local_control_status(
             snapshot.recording_folder = recording_run.recording_folder;
         }
     }
+    snapshot.recording_finalized = recording_run.finalized;
     snapshot.recording_sink_mode = recording_session.recording_sink_mode;
     snapshot.expected_camera_serials = gui_split_expected_camera_serials();
     snapshot.open_camera_serials =

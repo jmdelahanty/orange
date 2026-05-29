@@ -256,6 +256,25 @@ void test_status_readiness_matches_expected_camera_sets_without_order_sensitivit
             "recording request should not be ready when record selection mismatches expected cameras");
 }
 
+void test_status_reports_completed_recording_after_streaming_stop_path()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.autorun_stage = "done";
+    status.recording_active = false;
+    status.recording_finalizing = false;
+    status.recording_finalized = true;
+    status.active_recorders = 0;
+    status.recording_folder = "/tmp/orange_control_test_finalized";
+
+    const nlohmann::json json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(json["phase"].get<std::string>() == "streaming",
+            "completed local-control recording should not force stream shutdown");
+    require(json["readiness"]["recording_finalized"].get<bool>(),
+            "completed recording should remain visible after finalization");
+    require(json["recording"]["folder"].get<std::string>() == status.recording_folder,
+            "completed recording folder should remain visible for orchestrator validation");
+}
+
 void test_citrus_completion_is_diagnostic_ack_and_logged()
 {
     const auto socket_path = temp_path("completion.sock");
@@ -522,6 +541,8 @@ int main()
          test_status_request_returns_readiness_snapshot},
         {"status_readiness_matches_expected_camera_sets_without_order_sensitivity",
          test_status_readiness_matches_expected_camera_sets_without_order_sensitivity},
+        {"status_reports_completed_recording_after_streaming_stop_path",
+         test_status_reports_completed_recording_after_streaming_stop_path},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",
