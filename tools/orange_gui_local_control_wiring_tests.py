@@ -66,9 +66,44 @@ def test_drain_timeout_requests_forced_stream_shutdown() -> None:
     )
 
 
+def test_stop_commands_keep_gui_thread_lifecycle_authority() -> None:
+    orange = read("src/orange.cpp")
+    body = function_body(orange, "gui_drain_local_control_commands")
+    require(
+        "command.method == \"citrus_completion\" ||\n"
+        "            command.method == \"stop_recording\"" in body,
+        "GUI command drain must treat Citrus completion and stop_recording as stop commands",
+    )
+    require(
+        "if (!camera_control || !camera_control->record_video)" in body,
+        "GUI stop command handling must no-op when Orange is not recording",
+    )
+    require(
+        "gui_note_local_control_stop_event(stop_scheduler, \"ignored_not_recording\")" in body,
+        "idle stop command must record ignored_not_recording state",
+    )
+    require(
+        '{"reason", "orange_not_recording"}' in body,
+        "idle stop command must log an orange_not_recording reason",
+    )
+    require(
+        "stop_scheduler->deadline <= deadline" in body,
+        "stop scheduler must keep an existing earlier deadline",
+    )
+    require(
+        '{"event", "recording_stop_schedule_kept"}' in body,
+        "same/late stop requests must log schedule-kept evidence",
+    )
+    require(
+        '{"policy", "earliest_deadline"}' in body,
+        "schedule-kept event must name the earliest-deadline policy",
+    )
+
+
 def main() -> int:
     tests = [
         test_drain_timeout_requests_forced_stream_shutdown,
+        test_stop_commands_keep_gui_thread_lifecycle_authority,
     ]
     for test in tests:
         test()

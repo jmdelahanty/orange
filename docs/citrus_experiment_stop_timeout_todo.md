@@ -220,8 +220,13 @@ Refs:
 ## Phase 6: Validation
 
 - [ ] Test manual STOP ALL in Citrus and protocol natural finish.
-- [ ] Test duplicate stop-control packets.
-- [ ] Test stop-control while not recording.
+- [x] Test duplicate stop-control packets:
+  - socket-layer duplicate `request_id`,
+  - socket-layer duplicate `method + operation_id`,
+  - GUI-thread earliest-deadline policy for later stop requests.
+- [x] Test stop-control while not recording:
+  - GUI-thread command drain records `ignored_not_recording`,
+  - no stop schedule is created.
 - [ ] Test delayed stop during high-throughput recording.
 - [ ] Test forced-timeout path with induced writer stall.
 

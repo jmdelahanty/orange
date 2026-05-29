@@ -574,6 +574,11 @@ void test_stop_recording_queues_when_lifecycle_mode_enabled()
                       {"grace_seconds", 0}});
     const nlohmann::json first = send_request(socket_path, request);
     const nlohmann::json duplicate = send_request(socket_path, request);
+    const nlohmann::json same_operation_duplicate = send_request(
+        socket_path,
+        request_json("stop_recording", "stop-enabled-req-2", "stop-op-1",
+                     {{"reason", "orchestrator_stop_retry"},
+                      {"grace_seconds", 5}}));
     const std::vector<PendingLocalControlCommand> pending =
         server.DrainPendingCommands();
     server.Stop();
@@ -591,6 +596,10 @@ void test_stop_recording_queues_when_lifecycle_mode_enabled()
             "duplicate stop_recording request should be duplicate");
     require(!duplicate["queued_for_gui_thread"].get<bool>(),
             "duplicate stop_recording request should not queue again");
+    require(same_operation_duplicate["duplicate"].get<bool>(),
+            "same method and operation_id stop_recording should be duplicate with a new request_id");
+    require(!same_operation_duplicate["queued_for_gui_thread"].get<bool>(),
+            "same-operation stop_recording duplicate should not queue again");
     require(pending.size() == 1, "stop_recording should queue exactly one pending command");
     require(pending[0].method == "stop_recording",
             "pending stop command should preserve method");
