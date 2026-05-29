@@ -204,7 +204,11 @@ Refs:
   - accepted,
   - executed,
   - failed-timeout.
-- [ ] Include `request_id` and timestamps in all related logs.
+- [x] Include `request_id` and timestamps in structured local-control JSONL
+      logs:
+  - socket-thread request/response rows,
+  - GUI-thread start/stop scheduling rows,
+  - stop trigger, drain timeout, and drain finalization rows.
 
 ## Phase 6: Validation
 

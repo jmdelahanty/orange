@@ -124,6 +124,10 @@ nlohmann::json BuildLocalControlErrorResponse(const nlohmann::json& request,
                                               const std::string& code,
                                               const std::string& message);
 
+bool AppendLocalControlEventLog(const std::string& event_log_path,
+                                const nlohmann::json& event,
+                                std::string* error_out = nullptr);
+
 class LocalControlServer {
 public:
     LocalControlServer() = default;

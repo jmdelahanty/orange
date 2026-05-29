@@ -328,6 +328,30 @@ std::string gui_local_control_log_path(const std::string& socket_path)
     return path.empty() ? (socket_path + ".events.jsonl") : path;
 }
 
+void gui_log_local_control_event(
+    const std::string& event_log_path,
+    nlohmann::json event)
+{
+    if (event_log_path.empty()) {
+        return;
+    }
+    event["schema_id"] = "orange.local_control.gui_event";
+    event["schema_version"] = 1;
+    if (!event.contains("event_at_utc")) {
+        event["event_at_utc"] = get_current_utc_timestamp();
+    }
+    std::string error;
+    if (!orange::control::AppendLocalControlEventLog(
+            event_log_path,
+            event,
+            &error)) {
+        std::cerr << "[GUI][local_control] failed to append event log"
+                  << " path=" << event_log_path
+                  << " error=" << error
+                  << std::endl;
+    }
+}
+
 int gui_env_int(const char* name, const int default_value, const int min_value)
 {
     const char* raw = std::getenv(name);
@@ -3714,7 +3738,8 @@ void gui_drain_local_control_commands(
     orange::control::LocalControlServer* local_control_server,
     GuiLocalControlStartRequestState* start_request,
     GuiLocalControlStopSchedulerState* stop_scheduler,
-    CameraControl* camera_control)
+    CameraControl* camera_control,
+    const std::string& event_log_path)
 {
     if (!local_control_server || !local_control_server->running()) {
         return;
@@ -3734,6 +3759,23 @@ void gui_drain_local_control_commands(
                   << " start_enabled="
                   << (start_request && start_request->enabled ? 1 : 0)
                   << std::endl;
+        nlohmann::json accepted_event = {
+            {"event", "gui_command_accepted"},
+            {"method", command.method},
+            {"request_id", command.request_id},
+            {"operation_id", command.operation_id},
+            {"command_source", command.source},
+            {"received_at_utc", command.received_at_utc},
+            {"stop_enabled", stop_scheduler && stop_scheduler->enabled},
+            {"start_enabled", start_request && start_request->enabled},
+        };
+        const auto experiment_it_for_log = command.params.find("experiment_id");
+        if (experiment_it_for_log != command.params.end() &&
+            experiment_it_for_log->is_string()) {
+            accepted_event["experiment_id"] =
+                experiment_it_for_log->get<std::string>();
+        }
+        gui_log_local_control_event(event_log_path, std::move(accepted_event));
 
         if (command.method == "start_recording") {
             if (!start_request || !start_request->enabled) {
@@ -3743,6 +3785,15 @@ void gui_drain_local_control_commands(
                 std::cout << "[GUI][local_control] recording start ignored"
                           << " request_id=" << command.request_id
                           << " reason=start_control_disabled" << std::endl;
+                gui_log_local_control_event(
+                    event_log_path,
+                    {
+                        {"event", "recording_start_ignored"},
+                        {"request_id", command.request_id},
+                        {"operation_id", command.operation_id},
+                        {"command_source", command.source},
+                        {"reason", "start_control_disabled"},
+                    });
                 continue;
             }
             if (start_request->pending) {
@@ -3752,6 +3803,16 @@ void gui_drain_local_control_commands(
                           << " reason=start_already_pending"
                           << " pending_request_id=" << start_request->request_id
                           << std::endl;
+                gui_log_local_control_event(
+                    event_log_path,
+                    {
+                        {"event", "recording_start_ignored"},
+                        {"request_id", command.request_id},
+                        {"operation_id", command.operation_id},
+                        {"command_source", command.source},
+                        {"reason", "start_already_pending"},
+                        {"pending_request_id", start_request->request_id},
+                    });
                 continue;
             }
             start_request->pending = true;
@@ -3769,6 +3830,16 @@ void gui_drain_local_control_commands(
                       << " operation_id=" << start_request->operation_id
                       << " reason=" << start_request->reason
                       << std::endl;
+            gui_log_local_control_event(
+                event_log_path,
+                {
+                    {"event", "recording_start_queued"},
+                    {"request_id", start_request->request_id},
+                    {"operation_id", start_request->operation_id},
+                    {"command_source", start_request->source},
+                    {"reason", start_request->reason},
+                    {"received_at_utc", start_request->received_at_utc},
+                });
             continue;
         }
 
@@ -3784,6 +3855,16 @@ void gui_drain_local_control_commands(
                       << " method=" << command.method
                       << " request_id=" << command.request_id
                       << " reason=stop_control_disabled" << std::endl;
+            gui_log_local_control_event(
+                event_log_path,
+                {
+                    {"event", "recording_stop_ignored"},
+                    {"method", command.method},
+                    {"request_id", command.request_id},
+                    {"operation_id", command.operation_id},
+                    {"command_source", command.source},
+                    {"reason", "stop_control_disabled"},
+                });
             continue;
         }
         if (!camera_control || !camera_control->record_video) {
@@ -3792,6 +3873,16 @@ void gui_drain_local_control_commands(
                       << " method=" << command.method
                       << " request_id=" << command.request_id
                       << " reason=orange_not_recording" << std::endl;
+            gui_log_local_control_event(
+                event_log_path,
+                {
+                    {"event", "recording_stop_ignored"},
+                    {"method", command.method},
+                    {"request_id", command.request_id},
+                    {"operation_id", command.operation_id},
+                    {"command_source", command.source},
+                    {"reason", "orange_not_recording"},
+                });
             continue;
         }
 
@@ -3821,6 +3912,17 @@ void gui_drain_local_control_commands(
                       << " request_id=" << command.request_id
                       << " existing_request_id=" << stop_scheduler->request_id
                       << " policy=earliest_deadline" << std::endl;
+            gui_log_local_control_event(
+                event_log_path,
+                {
+                    {"event", "recording_stop_schedule_kept"},
+                    {"method", command.method},
+                    {"request_id", command.request_id},
+                    {"operation_id", command.operation_id},
+                    {"command_source", command.source},
+                    {"existing_request_id", stop_scheduler->request_id},
+                    {"policy", "earliest_deadline"},
+                });
             continue;
         }
 
@@ -3861,6 +3963,20 @@ void gui_drain_local_control_commands(
                   << " experiment_id=" << stop_scheduler->experiment_id
                   << " grace_seconds=" << stop_scheduler->grace_seconds
                   << std::endl;
+        gui_log_local_control_event(
+            event_log_path,
+            {
+                {"event", "recording_stop_scheduled"},
+                {"method", stop_scheduler->method},
+                {"request_id", stop_scheduler->request_id},
+                {"operation_id", stop_scheduler->operation_id},
+                {"command_source", stop_scheduler->source},
+                {"experiment_id", stop_scheduler->experiment_id},
+                {"terminal_state", stop_scheduler->terminal_state},
+                {"reason", stop_scheduler->reason},
+                {"received_at_utc", stop_scheduler->received_at_utc},
+                {"grace_seconds", stop_scheduler->grace_seconds},
+            });
     }
 }
 
@@ -3869,7 +3985,8 @@ void gui_poll_local_control_stop_scheduler(
     orange::session::RecordingSessionState* recording_session,
     CameraControl* camera_control,
     GuiRecordingRunState* recording_run,
-    GuiSessionTimingState* timing)
+    GuiSessionTimingState* timing,
+    const std::string& event_log_path)
 {
     if (!stop_scheduler || !stop_scheduler->scheduled) {
         return;
@@ -3913,12 +4030,29 @@ void gui_poll_local_control_stop_scheduler(
               << " drain_timeout_seconds="
               << stop_scheduler->drain_timeout_seconds
               << std::endl;
+    gui_log_local_control_event(
+        event_log_path,
+        {
+            {"event", "recording_stop_triggered"},
+            {"method", stop_scheduler->method},
+            {"request_id", stop_scheduler->request_id},
+            {"operation_id", stop_scheduler->operation_id},
+            {"command_source", stop_scheduler->source},
+            {"experiment_id", stop_scheduler->experiment_id},
+            {"terminal_state", stop_scheduler->terminal_state},
+            {"reason", stop_scheduler->reason},
+            {"received_at_utc", stop_scheduler->received_at_utc},
+            {"grace_seconds", stop_scheduler->grace_seconds},
+            {"stop_triggered_at_utc", stop_scheduler->stop_triggered_at_utc},
+            {"drain_timeout_seconds", stop_scheduler->drain_timeout_seconds},
+        });
 }
 
 void gui_poll_local_control_drain_timeout(
     GuiLocalControlStopSchedulerState* stop_scheduler,
     const CameraControl* camera_control,
-    const GuiRecordingRunState* recording_run)
+    const GuiRecordingRunState* recording_run,
+    const std::string& event_log_path)
 {
     if (!stop_scheduler ||
         !stop_scheduler->stop_triggered ||
@@ -3962,10 +4096,28 @@ void gui_poll_local_control_drain_timeout(
               << " timeout_seconds=" << stop_scheduler->drain_timeout_seconds
               << " active_recorders=" << active_recorders
               << std::endl;
+    gui_log_local_control_event(
+        event_log_path,
+        {
+            {"event", "recording_drain_timeout"},
+            {"method", stop_scheduler->method},
+            {"request_id", stop_scheduler->request_id},
+            {"operation_id", stop_scheduler->operation_id},
+            {"command_source", stop_scheduler->source},
+            {"experiment_id", stop_scheduler->experiment_id},
+            {"terminal_state", stop_scheduler->terminal_state},
+            {"reason", stop_scheduler->reason},
+            {"elapsed_seconds", elapsed},
+            {"timeout_seconds", stop_scheduler->drain_timeout_seconds},
+            {"active_recorders", active_recorders},
+            {"health", "critical"},
+            {"error_code", "drain_timeout"},
+        });
 }
 
 void gui_mark_local_control_drain_completed(
-    GuiLocalControlStopSchedulerState* stop_scheduler)
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    const std::string& event_log_path)
 {
     if (!stop_scheduler || !stop_scheduler->stop_triggered) {
         return;
@@ -3985,6 +4137,22 @@ void gui_mark_local_control_drain_completed(
                   << " drain_timed_out="
                   << (stop_scheduler->drain_timed_out ? 1 : 0)
                   << std::endl;
+        gui_log_local_control_event(
+            event_log_path,
+            {
+                {"event", "recording_drain_finalized"},
+                {"method", stop_scheduler->method},
+                {"request_id", stop_scheduler->request_id},
+                {"operation_id", stop_scheduler->operation_id},
+                {"command_source", stop_scheduler->source},
+                {"experiment_id", stop_scheduler->experiment_id},
+                {"terminal_state", stop_scheduler->terminal_state},
+                {"reason", stop_scheduler->reason},
+                {"drain_timed_out", stop_scheduler->drain_timed_out},
+                {"drain_completed_at_utc", stop_scheduler->drain_completed_at_utc},
+                {"health", stop_scheduler->drain_timed_out ? "warning" : "ok"},
+                {"error_code", stop_scheduler->drain_timed_out ? "drain_timeout" : ""},
+            });
     }
 }
 
@@ -6461,7 +6629,8 @@ bool gui_poll_local_control_start_request(
     CropPreviewWorker** crop_preview_workers,
     CropAndEncodeWorker** crop_and_encode_workers,
     PoseWorker** pose_workers,
-    std::vector<std::string>* recording_preflight_errors)
+    std::vector<std::string>* recording_preflight_errors,
+    const std::string& event_log_path)
 {
     if (!start_request || !start_request->pending) {
         return false;
@@ -6478,6 +6647,15 @@ bool gui_poll_local_control_start_request(
                   << " operation_id=" << operation_id
                   << " reason=" << reason
                   << std::endl;
+        gui_log_local_control_event(
+            event_log_path,
+            {
+                {"event", "recording_start_ignored"},
+                {"request_id", request_id},
+                {"operation_id", operation_id},
+                {"command_source", start_request->source},
+                {"reason", reason},
+            });
     };
 
     if (!start_request->enabled) {
@@ -6531,6 +6709,15 @@ bool gui_poll_local_control_start_request(
               << " request_id=" << request_id
               << " operation_id=" << operation_id
               << std::endl;
+    gui_log_local_control_event(
+        event_log_path,
+        {
+            {"event", started ? "recording_start_triggered" : "recording_start_failed"},
+            {"request_id", request_id},
+            {"operation_id", operation_id},
+            {"command_source", start_request->source},
+            {"reason", start_request->reason},
+        });
     return started;
 }
 
@@ -6784,11 +6971,13 @@ int main(int argc, char **args) {
     bool gui_local_control_exit_stream_stop_requested = false;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
     orange::control::LocalControlServer gui_local_control_server;
+    std::string gui_local_control_event_log_path;
     if (!gui_local_control_disabled()) {
         orange::control::LocalControlServerOptions control_options;
         control_options.socket_path = gui_local_control_socket_path();
         control_options.event_log_path =
             gui_local_control_log_path(control_options.socket_path);
+        gui_local_control_event_log_path = control_options.event_log_path;
         control_options.allow_gui_lifecycle_commands =
             gui_local_control_stop_scheduler.enabled;
         control_options.allow_gui_start_recording_commands =
@@ -6922,7 +7111,8 @@ int main(int argc, char **args) {
         gui_poll_local_control_drain_timeout(
             &gui_local_control_stop_scheduler,
             camera_control,
-            &gui_recording_run);
+            &gui_recording_run,
+            gui_local_control_event_log_path);
         join_aperture_worker_if_finished(&aperture_ui_state);
         join_alignment_worker_if_finished(&aperture_ui_state);
         join_usaf_worker_if_finished(&usaf_ui_state);
@@ -6953,14 +7143,40 @@ int main(int argc, char **args) {
                         &gui_local_control_stop_scheduler,
                         "finalized_stream_stop_requested");
                     std::cout << "[GUI][local_control] requesting stream stop before GUI exit"
+                              << " request_id="
+                              << gui_local_control_stop_scheduler.request_id
+                              << " operation_id="
+                              << gui_local_control_stop_scheduler.operation_id
                               << std::endl;
+                    gui_log_local_control_event(
+                        gui_local_control_event_log_path,
+                        {
+                            {"event", "finalized_stream_stop_requested"},
+                            {"method", gui_local_control_stop_scheduler.method},
+                            {"request_id", gui_local_control_stop_scheduler.request_id},
+                            {"operation_id", gui_local_control_stop_scheduler.operation_id},
+                            {"command_source", gui_local_control_stop_scheduler.source},
+                        });
                 }
             } else {
                 gui_note_local_control_stop_event(
                     &gui_local_control_stop_scheduler,
                     "finalized_exit_requested");
                 std::cout << "[GUI][local_control] requesting GUI exit after stream stop"
+                          << " request_id="
+                          << gui_local_control_stop_scheduler.request_id
+                          << " operation_id="
+                          << gui_local_control_stop_scheduler.operation_id
                           << std::endl;
+                gui_log_local_control_event(
+                    gui_local_control_event_log_path,
+                    {
+                        {"event", "finalized_exit_requested"},
+                        {"method", gui_local_control_stop_scheduler.method},
+                        {"request_id", gui_local_control_stop_scheduler.request_id},
+                        {"operation_id", gui_local_control_stop_scheduler.operation_id},
+                        {"command_source", gui_local_control_stop_scheduler.source},
+                    });
                 glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
                 gui_local_control_exit_pending_after_finalize = false;
             }
@@ -6981,7 +7197,8 @@ int main(int argc, char **args) {
                 &gui_local_control_server,
                 &gui_local_control_start_request,
                 &gui_local_control_stop_scheduler,
-                camera_control);
+                camera_control,
+                gui_local_control_event_log_path);
             const bool local_control_start_triggered =
                 gui_poll_local_control_start_request(
                     &gui_local_control_start_request,
@@ -7003,7 +7220,8 @@ int main(int argc, char **args) {
                     cropPreviewWorkers,
                     cropAndEncodeWorkers,
                     poseWorkers,
-                    &recording_preflight_errors);
+                    &recording_preflight_errors,
+                    gui_local_control_event_log_path);
             if (local_control_start_triggered) {
                 gui_autorun_requests.toggle_recording = false;
             }
@@ -7012,7 +7230,8 @@ int main(int argc, char **args) {
                 &recording_session,
                 camera_control,
                 &gui_recording_run,
-                &gui_session_timing);
+                &gui_session_timing,
+                gui_local_control_event_log_path);
         }
         if (gui_autorun_requests.close_window) {
             glfwSetWindowShouldClose(window->render_target, GLFW_TRUE);
@@ -8317,7 +8536,8 @@ int main(int argc, char **args) {
                                     orange_imgui_glfw_size_cache_stats()))) {
                             gui_display_frame_rate_stats.Finish();
                             gui_mark_local_control_drain_completed(
-                                &gui_local_control_stop_scheduler);
+                                &gui_local_control_stop_scheduler,
+                                gui_local_control_event_log_path);
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                                       << std::endl;
                         }
@@ -8431,7 +8651,8 @@ int main(int argc, char **args) {
                 gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);
                 gui_mark_local_control_drain_completed(
-                    &gui_local_control_stop_scheduler);
+                    &gui_local_control_stop_scheduler,
+                    gui_local_control_event_log_path);
                 if (gui_local_control_exit_after_finalize &&
                     gui_local_control_stop_scheduler.stop_triggered) {
                     gui_local_control_exit_pending_after_finalize = true;
@@ -8442,7 +8663,22 @@ int main(int argc, char **args) {
                             ? "finalized_exit_pending_stream_stop"
                             : "finalized_exit_pending");
                     std::cout << "[GUI][local_control] recording finalized; GUI exit pending"
+                              << " request_id="
+                              << gui_local_control_stop_scheduler.request_id
+                              << " operation_id="
+                              << gui_local_control_stop_scheduler.operation_id
                               << std::endl;
+                    gui_log_local_control_event(
+                        gui_local_control_event_log_path,
+                        {
+                            {"event", camera_control->subscribe
+                                          ? "finalized_exit_pending_stream_stop"
+                                          : "finalized_exit_pending"},
+                            {"method", gui_local_control_stop_scheduler.method},
+                            {"request_id", gui_local_control_stop_scheduler.request_id},
+                            {"operation_id", gui_local_control_stop_scheduler.operation_id},
+                            {"command_source", gui_local_control_stop_scheduler.source},
+                        });
                 }
             }
 

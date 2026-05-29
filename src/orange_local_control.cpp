@@ -23,6 +23,8 @@
 namespace orange::control {
 namespace {
 
+std::mutex g_event_log_mutex;
+
 std::string utc_now()
 {
     const auto now = std::chrono::system_clock::now();
@@ -271,6 +273,35 @@ bool recorder_ready_when_required(const RecorderReadinessSnapshot& snapshot,
 }
 
 }  // namespace
+
+bool AppendLocalControlEventLog(const std::string& event_log_path,
+                                const nlohmann::json& event,
+                                std::string* error_out)
+{
+    if (event_log_path.empty()) {
+        return true;
+    }
+    const std::lock_guard<std::mutex> lock(g_event_log_mutex);
+    const std::filesystem::path log_path(event_log_path);
+    if (!log_path.parent_path().empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(log_path.parent_path(), ec);
+        if (ec) {
+            set_error(error_out,
+                      "failed to create local control event log directory: " +
+                          log_path.parent_path().string() + ": " + ec.message());
+            return false;
+        }
+    }
+    std::ofstream out(event_log_path, std::ios::app);
+    if (!out) {
+        set_error(error_out,
+                  "failed to open local control event log: " + event_log_path);
+        return false;
+    }
+    out << event.dump() << '\n';
+    return true;
+}
 
 nlohmann::json LocalControlStatusSnapshotToJson(
     const LocalControlStatusSnapshot& snapshot)
@@ -917,20 +948,10 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
 
 void LocalControlServer::LogEvent(const nlohmann::json& event)
 {
-    if (options_.event_log_path.empty()) {
-        return;
+    std::string error;
+    if (!AppendLocalControlEventLog(options_.event_log_path, event, &error)) {
+        SetLastError(error);
     }
-    const std::filesystem::path log_path(options_.event_log_path);
-    if (!log_path.parent_path().empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(log_path.parent_path(), ec);
-    }
-    std::ofstream out(options_.event_log_path, std::ios::app);
-    if (!out) {
-        SetLastError("failed to open local control event log: " + options_.event_log_path);
-        return;
-    }
-    out << event.dump() << '\n';
 }
 
 }  // namespace orange::control

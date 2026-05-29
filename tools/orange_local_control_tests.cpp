@@ -24,6 +24,7 @@ using orange::control::LocalControlStatusSnapshot;
 using orange::control::ParseLocalControlRequest;
 using orange::control::PendingLocalControlCommand;
 using orange::control::RecorderReadinessSnapshot;
+using orange::control::AppendLocalControlEventLog;
 
 void require(const bool condition, const std::string& message)
 {
@@ -385,6 +386,54 @@ void test_status_reports_finalized_after_drain_timeout_as_warning()
             "completed timed-out drain should retain drain_timeout error code");
 }
 
+void test_append_local_control_event_log_creates_jsonl()
+{
+    const auto log_path = temp_path("nested/events.jsonl");
+    std::filesystem::remove_all(log_path.parent_path());
+
+    std::string error;
+    require(
+        AppendLocalControlEventLog(
+            log_path.string(),
+            {
+                {"schema_id", "orange.local_control.gui_event"},
+                {"schema_version", 1},
+                {"event", "recording_stop_triggered"},
+                {"event_at_utc", "2026-05-29T00:00:01Z"},
+                {"request_id", "stop-req-1"},
+            },
+            &error),
+        "event log append should succeed: " + error);
+    require(
+        AppendLocalControlEventLog(
+            log_path.string(),
+            {
+                {"schema_id", "orange.local_control.gui_event"},
+                {"schema_version", 1},
+                {"event", "recording_drain_finalized"},
+                {"event_at_utc", "2026-05-29T00:00:02Z"},
+                {"request_id", "stop-req-1"},
+            },
+            &error),
+        "second event log append should succeed: " + error);
+
+    std::ifstream in(log_path);
+    require(static_cast<bool>(in), "event log should exist");
+    std::string line1;
+    std::string line2;
+    std::getline(in, line1);
+    std::getline(in, line2);
+    require(!line1.empty() && !line2.empty(), "event log should contain two lines");
+    const nlohmann::json first = nlohmann::json::parse(line1);
+    const nlohmann::json second = nlohmann::json::parse(line2);
+    require(first["event"].get<std::string>() == "recording_stop_triggered",
+            "first event should parse");
+    require(second["event"].get<std::string>() == "recording_drain_finalized",
+            "second event should parse");
+    require(second["request_id"].get<std::string>() == "stop-req-1",
+            "event log should preserve request id");
+}
+
 void test_citrus_completion_is_diagnostic_ack_and_logged()
 {
     const auto socket_path = temp_path("completion.sock");
@@ -659,6 +708,8 @@ int main()
          test_status_reports_local_control_drain_timeout_telemetry},
         {"status_reports_finalized_after_drain_timeout_as_warning",
          test_status_reports_finalized_after_drain_timeout_as_warning},
+        {"append_local_control_event_log_creates_jsonl",
+         test_append_local_control_event_log_creates_jsonl},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",

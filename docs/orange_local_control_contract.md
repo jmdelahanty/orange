@@ -43,8 +43,14 @@ Default socket:
 Override it with `ORANGE_GUI_LOCAL_CONTROL_SOCKET` or
 `ORANGE_LOCAL_CONTROL_SOCKET`. Events are logged to
 `ORANGE_GUI_LOCAL_CONTROL_LOG` / `ORANGE_LOCAL_CONTROL_LOG`, or to
-`<socket>.events.jsonl` by default. Set `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1` or
-`ORANGE_LOCAL_CONTROL_DISABLE=1` to disable the endpoint for a diagnostic run.
+`<socket>.events.jsonl` by default. The log includes both socket-thread
+request/response rows and GUI-thread lifecycle rows with
+`schema_id=orange.local_control.gui_event`, `event_at_utc`, `request_id`, and
+`operation_id` where available. GUI-thread events include command acceptance,
+start queued/ignored/triggered/failed, stop scheduled/kept/ignored/triggered,
+drain timeout, drain finalized, and optional exit-after-finalize transitions.
+Set `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1` or `ORANGE_LOCAL_CONTROL_DISABLE=1` to
+disable the endpoint for a diagnostic run.
 Local-control recording stop is disabled by default; enable it only for
 integrated control tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`
 or `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`. The older Citrus-specific
