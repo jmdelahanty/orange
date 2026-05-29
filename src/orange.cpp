@@ -6496,6 +6496,23 @@ int main(int argc, char **args) {
             std::to_string(app_storage_config.gui_crop_frame_pool_size),
             "crop frame pool size");
     }
+    if (app_storage_config.gui_crop_external_recorder_gpu_id >= 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID",
+            std::to_string(app_storage_config.gui_crop_external_recorder_gpu_id),
+            "crop external recorder GPU");
+    }
+    for (const auto& [serial, gpu_id] :
+         app_storage_config.gui_crop_external_recorder_gpu_ids_by_serial) {
+        const std::string env_name =
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_" + serial;
+        const std::string label =
+            "crop external recorder GPU for Cam" + serial;
+        set_gui_env_from_app_config_if_absent(
+            env_name.c_str(),
+            std::to_string(gpu_id),
+            label.c_str());
+    }
 
     const u32 gui_swap_interval_default =
         app_storage_config.gui_swap_interval >= 0
@@ -6512,6 +6529,8 @@ int main(int argc, char **args) {
         .frame_max_fps = gx_resolve_frame_max_fps(gui_frame_max_fps_default),
         .width = 1920,
         .height = 1080,
+        .framebuffer_width = 0,
+        .framebuffer_height = 0,
         .render_target_title = (char *) "Orange",
         .glsl_version = (char *) malloc(100)
     };

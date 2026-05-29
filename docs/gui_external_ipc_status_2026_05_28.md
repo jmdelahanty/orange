@@ -80,8 +80,14 @@ and crop sidecar continuity.
   `gui.telemetry.show_speed_graphs`.
 - App config also covers stable crop recording defaults:
   `recording.crop.sink_mode`, `recording.crop.frame_pool_size`, and
-  `recording.crop.external_ipc.encode_queue_depth`; per-camera crop recorder
-  GPU placement remains a rig/topology launch setting.
+  `recording.crop.external_ipc.encode_queue_depth`.
+- App config now also covers crop external recorder GPU placement through
+  `recording.crop.external_ipc.recorder_gpu_id` and
+  `recording.crop.external_ipc.recorder_gpu_ids_by_serial`; env overrides
+  still win for validation one-offs.
+- Orange's render helper now caches the main GLFW framebuffer size and updates
+  it through the framebuffer-size callback, removing Orange's duplicate
+  per-frame `glfwGetFramebufferSize(...)` query from `render_a_frame(...)`.
 - Validation now checks source provenance, dirty tracked-worktree state,
   external recorder status/storage/protocol telemetry, CPU isolation, YOLO
   affinity, GUI display pacing, and the full crop/full-frame artifact surface.

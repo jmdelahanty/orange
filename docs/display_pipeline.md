@@ -68,13 +68,22 @@ scripts/update_app_config_display_profile.py \
   --hide-speed-graphs \
   --crop-recording-sink-mode external_ipc \
   --crop-external-encode-queue-depth 128 \
-  --crop-frame-pool-size 256
+  --crop-frame-pool-size 256 \
+  --crop-external-recorder-gpu 2010093=4 \
+  --crop-external-recorder-gpu 2010094=2 \
+  --crop-external-recorder-gpu 2010095=8 \
+  --crop-external-recorder-gpu 2010096=6
 ```
 
 - `gui.telemetry.show_speed_graphs=false` is the recommended performance
   default. `ORANGE_GUI_SHOW_SPEED_GRAPHS` overrides it for a single run. Set it
   to `1` only when live per-camera ImPlot speed graphs are needed during
   recording.
+- Orange's own render helper caches the main window framebuffer size after
+  initialization and updates it through the GLFW framebuffer-size callback, so
+  `render_a_frame(...)` no longer calls `glfwGetFramebufferSize(...)` every
+  frame. The Dear ImGui GLFW backend still performs its normal per-frame
+  window/framebuffer query inside `ImGui_ImplGlfw_NewFrame()`.
 - Display preview cadence is enforced before a frame is offered to the display
   worker. Skipped display frames are preview skips, not acquisition or
   recording drops.

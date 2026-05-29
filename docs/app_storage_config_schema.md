@@ -14,7 +14,10 @@ This is intentionally separate from the camera config schema:
   - where latest-recording pointers should be written
   - which optional runtime model assets should be preselected
 
-This schema is meant for process/session defaults, not per-camera behavior.
+This schema is meant for process/session defaults, not camera acquisition
+configuration. The one intentional serial-keyed exception is host-local crop
+external recorder GPU placement, because that is a workstation topology
+default rather than a camera sensor setting.
 
 ## Why This Exists
 
@@ -91,7 +94,9 @@ Missing-file behavior should remain non-fatal:
       "sink_mode": "in_process",
       "frame_pool_size": null,
       "external_ipc": {
-        "encode_queue_depth": 64
+        "encode_queue_depth": 64,
+        "recorder_gpu_id": null,
+        "recorder_gpu_ids_by_serial": {}
       }
     },
     "ptp_register_read_decimate": 1,
@@ -184,7 +189,11 @@ scripts/update_app_config_display_profile.py \
   --hide-speed-graphs \
   --crop-recording-sink-mode external_ipc \
   --crop-external-encode-queue-depth 128 \
-  --crop-frame-pool-size 256
+  --crop-frame-pool-size 256 \
+  --crop-external-recorder-gpu 2010093=4 \
+  --crop-external-recorder-gpu 2010094=2 \
+  --crop-external-recorder-gpu 2010095=8 \
+  --crop-external-recorder-gpu 2010096=6
 ```
 
 ### `gui.stream`
@@ -381,6 +390,9 @@ Fields:
 - `sink_mode`: one of `in_process`, `real`, or `external_ipc`
 - `frame_pool_size`: integer in `[1,512]` or `null`
 - `external_ipc.encode_queue_depth`: integer in `[1,4096]`
+- `external_ipc.recorder_gpu_id`: integer in `[0,255]` or `null`
+- `external_ipc.recorder_gpu_ids_by_serial`: object mapping camera serial
+  strings to integer GPU ids in `[0,255]`
 
 Recommended default:
 
@@ -389,7 +401,9 @@ Recommended default:
   "sink_mode": "in_process",
   "frame_pool_size": null,
   "external_ipc": {
-    "encode_queue_depth": 64
+    "encode_queue_depth": 64,
+    "recorder_gpu_id": null,
+    "recorder_gpu_ids_by_serial": {}
   }
 }
 ```
@@ -404,18 +418,22 @@ current four-camera Orange/Citrus co-run, the launcher still supplies
 If a workstation should use that profile for ordinary direct launches, set
 `recording.crop.frame_pool_size = 256` explicitly in the app config.
 
+`recorder_gpu_id` is a global fallback for crop external recorder placement.
+`recorder_gpu_ids_by_serial` is the preferred host-local four-camera form
+because it records the actual A16 topology used by the rig. If neither field is
+set, crop external recorders fall back to the camera analytics/source GPU unless
+the validation launcher supplies env overrides.
+
 Environment precedence:
 
 - `ORANGE_CROP_RECORDING_SINK_MODE` overrides `recording.crop.sink_mode`.
 - `ORANGE_CROP_FRAME_POOL_SIZE` overrides `recording.crop.frame_pool_size`.
 - `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH` overrides
   `recording.crop.external_ipc.encode_queue_depth`.
-
-Per-camera crop recorder GPU placement remains outside app config for now:
-`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID` and
-`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>` are rig/topology-specific
-validation controls and should become a rig/camera profile, not a global
-application default.
+- `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID` overrides
+  `recording.crop.external_ipc.recorder_gpu_id`.
+- `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>` overrides the matching
+  `recording.crop.external_ipc.recorder_gpu_ids_by_serial` entry.
 
 ### `recording.ptp_register_read_decimate`
 
@@ -573,9 +591,9 @@ Current implementation status:
   `recording.ptp_register_read_decimate` are used by the GUI unless overridden
   by environment or launcher values
 - `recording.crop.sink_mode`, `recording.crop.frame_pool_size`, and
-  `recording.crop.external_ipc.encode_queue_depth` are applied to the GUI by
-  setting the existing worker/session environment controls when those env vars
-  are not already present
+  `recording.crop.external_ipc.*` are applied to the GUI by setting the
+  existing worker/session environment controls when those env vars are not
+  already present
 - `gui.stream.downsample` and `gui.telemetry.show_speed_graphs` are used by the
   GUI unless overridden by environment or launcher values
 - `storage.latest_recording.*` now controls the local, canonical, and `/run`
@@ -673,6 +691,14 @@ intended as workstation defaults:
   - environment override: `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
   - built-in/default example value should remain `64`
   - the current four-camera Orange/Citrus profile uses `128`
+- `recording.crop.external_ipc.recorder_gpu_id`
+  - environment override: `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID`
+  - keep `null` unless a rig wants one fallback crop recorder GPU for every
+    camera
+- `recording.crop.external_ipc.recorder_gpu_ids_by_serial`
+  - environment override: `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>`
+  - the current local four-camera Orange/Citrus profile uses
+    `2010093=4`, `2010094=2`, `2010095=8`, and `2010096=6`
 - `recording.crop.frame_pool_size`
   - environment override: `ORANGE_CROP_FRAME_POOL_SIZE`
   - `null` keeps the built-in crop producer default
@@ -724,16 +750,6 @@ Do not turn these into app-config fields just to preserve the old env spelling.
 They are internal runtime-path toggles, not operator preferences. Use
 `ORANGE_<FLAG>=0` to recover the old behavior for targeted comparisons.
 
-### Candidate App Config Extensions
-
-These are currently launcher-only but should become schema fields if they are
-needed for routine operator runs:
-
-- crop external recorder placement:
-  - current envs: `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID` and
-    `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>`
-  - likely schema location: a rig/camera profile, not global app config
-
 ### Keep As Launch Or Diagnostic Flags
 
 These should stay outside durable app config unless a separate operator product
@@ -779,7 +795,7 @@ This schema should not contain:
 
 - per-camera recording strategy
 - source GPU placement
-- encoder GPU ids
+- full-frame split-GOP shard ids
 - codec/preset/GOP defaults for a specific camera
 - Citrus session output policy
 

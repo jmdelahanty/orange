@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update Orange app-config GUI display pacing defaults."""
+"""Update Orange app-config GUI display and recording profile defaults."""
 
 from __future__ import annotations
 
@@ -70,6 +70,22 @@ def gui_stream_downsample(value: str) -> int:
     return parsed
 
 
+def serial_gpu_assignment(value: str) -> tuple[str, int]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("must be SERIAL=GPU")
+    serial, gpu_text = value.split("=", 1)
+    serial = serial.strip()
+    if not serial:
+        raise argparse.ArgumentTypeError("serial must not be empty")
+    try:
+        gpu_id = int(gpu_text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("GPU must be an integer") from exc
+    if gpu_id < 0 or gpu_id > 255:
+        raise argparse.ArgumentTypeError("GPU must be in [0,255]")
+    return serial, gpu_id
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -133,6 +149,31 @@ def parse_args() -> argparse.Namespace:
         type=int_in_range(1, 4096),
         default=None,
         help="Optional recording.crop.external_ipc.encode_queue_depth value.",
+    )
+    crop_recorder_gpu_group = parser.add_mutually_exclusive_group()
+    crop_recorder_gpu_group.add_argument(
+        "--crop-external-recorder-gpu-id",
+        type=nonnegative_int_in_range(255),
+        default=None,
+        help="Optional recording.crop.external_ipc.recorder_gpu_id global fallback.",
+    )
+    crop_recorder_gpu_group.add_argument(
+        "--clear-crop-external-recorder-gpu-id",
+        action="store_true",
+        help="Set recording.crop.external_ipc.recorder_gpu_id=null.",
+    )
+    parser.add_argument(
+        "--crop-external-recorder-gpu",
+        action="append",
+        type=serial_gpu_assignment,
+        default=[],
+        metavar="SERIAL=GPU",
+        help="Set a recording.crop.external_ipc.recorder_gpu_ids_by_serial entry.",
+    )
+    parser.add_argument(
+        "--clear-crop-external-recorder-gpus",
+        action="store_true",
+        help="Clear recording.crop.external_ipc.recorder_gpu_ids_by_serial before applying entries.",
     )
     crop_pool_group = parser.add_mutually_exclusive_group()
     crop_pool_group.add_argument(
@@ -228,6 +269,10 @@ def update_display_config(payload: dict[str, Any], args: argparse.Namespace) -> 
     if (
         args.crop_recording_sink_mode is not None
         or args.crop_external_encode_queue_depth is not None
+        or args.crop_external_recorder_gpu_id is not None
+        or args.clear_crop_external_recorder_gpu_id
+        or args.crop_external_recorder_gpu
+        or args.clear_crop_external_recorder_gpus
         or args.crop_frame_pool_size is not None
         or args.clear_crop_frame_pool_size
     ):
@@ -250,14 +295,38 @@ def update_display_config(payload: dict[str, Any], args: argparse.Namespace) -> 
             crop["frame_pool_size"] = args.crop_frame_pool_size
         elif args.clear_crop_frame_pool_size:
             crop["frame_pool_size"] = None
-        if args.crop_external_encode_queue_depth is not None:
+        if (
+            args.crop_external_encode_queue_depth is not None
+            or args.crop_external_recorder_gpu_id is not None
+            or args.clear_crop_external_recorder_gpu_id
+            or args.crop_external_recorder_gpu
+            or args.clear_crop_external_recorder_gpus
+        ):
             external_ipc = crop.get("external_ipc")
             if external_ipc is None:
                 external_ipc = {}
             if not isinstance(external_ipc, dict):
                 raise SystemExit("recording.crop.external_ipc must be a JSON object")
             external_ipc = dict(external_ipc)
-            external_ipc["encode_queue_depth"] = args.crop_external_encode_queue_depth
+            if args.crop_external_encode_queue_depth is not None:
+                external_ipc["encode_queue_depth"] = args.crop_external_encode_queue_depth
+            if args.crop_external_recorder_gpu_id is not None:
+                external_ipc["recorder_gpu_id"] = args.crop_external_recorder_gpu_id
+            elif args.clear_crop_external_recorder_gpu_id:
+                external_ipc["recorder_gpu_id"] = None
+            if args.crop_external_recorder_gpu or args.clear_crop_external_recorder_gpus:
+                by_serial = external_ipc.get("recorder_gpu_ids_by_serial")
+                if args.clear_crop_external_recorder_gpus or by_serial is None:
+                    by_serial = {}
+                if not isinstance(by_serial, dict):
+                    raise SystemExit(
+                        "recording.crop.external_ipc.recorder_gpu_ids_by_serial "
+                        "must be a JSON object"
+                    )
+                by_serial = dict(by_serial)
+                for serial, gpu_id in args.crop_external_recorder_gpu:
+                    by_serial[serial] = gpu_id
+                external_ipc["recorder_gpu_ids_by_serial"] = by_serial
             crop["external_ipc"] = external_ipc
 
         recording = dict(recording)

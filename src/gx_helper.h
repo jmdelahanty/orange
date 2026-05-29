@@ -21,6 +21,8 @@ typedef struct gx_context
     u32 frame_max_fps;
     u32 width;
     u32 height;
+    int framebuffer_width;
+    int framebuffer_height;
     GLFWwindow *render_target;
     char *render_target_title;
     char *glsl_version;
@@ -82,9 +84,32 @@ static u32 gx_resolve_frame_max_fps(u32 default_value)
     return static_cast<u32>(parsed);
 }
 
+static void gx_framebuffer_size_callback(GLFWwindow *render_target, int width, int height)
+{
+    gx_context *context =
+        static_cast<gx_context *>(glfwGetWindowUserPointer(render_target));
+    if (!context) {
+        return;
+    }
+    context->framebuffer_width = width > 0 ? width : static_cast<int>(context->width);
+    context->framebuffer_height = height > 0 ? height : static_cast<int>(context->height);
+}
+
 void gx_init(gx_context *context, GLFWwindow *render_target)
 {
     context->render_target = render_target;
+    glfwSetWindowUserPointer(render_target, context);
+    glfwGetFramebufferSize(
+        render_target,
+        &context->framebuffer_width,
+        &context->framebuffer_height);
+    if (context->framebuffer_width <= 0) {
+        context->framebuffer_width = static_cast<int>(context->width);
+    }
+    if (context->framebuffer_height <= 0) {
+        context->framebuffer_height = static_cast<int>(context->height);
+    }
+    glfwSetFramebufferSizeCallback(render_target, gx_framebuffer_size_callback);
     glfwMakeContextCurrent(render_target);
     gx_glew_error_callback(glewInit());
     glfwSwapInterval(static_cast<int>(context->swap_interval));
@@ -109,7 +134,7 @@ GLFWwindow *gx_glfw_init_render_target(u32 marjor_version, u32 minor_version, u3
     strcpy(glsl_version, "#version 130");
 
     // Create window with graphics context
-    GLFWwindow *window = glfwCreateWindow(1920, 1080, title, NULL, NULL);
+    GLFWwindow *window = glfwCreateWindow(width, height, title, NULL, NULL);
     if (!window)
     {
         printf("Could not initialize window!");
@@ -261,9 +286,7 @@ void render_a_frame(gx_context *window)
 
     // Rendering
     ImGui::Render();
-    int display_w, display_h;
-    glfwGetFramebufferSize(window->render_target, &display_w, &display_h);
-    glViewport(0, 0, display_w, display_h);
+    glViewport(0, 0, window->framebuffer_width, window->framebuffer_height);
     glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
     glClear(GL_COLOR_BUFFER_BIT);
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

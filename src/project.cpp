@@ -951,6 +951,53 @@ static bool read_optional_bounded_int_field(const nlohmann::json& object,
     return true;
 }
 
+static bool read_optional_nonnegative_int_map_field(const nlohmann::json& object,
+                                                    const char* field_name,
+                                                    std::map<std::string, int>* values_out,
+                                                    const int max_value,
+                                                    std::string* error_out,
+                                                    const std::string& context)
+{
+    if (!values_out || !object.contains(field_name) || object[field_name].is_null()) {
+        return true;
+    }
+    if (!object[field_name].is_object()) {
+        if (error_out) {
+            *error_out = context + "." + field_name + " must be an object";
+        }
+        return false;
+    }
+
+    const nlohmann::json& values = object[field_name];
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        const std::string key = trim_ascii_copy(it.key());
+        if (key.empty()) {
+            if (error_out) {
+                *error_out = context + "." + field_name +
+                             " must not contain an empty serial key";
+            }
+            return false;
+        }
+        if (!it.value().is_number_integer()) {
+            if (error_out) {
+                *error_out = context + "." + field_name + "." + key +
+                             " must be an integer";
+            }
+            return false;
+        }
+        const int value = it.value().get<int>();
+        if (value < 0 || value > max_value) {
+            if (error_out) {
+                *error_out = context + "." + field_name + "." + key +
+                             " must be in [0," + std::to_string(max_value) + "]";
+            }
+            return false;
+        }
+        (*values_out)[key] = value;
+    }
+    return true;
+}
+
 static bool read_optional_bool_field(const nlohmann::json& object,
                                      const char* field_name,
                                      bool* value_out,
@@ -1073,6 +1120,8 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_recording_clip_seconds = 0;
     config.gui_crop_recording_sink_mode = "in_process";
     config.gui_crop_external_encode_queue_depth = -1;
+    config.gui_crop_external_recorder_gpu_id = -1;
+    config.gui_crop_external_recorder_gpu_ids_by_serial.clear();
     config.gui_crop_frame_pool_size = -1;
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
@@ -1286,6 +1335,33 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                         &config.gui_crop_external_encode_queue_depth,
                         1,
                         4096,
+                        error_out,
+                        "recording.crop.external_ipc")) {
+                    if (error_out &&
+                        error_out->find(config_path.string()) == std::string::npos) {
+                        *error_out += " in " + config_path.string();
+                    }
+                    return false;
+                }
+                if (!read_optional_bounded_int_field(
+                        external_ipc,
+                        "recorder_gpu_id",
+                        &config.gui_crop_external_recorder_gpu_id,
+                        0,
+                        255,
+                        error_out,
+                        "recording.crop.external_ipc")) {
+                    if (error_out &&
+                        error_out->find(config_path.string()) == std::string::npos) {
+                        *error_out += " in " + config_path.string();
+                    }
+                    return false;
+                }
+                if (!read_optional_nonnegative_int_map_field(
+                        external_ipc,
+                        "recorder_gpu_ids_by_serial",
+                        &config.gui_crop_external_recorder_gpu_ids_by_serial,
+                        255,
                         error_out,
                         "recording.crop.external_ipc")) {
                     if (error_out &&

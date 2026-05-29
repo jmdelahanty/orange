@@ -12,6 +12,7 @@
 #include <filesystem> // For filesystem operations
 #include <fstream>   // For file operations
 #include <iostream>  // For console output
+#include <map>
 
 struct ConnectedServer {
     char name[80];
@@ -33,6 +34,8 @@ struct AppStorageConfig {
     int gui_recording_clip_seconds = 0;
     std::string gui_crop_recording_sink_mode = "in_process";
     int gui_crop_external_encode_queue_depth = -1;
+    int gui_crop_external_recorder_gpu_id = -1;
+    std::map<std::string, int> gui_crop_external_recorder_gpu_ids_by_serial;
     int gui_crop_frame_pool_size = -1;
     std::string gui_external_recorder_contract_path;
     nlohmann::json gui_external_recorder_contract = nlohmann::json::object();

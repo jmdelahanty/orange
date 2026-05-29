@@ -160,6 +160,12 @@ def test_crop_options_update_config() -> None:
                 "external_ipc",
                 "--crop-external-encode-queue-depth",
                 "128",
+                "--crop-external-recorder-gpu-id",
+                "4",
+                "--crop-external-recorder-gpu",
+                "2010095=8",
+                "--crop-external-recorder-gpu",
+                "2010096=6",
                 "--crop-frame-pool-size",
                 "256",
             ]
@@ -172,6 +178,70 @@ def test_crop_options_update_config() -> None:
         require(
             crop["external_ipc"]["encode_queue_depth"] == 128,
             "crop external queue depth should update",
+        )
+        require(
+            crop["external_ipc"]["recorder_gpu_id"] == 4,
+            "crop external global recorder GPU should update",
+        )
+        require(
+            crop["external_ipc"]["recorder_gpu_ids_by_serial"] == {
+                "2010095": 8,
+                "2010096": 6,
+            },
+            "crop external per-camera recorder GPUs should update",
+        )
+
+
+def test_clear_crop_recorder_gpu_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.app.config",
+                    "schema_version": 1,
+                    "recording": {
+                        "crop": {
+                            "external_ipc": {
+                                "recorder_gpu_id": 4,
+                                "recorder_gpu_ids_by_serial": {
+                                    "2010093": 4,
+                                    "2010094": 2,
+                                },
+                            }
+                        }
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "citrus_safe",
+                "--clear-crop-external-recorder-gpu-id",
+                "--clear-crop-external-recorder-gpus",
+                "--crop-external-recorder-gpu",
+                "2010095=8",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        external_ipc = json.loads(path.read_text(encoding="utf-8"))["recording"]["crop"][
+            "external_ipc"
+        ]
+        require(
+            external_ipc["recorder_gpu_id"] is None,
+            "global crop recorder GPU should clear to null",
+        )
+        require(
+            external_ipc["recorder_gpu_ids_by_serial"] == {"2010095": 8},
+            "per-camera crop recorder GPUs should clear then apply new entry",
         )
 
 
@@ -268,17 +338,38 @@ def test_invalid_crop_queue_depth_fails() -> None:
         require("must be in [1,4096]" in result.stderr, "failure should explain range")
 
 
+def test_invalid_crop_recorder_gpu_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--crop-external-recorder-gpu",
+                "2010095=256",
+            ]
+        )
+
+        require(result.returncode != 0, "invalid crop recorder GPU should fail")
+        require("GPU must be in [0,255]" in result.stderr, "failure should explain range")
+
+
 def main() -> int:
     tests = [
         test_citrus_safe_profile_updates_existing_config,
         test_explicit_values_override_profile_defaults,
         test_stream_and_telemetry_options_update_config,
         test_crop_options_update_config,
+        test_clear_crop_recorder_gpu_config,
         test_clear_crop_frame_pool_size,
         test_dry_run_does_not_write,
         test_invalid_value_fails,
         test_invalid_stream_downsample_fails,
         test_invalid_crop_queue_depth_fails,
+        test_invalid_crop_recorder_gpu_fails,
     ]
     for test in tests:
         test()

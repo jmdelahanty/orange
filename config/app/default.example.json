@@ -14,7 +14,9 @@
       "sink_mode": "in_process",
       "frame_pool_size": null,
       "external_ipc": {
-        "encode_queue_depth": 64
+        "encode_queue_depth": 64,
+        "recorder_gpu_id": null,
+        "recorder_gpu_ids_by_serial": {}
       }
     },
     "ptp_register_read_decimate": 1,

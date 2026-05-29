@@ -117,6 +117,10 @@ void test_missing_config_uses_defaults()
     require(config.gui_recording_clip_seconds == 0, "default clip_seconds");
     require(config.gui_crop_recording_sink_mode == "in_process", "default crop sink mode");
     require(config.gui_crop_external_encode_queue_depth == -1, "default crop queue unset");
+    require(config.gui_crop_external_recorder_gpu_id == -1, "default crop recorder GPU unset");
+    require(
+        config.gui_crop_external_recorder_gpu_ids_by_serial.empty(),
+        "default per-camera crop recorder GPU map unset");
     require(config.gui_crop_frame_pool_size == -1, "default crop frame pool unset");
     require(config.gui_ptp_register_read_decimate == 1, "default PTP decimate");
     require(config.gui_stream_downsample == -1, "default stream downsample unset");
@@ -147,7 +151,12 @@ void test_loads_gui_and_crop_defaults()
       "sink_mode": "external_ipc",
       "frame_pool_size": 256,
       "external_ipc": {
-        "encode_queue_depth": 128
+        "encode_queue_depth": 128,
+        "recorder_gpu_id": 4,
+        "recorder_gpu_ids_by_serial": {
+          "2010095": 8,
+          "2010096": 6
+        }
       }
     },
     "ptp_register_read_decimate": 100
@@ -172,6 +181,16 @@ void test_loads_gui_and_crop_defaults()
     require(config.gui_recording_clip_seconds == 2, "clip_seconds should load");
     require(config.gui_crop_recording_sink_mode == "external_ipc", "crop sink mode should load");
     require(config.gui_crop_external_encode_queue_depth == 128, "crop queue depth should load");
+    require(config.gui_crop_external_recorder_gpu_id == 4, "crop recorder GPU should load");
+    require(
+        config.gui_crop_external_recorder_gpu_ids_by_serial.size() == 2,
+        "per-camera crop recorder GPU map should load");
+    require(
+        config.gui_crop_external_recorder_gpu_ids_by_serial.at("2010095") == 8,
+        "per-camera crop recorder GPU should load for 2010095");
+    require(
+        config.gui_crop_external_recorder_gpu_ids_by_serial.at("2010096") == 6,
+        "per-camera crop recorder GPU should load for 2010096");
     require(config.gui_crop_frame_pool_size == 256, "crop frame pool should load");
     require(config.gui_ptp_register_read_decimate == 100, "PTP decimate should load");
     require(config.gui_stream_downsample == 4, "GUI stream downsample should load");
@@ -248,6 +267,54 @@ void test_invalid_crop_queue_depth_fails()
     std::filesystem::remove_all(root);
 }
 
+void test_invalid_crop_recorder_gpu_fails()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "recording": {
+    "crop": {
+      "external_ipc": {
+        "recorder_gpu_id": 256
+      }
+    }
+  }
+})json");
+
+    require_load_fails(config_path, "recording.crop.external_ipc.recorder_gpu_id must be in [0,255]");
+    std::filesystem::remove_all(root);
+}
+
+void test_invalid_crop_recorder_gpu_map_fails()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "recording": {
+    "crop": {
+      "external_ipc": {
+        "recorder_gpu_ids_by_serial": {
+          "2010095": "gpu8"
+        }
+      }
+    }
+  }
+})json");
+
+    require_load_fails(
+        config_path,
+        "recording.crop.external_ipc.recorder_gpu_ids_by_serial.2010095 must be an integer");
+    std::filesystem::remove_all(root);
+}
+
 void test_invalid_stream_downsample_fails()
 {
     const std::filesystem::path root = make_temp_dir();
@@ -303,6 +370,8 @@ int main()
         {"real_crop_sink_aliases_in_process", &test_real_crop_sink_aliases_in_process},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},
         {"invalid_crop_queue_depth_fails", &test_invalid_crop_queue_depth_fails},
+        {"invalid_crop_recorder_gpu_fails", &test_invalid_crop_recorder_gpu_fails},
+        {"invalid_crop_recorder_gpu_map_fails", &test_invalid_crop_recorder_gpu_map_fails},
         {"invalid_stream_downsample_fails", &test_invalid_stream_downsample_fails},
         {"invalid_speed_graph_type_fails", &test_invalid_speed_graph_type_fails},
     };
