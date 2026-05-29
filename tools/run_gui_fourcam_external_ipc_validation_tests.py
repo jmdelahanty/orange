@@ -152,6 +152,14 @@ def test_default_hidden_profile_validate_only() -> None:
         "printed validator command should assert frame cap telemetry",
     )
     require(
+        result.stdout.count("--require-imgui-glfw-size-cache") == 4,
+        "printed validation/compare commands should require clean ImGui GLFW size-cache telemetry",
+    )
+    require(
+        "--require-gui-timing-telemetry --require-imgui-glfw-size-cache" in result.stdout,
+        "printed validator commands should require size-cache telemetry with GUI timing telemetry",
+    )
+    require(
         "ORANGE_GUI_REQUIRE_SOURCE_VERSION=1" in result.stdout,
         "four-camera profile should enable source-version validation",
     )

@@ -152,6 +152,14 @@ def test_default_dry_run_builds_live_profile() -> None:
             "default validator should match the Citrus-safe frame cap",
         )
         require(
+            "--require-gui-timing-telemetry" in validation["command"],
+            "default validator should require GUI timing telemetry",
+        )
+        require(
+            "--require-imgui-glfw-size-cache" in validation["command"],
+            "default validator should require clean ImGui GLFW size-cache telemetry",
+        )
+        require(
             "--expect-display-preview-max-fps 10" in validation["command"],
             "default validator should match the Citrus-safe display preview cap",
         )
