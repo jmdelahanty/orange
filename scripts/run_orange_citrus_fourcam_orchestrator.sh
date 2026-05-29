@@ -167,7 +167,7 @@ CITRUS_CANVAS="${ORANGE_CITRUS_CITRUS_CANVAS:-shadow}"
 CITRUS_PROTOCOL="${ORANGE_CITRUS_CITRUS_PROTOCOL:-good_cop_bad_cop_demo.json}"
 CITRUS_PROTOCOL_PATH="${ORANGE_CITRUS_CITRUS_PROTOCOL_PATH:-}"
 CITRUS_AUTORUN_START_DELAY_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_START_DELAY_SECONDS:-86400}"
-CITRUS_RUN_SECONDS="${ORANGE_CITRUS_CITRUS_RUN_SECONDS:-${ORANGE_CITRUS_CITRUS_AUTORUN_RUN_SECONDS:-}}"
+CITRUS_RUN_SECONDS="${ORANGE_CITRUS_CITRUS_RUN_SECONDS:-}"
 CITRUS_AUTORUN_LOADER=1
 CITRUS_ORANGE_COMPLETION_NOTIFY=0
 ALLOW_PREEXISTING_SOCKETS=0
@@ -350,7 +350,7 @@ while [[ $# -gt 0 ]]; do
       CITRUS_AUTORUN_START_DELAY_SECONDS="$1"
       shift
       ;;
-    --citrus-run-seconds|--citrus-autorun-run-seconds)
+    --citrus-run-seconds)
       shift
       require_value "--citrus-run-seconds" "$#"
       is_positive_integer "$1" || { echo "--citrus-run-seconds must be a positive integer" >&2; exit 2; }

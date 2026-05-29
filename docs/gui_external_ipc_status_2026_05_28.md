@@ -254,7 +254,8 @@ scripts/run_orange_citrus_fourcam_orchestrator.sh \
   --execute \
   --record-seconds 6 \
   --warmup-seconds 2 \
-  --clip-seconds 2
+  --clip-seconds 2 \
+  --citrus-run-seconds 6
 ```
 
 Earlier GUI-only no-lens-safe single-clip run:

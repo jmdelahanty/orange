@@ -431,6 +431,12 @@ mode, the wrapper refuses to proceed if the default Orange/Citrus local-control
 sockets are already answering; use `--allow-preexisting-sockets` only for an
 intentional diagnostic.
 
+For short deterministic smokes, pass `--citrus-run-seconds <seconds>`. That is
+an orchestrator timer, not a Citrus autorun env: after local-control start, the
+orchestrator waits until Citrus reports the experiment active/armed, sends
+Citrus `stop_experiment` after the requested active runtime, then waits for
+Citrus terminal state before stopping Orange.
+
 By default, the profile runs Orange validation after finalization and writes
 the validator JSON to `/tmp/<operation_id>_orange_gui_validation.json`. The
 default validator targets the exact `{orange_recording_folder}` reported by
