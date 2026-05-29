@@ -312,6 +312,12 @@ def citrus_ready_to_start(status: dict[str, Any]) -> bool:
     return bool(json_path(status, ["readiness", "ready_to_start"], False))
 
 
+def citrus_active_or_armed(status: dict[str, Any]) -> bool:
+    return bool(json_path(status, ["experiment", "active"], False)) or bool(
+        json_path(status, ["experiment", "armed"], False)
+    )
+
+
 def citrus_terminal_state(status: dict[str, Any]) -> str:
     value = json_path(status, ["experiment", "terminal_state"], "")
     return value if isinstance(value, str) else ""
@@ -455,6 +461,69 @@ class Orchestrator:
             time.sleep(self.args.poll_interval_seconds)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(f"timed out waiting for {label} {description}: {last_error}")
+
+    def wait_for_citrus_terminal_or_run_duration(self) -> dict[str, Any]:
+        if self.args.citrus_run_seconds <= 0.0:
+            return self.wait_for_status(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                citrus_is_terminal,
+                self.args.citrus_terminal_timeout_seconds,
+                "terminal_state",
+            )
+
+        step = self.step("wait_citrus_terminal_or_run_duration")
+        deadline = time.monotonic() + self.args.citrus_terminal_timeout_seconds
+        active_since: float | None = None
+        last_error = ""
+        last_status: dict[str, Any] = {}
+        while time.monotonic() <= deadline:
+            self.raise_if_started_process_exited("waiting for Citrus terminal state or run duration")
+            try:
+                _, status = self.status("citrus", CITRUS_REQUEST_SCHEMA_ID, self.args.citrus_socket)
+                last_status = status
+                if citrus_is_terminal(status):
+                    step.finish(ok=True, outcome="terminal", status=status)
+                    return status
+                now = time.monotonic()
+                if citrus_active_or_armed(status):
+                    if active_since is None:
+                        active_since = now
+                    active_elapsed_s = now - active_since
+                    if active_elapsed_s >= self.args.citrus_run_seconds:
+                        step.finish(
+                            ok=True,
+                            outcome="run_duration_elapsed",
+                            run_seconds=self.args.citrus_run_seconds,
+                            active_elapsed_s=active_elapsed_s,
+                            status=status,
+                        )
+                        return status
+            except (OSError, TimeoutError, json.JSONDecodeError, OrchestratorError) as exc:
+                last_error = str(exc)
+            time.sleep(self.args.poll_interval_seconds)
+        step.finish(ok=False, last_error=last_error, last_status=last_status)
+        raise OrchestratorError(
+            "timed out waiting for Citrus terminal state or "
+            f"{self.args.citrus_run_seconds}s active run duration: {last_error}"
+        )
+
+    def request_citrus_stop_for_run_duration(self) -> dict[str, Any]:
+        step = self.step("citrus_stop_experiment_run_duration")
+        response = self.send(
+            self.args.citrus_socket,
+            build_citrus_stop_request(
+                self.args.operation_id,
+                f"{self.args.operation_id}:citrus:stop_experiment:run_duration",
+                self.args.source,
+            ),
+        )
+        if not response_accepted(response):
+            step.finish(ok=False, response=response)
+            raise OrchestratorError(f"Citrus stop_experiment was not accepted: {response}")
+        step.finish(ok=True, response=response)
+        return response
 
     def refresh_started_processes(self) -> None:
         for info in self.started_processes:
@@ -708,14 +777,17 @@ class Orchestrator:
             raise OrchestratorError(f"Citrus start_experiment was not accepted: {citrus_start_response}")
         step.finish(ok=True, response=citrus_start_response)
 
-        final_citrus_status = self.wait_for_status(
-            "citrus",
-            CITRUS_REQUEST_SCHEMA_ID,
-            self.args.citrus_socket,
-            citrus_is_terminal,
-            self.args.citrus_terminal_timeout_seconds,
-            "terminal_state",
-        )
+        final_citrus_status = self.wait_for_citrus_terminal_or_run_duration()
+        if not citrus_is_terminal(final_citrus_status):
+            self.request_citrus_stop_for_run_duration()
+            final_citrus_status = self.wait_for_status(
+                "citrus",
+                CITRUS_REQUEST_SCHEMA_ID,
+                self.args.citrus_socket,
+                citrus_is_terminal,
+                self.args.citrus_terminal_timeout_seconds,
+                "terminal_state",
+            )
         if self.args.require_citrus_perf_jsonl and not citrus_perf_jsonl_path_known(final_citrus_status):
             final_citrus_status = self.wait_for_status(
                 "citrus",
@@ -1030,6 +1102,7 @@ class Orchestrator:
             "citrus": {
                 "socket": self.args.citrus_socket,
                 "log_path": self.args.citrus_log,
+                "run_seconds": self.args.citrus_run_seconds,
                 "terminal_state": citrus_terminal_state(citrus_status),
                 "terminal_reason": citrus_terminal_reason(citrus_status),
                 "perf_jsonl_enabled": citrus_perf_jsonl_enabled(citrus_status),
@@ -1079,6 +1152,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--launch-socket-preflight-timeout-seconds", type=positive_float, default=0.2)
     parser.add_argument("--timeout-seconds", type=positive_float, default=120.0)
     parser.add_argument("--citrus-terminal-timeout-seconds", type=positive_float, default=300.0)
+    parser.add_argument(
+        "--citrus-run-seconds",
+        type=nonnegative_float,
+        default=0.0,
+        help=(
+            "If positive, stop Citrus after this many seconds of active/armed "
+            "experiment time, then wait for terminal state."
+        ),
+    )
     parser.add_argument("--orange-finalize-timeout-seconds", type=positive_float, default=180.0)
     parser.add_argument("--orange-stop-grace-seconds", type=nonnegative_float, default=0.0)
     parser.add_argument("--require-citrus-perf-jsonl", action="store_true")
@@ -1164,6 +1246,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
             "socket": args.citrus_socket,
             "log_path": args.citrus_log,
             "command": shlex.split(args.citrus_command) if args.citrus_command else [],
+            "run_seconds": args.citrus_run_seconds,
             "env_overlay": {
                 **parse_env_items(args.citrus_env),
                 "CITRUS_GUI_LOCAL_CONTROL_SOCKET": args.citrus_socket,
@@ -1174,6 +1257,11 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 f"{args.operation_id}:citrus:start_experiment",
                 args.source,
             ),
+            "stop_request": build_citrus_stop_request(
+                args.operation_id,
+                f"{args.operation_id}:citrus:stop_experiment:run_duration",
+                args.source,
+            ) if args.citrus_run_seconds > 0.0 else None,
             "require_perf_jsonl": args.require_citrus_perf_jsonl,
             "preflight_existing_socket": bool(args.citrus_command)
             and not args.allow_preexisting_citrus_socket,

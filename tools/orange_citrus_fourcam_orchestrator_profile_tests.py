@@ -109,7 +109,7 @@ def test_default_dry_run_builds_live_profile() -> None:
             "profile should keep Citrus autorun from racing local-control start",
         )
         require(
-            "CITRUS_GUI_AUTORUN_RUN_SECONDS" not in citrus_env,
+            citrus["run_seconds"] == 0.0,
             "profile should not impose a Citrus stop duration by default",
         )
         require(
@@ -226,7 +226,7 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
             "2",
             "--clip-seconds",
             "2",
-            "--citrus-autorun-run-seconds",
+            "--citrus-run-seconds",
             "6",
         ]
     )
@@ -252,8 +252,16 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
         "rolling profile should pass explicit GUI record_for_seconds to Orange runtime",
     )
     require(
-        payload["citrus"]["env_overlay"].get("CITRUS_GUI_AUTORUN_RUN_SECONDS") == "6",
-        "rolling profile should pass optional Citrus autorun run duration",
+        payload["citrus"]["run_seconds"] == 6.0,
+        "rolling profile should pass optional orchestrator-managed Citrus run duration",
+    )
+    require(
+        payload["citrus"]["stop_request"]["method"] == "stop_experiment",
+        "rolling profile should describe the Citrus run-duration stop request",
+    )
+    require(
+        "CITRUS_GUI_AUTORUN_RUN_SECONDS" not in payload["citrus"]["env_overlay"],
+        "Citrus run duration should be orchestrator-managed, not autorun-env-managed",
     )
     validation = payload["validations"][0]
     require(

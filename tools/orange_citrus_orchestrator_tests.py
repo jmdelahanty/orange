@@ -344,6 +344,109 @@ def test_execute_against_fake_local_control_servers() -> None:
         require(json.loads(summary_path.read_text())["result"] == "pass", "summary file should match")
 
 
+def test_execute_stops_citrus_after_run_seconds() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        orange_state = {"started": False, "stopped": False}
+        citrus_state = {"started": False, "stopped": False, "stop_requests": 0}
+
+        def handle_orange(request: dict[str, Any]) -> dict[str, Any]:
+            method = request.get("method")
+            if method == "start_recording":
+                orange_state["started"] = True
+            elif method == "stop_recording":
+                orange_state["stopped"] = True
+            return response_for(
+                request,
+                orange_status(orange_state["started"], orange_state["stopped"]),
+            )
+
+        def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
+            method = request.get("method")
+            if method == "start_experiment":
+                citrus_state["started"] = True
+            elif method == "stop_experiment":
+                citrus_state["stopped"] = True
+                citrus_state["stop_requests"] += 1
+            terminal = citrus_state["stopped"]
+            status = {
+                "readiness": {
+                    "ready_to_start": not citrus_state["started"],
+                    "reasons": [],
+                },
+                "experiment": {
+                    "active": citrus_state["started"] and not terminal,
+                    "armed": False,
+                    "terminal_state": "stopped" if terminal else ("active" if citrus_state["started"] else ""),
+                    "terminal_reason": "stopped_by_local_control" if terminal else "",
+                    "last_operation_id": "op-run-seconds" if citrus_state["started"] else "",
+                },
+                "output": {
+                    "perf_jsonl_enabled": True,
+                    "perf_jsonl_path": str(root / "citrus_perf.jsonl") if terminal else "",
+                    "perf_jsonl_path_known": terminal,
+                },
+            }
+            return response_for(request, status)
+
+        def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+            if socket_path == "orange-run-seconds.sock":
+                return handle_orange(request)
+            if socket_path == "citrus-run-seconds.sock":
+                return handle_citrus(request)
+            raise AssertionError(f"unexpected socket path: {socket_path}")
+
+        original_send = module.send_unix_json
+        module.send_unix_json = fake_send
+        try:
+            args = module.parse_args(
+                [
+                    "--execute",
+                    "--operation-id",
+                    "op-run-seconds",
+                    "--orange-socket",
+                    "orange-run-seconds.sock",
+                    "--citrus-socket",
+                    "citrus-run-seconds.sock",
+                    "--poll-interval-seconds",
+                    "0.01",
+                    "--timeout-seconds",
+                    "2",
+                    "--citrus-terminal-timeout-seconds",
+                    "2",
+                    "--citrus-run-seconds",
+                    "0.02",
+                    "--orange-finalize-timeout-seconds",
+                    "2",
+                    "--allow-preexisting-orange-socket",
+                    "--allow-preexisting-citrus-socket",
+                    "--require-citrus-perf-jsonl",
+                    "--summary-json",
+                    str(root / "summary.json"),
+                ]
+            )
+            payload = module.Orchestrator(args).run()
+        finally:
+            module.send_unix_json = original_send
+
+        require(payload["result"] == "pass", "orchestrator should pass run-seconds fake run")
+        require(citrus_state["stop_requests"] == 1, "orchestrator should send one Citrus stop request")
+        require(
+            payload["citrus"]["terminal_state"] == "stopped",
+            "summary should report Citrus stopped by run duration",
+        )
+        step_names = [step["name"] for step in payload["steps"]]
+        require(
+            "wait_citrus_terminal_or_run_duration" in step_names,
+            "run should include the run-duration wait step",
+        )
+        require(
+            "citrus_stop_experiment_run_duration" in step_names,
+            "run should include the Citrus stop request step",
+        )
+
+
 def test_launch_preflights_all_sockets_before_starting_processes() -> None:
     module = load_module()
     args = module.parse_args(
@@ -671,6 +774,7 @@ def main() -> int:
         test_dry_run_default_does_not_open_sockets,
         test_dry_run_launch_socket_preflight_flags,
         test_execute_against_fake_local_control_servers,
+        test_execute_stops_citrus_after_run_seconds,
         test_launch_preflights_all_sockets_before_starting_processes,
         test_persist_artifacts_copies_logs_into_recording_folder,
         test_failure_summary_uses_last_known_status_for_artifacts,

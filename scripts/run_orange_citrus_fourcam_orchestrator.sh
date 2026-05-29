@@ -58,8 +58,8 @@ Options:
   --citrus-protocol-path <path>  Citrus autorun loader absolute protocol path.
   --citrus-autorun-start-delay-seconds <seconds>
                                   Long delay used so local control owns start.
-  --citrus-autorun-run-seconds <seconds>
-                                  Optional Citrus autorun stop duration.
+  --citrus-run-seconds <seconds>
+                                  Stop Citrus after this active runtime.
   --no-citrus-autorun-loader     Do not set Citrus autorun loader envs.
   --enable-citrus-orange-completion-notify
                                   Let Citrus also notify Orange on terminal state.
@@ -167,7 +167,7 @@ CITRUS_CANVAS="${ORANGE_CITRUS_CITRUS_CANVAS:-shadow}"
 CITRUS_PROTOCOL="${ORANGE_CITRUS_CITRUS_PROTOCOL:-good_cop_bad_cop_demo.json}"
 CITRUS_PROTOCOL_PATH="${ORANGE_CITRUS_CITRUS_PROTOCOL_PATH:-}"
 CITRUS_AUTORUN_START_DELAY_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_START_DELAY_SECONDS:-86400}"
-CITRUS_AUTORUN_RUN_SECONDS="${ORANGE_CITRUS_CITRUS_AUTORUN_RUN_SECONDS:-}"
+CITRUS_RUN_SECONDS="${ORANGE_CITRUS_CITRUS_RUN_SECONDS:-${ORANGE_CITRUS_CITRUS_AUTORUN_RUN_SECONDS:-}}"
 CITRUS_AUTORUN_LOADER=1
 CITRUS_ORANGE_COMPLETION_NOTIFY=0
 ALLOW_PREEXISTING_SOCKETS=0
@@ -350,11 +350,11 @@ while [[ $# -gt 0 ]]; do
       CITRUS_AUTORUN_START_DELAY_SECONDS="$1"
       shift
       ;;
-    --citrus-autorun-run-seconds)
+    --citrus-run-seconds|--citrus-autorun-run-seconds)
       shift
-      require_value "--citrus-autorun-run-seconds" "$#"
-      is_positive_integer "$1" || { echo "--citrus-autorun-run-seconds must be a positive integer" >&2; exit 2; }
-      CITRUS_AUTORUN_RUN_SECONDS="$1"
+      require_value "--citrus-run-seconds" "$#"
+      is_positive_integer "$1" || { echo "--citrus-run-seconds must be a positive integer" >&2; exit 2; }
+      CITRUS_RUN_SECONDS="$1"
       shift
       ;;
     --no-citrus-autorun-loader)
@@ -452,9 +452,9 @@ if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
     exit 2
   }
 fi
-if [[ -n "${CITRUS_AUTORUN_RUN_SECONDS}" ]]; then
-  is_positive_integer "${CITRUS_AUTORUN_RUN_SECONDS}" || {
-    echo "ORANGE_CITRUS_CITRUS_AUTORUN_RUN_SECONDS must be a positive integer" >&2
+if [[ -n "${CITRUS_RUN_SECONDS}" ]]; then
+  is_positive_integer "${CITRUS_RUN_SECONDS}" || {
+    echo "ORANGE_CITRUS_CITRUS_RUN_SECONDS must be a positive integer" >&2
     exit 2
   }
 fi
@@ -582,6 +582,9 @@ if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" ]]; then
   ARGS+=("--orange-validation-command" "${ORANGE_VALIDATION_COMMAND}")
   ARGS+=("--validation-artifact" "orange_validation_1=${ORANGE_VALIDATION_JSON}")
 fi
+if [[ -n "${CITRUS_RUN_SECONDS}" ]]; then
+  ARGS+=("--citrus-run-seconds" "${CITRUS_RUN_SECONDS}")
+fi
 
 DISPLAY_ENV_ITEMS=()
 if [[ -n "${DISPLAY_VALUE}" ]]; then
@@ -624,9 +627,6 @@ if (( CITRUS_AUTORUN_LOADER )) && [[ -n "${CITRUS_COMMAND}" ]]; then
   )
   if [[ -n "${CITRUS_PROTOCOL_PATH}" ]]; then
     CITRUS_EXTRA_ENV+=("CITRUS_GUI_AUTORUN_PROTOCOL_PATH=${CITRUS_PROTOCOL_PATH}")
-  fi
-  if [[ -n "${CITRUS_AUTORUN_RUN_SECONDS}" ]]; then
-    CITRUS_EXTRA_ENV+=("CITRUS_GUI_AUTORUN_RUN_SECONDS=${CITRUS_AUTORUN_RUN_SECONDS}")
   fi
 fi
 for item in "${CITRUS_EXTRA_ENV[@]}"; do

@@ -468,7 +468,7 @@ scripts/run_orange_citrus_fourcam_orchestrator.sh \
   --record-seconds 6 \
   --warmup-seconds 2 \
   --clip-seconds 2 \
-  --citrus-autorun-run-seconds 6
+  --citrus-run-seconds 6
 ```
 
 When `--clip-seconds` is present, the default validator expects
@@ -479,8 +479,8 @@ stop clock: the orchestrator still stops Orange through the selected stop policy
 after Citrus reaches a terminal state. The profile now forwards
 `ORANGE_GUI_RECORD_FOR_SECONDS=<record-seconds>` explicitly so the live Orange
 runtime and the validation command use the same recording-control value.
-`--citrus-autorun-run-seconds` is optional; when present, the wrapper forwards
-`CITRUS_GUI_AUTORUN_RUN_SECONDS=<seconds>` so Citrus requests its own stop after
-the local-control-started experiment has run for that duration. That gives short
+`--citrus-run-seconds` is optional; when present, the orchestrator waits until
+Citrus reports the experiment active/armed, sends Citrus `stop_experiment` after
+that active runtime, then waits for Citrus terminal state. That gives short
 orchestrator smoke tests a deterministic Citrus terminal state while preserving
 Orange-owned recording drain/finalization.
