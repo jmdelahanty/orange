@@ -482,7 +482,9 @@ That profile enables `CITRUS_ORANGE_COMPLETION_NOTIFY=1`, passes
 `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`, waits for Orange to finalize
 without sending its own Orange stop request, and validates that
 `recording.control.method` is `citrus_completion` with
-`command_source=citrus` and `ack_state=executed`.
+`command_source=citrus` and `ack_state=executed`. The orchestrator also checks
+the final Orange status before artifact validation and records
+`orange.local_control_citrus_notify_stop_status_check` in the combined summary.
 
 To run the same path as a STOP ALL-like diagnostic where Citrus stops itself
 before notifying Orange, add a finite Citrus run duration:

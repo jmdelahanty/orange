@@ -31,7 +31,17 @@ def load_module() -> Any:
     return module
 
 
-def orange_status(started: bool, stopped: bool, *, drain_timed_out: bool = False) -> dict[str, Any]:
+def orange_status(
+    started: bool,
+    stopped: bool,
+    *,
+    drain_timed_out: bool = False,
+    stop_method: str = "stop_recording",
+    stop_source: str = "orange_citrus_orchestrator",
+    operation_id: str = "op-test",
+    terminal_state: str = "",
+    reason: str = "orchestrator_stop",
+) -> dict[str, Any]:
     return {
         "phase": "streaming" if not started else ("streaming" if stopped else "recording"),
         "readiness": {
@@ -68,7 +78,11 @@ def orange_status(started: bool, stopped: bool, *, drain_timed_out: bool = False
                 "drain_timeout_seconds": 60.0,
                 "drain_elapsed_seconds": 61.25 if drain_timed_out else 0.0,
                 "request_id": "stop-req",
-                "operation_id": "op-test",
+                "operation_id": operation_id,
+                "method": stop_method if stopped or drain_timed_out else "",
+                "source": stop_source if stopped or drain_timed_out else "",
+                "terminal_state": terminal_state if stopped or drain_timed_out else "",
+                "reason": reason if stopped or drain_timed_out else "",
                 "last_event": "finalized_after_drain_timeout"
                 if drain_timed_out
                 else "finalized",
@@ -482,9 +496,18 @@ def test_execute_waits_for_citrus_completion_notify_stop() -> None:
             elif method in {"stop_recording", "citrus_completion"}:
                 orange_state["orchestrator_stop_requests"] += 1
                 orange_state["stopped"] = True
+            status = orange_status(
+                orange_state["started"],
+                orange_state["stopped"],
+                stop_method="citrus_completion",
+                stop_source="citrus",
+                operation_id="op-notify",
+                terminal_state="completed",
+                reason="protocol_finished",
+            )
             return response_for(
                 request,
-                orange_status(orange_state["started"], orange_state["stopped"]),
+                status,
             )
 
         def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
@@ -558,6 +581,10 @@ def test_execute_waits_for_citrus_completion_notify_stop() -> None:
             payload["orange"]["local_control_stop_ack_status_check"]["stop_policy"]
             == "citrus_completion_notify",
             "ACK-state check should preserve notify stop policy",
+        )
+        require(
+            payload["orange"]["local_control_citrus_notify_stop_status_check"]["ok"],
+            "summary should include a clean Citrus-notify status consistency check",
         )
         require(summary_path.exists(), "summary JSON should be written")
 
@@ -925,6 +952,89 @@ def test_orchestrator_checks_orange_stop_ack_state() -> None:
         finalized_wait_skipped=True,
     )
     require(not ignored_check["ok"], "ignored stop ACK state should fail for a stop policy")
+
+
+def test_orchestrator_checks_citrus_notify_stop_status() -> None:
+    module = load_module()
+
+    clean_status = orange_status(
+        True,
+        True,
+        stop_method="citrus_completion",
+        stop_source="citrus",
+        operation_id="op-test",
+        terminal_state="completed",
+        reason="protocol_finished",
+    )
+    clean_check = module.summarize_orange_citrus_notify_stop_status(
+        clean_status,
+        citrus_status(True, True),
+        stop_policy="citrus_completion_notify",
+        operation_id="op-test",
+    )
+    require(clean_check["ok"], f"clean Citrus notify stop should pass: {clean_check}")
+    require(
+        clean_check["method"] == "citrus_completion",
+        "notify check should report the Orange stop method",
+    )
+
+    skipped_check = module.summarize_orange_citrus_notify_stop_status(
+        clean_status,
+        citrus_status(True, True),
+        stop_policy="stop_recording",
+        operation_id="op-test",
+    )
+    require(skipped_check["ok"] and skipped_check["skipped"], "non-notify policies should skip the notify check")
+
+    wrong_method_status = orange_status(
+        True,
+        True,
+        stop_method="stop_recording",
+        stop_source="orange_citrus_orchestrator",
+        operation_id="op-test",
+        terminal_state="completed",
+        reason="protocol_finished",
+    )
+    wrong_method_check = module.summarize_orange_citrus_notify_stop_status(
+        wrong_method_status,
+        citrus_status(True, True),
+        stop_policy="citrus_completion_notify",
+        operation_id="op-test",
+    )
+    require(not wrong_method_check["ok"], "notify policy should fail when Orange stop was not Citrus completion")
+    require(
+        any("method" in failure for failure in wrong_method_check["failures"]),
+        "notify method failure should identify the bad method",
+    )
+
+    wrong_terminal_status = orange_status(
+        True,
+        True,
+        stop_method="citrus_completion",
+        stop_source="citrus",
+        operation_id="op-test",
+        terminal_state="completed",
+        reason="protocol_finished",
+    )
+    wrong_terminal_check = module.summarize_orange_citrus_notify_stop_status(
+        wrong_terminal_status,
+        {
+            "experiment": {
+                "terminal_state": "stopped",
+                "terminal_reason": "stopped_by_local_control",
+            }
+        },
+        stop_policy="citrus_completion_notify",
+        operation_id="op-test",
+    )
+    require(
+        not wrong_terminal_check["ok"],
+        "notify policy should fail when Orange stop terminal metadata does not match Citrus",
+    )
+    require(
+        any("terminal state mismatch" in failure for failure in wrong_terminal_check["failures"]),
+        "notify terminal failure should identify the bad terminal state",
+    )
 
 
 def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
@@ -1563,6 +1673,7 @@ def main() -> int:
         test_launch_preflights_all_sockets_before_starting_processes,
         test_orchestrator_fails_on_orange_drain_timeout_by_default,
         test_orchestrator_checks_orange_stop_ack_state,
+        test_orchestrator_checks_citrus_notify_stop_status,
         test_persist_artifacts_copies_logs_into_recording_folder,
         test_orange_local_control_event_log_summary,
         test_orange_local_control_event_log_required_check,

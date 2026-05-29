@@ -371,6 +371,27 @@ def orange_recording_stop_ack_state(status: dict[str, Any]) -> str:
     return str(orange_local_control_recording_stop(status).get("ack_state", ""))
 
 
+def orange_recording_stop_method(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("method", ""))
+
+
+def orange_recording_stop_operation_id(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("operation_id", ""))
+
+
+def orange_recording_stop_source(status: dict[str, Any]) -> str:
+    stop = orange_local_control_recording_stop(status)
+    return str(stop.get("source", stop.get("command_source", "")))
+
+
+def orange_recording_stop_terminal_state(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("terminal_state", ""))
+
+
+def orange_recording_stop_reason(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("reason", ""))
+
+
 def orange_recording_stop_forced_finalize_requested(status: dict[str, Any]) -> bool:
     return bool(
         orange_local_control_recording_stop(status).get(
@@ -495,6 +516,89 @@ def summarize_orange_stop_ack_status(
         "ack_state": orange_recording_stop_ack_state(status),
         "recording_finalized": orange_recording_finalized(status),
         "drain_timed_out": orange_recording_stop_drain_timed_out(status),
+        "failures": failures,
+    }
+
+
+def check_orange_citrus_notify_stop_status(
+    orange_status: dict[str, Any],
+    citrus_status: dict[str, Any],
+    *,
+    operation_id: str,
+) -> list[str]:
+    failures: list[str] = []
+    method = orange_recording_stop_method(orange_status)
+    if method != "citrus_completion":
+        failures.append(
+            "Orange final status did not record Citrus completion stop: "
+            f"method={method!r}"
+        )
+
+    source = orange_recording_stop_source(orange_status)
+    if source != "citrus":
+        failures.append(
+            "Orange final status did not record Citrus as stop source: "
+            f"source={source!r}"
+        )
+
+    stop_operation_id = orange_recording_stop_operation_id(orange_status)
+    if operation_id and stop_operation_id != operation_id:
+        failures.append(
+            "Orange Citrus completion stop operation id mismatch: "
+            f"operation_id={stop_operation_id!r}; expected {operation_id!r}"
+        )
+
+    terminal_state = citrus_terminal_state(citrus_status)
+    if terminal_state:
+        stop_terminal_state = orange_recording_stop_terminal_state(orange_status)
+        if stop_terminal_state != terminal_state:
+            failures.append(
+                "Orange Citrus completion stop terminal state mismatch: "
+                f"terminal_state={stop_terminal_state!r}; expected {terminal_state!r}"
+            )
+
+    terminal_reason = citrus_terminal_reason(citrus_status)
+    if terminal_reason:
+        stop_reason = orange_recording_stop_reason(orange_status)
+        if stop_reason != terminal_reason:
+            failures.append(
+                "Orange Citrus completion stop reason mismatch: "
+                f"reason={stop_reason!r}; expected {terminal_reason!r}"
+            )
+    return failures
+
+
+def summarize_orange_citrus_notify_stop_status(
+    orange_status: dict[str, Any],
+    citrus_status: dict[str, Any],
+    *,
+    stop_policy: str,
+    operation_id: str,
+) -> dict[str, Any]:
+    if stop_policy != "citrus_completion_notify":
+        return {
+            "ok": True,
+            "skipped": True,
+            "stop_policy": stop_policy,
+            "failures": [],
+        }
+    failures = check_orange_citrus_notify_stop_status(
+        orange_status,
+        citrus_status,
+        operation_id=operation_id,
+    )
+    return {
+        "ok": not failures,
+        "skipped": False,
+        "stop_policy": stop_policy,
+        "operation_id": operation_id,
+        "method": orange_recording_stop_method(orange_status),
+        "source": orange_recording_stop_source(orange_status),
+        "stop_operation_id": orange_recording_stop_operation_id(orange_status),
+        "terminal_state": orange_recording_stop_terminal_state(orange_status),
+        "terminal_reason": orange_recording_stop_reason(orange_status),
+        "expected_terminal_state": citrus_terminal_state(citrus_status),
+        "expected_terminal_reason": citrus_terminal_reason(citrus_status),
         "failures": failures,
     }
 
@@ -1249,6 +1353,10 @@ class Orchestrator:
 
         if self.args.stop_policy == "citrus_completion_notify":
             final_orange_status = self.wait_for_orange_citrus_notify_stop()
+            self.require_orange_citrus_notify_stop_status(
+                final_orange_status,
+                final_citrus_status,
+            )
             self.orange_recording_started = False
         elif self.args.stop_policy != "none":
             final_orange_status = self.request_orange_stop(final_citrus_status)
@@ -1452,6 +1560,26 @@ class Orchestrator:
         self.require_orange_stop_ack_status(status)
         return status
 
+    def require_orange_citrus_notify_stop_status(
+        self,
+        orange_status: dict[str, Any],
+        citrus_status: dict[str, Any],
+    ) -> None:
+        check = summarize_orange_citrus_notify_stop_status(
+            orange_status,
+            citrus_status,
+            stop_policy=self.args.stop_policy,
+            operation_id=self.args.operation_id,
+        )
+        step = self.step("orange_citrus_notify_stop_status_check")
+        step.finish(ok=check["ok"], check=check)
+        if check["ok"]:
+            return
+        failure_text = "; ".join(str(item) for item in check["failures"])
+        raise OrchestratorError(
+            f"Orange Citrus completion stop status mismatch: {failure_text}"
+        )
+
     def require_orange_local_control_event_log(self, status: dict[str, Any]) -> None:
         event_log = summarize_orange_local_control_event_log(
             resolve_orange_local_control_log_path(self.args)
@@ -1643,6 +1771,14 @@ class Orchestrator:
             stop_policy=self.args.stop_policy,
             finalized_wait_skipped=self.args.skip_wait_orange_finalized,
         )
+        orange_citrus_notify_stop_status_check = (
+            summarize_orange_citrus_notify_stop_status(
+                orange_status,
+                citrus_status,
+                stop_policy=self.args.stop_policy,
+                operation_id=self.args.operation_id,
+            )
+        )
         self.refresh_started_processes()
         return {
             "schema_id": SUMMARY_SCHEMA_ID,
@@ -1670,6 +1806,9 @@ class Orchestrator:
                 "local_control_stop_health": orange_recording_stop_health(orange_status),
                 "local_control_stop_ack_status_check": (
                     orange_stop_ack_status_check
+                ),
+                "local_control_citrus_notify_stop_status_check": (
+                    orange_citrus_notify_stop_status_check
                 ),
                 "local_control_stop_timeout_status_check": (
                     orange_drain_timeout_status_check

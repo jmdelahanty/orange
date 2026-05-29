@@ -494,7 +494,12 @@ the run crossed the configured drain observability threshold. The combined
 summary records `orange.local_control_recording_stop` and
 `orange.local_control_stop_drain_timed_out`; it also records
 `orange.local_control_stop_timeout_status_check`, which captures timeout policy
-and forced-finalize consistency evidence. The event-log summary records whether
+and forced-finalize consistency evidence. For
+`--stop-policy citrus_completion_notify`, the orchestrator additionally records
+`orange.local_control_citrus_notify_stop_status_check` and fails before
+post-run validators if Orange's final local-control status does not show
+`method=citrus_completion`, `source=citrus`, the expected operation id, and
+terminal state/reason matching Citrus. The event-log summary records whether
 GUI-thread stop trigger, drain timeout, forced-finalize request, and drain
 finalization events were observed. When
 `--require-orange-local-control-event-log` is enabled,
