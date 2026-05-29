@@ -41,6 +41,19 @@ def strip_cpp_line_comments(source: str) -> str:
     return "\n".join(line.split("//", 1)[0] for line in source.splitlines())
 
 
+def source_occurrences(pattern: str, roots: tuple[str, ...]) -> list[tuple[str, int, str]]:
+    occurrences: list[tuple[str, int, str]] = []
+    for root in roots:
+        for path in (REPO_ROOT / root).rglob("*"):
+            if path.suffix not in {".cpp", ".h", ".hpp", ".cu"}:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for line_number, line in enumerate(text.splitlines(), start=1):
+                if pattern in line:
+                    occurrences.append((str(path.relative_to(REPO_ROOT)), line_number, line.strip()))
+    return occurrences
+
+
 def test_override_header_maps_glfw_size_queries() -> None:
     header = read("src/imgui_glfw_size_cache_override.h")
     require(
@@ -137,6 +150,33 @@ def test_cache_context_registered_during_gx_init() -> None:
     )
 
 
+def test_size_cache_owns_glfw_user_pointer() -> None:
+    roots = ("src", "third_party/imgui/backends")
+    set_occurrences = source_occurrences("glfwSetWindowUserPointer", roots)
+    get_occurrences = source_occurrences("glfwGetWindowUserPointer", roots)
+    require(
+        set_occurrences == [
+            ("src/gx_helper.h", 100, "glfwSetWindowUserPointer(render_target, context);")
+        ],
+        f"GLFW window user pointer ownership changed: {set_occurrences}",
+    )
+    require(
+        get_occurrences == [
+            (
+                "src/gx_helper.h",
+                78,
+                'static_cast<gx_context *>(glfwGetWindowUserPointer(render_target));',
+            ),
+            (
+                "src/gx_helper.h",
+                89,
+                'static_cast<gx_context *>(glfwGetWindowUserPointer(render_target));',
+            ),
+        ],
+        f"GLFW window user pointer readers changed: {get_occurrences}",
+    )
+
+
 def test_multi_viewports_remain_disabled_for_clean_size_cache() -> None:
     gx_helper = read("src/gx_helper.h")
     body = strip_cpp_line_comments(function_body(gx_helper, "gx_imgui_init"))
@@ -203,6 +243,7 @@ def main() -> int:
         test_render_a_frame_uses_cached_framebuffer_size,
         test_imgui_new_frame_size_queries_are_intercepted,
         test_cache_context_registered_during_gx_init,
+        test_size_cache_owns_glfw_user_pointer,
         test_multi_viewports_remain_disabled_for_clean_size_cache,
         test_cache_context_cleared_before_window_destroy,
         test_imgui_backend_does_not_own_main_window_size_callbacks,
