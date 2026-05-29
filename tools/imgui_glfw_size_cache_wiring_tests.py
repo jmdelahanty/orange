@@ -101,12 +101,31 @@ def test_cache_context_registered_during_gx_init() -> None:
     )
 
 
+def test_recording_start_resets_size_cache_stats() -> None:
+    orange = read("src/orange.cpp")
+    body = function_body(orange, "gui_request_recording_start_through_operator_path")
+    require(
+        "display_frame_rate_stats->Reset()" in body,
+        "recording start must reset GUI frame-rate telemetry",
+    )
+    require(
+        "orange_imgui_glfw_reset_size_cache_stats()" in body,
+        "recording start must reset ImGui GLFW size-cache telemetry",
+    )
+    require(
+        body.index("orange_imgui_glfw_reset_size_cache_stats()")
+        < body.index("gui_note_recording_started("),
+        "size-cache counters must reset before the recording run is marked started",
+    )
+
+
 def main() -> int:
     tests = [
         test_override_header_maps_glfw_size_queries,
         test_cmake_force_includes_override_for_imgui_glfw_backend,
         test_render_a_frame_uses_cached_framebuffer_size,
         test_cache_context_registered_during_gx_init,
+        test_recording_start_resets_size_cache_stats,
     ]
     for test in tests:
         test()
