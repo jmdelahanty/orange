@@ -763,6 +763,17 @@ def write_rolling_full_frame_manifest(
                 "command_source": "orange_citrus_fourcam_profile",
                 "received_at_utc": "2026-05-29T00:00:00Z",
                 "stop_triggered_at_utc": "2026-05-29T00:00:01Z",
+                "drain_timeout_seconds": 60.0,
+                "drain_completed": True,
+                "drain_completed_at_utc": "2026-05-29T00:00:03Z",
+                "drain_timed_out": False,
+                "forced_finalize_requested": False,
+                "forced_finalize_stream_stop_requested": False,
+                "forced_finalize_requested_at_utc": "",
+                "health": "ok",
+                "error_code": "",
+                "last_event": "finalized",
+                "last_event_at_utc": "2026-05-29T00:00:03Z",
             }
         },
         "rollover": {"implementation": "external_recorder_gop_boundary_writer_rotation"},
@@ -3164,6 +3175,87 @@ def test_recording_session_manifest_checks_local_control_stop_metadata() -> None
         require(not reporter.failures, f"expected local-control stop metadata should pass: {reporter.failures}")
 
 
+def test_recording_session_manifest_checks_local_control_drain_timeout_consistency() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        manifest_path = root / "recording_session.json"
+        manifest = json.loads(manifest_path.read_text())
+        control = manifest["recording"]["control"]
+        control.update(
+            {
+                "drain_timed_out": True,
+                "forced_finalize_requested": True,
+                "forced_finalize_stream_stop_requested": True,
+                "forced_finalize_requested_at_utc": "2026-05-29T00:00:02Z",
+                "health": "warning",
+                "error_code": "drain_timeout",
+                "last_event": "finalized_after_drain_timeout",
+                "last_event_at_utc": "2026-05-29T00:00:03Z",
+            }
+        )
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_local_control_stop_method="stop_recording",
+            expected_local_control_stop_operation_id="op-rolling",
+            expected_local_control_stop_command_source="orange_citrus_fourcam_profile",
+        )
+        require(
+            not reporter.failures,
+            f"consistent local-control timeout metadata should pass: {reporter.failures}",
+        )
+
+
+def test_recording_session_manifest_fails_on_local_control_drain_timeout_inconsistency() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        manifest_path = root / "recording_session.json"
+        manifest = json.loads(manifest_path.read_text())
+        control = manifest["recording"]["control"]
+        control.update(
+            {
+                "drain_timed_out": True,
+                "forced_finalize_requested": False,
+                "forced_finalize_stream_stop_requested": False,
+                "error_code": "",
+                "last_event": "finalized_after_drain_timeout",
+            }
+        )
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_local_control_stop_method="stop_recording",
+            expected_local_control_stop_operation_id="op-rolling",
+            expected_local_control_stop_command_source="orange_citrus_fourcam_profile",
+        )
+        require(
+            any("forced_finalize_requested=False" in failure for failure in reporter.failures),
+            f"missing forced-finalize timeout evidence should fail: {reporter.failures}",
+        )
+        require(
+            any("error_code=''; expected 'drain_timeout'" in failure for failure in reporter.failures),
+            f"missing drain-timeout error code should fail: {reporter.failures}",
+        )
+        require(
+            any("forced_finalize_stream_stop_requested=False" in failure for failure in reporter.failures),
+            f"missing forced stream-stop evidence should fail: {reporter.failures}",
+        )
+
+
 def test_recording_session_manifest_fails_on_local_control_stop_metadata_mismatch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -3875,6 +3967,8 @@ def main() -> int:
         test_recording_session_manifest_accepts_rolling_clips,
         test_recording_session_manifest_checks_expected_rolling_control,
         test_recording_session_manifest_checks_local_control_stop_metadata,
+        test_recording_session_manifest_checks_local_control_drain_timeout_consistency,
+        test_recording_session_manifest_fails_on_local_control_drain_timeout_inconsistency,
         test_recording_session_manifest_fails_on_local_control_stop_metadata_mismatch,
         test_recording_session_manifest_fails_on_expected_recording_mode_mismatch,
         test_recording_session_manifest_fails_on_expected_control_mismatch,

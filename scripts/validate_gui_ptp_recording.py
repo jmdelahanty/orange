@@ -1593,6 +1593,114 @@ def check_local_control_stop_expectations(
         ),
     )
 
+    drain_completed = control.get("drain_completed")
+    if drain_completed is not None:
+        reporter.check(
+            isinstance(drain_completed, bool),
+            "recording_session recording.control drain_completed is boolean",
+            (
+                "recording_session recording.control drain_completed="
+                f"{drain_completed!r}"
+            ),
+        )
+        if drain_completed is True:
+            drain_completed_at_utc = control.get("drain_completed_at_utc")
+            reporter.check(
+                isinstance(drain_completed_at_utc, str)
+                and bool(drain_completed_at_utc),
+                "recording_session recording.control drain_completed_at_utc present",
+                (
+                    "recording_session recording.control drain_completed_at_utc="
+                    f"{drain_completed_at_utc!r}"
+                ),
+            )
+
+    drain_timed_out = control.get("drain_timed_out")
+    if drain_timed_out is not None:
+        reporter.check(
+            isinstance(drain_timed_out, bool),
+            "recording_session recording.control drain_timed_out is boolean",
+            (
+                "recording_session recording.control drain_timed_out="
+                f"{drain_timed_out!r}"
+            ),
+        )
+        if drain_timed_out is True:
+            forced_finalize_requested = control.get("forced_finalize_requested")
+            reporter.check(
+                forced_finalize_requested is True,
+                "recording_session recording.control forced_finalize_requested=true after drain timeout",
+                (
+                    "recording_session recording.control drain_timed_out=true "
+                    "but forced_finalize_requested="
+                    f"{forced_finalize_requested!r}"
+                ),
+            )
+            reporter.check(
+                control.get("error_code") == "drain_timeout",
+                "recording_session recording.control error_code=drain_timeout",
+                (
+                    "recording_session recording.control error_code="
+                    f"{control.get('error_code')!r}; expected 'drain_timeout'"
+                ),
+            )
+
+    forced_finalize_requested = control.get("forced_finalize_requested")
+    if forced_finalize_requested is True:
+        forced_at = control.get("forced_finalize_requested_at_utc")
+        reporter.check(
+            isinstance(forced_at, str) and bool(forced_at),
+            (
+                "recording_session recording.control "
+                "forced_finalize_requested_at_utc present"
+            ),
+            (
+                "recording_session recording.control "
+                f"forced_finalize_requested_at_utc={forced_at!r}"
+            ),
+        )
+
+    if control.get("forced_finalize_stream_stop_requested") is True:
+        reporter.check(
+            control.get("forced_finalize_requested") is True,
+            (
+                "recording_session recording.control forced stream-stop "
+                "requires forced finalize"
+            ),
+            (
+                "recording_session recording.control "
+                "forced_finalize_stream_stop_requested=true but "
+                f"forced_finalize_requested={control.get('forced_finalize_requested')!r}"
+            ),
+        )
+
+    if control.get("last_event") == "finalized_after_drain_timeout":
+        reporter.check(
+            control.get("drain_timed_out") is True,
+            (
+                "recording_session recording.control finalized-after-timeout "
+                "requires drain_timed_out=true"
+            ),
+            (
+                "recording_session recording.control last_event="
+                "'finalized_after_drain_timeout' but drain_timed_out="
+                f"{control.get('drain_timed_out')!r}"
+            ),
+        )
+        reporter.check(
+            control.get("forced_finalize_stream_stop_requested") is True,
+            (
+                "recording_session recording.control finalized-after-timeout "
+                "requires forced stream-stop"
+            ),
+            (
+                "recording_session recording.control last_event="
+                "'finalized_after_drain_timeout' but "
+                "forced_finalize_stream_stop_requested="
+                f"{control.get('forced_finalize_stream_stop_requested')!r}"
+            ),
+        )
+
     if expected_method is not None:
         reporter.check(
             control.get("method") == expected_method,

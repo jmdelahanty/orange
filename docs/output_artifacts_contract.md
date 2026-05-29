@@ -1112,7 +1112,9 @@ threshold when present. New GUI local-control runs also persist drain lifecycle
 evidence there, including `drain_completed`, `drain_completed_at_utc`,
 `drain_timed_out`, `forced_finalize_requested`,
 `forced_finalize_stream_stop_requested`, `health`, `error_code`, and
-`last_event` / `last_event_at_utc`.
+`last_event` / `last_event_at_utc`. The GUI validator rejects contradictory
+persisted stop-control evidence when local-control stop expectations are
+enabled.
 
 This derived diagnosis is intentionally script-owned. It should not be treated
 as a persisted Orange snapshot schema field.

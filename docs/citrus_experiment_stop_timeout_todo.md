@@ -229,6 +229,8 @@ Refs:
 - [x] Persist timeout policy/consistency checks in the orchestrator summary.
 - [x] Persist local-control drain completion, timeout, and forced-finalize
       evidence in `recording_session.json` stop-control metadata.
+- [x] Validate persisted stop-control timeout/forced-finalize consistency in
+      GUI artifact validation.
 
 ## Phase 6: Validation
 
