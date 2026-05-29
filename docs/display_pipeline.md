@@ -85,6 +85,13 @@ scripts/update_app_config_display_profile.py \
   frame. The Dear ImGui GLFW backend is compiled with Orange's size-cache shim,
   so its main-window `ImGui_ImplGlfw_NewFrame()` display-size path reads cached
   window/framebuffer dimensions instead of polling GLFW every frame.
+  The forced include is intentionally scoped only to the vendored
+  `imgui_impl_glfw.cpp` translation unit; Orange's shim implementation keeps raw
+  GLFW fallback calls for non-main-window diagnostics.
+- Keep ImGui multi-viewport/platform-window mode disabled for performance
+  validation. Secondary platform windows would route extra GLFW size queries
+  through the shim and are expected to produce fallback telemetry unless the
+  validator expectations are widened deliberately.
 - Display preview cadence is enforced before a frame is offered to the display
   worker. Skipped display frames are preview skips, not acquisition or
   recording drops.
@@ -172,6 +179,8 @@ When the source is color, or YOLO detection overlays are enabled and available:
   `recording_snapshot.json session.gui_display_frame_rate.imgui_glfw_size_cache`.
   Validation can require cache hits with no fallback size polling via
   `scripts/validate_gui_ptp_recording.py --require-imgui-glfw-size-cache`.
+  The counters reset when recording starts, so they describe the recorded run
+  rather than time spent in the idle GUI before the run.
 
 ## Optimization ideas (incremental)
 
@@ -207,8 +216,10 @@ When the source is color, or YOLO detection overlays are enabled and available:
   the intended `stream_downsample`, `display_preview_max_fps`,
   `swap_interval`, and `frame_max_fps`.
 - Confirm `session.gui_display_frame_rate.imgui_glfw_size_cache` reports
-  window/framebuffer cache hits and zero fallback calls when validating the
-  ImGui backend size-cache optimization.
+  `cache_context_registered=true`, positive window/framebuffer cache hits, zero
+  fallback/null-window calls, and a `total_size_requests` value equal to the sum
+  of the component counters when validating the ImGui backend size-cache
+  optimization.
 - Inspect `session.gui_display_frame_rate.timings` first:
   - high `main_texture_upload_ms` points at PBO upload/texture transfer,
   - high `camera_window_draw_ms` points at ImGui image/window drawing,

@@ -1095,6 +1095,13 @@ For runs intended to prove the ImGui GLFW backend display-size cache, also use
 window/framebuffer size hits, zero fallback GLFW size calls, and zero
 null-window requests during active recording.
 
+Those counters are reset at GUI recording start. A clean run should report
+`cache_context_registered=true`, positive `window_size_cache_hits` and
+`framebuffer_size_cache_hits`, zero fallback/null-window counters, and
+`total_size_requests` equal to the sum of the component counters. Fallback
+counts are diagnostic: they usually mean the ImGui GLFW backend asked about a
+non-main platform window or the compile-time shim scope changed.
+
 This derived diagnosis is intentionally script-owned. It should not be treated
 as a persisted Orange snapshot schema field.
 
