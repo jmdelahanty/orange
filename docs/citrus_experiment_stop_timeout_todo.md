@@ -76,8 +76,10 @@ Refs:
 - Orange has an opt-in local-control recording stop scheduler for
   `citrus_completion` and `stop_recording`.
 - Citrus has opt-in automatic completion emission to Orange.
-- Full integrated validation and Orange drain-timeout policy are not
-  implemented yet.
+- Orange local-control status now exposes telemetry for delayed-stop drain
+  progress and timeout reporting. The timeout is observable only; forced-safe
+  finalize policy is not implemented yet.
+- Full integrated validation is still pending.
 - Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
 
 ## Desired Behavior
@@ -163,8 +165,16 @@ Candidate hook points:
 
 ## Phase 4: Safe Drain Timeout
 
+- [x] Expose drain timeout telemetry in Orange local-control status:
+  - `drain_active`,
+  - `drain_timed_out`,
+  - `drain_timeout_seconds`,
+  - `drain_elapsed_seconds`,
+  - `stop_triggered_at_utc`,
+  - `drain_completed_at_utc`.
 - [ ] Add bounded drain timeout after delayed stop trigger (for example 30-60s).
-- [ ] Monitor `active_recorders` and drain progress.
+- [x] Monitor `active_recorders` and drain progress for status/log telemetry.
+- [ ] Use drain progress monitoring for bounded forced-finalize policy.
 - [ ] On timeout, emit critical status and execute forced-safe finalize path.
 - [ ] Ensure this path is idempotent and does not deadlock queues.
 
@@ -177,7 +187,7 @@ Refs:
 
 ## Phase 5: Acknowledgment and Observability
 
-- [ ] Emit explicit status logs:
+- [x] Emit explicit status logs:
   - command received,
   - countdown started,
   - stop triggered,

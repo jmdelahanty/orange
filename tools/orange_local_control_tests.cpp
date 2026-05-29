@@ -300,6 +300,53 @@ void test_status_reports_completed_recording_after_streaming_stop_path()
             "completed recording folder should remain visible for orchestrator validation");
 }
 
+void test_status_reports_local_control_drain_timeout_telemetry()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.local_control_recording_stop.enabled = true;
+    status.local_control_recording_stop.stop_triggered = true;
+    status.local_control_recording_stop.drain_active = true;
+    status.local_control_recording_stop.drain_timed_out = true;
+    status.local_control_recording_stop.drain_timeout_seconds = 60.0;
+    status.local_control_recording_stop.drain_elapsed_seconds = 61.25;
+    status.local_control_recording_stop.method = "stop_recording";
+    status.local_control_recording_stop.request_id = "stop-req-1";
+    status.local_control_recording_stop.operation_id = "stop-op-1";
+    status.local_control_recording_stop.reason = "orchestrator_stop";
+    status.local_control_recording_stop.stop_triggered_at_utc =
+        "2026-05-29T00:00:01Z";
+    status.local_control_recording_stop.drain_completed_at_utc.clear();
+    status.local_control_recording_stop.last_event = "drain_timeout";
+    status.local_control_recording_stop.last_event_at_utc =
+        "2026-05-29T00:01:02Z";
+
+    const nlohmann::json json =
+        orange::control::LocalControlStatusSnapshotToJson(status);
+    const auto& stop = json["local_control"]["recording_stop"];
+    require(stop["enabled"].get<bool>(), "recording stop control should be enabled");
+    require(stop["stop_triggered"].get<bool>(), "stop should be marked triggered");
+    require(stop["drain_active"].get<bool>(), "drain should be marked active");
+    require(stop["drain_timed_out"].get<bool>(), "drain timeout should be visible");
+    require(stop["drain_timeout_seconds"].get<double>() == 60.0,
+            "drain timeout threshold should be visible");
+    require(stop["drain_elapsed_seconds"].get<double>() == 61.25,
+            "drain elapsed seconds should be visible");
+    require(stop["stop_triggered_at_utc"].get<std::string>() ==
+                "2026-05-29T00:00:01Z",
+            "stop trigger timestamp should be visible");
+    require(stop["drain_completed_at_utc"].get<std::string>().empty(),
+            "unfinished drain should have no completion timestamp");
+    require(stop["last_event"].get<std::string>() == "drain_timeout",
+            "last scheduler event should report drain timeout");
+
+    const auto& completion_alias =
+        json["local_control"]["citrus_completion_stop"];
+    require(completion_alias["drain_timed_out"].get<bool>(),
+            "compatibility alias should expose drain timeout");
+    require(completion_alias["request_id"].get<std::string>() == "stop-req-1",
+            "compatibility alias should mirror stop request id");
+}
+
 void test_citrus_completion_is_diagnostic_ack_and_logged()
 {
     const auto socket_path = temp_path("completion.sock");
@@ -570,6 +617,8 @@ int main()
          test_citrus_readiness_requires_external_recorders_when_enabled},
         {"status_reports_completed_recording_after_streaming_stop_path",
          test_status_reports_completed_recording_after_streaming_stop_path},
+        {"status_reports_local_control_drain_timeout_telemetry",
+         test_status_reports_local_control_drain_timeout_telemetry},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",

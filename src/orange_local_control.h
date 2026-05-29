@@ -30,8 +30,12 @@ struct LocalControlRecordingStopSnapshot {
     bool enabled = false;
     bool scheduled = false;
     bool stop_triggered = false;
+    bool drain_active = false;
+    bool drain_timed_out = false;
     double grace_seconds = 0.0;
     double seconds_until_deadline = 0.0;
+    double drain_timeout_seconds = 0.0;
+    double drain_elapsed_seconds = 0.0;
     std::string method;
     std::string request_id;
     std::string operation_id;
@@ -40,6 +44,8 @@ struct LocalControlRecordingStopSnapshot {
     std::string terminal_state;
     std::string reason;
     std::string received_at_utc;
+    std::string stop_triggered_at_utc;
+    std::string drain_completed_at_utc;
     std::string last_event;
     std::string last_event_at_utc;
 };

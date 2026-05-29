@@ -161,7 +161,11 @@ struct GuiLocalControlStopSchedulerState {
     bool enabled = false;
     bool scheduled = false;
     bool stop_triggered = false;
+    bool drain_completed = false;
+    bool drain_timed_out = false;
+    bool drain_timeout_reported = false;
     double grace_seconds = 0.0;
+    double drain_timeout_seconds = 60.0;
     std::string method;
     std::string request_id;
     std::string operation_id;
@@ -170,9 +174,12 @@ struct GuiLocalControlStopSchedulerState {
     std::string terminal_state;
     std::string reason;
     std::string received_at_utc;
+    std::string stop_triggered_at_utc;
+    std::string drain_completed_at_utc;
     std::string last_event;
     std::string last_event_at_utc;
     std::chrono::steady_clock::time_point deadline{};
+    std::chrono::steady_clock::time_point stop_triggered_at{};
 };
 
 struct GuiLocalControlStartRequestState {
@@ -339,6 +346,15 @@ int gui_env_int(const char* name, const int default_value, const int min_value)
         return min_value;
     }
     return static_cast<int>(parsed);
+}
+
+int gui_local_control_drain_timeout_seconds()
+{
+    if (const char* raw = std::getenv("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS");
+        raw && *raw) {
+        return gui_env_int("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
+    }
+    return gui_env_int("ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
 }
 
 void set_gui_env_from_app_config_if_absent(const char* name,
@@ -3507,6 +3523,8 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     snapshot.scheduled = scheduler.scheduled;
     snapshot.stop_triggered = scheduler.stop_triggered;
     snapshot.grace_seconds = scheduler.grace_seconds;
+    snapshot.drain_timed_out = scheduler.drain_timed_out;
+    snapshot.drain_timeout_seconds = scheduler.drain_timeout_seconds;
     snapshot.method = scheduler.method;
     snapshot.request_id = scheduler.request_id;
     snapshot.operation_id = scheduler.operation_id;
@@ -3515,6 +3533,8 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     snapshot.terminal_state = scheduler.terminal_state;
     snapshot.reason = scheduler.reason;
     snapshot.received_at_utc = scheduler.received_at_utc;
+    snapshot.stop_triggered_at_utc = scheduler.stop_triggered_at_utc;
+    snapshot.drain_completed_at_utc = scheduler.drain_completed_at_utc;
     snapshot.last_event = scheduler.last_event;
     snapshot.last_event_at_utc = scheduler.last_event_at_utc;
     if (scheduler.scheduled && has_gui_timepoint(scheduler.deadline)) {
@@ -3523,6 +3543,16 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
                 scheduler.deadline - std::chrono::steady_clock::now())
                 .count();
         snapshot.seconds_until_deadline = std::max(0.0, remaining);
+    }
+    if (scheduler.stop_triggered &&
+        !scheduler.drain_completed &&
+        has_gui_timepoint(scheduler.stop_triggered_at)) {
+        const double elapsed =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - scheduler.stop_triggered_at)
+                .count();
+        snapshot.drain_active = true;
+        snapshot.drain_elapsed_seconds = std::max(0.0, elapsed);
     }
     return snapshot;
 }
@@ -3571,8 +3601,10 @@ void gui_reset_local_control_stop_scheduler_for_recording_start(
         return;
     }
     const bool enabled = scheduler->enabled;
+    const double drain_timeout_seconds = scheduler->drain_timeout_seconds;
     *scheduler = GuiLocalControlStopSchedulerState{};
     scheduler->enabled = enabled;
+    scheduler->drain_timeout_seconds = drain_timeout_seconds;
     gui_note_local_control_stop_event(scheduler, "recording_started");
 }
 
@@ -3763,6 +3795,12 @@ void gui_drain_local_control_commands(
 
         stop_scheduler->scheduled = true;
         stop_scheduler->stop_triggered = false;
+        stop_scheduler->drain_completed = false;
+        stop_scheduler->drain_timed_out = false;
+        stop_scheduler->drain_timeout_reported = false;
+        stop_scheduler->stop_triggered_at = {};
+        stop_scheduler->stop_triggered_at_utc.clear();
+        stop_scheduler->drain_completed_at_utc.clear();
         stop_scheduler->grace_seconds = grace_seconds;
         stop_scheduler->method = command.method;
         stop_scheduler->request_id = command.request_id;
@@ -3818,6 +3856,12 @@ void gui_poll_local_control_stop_scheduler(
 
     gui_clear_local_control_stop_schedule(stop_scheduler);
     stop_scheduler->stop_triggered = true;
+    stop_scheduler->drain_completed = false;
+    stop_scheduler->drain_timed_out = false;
+    stop_scheduler->drain_timeout_reported = false;
+    stop_scheduler->stop_triggered_at = std::chrono::steady_clock::now();
+    stop_scheduler->stop_triggered_at_utc = get_current_utc_timestamp();
+    stop_scheduler->drain_completed_at_utc.clear();
     gui_note_local_control_stop_event(stop_scheduler, "stop_triggered");
     const std::string stop_reason =
         stop_scheduler->method == "stop_recording"
@@ -3834,7 +3878,82 @@ void gui_poll_local_control_stop_scheduler(
               << " request_id=" << stop_scheduler->request_id
               << " operation_id=" << stop_scheduler->operation_id
               << " experiment_id=" << stop_scheduler->experiment_id
+              << " drain_timeout_seconds="
+              << stop_scheduler->drain_timeout_seconds
               << std::endl;
+}
+
+void gui_poll_local_control_drain_timeout(
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    const CameraControl* camera_control,
+    const GuiRecordingRunState* recording_run)
+{
+    if (!stop_scheduler ||
+        !stop_scheduler->stop_triggered ||
+        stop_scheduler->drain_completed ||
+        stop_scheduler->drain_timeout_seconds <= 0.0 ||
+        !has_gui_timepoint(stop_scheduler->stop_triggered_at)) {
+        return;
+    }
+    const bool drain_active =
+        (camera_control &&
+         (camera_control->recording_draining ||
+          camera_control->active_recorders.load(std::memory_order_relaxed) > 0)) ||
+        (recording_run && recording_run->finalizing && !recording_run->finalized);
+    if (!drain_active) {
+        return;
+    }
+
+    const double elapsed =
+        std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - stop_scheduler->stop_triggered_at)
+            .count();
+    if (elapsed < stop_scheduler->drain_timeout_seconds) {
+        return;
+    }
+
+    stop_scheduler->drain_timed_out = true;
+    if (stop_scheduler->drain_timeout_reported) {
+        return;
+    }
+    stop_scheduler->drain_timeout_reported = true;
+    gui_note_local_control_stop_event(stop_scheduler, "drain_timeout");
+    const int active_recorders =
+        camera_control
+            ? camera_control->active_recorders.load(std::memory_order_relaxed)
+            : -1;
+    std::cerr << "[GUI][local_control] recording drain timeout"
+              << " method=" << stop_scheduler->method
+              << " request_id=" << stop_scheduler->request_id
+              << " operation_id=" << stop_scheduler->operation_id
+              << " elapsed_seconds=" << elapsed
+              << " timeout_seconds=" << stop_scheduler->drain_timeout_seconds
+              << " active_recorders=" << active_recorders
+              << std::endl;
+}
+
+void gui_mark_local_control_drain_completed(
+    GuiLocalControlStopSchedulerState* stop_scheduler)
+{
+    if (!stop_scheduler || !stop_scheduler->stop_triggered) {
+        return;
+    }
+    if (!stop_scheduler->drain_completed) {
+        stop_scheduler->drain_completed = true;
+        stop_scheduler->drain_completed_at_utc = get_current_utc_timestamp();
+        gui_note_local_control_stop_event(
+            stop_scheduler,
+            stop_scheduler->drain_timed_out
+                ? "finalized_after_drain_timeout"
+                : "finalized");
+        std::cout << "[GUI][local_control] recording drain finalized"
+                  << " method=" << stop_scheduler->method
+                  << " request_id=" << stop_scheduler->request_id
+                  << " operation_id=" << stop_scheduler->operation_id
+                  << " drain_timed_out="
+                  << (stop_scheduler->drain_timed_out ? 1 : 0)
+                  << std::endl;
+    }
 }
 
 struct ApertureCharacterizationUiState {
@@ -6625,6 +6744,8 @@ int main(int argc, char **args) {
     GuiLocalControlStopSchedulerState gui_local_control_stop_scheduler;
     gui_local_control_stop_scheduler.enabled =
         gui_local_control_recording_stop_enabled();
+    gui_local_control_stop_scheduler.drain_timeout_seconds =
+        gui_local_control_drain_timeout_seconds();
     const bool gui_local_control_exit_after_finalize =
         gui_local_control_exit_after_finalize_enabled();
     bool gui_local_control_exit_pending_after_finalize = false;
@@ -6766,6 +6887,10 @@ int main(int argc, char **args) {
         GuiFrameTimingSample gui_frame_timing;
         orange::gui::reap_host_ptp_stack_worker(&host_ptp_stack_ui);
         gui_refresh_external_recorder_lifecycles(&recording_session, camera_control);
+        gui_poll_local_control_drain_timeout(
+            &gui_local_control_stop_scheduler,
+            camera_control,
+            &gui_recording_run);
         join_aperture_worker_if_finished(&aperture_ui_state);
         join_alignment_worker_if_finished(&aperture_ui_state);
         join_usaf_worker_if_finished(&usaf_ui_state);
@@ -8159,6 +8284,8 @@ int main(int argc, char **args) {
                                     show_yolo_speed_graphs,
                                     orange_imgui_glfw_size_cache_stats()))) {
                             gui_display_frame_rate_stats.Finish();
+                            gui_mark_local_control_drain_completed(
+                                &gui_local_control_stop_scheduler);
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                                       << std::endl;
                         }
@@ -8271,6 +8398,8 @@ int main(int argc, char **args) {
                         orange_imgui_glfw_size_cache_stats()))) {
                 gui_display_frame_rate_stats.Finish();
                 gui_mark_recording_finished(&gui_session_timing);
+                gui_mark_local_control_drain_completed(
+                    &gui_local_control_stop_scheduler);
                 if (gui_local_control_exit_after_finalize &&
                     gui_local_control_stop_scheduler.stop_triggered) {
                     gui_local_control_exit_pending_after_finalize = true;
