@@ -1200,6 +1200,69 @@ def test_default_autorun_enable_flags_are_forwarded_to_exec_env() -> None:
             require(expected in result.stdout, f"default exec env should include {expected}")
 
 
+def test_existing_default_app_config_is_forwarded_to_exec_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        app_config_path = root / "orange_data" / "config" / "app" / "default.json"
+        app_config_path.parent.mkdir(parents=True)
+        app_config_path.write_text(
+            json.dumps({"schema_id": "orange.app.config", "schema_version": 1}) + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "HOME": str(root),
+                "ORANGE_APP_CONFIG_PATH": "",
+                "ORANGE_GUI_APP_CONFIG_PATH": "",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            f"ORANGE_GUI_APP_CONFIG_PATH={app_config_path}" in result.stdout.splitlines(),
+            "launcher should forward the resolved user default app config when it exists",
+        )
+
+
+def test_missing_default_app_config_is_not_forwarded_to_exec_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        app_config_path = root / "orange_data" / "config" / "app" / "default.json"
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            print_exec_env=True,
+            extra_env={
+                "HOME": str(root),
+                "ORANGE_APP_CONFIG_PATH": "",
+                "ORANGE_GUI_APP_CONFIG_PATH": "",
+            },
+        )
+
+        require(result.returncode == 0, f"launcher failed: {result.stderr}")
+        require(
+            f"ORANGE_GUI_APP_CONFIG_PATH={app_config_path}" not in result.stdout.splitlines(),
+            "launcher should not forward a missing synthesized default app config path",
+        )
+
+
 def test_live_launcher_fails_fast_without_display_env() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1863,6 +1926,8 @@ def main() -> int:
         test_external_crop_ipc_autosizes_crop_frame_pool,
         test_display_env_controls_are_forwarded_to_exec_env,
         test_default_autorun_enable_flags_are_forwarded_to_exec_env,
+        test_existing_default_app_config_is_forwarded_to_exec_env,
+        test_missing_default_app_config_is_not_forwarded_to_exec_env,
         test_live_launcher_fails_fast_without_display_env,
     ]
     for test in tests:

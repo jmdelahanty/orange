@@ -336,7 +336,9 @@ the production-like crop recorder path, app config can also set
 `recording.crop.sink_mode = "external_ipc"`,
 `recording.crop.external_ipc.encode_queue_depth = 128`, and
 `recording.crop.frame_pool_size = 256`; env/launcher values remain the highest
-precedence.
+precedence. The GUI validation launcher forwards this user-default app config
+path into privileged launches when the file exists, so root-launched GUI runs use
+the same workstation defaults the launcher reports.
 
 The four-camera external-IPC launcher now defaults
 `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128`, which auto-sizes
