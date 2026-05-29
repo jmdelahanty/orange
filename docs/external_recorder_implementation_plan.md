@@ -660,8 +660,9 @@ Latest GUI/session external IPC validation:
   `2010093/2010094/2010095/2010096`, `sync_mode = "ptp_gate"`,
   `ptp.enabled = true`, and `ptp.mode = "TwoStep"`
 - the validation launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128`
-  for external crop IPC, derived from the default crop external encode queue
-  depth of `64`
+  for this historical run, derived from the then-default crop external encode
+  queue depth of `64`; current four-camera Orange/Citrus co-run profiles use
+  queue depth `128` and a derived crop frame pool of `256`
 - full-frame external IPC: all four cameras wrote valid `4512x4512` MP4s with
   `1016` frames each, `0` external IPC failures, `0` ACK timeouts,
   `0` camera frame-ID gaps, `0` GetFrame errors, and `0` encode failures
@@ -674,6 +675,23 @@ Latest GUI/session external IPC validation:
   ms`), and steady detect p95 was `4.962/5.151/5.613/6.116 ms`
 - `scripts/validate_gui_ptp_recording.py --latest-complete` with the external
   crop backend and per-camera recorder GPU checks passed with `0` warnings
+
+Orange/Citrus co-run queue-pressure update, 2026-05-28:
+
+- Live orchestration run `orange-citrus-live-006` validated the local-control
+  lifecycle and clean GUI shutdown after stream stop, but failed artifact
+  validation because `Cam2010093` external crop encoding dropped `17/2200`
+  frames.
+- The crop recorder was not accumulating a long GOP: crop streams used `gop=1`
+  and `encode_max_fps=0`. The backlog was in NVENC completion, with
+  `lock_bitstream_p95_ms` about `21.7 ms` and the external crop queue reaching
+  `63/64`.
+- The crop recorder GPUs are separate from analytics but still share the same
+  A16 NVENC engine space with the full-frame split-GOP secondary shards
+  (`2010093: 3,4` full-frame shards and crop on `4`, etc.). The four-camera
+  profile therefore now defaults `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128`,
+  which derives `ORANGE_CROP_FRAME_POOL_SIZE=256`, while the generic GUI
+  launcher default remains `64`.
 
 Earlier two-camera GUI validation:
 

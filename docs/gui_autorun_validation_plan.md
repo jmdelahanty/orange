@@ -331,6 +331,14 @@ persistent workstation default, set `gui.display.profile = "citrus_safe"` in
 `~/orange_data/config/app/default.json`; env/launcher values remain the highest
 precedence.
 
+The four-camera external-IPC launcher now defaults
+`ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128`, which auto-sizes
+`ORANGE_CROP_FRAME_POOL_SIZE=256` through the shared GUI validation launcher.
+The generic GUI launcher default remains `64`; the larger four-camera profile
+queue is specific to the full Orange/Citrus co-run, where each crop recorder GPU
+also carries a full-frame split-GOP recorder shard and short NVENC completion
+stalls can otherwise fill the crop recorder queue.
+
 ## Automation Research
 
 Dear ImGui applications can be automated through the upstream Dear ImGui Test
@@ -417,9 +425,10 @@ intentional diagnostic.
 By default, the profile runs Orange validation after finalization and writes
 the validator JSON to `/tmp/<operation_id>_orange_gui_validation.json`. The
 default validator targets the exact `{orange_recording_folder}` reported by
-Orange status, matches the Citrus-safe display profile, and does not require
-`45 fps` GUI p05. Disable it with `--skip-orange-validation` for lifecycle-only
-smokes, or replace it with `--orange-validation-command`.
+Orange status, matches the Citrus-safe display profile, expects the
+four-camera crop external queue depth of `128`, and does not require `45 fps`
+GUI p05. Disable it with `--skip-orange-validation` for lifecycle-only smokes,
+or replace it with `--orange-validation-command`.
 
 The profile also defaults Orange/Citrus stdout logs to operation-specific
 `/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so
@@ -511,7 +520,10 @@ Latest hardware validation, 2026-05-28:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
 - Latest rolling-clip artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_16_08_46`.
-- The launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128`.
+- The launcher auto-forwarded `ORANGE_CROP_FRAME_POOL_SIZE=128` for those
+  historical runs. The current four-camera external IPC profile defaults the
+  external crop queue to `128`, so the launcher now auto-forwards
+  `ORANGE_CROP_FRAME_POOL_SIZE=256`.
 - `Cam2010093` had no lens attached for the latest single-clip and rolling
   runs, so those validations used
   `--allow-main-video-content-failure 2010093`; the only warnings were the

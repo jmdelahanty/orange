@@ -155,6 +155,14 @@ def test_default_dry_run_builds_live_profile() -> None:
             "--expect-display-preview-max-fps 10" in validation["command"],
             "default validator should match the Citrus-safe display preview cap",
         )
+        require(
+            "--expect-external-crop-encode-queue-depth 128" in validation["command"],
+            "default validator should match the four-camera crop external queue",
+        )
+        require(
+            "--min-crop-frame-pool-size 256" in validation["command"],
+            "default validator should match the derived four-camera crop frame pool",
+        )
 
 
 def test_attach_mode_does_not_launch_processes() -> None:

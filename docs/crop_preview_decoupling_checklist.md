@@ -397,8 +397,11 @@ Acceptance:
 - [x] Add crop-frame-pool telemetry to the crop sidecar and validator.
   - `Cam<serial>_crop_sidecar_perf.csv` records `crop_frame_pool_size`.
   - `scripts/validate_gui_ptp_recording.py --min-crop-frame-pool-size <N>`
-    confirms the effective pool used by a live run. The current four-camera
-    external IPC profile auto-forwards `ORANGE_CROP_FRAME_POOL_SIZE=128`.
+    confirms the effective pool used by a live run. The shared GUI launcher
+    auto-forwards `ORANGE_CROP_FRAME_POOL_SIZE=2 *
+    ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`; the current four-camera
+    external IPC profile defaults the external crop queue to `128`, so it
+    auto-forwards `ORANGE_CROP_FRAME_POOL_SIZE=256`.
 - [x] Update GUI validation launcher instructions.
   - The launcher now validates all camera JSON files present in the selected
     config folder, instead of hardcoding the two-camera folder contents.

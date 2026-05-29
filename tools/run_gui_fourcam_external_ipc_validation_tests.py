@@ -133,6 +133,10 @@ def test_default_hidden_profile_validate_only() -> None:
         "profile should use crop external IPC",
     )
     require(
+        "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128" in result.stdout,
+        "four-camera profile should increase the crop external queue for shared NVENC contention",
+    )
+    require(
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*=2010093=4,2010094=2,2010095=8,2010096=6"
         in result.stdout,
         "profile should use the expected per-camera crop recorder GPUs",
@@ -164,7 +168,7 @@ def test_default_hidden_profile_validate_only() -> None:
         "printed validator command should check git command user mode",
     )
     require(
-        "ORANGE_CROP_FRAME_POOL_SIZE=128 (auto for external_ipc)" in result.stdout,
+        "ORANGE_CROP_FRAME_POOL_SIZE=256 (auto for external_ipc)" in result.stdout,
         "profile should auto-size crop frame pool for external IPC",
     )
 
@@ -276,6 +280,7 @@ def test_print_exec_env_only_contains_profile_env() -> None:
         "ORANGE_GUI_AUTORUN_START_RECORDING=1",
         "ORANGE_GUI_RECORDING_SINK_MODE=external_ipc",
         "ORANGE_CROP_RECORDING_SINK_MODE=external_ipc",
+        "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128",
         "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1",
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010093=4",
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010094=2",
@@ -295,12 +300,17 @@ def test_overrides_are_preserved() -> None:
         ["--validate-only"],
         extra_env={
             "ORANGE_GUI_FRAME_MAX_FPS": "45",
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH": "64",
             "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
             "ORANGE_GUI_REQUIRE_ISOLATED_CPUS": "6",
         },
     )
     require(result.returncode == 0, f"profile failed: {result.stderr}")
     require("ORANGE_GUI_FRAME_MAX_FPS=45" in result.stdout, "frame cap override should be preserved")
+    require(
+        "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
+        "external crop queue override should be preserved",
+    )
     require(
         "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*=2010093=4,2010094=2,2010095=6,2010096=6"
         in result.stdout,

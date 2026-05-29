@@ -404,8 +404,8 @@ if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}"
     "--expect-crop-preview-max-fps" "15" \
     "--expect-crop-preview-disabled" "0" \
     "--expect-crop-preview-display-enabled" "0" \
-    "--min-crop-frame-pool-size" "128" \
-    "--expect-external-crop-encode-queue-depth" "64" \
+    "--min-crop-frame-pool-size" "256" \
+    "--expect-external-crop-encode-queue-depth" "128" \
     "--require-external-crop-backend-metadata" \
     "--require-external-crop-recorder-gpu-separate-from-analytics" \
     "--expect-external-crop-recorder-gpu" "2010093=4" \

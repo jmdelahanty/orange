@@ -515,7 +515,9 @@ Current GUI implication:
   This used `100_cam4_ptp_fourcam`, full-frame external IPC, external crop IPC,
   crop preview hidden, per-camera external crop recorder GPUs
   `2010093 -> 4`, `2010094 -> 2`, `2010095 -> 8`, `2010096 -> 6`, and the
-  launcher auto-sized `ORANGE_CROP_FRAME_POOL_SIZE=128`.
+  launcher auto-sized `ORANGE_CROP_FRAME_POOL_SIZE=128`. Current
+  Orange/Citrus four-camera co-run profiles use external crop queue depth
+  `128`, which derives `ORANGE_CROP_FRAME_POOL_SIZE=256`.
 - In that run all four full-frame MP4s were valid `4512x4512` videos with
   `1016` frames, all crop streams wrote `1016` metadata/perf/keyframe/video
   frames, crop fanout matched detection rows, and crop pool misses were `0`.
