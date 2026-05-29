@@ -37,6 +37,10 @@ def function_body(source: str, function_name: str) -> str:
     raise AssertionError(f"{function_name} body did not terminate")
 
 
+def strip_cpp_line_comments(source: str) -> str:
+    return "\n".join(line.split("//", 1)[0] for line in source.splitlines())
+
+
 def test_override_header_maps_glfw_size_queries() -> None:
     header = read("src/imgui_glfw_size_cache_override.h")
     require(
@@ -114,6 +118,15 @@ def test_cache_context_registered_during_gx_init() -> None:
     )
 
 
+def test_multi_viewports_remain_disabled_for_clean_size_cache() -> None:
+    gx_helper = read("src/gx_helper.h")
+    body = strip_cpp_line_comments(function_body(gx_helper, "gx_imgui_init"))
+    require(
+        "io.ConfigFlags |= ImGuiConfigFlags_ViewportsEnable" not in body,
+        "multi-viewport support must stay disabled unless size-cache fallback expectations are updated",
+    )
+
+
 def test_cache_context_cleared_before_window_destroy() -> None:
     gx_helper = read("src/gx_helper.h")
     body = function_body(gx_helper, "gx_cleanup")
@@ -170,6 +183,7 @@ def main() -> int:
         test_render_a_frame_uses_cached_framebuffer_size,
         test_imgui_new_frame_size_queries_are_intercepted,
         test_cache_context_registered_during_gx_init,
+        test_multi_viewports_remain_disabled_for_clean_size_cache,
         test_cache_context_cleared_before_window_destroy,
         test_imgui_backend_does_not_own_main_window_size_callbacks,
         test_recording_start_resets_size_cache_stats,
