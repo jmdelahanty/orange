@@ -32,7 +32,8 @@ Options:
   --summary-json <path>          Combined orchestrator summary path.
   --orange-command <command>     Override Orange launch command.
   --citrus-command <command>     Override Citrus launch command.
-  --record-seconds <seconds>     Orange recording duration for the launched profile.
+  --record-seconds <seconds>     Orange recording_control record_for_seconds
+                                  for manifests/rolling contracts.
   --warmup-seconds <seconds>     Orange stream warmup before recording.
   --clip-seconds <seconds>       Enable Orange rolling clips with this duration.
   --attach-orange                Do not launch Orange; attach to its socket.
@@ -180,6 +181,7 @@ VALIDATION_TIMEOUT_SECONDS="${ORANGE_CITRUS_VALIDATION_TIMEOUT_SECONDS:-300}"
 ORANGE_RECORD_SECONDS="${ORANGE_CITRUS_ORANGE_RECORD_SECONDS:-}"
 ORANGE_WARMUP_SECONDS="${ORANGE_CITRUS_ORANGE_WARMUP_SECONDS:-}"
 ORANGE_CLIP_SECONDS="${ORANGE_CITRUS_ORANGE_CLIP_SECONDS:-}"
+ORANGE_PROFILE_ENV=()
 ORANGE_EXTRA_ENV=()
 CITRUS_EXTRA_ENV=()
 
@@ -440,6 +442,9 @@ if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
     exit 2
   }
 fi
+if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
+  ORANGE_PROFILE_ENV+=("ORANGE_GUI_RECORD_FOR_SECONDS=${ORANGE_RECORD_SECONDS}")
+fi
 
 if [[ "${ORANGE_COMMAND_MODE}" == "default" ]]; then
   ORANGE_COMMAND_ARGS=(
@@ -581,6 +586,9 @@ fi
 
 for item in "${DISPLAY_ENV_ITEMS[@]}"; do
   ARGS+=("--orange-env" "${item}" "--citrus-env" "${item}")
+done
+for item in "${ORANGE_PROFILE_ENV[@]}"; do
+  ARGS+=("--orange-env" "${item}")
 done
 for item in "${ORANGE_EXTRA_ENV[@]}"; do
   ARGS+=("--orange-env" "${item}")

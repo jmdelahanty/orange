@@ -472,4 +472,9 @@ scripts/run_orange_citrus_fourcam_orchestrator.sh \
 
 When `--clip-seconds` is present, the default validator expects
 `recording_session.json` mode `rolling_clips` and checks both the requested
-recording duration and clip duration.
+recording-control `record_for_seconds` and clip duration. In orchestrated runs,
+`--record-seconds` is a manifest/recorder contract intent, not the owner of the
+stop clock: the orchestrator still stops Orange through the selected stop policy
+after Citrus reaches a terminal state. The profile now forwards
+`ORANGE_GUI_RECORD_FOR_SECONDS=<record-seconds>` explicitly so the live Orange
+runtime and the validation command use the same recording-control value.

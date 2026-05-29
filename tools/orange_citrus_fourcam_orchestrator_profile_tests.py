@@ -241,6 +241,10 @@ def test_rolling_profile_passes_orange_clip_options_to_validation() -> None:
         ],
         "rolling profile should pass record/warmup/clip options to the Orange launcher",
     )
+    require(
+        payload["orange"]["env_overlay"].get("ORANGE_GUI_RECORD_FOR_SECONDS") == "6",
+        "rolling profile should pass explicit GUI record_for_seconds to Orange runtime",
+    )
     validation = payload["validations"][0]
     require(
         "--expect-recording-mode rolling_clips" in validation["command"],
