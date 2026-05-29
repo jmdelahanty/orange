@@ -780,6 +780,14 @@ def test_orange_local_control_event_log_summary() -> None:
                 "request_id": "stop-req",
                 "operation_id": "op-log",
             },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
+                "event": "recording_drain_forced_finalize_requested",
+                "event_at_utc": "2026-05-29T00:00:03Z",
+                "request_id": "stop-req",
+                "operation_id": "op-log",
+            },
             "not json",
         ]
         with log_path.open("w", encoding="utf-8") as handle:
@@ -791,14 +799,22 @@ def test_orange_local_control_event_log_summary() -> None:
 
         summary = module.summarize_orange_local_control_event_log(str(log_path))
         require(summary["exists"], "event log should exist")
-        require(summary["row_count"] == 5, "event log row count should parse")
+        require(summary["row_count"] == 6, "event log row count should parse")
         require(summary["socket_event_count"] == 1, "socket event count should parse")
-        require(summary["gui_event_count"] == 3, "GUI event count should parse")
+        require(summary["gui_event_count"] == 4, "GUI event count should parse")
         require(summary["invalid_row_count"] == 1, "invalid row count should parse")
         require(summary["events"]["recording_start_triggered"] == 1, "start trigger event should count")
         require(summary["events"]["recording_stop_triggered"] == 1, "stop trigger event should count")
+        require(
+            summary["events"]["recording_drain_forced_finalize_requested"] == 1,
+            "forced-finalize event should count",
+        )
         require(summary["has_start_triggered"], "start-trigger flag should be true")
         require(summary["has_stop_triggered"], "stop-trigger flag should be true")
+        require(
+            summary["has_forced_finalize_requested"],
+            "forced-finalize flag should be true",
+        )
         require(summary["has_drain_finalized"], "drain-finalized flag should be true")
         require(summary["request_ids"] == ["start-req", "stop-req"], "request ids should summarize")
         require(summary["operation_ids"] == ["op-log"], "operation ids should summarize")
@@ -824,6 +840,7 @@ def test_orange_local_control_event_log_required_check() -> None:
         "has_start_triggered": True,
         "has_stop_triggered": True,
         "has_drain_timeout": False,
+        "has_forced_finalize_requested": False,
         "has_drain_finalized": True,
     }
     ok_check = module.check_orange_local_control_event_log(
@@ -862,6 +879,40 @@ def test_orange_local_control_event_log_required_check() -> None:
     require(
         any("recording_drain_timeout" in failure for failure in timeout_check["failures"]),
         "timeout failure should name the missing drain-timeout event",
+    )
+
+    timeout_event_log = dict(event_log)
+    timeout_event_log["has_drain_timeout"] = True
+    timeout_forced_check = module.check_orange_local_control_event_log(
+        timeout_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=timeout_status,
+    )
+    require(
+        not timeout_forced_check["ok"],
+        "drain-timeout status should require forced-finalize event evidence",
+    )
+    require(
+        any(
+            "recording_drain_forced_finalize_requested" in failure
+            for failure in timeout_forced_check["failures"]
+        ),
+        "timeout failure should name the missing forced-finalize event",
+    )
+
+    timeout_event_log["has_forced_finalize_requested"] = True
+    timeout_ok_check = module.check_orange_local_control_event_log(
+        timeout_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=timeout_status,
+    )
+    require(
+        timeout_ok_check["ok"],
+        f"timeout event log with forced-finalize evidence should pass: {timeout_ok_check}",
     )
 
 

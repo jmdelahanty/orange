@@ -364,6 +364,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         "has_start_triggered": False,
         "has_stop_triggered": False,
         "has_drain_timeout": False,
+        "has_forced_finalize_requested": False,
         "has_drain_finalized": False,
     }
     if not path:
@@ -424,6 +425,9 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     summary["has_start_triggered"] = events.get("recording_start_triggered", 0) > 0
     summary["has_stop_triggered"] = events.get("recording_stop_triggered", 0) > 0
     summary["has_drain_timeout"] = events.get("recording_drain_timeout", 0) > 0
+    summary["has_forced_finalize_requested"] = (
+        events.get("recording_drain_forced_finalize_requested", 0) > 0
+    )
     summary["has_drain_finalized"] = events.get("recording_drain_finalized", 0) > 0
     return summary
 
@@ -475,8 +479,14 @@ def check_orange_local_control_event_log(
             failures.append("Orange local-control event log missing recording_stop_triggered")
         if not event_log.get("has_drain_finalized", False):
             failures.append("Orange local-control event log missing recording_drain_finalized")
-    if orange_recording_stop_drain_timed_out(orange_status) and not event_log.get("has_drain_timeout", False):
-        failures.append("Orange status reports drain timeout but event log lacks recording_drain_timeout")
+    if orange_recording_stop_drain_timed_out(orange_status):
+        if not event_log.get("has_drain_timeout", False):
+            failures.append("Orange status reports drain timeout but event log lacks recording_drain_timeout")
+        if not event_log.get("has_forced_finalize_requested", False):
+            failures.append(
+                "Orange status reports drain timeout but event log lacks "
+                "recording_drain_forced_finalize_requested"
+            )
 
     operation_ids = set(str(item) for item in event_log.get("operation_ids", []))
     if operation_id and operation_id not in operation_ids:

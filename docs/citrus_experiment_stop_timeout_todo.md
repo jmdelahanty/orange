@@ -219,6 +219,8 @@ Refs:
 - [x] Add an orchestrator gate for that event log so production-profile runs
       require matching socket rows and GUI-thread start/stop/drain lifecycle
       evidence before validators can pass.
+- [x] Require forced-finalize event-log evidence when Orange status reports a
+      local-control drain timeout.
 
 ## Phase 6: Validation
 

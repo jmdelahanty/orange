@@ -416,7 +416,10 @@ that mode a run fails unless the log has matching socket request/response rows,
 GUI-thread `recording_start_triggered` evidence, and, for stop policies other
 than `none`, `recording_stop_triggered` plus `recording_drain_finalized`
 evidence for the operation. The four-camera profile enables this requirement
-by default, with `--allow-missing-orange-event-log` only for diagnostics. It
+by default, with `--allow-missing-orange-event-log` only for diagnostics. The
+gate also requires timeout diagnostics to contain both `recording_drain_timeout` and
+`recording_drain_forced_finalize_requested` when Orange status reports
+`local_control.recording_stop.drain_timed_out=true`. It
 also sets
 `ORANGE_GUI_AUTORUN_START_RECORDING=0` and
 `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`, so an Orange GUI autorun launcher
@@ -454,8 +457,9 @@ orchestrator by default even if Orange eventually finalized, because it means
 the run crossed the configured drain observability threshold. The combined
 summary records `orange.local_control_recording_stop` and
 `orange.local_control_stop_drain_timed_out`; the event-log summary records
-whether GUI-thread stop trigger, drain timeout, and drain finalization events
-were observed. When `--require-orange-local-control-event-log` is enabled,
+whether GUI-thread stop trigger, drain timeout, forced-finalize request, and
+drain finalization events were observed. When
+`--require-orange-local-control-event-log` is enabled,
 the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
 fails the orchestrator before post-run validators execute. Use
