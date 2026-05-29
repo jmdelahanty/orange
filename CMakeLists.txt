@@ -468,6 +468,10 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/run_gui_fourcam_external_ipc_validation_tests.py")
 
     add_test(
+        NAME orange_citrus_orchestrator_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/orange_citrus_orchestrator_tests.py")
+
+    add_test(
         NAME orange_citrus_fourcam_orchestrator_profile_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/orange_citrus_fourcam_orchestrator_profile_tests.py")
 
