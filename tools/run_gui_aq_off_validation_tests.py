@@ -1417,6 +1417,122 @@ def test_live_launcher_rejects_stale_privilege_wrapper_for_yolo_affinity_env() -
         )
 
 
+def test_live_launcher_rejects_stale_privilege_wrapper_for_local_control_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        fake_wrapper = root / "orange-gui-validation"
+        fake_wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1:-}\" == \"--help\" ]]; then\n"
+            "  echo 'Usage: wrapper --orange-bin --env KEY=VALUE --ptp-stack-mode --dry-run'\n"
+            "  exit 0\n"
+            "fi\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=* ]]; then\n"
+            "    echo 'Refusing unsupported env key: ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START' >&2\n"
+            "    exit 2\n"
+            "  fi\n"
+            "done\n"
+            "if [[ \" $* \" == *\" --dry-run \"* ]]; then\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'fake wrapper should not launch orange' >&2\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_wrapper.chmod(0o755)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            extra_env={
+                "DISPLAY": ":77",
+                "ORANGE_GUI_USE_PRIVILEGE_WRAPPER": "1",
+                "ORANGE_GUI_PRIVILEGE_WRAPPER": str(fake_wrapper),
+                "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START": "1",
+            },
+        )
+
+        require(result.returncode != 0, "stale wrapper should fail before sudo execution")
+        require(
+            "Installed GUI privilege wrapper does not support "
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START" in result.stderr,
+            "launcher should explain that the wrapper lacks local-control env support",
+        )
+        require(
+            "install_orange_gui_validation_wrapper.sh --install-sudoers" in result.stderr,
+            "launcher should include the reinstall command",
+        )
+        require(
+            "fake wrapper should not launch orange" not in result.stderr,
+            "launcher should only dry-run the stale wrapper",
+        )
+
+
+def test_live_launcher_rejects_stale_privilege_wrapper_for_crop_recorder_routing_env() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        detect_engine = root / "detect.engine"
+        detect_engine.write_bytes(b"engine")
+        config_dir = root / "config"
+        config_dir.mkdir()
+        write_camera_config(config_dir, "2010095")
+        fake_wrapper = root / "orange-gui-validation"
+        fake_wrapper.write_text(
+            "#!/usr/bin/env bash\n"
+            "if [[ \"${1:-}\" == \"--help\" ]]; then\n"
+            "  echo 'Usage: wrapper --orange-bin --env KEY=VALUE --ptp-stack-mode --dry-run'\n"
+            "  exit 0\n"
+            "fi\n"
+            "for arg in \"$@\"; do\n"
+            "  if [[ \"$arg\" == ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*=* ]]; then\n"
+            "    echo 'Refusing unsupported env key: ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095' >&2\n"
+            "    exit 2\n"
+            "  fi\n"
+            "done\n"
+            "if [[ \" $* \" == *\" --dry-run \"* ]]; then\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'fake wrapper should not launch orange' >&2\n"
+            "exit 99\n",
+            encoding="utf-8",
+        )
+        fake_wrapper.chmod(0o755)
+
+        result = run_launcher(
+            config_dir,
+            detect_engine,
+            validate_only=False,
+            extra_env={
+                "DISPLAY": ":77",
+                "ORANGE_GUI_USE_PRIVILEGE_WRAPPER": "1",
+                "ORANGE_GUI_PRIVILEGE_WRAPPER": str(fake_wrapper),
+                "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095": "6",
+            },
+        )
+
+        require(result.returncode != 0, "stale wrapper should fail before sudo execution")
+        require(
+            "Installed GUI privilege wrapper does not support "
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*" in result.stderr,
+            "launcher should explain that the wrapper lacks crop recorder routing env support",
+        )
+        require(
+            "install_orange_gui_validation_wrapper.sh --install-sudoers" in result.stderr,
+            "launcher should include the reinstall command",
+        )
+        require(
+            "fake wrapper should not launch orange" not in result.stderr,
+            "launcher should only dry-run the stale wrapper",
+        )
+
+
 def test_invalid_gui_ptp_stack_mode_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1672,6 +1788,8 @@ def main() -> int:
         test_live_launcher_rejects_stale_privilege_wrapper_for_autorun_ptp,
         test_live_launcher_rejects_stale_privilege_wrapper_for_frame_cap_env,
         test_live_launcher_rejects_stale_privilege_wrapper_for_yolo_affinity_env,
+        test_live_launcher_rejects_stale_privilege_wrapper_for_local_control_env,
+        test_live_launcher_rejects_stale_privilege_wrapper_for_crop_recorder_routing_env,
         test_invalid_gui_ptp_stack_mode_fails,
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,

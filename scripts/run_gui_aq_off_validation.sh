@@ -913,32 +913,34 @@ Reinstall it before running autorun PTP validation:
 EOF
     exit 1
   fi
-  if ! "${GUI_PRIVILEGE_WRAPPER}" \
-      --dry-run \
-      --orange-bin "${ORANGE_BIN}" \
-      --env "ORANGE_GUI_FRAME_MAX_FPS=${GUI_FRAME_MAX_FPS}" >/dev/null; then
-    cat >&2 <<EOF
-Installed GUI privilege wrapper does not support ORANGE_GUI_FRAME_MAX_FPS.
+  for env_arg in "${ENV_ARGS[@]}"; do
+    env_key="${env_arg%%=*}"
+    env_label="${env_key}"
+    case "${env_key}" in
+      ORANGE_YOLO_AFFINITY_CAM_*)
+        env_label="ORANGE_YOLO_AFFINITY_CAM_*"
+        ;;
+      ORANGE_YOLO_RT_PRIORITY_CAM_*)
+        env_label="ORANGE_YOLO_RT_PRIORITY_CAM_*"
+        ;;
+      ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*)
+        env_label="ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*"
+        ;;
+    esac
+    if ! "${GUI_PRIVILEGE_WRAPPER}" \
+        --dry-run \
+        --orange-bin "${ORANGE_BIN}" \
+        --env "${env_arg}" >/dev/null; then
+      cat >&2 <<EOF
+Installed GUI privilege wrapper does not support ${env_label}.
 
-Reinstall it before running capped GUI validation:
+Reinstall it before running GUI validation:
 
   sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
 EOF
-    exit 1
-  fi
-  if ! "${GUI_PRIVILEGE_WRAPPER}" \
-      --dry-run \
-      --orange-bin "${ORANGE_BIN}" \
-      --env "ORANGE_YOLO_AFFINITY_CAM_2010095=${YOLO_AFFINITY_CAM_2010095}" >/dev/null; then
-    cat >&2 <<EOF
-Installed GUI privilege wrapper does not support ORANGE_YOLO_AFFINITY_CAM_*.
-
-Reinstall it before running pinned YOLO-worker GUI validation:
-
-  sudo scripts/install_orange_gui_validation_wrapper.sh --install-sudoers
-EOF
-    exit 1
-  fi
+      exit 1
+    fi
+  done
   WRAPPER_ARGS=("--orange-bin" "${ORANGE_BIN}")
   if [[ "${WRAPPER_SUPPORTS_PTP_STACK}" == "1" ]]; then
     WRAPPER_ARGS+=("--ptp-stack-mode" "${GUI_PTP_STACK_MODE}")
