@@ -700,25 +700,29 @@ intended as workstation defaults:
   - once model quality is accepted, the A16 high-effort detect engine should
     move here instead of living only in launcher env
 
-### Candidate Built-In Defaults
+### Core Performance Defaults
 
-These have been part of the healthy external-IPC validation profile and are
-good candidates to make default-on after one more positive-detection/soak
-validation pass:
+These started as environment-gated experiments, then became the healthy
+external-IPC validation profile. After the strict four-camera Orange/Citrus
+rolling run at
+`/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25`, they are core
+defaults with env opt-outs for diagnostics and A/B comparisons:
 
-- `ORANGE_ANALYTICS_EARLY_OWNED_FRAME=1`
+- `ORANGE_ANALYTICS_EARLY_OWNED_FRAME` defaults to enabled
   - keeps analytics input lifetime management off the fragile old ring path
-- `ORANGE_YOLO_DETACH_INPUT=1`
+- `ORANGE_YOLO_DETACH_INPUT` defaults to enabled
   - decouples YOLO input ownership from source-frame reuse
-- `ORANGE_YOLO_READY_EVENT_FASTPATH=1`
+- `ORANGE_YOLO_READY_EVENT_FASTPATH` defaults to enabled
   - keeps the common ready-event path cheap in the validated profile
-- `ORANGE_CROP_STAGE_SOURCE=1`
+- `ORANGE_CROP_STAGE_SOURCE` defaults to enabled
   - keeps crop source staging aligned with the validated external crop path
+- `ORANGE_CROP_COPY_TIMING` defaults to disabled
+  - keeps optional CUDA timing events off the crop hot path unless a diagnostic
+    run explicitly needs GPU copy timings
 
 Do not turn these into app-config fields just to preserve the old env spelling.
-If they remain necessary, prefer code defaults with opt-out diagnostics, or a
-small explicit runtime/performance profile once the flags stop being
-experimental.
+They are internal runtime-path toggles, not operator preferences. Use
+`ORANGE_<FLAG>=0` to recover the old behavior for targeted comparisons.
 
 ### Candidate App Config Extensions
 
@@ -758,7 +762,7 @@ surface is designed for them:
 - diagnostics:
   - `ORANGE_YOLO_PERF_LOG`
   - `ORANGE_YOLO_PERF_SAMPLE`
-  - `ORANGE_CROP_COPY_TIMING`
+  - `ORANGE_CROP_COPY_TIMING=1`
 - scheduling experiments:
   - `ORANGE_YOLO_AFFINITY`
   - `ORANGE_YOLO_AFFINITY_CAM_<serial>`

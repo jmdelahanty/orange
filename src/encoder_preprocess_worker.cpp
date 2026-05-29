@@ -190,7 +190,7 @@ EncoderPreprocessWorker::EncoderPreprocessWorker(
     detect_priority_wait_enabled_ =
         env_flag_disabled_by_default("ORANGE_RECORDING_DETECT_PRIORITY");
     yolo_detach_input_enabled_ =
-        env_flag_disabled_by_default("ORANGE_YOLO_DETACH_INPUT");
+        env_flag_enabled_by_default("ORANGE_YOLO_DETACH_INPUT");
     helper_copy_limit_bytes_ =
         env_int64_or_default("ORANGE_PREPROCESS_HELPER_COPY_BYTES", -1);
     helper_copy_delay_ns_ =

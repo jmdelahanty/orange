@@ -66,6 +66,24 @@ int ParseEnvInt(const char* name, const int default_value, const int min_value)
     return static_cast<int>(parsed);
 }
 
+bool EnvFlagEnabledByDefault(const char* name)
+{
+    const char* env = std::getenv(name);
+    if (!env || !*env) {
+        return true;
+    }
+    std::string normalized(env);
+    std::transform(
+        normalized.begin(),
+        normalized.end(),
+        normalized.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return normalized != "0" &&
+           normalized != "false" &&
+           normalized != "off" &&
+           normalized != "no";
+}
+
 double ParseEnvDouble(const char* name,
                       const double default_value,
                       const double min_value,
@@ -172,11 +190,9 @@ bool UseEventSyncWait()
 bool UseReadyEventFastPath()
 {
     static const bool enabled = []() {
-        const char* env = std::getenv("ORANGE_YOLO_READY_EVENT_FASTPATH");
-        const bool on = env && *env && std::strcmp(env, "0") != 0;
-        if (on) {
-            std::cout << "[YOLO] Ready ingress event fast path enabled." << std::endl;
-        }
+        const bool on = EnvFlagEnabledByDefault("ORANGE_YOLO_READY_EVENT_FASTPATH");
+        std::cout << "[YOLO] Ready ingress event fast path "
+                  << (on ? "enabled" : "disabled") << "." << std::endl;
         return on;
     }();
     return enabled;
@@ -198,11 +214,9 @@ bool UseInlineCropProducer()
 bool UseYoloDetachInput()
 {
     static const bool enabled = []() {
-        const char* env = std::getenv("ORANGE_YOLO_DETACH_INPUT");
-        const bool on = env && *env && std::strcmp(env, "0") != 0;
-        if (on) {
-            std::cout << "[YOLO] Input detach enabled." << std::endl;
-        }
+        const bool on = EnvFlagEnabledByDefault("ORANGE_YOLO_DETACH_INPUT");
+        std::cout << "[YOLO] Input detach "
+                  << (on ? "enabled" : "disabled") << "." << std::endl;
         return on;
     }();
     return enabled;

@@ -83,10 +83,10 @@ CropProducer::CropProducer(
     ck(cudaSetDevice(camera_params_->gpu_id));
     ck(cudaStreamCreateWithFlags(&producer_stream_, cudaStreamNonBlocking));
 
-    crop_copy_timing_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_TIMING", true);
+    crop_copy_timing_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_TIMING", false);
     crop_copy_kernel_enabled_ = env_flag_enabled("ORANGE_CROP_COPY_KERNEL", false);
-    crop_source_stage_enabled_ = env_flag_enabled("ORANGE_CROP_STAGE_SOURCE", false);
-    crop_early_owned_frame_enabled_ = env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false);
+    crop_source_stage_enabled_ = env_flag_enabled("ORANGE_CROP_STAGE_SOURCE", true);
+    crop_early_owned_frame_enabled_ = env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", true);
     crop_frame_pool_size_ =
         env_int_or_default(
             "ORANGE_CROP_FRAME_POOL_SIZE",

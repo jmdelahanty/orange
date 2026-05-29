@@ -747,8 +747,10 @@ Field semantics:
   worker start, or `-1` when no frame is waiting behind the current one.
 - `acquisition_to_yolo_input_ready_ms` and
   `worker_start_to_yolo_input_ready_ms`: host timing to the point where YOLO has
-  enqueued its input-ready event. These fields are populated when
-  `ORANGE_YOLO_DETACH_INPUT=1`, otherwise `-1`.
+  enqueued its input-ready event. These fields are populated when YOLO input
+  detach is enabled, which is the default. Set `ORANGE_YOLO_DETACH_INPUT=0`
+  to recover the older non-detached diagnostic path where these fields are
+  `-1`.
 - `service_*`: cross-camera YOLO service-order instrumentation used to spot
   multi-camera fairness skew.
 - `cpu_wait_event_ms`: aggregate host time spent checking and optionally
@@ -757,22 +759,25 @@ Field semantics:
   ingress event.
 - `cpu_stream_wait_event_ms`: host time spent in `cudaStreamWaitEvent` for the
   ingress event. This should be near zero when
-  `ORANGE_YOLO_READY_EVENT_FASTPATH=1` and
-  `ingress_event_ready_before_wait=1`.
+  the ready-event fast path is enabled and `ingress_event_ready_before_wait=1`.
 - `cpu_input_ready_event_record_ms`: host time spent recording the
-  YOLO-input-ready CUDA event when `ORANGE_YOLO_DETACH_INPUT=1`.
+  YOLO-input-ready CUDA event when YOLO input detach is enabled.
 - `*_ms` and fps fields: floating-point timing/throughput metrics.
 
 Gate:
 - Disabled when `ORANGE_YOLO_PERF_LOG=0`.
 - Sampling controlled by `ORANGE_YOLO_PERF_SAMPLE`.
-- `ORANGE_YOLO_READY_EVENT_FASTPATH=1` skips `cudaStreamWaitEvent` when
+- `ORANGE_YOLO_READY_EVENT_FASTPATH` defaults to enabled and skips
+  `cudaStreamWaitEvent` when
   `cudaEventQuery` has already proven the ingress event is complete. It
-  preserves the wait path when the event is not ready.
-- `ORANGE_YOLO_DETACH_INPUT=1` records an event after YOLO has copied/preprocessed
-  the source frame into its owned TensorRT input buffer. With
+  preserves the wait path when the event is not ready. Set
+  `ORANGE_YOLO_READY_EVENT_FASTPATH=0` for old-path comparisons.
+- `ORANGE_YOLO_DETACH_INPUT` defaults to enabled and records an event after
+  YOLO has copied/preprocessed the source frame into its owned TensorRT input
+  buffer. With
   `ORANGE_RECORDING_DETECT_PRIORITY=1`, source/primary recording gates on this
-  event instead of full detection completion.
+  event instead of full detection completion. Set `ORANGE_YOLO_DETACH_INPUT=0`
+  for old-path comparisons.
 
 Behavior notes:
 - The GUI YOLO perf file is opened against the active recording folder.
@@ -1158,8 +1163,9 @@ Field semantics:
   analytics-owned frame to become available when the crop path uses detached
   analytics input.
 - `source_stage_enqueue_cpu_ms`: CPU-side time to stage the full source frame
-  into ordinary device memory when `ORANGE_CROP_STAGE_SOURCE=1`. This is `0`
-  when staged-source mode is disabled.
+  into ordinary device memory. Staged-source mode is enabled by default; set
+  `ORANGE_CROP_STAGE_SOURCE=0` for direct-source comparisons. This field is
+  `0` when staged-source mode is disabled.
 - `crop_copy_start_event_record_cpu_ms`: CPU-side time to record the optional
   crop-copy timing start event immediately before the ROI copy submission.
 - `crop_roi_copy_enqueue_cpu_ms`: CPU-side time to submit the source ROI
@@ -1172,12 +1178,12 @@ Field semantics:
   it is recorded after the ROI copy.
 - `crop_copy_gpu_ms`: CUDA event elapsed time for the source ROI copy itself,
   or `-1` when copy timing is disabled or the nonblocking timing query has not
-  completed by row write. Set `ORANGE_CROP_COPY_TIMING=0` before launching
-  Orange to disable the timing events and test whether they perturb the crop
-  producer hot path.
-- `ORANGE_CROP_STAGE_SOURCE=1` stages the GPUDirect source frame into ordinary
-  device memory before crop extraction so the ROI path can be compared against
-  the direct GPUDirect-backed source path.
+  completed by row write. Copy timing is disabled by default; set
+  `ORANGE_CROP_COPY_TIMING=1` before launching Orange when a diagnostic run
+  needs GPU copy timings.
+- `ORANGE_CROP_STAGE_SOURCE` defaults to enabled and stages the GPUDirect source
+  frame into ordinary device memory before crop extraction so the ROI path can
+  be compared against the direct GPUDirect-backed source path.
 - `crop_preview_cpu_ms`: legacy in-worker preview timing. New GUI builds move
   live crop preview into `CropPreviewWorker`, so this is expected to remain `0`
   for decoupled-preview runs.

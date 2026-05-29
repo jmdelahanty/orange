@@ -1137,7 +1137,7 @@ void acquire_frames(
                   << " enqueues YOLO before full-frame recording" << std::endl;
     }
     const bool yolo_detach_input =
-        env_flag_enabled("ORANGE_YOLO_DETACH_INPUT", false);
+        env_flag_enabled("ORANGE_YOLO_DETACH_INPUT", true);
     if (yolo_detach_input) {
         std::cout << "[YOLO_DETACH_INPUT] Cam "
                   << camera_params->camera_serial
@@ -1648,7 +1648,7 @@ void acquire_frames(
                 camera_params &&
                 camera_params->acquisition_buffer_mode == "force_ring_copy";
             const bool analytics_owned_frame_enabled =
-                env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", false) &&
+                env_flag_enabled("ORANGE_ANALYTICS_EARLY_OWNED_FRAME", true) &&
                 will_yolo &&
                 use_direct_pointer &&
                 !force_ring_copy;
