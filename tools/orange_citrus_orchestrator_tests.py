@@ -31,7 +31,7 @@ def load_module() -> Any:
     return module
 
 
-def orange_status(started: bool, stopped: bool) -> dict[str, Any]:
+def orange_status(started: bool, stopped: bool, *, drain_timed_out: bool = False) -> dict[str, Any]:
     return {
         "phase": "streaming" if not started else ("streaming" if stopped else "recording"),
         "readiness": {
@@ -44,6 +44,21 @@ def orange_status(started: bool, stopped: bool) -> dict[str, Any]:
         "recording": {
             "folder": "/tmp/orange_citrus_fake_recording",
             "sink_mode": "external_ipc",
+        },
+        "local_control": {
+            "recording_stop": {
+                "enabled": True,
+                "stop_triggered": stopped,
+                "drain_active": False,
+                "drain_timed_out": drain_timed_out,
+                "drain_timeout_seconds": 60.0,
+                "drain_elapsed_seconds": 61.25 if drain_timed_out else 0.0,
+                "request_id": "stop-req",
+                "operation_id": "op-test",
+                "last_event": "finalized_after_drain_timeout"
+                if drain_timed_out
+                else "finalized",
+            }
         },
     }
 
@@ -108,6 +123,16 @@ def test_request_builders_and_readiness_helpers() -> None:
     require(module.orange_ready_for_recording(orange_status(False, False)), "orange ready")
     require(module.orange_ready_for_citrus(orange_status(True, False)), "orange recording")
     require(module.orange_recording_finalized(orange_status(True, True)), "orange finalized")
+    require(
+        not module.orange_recording_stop_drain_timed_out(orange_status(True, True)),
+        "orange drain timeout should default false",
+    )
+    require(
+        module.orange_recording_stop_drain_timed_out(
+            orange_status(True, True, drain_timed_out=True)
+        ),
+        "orange drain timeout helper should read local-control status",
+    )
     require(module.citrus_ready_to_start(citrus_status(False, False)), "citrus ready")
     require(module.citrus_is_terminal(citrus_status(True, True)), "citrus terminal")
     require(module.citrus_perf_jsonl_path_known(citrus_status(True, True)), "perf path known")
@@ -205,6 +230,10 @@ def test_dry_run_default_does_not_open_sockets() -> None:
     require(
         not payload["orange"]["preflight_existing_socket"],
         "attach-mode dry-run should not preflight an Orange launch socket",
+    )
+    require(
+        not payload["orange"]["allow_drain_timeout"],
+        "orchestrator should fail on Orange drain timeout telemetry by default",
     )
     require(payload["validations"][0]["label"] == "quick", "dry-run should show validation labels")
     require(
@@ -335,6 +364,14 @@ def test_execute_against_fake_local_control_servers() -> None:
 
         require(payload["result"] == "pass", "orchestrator should pass fake run")
         require(payload["orange"]["recording_finalized"], "summary should report Orange finalized")
+        require(
+            not payload["orange"]["local_control_stop_drain_timed_out"],
+            "summary should report no Orange drain timeout",
+        )
+        require(
+            payload["orange"]["local_control_recording_stop"]["last_event"] == "finalized",
+            "summary should include Orange local-control stop status",
+        )
         require(payload["citrus"]["terminal_state"] == "completed", "summary should report Citrus terminal")
         require(payload["citrus"]["perf_jsonl_path"] == "/tmp/citrus_perf.jsonl", "summary should carry perf path")
         require(len(payload["validations"]) == 1, "summary should carry validation results")
@@ -496,6 +533,81 @@ def test_launch_preflights_all_sockets_before_starting_processes() -> None:
         calls == [("preflight", "orange"), ("preflight", "citrus")],
         "orchestrator should preflight both launch sockets before starting any process",
     )
+
+
+def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
+    module = load_module()
+    orange_state = {"stopped": False}
+
+    def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+        require(socket_path == "orange-timeout.sock", "unexpected socket path")
+        if request.get("method") == "stop_recording":
+            orange_state["stopped"] = True
+        return response_for(
+            request,
+            orange_status(
+                True,
+                orange_state["stopped"],
+                drain_timed_out=orange_state["stopped"],
+            ),
+        )
+
+    original_send = module.send_unix_json
+    module.send_unix_json = fake_send
+    try:
+        args = module.parse_args(
+            [
+                "--execute",
+                "--operation-id",
+                "op-timeout",
+                "--orange-socket",
+                "orange-timeout.sock",
+                "--poll-interval-seconds",
+                "0.01",
+                "--orange-finalize-timeout-seconds",
+                "1",
+            ]
+        )
+        orchestrator = module.Orchestrator(args)
+        try:
+            orchestrator.request_orange_stop(citrus_status(True, True))
+        except module.OrchestratorError as exc:
+            require(
+                "Orange recording drain timed out" in str(exc),
+                "drain timeout should fail",
+            )
+        else:
+            raise AssertionError("expected Orange drain timeout to fail")
+        orchestrator.orange_recording_started = True
+        require(
+            orchestrator.best_effort_stop_after_failure() is None,
+            "failure cleanup should not resend stop after finalized timeout status",
+        )
+
+        args_allow = module.parse_args(
+            [
+                "--execute",
+                "--operation-id",
+                "op-timeout-allow",
+                "--orange-socket",
+                "orange-timeout.sock",
+                "--poll-interval-seconds",
+                "0.01",
+                "--orange-finalize-timeout-seconds",
+                "1",
+                "--allow-orange-drain-timeout",
+            ]
+        )
+        orange_state["stopped"] = False
+        allowed_status = module.Orchestrator(args_allow).request_orange_stop(
+            citrus_status(True, True)
+        )
+        require(
+            module.orange_recording_stop_drain_timed_out(allowed_status),
+            "allowed path should still return timeout status",
+        )
+    finally:
+        module.send_unix_json = original_send
 
 
 def test_persist_artifacts_copies_logs_into_recording_folder() -> None:
@@ -776,6 +888,7 @@ def main() -> int:
         test_execute_against_fake_local_control_servers,
         test_execute_stops_citrus_after_run_seconds,
         test_launch_preflights_all_sockets_before_starting_processes,
+        test_orchestrator_fails_on_orange_drain_timeout_by_default,
         test_persist_artifacts_copies_logs_into_recording_folder,
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,

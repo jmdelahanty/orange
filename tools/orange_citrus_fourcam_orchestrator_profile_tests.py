@@ -79,6 +79,10 @@ def test_default_dry_run_builds_live_profile() -> None:
         )
         require(orange["preflight_existing_socket"], "profile should preflight Orange launch socket")
         require(citrus["preflight_existing_socket"], "profile should preflight Citrus launch socket")
+        require(
+            not orange["allow_drain_timeout"],
+            "profile should fail on Orange drain timeout telemetry by default",
+        )
 
         orange_env = orange["env_overlay"]
         citrus_env = citrus["env_overlay"]
@@ -299,12 +303,30 @@ def test_allow_preexisting_sockets_disables_launch_preflight() -> None:
     )
 
 
+def test_allow_orange_drain_timeout_passes_through() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-allow-drain-timeout",
+            "--allow-orange-drain-timeout",
+            "--skip-orange-validation",
+        ]
+    )
+    require(result.returncode == 0, f"profile allow-drain-timeout dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    require(
+        payload["orange"]["allow_drain_timeout"],
+        "profile should pass through the Orange drain-timeout override",
+    )
+
+
 def main() -> int:
     tests = [
         test_default_dry_run_builds_live_profile,
         test_attach_mode_does_not_launch_processes,
         test_rolling_profile_passes_orange_clip_options_to_validation,
         test_allow_preexisting_sockets_disables_launch_preflight,
+        test_allow_orange_drain_timeout_passes_through,
     ]
     for test in tests:
         test()

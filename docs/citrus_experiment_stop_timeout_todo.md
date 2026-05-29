@@ -192,6 +192,9 @@ Refs:
   - countdown started,
   - stop triggered,
   - drain complete or timeout.
+- [x] Make the Orange/Citrus orchestrator summarize
+      `local_control.recording_stop` and fail by default when
+      `drain_timed_out=true`.
 - [ ] Optionally send ACK back to Citrus:
   - accepted,
   - executed,

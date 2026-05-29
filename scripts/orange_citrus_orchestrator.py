@@ -308,6 +308,15 @@ def orange_recording_finalized(status: dict[str, Any]) -> bool:
     return bool(json_path(status, ["readiness", "recording_finalized"], False))
 
 
+def orange_local_control_recording_stop(status: dict[str, Any]) -> dict[str, Any]:
+    value = json_path(status, ["local_control", "recording_stop"], {})
+    return value if isinstance(value, dict) else {}
+
+
+def orange_recording_stop_drain_timed_out(status: dict[str, Any]) -> bool:
+    return bool(orange_local_control_recording_stop(status).get("drain_timed_out", False))
+
+
 def citrus_ready_to_start(status: dict[str, Any]) -> bool:
     return bool(json_path(status, ["readiness", "ready_to_start"], False))
 
@@ -962,14 +971,30 @@ class Orchestrator:
 
         if self.args.skip_wait_orange_finalized:
             _, status = self.status("orange", ORANGE_REQUEST_SCHEMA_ID, self.args.orange_socket)
+            self.require_orange_drain_not_timed_out(status)
             return status
-        return self.wait_for_status(
+        status = self.wait_for_status(
             "orange",
             ORANGE_REQUEST_SCHEMA_ID,
             self.args.orange_socket,
             orange_recording_finalized,
             self.args.orange_finalize_timeout_seconds,
             "recording_finalized",
+        )
+        self.require_orange_drain_not_timed_out(status)
+        return status
+
+    def require_orange_drain_not_timed_out(self, status: dict[str, Any]) -> None:
+        if self.args.allow_orange_drain_timeout or not orange_recording_stop_drain_timed_out(status):
+            return
+        stop_status = orange_local_control_recording_stop(status)
+        raise OrchestratorError(
+            "Orange recording drain timed out before finalization: "
+            f"request_id={stop_status.get('request_id', '')} "
+            f"operation_id={stop_status.get('operation_id', '')} "
+            f"elapsed_seconds={stop_status.get('drain_elapsed_seconds', '')} "
+            f"timeout_seconds={stop_status.get('drain_timeout_seconds', '')} "
+            f"last_event={stop_status.get('last_event', '')}"
         )
 
     def persist_artifacts(self, summary: dict[str, Any]) -> None:
@@ -1058,6 +1083,8 @@ class Orchestrator:
     def best_effort_stop_after_failure(self) -> dict[str, Any] | None:
         if not self.args.stop_orange_on_failure or not self.orange_recording_started:
             return None
+        if orange_recording_finalized(self.last_orange_status):
+            return None
         try:
             request = build_orange_stop_request(
                 self.args.operation_id,
@@ -1098,6 +1125,9 @@ class Orchestrator:
                 "ready_for_recording_request": orange_ready_for_recording(orange_status),
                 "ready_for_citrus_experiment": orange_ready_for_citrus(orange_status),
                 "recording_finalized": orange_recording_finalized(orange_status),
+                "local_control_recording_stop": orange_local_control_recording_stop(orange_status),
+                "local_control_stop_drain_timed_out": orange_recording_stop_drain_timed_out(orange_status),
+                "allow_drain_timeout": self.args.allow_orange_drain_timeout,
             },
             "citrus": {
                 "socket": self.args.citrus_socket,
@@ -1163,6 +1193,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--orange-finalize-timeout-seconds", type=positive_float, default=180.0)
     parser.add_argument("--orange-stop-grace-seconds", type=nonnegative_float, default=0.0)
+    parser.add_argument(
+        "--allow-orange-drain-timeout",
+        action="store_true",
+        help=(
+            "Do not fail the orchestrator if Orange local-control status reports "
+            "recording_stop.drain_timed_out=true."
+        ),
+    )
     parser.add_argument("--require-citrus-perf-jsonl", action="store_true")
     parser.add_argument(
         "--validation-command",
@@ -1239,6 +1277,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
                 args.source,
             ),
             "stop_policy": args.stop_policy,
+            "allow_drain_timeout": args.allow_orange_drain_timeout,
             "preflight_existing_socket": bool(args.orange_command)
             and not args.allow_preexisting_orange_socket,
         },

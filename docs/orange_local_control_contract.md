@@ -409,6 +409,15 @@ newest artifact on disk. Placeholder expansion is strict: if a command uses an
 artifact placeholder and the corresponding status field is missing or empty, the
 orchestrator fails before running that validator.
 
+After Orange finalization, the orchestrator also inspects
+`local_control.recording_stop.drain_timed_out`. A timed-out drain fails the
+orchestrator by default even if Orange eventually finalized, because it means
+the run crossed the configured drain observability threshold. The combined
+summary records `orange.local_control_recording_stop` and
+`orange.local_control_stop_drain_timed_out`. Use
+`--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
+expected observation rather than a pass/fail gate.
+
 When the orchestrator launches Orange or Citrus itself, readiness waits also
 poll those child processes. If a launched GUI exits before its relevant
 readiness/completion evidence is captured, the orchestrator fails immediately
