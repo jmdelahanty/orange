@@ -234,7 +234,10 @@ The top-level rolling manifest uses this shape:
       "request_id": "run-42:orange:stop_recording",
       "operation_id": "run-42",
       "received_at_utc": "2026-05-29T00:00:00Z",
-      "stop_triggered_at_utc": "2026-05-29T00:00:00Z"
+      "stop_triggered_at_utc": "2026-05-29T00:00:00Z",
+      "drain_completed": true,
+      "drain_timed_out": false,
+      "ack_state": "executed"
     },
     "drain_completed": true,
     "actual_recording_duration_s": 18.0,

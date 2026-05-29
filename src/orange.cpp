@@ -1766,6 +1766,8 @@ void gui_update_local_control_stop_manifest_for_finalized_drain(
     run->stop_control["health"] = drain_timed_out ? "warning" : "ok";
     run->stop_control["error_code"] =
         drain_timed_out ? "drain_timeout" : "";
+    run->stop_control["ack_state"] =
+        drain_timed_out ? "failed_timeout" : "executed";
     run->stop_control["last_event"] =
         drain_timed_out ? "finalized_after_drain_timeout" : "finalized";
     run->stop_control["last_event_at_utc"] =
@@ -3684,6 +3686,7 @@ nlohmann::json gui_local_control_stop_manifest_control(
          scheduler.forced_finalize_stream_stop_requested},
         {"forced_finalize_requested_at_utc",
          scheduler.forced_finalize_requested_at_utc},
+        {"ack_state", "executing"},
         {"health", "ok"},
         {"error_code", ""}
     };
@@ -4147,6 +4150,7 @@ void gui_poll_local_control_drain_timeout(
                 stop_scheduler->forced_finalize_stream_stop_requested;
             recording_run->stop_control["forced_finalize_requested_at_utc"] =
                 stop_scheduler->forced_finalize_requested_at_utc;
+            recording_run->stop_control["ack_state"] = "failed_timeout";
             recording_run->stop_control["health"] = "critical";
             recording_run->stop_control["error_code"] = "drain_timeout";
         }

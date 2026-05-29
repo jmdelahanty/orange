@@ -1593,6 +1593,13 @@ def check_local_control_stop_expectations(
         ),
     )
 
+    ack_state = control.get("ack_state")
+    reporter.check(
+        isinstance(ack_state, str) and bool(ack_state),
+        "recording_session recording.control ack_state present",
+        f"recording_session recording.control ack_state={ack_state!r}",
+    )
+
     drain_completed = control.get("drain_completed")
     if drain_completed is not None:
         reporter.check(
@@ -1642,6 +1649,23 @@ def check_local_control_stop_expectations(
                 (
                     "recording_session recording.control error_code="
                     f"{control.get('error_code')!r}; expected 'drain_timeout'"
+                ),
+            )
+            reporter.check(
+                control.get("ack_state") == "failed_timeout",
+                "recording_session recording.control ack_state=failed_timeout after drain timeout",
+                (
+                    "recording_session recording.control drain_timed_out=true "
+                    f"but ack_state={control.get('ack_state')!r}"
+                ),
+            )
+        elif drain_timed_out is False and control.get("drain_completed") is True:
+            reporter.check(
+                control.get("ack_state") == "executed",
+                "recording_session recording.control ack_state=executed after finalized drain",
+                (
+                    "recording_session recording.control clean finalized drain "
+                    f"but ack_state={control.get('ack_state')!r}"
                 ),
             )
 
@@ -1698,6 +1722,30 @@ def check_local_control_stop_expectations(
                 "'finalized_after_drain_timeout' but "
                 "forced_finalize_stream_stop_requested="
                 f"{control.get('forced_finalize_stream_stop_requested')!r}"
+            ),
+        )
+        reporter.check(
+            control.get("ack_state") == "failed_timeout",
+            (
+                "recording_session recording.control finalized-after-timeout "
+                "requires failed-timeout ACK state"
+            ),
+            (
+                "recording_session recording.control last_event="
+                "'finalized_after_drain_timeout' but ack_state="
+                f"{control.get('ack_state')!r}"
+            ),
+        )
+    elif control.get("last_event") == "finalized":
+        reporter.check(
+            control.get("ack_state") == "executed",
+            (
+                "recording_session recording.control finalized "
+                "requires executed ACK state"
+            ),
+            (
+                "recording_session recording.control last_event='finalized' "
+                f"but ack_state={control.get('ack_state')!r}"
             ),
         )
 
@@ -5859,6 +5907,7 @@ def print_recording_session_summary(recording_session: dict[str, Any]) -> None:
             f"operation_id={local_control_stop.get('operation_id', 'unknown')} "
             f"source={local_control_stop.get('command_source', 'unknown')} "
             f"reason={local_control_stop.get('reason', 'unknown')} "
+            f"ack_state={local_control_stop.get('ack_state', 'unknown')} "
             f"drain_timed_out={local_control_stop.get('drain_timed_out', 'unknown')} "
             "forced_stream_stop="
             f"{local_control_stop.get('forced_finalize_stream_stop_requested', 'unknown')}"

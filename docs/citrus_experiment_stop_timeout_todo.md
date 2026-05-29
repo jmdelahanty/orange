@@ -213,6 +213,8 @@ Refs:
 - [x] Make the Orange/Citrus orchestrator preserve and validate that ACK state
       in `orange.local_control_stop_ack_state` and
       `orange.local_control_stop_ack_status_check`.
+- [x] Persist terminal stop ACK state in `recording_session.json`
+      `recording.control.ack_state` and validate it in GUI artifacts.
 - [ ] Optionally add a future push/callback ACK back to Citrus if polling the
       shared Orange status is not enough.
 - [x] Include `request_id` and timestamps in structured local-control JSONL

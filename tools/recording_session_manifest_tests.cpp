@@ -88,6 +88,7 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
         {"method", "stop_recording"},
         {"request_id", "req-stop-1"},
         {"operation_id", "op-stop-1"},
+        {"ack_state", "executed"},
         {"received_at_utc", "2026-05-29T00:00:00Z"}
     };
     options.cameras.push_back(make_camera_artifact("2010096", 300));
@@ -122,6 +123,9 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
     require(
         manifest["recording"]["control"].value("operation_id", std::string()) == "op-stop-1",
         "single-clip manifest should preserve local-control stop operation id");
+    require(
+        manifest["recording"]["control"].value("ack_state", std::string()) == "executed",
+        "single-clip manifest should preserve local-control stop ACK state");
 }
 
 void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
@@ -140,6 +144,7 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
         {"request_id", "req-completion-1"},
         {"operation_id", "op-completion-1"},
         {"terminal_state", "completed"},
+        {"ack_state", "executed"},
         {"received_at_utc", "2026-05-29T00:01:00Z"}
     };
     options.camera_serials.push_back("2010096");

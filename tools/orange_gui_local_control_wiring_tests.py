@@ -51,6 +51,10 @@ def test_drain_timeout_requests_forced_stream_shutdown() -> None:
         'recording_run->stop_control["health"] = "critical"' in timeout_body,
         "drain-timeout path must preserve critical health in stop control",
     )
+    require(
+        'recording_run->stop_control["ack_state"] = "failed_timeout"' in timeout_body,
+        "drain-timeout path must persist failed-timeout ACK state in stop control",
+    )
     snapshot_body = function_body(orange, "gui_control_stop_snapshot")
     require(
         "snapshot.forced_finalize_stream_stop_requested =\n"
@@ -149,6 +153,7 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
             '         scheduler.forced_finalize_stream_stop_requested}',
             "initial forced stream-stop state",
         ),
+        ('{"ack_state", "executing"}', "initial executing ACK state"),
     ):
         require(needle in manifest_body, f"recording manifest control must include {description}")
 
@@ -169,6 +174,12 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
         '        drain_timed_out ? "finalized_after_drain_timeout" : "finalized";'
         in finalized_body,
         "finalized drain helper must persist final local-control event",
+    )
+    require(
+        'run->stop_control["ack_state"] =\n'
+        '        drain_timed_out ? "failed_timeout" : "executed";'
+        in finalized_body,
+        "finalized drain helper must persist terminal ACK state",
     )
     finalize_body = function_body(orange, "gui_finalize_recording_session_if_ready")
     require(

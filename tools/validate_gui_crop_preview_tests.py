@@ -770,6 +770,7 @@ def write_rolling_full_frame_manifest(
                 "forced_finalize_requested": False,
                 "forced_finalize_stream_stop_requested": False,
                 "forced_finalize_requested_at_utc": "",
+                "ack_state": "executed",
                 "health": "ok",
                 "error_code": "",
                 "last_event": "finalized",
@@ -3189,6 +3190,7 @@ def test_recording_session_manifest_checks_local_control_drain_timeout_consisten
                 "forced_finalize_requested": True,
                 "forced_finalize_stream_stop_requested": True,
                 "forced_finalize_requested_at_utc": "2026-05-29T00:00:02Z",
+                "ack_state": "failed_timeout",
                 "health": "warning",
                 "error_code": "drain_timeout",
                 "last_event": "finalized_after_drain_timeout",
@@ -3226,6 +3228,7 @@ def test_recording_session_manifest_fails_on_local_control_drain_timeout_inconsi
                 "drain_timed_out": True,
                 "forced_finalize_requested": False,
                 "forced_finalize_stream_stop_requested": False,
+                "ack_state": "executed",
                 "error_code": "",
                 "last_event": "finalized_after_drain_timeout",
             }
@@ -3253,6 +3256,36 @@ def test_recording_session_manifest_fails_on_local_control_drain_timeout_inconsi
         require(
             any("forced_finalize_stream_stop_requested=False" in failure for failure in reporter.failures),
             f"missing forced stream-stop evidence should fail: {reporter.failures}",
+        )
+        require(
+            any("ack_state='executed'" in failure for failure in reporter.failures),
+            f"wrong timeout ACK state should fail: {reporter.failures}",
+        )
+
+
+def test_recording_session_manifest_fails_on_local_control_ack_state_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        manifest_path = root / "recording_session.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["recording"]["control"]["ack_state"] = "executing"
+        manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_local_control_stop_method="stop_recording",
+            expected_local_control_stop_operation_id="op-rolling",
+            expected_local_control_stop_command_source="orange_citrus_fourcam_profile",
+        )
+        require(
+            any("last_event='finalized'" in failure for failure in reporter.failures),
+            f"wrong finalized ACK state should fail: {reporter.failures}",
         )
 
 
@@ -3969,6 +4002,7 @@ def main() -> int:
         test_recording_session_manifest_checks_local_control_stop_metadata,
         test_recording_session_manifest_checks_local_control_drain_timeout_consistency,
         test_recording_session_manifest_fails_on_local_control_drain_timeout_inconsistency,
+        test_recording_session_manifest_fails_on_local_control_ack_state_mismatch,
         test_recording_session_manifest_fails_on_local_control_stop_metadata_mismatch,
         test_recording_session_manifest_fails_on_expected_recording_mode_mismatch,
         test_recording_session_manifest_fails_on_expected_control_mismatch,
