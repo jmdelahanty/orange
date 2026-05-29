@@ -1232,6 +1232,11 @@ def test_existing_default_app_config_is_forwarded_to_exec_env() -> None:
             f"ORANGE_GUI_APP_CONFIG_PATH={app_config_path}" in result.stdout.splitlines(),
             "launcher should forward the resolved user default app config when it exists",
         )
+        require(
+            f"app config forwarded env=ORANGE_GUI_APP_CONFIG_PATH={app_config_path}"
+            in result.stdout,
+            "launcher should report the forwarded default app config env",
+        )
 
 
 def test_missing_default_app_config_is_not_forwarded_to_exec_env() -> None:
@@ -1260,6 +1265,10 @@ def test_missing_default_app_config_is_not_forwarded_to_exec_env() -> None:
         require(
             f"ORANGE_GUI_APP_CONFIG_PATH={app_config_path}" not in result.stdout.splitlines(),
             "launcher should not forward a missing synthesized default app config path",
+        )
+        require(
+            "app config forwarded env=<not forwarded>" in result.stdout,
+            "launcher should report that a missing synthesized default app config was not forwarded",
         )
 
 
