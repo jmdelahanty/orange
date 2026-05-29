@@ -205,10 +205,13 @@ Refs:
 - [x] Make the Orange/Citrus orchestrator summarize
       `local_control.recording_stop` and fail by default when
       `drain_timed_out=true`.
-- [ ] Optionally send ACK back to Citrus:
+- [x] Expose pollable stop ACK state in `local_control.recording_stop.ack_state`
+      and its `citrus_completion_stop` compatibility alias:
   - accepted,
   - executed,
-  - failed-timeout.
+  - failed_timeout.
+- [ ] Optionally add a future push/callback ACK back to Citrus if polling the
+      shared Orange status is not enough.
 - [x] Include `request_id` and timestamps in structured local-control JSONL
       logs:
   - socket-thread request/response rows,

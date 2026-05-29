@@ -333,6 +333,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
             "active timed-out drain should report drain_timeout state");
     require(stop["health"].get<std::string>() == "critical",
             "active timed-out drain should report critical health");
+    require(stop["ack_state"].get<std::string>() == "failed_timeout",
+            "active timed-out drain should report failed-timeout ACK state");
     require(stop["error_code"].get<std::string>() == "drain_timeout",
             "timed-out drain should report drain_timeout error code");
     require(stop["stop_triggered"].get<bool>(), "stop should be marked triggered");
@@ -367,6 +369,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
             "compatibility alias should expose forced stream-stop request");
     require(completion_alias["health"].get<std::string>() == "critical",
             "compatibility alias should expose critical health");
+    require(completion_alias["ack_state"].get<std::string>() == "failed_timeout",
+            "compatibility alias should expose failed-timeout ACK state");
     require(completion_alias["request_id"].get<std::string>() == "stop-req-1",
             "compatibility alias should mirror stop request id");
 }
@@ -397,8 +401,49 @@ void test_status_reports_finalized_after_drain_timeout_as_warning()
             "completed timed-out drain should report finalized-after-timeout state");
     require(stop["health"].get<std::string>() == "warning",
             "completed timed-out drain should report warning health");
+    require(stop["ack_state"].get<std::string>() == "failed_timeout",
+            "completed timed-out drain should report failed-timeout ACK state");
     require(stop["error_code"].get<std::string>() == "drain_timeout",
             "completed timed-out drain should retain drain_timeout error code");
+}
+
+void test_status_reports_recording_stop_ack_states()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.local_control_recording_stop.enabled = true;
+
+    nlohmann::json json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(
+        json["local_control"]["recording_stop"]["ack_state"].get<std::string>() == "idle",
+        "idle stop control should report idle ACK state");
+
+    status.local_control_recording_stop.scheduled = true;
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(
+        json["local_control"]["recording_stop"]["ack_state"].get<std::string>() == "accepted",
+        "scheduled stop control should report accepted ACK state");
+
+    status.local_control_recording_stop.scheduled = false;
+    status.local_control_recording_stop.stop_triggered = true;
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(
+        json["local_control"]["recording_stop"]["ack_state"].get<std::string>() == "executing",
+        "triggered stop control should report executing ACK state");
+
+    status.local_control_recording_stop.drain_completed_at_utc =
+        "2026-05-29T00:00:02Z";
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(
+        json["local_control"]["recording_stop"]["ack_state"].get<std::string>() == "executed",
+        "finalized stop control should report executed ACK state");
+
+    status.local_control_recording_stop = {};
+    status.local_control_recording_stop.enabled = true;
+    status.local_control_recording_stop.last_event = "ignored_not_recording";
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(
+        json["local_control"]["recording_stop"]["ack_state"].get<std::string>() == "ignored",
+        "ignored stop control should report ignored ACK state");
 }
 
 void test_append_local_control_event_log_creates_jsonl()
@@ -732,6 +777,8 @@ int main()
          test_status_reports_local_control_drain_timeout_telemetry},
         {"status_reports_finalized_after_drain_timeout_as_warning",
          test_status_reports_finalized_after_drain_timeout_as_warning},
+        {"status_reports_recording_stop_ack_states",
+         test_status_reports_recording_stop_ack_states},
         {"append_local_control_event_log_creates_jsonl",
          test_append_local_control_event_log_creates_jsonl},
         {"citrus_completion_is_diagnostic_ack_and_logged",

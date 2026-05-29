@@ -196,6 +196,33 @@ std::string recording_stop_health(
     return "ok";
 }
 
+std::string recording_stop_ack_state(
+    const LocalControlRecordingStopSnapshot& snapshot)
+{
+    const std::string state = recording_stop_state(snapshot);
+    if (state == "disabled") {
+        return "disabled";
+    }
+    if (snapshot.drain_timed_out) {
+        return "failed_timeout";
+    }
+    if (state == "finalized") {
+        return "executed";
+    }
+    if (state == "draining" || state == "stop_triggered") {
+        return "executing";
+    }
+    if (state == "scheduled") {
+        return "accepted";
+    }
+    if (snapshot.last_event == "ignored_disabled" ||
+        snapshot.last_event == "ignored_not_recording" ||
+        snapshot.last_event == "cancelled_recording_inactive") {
+        return "ignored";
+    }
+    return "idle";
+}
+
 nlohmann::json recording_stop_to_json(
     const LocalControlRecordingStopSnapshot& snapshot)
 {
@@ -204,6 +231,7 @@ nlohmann::json recording_stop_to_json(
         {"enabled", snapshot.enabled},
         {"state", state},
         {"health", recording_stop_health(snapshot)},
+        {"ack_state", recording_stop_ack_state(snapshot)},
         {"error_code",
          (state == "drain_timeout" ||
           state == "finalized_after_drain_timeout")

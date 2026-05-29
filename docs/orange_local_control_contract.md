@@ -160,7 +160,8 @@ Orange readiness means more than process started. Status reports:
 - `local_control.recording_stop`: whether local-control recording stop is
   enabled, whether a stop is scheduled, whether one has triggered, the current
   method/request/operation/experiment ids, terminal state/reason, remaining
-  deadline seconds, drain telemetry, derived stop `state`, derived `health`,
+  deadline seconds, drain telemetry, derived stop `state`, derived `ack_state`,
+  derived `health`,
   `error_code`, and the latest scheduler event. Drain telemetry includes
   `drain_active`, `drain_timed_out`,
   `forced_finalize_requested`, `forced_finalize_stream_stop_requested`,
@@ -168,6 +169,13 @@ Orange readiness means more than process started. Status reports:
   `stop_triggered_at_utc`, and `drain_completed_at_utc`.
 - `local_control.citrus_completion_stop`: compatibility alias for the same
   recording-stop status
+
+`ack_state` is the pollable local-control acknowledgment state for Citrus and
+orchestrators: `accepted` after the GUI thread schedules the stop, `executing`
+after the stop has triggered and drain/finalization is in progress, `executed`
+after clean finalization, `failed_timeout` after the drain timeout threshold is
+crossed, `ignored` for accepted commands that cannot affect recording, and
+`idle`/`disabled` when no stop request is active.
 
 Camera-set comparisons are order-insensitive. If no expected serials are
 configured, match fields are reported as `null` and readiness falls back to the
