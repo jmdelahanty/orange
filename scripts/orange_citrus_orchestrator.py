@@ -307,8 +307,10 @@ class Orchestrator:
         self.args = args
         self.steps: list[StepLog] = []
         self.started_processes: list[dict[str, Any]] = []
+        self.processes: dict[str, subprocess.Popen[Any]] = {}
         self.validation_results: list[dict[str, Any]] = []
         self.orange_recording_started = False
+        self.citrus_control_complete = False
 
     def step(self, name: str) -> StepLog:
         item = StepLog(name=name)
@@ -345,6 +347,7 @@ class Orchestrator:
         last_error = ""
         last_status: dict[str, Any] = {}
         while time.monotonic() <= deadline:
+            self.raise_if_started_process_exited(f"waiting for {label} {description}")
             try:
                 _, status = self.status(label, schema_id, socket_path)
                 last_status = status
@@ -356,6 +359,29 @@ class Orchestrator:
             time.sleep(self.args.poll_interval_seconds)
         step.finish(ok=False, last_error=last_error, last_status=last_status)
         raise OrchestratorError(f"timed out waiting for {label} {description}: {last_error}")
+
+    def refresh_started_processes(self) -> None:
+        for info in self.started_processes:
+            label = str(info.get("label", ""))
+            process = self.processes.get(label)
+            if process is not None:
+                info["returncode"] = process.poll()
+
+    def raise_if_started_process_exited(self, context: str) -> None:
+        self.refresh_started_processes()
+        for info in self.started_processes:
+            returncode = info.get("returncode")
+            if returncode is None:
+                continue
+            label = info.get("label", "<unknown>")
+            if label == "citrus" and self.citrus_control_complete:
+                continue
+            pid = info.get("pid", "<unknown>")
+            log_path = info.get("log_path", "")
+            raise OrchestratorError(
+                f"{label} process exited while {context}: "
+                f"pid={pid} returncode={returncode} log_path={log_path}"
+            )
 
     def start_process(
         self,
@@ -392,8 +418,15 @@ class Orchestrator:
             if log_file is not None:
                 log_file.close()
         self.started_processes.append(
-            {"label": label, "pid": process.pid, "command": argv, "log_path": log_path}
+            {
+                "label": label,
+                "pid": process.pid,
+                "command": argv,
+                "log_path": log_path,
+                "returncode": None,
+            }
         )
+        self.processes[label] = process
         step.finish(ok=True, pid=process.pid, command=argv, env_overlay=env_overlay)
 
     def run(self) -> dict[str, Any]:
@@ -502,6 +535,7 @@ class Orchestrator:
                 self.args.timeout_seconds,
                 "perf_jsonl_path_known",
             )
+        self.citrus_control_complete = True
 
         if self.args.stop_policy != "none":
             final_orange_status = self.request_orange_stop(final_citrus_status)
@@ -698,6 +732,7 @@ class Orchestrator:
     ) -> dict[str, Any]:
         citrus_status = final_citrus_status or {}
         orange_status = final_orange_status or {}
+        self.refresh_started_processes()
         return {
             "schema_id": SUMMARY_SCHEMA_ID,
             "schema_version": SUMMARY_SCHEMA_VERSION,

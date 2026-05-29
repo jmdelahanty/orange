@@ -262,11 +262,76 @@ def test_execute_against_fake_local_control_servers() -> None:
         require(json.loads(summary_path.read_text())["result"] == "pass", "summary file should match")
 
 
+def test_wait_reports_launched_process_exit() -> None:
+    module = load_module()
+    args = module.parse_args(
+        [
+            "--execute",
+            "--operation-id",
+            "op-process-exit",
+            "--poll-interval-seconds",
+            "0.01",
+            "--socket-timeout-seconds",
+            "0.01",
+            "--timeout-seconds",
+            "1",
+        ]
+    )
+    orchestrator = module.Orchestrator(args)
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import sys; sys.exit(7)')}"
+    orchestrator.start_process("orange", command, {}, "")
+    try:
+        orchestrator.wait_for_status(
+            "orange",
+            module.ORANGE_REQUEST_SCHEMA_ID,
+            "/tmp/orange_citrus_missing_process_exit.sock",
+            lambda status: False,
+            1,
+            "ready_for_recording_request",
+        )
+    except module.OrchestratorError as exc:
+        message = str(exc)
+        require("orange process exited" in message, "error should name exited process")
+        require("returncode=7" in message, "error should include return code")
+    else:
+        raise AssertionError("expected wait_for_status to fail on launched process exit")
+    require(
+        orchestrator.started_processes[0]["returncode"] == 7,
+        "started process metadata should capture return code",
+    )
+
+
+def test_post_terminal_citrus_exit_is_not_an_orange_wait_failure() -> None:
+    module = load_module()
+    args = module.parse_args(
+        [
+            "--execute",
+            "--operation-id",
+            "op-citrus-exit-after-terminal",
+            "--poll-interval-seconds",
+            "0.01",
+        ]
+    )
+    orchestrator = module.Orchestrator(args)
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import sys; sys.exit(0)')}"
+    orchestrator.start_process("citrus", command, {}, "")
+    while orchestrator.processes["citrus"].poll() is None:
+        pass
+    orchestrator.citrus_control_complete = True
+    orchestrator.raise_if_started_process_exited("waiting for orange recording_finalized")
+    require(
+        orchestrator.started_processes[0]["returncode"] == 0,
+        "post-terminal Citrus exit should still be recorded",
+    )
+
+
 def main() -> int:
     tests = [
         test_request_builders_and_readiness_helpers,
         test_dry_run_default_does_not_open_sockets,
         test_execute_against_fake_local_control_servers,
+        test_wait_reports_launched_process_exit,
+        test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
     ]
     for test in tests:
         test()

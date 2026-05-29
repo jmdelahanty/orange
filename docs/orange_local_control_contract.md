@@ -390,6 +390,14 @@ placeholders. Prefer `{orange_recording_folder}` for Orange validators so the
 orchestrator validates the exact run reported by Orange status instead of the
 newest artifact on disk.
 
+When the orchestrator launches Orange or Citrus itself, readiness waits also
+poll those child processes. If a launched GUI exits before its relevant
+readiness/completion evidence is captured, the orchestrator fails immediately
+with the process label, PID, return code, and log path instead of waiting for a
+generic socket timeout. Once Citrus terminal/perf-path evidence has been
+captured, a later Citrus process exit is recorded in `started_processes[]` but
+does not make Orange finalization fail.
+
 Four-camera Citrus profile wrapper:
 
 ```bash
