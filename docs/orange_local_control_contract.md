@@ -457,9 +457,11 @@ After Orange finalization, the orchestrator also inspects
 orchestrator by default even if Orange eventually finalized, because it means
 the run crossed the configured drain observability threshold. The combined
 summary records `orange.local_control_recording_stop` and
-`orange.local_control_stop_drain_timed_out`; the event-log summary records
-whether GUI-thread stop trigger, drain timeout, forced-finalize request, and
-drain finalization events were observed. When
+`orange.local_control_stop_drain_timed_out`; it also records
+`orange.local_control_stop_timeout_status_check`, which captures timeout policy
+and forced-finalize consistency evidence. The event-log summary records whether
+GUI-thread stop trigger, drain timeout, forced-finalize request, and drain
+finalization events were observed. When
 `--require-orange-local-control-event-log` is enabled,
 the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence

@@ -401,6 +401,10 @@ def test_execute_against_fake_local_control_servers() -> None:
             "summary should include Orange stop health",
         )
         require(
+            payload["orange"]["local_control_stop_timeout_status_check"]["ok"],
+            "summary should include passing Orange timeout-status check",
+        )
+        require(
             not payload["orange"]["local_control_event_log_check"]["required"],
             "event-log evidence check should be opt-in for the base orchestrator",
         )
@@ -646,6 +650,19 @@ def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
         require(
             module.orange_recording_stop_health(allowed_status) == "warning",
             "allowed path should expose warning health after timeout finalizes",
+        )
+        allowed_check = module.summarize_orange_drain_timeout_status(
+            allowed_status,
+            allow_drain_timeout=True,
+        )
+        require(allowed_check["ok"], f"allowed timeout status should pass: {allowed_check}")
+        require(
+            allowed_check["drain_timed_out"],
+            "allowed timeout status summary should report timeout",
+        )
+        require(
+            allowed_check["policy_ok"],
+            "allowed timeout status summary should report policy ok",
         )
         broken_status = orange_status(True, True, drain_timed_out=True)
         broken_status["local_control"]["recording_stop"]["forced_finalize_requested"] = False

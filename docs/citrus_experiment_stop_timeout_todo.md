@@ -226,6 +226,7 @@ Refs:
 - [x] Keep `--allow-orange-drain-timeout` diagnostic-only: the orchestrator
       still fails inconsistent timeout status that lacks forced-finalize or
       stream-stop-request evidence.
+- [x] Persist timeout policy/consistency checks in the orchestrator summary.
 
 ## Phase 6: Validation
 

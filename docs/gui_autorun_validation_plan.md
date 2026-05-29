@@ -470,7 +470,9 @@ enabled, timeout status requires both `recording_drain_timeout` and
 `--allow-orange-drain-timeout` is used for diagnostic timeout runs, the
 orchestrator still requires the timeout status to show that forced finalization
 was armed and that the stream-stop path was requested after
-`finalized_after_drain_timeout`.
+`finalized_after_drain_timeout`. The combined summary records this as
+`orange.local_control_stop_timeout_status_check` alongside the raw
+`local_control.recording_stop` status.
 
 The profile also defaults Orange/Citrus stdout logs to operation-specific
 `/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so

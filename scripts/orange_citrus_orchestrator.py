@@ -390,6 +390,36 @@ def check_orange_drain_timeout_status(status: dict[str, Any]) -> list[str]:
     return failures
 
 
+def summarize_orange_drain_timeout_status(
+    status: dict[str, Any],
+    *,
+    allow_drain_timeout: bool,
+) -> dict[str, Any]:
+    timed_out = orange_recording_stop_drain_timed_out(status)
+    consistency_failures = check_orange_drain_timeout_status(status)
+    policy_failures: list[str] = []
+    if timed_out and not allow_drain_timeout:
+        policy_failures.append("Orange recording drain timed out")
+    return {
+        "ok": not consistency_failures and not policy_failures,
+        "drain_timed_out": timed_out,
+        "allow_drain_timeout": bool(allow_drain_timeout),
+        "state": orange_recording_stop_state(status),
+        "health": orange_recording_stop_health(status),
+        "forced_finalize_requested": (
+            orange_recording_stop_forced_finalize_requested(status)
+        ),
+        "forced_finalize_stream_stop_requested": (
+            orange_recording_stop_forced_finalize_stream_stop_requested(status)
+        ),
+        "consistency_ok": not consistency_failures,
+        "consistency_failures": consistency_failures,
+        "policy_ok": not policy_failures,
+        "policy_failures": policy_failures,
+        "failures": [*consistency_failures, *policy_failures],
+    }
+
+
 def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "path": path,
@@ -1225,14 +1255,20 @@ class Orchestrator:
         raise OrchestratorError(f"Orange local-control event-log check failed: {failure_text}")
 
     def require_orange_drain_not_timed_out(self, status: dict[str, Any]) -> None:
-        timeout_status_failures = check_orange_drain_timeout_status(status)
+        status_check = summarize_orange_drain_timeout_status(
+            status,
+            allow_drain_timeout=self.args.allow_orange_drain_timeout,
+        )
+        step = self.step("orange_drain_timeout_status_check")
+        step.finish(ok=status_check["ok"], check=status_check)
+        timeout_status_failures = status_check["consistency_failures"]
         if timeout_status_failures:
             failure_text = "; ".join(timeout_status_failures)
             raise OrchestratorError(
                 "Orange recording drain timeout status is inconsistent: "
                 f"{failure_text}"
             )
-        if self.args.allow_orange_drain_timeout or not orange_recording_stop_drain_timed_out(status):
+        if status_check["policy_ok"]:
             return
         stop_status = orange_local_control_recording_stop(status)
         raise OrchestratorError(
@@ -1369,6 +1405,10 @@ class Orchestrator:
             stop_policy=self.args.stop_policy,
             orange_status=orange_status,
         )
+        orange_drain_timeout_status_check = summarize_orange_drain_timeout_status(
+            orange_status,
+            allow_drain_timeout=self.args.allow_orange_drain_timeout,
+        )
         self.refresh_started_processes()
         return {
             "schema_id": SUMMARY_SCHEMA_ID,
@@ -1393,6 +1433,9 @@ class Orchestrator:
                 "local_control_stop_drain_timed_out": orange_recording_stop_drain_timed_out(orange_status),
                 "local_control_stop_state": orange_recording_stop_state(orange_status),
                 "local_control_stop_health": orange_recording_stop_health(orange_status),
+                "local_control_stop_timeout_status_check": (
+                    orange_drain_timeout_status_check
+                ),
                 "allow_drain_timeout": self.args.allow_orange_drain_timeout,
             },
             "citrus": {
