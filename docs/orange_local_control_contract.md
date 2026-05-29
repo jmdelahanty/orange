@@ -140,7 +140,7 @@ Orange readiness means more than process started. Status reports:
   active, expected camera selections match, and no recording is active/finalizing
 - `ready_for_citrus_experiment`, true only when cameras are open, streaming is
   active, expected camera selections match, Orange recording is already active,
-  and any enabled external IPC full-frame/crop recorder supervisors are ready
+  and any required external IPC full-frame/crop recorder supervisors are ready
 - active recording folder and sink mode
 - selected record/YOLO/crop camera serials
 - full-frame external recorder lifecycle readiness

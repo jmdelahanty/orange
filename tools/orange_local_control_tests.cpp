@@ -275,10 +275,10 @@ void test_citrus_readiness_requires_external_recorders_when_enabled()
     require(!json["readiness"]["crop_external_recorders_ready"].get<bool>(),
             "crop recorder readiness should remain explicit");
 
-    status.crop_recorder.external_ipc_enabled = false;
+    status.crop_selected_camera_serials.clear();
     json = orange::control::LocalControlStatusSnapshotToJson(status);
     require(json["readiness"]["ready_for_citrus_experiment"].get<bool>(),
-            "disabled crop external IPC should not block Citrus readiness");
+            "unselected crop recording should not block Citrus readiness");
 }
 
 void test_status_reports_completed_recording_after_streaming_stop_path()
