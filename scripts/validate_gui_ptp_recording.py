@@ -120,6 +120,19 @@ def parse_args() -> argparse.Namespace:
         help="Optional expected recording_control.clip_seconds value.",
     )
     parser.add_argument(
+        "--expect-local-control-stop-method",
+        choices=("stop_recording", "citrus_completion"),
+        help="Optional expected recording.control.method in recording_session.json.",
+    )
+    parser.add_argument(
+        "--expect-local-control-stop-operation-id",
+        help="Optional expected recording.control.operation_id in recording_session.json.",
+    )
+    parser.add_argument(
+        "--expect-local-control-stop-command-source",
+        help="Optional expected recording.control.command_source in recording_session.json.",
+    )
+    parser.add_argument(
         "--expect-ptp-register-read-decimate",
         type=int,
         default=100,
@@ -1144,6 +1157,9 @@ def check_recording_session_manifest(
     expected_recording_mode: str | None = None,
     expected_record_for_seconds: int | None = None,
     expected_clip_seconds: int | None = None,
+    expected_local_control_stop_method: str | None = None,
+    expected_local_control_stop_operation_id: str | None = None,
+    expected_local_control_stop_command_source: str | None = None,
 ) -> None:
     manifest_path = recording_folder / "recording_session.json"
     manifest = read_json(manifest_path)
@@ -1187,6 +1203,13 @@ def check_recording_session_manifest(
         mode,
         expected_record_for_seconds,
         expected_clip_seconds,
+    )
+    check_local_control_stop_expectations(
+        reporter,
+        manifest,
+        expected_local_control_stop_method,
+        expected_local_control_stop_operation_id,
+        expected_local_control_stop_command_source,
     )
 
     snapshot_session = snapshot.get("session")
@@ -1505,6 +1528,104 @@ def check_recording_control_expectations(
             (
                 f"recording_session clip_seconds={clip_seconds}; "
                 f"expected {expected_clip_seconds}"
+            ),
+        )
+
+
+def check_local_control_stop_expectations(
+    reporter: Reporter,
+    manifest: dict[str, Any],
+    expected_method: str | None,
+    expected_operation_id: str | None,
+    expected_command_source: str | None,
+) -> None:
+    requires_control = any(
+        value is not None
+        for value in (
+            expected_method,
+            expected_operation_id,
+            expected_command_source,
+        )
+    )
+    if not requires_control:
+        return
+
+    recording = manifest.get("recording")
+    recording = recording if isinstance(recording, dict) else {}
+    control = recording.get("control")
+    control = control if isinstance(control, dict) else None
+    reporter.check(
+        control is not None,
+        "recording_session local-control stop metadata present",
+        "recording_session recording.control missing",
+    )
+    if control is None:
+        return
+
+    source = control.get("source")
+    reporter.check(
+        source == "orange_gui_local_control",
+        "recording_session recording.control source is orange_gui_local_control",
+        f"recording_session recording.control source={source!r}",
+    )
+    request_id = control.get("request_id")
+    reporter.check(
+        isinstance(request_id, str) and bool(request_id),
+        "recording_session recording.control request_id present",
+        f"recording_session recording.control request_id={request_id!r}",
+    )
+    received_at_utc = control.get("received_at_utc")
+    reporter.check(
+        isinstance(received_at_utc, str) and bool(received_at_utc),
+        "recording_session recording.control received_at_utc present",
+        (
+            "recording_session recording.control received_at_utc="
+            f"{received_at_utc!r}"
+        ),
+    )
+    stop_triggered_at_utc = control.get("stop_triggered_at_utc")
+    reporter.check(
+        isinstance(stop_triggered_at_utc, str) and bool(stop_triggered_at_utc),
+        "recording_session recording.control stop_triggered_at_utc present",
+        (
+            "recording_session recording.control stop_triggered_at_utc="
+            f"{stop_triggered_at_utc!r}"
+        ),
+    )
+
+    if expected_method is not None:
+        reporter.check(
+            control.get("method") == expected_method,
+            f"recording_session recording.control method={expected_method}",
+            (
+                "recording_session recording.control method="
+                f"{control.get('method')!r}; expected {expected_method!r}"
+            ),
+        )
+    if expected_operation_id is not None:
+        reporter.check(
+            control.get("operation_id") == expected_operation_id,
+            (
+                "recording_session recording.control "
+                f"operation_id={expected_operation_id}"
+            ),
+            (
+                "recording_session recording.control operation_id="
+                f"{control.get('operation_id')!r}; "
+                f"expected {expected_operation_id!r}"
+            ),
+        )
+    if expected_command_source is not None:
+        reporter.check(
+            control.get("command_source") == expected_command_source,
+            (
+                "recording_session recording.control "
+                f"command_source={expected_command_source}"
+            ),
+            (
+                "recording_session recording.control command_source="
+                f"{control.get('command_source')!r}; "
+                f"expected {expected_command_source!r}"
             ),
         )
 
@@ -5695,6 +5816,9 @@ def main() -> int:
             args.expect_recording_mode,
             args.expect_record_for_seconds,
             args.expect_clip_seconds,
+            args.expect_local_control_stop_method,
+            args.expect_local_control_stop_operation_id,
+            args.expect_local_control_stop_command_source,
         )
         external_recorder_status_summary = check_external_recorder_status(
             reporter,

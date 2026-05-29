@@ -164,6 +164,18 @@ def test_default_dry_run_builds_live_profile() -> None:
             "default validator should require GUI timing telemetry",
         )
         require(
+            "--expect-local-control-stop-method stop_recording" in validation["command"],
+            "default validator should require local-control stop method",
+        )
+        require(
+            "--expect-local-control-stop-operation-id {operation_id}" in validation["command"],
+            "default validator should require local-control stop operation id",
+        )
+        require(
+            "--expect-local-control-stop-command-source orange_citrus_fourcam_profile" in validation["command"],
+            "default validator should require local-control stop command source",
+        )
+        require(
             "--require-imgui-glfw-size-cache" in validation["command"],
             "default validator should require clean ImGui GLFW size-cache telemetry",
         )

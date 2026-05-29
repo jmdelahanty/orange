@@ -224,6 +224,11 @@ operation id, source, Citrus experiment fields when present, receive timestamp,
 trigger timestamp, grace seconds, and the configured drain-timeout threshold.
 This makes the artifact self-describing even after the socket server and
 orchestrator process have exited.
+The GUI validator can require this provenance with
+`--expect-local-control-stop-method`,
+`--expect-local-control-stop-operation-id`, and
+`--expect-local-control-stop-command-source`; the four-camera Orange/Citrus
+profile passes those checks by default.
 
 Orange also records local-control drain observability after a triggered stop.
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` sets the telemetry threshold,

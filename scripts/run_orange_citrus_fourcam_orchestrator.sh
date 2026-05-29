@@ -510,12 +510,21 @@ fi
 if [[ -n "${ORANGE_CLIP_SECONDS}" ]]; then
   ORANGE_VALIDATION_MODE_ARGS+=("--expect-clip-seconds" "${ORANGE_CLIP_SECONDS}")
 fi
+ORANGE_VALIDATION_LOCAL_CONTROL_ARGS=()
+if [[ "${STOP_POLICY}" != "none" ]]; then
+  ORANGE_VALIDATION_LOCAL_CONTROL_ARGS+=(
+    "--expect-local-control-stop-method" "${STOP_POLICY}"
+    "--expect-local-control-stop-operation-id" "{operation_id}"
+    "--expect-local-control-stop-command-source" "orange_citrus_fourcam_profile"
+  )
+fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
   ORANGE_VALIDATION_COMMAND="$(join_command \
     "${REPO_ROOT}/scripts/validate_gui_ptp_recording.py" \
     "{orange_recording_folder}" \
     "--expected-cameras" "2010093,2010094,2010095,2010096" \
     "${ORANGE_VALIDATION_MODE_ARGS[@]}" \
+    "${ORANGE_VALIDATION_LOCAL_CONTROL_ARGS[@]}" \
     "--require-crop-recording-artifacts" \
     "--require-crop-preview-counters" \
     "--expect-crop-preview-max-fps" "15" \

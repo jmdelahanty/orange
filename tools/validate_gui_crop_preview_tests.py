@@ -754,6 +754,17 @@ def write_rolling_full_frame_manifest(
             "record_for_seconds": record_for_seconds,
             "clip_seconds": clip_seconds,
         },
+        "recording": {
+            "control": {
+                "source": "orange_gui_local_control",
+                "method": "stop_recording",
+                "request_id": "op-rolling:orange:stop_recording",
+                "operation_id": "op-rolling",
+                "command_source": "orange_citrus_fourcam_profile",
+                "received_at_utc": "2026-05-29T00:00:00Z",
+                "stop_triggered_at_utc": "2026-05-29T00:00:01Z",
+            }
+        },
         "rollover": {"implementation": "external_recorder_gop_boundary_writer_rotation"},
         "indexes": {
             "clip_index_json": "recording_clip_index.json",
@@ -3135,6 +3146,45 @@ def test_recording_session_manifest_checks_expected_rolling_control() -> None:
         require(not reporter.failures, f"expected rolling control should pass: {reporter.failures}")
 
 
+def test_recording_session_manifest_checks_local_control_stop_metadata() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_local_control_stop_method="stop_recording",
+            expected_local_control_stop_operation_id="op-rolling",
+            expected_local_control_stop_command_source="orange_citrus_fourcam_profile",
+        )
+        require(not reporter.failures, f"expected local-control stop metadata should pass: {reporter.failures}")
+
+
+def test_recording_session_manifest_fails_on_local_control_stop_metadata_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010095"
+        snapshot = write_rolling_full_frame_manifest(root, serial)
+        reporter = validator.Reporter(verbose=False)
+        validator.check_recording_session_manifest(
+            reporter,
+            root,
+            snapshot,
+            [serial],
+            expected_local_control_stop_method="citrus_completion",
+            expected_local_control_stop_operation_id="op-rolling",
+            expected_local_control_stop_command_source="orange_citrus_fourcam_profile",
+        )
+        require(
+            any("method='stop_recording'; expected 'citrus_completion'" in failure for failure in reporter.failures),
+            f"expected local-control stop metadata mismatch should fail: {reporter.failures}",
+        )
+
+
 def test_recording_session_manifest_fails_on_expected_recording_mode_mismatch() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -3824,6 +3874,8 @@ def main() -> int:
         test_recording_output_contract_allows_external_crop_sidecar_failure,
         test_recording_session_manifest_accepts_rolling_clips,
         test_recording_session_manifest_checks_expected_rolling_control,
+        test_recording_session_manifest_checks_local_control_stop_metadata,
+        test_recording_session_manifest_fails_on_local_control_stop_metadata_mismatch,
         test_recording_session_manifest_fails_on_expected_recording_mode_mismatch,
         test_recording_session_manifest_fails_on_expected_control_mismatch,
         test_recording_session_manifest_fails_on_rolling_frame_gap,
