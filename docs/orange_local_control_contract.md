@@ -404,6 +404,15 @@ generic socket timeout. Once Citrus terminal/perf-path evidence has been
 captured, a later Citrus process exit is recorded in `started_processes[]` but
 does not make Orange finalization fail.
 
+After the orchestrator has captured Citrus terminal/perf-path evidence, waited
+for Orange finalization, and run validators, it owns cleanup of the launched GUI
+processes. Any launched child process still alive at that point is terminated by
+process group and the action/return code are recorded in `started_processes[]`.
+The orchestrator also removes the local-control socket files for GUI processes
+it launched. Attach mode remains different: if Orange or Citrus was not
+launched by this orchestrator, the orchestrator does not own that process or its
+socket cleanup.
+
 Launch mode also preflights the target local-control socket before starting a
 new GUI process. If `/tmp/orange_local_control.sock` or
 `/tmp/citrus_local_control.sock` is already answering, the orchestrator refuses

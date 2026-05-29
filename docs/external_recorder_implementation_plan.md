@@ -692,6 +692,14 @@ Orange/Citrus co-run queue-pressure update, 2026-05-28:
   profile therefore now defaults `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128`,
   which derives `ORANGE_CROP_FRAME_POOL_SIZE=256`, while the generic GUI
   launcher default remains `64`.
+- Current-code live orchestration run `orange-citrus-live-010` passed with
+  `0` warnings at
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`. All four crop
+  streams received/encoded `2202/2202` frames with `0` drops at queue depth
+  `128`; crop queue high-water was `52/52/51/47`. This validates the larger
+  four-camera co-run queue as sufficient for the short Citrus profile, while
+  preserving the need to monitor `enqueue_age_p95_ms` and high-water in longer
+  soaks.
 
 Earlier two-camera GUI validation:
 

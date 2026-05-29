@@ -7,8 +7,14 @@ work on `exp/gop-split-a16`.
 
 - Four-camera GUI autorun works through the installed display wrapper on the
   real X11 display.
+- Four-camera Orange/Citrus orchestration now works through the local-control
+  sockets on the real X11 display.
 - The current production-like profile is:
   `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview`.
+- The current Orange/Citrus co-run profile is:
+  `scripts/run_orange_citrus_fourcam_orchestrator.sh --execute`.
+- Latest strict Orange/Citrus artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
 - The latest single-clip hardware artifact is:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
 - The latest rolling-clip hardware artifact is:
@@ -18,6 +24,33 @@ work on `exp/gop-split-a16`.
   `--allow-main-video-content-failure 2010093`.
 - With that opt-in, both strict validations passed with two warnings, both for
   the expected `Cam2010093` low-bitrate/black main-video content.
+
+Healthy metrics from the Orange/Citrus co-run:
+
+- Operation id: `orange-citrus-live-010`.
+- Orange artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
+- Orchestrator summary:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48/orchestrator/orchestrator_summary.json`.
+- Citrus perf JSONL:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48/citrus/2026-05-29T01-48-51Z_citrus_perf_125475.jsonl`.
+- Result: `PASS (0 warnings)` with strict main-video content validation for
+  all four cameras.
+- Full-frame external IPC: all four cameras wrote `2202` frames, valid
+  `4512x4512` MP4s, and about `150.6-152.8 Mbps` video.
+- Crop external IPC: all four crop streams received/encoded `2202/2202`
+  frames with `0` drops. Queue depth was `128`; high-water was
+  `52/52/51/47`.
+- YOLO steady detect p95 was `3.960/3.952/3.951/3.949 ms`; YOLO queue p95 was
+  `0.017/0.017/0.016/0.014 ms`.
+- GUI Citrus-safe profile held Orange near its cap: hidden-preview p05 `29.3`,
+  p50 `30.0`, mean `30.2`, with `swap_interval=1`, GUI frame cap `30`, and
+  display preview cap `10`.
+- Citrus completed `good_cop_bad_cop_demo.json` with terminal state
+  `completed` and reason `protocol_finished`.
+- The orchestrator copied Orange/Citrus logs, validation JSON, and the combined
+  summary into the recording folder, then cleaned up the launched Citrus
+  process group and removed the local-control sockets.
 
 Healthy metrics from the single-clip run:
 
