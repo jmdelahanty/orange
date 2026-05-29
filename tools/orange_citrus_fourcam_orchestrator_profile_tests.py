@@ -190,6 +190,10 @@ def test_default_dry_run_builds_live_profile() -> None:
             "default validator should require local-control stop command source",
         )
         require(
+            "--expect-local-control-stop-ack-state executed" in validation["command"],
+            "default validator should require a clean executed stop ACK state",
+        )
+        require(
             "--require-imgui-glfw-size-cache" in validation["command"],
             "default validator should require clean ImGui GLFW size-cache telemetry",
         )
@@ -354,6 +358,60 @@ def test_citrus_completion_notify_profile_waits_for_citrus_owned_stop() -> None:
         "--expect-local-control-stop-command-source citrus" in validation["command"],
         "notify profile should validate Citrus owned the stop request",
     )
+    require(
+        "--expect-local-control-stop-ack-state executed" in validation["command"],
+        "notify profile should validate a clean executed ACK state",
+    )
+    require(
+        "--expect-local-control-stop-terminal-state stopped" not in validation["command"],
+        "natural-finish notify profile should not force STOP ALL terminal state",
+    )
+
+
+def test_citrus_completion_notify_run_seconds_profile_validates_stopped_terminal() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-notify-stopped",
+            "--record-seconds",
+            "6",
+            "--warmup-seconds",
+            "2",
+            "--clip-seconds",
+            "2",
+            "--stop-policy",
+            "citrus_completion_notify",
+            "--citrus-run-seconds",
+            "1",
+        ]
+    )
+    require(result.returncode == 0, f"profile notify stopped dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    validation = payload["validations"][0]
+    require(
+        payload["citrus"]["run_seconds"] == 1.0,
+        "notify stopped profile should preserve the run-seconds stop trigger",
+    )
+    require(
+        "--expect-local-control-stop-method citrus_completion" in validation["command"],
+        "notify stopped profile should validate Orange saw a citrus_completion stop",
+    )
+    require(
+        "--expect-local-control-stop-command-source citrus" in validation["command"],
+        "notify stopped profile should validate Citrus owned the stop request",
+    )
+    require(
+        "--expect-local-control-stop-terminal-state stopped" in validation["command"],
+        "notify stopped profile should validate the STOP ALL-like terminal state",
+    )
+    require(
+        "--expect-local-control-stop-reason stopped_by_local_control" in validation["command"],
+        "notify stopped profile should validate the STOP ALL-like terminal reason",
+    )
+    require(
+        "--expect-local-control-stop-ack-state executed" in validation["command"],
+        "notify stopped profile should validate a clean executed ACK state",
+    )
 
 
 def test_allow_preexisting_sockets_disables_launch_preflight() -> None:
@@ -391,6 +449,23 @@ def test_allow_orange_drain_timeout_passes_through() -> None:
     require(
         payload["orange"]["allow_drain_timeout"],
         "profile should pass through the Orange drain-timeout override",
+    )
+
+
+def test_allow_orange_drain_timeout_validation_expects_timeout() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-allow-drain-timeout-validation",
+            "--allow-orange-drain-timeout",
+        ]
+    )
+    require(result.returncode == 0, f"profile drain-timeout validation dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    validation = payload["validations"][0]
+    require(
+        "--expect-local-control-stop-ack-state failed_timeout" in validation["command"],
+        "diagnostic drain-timeout validation should require the timeout ACK state",
     )
 
 
@@ -447,8 +522,10 @@ def main() -> int:
         test_attach_mode_does_not_launch_processes,
         test_rolling_profile_passes_orange_clip_options_to_validation,
         test_citrus_completion_notify_profile_waits_for_citrus_owned_stop,
+        test_citrus_completion_notify_run_seconds_profile_validates_stopped_terminal,
         test_allow_preexisting_sockets_disables_launch_preflight,
         test_allow_orange_drain_timeout_passes_through,
+        test_allow_orange_drain_timeout_validation_expects_timeout,
         test_diagnostic_drain_timeout_profile_passes_orange_env,
         test_allow_missing_orange_event_log_passes_through,
     ]

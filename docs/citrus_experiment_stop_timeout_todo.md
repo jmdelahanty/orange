@@ -285,6 +285,11 @@ Refs:
     own Orange stop request.
   - Orange persisted `method=citrus_completion`, `command_source=citrus`,
     `grace_seconds=10`, and `ack_state=executed`.
+- [x] Add STOP ALL-like orchestrator validation profile:
+  - `--stop-policy citrus_completion_notify --citrus-run-seconds <seconds>`
+    now keeps Citrus as the owner of the completion request and makes Orange
+    artifact validation require `terminal_state=stopped`,
+    `reason=stopped_by_local_control`, and `ack_state=executed`.
 - [ ] Test manual STOP ALL in Citrus.
   - Launch Orange with
     `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --citrus-display-safe --manual-local-control`

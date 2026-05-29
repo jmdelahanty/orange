@@ -612,6 +612,21 @@ if [[ -n "${ORANGE_VALIDATION_STOP_METHOD}" ]]; then
     "--expect-local-control-stop-operation-id" "{operation_id}"
     "--expect-local-control-stop-command-source" "${ORANGE_VALIDATION_STOP_SOURCE}"
   )
+  if (( ALLOW_ORANGE_DRAIN_TIMEOUT )); then
+    ORANGE_VALIDATION_LOCAL_CONTROL_ARGS+=(
+      "--expect-local-control-stop-ack-state" "failed_timeout"
+    )
+  else
+    ORANGE_VALIDATION_LOCAL_CONTROL_ARGS+=(
+      "--expect-local-control-stop-ack-state" "executed"
+    )
+  fi
+  if [[ "${STOP_POLICY}" == "citrus_completion_notify" && -n "${CITRUS_RUN_SECONDS}" ]]; then
+    ORANGE_VALIDATION_LOCAL_CONTROL_ARGS+=(
+      "--expect-local-control-stop-terminal-state" "stopped"
+      "--expect-local-control-stop-reason" "stopped_by_local_control"
+    )
+  fi
 fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" && -z "${ORANGE_VALIDATION_COMMAND}" ]]; then
   ORANGE_VALIDATION_COMMAND="$(join_command \

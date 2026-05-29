@@ -482,7 +482,24 @@ That profile enables `CITRUS_ORANGE_COMPLETION_NOTIFY=1`, passes
 `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`, waits for Orange to finalize
 without sending its own Orange stop request, and validates that
 `recording.control.method` is `citrus_completion` with
-`command_source=citrus`.
+`command_source=citrus` and `ack_state=executed`.
+
+To run the same path as a STOP ALL-like diagnostic where Citrus stops itself
+before notifying Orange, add a finite Citrus run duration:
+
+```bash
+scripts/run_orange_citrus_fourcam_orchestrator.sh \
+  --execute \
+  --record-seconds 6 \
+  --warmup-seconds 2 \
+  --clip-seconds 2 \
+  --citrus-run-seconds 1 \
+  --stop-policy citrus_completion_notify
+```
+
+That stricter profile also validates
+`recording.control.terminal_state=stopped` and
+`recording.control.reason=stopped_by_local_control`.
 
 ## Remaining Risks
 

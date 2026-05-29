@@ -263,11 +263,15 @@ The GUI validator can require this provenance with
 `--expect-local-control-stop-method`,
 `--expect-local-control-stop-operation-id`, and
 `--expect-local-control-stop-command-source`; the four-camera Orange/Citrus
-profile passes those checks by default. `scripts/summarize_gui_validation.py`
-and `scripts/validate_gui_ptp_recording.py --json-out` also surface the same
-fields under `recording_session.local_control_stop` so saved validation JSON can
-be audited without reopening the manifest. The persisted stop-control object
-also records drain lifecycle evidence: `drain_completed`,
+profile passes those checks plus an `ack_state="executed"` check by default.
+For `--stop-policy citrus_completion_notify --citrus-run-seconds ...`, the
+profile also validates the STOP ALL-like Citrus terminal metadata:
+`terminal_state="stopped"` and `reason="stopped_by_local_control"`.
+`scripts/summarize_gui_validation.py` and
+`scripts/validate_gui_ptp_recording.py --json-out` also surface the same fields
+under `recording_session.local_control_stop` so saved validation JSON can be
+audited without reopening the manifest. The persisted stop-control object also
+records drain lifecycle evidence: `drain_completed`,
 `drain_completed_at_utc`, `drain_timed_out`, `forced_finalize_requested`,
 `forced_finalize_stream_stop_requested`, terminal `ack_state`, `health`,
 `error_code`, and the final `last_event` / `last_event_at_utc` values. Clean
