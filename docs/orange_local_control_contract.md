@@ -408,6 +408,12 @@ local-control JSONL event log path (`--orange-local-control-log`, or
 `<orange-socket>.events.jsonl` by default), summarizes that log under
 `orange.local_control_event_log`, and copies it into the Orange recording
 folder's orchestrator artifact directory when artifact copying is enabled. It
+can also require that log with `--require-orange-local-control-event-log`; in
+that mode a run fails unless the log has matching socket request/response rows,
+GUI-thread `recording_start_triggered` evidence, and, for stop policies other
+than `none`, `recording_stop_triggered` plus `recording_drain_finalized`
+evidence for the operation. The four-camera profile enables this requirement
+by default, with `--allow-missing-orange-event-log` only for diagnostics. It
 also sets
 `ORANGE_GUI_AUTORUN_START_RECORDING=0` and
 `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`, so an Orange GUI autorun launcher
@@ -446,7 +452,10 @@ the run crossed the configured drain observability threshold. The combined
 summary records `orange.local_control_recording_stop` and
 `orange.local_control_stop_drain_timed_out`; the event-log summary records
 whether GUI-thread stop trigger, drain timeout, and drain finalization events
-were observed. Use
+were observed. When `--require-orange-local-control-event-log` is enabled,
+the combined summary also records
+`orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
+fails the orchestrator before post-run validators execute. Use
 `--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
 expected observation rather than a pass/fail gate.
 

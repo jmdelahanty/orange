@@ -158,11 +158,13 @@ For the local four-camera Citrus integration profile, use
 same dry-run-first boundary while composing the production-like Orange
 four-camera external-IPC launcher, the Citrus GUI binary, real-display env
 defaults, Citrus perf JSONL collection, the Orange/Citrus socket paths, and a
-default post-finalization Orange artifact validator. For bounded local-control
-smokes, `--citrus-run-seconds <seconds>` is owned by the orchestrator: it starts
-Citrus through local control, waits for active/armed state, sends
-`stop_experiment` after that active runtime, and only then asks Orange to
-stop/drain/finalize.
+default post-finalization Orange artifact validator. The wrapper also requires
+Orange's local-control JSONL event log by default, so a profile run must show
+both socket-level requests and GUI-thread start/stop/drain lifecycle events for
+the operation before it can pass. For bounded local-control smokes,
+`--citrus-run-seconds <seconds>` is owned by the orchestrator: it starts Citrus
+through local control, waits for active/armed state, sends `stop_experiment`
+after that active runtime, and only then asks Orange to stop/drain/finalize.
 
 ### NodeExecutor
 

@@ -449,6 +449,14 @@ requires clean ImGui GLFW size-cache telemetry, and does not require `45 fps`
 GUI p05. Disable it with `--skip-orange-validation` for lifecycle-only smokes,
 or replace it with `--orange-validation-command`.
 
+The profile also requires Orange's local-control JSONL event log by default.
+That gate is separate from artifact validation: before validators run, the
+orchestrator checks that the log contains socket request/response rows and
+GUI-thread `recording_start_triggered`, `recording_stop_triggered`, and
+`recording_drain_finalized` evidence for the same operation id. Use
+`--allow-missing-orange-event-log` only for diagnostic attach runs where that
+evidence is intentionally unavailable.
+
 The profile also defaults Orange/Citrus stdout logs to operation-specific
 `/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so
 later attempts do not overwrite the previous run. When Orange reports a

@@ -249,6 +249,10 @@ def test_dry_run_default_does_not_open_sockets() -> None:
         not payload["orange"]["allow_drain_timeout"],
         "orchestrator should fail on Orange drain timeout telemetry by default",
     )
+    require(
+        not payload["orange"]["require_local_control_event_log"],
+        "base orchestrator should make event-log evidence opt-in",
+    )
     require(payload["validations"][0]["label"] == "quick", "dry-run should show validation labels")
     require(
         payload["validations"][0]["command"] == f"{sys.executable} -c \"print('dry-run-validation')\"",
@@ -393,6 +397,10 @@ def test_execute_against_fake_local_control_servers() -> None:
         require(
             payload["orange"]["local_control_stop_health"] == "ok",
             "summary should include Orange stop health",
+        )
+        require(
+            not payload["orange"]["local_control_event_log_check"]["required"],
+            "event-log evidence check should be opt-in for the base orchestrator",
         )
         require(payload["citrus"]["terminal_state"] == "completed", "summary should report Citrus terminal")
         require(payload["citrus"]["perf_jsonl_path"] == "/tmp/citrus_perf.jsonl", "summary should carry perf path")
@@ -751,6 +759,14 @@ def test_orange_local_control_event_log_summary() -> None:
             {
                 "schema_id": "orange.local_control.gui_event",
                 "schema_version": 1,
+                "event": "recording_start_triggered",
+                "event_at_utc": "2026-05-29T00:00:00Z",
+                "request_id": "start-req",
+                "operation_id": "op-log",
+            },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
                 "event": "recording_stop_triggered",
                 "event_at_utc": "2026-05-29T00:00:01Z",
                 "request_id": "stop-req",
@@ -775,15 +791,153 @@ def test_orange_local_control_event_log_summary() -> None:
 
         summary = module.summarize_orange_local_control_event_log(str(log_path))
         require(summary["exists"], "event log should exist")
-        require(summary["row_count"] == 4, "event log row count should parse")
+        require(summary["row_count"] == 5, "event log row count should parse")
         require(summary["socket_event_count"] == 1, "socket event count should parse")
-        require(summary["gui_event_count"] == 2, "GUI event count should parse")
+        require(summary["gui_event_count"] == 3, "GUI event count should parse")
         require(summary["invalid_row_count"] == 1, "invalid row count should parse")
+        require(summary["events"]["recording_start_triggered"] == 1, "start trigger event should count")
         require(summary["events"]["recording_stop_triggered"] == 1, "stop trigger event should count")
+        require(summary["has_start_triggered"], "start-trigger flag should be true")
         require(summary["has_stop_triggered"], "stop-trigger flag should be true")
         require(summary["has_drain_finalized"], "drain-finalized flag should be true")
-        require(summary["request_ids"] == ["stop-req"], "request ids should summarize")
+        require(summary["request_ids"] == ["start-req", "stop-req"], "request ids should summarize")
         require(summary["operation_ids"] == ["op-log"], "operation ids should summarize")
+
+
+def test_orange_local_control_event_log_required_check() -> None:
+    module = load_module()
+    status = orange_status(True, True)
+    status["local_control"]["recording_stop"]["request_id"] = "op-log:orange:stop_recording"
+    status["local_control"]["recording_stop"]["operation_id"] = "op-log"
+    event_log = {
+        "path": "/tmp/orange.events.jsonl",
+        "exists": True,
+        "row_count": 5,
+        "socket_event_count": 2,
+        "gui_event_count": 3,
+        "invalid_row_count": 0,
+        "request_ids": [
+            "op-log:orange:start_recording",
+            "op-log:orange:stop_recording",
+        ],
+        "operation_ids": ["op-log"],
+        "has_start_triggered": True,
+        "has_stop_triggered": True,
+        "has_drain_timeout": False,
+        "has_drain_finalized": True,
+    }
+    ok_check = module.check_orange_local_control_event_log(
+        event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(ok_check["ok"], f"valid event log should pass: {ok_check}")
+
+    missing_check = module.check_orange_local_control_event_log(
+        {"path": "/tmp/missing.events.jsonl", "exists": False},
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(not missing_check["ok"], "missing required event log should fail")
+    require(
+        any("missing" in failure for failure in missing_check["failures"]),
+        "missing check should identify missing event log",
+    )
+
+    timeout_status = orange_status(True, True, drain_timed_out=True)
+    timeout_status["local_control"]["recording_stop"]["request_id"] = "op-log:orange:stop_recording"
+    timeout_status["local_control"]["recording_stop"]["operation_id"] = "op-log"
+    timeout_check = module.check_orange_local_control_event_log(
+        event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=timeout_status,
+    )
+    require(not timeout_check["ok"], "drain-timeout status should require timeout event evidence")
+    require(
+        any("recording_drain_timeout" in failure for failure in timeout_check["failures"]),
+        "timeout failure should name the missing drain-timeout event",
+    )
+
+
+def test_execute_requires_orange_local_control_event_log_when_enabled() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        orange_state = {"started": False, "stopped": False}
+        citrus_state = {"started": False, "status_polls_after_start": 0}
+
+        def handle_orange(request: dict[str, Any]) -> dict[str, Any]:
+            method = request.get("method")
+            if method == "start_recording":
+                orange_state["started"] = True
+            elif method == "stop_recording":
+                orange_state["stopped"] = True
+            return response_for(
+                request,
+                orange_status(orange_state["started"], orange_state["stopped"]),
+            )
+
+        def handle_citrus(request: dict[str, Any]) -> dict[str, Any]:
+            method = request.get("method")
+            if method == "start_experiment":
+                citrus_state["started"] = True
+            elif method == "status" and citrus_state["started"]:
+                citrus_state["status_polls_after_start"] += 1
+            terminal = citrus_state["status_polls_after_start"] >= 1
+            return response_for(
+                request,
+                citrus_status(citrus_state["started"], terminal),
+            )
+
+        def fake_send(socket_path: str, request: dict[str, Any], timeout_seconds: float) -> dict[str, Any]:
+            if socket_path == "orange-require-events.sock":
+                return handle_orange(request)
+            if socket_path == "citrus-require-events.sock":
+                return handle_citrus(request)
+            raise AssertionError(f"unexpected socket path: {socket_path}")
+
+        original_send = module.send_unix_json
+        module.send_unix_json = fake_send
+        try:
+            args = module.parse_args(
+                [
+                    "--execute",
+                    "--operation-id",
+                    "op-require-events",
+                    "--orange-socket",
+                    "orange-require-events.sock",
+                    "--orange-local-control-log",
+                    str(root / "missing_orange.events.jsonl"),
+                    "--citrus-socket",
+                    "citrus-require-events.sock",
+                    "--poll-interval-seconds",
+                    "0.01",
+                    "--timeout-seconds",
+                    "2",
+                    "--citrus-terminal-timeout-seconds",
+                    "2",
+                    "--orange-finalize-timeout-seconds",
+                    "2",
+                    "--require-orange-local-control-event-log",
+                ]
+            )
+            try:
+                module.Orchestrator(args).run()
+            except module.OrchestratorError as exc:
+                require(
+                    "event-log check failed" in str(exc),
+                    "required missing event log should fail the run",
+                )
+            else:
+                raise AssertionError("expected missing required event log to fail")
+        finally:
+            module.send_unix_json = original_send
 
 
 def test_failure_summary_uses_last_known_status_for_artifacts() -> None:
@@ -1000,6 +1154,8 @@ def main() -> int:
         test_orchestrator_fails_on_orange_drain_timeout_by_default,
         test_persist_artifacts_copies_logs_into_recording_folder,
         test_orange_local_control_event_log_summary,
+        test_orange_local_control_event_log_required_check,
+        test_execute_requires_orange_local_control_event_log_when_enabled,
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,

@@ -77,6 +77,9 @@ Options:
   --allow-orange-drain-timeout
                                   Do not fail if Orange reports drain timeout
                                   telemetry before finalization.
+  --allow-missing-orange-event-log
+                                  Do not require Orange local-control event-log
+                                  lifecycle evidence.
   --allow-missing-citrus-perf-jsonl
                                   Do not require Citrus perf JSONL status/path.
   --help
@@ -184,6 +187,7 @@ CITRUS_TERMINAL_TIMEOUT_SECONDS="${ORANGE_CITRUS_TERMINAL_TIMEOUT_SECONDS:-600}"
 ORANGE_FINALIZE_TIMEOUT_SECONDS="${ORANGE_CITRUS_ORANGE_FINALIZE_TIMEOUT_SECONDS:-240}"
 ORANGE_STOP_GRACE_SECONDS="${ORANGE_CITRUS_ORANGE_STOP_GRACE_SECONDS:-0}"
 ALLOW_ORANGE_DRAIN_TIMEOUT="${ORANGE_CITRUS_ALLOW_ORANGE_DRAIN_TIMEOUT:-0}"
+REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG="${ORANGE_CITRUS_REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG:-1}"
 VALIDATION_TIMEOUT_SECONDS="${ORANGE_CITRUS_VALIDATION_TIMEOUT_SECONDS:-300}"
 ORANGE_RECORD_SECONDS="${ORANGE_CITRUS_ORANGE_RECORD_SECONDS:-}"
 ORANGE_WARMUP_SECONDS="${ORANGE_CITRUS_ORANGE_WARMUP_SECONDS:-}"
@@ -426,6 +430,10 @@ while [[ $# -gt 0 ]]; do
       ALLOW_ORANGE_DRAIN_TIMEOUT=1
       shift
       ;;
+    --allow-missing-orange-event-log)
+      REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG=0
+      shift
+      ;;
     --allow-missing-citrus-perf-jsonl)
       REQUIRE_CITRUS_PERF_JSONL=0
       shift
@@ -597,6 +605,9 @@ if (( ALLOW_PREEXISTING_SOCKETS )); then
 fi
 if (( ALLOW_ORANGE_DRAIN_TIMEOUT )); then
   ARGS+=("--allow-orange-drain-timeout")
+fi
+if (( REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG )); then
+  ARGS+=("--require-orange-local-control-event-log")
 fi
 if [[ "${ORANGE_VALIDATION_ENABLED}" == "1" ]]; then
   ARGS+=("--orange-validation-command" "${ORANGE_VALIDATION_COMMAND}")

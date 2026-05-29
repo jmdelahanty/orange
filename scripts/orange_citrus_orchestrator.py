@@ -361,6 +361,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         "request_ids": [],
         "operation_ids": [],
         "last_gui_event": "",
+        "has_start_triggered": False,
         "has_stop_triggered": False,
         "has_drain_timeout": False,
         "has_drain_finalized": False,
@@ -420,10 +421,78 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     summary["events"] = dict(sorted(events.items()))
     summary["request_ids"] = sorted(request_ids)
     summary["operation_ids"] = sorted(operation_ids)
+    summary["has_start_triggered"] = events.get("recording_start_triggered", 0) > 0
     summary["has_stop_triggered"] = events.get("recording_stop_triggered", 0) > 0
     summary["has_drain_timeout"] = events.get("recording_drain_timeout", 0) > 0
     summary["has_drain_finalized"] = events.get("recording_drain_finalized", 0) > 0
     return summary
+
+
+def check_orange_local_control_event_log(
+    event_log: dict[str, Any],
+    *,
+    required: bool,
+    operation_id: str,
+    stop_policy: str,
+    orange_status: dict[str, Any],
+) -> dict[str, Any]:
+    expected_request_ids = [f"{operation_id}:orange:start_recording"] if operation_id else []
+    stop_status = orange_local_control_recording_stop(orange_status)
+    stop_request_id = str(stop_status.get("request_id", ""))
+    if stop_policy != "none" and stop_request_id:
+        expected_request_ids.append(stop_request_id)
+
+    check: dict[str, Any] = {
+        "required": bool(required),
+        "ok": True,
+        "failures": [],
+        "expected_request_ids": expected_request_ids,
+        "expected_operation_id": operation_id,
+    }
+    if not required:
+        return check
+
+    failures: list[str] = []
+    if not event_log.get("exists", False):
+        failures.append(
+            f"Orange local-control event log missing: {event_log.get('path', '')}"
+        )
+    if int(event_log.get("row_count") or 0) <= 0:
+        failures.append("Orange local-control event log has no rows")
+    invalid_rows = int(event_log.get("invalid_row_count") or 0)
+    if invalid_rows != 0:
+        failures.append(f"Orange local-control event log has {invalid_rows} invalid JSON row(s)")
+    if int(event_log.get("socket_event_count") or 0) <= 0:
+        failures.append("Orange local-control event log has no socket request/response rows")
+    if int(event_log.get("gui_event_count") or 0) <= 0:
+        failures.append("Orange local-control event log has no GUI-thread lifecycle rows")
+    if not event_log.get("has_start_triggered", False):
+        failures.append("Orange local-control event log missing recording_start_triggered")
+    if stop_policy != "none":
+        if not stop_request_id:
+            failures.append("Orange status missing local_control.recording_stop.request_id")
+        if not event_log.get("has_stop_triggered", False):
+            failures.append("Orange local-control event log missing recording_stop_triggered")
+        if not event_log.get("has_drain_finalized", False):
+            failures.append("Orange local-control event log missing recording_drain_finalized")
+    if orange_recording_stop_drain_timed_out(orange_status) and not event_log.get("has_drain_timeout", False):
+        failures.append("Orange status reports drain timeout but event log lacks recording_drain_timeout")
+
+    operation_ids = set(str(item) for item in event_log.get("operation_ids", []))
+    if operation_id and operation_id not in operation_ids:
+        failures.append(
+            f"Orange local-control event log missing operation_id={operation_id}"
+        )
+    request_ids = set(str(item) for item in event_log.get("request_ids", []))
+    for request_id in expected_request_ids:
+        if request_id and request_id not in request_ids:
+            failures.append(
+                f"Orange local-control event log missing request_id={request_id}"
+            )
+
+    check["failures"] = failures
+    check["ok"] = not failures
+    return check
 
 
 def citrus_ready_to_start(status: dict[str, Any]) -> bool:
@@ -913,6 +982,7 @@ class Orchestrator:
             final_orange_status = self.request_orange_stop(final_citrus_status)
             self.orange_recording_started = False
 
+        self.require_orange_local_control_event_log(final_orange_status)
         self.validation_results = self.run_validations(
             final_orange_status,
             final_citrus_status,
@@ -1085,6 +1155,24 @@ class Orchestrator:
         self.require_orange_drain_not_timed_out(status)
         return status
 
+    def require_orange_local_control_event_log(self, status: dict[str, Any]) -> None:
+        event_log = summarize_orange_local_control_event_log(
+            resolve_orange_local_control_log_path(self.args)
+        )
+        check = check_orange_local_control_event_log(
+            event_log,
+            required=self.args.require_orange_local_control_event_log,
+            operation_id=self.args.operation_id,
+            stop_policy=self.args.stop_policy,
+            orange_status=status,
+        )
+        step = self.step("orange_local_control_event_log_check")
+        step.finish(ok=check["ok"], check=check)
+        if check["ok"]:
+            return
+        failure_text = "; ".join(str(item) for item in check["failures"])
+        raise OrchestratorError(f"Orange local-control event-log check failed: {failure_text}")
+
     def require_orange_drain_not_timed_out(self, status: dict[str, Any]) -> None:
         if self.args.allow_orange_drain_timeout or not orange_recording_stop_drain_timed_out(status):
             return
@@ -1213,6 +1301,16 @@ class Orchestrator:
     ) -> dict[str, Any]:
         citrus_status = final_citrus_status or self.last_citrus_status or {}
         orange_status = final_orange_status or self.last_orange_status or {}
+        orange_event_log = summarize_orange_local_control_event_log(
+            resolve_orange_local_control_log_path(self.args)
+        )
+        orange_event_log_check = check_orange_local_control_event_log(
+            orange_event_log,
+            required=self.args.require_orange_local_control_event_log,
+            operation_id=self.args.operation_id,
+            stop_policy=self.args.stop_policy,
+            orange_status=orange_status,
+        )
         self.refresh_started_processes()
         return {
             "schema_id": SUMMARY_SCHEMA_ID,
@@ -1226,9 +1324,8 @@ class Orchestrator:
                 "socket": self.args.orange_socket,
                 "log_path": self.args.orange_log,
                 "local_control_event_log_path": resolve_orange_local_control_log_path(self.args),
-                "local_control_event_log": summarize_orange_local_control_event_log(
-                    resolve_orange_local_control_log_path(self.args)
-                ),
+                "local_control_event_log": orange_event_log,
+                "local_control_event_log_check": orange_event_log_check,
                 "recording_folder": json_path(orange_status, ["recording", "folder"], ""),
                 "phase": orange_status.get("phase", ""),
                 "ready_for_recording_request": orange_ready_for_recording(orange_status),
@@ -1358,6 +1455,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--skip-wait-orange-finalized", action="store_true")
     parser.add_argument("--allow-preexisting-orange-socket", action="store_true")
     parser.add_argument("--allow-preexisting-citrus-socket", action="store_true")
+    parser.add_argument(
+        "--require-orange-local-control-event-log",
+        action="store_true",
+        help=(
+            "Fail execute-mode runs unless the Orange local-control event log "
+            "contains matching socket rows and GUI-thread start/stop/drain "
+            "lifecycle events for this operation."
+        ),
+    )
     parser.add_argument("--no-stop-orange-on-failure", dest="stop_orange_on_failure", action="store_false")
     parser.set_defaults(stop_orange_on_failure=True)
     parser.add_argument(
@@ -1391,6 +1497,7 @@ def dry_run_summary(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "stop_policy": args.stop_policy,
             "allow_drain_timeout": args.allow_orange_drain_timeout,
+            "require_local_control_event_log": args.require_orange_local_control_event_log,
             "preflight_existing_socket": bool(args.orange_command)
             and not args.allow_preexisting_orange_socket,
         },

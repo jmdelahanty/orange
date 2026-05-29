@@ -83,6 +83,10 @@ def test_default_dry_run_builds_live_profile() -> None:
             not orange["allow_drain_timeout"],
             "profile should fail on Orange drain timeout telemetry by default",
         )
+        require(
+            orange["require_local_control_event_log"],
+            "profile should require Orange local-control event-log lifecycle evidence",
+        )
 
         orange_env = orange["env_overlay"]
         citrus_env = citrus["env_overlay"]
@@ -332,6 +336,23 @@ def test_allow_orange_drain_timeout_passes_through() -> None:
     )
 
 
+def test_allow_missing_orange_event_log_passes_through() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-allow-missing-event-log",
+            "--allow-missing-orange-event-log",
+            "--skip-orange-validation",
+        ]
+    )
+    require(result.returncode == 0, f"profile allow-missing-event-log dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    require(
+        not payload["orange"]["require_local_control_event_log"],
+        "profile should pass through the Orange event-log requirement override",
+    )
+
+
 def main() -> int:
     tests = [
         test_default_dry_run_builds_live_profile,
@@ -339,6 +360,7 @@ def main() -> int:
         test_rolling_profile_passes_orange_clip_options_to_validation,
         test_allow_preexisting_sockets_disables_launch_preflight,
         test_allow_orange_drain_timeout_passes_through,
+        test_allow_missing_orange_event_log_passes_through,
     ]
     for test in tests:
         test()

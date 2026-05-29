@@ -211,6 +211,9 @@ Refs:
   - stop trigger, drain timeout, and drain finalization rows.
 - [x] Make the orchestrator preserve and summarize the Orange local-control
       JSONL event log as a run artifact.
+- [x] Add an orchestrator gate for that event log so production-profile runs
+      require matching socket rows and GUI-thread start/stop/drain lifecycle
+      evidence before validators can pass.
 
 ## Phase 6: Validation
 
