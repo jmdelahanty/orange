@@ -448,6 +448,10 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_crop_preview_tests.py")
 
     add_test(
+        NAME imgui_glfw_size_cache_wiring_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/imgui_glfw_size_cache_wiring_tests.py")
+
+    add_test(
         NAME compare_gui_crop_preview_validation_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/compare_gui_crop_preview_validation_tests.py")
 
