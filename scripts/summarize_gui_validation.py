@@ -1680,7 +1680,8 @@ def print_human(summary: dict[str, Any]) -> None:
                 f"framebuffer_hits={fmt_int(size_cache.get('framebuffer_size_cache_hits'))} "
                 f"fallbacks={fmt_int(size_cache.get('window_size_fallbacks'))}/"
                 f"{fmt_int(size_cache.get('framebuffer_size_fallbacks'))} "
-                f"null_requests={fmt_int(size_cache.get('null_window_requests'))}"
+                f"null_requests={fmt_int(size_cache.get('null_window_requests'))} "
+                f"total={fmt_int(size_cache.get('total_size_requests'))}"
             )
         print(f"  fps overall: {fps_bucket_text('overall')}")
         print(f"  fps crop-preview-visible: {fps_bucket_text('crop_preview_visible')}")

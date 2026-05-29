@@ -4108,6 +4108,12 @@ def check_gui_display_frame_rate(
                 f"schema_version={size_cache.get('schema_version')!r}"
             ),
         )
+        source = size_cache.get("source")
+        reporter.check(
+            source == "orange_imgui_glfw_size_cache",
+            "GUI ImGui GLFW size-cache source=orange_imgui_glfw_size_cache",
+            f"GUI ImGui GLFW size-cache source={source!r}",
+        )
         cache_context_registered = size_cache.get("cache_context_registered")
         reporter.check(
             cache_context_registered is True,
@@ -4122,6 +4128,22 @@ def check_gui_display_frame_rate(
         window_fallbacks = integer(size_cache.get("window_size_fallbacks"))
         framebuffer_fallbacks = integer(size_cache.get("framebuffer_size_fallbacks"))
         null_requests = integer(size_cache.get("null_window_requests"))
+        total_size_requests = integer(size_cache.get("total_size_requests"))
+        expected_total = None
+        if (
+            window_hits is not None
+            and framebuffer_hits is not None
+            and window_fallbacks is not None
+            and framebuffer_fallbacks is not None
+            and null_requests is not None
+        ):
+            expected_total = (
+                window_hits
+                + framebuffer_hits
+                + window_fallbacks
+                + framebuffer_fallbacks
+                + null_requests
+            )
         reporter.check(
             window_hits is not None and window_hits > 0,
             f"GUI ImGui GLFW window-size cache hits={window_hits}",
@@ -4152,6 +4174,14 @@ def check_gui_display_frame_rate(
             null_requests == 0,
             "GUI ImGui GLFW null-window size requests=0",
             f"GUI ImGui GLFW null-window size requests={null_requests}",
+        )
+        reporter.check(
+            expected_total is not None and total_size_requests == expected_total,
+            f"GUI ImGui GLFW total size requests={total_size_requests}",
+            (
+                "GUI ImGui GLFW total size requests "
+                f"{total_size_requests} != expected {expected_total}"
+            ),
         )
 
     def check_bucket(bucket_name: str, label: str, threshold: float | None) -> None:
@@ -5537,7 +5567,8 @@ def print_gui_display_frame_rate_summary(gui_fps: dict[str, Any]) -> None:
             f"framebuffer_hits={size_cache.get('framebuffer_size_cache_hits')} "
             f"fallbacks={size_cache.get('window_size_fallbacks')}/"
             f"{size_cache.get('framebuffer_size_fallbacks')} "
-            f"null_requests={size_cache.get('null_window_requests')}"
+            f"null_requests={size_cache.get('null_window_requests')} "
+            f"total={size_cache.get('total_size_requests')}"
         )
     print(f"  overall: {bucket_text('overall')}")
     print(f"  crop-preview-visible: {bucket_text('crop_preview_visible')}")

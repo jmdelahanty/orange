@@ -496,8 +496,11 @@ still alive by design.
 
 ## Validation
 
-- `ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh` still only
-  validates config and launcher environment.
+- `ORANGE_GUI_VALIDATE_ONLY=1 ./scripts/run_gui_aq_off_validation.sh` validates
+  config, launcher environment, and the printed post-run validator command
+  surface. It does not prove runtime-only artifact fields such as
+  `session.gui_display_frame_rate.imgui_glfw_size_cache`; those require a fresh
+  GUI recording plus `--require-imgui-glfw-size-cache`.
 - `ORANGE_GUI_PRINT_EXEC_ENV_ONLY=1` prints the autorun env values and
   `ORANGE_GUI_CONFIG_DIR` crossing the `sudo env` boundary. It also prints
   display/session variables that will be forwarded to the root-launched GUI.
