@@ -201,6 +201,11 @@ bool allow_gui_stop_recording(const LocalControlServerOptions& options)
            options.allow_gui_lifecycle_commands;
 }
 
+bool recorder_ready_when_required(const RecorderReadinessSnapshot& snapshot)
+{
+    return !snapshot.external_ipc_enabled || snapshot.supervisors_ready;
+}
+
 }  // namespace
 
 nlohmann::json LocalControlStatusSnapshotToJson(
@@ -251,6 +256,10 @@ nlohmann::json LocalControlStatusSnapshotToJson(
         expected_record_selected &&
         expected_yolo_selected &&
         expected_crop_selected;
+    const bool full_frame_recorders_ready =
+        recorder_ready_when_required(snapshot.full_frame_recorder);
+    const bool crop_recorders_ready =
+        recorder_ready_when_required(snapshot.crop_recorder);
     const bool ready_for_recording_request =
         snapshot.cameras_open &&
         snapshot.streaming_active &&
@@ -264,7 +273,9 @@ nlohmann::json LocalControlStatusSnapshotToJson(
         snapshot.recording_active &&
         !snapshot.recording_finalizing &&
         expected_open &&
-        selections_match_expected;
+        selections_match_expected &&
+        full_frame_recorders_ready &&
+        crop_recorders_ready;
     const bool recording_finalized =
         snapshot.recording_finalized ||
         (!snapshot.recording_active &&

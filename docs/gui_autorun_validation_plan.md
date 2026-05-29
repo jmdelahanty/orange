@@ -406,6 +406,9 @@ For orchestrated runs where Orange should use autorun only to reach streaming
 readiness, set `ORANGE_GUI_AUTORUN_START_RECORDING=0`. That leaves the record
 camera selection intact while skipping the autorun record-button transition, so
 the external orchestrator can issue the opt-in `start_recording` request.
+After that request, Orange reports `ready_for_citrus_experiment=true` only once
+recording is active and any enabled external IPC full-frame/crop recorder
+supervisors are ready.
 
 The four-camera Orange/Citrus profile wrapper is:
 

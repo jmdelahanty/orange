@@ -256,6 +256,31 @@ void test_status_readiness_matches_expected_camera_sets_without_order_sensitivit
             "recording request should not be ready when record selection mismatches expected cameras");
 }
 
+void test_citrus_readiness_requires_external_recorders_when_enabled()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.full_frame_recorder.supervisors_ready = false;
+    nlohmann::json json = orange::control::LocalControlStatusSnapshotToJson(status);
+
+    require(!json["readiness"]["ready_for_citrus_experiment"].get<bool>(),
+            "Citrus should not start until full-frame external recorders are ready");
+    require(!json["readiness"]["full_frame_external_recorders_ready"].get<bool>(),
+            "full-frame recorder readiness should remain explicit");
+
+    status.full_frame_recorder.supervisors_ready = true;
+    status.crop_recorder.supervisors_ready = false;
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(!json["readiness"]["ready_for_citrus_experiment"].get<bool>(),
+            "Citrus should not start until crop external recorders are ready");
+    require(!json["readiness"]["crop_external_recorders_ready"].get<bool>(),
+            "crop recorder readiness should remain explicit");
+
+    status.crop_recorder.external_ipc_enabled = false;
+    json = orange::control::LocalControlStatusSnapshotToJson(status);
+    require(json["readiness"]["ready_for_citrus_experiment"].get<bool>(),
+            "disabled crop external IPC should not block Citrus readiness");
+}
+
 void test_status_reports_completed_recording_after_streaming_stop_path()
 {
     LocalControlStatusSnapshot status = healthy_status();
@@ -541,6 +566,8 @@ int main()
          test_status_request_returns_readiness_snapshot},
         {"status_readiness_matches_expected_camera_sets_without_order_sensitivity",
          test_status_readiness_matches_expected_camera_sets_without_order_sensitivity},
+        {"citrus_readiness_requires_external_recorders_when_enabled",
+         test_citrus_readiness_requires_external_recorders_when_enabled},
         {"status_reports_completed_recording_after_streaming_stop_path",
          test_status_reports_completed_recording_after_streaming_stop_path},
         {"citrus_completion_is_diagnostic_ack_and_logged",
