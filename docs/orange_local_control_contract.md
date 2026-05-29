@@ -388,7 +388,9 @@ written under `validations[]` in the combined summary. Commands may use
 `{operation_id}`, `{orange_recording_folder}`, and `{citrus_perf_jsonl_path}`
 placeholders. Prefer `{orange_recording_folder}` for Orange validators so the
 orchestrator validates the exact run reported by Orange status instead of the
-newest artifact on disk.
+newest artifact on disk. Placeholder expansion is strict: if a command uses an
+artifact placeholder and the corresponding status field is missing or empty, the
+orchestrator fails before running that validator.
 
 When the orchestrator launches Orange or Citrus itself, readiness waits also
 poll those child processes. If a launched GUI exits before its relevant

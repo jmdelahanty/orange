@@ -235,14 +235,21 @@ def render_validation_command(
     orange_status: dict[str, Any],
     citrus_status: dict[str, Any],
 ) -> str:
+    raw_values = {
+        "{operation_id}": operation_id,
+        "{orange_recording_folder}": json_path(orange_status, ["recording", "folder"], ""),
+        "{citrus_perf_jsonl_path}": json_path(citrus_status, ["output", "perf_jsonl_path"], ""),
+    }
+    for placeholder, value in raw_values.items():
+        if placeholder not in command:
+            continue
+        if value is None or str(value) == "":
+            raise OrchestratorError(
+                f"validation command requires {placeholder}, but its status value is missing"
+            )
     replacements = {
-        "{operation_id}": shlex.quote(operation_id),
-        "{orange_recording_folder}": shlex.quote(
-            str(json_path(orange_status, ["recording", "folder"], ""))
-        ),
-        "{citrus_perf_jsonl_path}": shlex.quote(
-            str(json_path(citrus_status, ["output", "perf_jsonl_path"], ""))
-        ),
+        placeholder: shlex.quote(str(value))
+        for placeholder, value in raw_values.items()
     }
     rendered = command
     for needle, value in replacements.items():

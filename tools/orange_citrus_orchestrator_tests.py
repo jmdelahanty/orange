@@ -128,6 +128,20 @@ def test_request_builders_and_readiness_helpers() -> None:
         ],
         "validation placeholders should render as safely quoted argv tokens",
     )
+    try:
+        module.render_validation_command(
+            "validator {orange_recording_folder}",
+            operation_id="op-1",
+            orange_status={"recording": {"folder": ""}},
+            citrus_status={},
+        )
+    except module.OrchestratorError as exc:
+        require(
+            "{orange_recording_folder}" in str(exc),
+            "missing placeholder error should identify Orange folder placeholder",
+        )
+    else:
+        raise AssertionError("expected missing Orange recording folder to fail")
 
 
 def test_dry_run_default_does_not_open_sockets() -> None:
