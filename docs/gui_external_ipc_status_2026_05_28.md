@@ -353,8 +353,12 @@ Expected validation shape:
 
 ## Remaining Risks
 
-- The latest run had no positive detections; crop infrastructure was validated
-  with blank crop recording rows, not fish/positive detection crops.
+- The latest strict Orange/Citrus runs did include real positive YOLO rows:
+  single-clip had `2010094=2202/2202` and `2010096=716/2202` detection rows,
+  and rolling had `2010094=2183/2183` and `2010096=898/2183` detection rows.
+  `2010093` and `2010095` remained zero-detection cameras in those artifacts,
+  so this validates positive detection-to-crop fanout on two views, not full
+  four-view positive-detection coverage or pose/track quality.
 - Older no-lens artifacts remain documented above, but the current strict
   Orange/Citrus artifacts passed main-video content validation for all four
   cameras with `0` warnings.

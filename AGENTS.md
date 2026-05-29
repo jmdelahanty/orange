@@ -639,6 +639,12 @@ multi-GPU split-GOP throughput.
   frame in the strict runs with `0` drops; steady YOLO p95 is about
   `3.95-3.96 ms` across all four cameras and YOLO queue p95 is about
   `0.014-0.017 ms`.
+- Those strict Orange/Citrus runs included real positive YOLO rows on two
+  views: single-clip had `2010094=2202/2202` and `2010096=716/2202`
+  detection rows, and rolling had `2010094=2183/2183` and
+  `2010096=898/2183`. `2010093` and `2010095` remained zero-detection views,
+  so the artifacts validate positive detection-to-crop fanout on two cameras,
+  not four-view positive-detection coverage or pose/track quality.
 - Orange/Citrus display pacing intentionally uses the Citrus-safe GUI profile:
   `swap_interval=1`, GUI frame cap `30`, and display preview cap `10`, so
   Orange stays near `30 fps` and avoids burning display-GPU budget while

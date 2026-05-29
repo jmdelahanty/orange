@@ -236,6 +236,13 @@ def camera_serial_from_yolo_perf(path: Path) -> str | None:
     return name[len("Cam") : -len("_yolo_perf.csv")]
 
 
+def camera_serial_from_yolo_events(path: Path) -> str | None:
+    name = path.name
+    if not name.startswith("Cam") or not name.endswith("_yolo_events.jsonl"):
+        return None
+    return name[len("Cam") : -len("_yolo_events.jsonl")]
+
+
 def camera_serial_from_pipeline_perf(path: Path) -> str | None:
     name = path.name
     if not name.startswith("Cam") or not name.endswith("_pipeline_perf.csv"):
@@ -831,6 +838,52 @@ def summarize_metric(rows: list[dict[str, str]], field: str, steady_after_frame:
     }
 
 
+def summarize_yolo_event_log(path: Path) -> dict[str, Any]:
+    summary = {
+        "path": str(path),
+        "present": path.exists(),
+        "rows": 0,
+        "detection_rows": 0,
+        "zero_rows": 0,
+        "failed_rows": 0,
+        "timeout_rows": 0,
+        "parse_errors": 0,
+        "max_detection_count": 0,
+    }
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    summary["parse_errors"] += 1
+                    continue
+                summary["rows"] += 1
+                yolo = event.get("yolo")
+                yolo = yolo if isinstance(yolo, dict) else {}
+                raw_count = yolo.get("detection_count")
+                detection_count = raw_count if isinstance(raw_count, int) else 0
+                if detection_count > 0:
+                    summary["detection_rows"] += 1
+                    summary["max_detection_count"] = max(
+                        summary["max_detection_count"],
+                        detection_count,
+                    )
+                else:
+                    summary["zero_rows"] += 1
+                status = str(yolo.get("status") or "")
+                if status == "failed":
+                    summary["failed_rows"] += 1
+                elif status == "timeout":
+                    summary["timeout_rows"] += 1
+    except OSError:
+        summary["present"] = False
+    return summary
+
+
 def summarize_yolo(recording_folder: Path, steady_after_frame: int) -> dict[str, Any]:
     fields = [
         "acquisition_to_detect_done_ms",
@@ -876,6 +929,21 @@ def summarize_yolo(recording_folder: Path, steady_after_frame: int) -> dict[str,
             "metrics": metrics,
             "affinity": affinity,
         }
+    for path in sorted(recording_folder.glob("Cam*_yolo_events.jsonl")):
+        serial = camera_serial_from_yolo_events(path)
+        if serial is None:
+            continue
+        item = summaries.setdefault(
+            serial,
+            {
+                "path": "",
+                "rows": 0,
+                "ok_rows": 0,
+                "metrics": {},
+                "affinity": {},
+            },
+        )
+        item["events"] = summarize_yolo_event_log(path)
     return summaries
 
 
@@ -1534,10 +1602,14 @@ def print_human(summary: dict[str, Any]) -> None:
             cpu_pre_sync = metrics.get("cpu_pre_sync_ms") or {}
             ptp = metrics.get("acquisition_to_ptp_done_ms") or {}
             affinity = yolo.get("affinity") if isinstance(yolo.get("affinity"), dict) else {}
+            events = yolo.get("events") if isinstance(yolo.get("events"), dict) else {}
             requested_cpus = affinity.get("requested_cpus") or "n/a"
             effective_cpus = affinity.get("effective_cpus") or "n/a"
             print(
                 f"  Cam{serial}: rows={yolo['rows']} "
+                f"event_rows={fmt_int(events.get('rows'))} "
+                f"detection_rows={fmt_int(events.get('detection_rows'))} "
+                f"zero_rows={fmt_int(events.get('zero_rows'))} "
                 f"detect_p95={fmt_ms_unit(primary.get('p95'))} "
                 f"steady_p95={fmt_ms_unit(primary.get('steady_p95'))} "
                 f"acq_worker_p95={fmt_ms_unit(acquisition_to_worker.get('p95'))} "

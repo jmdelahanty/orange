@@ -5260,11 +5260,19 @@ def compact_camera_summary(summary: dict[str, Any], cameras: list[str], video_sa
         yolo = nested_dict(summary, "yolo", serial)
         yolo_affinity = yolo.get("affinity")
         yolo_affinity = yolo_affinity if isinstance(yolo_affinity, dict) else {}
+        yolo_events = yolo.get("events")
+        yolo_events = yolo_events if isinstance(yolo_events, dict) else {}
         pipeline = nested_dict(summary, "pipeline", serial).get("final", {})
         video = nested_dict(summary, "videos", serial)
         outputs = nested_dict(summary, "outputs", serial)
         out[serial] = {
             "yolo_affinity": yolo_affinity,
+            "yolo_event_rows": yolo_events.get("rows"),
+            "yolo_detection_rows": yolo_events.get("detection_rows"),
+            "yolo_zero_rows": yolo_events.get("zero_rows"),
+            "yolo_failed_rows": yolo_events.get("failed_rows"),
+            "yolo_timeout_rows": yolo_events.get("timeout_rows"),
+            "yolo_event_parse_errors": yolo_events.get("parse_errors"),
             "detect_steady_p95_ms": detect.get("steady_p95"),
             "detect_p95_ms": detect.get("p95"),
             "acquisition_to_worker_start_p95_ms": acquisition_to_worker.get("p95"),
@@ -5311,6 +5319,9 @@ def print_camera_summary(camera_summary: dict[str, Any]) -> None:
             f"service_gap_p95={item.get('same_camera_service_gap_p95_ms')} ms "
             f"service_gap_steady_p95={item.get('same_camera_service_gap_steady_p95_ms')} ms "
             f"ptp_done_p95={item.get('ptp_done_p95_ms')} ms "
+            f"yolo_events={item.get('yolo_event_rows')} "
+            f"yolo_det_rows={item.get('yolo_detection_rows')} "
+            f"yolo_zero_rows={item.get('yolo_zero_rows')} "
             f"outputs={output_text} "
             f"video_frames={video.get('frames')} "
             f"bitrate_mbps={video.get('bitrate_mbps')}"

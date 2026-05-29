@@ -699,7 +699,9 @@ Orange/Citrus co-run queue-pressure update, 2026-05-28:
   `128`; crop queue high-water was `52/52/51/47`. This validates the larger
   four-camera co-run queue as sufficient for the short Citrus profile, while
   preserving the need to monitor `enqueue_age_p95_ms` and high-water in longer
-  soaks.
+  soaks. The run included real positive YOLO rows on `2010094` (`2202/2202`)
+  and `2010096` (`716/2202`), with zero detections on `2010093` and
+  `2010095`.
 - The short rolling Orange/Citrus profile is also live-proven:
   `orange-citrus-rolling-live-011` at
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_55_25` used
@@ -707,7 +709,9 @@ Orange/Citrus co-run queue-pressure update, 2026-05-28:
   validated both full-frame and crop rolling artifacts. All four crop streams
   received/encoded `2183/2183` frames with `0` drops, wrote `11` rolling crop
   clips per camera, and reported crop queue high-water `22/44/40/42` at depth
-  `128`.
+  `128`. It also included real positive YOLO rows on `2010094` (`2183/2183`)
+  and `2010096` (`898/2183`), with zero detections on `2010093` and
+  `2010095`.
 
 Earlier two-camera GUI validation:
 
