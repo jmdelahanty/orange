@@ -101,6 +101,24 @@ def test_cache_context_registered_during_gx_init() -> None:
     )
 
 
+def test_cache_context_cleared_before_window_destroy() -> None:
+    gx_helper = read("src/gx_helper.h")
+    body = function_body(gx_helper, "gx_cleanup")
+    require(
+        "orange_imgui_glfw_set_size_cache_context(nullptr, nullptr)" in body,
+        "gx_cleanup must clear the size-cache context",
+    )
+    require(
+        "glfwDestroyWindow(window->render_target)" in body,
+        "gx_cleanup must destroy the GLFW render target",
+    )
+    require(
+        body.index("orange_imgui_glfw_set_size_cache_context(nullptr, nullptr)")
+        < body.index("glfwDestroyWindow(window->render_target)"),
+        "size-cache context must be cleared before the GLFW window is destroyed",
+    )
+
+
 def test_imgui_backend_does_not_own_main_window_size_callbacks() -> None:
     imgui_glfw = read("third_party/imgui/backends/imgui_impl_glfw.cpp")
     body = function_body(imgui_glfw, "ImGui_ImplGlfw_InstallCallbacks")
@@ -138,6 +156,7 @@ def main() -> int:
         test_cmake_force_includes_override_for_imgui_glfw_backend,
         test_render_a_frame_uses_cached_framebuffer_size,
         test_cache_context_registered_during_gx_init,
+        test_cache_context_cleared_before_window_destroy,
         test_imgui_backend_does_not_own_main_window_size_callbacks,
         test_recording_start_resets_size_cache_stats,
     ]
