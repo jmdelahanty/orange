@@ -1660,6 +1660,54 @@ def test_gui_privilege_wrapper_accepts_recording_control_envs() -> None:
     )
 
 
+def test_gui_privilege_wrapper_accepts_crop_recorder_envs() -> None:
+    result = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            "ORANGE_CROP_RECORDING_SINK_MODE=external_ipc",
+            "--env",
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128",
+            "--env",
+            "ORANGE_CROP_EXTERNAL_REQUIRE_SEPARATE_GPU=1",
+            "--env",
+            "ORANGE_CROP_FRAME_POOL_SIZE=256",
+            "--env",
+            "ORANGE_CROP_PREVIEW_MAX_FPS=15",
+            "--env",
+            "ORANGE_CROP_PREVIEW_DISABLE=0",
+            "--env",
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID=8",
+            "--env",
+            "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=6",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode == 0, f"wrapper should accept crop recorder envs: {result.stderr}")
+    require(
+        "ORANGE_CROP_RECORDING_SINK_MODE=external_ipc" in result.stdout,
+        "wrapper dry-run should include crop recording sink mode",
+    )
+    require(
+        "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128" in result.stdout,
+        "wrapper dry-run should include crop external queue depth",
+    )
+    require(
+        "ORANGE_CROP_FRAME_POOL_SIZE=256" in result.stdout,
+        "wrapper dry-run should include crop frame-pool size",
+    )
+    require(
+        "ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_2010095=6" in result.stdout,
+        "wrapper dry-run should include per-camera crop recorder GPU routing",
+    )
+
+
 def test_gui_privilege_wrapper_accepts_app_config_envs() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1794,6 +1842,7 @@ def main() -> int:
         test_gui_privilege_wrapper_help_documents_contract,
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_gui_privilege_wrapper_accepts_recording_control_envs,
+        test_gui_privilege_wrapper_accepts_crop_recorder_envs,
         test_gui_privilege_wrapper_accepts_app_config_envs,
         test_gui_privilege_wrapper_accepts_local_control_envs,
         test_gui_privilege_wrapper_rejects_missing_app_config_env,

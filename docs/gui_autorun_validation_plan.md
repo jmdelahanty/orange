@@ -298,11 +298,12 @@ automatically (`ORANGE_GUI_USE_PRIVILEGE_WRAPPER=auto`). Set
 `ORANGE_GUI_USE_PRIVILEGE_WRAPPER=1` to require it, or `0` to force the older
 `sudo env` path.
 
-The launcher also dry-runs the installed wrapper before privileged launch to
-confirm it accepts the current validation env contract, including
-`ORANGE_GUI_FRAME_MAX_FPS` and the wildcard
-`ORANGE_YOLO_AFFINITY_CAM_*` per-camera affinity controls. If the wrapper is
-stale, reinstall it:
+The launcher also dry-runs the installed wrapper before privileged launch once
+for each env var it is about to pass. That catches stale wrapper installs before
+the sudo launch, including display pacing, per-camera YOLO affinity, local
+control, crop-recorder queue, crop frame-pool, and per-camera crop-recorder GPU
+routing envs such as `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_*`. If the
+wrapper is stale, reinstall it:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16
