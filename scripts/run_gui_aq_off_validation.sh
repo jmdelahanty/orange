@@ -270,7 +270,7 @@ if [[ -n "${GUI_CLIP_SECONDS}" ]] &&
   fi
   RECORDING_MODE_VALIDATION_FLAGS+=" --expect-clip-seconds ${GUI_CLIP_SECONDS}"
 fi
-COMPARE_VALIDATION_FLAGS="--require-pass --require-zero-crop-drops --require-visible-samples --require-hidden-samples --require-matching-cameras --require-matching-display-config --require-matching-crop-config --require-matching-yolo-runtime-config --min-gui-visible-p05-fps 45 --min-gui-hidden-p05-fps 45"
+COMPARE_VALIDATION_FLAGS="--require-pass --require-zero-crop-drops --require-visible-samples --require-hidden-samples --require-matching-cameras --require-matching-display-config --require-matching-crop-config --require-matching-yolo-runtime-config --require-imgui-glfw-size-cache --min-gui-visible-p05-fps 45 --min-gui-hidden-p05-fps 45"
 if [[ -n "${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}" ]]; then
   COMPARE_VALIDATION_FLAGS+=" --max-external-crop-queue-high-water ${CROP_EXTERNAL_MAX_QUEUE_HIGH_WATER}"
 fi

@@ -782,6 +782,7 @@ scripts/compare_gui_crop_preview_validation.py \
   --require-matching-cameras \
   --require-matching-display-config \
   --require-matching-crop-config \
+  --require-imgui-glfw-size-cache \
   --require-external-crop-recorder-gpu-separate-from-analytics \
   --min-gui-visible-p05-fps 45 \
   --min-gui-hidden-p05-fps 45

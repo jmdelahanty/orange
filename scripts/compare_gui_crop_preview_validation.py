@@ -100,6 +100,14 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--require-imgui-glfw-size-cache",
+        action="store_true",
+        help=(
+            "Exit nonzero unless every compared run reports clean ImGui GLFW "
+            "size-cache telemetry with cache hits and no fallback size polling."
+        ),
+    )
+    parser.add_argument(
         "--require-matching-crop-config",
         action="store_true",
         help=(
@@ -694,6 +702,63 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
 
     gui_fps = payload.get("gui_display_frame_rate")
     gui_fps = gui_fps if isinstance(gui_fps, dict) else {}
+    imgui_size_cache = nested_dict(gui_fps, "imgui_glfw_size_cache")
+    imgui_size_cache_source = imgui_size_cache.get("source")
+    imgui_size_cache_registered = imgui_size_cache.get("cache_context_registered") is True
+    imgui_window_size_cache_hits = finite_optional_int(
+        imgui_size_cache.get("window_size_cache_hits")
+    )
+    imgui_framebuffer_size_cache_hits = finite_optional_int(
+        imgui_size_cache.get("framebuffer_size_cache_hits")
+    )
+    imgui_window_size_fallbacks = finite_optional_int(
+        imgui_size_cache.get("window_size_fallbacks")
+    )
+    imgui_framebuffer_size_fallbacks = finite_optional_int(
+        imgui_size_cache.get("framebuffer_size_fallbacks")
+    )
+    imgui_size_cache_null_requests = finite_optional_int(
+        imgui_size_cache.get("null_window_requests")
+    )
+    imgui_size_cache_total_requests = finite_optional_int(
+        imgui_size_cache.get("total_size_requests")
+    )
+    imgui_size_cache_expected_total = None
+    if (
+        imgui_window_size_cache_hits is not None
+        and imgui_framebuffer_size_cache_hits is not None
+        and imgui_window_size_fallbacks is not None
+        and imgui_framebuffer_size_fallbacks is not None
+        and imgui_size_cache_null_requests is not None
+    ):
+        imgui_size_cache_expected_total = (
+            imgui_window_size_cache_hits
+            + imgui_framebuffer_size_cache_hits
+            + imgui_window_size_fallbacks
+            + imgui_framebuffer_size_fallbacks
+            + imgui_size_cache_null_requests
+        )
+    imgui_size_cache_fallbacks = None
+    if (
+        imgui_window_size_fallbacks is not None
+        and imgui_framebuffer_size_fallbacks is not None
+    ):
+        imgui_size_cache_fallbacks = (
+            imgui_window_size_fallbacks + imgui_framebuffer_size_fallbacks
+        )
+    imgui_size_cache_clean = (
+        bool(imgui_size_cache)
+        and imgui_size_cache_source == "orange_imgui_glfw_size_cache"
+        and imgui_size_cache_registered
+        and imgui_window_size_cache_hits is not None
+        and imgui_window_size_cache_hits > 0
+        and imgui_framebuffer_size_cache_hits is not None
+        and imgui_framebuffer_size_cache_hits > 0
+        and imgui_size_cache_fallbacks == 0
+        and imgui_size_cache_null_requests == 0
+        and imgui_size_cache_expected_total is not None
+        and imgui_size_cache_total_requests == imgui_size_cache_expected_total
+    )
     timing_diagnosis = gui_timing_diagnosis(gui_fps)
     source_version = payload.get("source_version")
     source_version = source_version if isinstance(source_version, dict) else {}
@@ -822,6 +887,16 @@ def summarize_validation(label: str, payload: dict[str, Any]) -> dict[str, Any]:
         "gui_swap_interval": finite_int(gui_fps.get("swap_interval")),
         "gui_frame_max_fps": finite_int(gui_fps.get("frame_max_fps")),
         "yolo_speed_graphs_enabled": finite_int(gui_fps.get("yolo_speed_graphs_enabled")),
+        "imgui_size_cache_present": bool(imgui_size_cache),
+        "imgui_size_cache_clean": imgui_size_cache_clean,
+        "imgui_size_cache_source": imgui_size_cache_source,
+        "imgui_size_cache_registered": imgui_size_cache_registered,
+        "imgui_window_size_cache_hits": imgui_window_size_cache_hits,
+        "imgui_framebuffer_size_cache_hits": imgui_framebuffer_size_cache_hits,
+        "imgui_size_cache_fallbacks": imgui_size_cache_fallbacks,
+        "imgui_size_cache_null_requests": imgui_size_cache_null_requests,
+        "imgui_size_cache_total_requests": imgui_size_cache_total_requests,
+        "imgui_size_cache_expected_total": imgui_size_cache_expected_total,
         "gui_frame_total_p95_ms": nested_float(gui_fps, "timings", "frame_total_ms", "p95_ms"),
         "gui_main_texture_upload_p95_ms": nested_float(
             gui_fps,
@@ -971,6 +1046,19 @@ def render_table(summaries: list[dict[str, Any]]) -> str:
         ("swap", lambda item: fmt_int(item.get("gui_swap_interval"))),
         ("frame cap", lambda item: fmt_int(item.get("gui_frame_max_fps"))),
         ("speed graphs", lambda item: fmt_int(item.get("yolo_speed_graphs_enabled"))),
+        ("imgui cache", lambda item: (
+            f"ok {fmt_optional_int(item.get('imgui_size_cache_total_requests'))}"
+            if item.get("imgui_size_cache_clean")
+            else (
+                "missing"
+                if not item.get("imgui_size_cache_present")
+                else (
+                    "bad "
+                    f"fb={fmt_optional_int(item.get('imgui_size_cache_fallbacks'))} "
+                    f"null={fmt_optional_int(item.get('imgui_size_cache_null_requests'))}"
+                )
+            )
+        )),
         ("frame p95", lambda item: fmt_float(item.get("gui_frame_total_p95_ms"), 2)),
         ("main upload p95", lambda item: fmt_float(item.get("gui_main_texture_upload_p95_ms"), 2)),
         ("crop upload p95", lambda item: fmt_float(item.get("gui_crop_texture_upload_p95_ms"), 2)),
@@ -1172,6 +1260,22 @@ def threshold_failures(args: argparse.Namespace, summaries: list[dict[str, Any]]
                 failures.append(
                     f"{item.get('label')}: YOLO runtime config {current_yolo_runtime} "
                     f"does not match {summaries[0].get('label')} {expected_yolo_runtime}"
+                )
+
+    if getattr(args, "require_imgui_glfw_size_cache", False):
+        for item in summaries:
+            if not item.get("imgui_size_cache_clean"):
+                failures.append(
+                    f"{item.get('label')}: ImGui GLFW size-cache telemetry not clean "
+                    f"(present={item.get('imgui_size_cache_present')} "
+                    f"source={item.get('imgui_size_cache_source')!r} "
+                    f"registered={item.get('imgui_size_cache_registered')} "
+                    f"window_hits={item.get('imgui_window_size_cache_hits')} "
+                    f"framebuffer_hits={item.get('imgui_framebuffer_size_cache_hits')} "
+                    f"fallbacks={item.get('imgui_size_cache_fallbacks')} "
+                    f"null_requests={item.get('imgui_size_cache_null_requests')} "
+                    f"total={item.get('imgui_size_cache_total_requests')} "
+                    f"expected_total={item.get('imgui_size_cache_expected_total')})"
                 )
 
     if getattr(args, "require_external_crop_recorder_gpu_separate_from_analytics", False):

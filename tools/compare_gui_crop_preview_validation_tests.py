@@ -254,6 +254,17 @@ def sample_payload(
             "swap_interval": 0,
             "frame_max_fps": 60,
             "yolo_speed_graphs_enabled": False,
+            "imgui_glfw_size_cache": {
+                "schema_version": 1,
+                "source": "orange_imgui_glfw_size_cache",
+                "cache_context_registered": True,
+                "window_size_cache_hits": 120,
+                "window_size_fallbacks": 0,
+                "framebuffer_size_cache_hits": 120,
+                "framebuffer_size_fallbacks": 0,
+                "null_window_requests": 0,
+                "total_size_requests": 240,
+            },
             "overall": {"sample_count": 120, "p05_fps": 57.0},
             "crop_preview_visible": {"sample_count": 80, "p05_fps": visible_p05},
             "crop_preview_hidden": {"sample_count": 0},
@@ -348,6 +359,13 @@ def test_summarize_validation_aggregates_crop_preview_and_fps() -> None:
     require(summary["gui_swap_interval"] == 0, "GUI swap interval should parse")
     require(summary["gui_frame_max_fps"] == 60, "GUI frame cap should parse")
     require(summary["yolo_speed_graphs_enabled"] == 0, "speed graph state should parse")
+    require(summary["imgui_size_cache_present"], "ImGui GLFW size-cache telemetry should parse")
+    require(summary["imgui_size_cache_clean"], "ImGui GLFW size-cache telemetry should be clean")
+    require(summary["imgui_window_size_cache_hits"] == 120, "window-size cache hits should parse")
+    require(summary["imgui_framebuffer_size_cache_hits"] == 120, "framebuffer-size cache hits should parse")
+    require(summary["imgui_size_cache_fallbacks"] == 0, "size-cache fallbacks should parse")
+    require(summary["imgui_size_cache_null_requests"] == 0, "size-cache null requests should parse")
+    require(summary["imgui_size_cache_total_requests"] == 240, "size-cache total should parse")
     require(
         summary["isolated_cpu_values"] == [1, 2, 6, 8, 10, 12],
         "isolated CPU values should parse",
@@ -427,6 +445,7 @@ def test_threshold_failures_cover_fps_and_external_queue_pressure() -> None:
         require_matching_cameras=False,
         require_matching_display_config=False,
         require_matching_crop_config=False,
+        require_imgui_glfw_size_cache=False,
         min_gui_overall_p05_fps=45.0,
         min_gui_visible_p05_fps=45.0,
         min_gui_hidden_p05_fps=45.0,
@@ -472,6 +491,7 @@ def test_threshold_failures_cover_mismatched_camera_and_display_config() -> None
         require_matching_cameras=True,
         require_matching_display_config=True,
         require_matching_crop_config=False,
+        require_imgui_glfw_size_cache=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -504,6 +524,7 @@ def test_threshold_failures_cover_mismatched_crop_config() -> None:
         require_matching_cameras=False,
         require_matching_display_config=False,
         require_matching_crop_config=True,
+        require_imgui_glfw_size_cache=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -534,6 +555,7 @@ def test_threshold_failures_cover_mismatched_yolo_runtime_config() -> None:
         require_matching_display_config=False,
         require_matching_crop_config=False,
         require_matching_yolo_runtime_config=True,
+        require_imgui_glfw_size_cache=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -611,6 +633,7 @@ def test_threshold_failures_cover_mismatched_external_crop_gpu_mapping() -> None
         require_matching_cameras=False,
         require_matching_display_config=False,
         require_matching_crop_config=True,
+        require_imgui_glfw_size_cache=False,
         min_gui_overall_p05_fps=None,
         min_gui_visible_p05_fps=None,
         min_gui_hidden_p05_fps=None,
@@ -644,6 +667,7 @@ def test_threshold_failures_cover_same_external_crop_gpu_mapping() -> None:
         require_matching_cameras=False,
         require_matching_display_config=False,
         require_matching_crop_config=False,
+        require_imgui_glfw_size_cache=False,
         require_external_crop_recorder_gpu_separate_from_analytics=True,
         require_external_recorder_status=False,
         min_gui_overall_p05_fps=None,
@@ -678,6 +702,7 @@ def test_threshold_failures_cover_missing_external_crop_gpu_mapping() -> None:
         require_matching_cameras=False,
         require_matching_display_config=False,
         require_matching_crop_config=False,
+        require_imgui_glfw_size_cache=False,
         require_external_crop_recorder_gpu_separate_from_analytics=True,
         require_external_recorder_status=False,
         min_gui_overall_p05_fps=None,
@@ -712,6 +737,8 @@ def test_table_contains_expected_columns_and_values() -> None:
     require("crop upload p95" in table, "table should include crop upload timing column")
     require("crop draw p95" in table, "table should include crop draw timing column")
     require("speed graph p95" in table, "table should include speed graph timing column")
+    require("imgui cache" in table, "table should include ImGui size-cache column")
+    require("ok 240" in table, "table should include clean ImGui size-cache count")
     require("dominant p95" in table, "table should include dominant timing column")
     require("render-present 4.00" in table, "table should include dominant timing value")
     require("dom share" in table, "table should include dominant timing share column")
@@ -762,6 +789,7 @@ def test_threshold_failures_cover_external_recorder_status() -> None:
         require_matching_cameras=False,
         require_matching_display_config=False,
         require_matching_crop_config=False,
+        require_imgui_glfw_size_cache=False,
         require_external_crop_recorder_gpu_separate_from_analytics=False,
         require_external_recorder_status=True,
         require_external_recorder_storage_preflight=True,
@@ -806,6 +834,55 @@ def test_uses_validator_timing_diagnosis_when_present() -> None:
         "validator-provided timing diagnosis should take precedence",
     )
     require(summary["gui_dominant_timing_p95_ms"] == 9.0, "validator diagnosis p95 should parse")
+
+
+def test_threshold_failures_cover_imgui_size_cache_gate() -> None:
+    healthy = compare.summarize_validation("healthy", sample_payload())
+    missing_payload = sample_payload()
+    missing_payload["gui_display_frame_rate"].pop("imgui_glfw_size_cache")
+    missing = compare.summarize_validation("missing", missing_payload)
+    fallback_payload = sample_payload()
+    fallback_payload["gui_display_frame_rate"]["imgui_glfw_size_cache"]["window_size_fallbacks"] = 1
+    fallback_payload["gui_display_frame_rate"]["imgui_glfw_size_cache"]["total_size_requests"] = 241
+    fallback = compare.summarize_validation("fallback", fallback_payload)
+    total_payload = sample_payload()
+    total_payload["gui_display_frame_rate"]["imgui_glfw_size_cache"]["total_size_requests"] = 239
+    total_bad = compare.summarize_validation("total-bad", total_payload)
+    args = SimpleNamespace(
+        require_pass=False,
+        require_zero_crop_drops=False,
+        require_visible_samples=False,
+        require_hidden_samples=False,
+        require_matching_cameras=False,
+        require_matching_display_config=False,
+        require_matching_crop_config=False,
+        require_matching_yolo_runtime_config=False,
+        require_imgui_glfw_size_cache=True,
+        require_external_crop_recorder_gpu_separate_from_analytics=False,
+        require_external_recorder_status=False,
+        require_external_recorder_storage_preflight=False,
+        require_external_recorder_protocol_hello=False,
+        min_gui_overall_p05_fps=None,
+        min_gui_visible_p05_fps=None,
+        min_gui_hidden_p05_fps=None,
+        max_external_crop_queue_high_water=None,
+        max_external_crop_enqueue_age_p95_ms=None,
+    )
+
+    require(not compare.threshold_failures(args, [healthy]), "clean size-cache telemetry should pass")
+    failures = compare.threshold_failures(args, [missing, fallback, total_bad])
+    require(
+        any("missing" in failure and "present=False" in failure for failure in failures),
+        "missing size-cache telemetry should fail",
+    )
+    require(
+        any("fallback" in failure and "fallbacks=1" in failure for failure in failures),
+        "fallback size-cache telemetry should fail",
+    )
+    require(
+        any("total-bad" in failure and "expected_total=240" in failure for failure in failures),
+        "bad total size-cache telemetry should fail",
+    )
 
 
 def test_table_marks_absent_fanout_as_unavailable() -> None:
@@ -857,6 +934,7 @@ def test_cli_thresholds_fail_with_clear_stderr() -> None:
                 "--require-matching-cameras",
                 "--require-matching-display-config",
                 "--require-matching-crop-config",
+                "--require-imgui-glfw-size-cache",
                 "--min-gui-visible-p05-fps",
                 "45",
                 "--max-external-crop-queue-high-water",
@@ -1013,6 +1091,7 @@ def main() -> int:
         test_table_contains_expected_columns_and_values,
         test_threshold_failures_cover_external_recorder_status,
         test_uses_validator_timing_diagnosis_when_present,
+        test_threshold_failures_cover_imgui_size_cache_gate,
         test_table_marks_absent_fanout_as_unavailable,
         test_absent_timing_counts_stay_unavailable,
         test_cli_thresholds_fail_with_clear_stderr,
