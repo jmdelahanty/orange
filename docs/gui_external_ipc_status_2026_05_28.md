@@ -78,6 +78,10 @@ and crop sidecar continuity.
 - App config now covers the stable GUI profile defaults used by validation:
   `gui.stream.downsample`, `gui.display.*`, and
   `gui.telemetry.show_speed_graphs`.
+- App config also covers stable crop recording defaults:
+  `recording.crop.sink_mode`, `recording.crop.frame_pool_size`, and
+  `recording.crop.external_ipc.encode_queue_depth`; per-camera crop recorder
+  GPU placement remains a rig/topology launch setting.
 - Validation now checks source provenance, dirty tracked-worktree state,
   external recorder status/storage/protocol telemetry, CPU isolation, YOLO
   affinity, GUI display pacing, and the full crop/full-frame artifact surface.

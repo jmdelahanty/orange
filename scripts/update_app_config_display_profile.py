@@ -47,6 +47,19 @@ def nonnegative_int_in_range(max_value: int):
     return parse
 
 
+def int_in_range(min_value: int, max_value: int):
+    def parse(value: str) -> int:
+        try:
+            parsed = int(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError("must be an integer") from exc
+        if parsed < min_value or parsed > max_value:
+            raise argparse.ArgumentTypeError(f"must be in [{min_value},{max_value}]")
+        return parsed
+
+    return parse
+
+
 def gui_stream_downsample(value: str) -> int:
     try:
         parsed = int(value)
@@ -108,6 +121,30 @@ def parse_args() -> argparse.Namespace:
         dest="show_speed_graphs",
         action="store_false",
         help="Set gui.telemetry.show_speed_graphs=false.",
+    )
+    parser.add_argument(
+        "--crop-recording-sink-mode",
+        choices=["in_process", "real", "external_ipc"],
+        default=None,
+        help="Optional recording.crop.sink_mode value.",
+    )
+    parser.add_argument(
+        "--crop-external-encode-queue-depth",
+        type=int_in_range(1, 4096),
+        default=None,
+        help="Optional recording.crop.external_ipc.encode_queue_depth value.",
+    )
+    crop_pool_group = parser.add_mutually_exclusive_group()
+    crop_pool_group.add_argument(
+        "--crop-frame-pool-size",
+        type=int_in_range(1, 512),
+        default=None,
+        help="Optional recording.crop.frame_pool_size value.",
+    )
+    crop_pool_group.add_argument(
+        "--clear-crop-frame-pool-size",
+        action="store_true",
+        help="Set recording.crop.frame_pool_size=null.",
     )
     parser.add_argument(
         "--dry-run",
@@ -187,6 +224,46 @@ def update_display_config(payload: dict[str, Any], args: argparse.Namespace) -> 
         gui["telemetry"] = telemetry
 
     out["gui"] = gui
+
+    if (
+        args.crop_recording_sink_mode is not None
+        or args.crop_external_encode_queue_depth is not None
+        or args.crop_frame_pool_size is not None
+        or args.clear_crop_frame_pool_size
+    ):
+        recording = out.get("recording")
+        if recording is None:
+            recording = {}
+        if not isinstance(recording, dict):
+            raise SystemExit("recording must be a JSON object")
+
+        crop = recording.get("crop")
+        if crop is None:
+            crop = {}
+        if not isinstance(crop, dict):
+            raise SystemExit("recording.crop must be a JSON object")
+        crop = dict(crop)
+
+        if args.crop_recording_sink_mode is not None:
+            crop["sink_mode"] = args.crop_recording_sink_mode
+        if args.crop_frame_pool_size is not None:
+            crop["frame_pool_size"] = args.crop_frame_pool_size
+        elif args.clear_crop_frame_pool_size:
+            crop["frame_pool_size"] = None
+        if args.crop_external_encode_queue_depth is not None:
+            external_ipc = crop.get("external_ipc")
+            if external_ipc is None:
+                external_ipc = {}
+            if not isinstance(external_ipc, dict):
+                raise SystemExit("recording.crop.external_ipc must be a JSON object")
+            external_ipc = dict(external_ipc)
+            external_ipc["encode_queue_depth"] = args.crop_external_encode_queue_depth
+            crop["external_ipc"] = external_ipc
+
+        recording = dict(recording)
+        recording["crop"] = crop
+        out["recording"] = recording
+
     return out
 
 

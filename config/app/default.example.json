@@ -10,6 +10,13 @@
       "record_for_seconds": 0,
       "clip_seconds": 0
     },
+    "crop": {
+      "sink_mode": "in_process",
+      "frame_pool_size": null,
+      "external_ipc": {
+        "encode_queue_depth": 64
+      }
+    },
     "ptp_register_read_decimate": 1,
     "external_recorder_contract_path": ""
   },

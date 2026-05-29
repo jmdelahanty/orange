@@ -87,6 +87,13 @@ Missing-file behavior should remain non-fatal:
       "record_for_seconds": 0,
       "clip_seconds": 0
     },
+    "crop": {
+      "sink_mode": "in_process",
+      "frame_pool_size": null,
+      "external_ipc": {
+        "encode_queue_depth": 64
+      }
+    },
     "ptp_register_read_decimate": 1,
     "external_recorder_contract_path": ""
   },
@@ -174,7 +181,10 @@ current Orange/Citrus co-run workstation default:
 scripts/update_app_config_display_profile.py \
   --profile citrus_safe \
   --stream-downsample 4 \
-  --hide-speed-graphs
+  --hide-speed-graphs \
+  --crop-recording-sink-mode external_ipc \
+  --crop-external-encode-queue-depth 128 \
+  --crop-frame-pool-size 256
 ```
 
 ### `gui.stream`
@@ -356,6 +366,57 @@ crop sidecar clips align with the parent full-frame clip manifest. With
 `clip_seconds = 0`, crop outputs remain single-clip sidecars. Environment
 variables still take precedence over the JSON file and in-memory GUI controls.
 
+### `recording.crop`
+
+Type:
+
+- object
+
+Meaning:
+
+- app-level defaults for GUI crop recording worker behavior
+
+Fields:
+
+- `sink_mode`: one of `in_process`, `real`, or `external_ipc`
+- `frame_pool_size`: integer in `[1,512]` or `null`
+- `external_ipc.encode_queue_depth`: integer in `[1,4096]`
+
+Recommended default:
+
+```json
+{
+  "sink_mode": "in_process",
+  "frame_pool_size": null,
+  "external_ipc": {
+    "encode_queue_depth": 64
+  }
+}
+```
+
+`sink_mode = "real"` is accepted as an alias for `in_process`, matching the
+full-frame sink-mode naming. `external_ipc` routes crop frames through the
+supervised external crop recorder path when crop recording is enabled.
+
+`frame_pool_size = null` keeps Orange's built-in crop producer default. For the
+current four-camera Orange/Citrus co-run, the launcher still supplies
+`ORANGE_CROP_FRAME_POOL_SIZE=256`, derived from the larger crop external queue.
+If a workstation should use that profile for ordinary direct launches, set
+`recording.crop.frame_pool_size = 256` explicitly in the app config.
+
+Environment precedence:
+
+- `ORANGE_CROP_RECORDING_SINK_MODE` overrides `recording.crop.sink_mode`.
+- `ORANGE_CROP_FRAME_POOL_SIZE` overrides `recording.crop.frame_pool_size`.
+- `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH` overrides
+  `recording.crop.external_ipc.encode_queue_depth`.
+
+Per-camera crop recorder GPU placement remains outside app config for now:
+`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID` and
+`ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>` are rig/topology-specific
+validation controls and should become a rig/camera profile, not a global
+application default.
+
 ### `recording.ptp_register_read_decimate`
 
 Type:
@@ -511,6 +572,10 @@ Current implementation status:
 - `recording.sink_mode`, `recording.recording_control.*`, and
   `recording.ptp_register_read_decimate` are used by the GUI unless overridden
   by environment or launcher values
+- `recording.crop.sink_mode`, `recording.crop.frame_pool_size`, and
+  `recording.crop.external_ipc.encode_queue_depth` are applied to the GUI by
+  setting the existing worker/session environment controls when those env vars
+  are not already present
 - `gui.stream.downsample` and `gui.telemetry.show_speed_graphs` are used by the
   GUI unless overridden by environment or launcher values
 - `storage.latest_recording.*` now controls the local, canonical, and `/run`
@@ -600,6 +665,18 @@ intended as workstation defaults:
   - environment override: `ORANGE_GUI_CLIP_SECONDS`
   - built-in default should remain `0`; set a positive value only for
     timed/rolling profiles
+- `recording.crop.sink_mode`
+  - environment override: `ORANGE_CROP_RECORDING_SINK_MODE`
+  - built-in default should remain `in_process`
+  - production-like four-camera GUI validation should use `external_ipc`
+- `recording.crop.external_ipc.encode_queue_depth`
+  - environment override: `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
+  - built-in/default example value should remain `64`
+  - the current four-camera Orange/Citrus profile uses `128`
+- `recording.crop.frame_pool_size`
+  - environment override: `ORANGE_CROP_FRAME_POOL_SIZE`
+  - `null` keeps the built-in crop producer default
+  - the current four-camera Orange/Citrus profile uses `256`
 - `recording.ptp_register_read_decimate`
   - environment override: `ORANGE_PTP_REGISTER_READ_DECIMATE`
   - built-in default should remain `1` for diagnostic compatibility
@@ -648,17 +725,6 @@ experimental.
 These are currently launcher-only but should become schema fields if they are
 needed for routine operator runs:
 
-- crop recording sink mode:
-  - current env: `ORANGE_CROP_RECORDING_SINK_MODE`
-  - likely schema location: `recording.crop.sink_mode`
-- crop external recorder queue depth:
-  - current env: `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH`
-  - likely schema location: `recording.crop.external_ipc.encode_queue_depth`
-  - the current four-camera Orange/Citrus profile uses `128`
-- crop frame pool sizing:
-  - current env: `ORANGE_CROP_FRAME_POOL_SIZE`
-  - likely schema location: `recording.crop.frame_pool_size`
-  - if unset, the launcher currently derives this from crop queue depth
 - crop external recorder placement:
   - current envs: `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID` and
     `ORANGE_CROP_EXTERNAL_RECORDER_GPU_ID_CAM_<serial>`

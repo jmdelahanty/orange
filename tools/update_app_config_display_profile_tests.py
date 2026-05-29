@@ -127,6 +127,73 @@ def test_stream_and_telemetry_options_update_config() -> None:
         )
 
 
+def test_crop_options_update_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.app.config",
+                    "schema_version": 1,
+                    "recording": {
+                        "sink_mode": "external_ipc",
+                        "crop": {
+                            "sink_mode": "in_process",
+                            "frame_pool_size": None,
+                            "external_ipc": {"encode_queue_depth": 64},
+                        },
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "citrus_safe",
+                "--crop-recording-sink-mode",
+                "external_ipc",
+                "--crop-external-encode-queue-depth",
+                "128",
+                "--crop-frame-pool-size",
+                "256",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        crop = json.loads(path.read_text(encoding="utf-8"))["recording"]["crop"]
+        require(crop["sink_mode"] == "external_ipc", "crop sink mode should update")
+        require(crop["frame_pool_size"] == 256, "crop frame pool should update")
+        require(
+            crop["external_ipc"]["encode_queue_depth"] == 128,
+            "crop external queue depth should update",
+        )
+
+
+def test_clear_crop_frame_pool_size() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--clear-crop-frame-pool-size",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        crop = json.loads(path.read_text(encoding="utf-8"))["recording"]["crop"]
+        require(crop["frame_pool_size"] is None, "crop frame pool should clear to null")
+
+
 def test_dry_run_does_not_write() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "default.json"
@@ -182,14 +249,36 @@ def test_invalid_stream_downsample_fails() -> None:
         )
 
 
+def test_invalid_crop_queue_depth_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--crop-external-encode-queue-depth",
+                "0",
+            ]
+        )
+
+        require(result.returncode != 0, "invalid crop queue depth should fail")
+        require("must be in [1,4096]" in result.stderr, "failure should explain range")
+
+
 def main() -> int:
     tests = [
         test_citrus_safe_profile_updates_existing_config,
         test_explicit_values_override_profile_defaults,
         test_stream_and_telemetry_options_update_config,
+        test_crop_options_update_config,
+        test_clear_crop_frame_pool_size,
         test_dry_run_does_not_write,
         test_invalid_value_fails,
         test_invalid_stream_downsample_fails,
+        test_invalid_crop_queue_depth_fails,
     ]
     for test in tests:
         test()

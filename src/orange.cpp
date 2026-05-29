@@ -341,6 +341,24 @@ int gui_env_int(const char* name, const int default_value, const int min_value)
     return static_cast<int>(parsed);
 }
 
+void set_gui_env_from_app_config_if_absent(const char* name,
+                                           const std::string& value,
+                                           const char* label)
+{
+    if (!name || !*name || value.empty()) {
+        return;
+    }
+    const char* existing = std::getenv(name);
+    if (existing && *existing) {
+        return;
+    }
+    setenv(name, value.c_str(), 1);
+    if (label && *label) {
+        std::cout << "[GUI][app_config] " << label << ": "
+                  << value << std::endl;
+    }
+}
+
 int resolve_gui_crop_frame_pool_size()
 {
     const char* raw = std::getenv("ORANGE_CROP_FRAME_POOL_SIZE");
@@ -6459,6 +6477,24 @@ int main(int argc, char **args) {
         std::cout << "[GUI][PTP] PTP register-read decimation from app config: 1/"
                   << app_storage_config.gui_ptp_register_read_decimate
                   << std::endl;
+    }
+    set_gui_env_from_app_config_if_absent(
+        "ORANGE_CROP_RECORDING_SINK_MODE",
+        app_storage_config.gui_crop_recording_sink_mode,
+        app_storage_config.gui_crop_recording_sink_mode == "external_ipc"
+            ? "crop recording sink mode"
+            : "");
+    if (app_storage_config.gui_crop_external_encode_queue_depth > 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH",
+            std::to_string(app_storage_config.gui_crop_external_encode_queue_depth),
+            "crop external encode queue depth");
+    }
+    if (app_storage_config.gui_crop_frame_pool_size > 0) {
+        set_gui_env_from_app_config_if_absent(
+            "ORANGE_CROP_FRAME_POOL_SIZE",
+            std::to_string(app_storage_config.gui_crop_frame_pool_size),
+            "crop frame pool size");
     }
 
     const u32 gui_swap_interval_default =

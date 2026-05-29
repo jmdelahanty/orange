@@ -330,8 +330,12 @@ the four-camera launcher exposes `--gui-frame-max-fps`,
 persistent workstation default, set `gui.display.profile = "citrus_safe"` in
 `~/orange_data/config/app/default.json`. The same app config can also set
 `gui.stream.downsample = 4` and
-`gui.telemetry.show_speed_graphs = false`; env/launcher values remain the
-highest precedence.
+`gui.telemetry.show_speed_graphs = false`. For direct launches that should use
+the production-like crop recorder path, app config can also set
+`recording.crop.sink_mode = "external_ipc"`,
+`recording.crop.external_ipc.encode_queue_depth = 128`, and
+`recording.crop.frame_pool_size = 256`; env/launcher values remain the highest
+precedence.
 
 The four-camera external-IPC launcher now defaults
 `ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=128`, which auto-sizes

@@ -998,6 +998,21 @@ static bool read_optional_gui_stream_downsample_field(const nlohmann::json& obje
     return true;
 }
 
+static std::string normalize_app_crop_recording_sink_mode(std::string value)
+{
+    value = trim_ascii_copy(std::move(value));
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (value.empty() || value == "real" || value == "in_process") {
+        return "in_process";
+    }
+    if (value == "external_ipc") {
+        return value;
+    }
+    return std::string();
+}
+
 static bool apply_app_config_display_profile(AppStorageConfig* config,
                                              const std::string& profile,
                                              std::string* error_out,
@@ -1056,6 +1071,9 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_recording_sink_mode = "real";
     config.gui_recording_record_for_seconds = 0;
     config.gui_recording_clip_seconds = 0;
+    config.gui_crop_recording_sink_mode = "in_process";
+    config.gui_crop_external_encode_queue_depth = -1;
+    config.gui_crop_frame_pool_size = -1;
     config.gui_external_recorder_contract_path.clear();
     config.gui_external_recorder_contract = nlohmann::json::object();
     config.gui_ptp_register_read_decimate = 1;
@@ -1207,6 +1225,75 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                         config_path.string();
                 }
                 return false;
+            }
+        }
+        if (recording.contains("crop")) {
+            if (!recording["crop"].is_object()) {
+                if (error_out) {
+                    *error_out = "recording.crop must be an object in " + config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& crop = recording["crop"];
+            if (crop.contains("sink_mode")) {
+                if (!crop["sink_mode"].is_string()) {
+                    if (error_out) {
+                        *error_out = "recording.crop.sink_mode must be a string in " +
+                                     config_path.string();
+                    }
+                    return false;
+                }
+                const std::string normalized =
+                    normalize_app_crop_recording_sink_mode(
+                        crop["sink_mode"].get<std::string>());
+                if (normalized.empty()) {
+                    if (error_out) {
+                        *error_out =
+                            "recording.crop.sink_mode must be real, in_process, or "
+                            "external_ipc in " +
+                            config_path.string();
+                    }
+                    return false;
+                }
+                config.gui_crop_recording_sink_mode = normalized;
+            }
+            if (!read_optional_bounded_int_field(
+                    crop,
+                    "frame_pool_size",
+                    &config.gui_crop_frame_pool_size,
+                    1,
+                    512,
+                    error_out,
+                    "recording.crop")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+            if (crop.contains("external_ipc")) {
+                if (!crop["external_ipc"].is_object()) {
+                    if (error_out) {
+                        *error_out =
+                            "recording.crop.external_ipc must be an object in " +
+                            config_path.string();
+                    }
+                    return false;
+                }
+                const nlohmann::json& external_ipc = crop["external_ipc"];
+                if (!read_optional_bounded_int_field(
+                        external_ipc,
+                        "encode_queue_depth",
+                        &config.gui_crop_external_encode_queue_depth,
+                        1,
+                        4096,
+                        error_out,
+                        "recording.crop.external_ipc")) {
+                    if (error_out &&
+                        error_out->find(config_path.string()) == std::string::npos) {
+                        *error_out += " in " + config_path.string();
+                    }
+                    return false;
+                }
             }
         }
         if (recording.contains("external_recorder_contract")) {

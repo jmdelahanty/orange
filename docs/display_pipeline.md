@@ -65,7 +65,10 @@ interaction work.
 scripts/update_app_config_display_profile.py \
   --profile citrus_safe \
   --stream-downsample 4 \
-  --hide-speed-graphs
+  --hide-speed-graphs \
+  --crop-recording-sink-mode external_ipc \
+  --crop-external-encode-queue-depth 128 \
+  --crop-frame-pool-size 256
 ```
 
 - `gui.telemetry.show_speed_graphs=false` is the recommended performance
