@@ -213,6 +213,7 @@ nlohmann::json recording_stop_to_json(
         {"stop_triggered", snapshot.stop_triggered},
         {"drain_active", snapshot.drain_active},
         {"drain_timed_out", snapshot.drain_timed_out},
+        {"forced_finalize_requested", snapshot.forced_finalize_requested},
         {"grace_seconds", snapshot.grace_seconds},
         {"seconds_until_deadline", snapshot.seconds_until_deadline},
         {"drain_timeout_seconds", snapshot.drain_timeout_seconds},
@@ -227,6 +228,7 @@ nlohmann::json recording_stop_to_json(
         {"received_at_utc", snapshot.received_at_utc},
         {"stop_triggered_at_utc", snapshot.stop_triggered_at_utc},
         {"drain_completed_at_utc", snapshot.drain_completed_at_utc},
+        {"forced_finalize_requested_at_utc", snapshot.forced_finalize_requested_at_utc},
         {"last_event", snapshot.last_event},
         {"last_event_at_utc", snapshot.last_event_at_utc},
     };

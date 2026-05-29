@@ -165,6 +165,8 @@ struct GuiLocalControlStopSchedulerState {
     bool drain_completed = false;
     bool drain_timed_out = false;
     bool drain_timeout_reported = false;
+    bool forced_finalize_requested = false;
+    bool forced_finalize_stream_stop_requested = false;
     double grace_seconds = 0.0;
     double drain_timeout_seconds = 60.0;
     std::string method;
@@ -177,6 +179,7 @@ struct GuiLocalControlStopSchedulerState {
     std::string received_at_utc;
     std::string stop_triggered_at_utc;
     std::string drain_completed_at_utc;
+    std::string forced_finalize_requested_at_utc;
     std::string last_event;
     std::string last_event_at_utc;
     std::chrono::steady_clock::time_point deadline{};
@@ -3559,6 +3562,7 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     snapshot.stop_triggered = scheduler.stop_triggered;
     snapshot.grace_seconds = scheduler.grace_seconds;
     snapshot.drain_timed_out = scheduler.drain_timed_out;
+    snapshot.forced_finalize_requested = scheduler.forced_finalize_requested;
     snapshot.drain_timeout_seconds = scheduler.drain_timeout_seconds;
     snapshot.method = scheduler.method;
     snapshot.request_id = scheduler.request_id;
@@ -3570,6 +3574,8 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     snapshot.received_at_utc = scheduler.received_at_utc;
     snapshot.stop_triggered_at_utc = scheduler.stop_triggered_at_utc;
     snapshot.drain_completed_at_utc = scheduler.drain_completed_at_utc;
+    snapshot.forced_finalize_requested_at_utc =
+        scheduler.forced_finalize_requested_at_utc;
     snapshot.last_event = scheduler.last_event;
     snapshot.last_event_at_utc = scheduler.last_event_at_utc;
     if (scheduler.scheduled && has_gui_timepoint(scheduler.deadline)) {
@@ -3931,9 +3937,12 @@ void gui_drain_local_control_commands(
         stop_scheduler->drain_completed = false;
         stop_scheduler->drain_timed_out = false;
         stop_scheduler->drain_timeout_reported = false;
+        stop_scheduler->forced_finalize_requested = false;
+        stop_scheduler->forced_finalize_stream_stop_requested = false;
         stop_scheduler->stop_triggered_at = {};
         stop_scheduler->stop_triggered_at_utc.clear();
         stop_scheduler->drain_completed_at_utc.clear();
+        stop_scheduler->forced_finalize_requested_at_utc.clear();
         stop_scheduler->grace_seconds = grace_seconds;
         stop_scheduler->method = command.method;
         stop_scheduler->request_id = command.request_id;
@@ -4007,9 +4016,12 @@ void gui_poll_local_control_stop_scheduler(
     stop_scheduler->drain_completed = false;
     stop_scheduler->drain_timed_out = false;
     stop_scheduler->drain_timeout_reported = false;
+    stop_scheduler->forced_finalize_requested = false;
+    stop_scheduler->forced_finalize_stream_stop_requested = false;
     stop_scheduler->stop_triggered_at = std::chrono::steady_clock::now();
     stop_scheduler->stop_triggered_at_utc = get_current_utc_timestamp();
     stop_scheduler->drain_completed_at_utc.clear();
+    stop_scheduler->forced_finalize_requested_at_utc.clear();
     gui_note_local_control_stop_event(stop_scheduler, "stop_triggered");
     const std::string stop_reason =
         stop_scheduler->method == "stop_recording"
@@ -4051,7 +4063,7 @@ void gui_poll_local_control_stop_scheduler(
 void gui_poll_local_control_drain_timeout(
     GuiLocalControlStopSchedulerState* stop_scheduler,
     const CameraControl* camera_control,
-    const GuiRecordingRunState* recording_run,
+    GuiRecordingRunState* recording_run,
     const std::string& event_log_path)
 {
     if (!stop_scheduler ||
@@ -4079,6 +4091,17 @@ void gui_poll_local_control_drain_timeout(
     }
 
     stop_scheduler->drain_timed_out = true;
+    if (!stop_scheduler->forced_finalize_requested) {
+        stop_scheduler->forced_finalize_requested = true;
+        stop_scheduler->forced_finalize_requested_at_utc =
+            get_current_utc_timestamp();
+        if (recording_run && recording_run->stop_control.is_object()) {
+            recording_run->stop_control["drain_timed_out"] = true;
+            recording_run->stop_control["forced_finalize_requested"] = true;
+            recording_run->stop_control["forced_finalize_requested_at_utc"] =
+                stop_scheduler->forced_finalize_requested_at_utc;
+        }
+    }
     if (stop_scheduler->drain_timeout_reported) {
         return;
     }
@@ -4110,6 +4133,54 @@ void gui_poll_local_control_drain_timeout(
             {"elapsed_seconds", elapsed},
             {"timeout_seconds", stop_scheduler->drain_timeout_seconds},
             {"active_recorders", active_recorders},
+            {"forced_finalize_requested", stop_scheduler->forced_finalize_requested},
+            {"forced_finalize_requested_at_utc",
+             stop_scheduler->forced_finalize_requested_at_utc},
+            {"health", "critical"},
+            {"error_code", "drain_timeout"},
+        });
+}
+
+void gui_request_local_control_forced_finalize_if_needed(
+    GuiLocalControlStopSchedulerState* stop_scheduler,
+    CameraControl* camera_control,
+    GuiAutorunRequests* gui_autorun_requests,
+    const std::string& event_log_path)
+{
+    if (!stop_scheduler ||
+        !camera_control ||
+        !gui_autorun_requests ||
+        !stop_scheduler->forced_finalize_requested ||
+        stop_scheduler->forced_finalize_stream_stop_requested ||
+        stop_scheduler->drain_completed ||
+        !camera_control->subscribe) {
+        return;
+    }
+
+    gui_autorun_requests->toggle_streaming = true;
+    stop_scheduler->forced_finalize_stream_stop_requested = true;
+    gui_note_local_control_stop_event(
+        stop_scheduler,
+        "forced_finalize_stream_stop_requested");
+    std::cerr << "[GUI][local_control] requesting stream shutdown for forced finalize"
+              << " method=" << stop_scheduler->method
+              << " request_id=" << stop_scheduler->request_id
+              << " operation_id=" << stop_scheduler->operation_id
+              << std::endl;
+    gui_log_local_control_event(
+        event_log_path,
+        {
+            {"event", "recording_drain_forced_finalize_requested"},
+            {"method", stop_scheduler->method},
+            {"request_id", stop_scheduler->request_id},
+            {"operation_id", stop_scheduler->operation_id},
+            {"command_source", stop_scheduler->source},
+            {"experiment_id", stop_scheduler->experiment_id},
+            {"terminal_state", stop_scheduler->terminal_state},
+            {"reason", stop_scheduler->reason},
+            {"forced_finalize_requested_at_utc",
+             stop_scheduler->forced_finalize_requested_at_utc},
+            {"action", "stream_shutdown"},
             {"health", "critical"},
             {"error_code", "drain_timeout"},
         });
@@ -7132,6 +7203,11 @@ int main(int argc, char **args) {
             camera_control,
             &gui_recording_run,
             calibration_tool_busy);
+        gui_request_local_control_forced_finalize_if_needed(
+            &gui_local_control_stop_scheduler,
+            camera_control,
+            &gui_autorun_requests,
+            gui_local_control_event_log_path);
         if (gui_local_control_exit_pending_after_finalize &&
             !camera_control->record_video &&
             !camera_control->recording_draining) {

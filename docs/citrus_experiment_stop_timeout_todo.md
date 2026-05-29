@@ -176,12 +176,14 @@ Candidate hook points:
   - `drain_elapsed_seconds`,
   - `stop_triggered_at_utc`,
   - `drain_completed_at_utc`.
-- [ ] Add bounded drain timeout after delayed stop trigger (for example 30-60s).
+- [x] Add bounded drain timeout after delayed stop trigger (for example 30-60s).
 - [x] Monitor `active_recorders` and drain progress for status/log telemetry.
-- [ ] Use drain progress monitoring for bounded forced-finalize policy.
+- [x] Use drain progress monitoring for bounded forced-finalize policy.
 - [x] On timeout, emit critical status.
-- [ ] On timeout, execute forced-safe finalize path.
-- [ ] Ensure this path is idempotent and does not deadlock queues.
+- [x] On timeout, request forced-safe finalization through the existing stream
+      shutdown path, which stops acquisition, stops/join workers, and then
+      runs the normal session finalizer.
+- [x] Ensure this path is idempotent and does not deadlock queues.
 
 Refs:
 

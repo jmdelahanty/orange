@@ -308,6 +308,7 @@ void test_status_reports_local_control_drain_timeout_telemetry()
     status.local_control_recording_stop.stop_triggered = true;
     status.local_control_recording_stop.drain_active = true;
     status.local_control_recording_stop.drain_timed_out = true;
+    status.local_control_recording_stop.forced_finalize_requested = true;
     status.local_control_recording_stop.drain_timeout_seconds = 60.0;
     status.local_control_recording_stop.drain_elapsed_seconds = 61.25;
     status.local_control_recording_stop.method = "stop_recording";
@@ -317,6 +318,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
     status.local_control_recording_stop.stop_triggered_at_utc =
         "2026-05-29T00:00:01Z";
     status.local_control_recording_stop.drain_completed_at_utc.clear();
+    status.local_control_recording_stop.forced_finalize_requested_at_utc =
+        "2026-05-29T00:01:02Z";
     status.local_control_recording_stop.last_event = "drain_timeout";
     status.local_control_recording_stop.last_event_at_utc =
         "2026-05-29T00:01:02Z";
@@ -334,6 +337,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
     require(stop["stop_triggered"].get<bool>(), "stop should be marked triggered");
     require(stop["drain_active"].get<bool>(), "drain should be marked active");
     require(stop["drain_timed_out"].get<bool>(), "drain timeout should be visible");
+    require(stop["forced_finalize_requested"].get<bool>(),
+            "timed-out drain should report forced finalize request");
     require(stop["drain_timeout_seconds"].get<double>() == 60.0,
             "drain timeout threshold should be visible");
     require(stop["drain_elapsed_seconds"].get<double>() == 61.25,
@@ -343,6 +348,9 @@ void test_status_reports_local_control_drain_timeout_telemetry()
             "stop trigger timestamp should be visible");
     require(stop["drain_completed_at_utc"].get<std::string>().empty(),
             "unfinished drain should have no completion timestamp");
+    require(stop["forced_finalize_requested_at_utc"].get<std::string>() ==
+                "2026-05-29T00:01:02Z",
+            "forced finalize request timestamp should be visible");
     require(stop["last_event"].get<std::string>() == "drain_timeout",
             "last scheduler event should report drain timeout");
 
@@ -350,6 +358,8 @@ void test_status_reports_local_control_drain_timeout_telemetry()
         json["local_control"]["citrus_completion_stop"];
     require(completion_alias["drain_timed_out"].get<bool>(),
             "compatibility alias should expose drain timeout");
+    require(completion_alias["forced_finalize_requested"].get<bool>(),
+            "compatibility alias should expose forced finalize request");
     require(completion_alias["health"].get<std::string>() == "critical",
             "compatibility alias should expose critical health");
     require(completion_alias["request_id"].get<std::string>() == "stop-req-1",

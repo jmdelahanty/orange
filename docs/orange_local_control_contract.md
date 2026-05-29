@@ -459,6 +459,17 @@ fails the orchestrator before post-run validators execute. Use
 `--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
 expected observation rather than a pass/fail gate.
 
+When Orange itself sees a local-control drain exceed
+`ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` /
+`ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS`, it marks
+`recording_stop.drain_timed_out=true`,
+`recording_stop.forced_finalize_requested=true`, emits a
+`recording_drain_timeout` GUI event, and requests forced-safe finalization by
+taking the existing stream-shutdown path. That path stops acquisition, stops
+and joins workers, shuts down recording pipelines, and then calls the normal
+recording-session finalizer. The forced request is idempotent; repeated GUI
+ticks do not re-request stream shutdown.
+
 When the orchestrator launches Orange or Citrus itself, readiness waits also
 poll those child processes. If a launched GUI exits before its relevant
 readiness/completion evidence is captured, the orchestrator fails immediately

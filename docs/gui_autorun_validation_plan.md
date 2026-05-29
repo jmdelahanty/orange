@@ -457,6 +457,13 @@ GUI-thread `recording_start_triggered`, `recording_stop_triggered`, and
 `--allow-missing-orange-event-log` only for diagnostic attach runs where that
 evidence is intentionally unavailable.
 
+If Orange's local-control drain timeout fires during one of these runs, Orange
+now requests forced-safe finalization through the same stream-shutdown path used
+by the operator. The status surface reports
+`recording_stop.forced_finalize_requested=true`, and the event log records
+`recording_drain_forced_finalize_requested` before the stream-stop path joins
+workers and runs the normal session finalizer.
+
 The profile also defaults Orange/Citrus stdout logs to operation-specific
 `/tmp/<operation_id>_orange.log` and `/tmp/<operation_id>_citrus.log` paths so
 later attempts do not overwrite the previous run. When Orange reports a
