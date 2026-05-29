@@ -156,6 +156,7 @@ struct GuiRecordingRunState {
     std::chrono::steady_clock::time_point recording_started_at{};
     std::chrono::steady_clock::time_point recording_stop_requested_at{};
     std::chrono::steady_clock::time_point recording_drained_at{};
+    bool diagnostic_finalize_stall_reported = false;
 };
 
 struct GuiLocalControlStopSchedulerState {
@@ -383,6 +384,22 @@ int gui_local_control_drain_timeout_seconds()
         return gui_env_int("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
     }
     return gui_env_int("ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
+}
+
+int gui_local_control_diagnostic_finalize_stall_seconds()
+{
+    if (const char* raw =
+            std::getenv("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS");
+        raw && *raw) {
+        return gui_env_int(
+            "ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS",
+            0,
+            0);
+    }
+    return gui_env_int(
+        "ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS",
+        0,
+        0);
 }
 
 void set_gui_env_from_app_config_if_absent(const char* name,
@@ -1717,6 +1734,7 @@ void gui_note_recording_started(GuiRecordingRunState* run,
     run->recording_drained_at_utc.clear();
     run->stop_reason = "manual_stop";
     run->stop_control = nlohmann::json::object();
+    run->diagnostic_finalize_stall_reported = false;
     if (camera_control) {
         camera_control->preserve_recording_session_state = true;
     }
@@ -1814,6 +1832,39 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 camera_control->recording_draining ||
                 camera_control->active_recorders.load(std::memory_order_relaxed) > 0)) {
         return false;
+    }
+
+    const int diagnostic_finalize_stall_seconds =
+        gui_local_control_diagnostic_finalize_stall_seconds();
+    if (diagnostic_finalize_stall_seconds > 0 &&
+        run->stop_control.is_object() &&
+        !run->stop_control.empty() &&
+        has_gui_timepoint(run->recording_stop_requested_at)) {
+        const double elapsed =
+            std::chrono::duration<double>(
+                std::chrono::steady_clock::now() -
+                run->recording_stop_requested_at)
+                .count();
+        if (elapsed < static_cast<double>(diagnostic_finalize_stall_seconds)) {
+            if (!run->diagnostic_finalize_stall_reported) {
+                run->diagnostic_finalize_stall_reported = true;
+                run->stop_control["diagnostic_finalize_stall_seconds"] =
+                    diagnostic_finalize_stall_seconds;
+                run->stop_control["diagnostic_finalize_stall_active"] = true;
+                std::cerr
+                    << "[GUI][local_control] diagnostic finalize stall active"
+                    << " seconds=" << diagnostic_finalize_stall_seconds
+                    << " request_id="
+                    << run->stop_control.value("request_id", std::string())
+                    << " operation_id="
+                    << run->stop_control.value("operation_id", std::string())
+                    << std::endl;
+            }
+            return false;
+        }
+        if (run->diagnostic_finalize_stall_reported) {
+            run->stop_control["diagnostic_finalize_stall_active"] = false;
+        }
     }
 
     run->recording_drained_at = std::chrono::steady_clock::now();

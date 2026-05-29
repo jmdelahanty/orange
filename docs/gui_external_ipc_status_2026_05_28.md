@@ -17,6 +17,8 @@ work on `exp/gop-split-a16`.
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_21_48_48`.
 - Latest strict Orange/Citrus rolling artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_44_43`.
+- Latest Orange/Citrus forced-timeout diagnostic artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_10_43_46`.
 - Previous strict Orange/Citrus rolling artifact (orchestrator-owned stop):
   `/home/jeremy/orange_data/exp/unsorted/2026_05_29_02_26_12`.
 - Earlier strict Orange/Citrus rolling artifact:
@@ -24,6 +26,12 @@ work on `exp/gop-split-a16`.
 - The latest strict Orange/Citrus artifact passed with `0` failures and
   `0` warnings, strict main-video content validation for all four cameras, and
   persisted Citrus-owned local-control stop ACK state `executed`.
+- The latest forced-timeout diagnostic passed the orchestrator's
+  `--allow-orange-drain-timeout` consistency gates: Orange reported
+  `ack_state=failed_timeout`, `drain_timed_out=true`,
+  `forced_finalize_requested=true`, and
+  `forced_finalize_stream_stop_requested=true`, then finalized
+  `recording_session.json` with `last_event=finalized_after_drain_timeout`.
 - Earlier GUI-only single-clip hardware artifact:
   `/home/jeremy/orange_data/exp/unsorted/2026_05_28_15_38_33`.
 - Earlier GUI-only rolling-clip hardware artifact:

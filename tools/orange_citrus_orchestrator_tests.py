@@ -1378,6 +1378,86 @@ def test_post_terminal_citrus_exit_is_not_an_orange_wait_failure() -> None:
     )
 
 
+def test_clean_orange_exit_after_manifest_finalization_is_accepted() -> None:
+    module = load_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recording_folder = root / "recording"
+        recording_folder.mkdir()
+        operation_id = "op-clean-orange-exit-finalized"
+        (recording_folder / "recording_session.json").write_text(
+            json.dumps(
+                {
+                    "recording": {
+                        "control": {
+                            "ack_state": "failed_timeout",
+                            "drain_completed": True,
+                            "drain_timed_out": True,
+                            "error_code": "drain_timeout",
+                            "forced_finalize_requested": True,
+                            "forced_finalize_stream_stop_requested": True,
+                            "last_event": "finalized_after_drain_timeout",
+                            "method": "stop_recording",
+                            "operation_id": operation_id,
+                            "request_id": f"{operation_id}:orange:stop_recording",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        args = module.parse_args(
+            [
+                "--execute",
+                "--operation-id",
+                operation_id,
+                "--poll-interval-seconds",
+                "0.01",
+                "--socket-timeout-seconds",
+                "0.01",
+                "--timeout-seconds",
+                "1",
+            ]
+        )
+        orchestrator = module.Orchestrator(args)
+        orchestrator.last_orange_status = {
+            "recording": {"folder": str(recording_folder)},
+            "readiness": {
+                "recording_active": False,
+                "recording_finalized": False,
+                "recording_finalizing": True,
+            },
+            "local_control": {
+                "recording_stop": {
+                    "ack_state": "executing",
+                    "operation_id": operation_id,
+                }
+            },
+        }
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote('import sys; sys.exit(0)')}"
+        orchestrator.start_process("orange", command, {}, "")
+        status = orchestrator.wait_for_status(
+            "orange",
+            module.ORANGE_REQUEST_SCHEMA_ID,
+            str(root / "missing-orange.sock"),
+            module.orange_recording_finalized,
+            1,
+            "recording_finalized",
+        )
+        require(
+            module.orange_recording_finalized(status),
+            "manifest-backed clean Orange exit should satisfy finalized predicate",
+        )
+        require(
+            module.orange_recording_stop_ack_state(status) == "failed_timeout",
+            "manifest-backed status should preserve timeout ack state",
+        )
+        require(
+            orchestrator.steps[-1].detail.get("accepted_clean_process_exit"),
+            "wait step should record that a clean Orange exit was accepted",
+        )
+
+
 def test_cleanup_started_processes_terminates_launched_children() -> None:
     module = load_module()
     with tempfile.TemporaryDirectory() as tmp:
@@ -1490,6 +1570,7 @@ def main() -> int:
         test_failure_summary_uses_last_known_status_for_artifacts,
         test_wait_reports_launched_process_exit,
         test_post_terminal_citrus_exit_is_not_an_orange_wait_failure,
+        test_clean_orange_exit_after_manifest_finalization_is_accepted,
         test_cleanup_started_processes_terminates_launched_children,
         test_launch_socket_preflight_refuses_live_socket,
         test_launch_socket_preflight_allows_absent_socket,

@@ -516,6 +516,17 @@ generic socket timeout. Once Citrus terminal/perf-path evidence has been
 captured, a later Citrus process exit is recorded in `started_processes[]` but
 does not make Orange finalization fail.
 
+There is one narrow Orange process-exit acceptance path. If launched Orange
+exits with return code `0` while the orchestrator is waiting for
+`recording_finalized`, the orchestrator may infer finalization only from the
+last known recording folder's `recording_session.json`, and only when that
+manifest's stop-control `operation_id` matches the current operation and its
+control metadata proves drain completion. This covers the expected
+`ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=1` race where Orange finalizes,
+writes the manifest, removes the socket, and exits before one last status poll
+can observe `readiness.recording_finalized=true`. Early Orange exits without
+matching manifest evidence still fail.
+
 After the orchestrator has captured Citrus terminal/perf-path evidence, waited
 for Orange finalization, and run validators, it owns cleanup of the launched GUI
 processes. Any launched child process still alive at that point is terminated by

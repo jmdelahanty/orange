@@ -394,6 +394,36 @@ def test_allow_orange_drain_timeout_passes_through() -> None:
     )
 
 
+def test_diagnostic_drain_timeout_profile_passes_orange_env() -> None:
+    result = run_profile(
+        [
+            "--operation-id",
+            "profile-diagnostic-timeout",
+            "--orange-drain-timeout-seconds",
+            "1",
+            "--orange-diagnostic-finalize-stall-seconds",
+            "3",
+            "--allow-orange-drain-timeout",
+            "--skip-orange-validation",
+        ]
+    )
+    require(result.returncode == 0, f"profile diagnostic timeout dry-run failed: {result.stderr}")
+    payload = json.loads(result.stdout)
+    orange_env = payload["orange"]["env_overlay"]
+    require(
+        payload["orange"]["allow_drain_timeout"],
+        "diagnostic timeout profile should allow Orange drain-timeout status",
+    )
+    require(
+        orange_env["ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS"] == "1",
+        "profile should pass the diagnostic drain-timeout override to Orange",
+    )
+    require(
+        orange_env["ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS"] == "3",
+        "profile should pass the diagnostic finalizer stall to Orange",
+    )
+
+
 def test_allow_missing_orange_event_log_passes_through() -> None:
     result = run_profile(
         [
@@ -419,6 +449,7 @@ def main() -> int:
         test_citrus_completion_notify_profile_waits_for_citrus_owned_stop,
         test_allow_preexisting_sockets_disables_launch_preflight,
         test_allow_orange_drain_timeout_passes_through,
+        test_diagnostic_drain_timeout_profile_passes_orange_env,
         test_allow_missing_orange_event_log_passes_through,
     ]
     for test in tests:

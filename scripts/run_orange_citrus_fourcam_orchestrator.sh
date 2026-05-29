@@ -74,6 +74,11 @@ Options:
                                   Copied into <recording_folder>/orchestrator/.
   --validation-timeout-seconds <seconds>
   --orange-stop-grace-seconds <seconds>
+  --orange-drain-timeout-seconds <seconds>
+                                  Override Orange local-control drain timeout.
+  --orange-diagnostic-finalize-stall-seconds <seconds>
+                                  Diagnostic-only finalizer stall to exercise
+                                  drain-timeout/forced-finalize handling.
   --stop-policy <policy>         stop_recording, citrus_completion,
                                   citrus_completion_notify, or none.
   --timeout-seconds <seconds>    Orange/Citrus readiness timeout.
@@ -192,6 +197,8 @@ TIMEOUT_SECONDS="${ORANGE_CITRUS_TIMEOUT_SECONDS:-180}"
 CITRUS_TERMINAL_TIMEOUT_SECONDS="${ORANGE_CITRUS_TERMINAL_TIMEOUT_SECONDS:-600}"
 ORANGE_FINALIZE_TIMEOUT_SECONDS="${ORANGE_CITRUS_ORANGE_FINALIZE_TIMEOUT_SECONDS:-240}"
 ORANGE_STOP_GRACE_SECONDS="${ORANGE_CITRUS_ORANGE_STOP_GRACE_SECONDS:-}"
+ORANGE_DRAIN_TIMEOUT_SECONDS="${ORANGE_CITRUS_ORANGE_DRAIN_TIMEOUT_SECONDS:-}"
+ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS="${ORANGE_CITRUS_ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS:-}"
 ALLOW_ORANGE_DRAIN_TIMEOUT="${ORANGE_CITRUS_ALLOW_ORANGE_DRAIN_TIMEOUT:-0}"
 REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG="${ORANGE_CITRUS_REQUIRE_ORANGE_LOCAL_CONTROL_EVENT_LOG:-1}"
 VALIDATION_TIMEOUT_SECONDS="${ORANGE_CITRUS_VALIDATION_TIMEOUT_SECONDS:-300}"
@@ -414,6 +421,18 @@ while [[ $# -gt 0 ]]; do
       ORANGE_STOP_GRACE_SECONDS="$1"
       shift
       ;;
+    --orange-drain-timeout-seconds)
+      shift
+      require_value "--orange-drain-timeout-seconds" "$#"
+      ORANGE_DRAIN_TIMEOUT_SECONDS="$1"
+      shift
+      ;;
+    --orange-diagnostic-finalize-stall-seconds)
+      shift
+      require_value "--orange-diagnostic-finalize-stall-seconds" "$#"
+      ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS="$1"
+      shift
+      ;;
     --stop-policy)
       shift
       require_value "--stop-policy" "$#"
@@ -486,6 +505,18 @@ if [[ -n "${CITRUS_RUN_SECONDS}" ]]; then
     exit 2
   }
 fi
+if [[ -n "${ORANGE_DRAIN_TIMEOUT_SECONDS}" ]]; then
+  is_nonnegative_integer "${ORANGE_DRAIN_TIMEOUT_SECONDS}" || {
+    echo "ORANGE_CITRUS_ORANGE_DRAIN_TIMEOUT_SECONDS must be a non-negative integer" >&2
+    exit 2
+  }
+fi
+if [[ -n "${ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS}" ]]; then
+  is_nonnegative_integer "${ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS}" || {
+    echo "ORANGE_CITRUS_ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS must be a non-negative integer" >&2
+    exit 2
+  }
+fi
 case "${STOP_POLICY}" in
   stop_recording|citrus_completion|citrus_completion_notify|none)
     ;;
@@ -509,6 +540,12 @@ if [[ "${STOP_POLICY}" == "citrus_completion_notify" ]]; then
 fi
 if [[ -n "${ORANGE_RECORD_SECONDS}" ]]; then
   ORANGE_PROFILE_ENV+=("ORANGE_GUI_RECORD_FOR_SECONDS=${ORANGE_RECORD_SECONDS}")
+fi
+if [[ -n "${ORANGE_DRAIN_TIMEOUT_SECONDS}" ]]; then
+  ORANGE_PROFILE_ENV+=("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS=${ORANGE_DRAIN_TIMEOUT_SECONDS}")
+fi
+if [[ -n "${ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS}" ]]; then
+  ORANGE_PROFILE_ENV+=("ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS=${ORANGE_DIAGNOSTIC_FINALIZE_STALL_SECONDS}")
 fi
 
 if [[ "${ORANGE_COMMAND_MODE}" == "default" ]]; then

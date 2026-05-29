@@ -56,8 +56,9 @@ Explicit limitation note (current state):
 - Citrus completion emission is opt-in, not enabled by default.
 - Orange/Citrus orchestrator live validation has passed for both the
   orchestrator-owned `stop_recording` path and the Citrus-owned
-  `citrus_completion` notifier path. Manual Citrus STOP ALL and induced drain
-  timeout validation remain open.
+  `citrus_completion` notifier path. The induced drain-timeout path has also
+  passed as a diagnostic forced-finalize run. Manual Citrus STOP ALL validation
+  remains open.
 
 Refs:
 
@@ -104,6 +105,19 @@ Refs:
   the normal GUI path, persisted `recording.control.command_source="citrus"`
   and `ack_state="executed"`, and the Orange GUI validator passed with
   `0` failures and `0` warnings.
+- Diagnostic forced-timeout validation passed on 2026-05-29:
+  `/home/jeremy/orange_data/exp/unsorted/2026_05_29_10_43_46`.
+  The orchestrator ran with
+  `--orange-drain-timeout-seconds 1`,
+  `--orange-diagnostic-finalize-stall-seconds 3`, and
+  `--allow-orange-drain-timeout`. Orange reported
+  `ack_state="failed_timeout"`, `drain_timed_out=true`,
+  `forced_finalize_requested=true`, and
+  `forced_finalize_stream_stop_requested=true`, then finalized the manifest
+  with `last_event="finalized_after_drain_timeout"` and
+  `drain_completed=true`. The orchestrator event-log gate observed
+  `recording_drain_timeout`, `recording_drain_forced_finalize_requested`, and
+  `recording_drain_finalized`.
 - Existing SHM queues are per-camera frame/update queues (`/shm_cam_<serial>`), not a dedicated control channel, so the recommended control IPC transport remains future work.
 
 ## Desired Behavior
@@ -283,7 +297,10 @@ Refs:
   - 2026-05-29 direct-notifier run recorded four-camera full-frame and crop
     external IPC at about `100 fps`, waited the default `10` second completion
     grace, then drained/finalized with `0` drops and `0` validator warnings.
-- [ ] Test forced-timeout path with induced writer stall.
+- [x] Test forced-timeout path with induced writer stall:
+  - 2026-05-29 diagnostic run used a synthetic finalizer stall to force the
+    local-control drain timeout and verified forced-safe finalization telemetry
+    and persisted stop-control metadata.
 
 ## Definition of Done
 
@@ -292,6 +309,6 @@ Refs:
 - [x] Delay is configurable and defaults to 10 seconds.
 - [x] Stop uses existing safe drain/finalize behavior for orchestrator-owned
       `stop_recording` and Citrus-owned `citrus_completion` paths.
-- [ ] Drain timeout path is bounded and observable.
+- [x] Drain timeout path is bounded and observable.
 - [x] Duplicate/out-of-order control packets do not cause inconsistent state in
       the local-control scheduler tests.

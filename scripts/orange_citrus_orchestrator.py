@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import errno
 import json
 import os
@@ -344,6 +345,11 @@ def orange_recording_finalized(status: dict[str, Any]) -> bool:
     return bool(json_path(status, ["readiness", "recording_finalized"], False))
 
 
+def orange_recording_folder(status: dict[str, Any]) -> str:
+    value = json_path(status, ["recording", "folder"], "")
+    return value if isinstance(value, str) else ""
+
+
 def orange_local_control_recording_stop(status: dict[str, Any]) -> dict[str, Any]:
     value = json_path(status, ["local_control", "recording_stop"], {})
     return value if isinstance(value, dict) else {}
@@ -491,6 +497,80 @@ def summarize_orange_stop_ack_status(
         "drain_timed_out": orange_recording_stop_drain_timed_out(status),
         "failures": failures,
     }
+
+
+def infer_orange_finalized_status_from_session(
+    base_status: dict[str, Any],
+    *,
+    operation_id: str,
+) -> dict[str, Any] | None:
+    folder = orange_recording_folder(base_status)
+    if not folder:
+        return None
+    session_path = Path(folder) / "recording_session.json"
+    try:
+        payload = json.loads(session_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    control = json_path(payload, ["recording", "control"], {})
+    if not isinstance(control, dict):
+        return None
+
+    control_operation_id = str(control.get("operation_id", ""))
+    if operation_id and control_operation_id != operation_id:
+        return None
+
+    last_event = str(control.get("last_event", ""))
+    drain_completed = bool(control.get("drain_completed", False))
+    if not drain_completed or last_event not in {
+        "finalized",
+        "finalized_after_drain_timeout",
+    }:
+        return None
+
+    status = copy.deepcopy(base_status)
+    status["phase"] = "recording_finalized"
+
+    readiness = status.get("readiness", {})
+    readiness = readiness if isinstance(readiness, dict) else {}
+    readiness = dict(readiness)
+    readiness["recording_active"] = False
+    readiness["recording_finalizing"] = False
+    readiness["recording_finalized"] = True
+    status["readiness"] = readiness
+
+    recording = status.get("recording", {})
+    recording = recording if isinstance(recording, dict) else {}
+    recording = dict(recording)
+    recording["folder"] = folder
+    status["recording"] = recording
+
+    local_control = status.get("local_control", {})
+    local_control = local_control if isinstance(local_control, dict) else {}
+    local_control = dict(local_control)
+    recording_stop = local_control.get("recording_stop", {})
+    recording_stop = recording_stop if isinstance(recording_stop, dict) else {}
+    recording_stop = dict(recording_stop)
+    recording_stop.update(control)
+    recording_stop["drain_active"] = False
+    if drain_completed:
+        recording_stop["drain_completed"] = True
+    if "state" not in recording_stop or not recording_stop["state"]:
+        if last_event == "finalized_after_drain_timeout":
+            recording_stop["state"] = "finalized_after_drain_timeout"
+        elif drain_completed:
+            recording_stop["state"] = "finalized"
+    if "ack_state" not in recording_stop or not recording_stop["ack_state"]:
+        recording_stop["ack_state"] = (
+            "failed_timeout" if bool(recording_stop.get("drain_timed_out")) else "executed"
+        )
+    local_control["recording_stop"] = recording_stop
+    if str(recording_stop.get("method", "")) == "citrus_completion":
+        local_control["citrus_completion_stop"] = dict(recording_stop)
+    status["local_control"] = local_control
+    status["orchestrator_inferred_recording_session"] = str(session_path)
+    return status
 
 
 def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
@@ -790,6 +870,19 @@ class Orchestrator:
         last_error = ""
         last_status: dict[str, Any] = {}
         while time.monotonic() <= deadline:
+            if label == "orange":
+                inferred_status = self.infer_orange_finalized_after_clean_exit(
+                    description=description,
+                    predicate=predicate,
+                    last_status=last_status,
+                )
+                if inferred_status is not None:
+                    step.finish(
+                        ok=True,
+                        status=inferred_status,
+                        accepted_clean_process_exit=True,
+                    )
+                    return inferred_status
             self.raise_if_started_process_exited(f"waiting for {label} {description}")
             try:
                 _, status = self.status(label, schema_id, socket_path)
@@ -888,6 +981,28 @@ class Orchestrator:
                 f"{label} process exited while {context}: "
                 f"pid={pid} returncode={returncode} log_path={log_path}"
             )
+
+    def infer_orange_finalized_after_clean_exit(
+        self,
+        *,
+        description: str,
+        predicate: Callable[[dict[str, Any]], bool],
+        last_status: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if not description.startswith("recording_finalized"):
+            return None
+        self.refresh_started_processes()
+        process = self.processes.get("orange")
+        if process is None or process.poll() != 0:
+            return None
+        status = infer_orange_finalized_status_from_session(
+            last_status or self.last_orange_status,
+            operation_id=self.args.operation_id,
+        )
+        if status is None or not predicate(status):
+            return None
+        self.last_orange_status = status
+        return status
 
     def cleanup_started_processes(
         self,

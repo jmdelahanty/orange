@@ -188,12 +188,52 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
     )
 
 
+def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
+    orange = read("src/orange.cpp")
+    env_body = function_body(
+        orange,
+        "gui_local_control_diagnostic_finalize_stall_seconds",
+    )
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS" in env_body,
+        "diagnostic finalize stall must have a GUI env knob",
+    )
+    require(
+        "ORANGE_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS" in env_body,
+        "diagnostic finalize stall must have a non-GUI alias",
+    )
+    finalize_body = function_body(orange, "gui_finalize_recording_session_if_ready")
+    require(
+        "gui_local_control_diagnostic_finalize_stall_seconds()" in finalize_body,
+        "recording finalizer must consult the diagnostic stall knob",
+    )
+    require(
+        'run->stop_control["diagnostic_finalize_stall_active"] = true' in finalize_body,
+        "diagnostic stall must persist active-state evidence in stop control",
+    )
+    require(
+        "return false;" in finalize_body,
+        "diagnostic stall must defer finalization until the stall interval elapses",
+    )
+    wrapper = read("scripts/orange_gui_validation_wrapper.sh")
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS" in wrapper,
+        "sudo validation wrapper must allow the diagnostic stall env through",
+    )
+    launcher = read("scripts/run_gui_aq_off_validation.sh")
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_DIAGNOSTIC_FINALIZE_STALL_SECONDS" in launcher,
+        "GUI validation launcher must pass the diagnostic stall env through",
+    )
+
+
 def main() -> int:
     tests = [
         test_drain_timeout_requests_forced_stream_shutdown,
         test_stop_commands_keep_gui_thread_lifecycle_authority,
         test_completion_and_stop_grace_defaults_are_distinct,
         test_recording_session_stop_control_carries_drain_evidence,
+        test_diagnostic_finalize_stall_can_exercise_drain_timeout,
     ]
     for test in tests:
         test()
