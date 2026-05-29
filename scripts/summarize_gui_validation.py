@@ -1488,6 +1488,16 @@ def summarize_recording_session(manifest: dict[str, Any]) -> dict[str, Any]:
             "grace_seconds",
             "stop_triggered_at_utc",
             "drain_timeout_seconds",
+            "drain_completed",
+            "drain_completed_at_utc",
+            "drain_timed_out",
+            "forced_finalize_requested",
+            "forced_finalize_stream_stop_requested",
+            "forced_finalize_requested_at_utc",
+            "health",
+            "error_code",
+            "last_event",
+            "last_event_at_utc",
         )
         summary["local_control_stop"] = {
             key: control.get(key)
@@ -1602,7 +1612,10 @@ def print_human(summary: dict[str, Any]) -> None:
                 f"method={local_control_stop.get('method', 'unknown')} "
                 f"operation_id={local_control_stop.get('operation_id', 'unknown')} "
                 f"source={local_control_stop.get('command_source', 'unknown')} "
-                f"reason={local_control_stop.get('reason', 'unknown')}"
+                f"reason={local_control_stop.get('reason', 'unknown')} "
+                f"drain_timed_out={local_control_stop.get('drain_timed_out', 'unknown')} "
+                "forced_stream_stop="
+                f"{local_control_stop.get('forced_finalize_stream_stop_requested', 'unknown')}"
             )
     sync = summary.get("sync", {})
     print(f"Sync: mode={sync.get('mode', 'unknown')} camera_sync_enabled={sync.get('camera_sync_enabled', 'unknown')}")

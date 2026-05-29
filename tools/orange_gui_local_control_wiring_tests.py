@@ -47,6 +47,10 @@ def test_drain_timeout_requests_forced_stream_shutdown() -> None:
         'recording_run->stop_control["forced_finalize_requested"] = true' in timeout_body,
         "drain-timeout path must preserve forced-finalize provenance in stop control",
     )
+    require(
+        'recording_run->stop_control["health"] = "critical"' in timeout_body,
+        "drain-timeout path must preserve critical health in stop control",
+    )
     snapshot_body = function_body(orange, "gui_control_stop_snapshot")
     require(
         "snapshot.forced_finalize_stream_stop_requested =\n"
@@ -54,6 +58,11 @@ def test_drain_timeout_requests_forced_stream_shutdown() -> None:
         "local-control status must expose whether forced finalize requested stream shutdown",
     )
     force_body = function_body(orange, "gui_request_local_control_forced_finalize_if_needed")
+    require(
+        'recording_run->stop_control["forced_finalize_stream_stop_requested"] = true'
+        in force_body,
+        "forced-finalize helper must persist stream-shutdown request in stop control",
+    )
     require(
         "gui_autorun_requests->toggle_streaming = true" in force_body,
         "forced-finalize helper must request the existing stream shutdown path",
@@ -125,11 +134,55 @@ def test_completion_and_stop_grace_defaults_are_distinct() -> None:
     )
 
 
+def test_recording_session_stop_control_carries_drain_evidence() -> None:
+    orange = read("src/orange.cpp")
+    manifest_body = function_body(orange, "gui_local_control_stop_manifest_control")
+    for needle, description in (
+        ('{"drain_completed", false}', "initial drain-completed state"),
+        ('{"drain_timed_out", scheduler.drain_timed_out}', "initial drain-timeout state"),
+        (
+            '{"forced_finalize_requested", scheduler.forced_finalize_requested}',
+            "initial forced-finalize state",
+        ),
+        (
+            '{"forced_finalize_stream_stop_requested",\n'
+            '         scheduler.forced_finalize_stream_stop_requested}',
+            "initial forced stream-stop state",
+        ),
+    ):
+        require(needle in manifest_body, f"recording manifest control must include {description}")
+
+    finalized_body = function_body(
+        orange,
+        "gui_update_local_control_stop_manifest_for_finalized_drain",
+    )
+    require(
+        'run->stop_control["drain_completed"] = true' in finalized_body,
+        "finalized drain helper must persist drain completion",
+    )
+    require(
+        'run->stop_control["drain_completed_at_utc"] =' in finalized_body,
+        "finalized drain helper must persist drain completion timestamp",
+    )
+    require(
+        'run->stop_control["last_event"] =\n'
+        '        drain_timed_out ? "finalized_after_drain_timeout" : "finalized";'
+        in finalized_body,
+        "finalized drain helper must persist final local-control event",
+    )
+    finalize_body = function_body(orange, "gui_finalize_recording_session_if_ready")
+    require(
+        "gui_update_local_control_stop_manifest_for_finalized_drain(run);" in finalize_body,
+        "recording finalizer must update stop-control evidence before writing the manifest",
+    )
+
+
 def main() -> int:
     tests = [
         test_drain_timeout_requests_forced_stream_shutdown,
         test_stop_commands_keep_gui_thread_lifecycle_authority,
         test_completion_and_stop_grace_defaults_are_distinct,
+        test_recording_session_stop_control_carries_drain_evidence,
     ]
     for test in tests:
         test()

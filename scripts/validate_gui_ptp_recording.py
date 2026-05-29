@@ -5750,7 +5750,10 @@ def print_recording_session_summary(recording_session: dict[str, Any]) -> None:
             f"method={local_control_stop.get('method', 'unknown')} "
             f"operation_id={local_control_stop.get('operation_id', 'unknown')} "
             f"source={local_control_stop.get('command_source', 'unknown')} "
-            f"reason={local_control_stop.get('reason', 'unknown')}"
+            f"reason={local_control_stop.get('reason', 'unknown')} "
+            f"drain_timed_out={local_control_stop.get('drain_timed_out', 'unknown')} "
+            "forced_stream_stop="
+            f"{local_control_stop.get('forced_finalize_stream_stop_requested', 'unknown')}"
         )
 
 

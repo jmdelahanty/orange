@@ -1108,7 +1108,11 @@ GUI local-control stop provenance is stored in `recording_session.json` under
 `recording_session.local_control_stop`. That summary carries the stop method,
 request/operation identity, command source, optional Citrus terminal fields,
 receive/trigger timestamps, grace seconds, and configured drain-timeout
-threshold when present.
+threshold when present. New GUI local-control runs also persist drain lifecycle
+evidence there, including `drain_completed`, `drain_completed_at_utc`,
+`drain_timed_out`, `forced_finalize_requested`,
+`forced_finalize_stream_stop_requested`, `health`, `error_code`, and
+`last_event` / `last_event_at_utc`.
 
 This derived diagnosis is intentionally script-owned. It should not be treated
 as a persisted Orange snapshot schema field.

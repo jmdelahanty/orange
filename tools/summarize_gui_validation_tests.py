@@ -816,6 +816,16 @@ def test_recording_session_summary_reports_local_control_stop() -> None:
                     "grace_seconds": 0.0,
                     "stop_triggered_at_utc": "2026-05-29T00:40:55Z",
                     "drain_timeout_seconds": 60.0,
+                    "drain_completed": True,
+                    "drain_completed_at_utc": "2026-05-29T00:41:04Z",
+                    "drain_timed_out": True,
+                    "forced_finalize_requested": True,
+                    "forced_finalize_stream_stop_requested": True,
+                    "forced_finalize_requested_at_utc": "2026-05-29T00:41:03Z",
+                    "health": "warning",
+                    "error_code": "drain_timeout",
+                    "last_event": "finalized_after_drain_timeout",
+                    "last_event_at_utc": "2026-05-29T00:41:04Z",
                 }
             },
         }
@@ -850,6 +860,18 @@ def test_recording_session_summary_reports_local_control_stop() -> None:
         require(
             local_control_stop["drain_timeout_seconds"] == 60.0,
             "local-control stop drain timeout should be summarized",
+        )
+        require(
+            local_control_stop["drain_timed_out"],
+            "local-control stop drain timeout state should be summarized",
+        )
+        require(
+            local_control_stop["forced_finalize_stream_stop_requested"],
+            "local-control stop forced stream-stop request should be summarized",
+        )
+        require(
+            local_control_stop["last_event"] == "finalized_after_drain_timeout",
+            "local-control stop final event should be summarized",
         )
 
 

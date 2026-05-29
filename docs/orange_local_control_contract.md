@@ -242,7 +242,11 @@ The GUI validator can require this provenance with
 profile passes those checks by default. `scripts/summarize_gui_validation.py`
 and `scripts/validate_gui_ptp_recording.py --json-out` also surface the same
 fields under `recording_session.local_control_stop` so saved validation JSON can
-be audited without reopening the manifest.
+be audited without reopening the manifest. The persisted stop-control object
+also records drain lifecycle evidence: `drain_completed`,
+`drain_completed_at_utc`, `drain_timed_out`, `forced_finalize_requested`,
+`forced_finalize_stream_stop_requested`, `health`, `error_code`, and the final
+`last_event` / `last_event_at_utc` values.
 
 Orange also records local-control drain observability after a triggered stop.
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` sets the telemetry threshold,
