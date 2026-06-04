@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import summarize_gui_validation as gui_summary
+import orange_citrus_orchestrator as orange_citrus
 from recording_output_validation import (
     recording_clip_output_contract_errors,
     recording_output_contract_errors,
@@ -144,6 +145,39 @@ def parse_args() -> argparse.Namespace:
         "--expect-local-control-stop-ack-state",
         choices=("idle", "accepted", "executing", "executed", "failed_timeout", "ignored", "disabled"),
         help="Optional expected recording.control.ack_state in recording_session.json.",
+    )
+    parser.add_argument(
+        "--orange-local-control-event-log",
+        default="",
+        help=(
+            "Optional Orange local-control JSONL event log path to validate "
+            "against recording.control metadata."
+        ),
+    )
+    parser.add_argument(
+        "--require-orange-local-control-event-log",
+        action="store_true",
+        help=(
+            "Require Orange local-control socket/GUI-thread lifecycle evidence. "
+            "Defaults to /tmp/orange_local_control.sock.events.jsonl when "
+            "--orange-local-control-event-log is omitted."
+        ),
+    )
+    parser.add_argument(
+        "--expect-local-control-generic-stop-enabled",
+        choices=("0", "1"),
+        help=(
+            "Optional expected GUI-thread generic stop_recording gate value "
+            "from the local-control event log gui_command_accepted row."
+        ),
+    )
+    parser.add_argument(
+        "--expect-local-control-citrus-stop-enabled",
+        choices=("0", "1"),
+        help=(
+            "Optional expected GUI-thread citrus_completion gate value from "
+            "the local-control event log gui_command_accepted row."
+        ),
     )
     parser.add_argument(
         "--expect-ptp-register-read-decimate",
@@ -920,7 +954,7 @@ def check_optional_backend_int_map(
     map_name: str,
     expected: int | None,
     label: str,
-) -> None:
+) -> dict[str, Any]:
     if expected is None:
         return
     values = backend.get(map_name)
@@ -1185,7 +1219,7 @@ def check_recording_session_manifest(
         f"recording_session.json missing or invalid at {manifest_path}",
     )
     if not manifest:
-        return
+        return {}
 
     producer = str(manifest.get("producer", ""))
     backend = manifest.get("recording_backend")
@@ -1253,7 +1287,7 @@ def check_recording_session_manifest(
             snapshot_session,
             cameras,
         )
-        return
+        return manifest
 
     camera_artifacts = manifest.get("camera_artifacts")
     camera_artifacts = camera_artifacts if isinstance(camera_artifacts, dict) else {}
@@ -1342,6 +1376,7 @@ def check_recording_session_manifest(
             f"Cam{serial} recording_session packet_count_source={packet_source}",
             f"Cam{serial} recording_session packet_count_source={packet_source!r}",
         )
+    return manifest
 
 
 def check_source_version(
@@ -1684,6 +1719,32 @@ def check_local_control_stop_expectations(
                     f"but ack_state={control.get('ack_state')!r}"
                 ),
             )
+            if control.get("drain_completed") is True:
+                reporter.check(
+                    control.get("forced_finalize_stream_stop_requested") is True,
+                    (
+                        "recording_session recording.control completed timeout "
+                        "requires forced stream-stop"
+                    ),
+                    (
+                        "recording_session recording.control drain_timed_out=true "
+                        "and drain_completed=true but "
+                        "forced_finalize_stream_stop_requested="
+                        f"{control.get('forced_finalize_stream_stop_requested')!r}"
+                    ),
+                )
+                reporter.check(
+                    control.get("last_event") == "finalized_after_drain_timeout",
+                    (
+                        "recording_session recording.control completed timeout "
+                        "last_event=finalized_after_drain_timeout"
+                    ),
+                    (
+                        "recording_session recording.control drain_timed_out=true "
+                        "and drain_completed=true but last_event="
+                        f"{control.get('last_event')!r}"
+                    ),
+                )
         elif drain_timed_out is False and control.get("drain_completed") is True:
             reporter.check(
                 control.get("ack_state") == "executed",
@@ -1696,6 +1757,18 @@ def check_local_control_stop_expectations(
 
     forced_finalize_requested = control.get("forced_finalize_requested")
     if forced_finalize_requested is True:
+        reporter.check(
+            control.get("drain_timed_out") is True,
+            (
+                "recording_session recording.control forced finalize "
+                "requires drain_timed_out=true"
+            ),
+            (
+                "recording_session recording.control "
+                "forced_finalize_requested=true but drain_timed_out="
+                f"{control.get('drain_timed_out')!r}"
+            ),
+        )
         forced_at = control.get("forced_finalize_requested_at_utc")
         reporter.check(
             isinstance(forced_at, str) and bool(forced_at),
@@ -1720,6 +1793,18 @@ def check_local_control_stop_expectations(
                 "recording_session recording.control "
                 "forced_finalize_stream_stop_requested=true but "
                 f"forced_finalize_requested={control.get('forced_finalize_requested')!r}"
+            ),
+        )
+        reporter.check(
+            control.get("drain_timed_out") is True,
+            (
+                "recording_session recording.control forced stream-stop "
+                "requires drain_timed_out=true"
+            ),
+            (
+                "recording_session recording.control "
+                "forced_finalize_stream_stop_requested=true but drain_timed_out="
+                f"{control.get('drain_timed_out')!r}"
             ),
         )
 
@@ -1840,6 +1925,262 @@ def check_local_control_stop_expectations(
                 f"{control.get('ack_state')!r}; expected {expected_ack_state!r}"
             ),
         )
+        if expected_ack_state == "failed_timeout":
+            reporter.check(
+                control.get("drain_timed_out") is True,
+                (
+                    "recording_session recording.control failed-timeout ACK "
+                    "requires drain_timed_out=true"
+                ),
+                (
+                    "recording_session recording.control ack_state='failed_timeout' "
+                    f"but drain_timed_out={control.get('drain_timed_out')!r}"
+                ),
+            )
+            reporter.check(
+                control.get("forced_finalize_requested") is True,
+                (
+                    "recording_session recording.control failed-timeout ACK "
+                    "requires forced finalize"
+                ),
+                (
+                    "recording_session recording.control ack_state='failed_timeout' "
+                    "but forced_finalize_requested="
+                    f"{control.get('forced_finalize_requested')!r}"
+                ),
+            )
+            reporter.check(
+                control.get("error_code") == "drain_timeout",
+                (
+                    "recording_session recording.control failed-timeout ACK "
+                    "requires error_code=drain_timeout"
+                ),
+                (
+                    "recording_session recording.control ack_state='failed_timeout' "
+                    f"but error_code={control.get('error_code')!r}"
+                ),
+            )
+
+
+def infer_local_control_stop_status_from_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    recording = manifest.get("recording")
+    recording = recording if isinstance(recording, dict) else {}
+    control = recording.get("control")
+    control = dict(control) if isinstance(control, dict) else {}
+    if control and "state" not in control:
+        last_event = str(control.get("last_event", ""))
+        if last_event == "finalized_after_drain_timeout":
+            control["state"] = "finalized_after_drain_timeout"
+        elif control.get("drain_completed") is True:
+            control["state"] = "finalized"
+        elif control.get("stop_triggered_at_utc"):
+            control["state"] = "stop_triggered"
+    if control and "health" not in control:
+        control["health"] = "warning" if control.get("drain_timed_out") is True else "ok"
+    if control and "error_code" not in control:
+        control["error_code"] = "drain_timeout" if control.get("drain_timed_out") is True else ""
+    if control and "ack_state" not in control:
+        control["ack_state"] = (
+            "failed_timeout" if control.get("drain_timed_out") is True else "executed"
+        )
+    return {"local_control": {"recording_stop": control}}
+
+
+def default_orange_local_control_event_log_path() -> Path:
+    return Path("/tmp/orange_local_control.sock.events.jsonl")
+
+
+def local_control_event_log_from_manifest(
+    manifest: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    recording = manifest.get("recording")
+    recording = recording if isinstance(recording, dict) else {}
+    control = recording.get("control")
+    control = control if isinstance(control, dict) else {}
+    event_log = control.get("event_log")
+    event_log = event_log if isinstance(event_log, dict) else {}
+    if not event_log:
+        return "", {}
+
+    relative_path = str(event_log.get("relative_path") or "")
+    recording_folder = str(manifest.get("recording_folder") or "")
+    if relative_path and recording_folder:
+        return str(Path(recording_folder) / relative_path), event_log
+
+    copied_path = str(event_log.get("copied_path") or "")
+    if copied_path:
+        return copied_path, event_log
+
+    source_path = str(event_log.get("source_path") or "")
+    return source_path, event_log
+
+
+def check_local_control_event_log_expectations(
+    reporter: Reporter,
+    manifest: dict[str, Any],
+    event_log_path: str,
+    *,
+    required: bool,
+    expected_generic_stop_enabled: bool | None = None,
+    expected_citrus_stop_enabled: bool | None = None,
+) -> dict[str, Any]:
+    manifest_event_log_path, manifest_event_log = local_control_event_log_from_manifest(manifest)
+    requires_gate_check = (
+        expected_generic_stop_enabled is not None
+        or expected_citrus_stop_enabled is not None
+    )
+    if not required and not event_log_path and not manifest_event_log and not requires_gate_check:
+        return {}
+    require_event_log = required or bool(manifest_event_log) or requires_gate_check
+    path = (
+        event_log_path
+        or manifest_event_log_path
+        or str(default_orange_local_control_event_log_path())
+    )
+    event_log = orange_citrus.summarize_orange_local_control_event_log(path)
+    status = infer_local_control_stop_status_from_manifest(manifest)
+    stop_status = orange_citrus.orange_local_control_recording_stop(status)
+    stop_request_id = str(stop_status.get("request_id", ""))
+    operation_id = str(stop_status.get("operation_id", ""))
+    failures: list[str] = []
+
+    if not stop_status:
+        failures.append("recording_session recording.control missing")
+    if require_event_log and not event_log.get("exists", False):
+        failures.append(f"Orange local-control event log missing: {path}")
+    if require_event_log and int(event_log.get("row_count") or 0) <= 0:
+        failures.append("Orange local-control event log has no rows")
+    invalid_rows = int(event_log.get("invalid_row_count") or 0)
+    if invalid_rows:
+        failures.append(f"Orange local-control event log has {invalid_rows} invalid JSON row(s)")
+    if require_event_log and int(event_log.get("socket_event_count") or 0) <= 0:
+        failures.append("Orange local-control event log has no socket request/response rows")
+    if require_event_log and int(event_log.get("gui_event_count") or 0) <= 0:
+        failures.append("Orange local-control event log has no GUI-thread lifecycle rows")
+    if manifest_event_log:
+        if manifest_event_log.get("copied") is not True:
+            failures.append(
+                "recording_session recording.control event_log copied is not true"
+            )
+        if not manifest_event_log_path:
+            failures.append(
+                "recording_session recording.control event_log path missing"
+            )
+        if not str(manifest_event_log.get("relative_path") or ""):
+            failures.append(
+                "recording_session recording.control event_log relative_path missing"
+            )
+        if not str(manifest_event_log.get("copied_at_utc") or ""):
+            failures.append(
+                "recording_session recording.control event_log copied_at_utc missing"
+            )
+        reported_bytes = integer(manifest_event_log.get("bytes"))
+        if reported_bytes is None or reported_bytes <= 0:
+            failures.append(
+                "recording_session recording.control event_log bytes missing or nonpositive"
+            )
+        elif event_log.get("exists", False):
+            try:
+                actual_bytes = Path(path).stat().st_size
+            except OSError as exc:
+                failures.append(
+                    "recording_session recording.control event_log bytes could not be checked: "
+                    f"{exc}"
+                )
+            else:
+                if actual_bytes != reported_bytes:
+                    failures.append(
+                        "recording_session recording.control event_log bytes mismatch: "
+                        f"manifest={reported_bytes} file={actual_bytes}"
+                    )
+    if stop_status and not stop_request_id:
+        failures.append("recording_session recording.control request_id missing")
+    if stop_status and not operation_id:
+        failures.append("recording_session recording.control operation_id missing")
+    if stop_status and stop_request_id:
+        failures.extend(
+            orange_citrus.check_stop_lifecycle_event_details(
+                event_log,
+                stop_status=stop_status,
+                stop_policy="citrus_completion"
+                if str(stop_status.get("method", "")) == "citrus_completion"
+                else "stop_recording",
+            )
+        )
+        if requires_gate_check:
+            accepted_events = orange_citrus.event_log_lifecycle_events_for_request(
+                event_log,
+                stop_request_id,
+                event_name="gui_command_accepted",
+            )
+            if not accepted_events:
+                failures.append(
+                    "Orange local-control event log missing GUI-thread "
+                    "gui_command_accepted row for gate expectation "
+                    f"request_id={stop_request_id}"
+                )
+            for row in accepted_events:
+                if expected_generic_stop_enabled is not None:
+                    actual = row.get("stop_recording_enabled", row.get("stop_enabled"))
+                    if actual is not expected_generic_stop_enabled:
+                        failures.append(
+                            "Orange local-control event log gui_command_accepted "
+                            "stop_recording_enabled="
+                            f"{actual!r}; expected {expected_generic_stop_enabled!r}"
+                        )
+                if expected_citrus_stop_enabled is not None:
+                    actual = row.get("citrus_completion_enabled")
+                    if actual is not expected_citrus_stop_enabled:
+                        failures.append(
+                            "Orange local-control event log gui_command_accepted "
+                            "citrus_completion_enabled="
+                            f"{actual!r}; expected {expected_citrus_stop_enabled!r}"
+                        )
+    if stop_status.get("drain_timed_out") is True:
+        timeout_rows = orange_citrus.event_log_lifecycle_events_for_request(
+            event_log,
+            stop_request_id,
+            event_name="recording_drain_timeout",
+        )
+        forced_rows = orange_citrus.event_log_lifecycle_events_for_request(
+            event_log,
+            stop_request_id,
+            event_name="recording_drain_forced_finalize_requested",
+        )
+        if not timeout_rows:
+            failures.append(
+                "Orange local-control event log missing recording_drain_timeout "
+                f"for request_id={stop_request_id}"
+            )
+        if not forced_rows:
+            failures.append(
+                "Orange local-control event log missing "
+                "recording_drain_forced_finalize_requested for "
+                f"request_id={stop_request_id}"
+            )
+
+    request_chains = [
+        orange_citrus.summarize_event_log_request_chain(event_log, stop_request_id)
+    ] if stop_request_id else []
+    result = {
+        "required": bool(required),
+        "required_by_manifest": bool(manifest_event_log),
+        "required_by_gate_expectation": bool(requires_gate_check),
+        "expected_generic_stop_enabled": expected_generic_stop_enabled,
+        "expected_citrus_stop_enabled": expected_citrus_stop_enabled,
+        "path": path,
+        "ok": not failures,
+        "failures": failures,
+        "manifest_event_log": manifest_event_log,
+        "event_log": event_log,
+        "request_chains": request_chains,
+    }
+    if failures:
+        for failure in failures:
+            reporter.fail(failure)
+    else:
+        reporter.pass_("Orange local-control event log validates recording.control stop")
+    return result
 
 
 def sorted_rolling_artifacts_for_camera(
@@ -3093,6 +3434,12 @@ def integer(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def optional_cli_bool(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    return value == "1"
 
 
 def int_csv_field(row: dict[str, str], field: str) -> int | None:
@@ -5968,6 +6315,15 @@ def print_recording_session_summary(recording_session: dict[str, Any]) -> None:
             "forced_stream_stop="
             f"{local_control_stop.get('forced_finalize_stream_stop_requested', 'unknown')}"
         )
+        event_log = local_control_stop.get("event_log")
+        event_log = event_log if isinstance(event_log, dict) else {}
+        if event_log:
+            print(
+                "  local-control-event-log: "
+                f"copied={event_log.get('copied', 'unknown')} "
+                f"relative_path={event_log.get('relative_path', 'unknown')} "
+                f"bytes={event_log.get('bytes', 'unknown')}"
+            )
 
 
 def main() -> int:
@@ -6026,6 +6382,7 @@ def main() -> int:
         required_kernel_cmdline_cpus_by_option,
     )
 
+    local_control_event_log_check: dict[str, Any] = {}
     if not cameras:
         reporter.fail("no cameras discovered or requested")
     else:
@@ -6053,7 +6410,7 @@ def main() -> int:
             args.expect_ptp_register_read_decimate,
             args.skip_ptp_register_decimate_check,
         )
-        check_recording_session_manifest(
+        recording_session_manifest = check_recording_session_manifest(
             reporter,
             recording_folder,
             snapshot,
@@ -6067,6 +6424,18 @@ def main() -> int:
             args.expect_local_control_stop_terminal_state,
             args.expect_local_control_stop_reason,
             args.expect_local_control_stop_ack_state,
+        )
+        local_control_event_log_check = check_local_control_event_log_expectations(
+            reporter,
+            recording_session_manifest,
+            args.orange_local_control_event_log,
+            required=args.require_orange_local_control_event_log,
+            expected_generic_stop_enabled=optional_cli_bool(
+                args.expect_local_control_generic_stop_enabled
+            ),
+            expected_citrus_stop_enabled=optional_cli_bool(
+                args.expect_local_control_citrus_stop_enabled
+            ),
         )
         external_recorder_status_summary = check_external_recorder_status(
             reporter,
@@ -6189,6 +6558,7 @@ def main() -> int:
         "warnings": reporter.warnings,
         "failures": reporter.failures,
         "recording_session": recording_session_summary,
+        "orange_local_control_event_log_check": local_control_event_log_check,
         "summary": camera_summary,
         "crop_preview": crop_preview_summary,
         "crop_recording": crop_recording_summary,

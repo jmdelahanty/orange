@@ -115,7 +115,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     add_request_id_arg(citrus)
     add_operation_id_arg(
         citrus,
-        help_text="Operation id. Default: --experiment-id.",
+        help_text=(
+            "Operation id. Default: "
+            "citrus_completion:<experiment-id>:<terminal-state>:<reason>."
+        ),
     )
     citrus.add_argument("--experiment-id", required=True, help="Citrus experiment id.")
     citrus.add_argument(
@@ -167,7 +170,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def build_request(args: argparse.Namespace) -> dict[str, Any]:
-    request_id = args.request_id or str(uuid.uuid4())
     method_by_command = {
         "status": "status",
         "citrus-completion": "citrus_completion",
@@ -175,6 +177,17 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
         "stop-recording": "stop_recording",
     }
     method = method_by_command[args.command]
+    completion_operation_id = ""
+    if args.command == "citrus-completion":
+        completion_operation_id = (
+            f"citrus_completion:{args.experiment_id}:"
+            f"{args.terminal_state}:{args.reason}"
+        )
+    request_id = args.request_id or (
+        completion_operation_id
+        if args.command == "citrus-completion"
+        else str(uuid.uuid4())
+    )
     source = args.source
     if source is None:
         source = "citrus" if args.command == "citrus-completion" else "orange_local_control_client"
@@ -189,7 +202,7 @@ def build_request(args: argparse.Namespace) -> dict[str, Any]:
     }
 
     if args.command == "citrus-completion":
-        payload["operation_id"] = args.operation_id or args.experiment_id
+        payload["operation_id"] = args.operation_id or completion_operation_id
         payload["params"] = {
             "experiment_id": args.experiment_id,
             "terminal_state": args.terminal_state,

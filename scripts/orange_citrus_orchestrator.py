@@ -29,6 +29,35 @@ SCHEMA_VERSION = 1
 SUMMARY_SCHEMA_ID = "orange_citrus.orchestrator.summary"
 SUMMARY_SCHEMA_VERSION = 1
 TERMINAL_CITRUS_STATES = {"completed", "stopped", "failed", "start_rejected"}
+SOCKET_RESPONSE_EVENT_FIELDS = (
+    "responded_at_utc",
+    "duplicate",
+    "diagnostic_only",
+    "queued_for_gui_thread",
+)
+GUI_LIFECYCLE_EVENT_FIELDS = (
+    "event_at_utc",
+    "received_at_utc",
+    "drain_completed_at_utc",
+    "drain_timed_out",
+    "forced_finalize_requested",
+    "forced_finalize_requested_at_utc",
+    "elapsed_seconds",
+    "timeout_seconds",
+    "active_recorders",
+    "grace_seconds",
+    "health",
+    "error_code",
+    "action",
+    "experiment_id",
+    "pending_request_id",
+    "existing_request_id",
+    "policy",
+    "stop_enabled",
+    "stop_recording_enabled",
+    "citrus_completion_enabled",
+    "start_enabled",
+)
 
 
 class OrchestratorError(RuntimeError):
@@ -46,6 +75,16 @@ def json_path(payload: dict[str, Any], keys: list[str], default: Any = None) -> 
             return default
         current = current[key]
     return current
+
+
+def copy_present_fields(
+    target: dict[str, Any],
+    source: dict[str, Any],
+    fields: tuple[str, ...],
+) -> None:
+    for field in fields:
+        if field in source:
+            target[field] = source[field]
 
 
 def nonnegative_float(value: str) -> float:
@@ -204,8 +243,8 @@ def socket_absent_or_stale_error(exc: OSError) -> bool:
 
 
 def response_accepted(response: dict[str, Any]) -> bool:
-    return bool(response.get("ok")) and (
-        bool(response.get("accepted")) or bool(response.get("duplicate"))
+    return response.get("ok") is True and (
+        response.get("accepted") is True or response.get("duplicate") is True
     )
 
 
@@ -304,6 +343,10 @@ def safe_artifact_name(value: str) -> str:
     return safe or "artifact"
 
 
+def json_bool(value: Any) -> bool:
+    return value is True
+
+
 def render_validation_command(
     command: str,
     *,
@@ -334,15 +377,15 @@ def render_validation_command(
 
 
 def orange_ready_for_recording(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["readiness", "ready_for_recording_request"], False))
+    return json_bool(json_path(status, ["readiness", "ready_for_recording_request"], False))
 
 
 def orange_ready_for_citrus(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["readiness", "ready_for_citrus_experiment"], False))
+    return json_bool(json_path(status, ["readiness", "ready_for_citrus_experiment"], False))
 
 
 def orange_recording_finalized(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["readiness", "recording_finalized"], False))
+    return json_bool(json_path(status, ["readiness", "recording_finalized"], False))
 
 
 def orange_recording_folder(status: dict[str, Any]) -> str:
@@ -356,7 +399,7 @@ def orange_local_control_recording_stop(status: dict[str, Any]) -> dict[str, Any
 
 
 def orange_recording_stop_drain_timed_out(status: dict[str, Any]) -> bool:
-    return bool(orange_local_control_recording_stop(status).get("drain_timed_out", False))
+    return json_bool(orange_local_control_recording_stop(status).get("drain_timed_out", False))
 
 
 def orange_recording_stop_state(status: dict[str, Any]) -> str:
@@ -369,6 +412,10 @@ def orange_recording_stop_health(status: dict[str, Any]) -> str:
 
 def orange_recording_stop_ack_state(status: dict[str, Any]) -> str:
     return str(orange_local_control_recording_stop(status).get("ack_state", ""))
+
+
+def orange_recording_stop_error_code(status: dict[str, Any]) -> str:
+    return str(orange_local_control_recording_stop(status).get("error_code", ""))
 
 
 def orange_recording_stop_method(status: dict[str, Any]) -> str:
@@ -393,7 +440,7 @@ def orange_recording_stop_reason(status: dict[str, Any]) -> str:
 
 
 def orange_recording_stop_forced_finalize_requested(status: dict[str, Any]) -> bool:
-    return bool(
+    return json_bool(
         orange_local_control_recording_stop(status).get(
             "forced_finalize_requested",
             False,
@@ -404,7 +451,7 @@ def orange_recording_stop_forced_finalize_requested(status: dict[str, Any]) -> b
 def orange_recording_stop_forced_finalize_stream_stop_requested(
     status: dict[str, Any],
 ) -> bool:
-    return bool(
+    return json_bool(
         orange_local_control_recording_stop(status).get(
             "forced_finalize_stream_stop_requested",
             False,
@@ -413,24 +460,67 @@ def orange_recording_stop_forced_finalize_stream_stop_requested(
 
 
 def check_orange_drain_timeout_status(status: dict[str, Any]) -> list[str]:
-    if not orange_recording_stop_drain_timed_out(status):
-        return []
     failures: list[str] = []
+    stop = orange_local_control_recording_stop(status)
+    for field in (
+        "drain_timed_out",
+        "forced_finalize_requested",
+        "forced_finalize_stream_stop_requested",
+    ):
+        if field in stop and not isinstance(stop.get(field), bool):
+            failures.append(
+                "Orange status local_control.recording_stop."
+                f"{field}={stop.get(field)!r}; expected JSON boolean"
+            )
+    timed_out = orange_recording_stop_drain_timed_out(status)
     ack_state = orange_recording_stop_ack_state(status)
+    error_code = orange_recording_stop_error_code(status)
+    forced_finalize_requested = orange_recording_stop_forced_finalize_requested(status)
+    forced_stream_stop_requested = (
+        orange_recording_stop_forced_finalize_stream_stop_requested(status)
+    )
+    state = orange_recording_stop_state(status)
+    if not timed_out:
+        if ack_state == "failed_timeout":
+            failures.append(
+                "Orange status reports failed-timeout ACK but "
+                "local_control.recording_stop.drain_timed_out is not true"
+            )
+        if forced_finalize_requested:
+            failures.append(
+                "Orange status reports forced finalize but "
+                "local_control.recording_stop.drain_timed_out is not true"
+            )
+        if forced_stream_stop_requested:
+            failures.append(
+                "Orange status reports forced stream-stop but "
+                "local_control.recording_stop.drain_timed_out is not true"
+            )
+        if state == "finalized_after_drain_timeout":
+            failures.append(
+                "Orange status reports finalized-after-drain-timeout state but "
+                "local_control.recording_stop.drain_timed_out is not true"
+            )
+        return failures
     if ack_state and ack_state != "failed_timeout":
         failures.append(
             "Orange status reports drain timeout but "
             f"local_control.recording_stop.ack_state={ack_state!r}"
         )
-    if not orange_recording_stop_forced_finalize_requested(status):
+    if error_code != "drain_timeout":
+        failures.append(
+            "Orange status reports drain timeout but "
+            f"local_control.recording_stop.error_code={error_code!r}"
+        )
+    if not forced_finalize_requested:
         failures.append(
             "Orange status reports drain timeout but "
             "local_control.recording_stop.forced_finalize_requested is not true"
         )
     if (
         orange_recording_finalized(status)
-        or orange_recording_stop_state(status) == "finalized_after_drain_timeout"
-    ) and not orange_recording_stop_forced_finalize_stream_stop_requested(status):
+        or state == "finalized_after_drain_timeout"
+    ) and not forced_stream_stop_requested:
         failures.append(
             "Orange status reports finalized-after-drain-timeout but "
             "local_control.recording_stop.forced_finalize_stream_stop_requested "
@@ -456,6 +546,7 @@ def summarize_orange_drain_timeout_status(
         "state": orange_recording_stop_state(status),
         "ack_state": orange_recording_stop_ack_state(status),
         "health": orange_recording_stop_health(status),
+        "error_code": orange_recording_stop_error_code(status),
         "forced_finalize_requested": (
             orange_recording_stop_forced_finalize_requested(status)
         ),
@@ -626,7 +717,7 @@ def infer_orange_finalized_status_from_session(
         return None
 
     last_event = str(control.get("last_event", ""))
-    drain_completed = bool(control.get("drain_completed", False))
+    drain_completed = control.get("drain_completed") is True
     if not drain_completed or last_event not in {
         "finalized",
         "finalized_after_drain_timeout",
@@ -667,7 +758,7 @@ def infer_orange_finalized_status_from_session(
             recording_stop["state"] = "finalized"
     if "ack_state" not in recording_stop or not recording_stop["ack_state"]:
         recording_stop["ack_state"] = (
-            "failed_timeout" if bool(recording_stop.get("drain_timed_out")) else "executed"
+            "failed_timeout" if recording_stop.get("drain_timed_out") is True else "executed"
         )
     local_control["recording_stop"] = recording_stop
     if str(recording_stop.get("method", "")) == "citrus_completion":
@@ -691,7 +782,13 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
         "request_ids": [],
         "operation_ids": [],
         "last_gui_event": "",
+        "first_socket_received_at_utc": "",
+        "last_socket_received_at_utc": "",
+        "last_socket_responded_at_utc": "",
+        "first_gui_event_at_utc": "",
+        "last_gui_event_at_utc": "",
         "has_start_triggered": False,
+        "has_stop_scheduled": False,
         "has_stop_triggered": False,
         "has_drain_timeout": False,
         "has_forced_finalize_requested": False,
@@ -718,6 +815,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
                 if not line:
                     continue
                 summary["row_count"] += 1
+                row_index = int(summary["row_count"])
                 try:
                     row = json.loads(line)
                 except json.JSONDecodeError:
@@ -731,16 +829,26 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
                     response = response if isinstance(response, dict) else {}
                     request_id = response.get("request_id") or request.get("request_id")
                     operation_id = response.get("operation_id") or request.get("operation_id")
-                    socket_request_events.append(
-                        {
-                            "request_id": request_id or "",
-                            "operation_id": operation_id or "",
-                            "method": response.get("method") or request.get("method", ""),
-                            "source": request.get("source", ""),
-                            "ok": bool(response.get("ok", False)),
-                            "accepted": bool(response.get("accepted", False)),
-                        }
-                    )
+                    socket_event = {
+                        "row_index": row_index,
+                        "request_id": request_id or "",
+                        "operation_id": operation_id or "",
+                        "method": response.get("method") or request.get("method", ""),
+                        "source": request.get("source", ""),
+                        "received_at_utc": row.get("received_at_utc", ""),
+                        "ok": response.get("ok", False),
+                        "accepted": response.get("accepted", False),
+                    }
+                    copy_present_fields(socket_event, response, SOCKET_RESPONSE_EVENT_FIELDS)
+                    socket_request_events.append(socket_event)
+                    received_at_utc = str(socket_event.get("received_at_utc", ""))
+                    if received_at_utc:
+                        if not summary["first_socket_received_at_utc"]:
+                            summary["first_socket_received_at_utc"] = received_at_utc
+                        summary["last_socket_received_at_utc"] = received_at_utc
+                    responded_at_utc = str(socket_event.get("responded_at_utc", ""))
+                    if responded_at_utc:
+                        summary["last_socket_responded_at_utc"] = responded_at_utc
                 elif (
                     isinstance(row, dict)
                     and row.get("schema_id") == "orange.local_control.gui_event"
@@ -751,6 +859,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
                         events[event] = events.get(event, 0) + 1
                         summary["last_gui_event"] = event
                     lifecycle_event = {
+                        "row_index": row_index,
                         "event": event,
                         "request_id": row.get("request_id", ""),
                         "operation_id": row.get("operation_id", ""),
@@ -759,7 +868,13 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
                         "terminal_state": row.get("terminal_state", ""),
                         "reason": row.get("reason", ""),
                     }
+                    copy_present_fields(lifecycle_event, row, GUI_LIFECYCLE_EVENT_FIELDS)
                     gui_lifecycle_events.append(lifecycle_event)
+                    event_at_utc = str(lifecycle_event.get("event_at_utc", ""))
+                    if event_at_utc:
+                        if not summary["first_gui_event_at_utc"]:
+                            summary["first_gui_event_at_utc"] = event_at_utc
+                        summary["last_gui_event_at_utc"] = event_at_utc
                     request_id = row.get("request_id")
                     operation_id = row.get("operation_id")
                 else:
@@ -779,6 +894,7 @@ def summarize_orange_local_control_event_log(path: str) -> dict[str, Any]:
     summary["request_ids"] = sorted(request_ids)
     summary["operation_ids"] = sorted(operation_ids)
     summary["has_start_triggered"] = events.get("recording_start_triggered", 0) > 0
+    summary["has_stop_scheduled"] = events.get("recording_stop_scheduled", 0) > 0
     summary["has_stop_triggered"] = events.get("recording_stop_triggered", 0) > 0
     summary["has_drain_timeout"] = events.get("recording_drain_timeout", 0) > 0
     summary["has_forced_finalize_requested"] = (
@@ -825,6 +941,328 @@ def event_log_socket_events_for_request(
     return matches
 
 
+def event_log_first_row_index(rows: list[dict[str, Any]]) -> int | None:
+    indexes: list[int] = []
+    for row in rows:
+        try:
+            index = int(row.get("row_index", 0))
+        except (TypeError, ValueError):
+            continue
+        if index > 0:
+            indexes.append(index)
+    return min(indexes) if indexes else None
+
+
+def event_log_queued_socket_events(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [row for row in rows if row.get("queued_for_gui_thread") is True]
+
+
+def event_log_row_indexes(rows: list[dict[str, Any]]) -> list[int]:
+    indexes: list[int] = []
+    for row in rows:
+        try:
+            index = int(row.get("row_index", 0))
+        except (TypeError, ValueError):
+            continue
+        if index > 0:
+            indexes.append(index)
+    return sorted(indexes)
+
+
+def event_log_string_values(rows: list[dict[str, Any]], field: str) -> list[str]:
+    values = sorted(
+        {
+            str(row.get(field, ""))
+            for row in rows
+            if str(row.get(field, ""))
+        }
+    )
+    return values
+
+
+def event_log_bool_values(rows: list[dict[str, Any]], field: str) -> list[bool]:
+    values = sorted(
+        {
+            row[field]
+            for row in rows
+            if isinstance(row.get(field), bool)
+        }
+    )
+    return values
+
+
+def summarize_event_log_request_chain(
+    event_log: dict[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    socket_events = event_log_socket_events_for_request(event_log, request_id)
+    queued_socket_events = event_log_queued_socket_events(socket_events)
+    gui_accepted_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="gui_command_accepted",
+    )
+    start_queued_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_start_queued",
+    )
+    start_triggered_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_start_triggered",
+    )
+    stop_scheduled_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_stop_scheduled",
+    )
+    stop_triggered_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_stop_triggered",
+    )
+    drain_finalized_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_drain_finalized",
+    )
+    drain_timeout_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_drain_timeout",
+    )
+    forced_finalize_events = event_log_lifecycle_events_for_request(
+        event_log,
+        request_id,
+        event_name="recording_drain_forced_finalize_requested",
+    )
+    return {
+        "request_id": request_id,
+        "socket_rows": len(socket_events),
+        "queued_socket_rows": len(queued_socket_events),
+        "gui_command_accepted_rows": len(gui_accepted_events),
+        "recording_start_queued_rows": len(start_queued_events),
+        "recording_start_triggered_rows": len(start_triggered_events),
+        "recording_stop_scheduled_rows": len(stop_scheduled_events),
+        "recording_stop_triggered_rows": len(stop_triggered_events),
+        "recording_drain_finalized_rows": len(drain_finalized_events),
+        "recording_drain_timeout_rows": len(drain_timeout_events),
+        "recording_drain_forced_finalize_requested_rows": len(forced_finalize_events),
+        "has_socket": bool(socket_events),
+        "has_queued_socket": bool(queued_socket_events),
+        "has_gui_command_accepted": bool(gui_accepted_events),
+        "has_recording_start_queued": bool(start_queued_events),
+        "has_recording_start_triggered": bool(start_triggered_events),
+        "has_recording_stop_scheduled": bool(stop_scheduled_events),
+        "has_recording_stop_triggered": bool(stop_triggered_events),
+        "has_recording_drain_finalized": bool(drain_finalized_events),
+        "has_recording_drain_timeout": bool(drain_timeout_events),
+        "has_recording_drain_forced_finalize_requested": bool(forced_finalize_events),
+        "socket_ok_values": event_log_bool_values(socket_events, "ok"),
+        "socket_accepted_values": event_log_bool_values(socket_events, "accepted"),
+        "socket_queued_for_gui_thread_values": event_log_bool_values(
+            socket_events,
+            "queued_for_gui_thread",
+        ),
+        "socket_methods": event_log_string_values(socket_events, "method"),
+        "socket_sources": event_log_string_values(socket_events, "source"),
+        "gui_command_accepted_methods": event_log_string_values(
+            gui_accepted_events,
+            "method",
+        ),
+        "gui_command_accepted_sources": event_log_string_values(
+            gui_accepted_events,
+            "command_source",
+        ),
+        "gui_command_accepted_start_enabled_values": event_log_bool_values(
+            gui_accepted_events,
+            "start_enabled",
+        ),
+        "gui_command_accepted_stop_enabled_values": event_log_bool_values(
+            gui_accepted_events,
+            "stop_enabled",
+        ),
+        "gui_command_accepted_stop_recording_enabled_values": event_log_bool_values(
+            gui_accepted_events,
+            "stop_recording_enabled",
+        ),
+        "gui_command_accepted_citrus_completion_enabled_values": event_log_bool_values(
+            gui_accepted_events,
+            "citrus_completion_enabled",
+        ),
+        "recording_start_queued_methods": event_log_string_values(
+            start_queued_events,
+            "method",
+        ),
+        "recording_start_queued_sources": event_log_string_values(
+            start_queued_events,
+            "command_source",
+        ),
+        "recording_start_triggered_methods": event_log_string_values(
+            start_triggered_events,
+            "method",
+        ),
+        "recording_start_triggered_sources": event_log_string_values(
+            start_triggered_events,
+            "command_source",
+        ),
+        "recording_stop_scheduled_methods": event_log_string_values(
+            stop_scheduled_events,
+            "method",
+        ),
+        "recording_stop_scheduled_sources": event_log_string_values(
+            stop_scheduled_events,
+            "command_source",
+        ),
+        "recording_stop_scheduled_terminal_states": event_log_string_values(
+            stop_scheduled_events,
+            "terminal_state",
+        ),
+        "recording_stop_scheduled_reasons": event_log_string_values(
+            stop_scheduled_events,
+            "reason",
+        ),
+        "recording_stop_triggered_methods": event_log_string_values(
+            stop_triggered_events,
+            "method",
+        ),
+        "recording_stop_triggered_sources": event_log_string_values(
+            stop_triggered_events,
+            "command_source",
+        ),
+        "recording_stop_triggered_terminal_states": event_log_string_values(
+            stop_triggered_events,
+            "terminal_state",
+        ),
+        "recording_stop_triggered_reasons": event_log_string_values(
+            stop_triggered_events,
+            "reason",
+        ),
+        "recording_drain_finalized_methods": event_log_string_values(
+            drain_finalized_events,
+            "method",
+        ),
+        "recording_drain_finalized_sources": event_log_string_values(
+            drain_finalized_events,
+            "command_source",
+        ),
+        "recording_drain_finalized_terminal_states": event_log_string_values(
+            drain_finalized_events,
+            "terminal_state",
+        ),
+        "recording_drain_finalized_reasons": event_log_string_values(
+            drain_finalized_events,
+            "reason",
+        ),
+        "recording_drain_finalized_drain_timed_out_values": (
+            event_log_bool_values(drain_finalized_events, "drain_timed_out")
+        ),
+        "recording_drain_finalized_healths": event_log_string_values(
+            drain_finalized_events,
+            "health",
+        ),
+        "recording_drain_finalized_error_codes": event_log_string_values(
+            drain_finalized_events,
+            "error_code",
+        ),
+        "recording_drain_timeout_methods": event_log_string_values(
+            drain_timeout_events,
+            "method",
+        ),
+        "recording_drain_timeout_sources": event_log_string_values(
+            drain_timeout_events,
+            "command_source",
+        ),
+        "recording_drain_timeout_forced_finalize_requested_values": (
+            event_log_bool_values(drain_timeout_events, "forced_finalize_requested")
+        ),
+        "recording_drain_timeout_healths": event_log_string_values(
+            drain_timeout_events,
+            "health",
+        ),
+        "recording_drain_timeout_error_codes": event_log_string_values(
+            drain_timeout_events,
+            "error_code",
+        ),
+        "recording_drain_forced_finalize_requested_methods": event_log_string_values(
+            forced_finalize_events,
+            "method",
+        ),
+        "recording_drain_forced_finalize_requested_sources": event_log_string_values(
+            forced_finalize_events,
+            "command_source",
+        ),
+        "recording_drain_forced_finalize_requested_actions": (
+            event_log_string_values(forced_finalize_events, "action")
+        ),
+        "recording_drain_forced_finalize_requested_healths": (
+            event_log_string_values(forced_finalize_events, "health")
+        ),
+        "recording_drain_forced_finalize_requested_error_codes": (
+            event_log_string_values(forced_finalize_events, "error_code")
+        ),
+        "socket_row_indexes": event_log_row_indexes(socket_events),
+        "queued_socket_row_indexes": event_log_row_indexes(queued_socket_events),
+        "gui_command_accepted_row_indexes": event_log_row_indexes(gui_accepted_events),
+        "recording_start_queued_row_indexes": event_log_row_indexes(start_queued_events),
+        "recording_start_triggered_row_indexes": (
+            event_log_row_indexes(start_triggered_events)
+        ),
+        "recording_stop_scheduled_row_indexes": (
+            event_log_row_indexes(stop_scheduled_events)
+        ),
+        "recording_stop_triggered_row_indexes": (
+            event_log_row_indexes(stop_triggered_events)
+        ),
+        "recording_drain_finalized_row_indexes": (
+            event_log_row_indexes(drain_finalized_events)
+        ),
+        "recording_drain_timeout_row_indexes": event_log_row_indexes(drain_timeout_events),
+        "recording_drain_forced_finalize_requested_row_indexes": (
+            event_log_row_indexes(forced_finalize_events)
+        ),
+    }
+
+
+def check_socket_queued_for_gui_thread(
+    failures: list[str],
+    *,
+    request_id: str,
+    socket_events: list[dict[str, Any]],
+    label: str,
+) -> list[dict[str, Any]]:
+    queued_events = event_log_queued_socket_events(socket_events)
+    if socket_events and not queued_events:
+        failures.append(
+            "Orange local-control event log "
+            f"{label} socket request/response for request_id={request_id} "
+            "never reported queued_for_gui_thread=true"
+        )
+    return queued_events
+
+
+def check_event_log_row_order(
+    failures: list[str],
+    *,
+    request_id: str,
+    earlier_rows: list[dict[str, Any]],
+    earlier_label: str,
+    later_rows: list[dict[str, Any]],
+    later_label: str,
+) -> None:
+    earlier_index = event_log_first_row_index(earlier_rows)
+    later_index = event_log_first_row_index(later_rows)
+    if earlier_index is None or later_index is None:
+        return
+    if earlier_index > later_index:
+        failures.append(
+            "Orange local-control event log out-of-order rows for "
+            f"request_id={request_id}: {earlier_label} row_index={earlier_index} "
+            f"after {later_label} row_index={later_index}"
+        )
+
+
 def check_stop_lifecycle_event_details(
     event_log: dict[str, Any],
     *,
@@ -843,7 +1281,31 @@ def check_stop_lifecycle_event_details(
     expected_operation_id = str(stop_status.get("operation_id", ""))
     expected_terminal_state = str(stop_status.get("terminal_state", ""))
     expected_reason = str(stop_status.get("reason", ""))
+    if not expected_method:
+        failures.append("Orange status missing local_control.recording_stop.method")
+    if not expected_source:
+        failures.append(
+            "Orange status missing local_control.recording_stop.command_source/source"
+        )
+    if not expected_operation_id:
+        failures.append("Orange status missing local_control.recording_stop.operation_id")
     socket_events = event_log_socket_events_for_request(event_log, stop_request_id)
+    queued_socket_events = check_socket_queued_for_gui_thread(
+        failures,
+        request_id=stop_request_id,
+        socket_events=socket_events,
+        label="stop",
+    )
+    accepted_events = event_log_lifecycle_events_for_request(
+        event_log,
+        stop_request_id,
+        event_name="gui_command_accepted",
+    )
+    scheduled_events = event_log_lifecycle_events_for_request(
+        event_log,
+        stop_request_id,
+        event_name="recording_stop_scheduled",
+    )
     trigger_events = event_log_lifecycle_events_for_request(
         event_log,
         stop_request_id,
@@ -854,9 +1316,24 @@ def check_stop_lifecycle_event_details(
         stop_request_id,
         event_name="recording_drain_finalized",
     )
+    timeout_events = event_log_lifecycle_events_for_request(
+        event_log,
+        stop_request_id,
+        event_name="recording_drain_timeout",
+    )
+    forced_finalize_events = event_log_lifecycle_events_for_request(
+        event_log,
+        stop_request_id,
+        event_name="recording_drain_forced_finalize_requested",
+    )
     if not trigger_events:
         failures.append(
             "Orange local-control event log missing recording_stop_triggered "
+            f"for request_id={stop_request_id}"
+        )
+    if not scheduled_events:
+        failures.append(
+            "Orange local-control event log missing recording_stop_scheduled "
             f"for request_id={stop_request_id}"
         )
     if not finalize_events:
@@ -869,14 +1346,172 @@ def check_stop_lifecycle_event_details(
             "Orange local-control event log missing socket request/response "
             f"for request_id={stop_request_id}"
         )
+    if not accepted_events:
+        failures.append(
+            "Orange local-control event log missing GUI-thread gui_command_accepted "
+            f"for request_id={stop_request_id}"
+        )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=queued_socket_events,
+        earlier_label="queued socket request/response",
+        later_rows=accepted_events,
+        later_label="gui_command_accepted",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=accepted_events,
+        earlier_label="gui_command_accepted",
+        later_rows=scheduled_events,
+        later_label="recording_stop_scheduled",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=scheduled_events,
+        earlier_label="recording_stop_scheduled",
+        later_rows=trigger_events,
+        later_label="recording_stop_triggered",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=trigger_events,
+        earlier_label="recording_stop_triggered",
+        later_rows=finalize_events,
+        later_label="recording_drain_finalized",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=trigger_events,
+        earlier_label="recording_stop_triggered",
+        later_rows=timeout_events,
+        later_label="recording_drain_timeout",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=timeout_events,
+        earlier_label="recording_drain_timeout",
+        later_rows=forced_finalize_events,
+        later_label="recording_drain_forced_finalize_requested",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=stop_request_id,
+        earlier_rows=forced_finalize_events,
+        earlier_label="recording_drain_forced_finalize_requested",
+        later_rows=finalize_events,
+        later_label="recording_drain_finalized",
+    )
+    stop_reports_timeout = stop_status.get("drain_timed_out") is True
+    stop_reports_forced_finalize = (
+        stop_status.get("forced_finalize_requested") is True
+    )
+    stop_reports_forced_stream_stop = (
+        stop_status.get("forced_finalize_stream_stop_requested") is True
+    )
+    expected_finalize_health = str(
+        stop_status.get("health", "warning" if stop_reports_timeout else "ok")
+    )
+    expected_finalize_error_code = str(
+        stop_status.get("error_code", "drain_timeout" if stop_reports_timeout else "")
+    )
+    if timeout_events and not stop_reports_timeout:
+        failures.append(
+            "Orange local-control event log has recording_drain_timeout for "
+            f"request_id={stop_request_id} but "
+            "local_control.recording_stop.drain_timed_out is not true"
+        )
+    if forced_finalize_events and not stop_reports_timeout:
+        failures.append(
+            "Orange local-control event log has "
+            "recording_drain_forced_finalize_requested for "
+            f"request_id={stop_request_id} but "
+            "local_control.recording_stop.drain_timed_out is not true"
+        )
+    if forced_finalize_events and not stop_reports_forced_finalize:
+        failures.append(
+            "Orange local-control event log has "
+            "recording_drain_forced_finalize_requested for "
+            f"request_id={stop_request_id} but "
+            "local_control.recording_stop.forced_finalize_requested is not true"
+        )
+    if forced_finalize_events and finalize_events and not stop_reports_forced_stream_stop:
+        failures.append(
+            "Orange local-control event log has finalized forced-finalize "
+            f"evidence for request_id={stop_request_id} but "
+            "local_control.recording_stop.forced_finalize_stream_stop_requested "
+            "is not true"
+        )
+    for row in finalize_events:
+        if row.get("drain_timed_out") is not stop_reports_timeout:
+            failures.append(
+                "Orange local-control event log recording_drain_finalized "
+                f"drain_timed_out={row.get('drain_timed_out')!r}; expected "
+                f"{stop_reports_timeout!r} from final Orange stop status"
+            )
+        if str(row.get("health", "")) != expected_finalize_health:
+            failures.append(
+                "Orange local-control event log recording_drain_finalized "
+                f"health={row.get('health', '')!r}; expected "
+                f"{expected_finalize_health!r}"
+            )
+        if str(row.get("error_code", "")) != expected_finalize_error_code:
+            failures.append(
+                "Orange local-control event log recording_drain_finalized "
+                f"error_code={row.get('error_code', '')!r}; expected "
+                f"{expected_finalize_error_code!r}"
+            )
+    for row in timeout_events:
+        if row.get("forced_finalize_requested") is not True:
+            failures.append(
+                "Orange local-control event log recording_drain_timeout "
+                "forced_finalize_requested="
+                f"{row.get('forced_finalize_requested')!r}; expected True"
+            )
+        if str(row.get("health", "")) != "critical":
+            failures.append(
+                "Orange local-control event log recording_drain_timeout "
+                f"health={row.get('health', '')!r}; expected 'critical'"
+            )
+        if str(row.get("error_code", "")) != "drain_timeout":
+            failures.append(
+                "Orange local-control event log recording_drain_timeout "
+                f"error_code={row.get('error_code', '')!r}; "
+                "expected 'drain_timeout'"
+            )
+    for row in forced_finalize_events:
+        if str(row.get("action", "")) != "stream_shutdown":
+            failures.append(
+                "Orange local-control event log "
+                "recording_drain_forced_finalize_requested "
+                f"action={row.get('action', '')!r}; expected 'stream_shutdown'"
+            )
+        if str(row.get("health", "")) != "critical":
+            failures.append(
+                "Orange local-control event log "
+                "recording_drain_forced_finalize_requested "
+                f"health={row.get('health', '')!r}; expected 'critical'"
+            )
+        if str(row.get("error_code", "")) != "drain_timeout":
+            failures.append(
+                "Orange local-control event log "
+                "recording_drain_forced_finalize_requested "
+                f"error_code={row.get('error_code', '')!r}; "
+                "expected 'drain_timeout'"
+            )
 
     for row in socket_events:
-        if not bool(row.get("ok", False)):
+        if row.get("ok") is not True:
             failures.append(
                 "Orange local-control event log socket request "
                 f"ok={row.get('ok', False)!r}; expected True"
             )
-        if not bool(row.get("accepted", False)):
+        if row.get("accepted") is not True:
             failures.append(
                 "Orange local-control event log socket request "
                 f"accepted={row.get('accepted', False)!r}; expected True"
@@ -898,8 +1533,53 @@ def check_stop_lifecycle_event_details(
                 f"expected {expected_operation_id!r}"
             )
 
+    for row in accepted_events:
+        row_method = str(row.get("method", ""))
+        if row_method == "citrus_completion":
+            has_citrus_gate = "citrus_completion_enabled" in row
+            citrus_enabled = row.get("citrus_completion_enabled")
+            stop_enabled = row.get("stop_enabled")
+            if has_citrus_gate:
+                if citrus_enabled is not True:
+                    failures.append(
+                        "Orange local-control event log gui_command_accepted "
+                        "citrus_completion_enabled="
+                        f"{citrus_enabled!r}; expected True"
+                    )
+            elif stop_enabled is not True:
+                failures.append(
+                    "Orange local-control event log gui_command_accepted "
+                    f"stop_enabled={stop_enabled!r}; expected True for "
+                    "legacy citrus_completion row"
+                )
+        elif row.get("stop_enabled") is not True:
+            failures.append(
+                "Orange local-control event log gui_command_accepted "
+                f"stop_enabled={row.get('stop_enabled', False)!r}; expected True"
+            )
+        if expected_method and str(row.get("method", "")) != expected_method:
+            failures.append(
+                "Orange local-control event log gui_command_accepted "
+                f"method={row.get('method', '')!r}; expected {expected_method!r}"
+            )
+        if expected_source and str(row.get("command_source", "")) != expected_source:
+            failures.append(
+                "Orange local-control event log gui_command_accepted "
+                f"command_source={row.get('command_source', '')!r}; "
+                f"expected {expected_source!r}"
+            )
+        if expected_operation_id and str(row.get("operation_id", "")) != expected_operation_id:
+            failures.append(
+                "Orange local-control event log gui_command_accepted "
+                f"operation_id={row.get('operation_id', '')!r}; "
+                f"expected {expected_operation_id!r}"
+            )
+
     for event_name, rows in (
+        ("recording_stop_scheduled", scheduled_events),
         ("recording_stop_triggered", trigger_events),
+        ("recording_drain_timeout", timeout_events),
+        ("recording_drain_forced_finalize_requested", forced_finalize_events),
         ("recording_drain_finalized", finalize_events),
     ):
         for row in rows:
@@ -958,6 +1638,22 @@ def check_start_lifecycle_event_details(
     start_request_id = f"{operation_id}:orange:start_recording"
     failures: list[str] = []
     socket_events = event_log_socket_events_for_request(event_log, start_request_id)
+    queued_socket_events = check_socket_queued_for_gui_thread(
+        failures,
+        request_id=start_request_id,
+        socket_events=socket_events,
+        label="start",
+    )
+    accepted_events = event_log_lifecycle_events_for_request(
+        event_log,
+        start_request_id,
+        event_name="gui_command_accepted",
+    )
+    queued_events = event_log_lifecycle_events_for_request(
+        event_log,
+        start_request_id,
+        event_name="recording_start_queued",
+    )
     trigger_events = event_log_lifecycle_events_for_request(
         event_log,
         start_request_id,
@@ -973,15 +1669,49 @@ def check_start_lifecycle_event_details(
             "Orange local-control event log missing recording_start_triggered "
             f"for request_id={start_request_id}"
         )
+    if not accepted_events:
+        failures.append(
+            "Orange local-control event log missing start GUI-thread gui_command_accepted "
+            f"for request_id={start_request_id}"
+        )
+    if not queued_events:
+        failures.append(
+            "Orange local-control event log missing recording_start_queued "
+            f"for request_id={start_request_id}"
+        )
+    check_event_log_row_order(
+        failures,
+        request_id=start_request_id,
+        earlier_rows=queued_socket_events,
+        earlier_label="queued start socket request/response",
+        later_rows=accepted_events,
+        later_label="gui_command_accepted",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=start_request_id,
+        earlier_rows=accepted_events,
+        earlier_label="gui_command_accepted",
+        later_rows=queued_events,
+        later_label="recording_start_queued",
+    )
+    check_event_log_row_order(
+        failures,
+        request_id=start_request_id,
+        earlier_rows=queued_events,
+        earlier_label="recording_start_queued",
+        later_rows=trigger_events,
+        later_label="recording_start_triggered",
+    )
 
     expected_source = ""
     for row in socket_events:
-        if not bool(row.get("ok", False)):
+        if row.get("ok") is not True:
             failures.append(
                 "Orange local-control event log start socket request "
                 f"ok={row.get('ok', False)!r}; expected True"
             )
-        if not bool(row.get("accepted", False)):
+        if row.get("accepted") is not True:
             failures.append(
                 "Orange local-control event log start socket request "
                 f"accepted={row.get('accepted', False)!r}; expected True"
@@ -997,10 +1727,64 @@ def check_start_lifecycle_event_details(
                 f"operation_id={row.get('operation_id', '')!r}; "
                 f"expected {operation_id!r}"
             )
-        if not expected_source and str(row.get("source", "")):
-            expected_source = str(row.get("source", ""))
+        row_source = str(row.get("source", ""))
+        if not row_source:
+            failures.append(
+                "Orange local-control event log start socket request "
+                "source is empty"
+            )
+        elif not expected_source:
+            expected_source = row_source
+
+    for row in accepted_events:
+        if row.get("start_enabled") is not True:
+            failures.append(
+                "Orange local-control event log start gui_command_accepted "
+                f"start_enabled={row.get('start_enabled', False)!r}; expected True"
+            )
+        if str(row.get("method", "")) != "start_recording":
+            failures.append(
+                "Orange local-control event log start gui_command_accepted "
+                f"method={row.get('method', '')!r}; expected 'start_recording'"
+            )
+        if str(row.get("operation_id", "")) != operation_id:
+            failures.append(
+                "Orange local-control event log start gui_command_accepted "
+                f"operation_id={row.get('operation_id', '')!r}; "
+                f"expected {operation_id!r}"
+            )
+        if expected_source and str(row.get("command_source", "")) != expected_source:
+            failures.append(
+                "Orange local-control event log start gui_command_accepted "
+                f"command_source={row.get('command_source', '')!r}; "
+                f"expected {expected_source!r}"
+            )
+
+    for row in queued_events:
+        if str(row.get("method", "")) != "start_recording":
+            failures.append(
+                "Orange local-control event log recording_start_queued "
+                f"method={row.get('method', '')!r}; expected 'start_recording'"
+            )
+        if str(row.get("operation_id", "")) != operation_id:
+            failures.append(
+                "Orange local-control event log recording_start_queued "
+                f"operation_id={row.get('operation_id', '')!r}; "
+                f"expected {operation_id!r}"
+            )
+        if expected_source and str(row.get("command_source", "")) != expected_source:
+            failures.append(
+                "Orange local-control event log recording_start_queued "
+                f"command_source={row.get('command_source', '')!r}; "
+                f"expected {expected_source!r}"
+            )
 
     for row in trigger_events:
+        if str(row.get("method", "")) != "start_recording":
+            failures.append(
+                "Orange local-control event log recording_start_triggered "
+                f"method={row.get('method', '')!r}; expected 'start_recording'"
+            )
         if str(row.get("operation_id", "")) != operation_id:
             failures.append(
                 "Orange local-control event log recording_start_triggered "
@@ -1036,6 +1820,11 @@ def check_orange_local_control_event_log(
         "failures": [],
         "expected_request_ids": expected_request_ids,
         "expected_operation_id": operation_id,
+        "request_chains": [
+            summarize_event_log_request_chain(event_log, request_id)
+            for request_id in expected_request_ids
+            if request_id
+        ],
     }
     if not required:
         return check
@@ -1079,10 +1868,29 @@ def check_orange_local_control_event_log(
     if orange_recording_stop_drain_timed_out(orange_status):
         if not event_log.get("has_drain_timeout", False):
             failures.append("Orange status reports drain timeout but event log lacks recording_drain_timeout")
+        if stop_request_id and not event_log_lifecycle_events_for_request(
+            event_log,
+            stop_request_id,
+            event_name="recording_drain_timeout",
+        ):
+            failures.append(
+                "Orange status reports drain timeout but event log lacks "
+                f"recording_drain_timeout for request_id={stop_request_id}"
+            )
         if not event_log.get("has_forced_finalize_requested", False):
             failures.append(
                 "Orange status reports drain timeout but event log lacks "
                 "recording_drain_forced_finalize_requested"
+            )
+        if stop_request_id and not event_log_lifecycle_events_for_request(
+            event_log,
+            stop_request_id,
+            event_name="recording_drain_forced_finalize_requested",
+        ):
+            failures.append(
+                "Orange status reports drain timeout but event log lacks "
+                "recording_drain_forced_finalize_requested for "
+                f"request_id={stop_request_id}"
             )
 
     operation_ids = set(str(item) for item in event_log.get("operation_ids", []))
@@ -1103,11 +1911,11 @@ def check_orange_local_control_event_log(
 
 
 def citrus_ready_to_start(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["readiness", "ready_to_start"], False))
+    return json_bool(json_path(status, ["readiness", "ready_to_start"], False))
 
 
 def citrus_active_or_armed(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["experiment", "active"], False)) or bool(
+    return json_bool(json_path(status, ["experiment", "active"], False)) or json_bool(
         json_path(status, ["experiment", "armed"], False)
     )
 
@@ -1127,11 +1935,11 @@ def citrus_is_terminal(status: dict[str, Any]) -> bool:
 
 
 def citrus_perf_jsonl_enabled(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["output", "perf_jsonl_enabled"], False))
+    return json_bool(json_path(status, ["output", "perf_jsonl_enabled"], False))
 
 
 def citrus_perf_jsonl_path_known(status: dict[str, Any]) -> bool:
-    return bool(json_path(status, ["output", "perf_jsonl_path_known"], False))
+    return json_bool(json_path(status, ["output", "perf_jsonl_path_known"], False))
 
 
 @dataclass
@@ -2073,6 +2881,7 @@ class Orchestrator:
                 "local_control_stop_state": orange_recording_stop_state(orange_status),
                 "local_control_stop_ack_state": orange_recording_stop_ack_state(orange_status),
                 "local_control_stop_health": orange_recording_stop_health(orange_status),
+                "local_control_stop_error_code": orange_recording_stop_error_code(orange_status),
                 "local_control_stop_ack_status_check": (
                     orange_stop_ack_status_check
                 ),

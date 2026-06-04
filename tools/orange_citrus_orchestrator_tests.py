@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import shlex
@@ -152,8 +153,26 @@ def test_request_builders_and_readiness_helpers() -> None:
     require(module.orange_ready_for_citrus(orange_status(True, False)), "orange recording")
     require(module.orange_recording_finalized(orange_status(True, True)), "orange finalized")
     require(
+        not module.orange_ready_for_recording(
+            {"readiness": {"ready_for_recording_request": "true"}}
+        ),
+        "orange readiness helper must reject truthy-string booleans",
+    )
+    require(
+        not module.orange_recording_finalized(
+            {"readiness": {"recording_finalized": "true"}}
+        ),
+        "orange finalized helper must reject truthy-string booleans",
+    )
+    require(
         not module.orange_recording_stop_drain_timed_out(orange_status(True, True)),
         "orange drain timeout should default false",
+    )
+    string_timeout_status = orange_status(True, True)
+    string_timeout_status["local_control"]["recording_stop"]["drain_timed_out"] = "true"
+    require(
+        not module.orange_recording_stop_drain_timed_out(string_timeout_status),
+        "orange drain timeout helper must reject truthy-string booleans",
     )
     require(
         module.orange_recording_stop_drain_timed_out(
@@ -171,6 +190,26 @@ def test_request_builders_and_readiness_helpers() -> None:
         )
         == "failed_timeout",
         "orange stop ACK-state helper should report drain timeout",
+    )
+    require(
+        module.response_accepted({"ok": True, "accepted": True}) is True,
+        "accepted response with JSON booleans should pass",
+    )
+    require(
+        module.response_accepted({"ok": True, "duplicate": True}) is True,
+        "duplicate response with JSON booleans should pass",
+    )
+    require(
+        module.response_accepted({"ok": "true", "accepted": True}) is False,
+        "response acceptance must reject truthy-string ok",
+    )
+    require(
+        module.response_accepted({"ok": True, "accepted": "true"}) is False,
+        "response acceptance must reject truthy-string accepted",
+    )
+    require(
+        module.response_accepted({"ok": True, "duplicate": "true"}) is False,
+        "response acceptance must reject truthy-string duplicate",
     )
     stop_args = module.parse_args(["--stop-policy", "stop_recording"])
     require(
@@ -195,8 +234,18 @@ def test_request_builders_and_readiness_helpers() -> None:
         "explicit Orange stop grace should override policy defaults",
     )
     require(module.citrus_ready_to_start(citrus_status(False, False)), "citrus ready")
+    require(
+        not module.citrus_ready_to_start({"readiness": {"ready_to_start": "true"}}),
+        "citrus readiness helper must reject truthy-string booleans",
+    )
     require(module.citrus_is_terminal(citrus_status(True, True)), "citrus terminal")
     require(module.citrus_perf_jsonl_path_known(citrus_status(True, True)), "perf path known")
+    require(
+        not module.citrus_perf_jsonl_path_known(
+            {"output": {"perf_jsonl_path_known": "true"}}
+        ),
+        "citrus perf path-known helper must reject truthy-string booleans",
+    )
 
     rendered = module.render_validation_command(
         "validator {orange_recording_folder} {citrus_perf_jsonl_path} {operation_id}",
@@ -878,6 +927,71 @@ def test_orchestrator_fails_on_orange_drain_timeout_by_default() -> None:
             ),
             "finalized timeout status check should require forced stream-stop request",
         )
+        bad_error_status = orange_status(True, True, drain_timed_out=True)
+        bad_error_status["local_control"]["recording_stop"]["error_code"] = ""
+        bad_error_failures = module.check_orange_drain_timeout_status(bad_error_status)
+        require(
+            any("error_code=''" in failure for failure in bad_error_failures),
+            "timeout status check should require drain_timeout error code when present",
+        )
+        impossible_failed_ack_status = orange_status(True, True)
+        impossible_failed_ack_status["local_control"]["recording_stop"][
+            "ack_state"
+        ] = "failed_timeout"
+        impossible_failed_ack_check = module.summarize_orange_drain_timeout_status(
+            impossible_failed_ack_status,
+            allow_drain_timeout=True,
+        )
+        require(
+            not impossible_failed_ack_check["ok"],
+            "failed_timeout ACK without drain_timed_out should fail consistency",
+        )
+        require(
+            any(
+                "failed-timeout ACK" in failure
+                for failure in impossible_failed_ack_check["consistency_failures"]
+            ),
+            "failed_timeout ACK consistency failure should name failed-timeout ACK",
+        )
+        impossible_forced_status = orange_status(True, True)
+        impossible_forced_status["local_control"]["recording_stop"][
+            "forced_finalize_requested"
+        ] = True
+        impossible_forced_failures = module.check_orange_drain_timeout_status(
+            impossible_forced_status
+        )
+        require(
+            any("forced finalize" in failure for failure in impossible_forced_failures),
+            "forced-finalize status without timeout should fail consistency",
+        )
+        impossible_state_status = orange_status(True, True)
+        impossible_state_status["local_control"]["recording_stop"][
+            "state"
+        ] = "finalized_after_drain_timeout"
+        impossible_state_failures = module.check_orange_drain_timeout_status(
+            impossible_state_status
+        )
+        require(
+            any("finalized-after-drain-timeout state" in failure for failure in impossible_state_failures),
+            "finalized-after-timeout state without timeout should fail consistency",
+        )
+        string_bool_status = orange_status(True, True)
+        string_bool_status["local_control"]["recording_stop"][
+            "drain_timed_out"
+        ] = "true"
+        string_bool_status["local_control"]["recording_stop"][
+            "forced_finalize_requested"
+        ] = "true"
+        string_bool_status["local_control"]["recording_stop"][
+            "forced_finalize_stream_stop_requested"
+        ] = "false"
+        string_bool_failures = module.check_orange_drain_timeout_status(
+            string_bool_status
+        )
+        require(
+            sum("expected JSON boolean" in failure for failure in string_bool_failures) == 3,
+            f"status check should reject non-boolean stop flags: {string_bool_failures}",
+        )
     finally:
         module.send_unix_json = original_send
 
@@ -1149,7 +1263,36 @@ def test_orange_local_control_event_log_summary() -> None:
                     "operation_id": "op-log",
                     "ok": True,
                     "accepted": True,
+                    "responded_at_utc": "2026-05-29T00:00:00Z",
+                    "duplicate": False,
+                    "queued_for_gui_thread": True,
                 },
+            },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
+                "event": "gui_command_accepted",
+                "event_at_utc": "2026-05-29T00:00:00Z",
+                "request_id": "start-req",
+                "operation_id": "op-log",
+                "method": "start_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "received_at_utc": "2026-05-29T00:00:00Z",
+                "start_enabled": True,
+                "stop_enabled": True,
+                "stop_recording_enabled": True,
+                "citrus_completion_enabled": True,
+            },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
+                "event": "recording_start_queued",
+                "event_at_utc": "2026-05-29T00:00:00Z",
+                "request_id": "start-req",
+                "operation_id": "op-log",
+                "method": "start_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_start",
             },
             {
                 "schema_id": "orange.local_control.gui_event",
@@ -1158,6 +1301,19 @@ def test_orange_local_control_event_log_summary() -> None:
                 "event_at_utc": "2026-05-29T00:00:00Z",
                 "request_id": "start-req",
                 "operation_id": "op-log",
+                "method": "start_recording",
+            },
+            {
+                "schema_id": "orange.local_control.gui_event",
+                "schema_version": 1,
+                "event": "recording_stop_scheduled",
+                "event_at_utc": "2026-05-29T00:00:01Z",
+                "request_id": "stop-req",
+                "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_stop",
+                "grace_seconds": 0.0,
             },
             {
                 "schema_id": "orange.local_control.gui_event",
@@ -1169,6 +1325,7 @@ def test_orange_local_control_event_log_summary() -> None:
                 "method": "stop_recording",
                 "command_source": "orange_citrus_orchestrator",
                 "reason": "orchestrator_stop",
+                "grace_seconds": 0.0,
             },
             {
                 "schema_id": "orange.local_control.gui_event",
@@ -1180,6 +1337,8 @@ def test_orange_local_control_event_log_summary() -> None:
                 "method": "stop_recording",
                 "command_source": "orange_citrus_orchestrator",
                 "reason": "orchestrator_stop",
+                "drain_timed_out": False,
+                "health": "ok",
             },
             {
                 "schema_id": "orange.local_control.gui_event",
@@ -1200,22 +1359,64 @@ def test_orange_local_control_event_log_summary() -> None:
 
         summary = module.summarize_orange_local_control_event_log(str(log_path))
         require(summary["exists"], "event log should exist")
-        require(summary["row_count"] == 6, "event log row count should parse")
+        require(summary["row_count"] == 9, "event log row count should parse")
         require(summary["socket_event_count"] == 1, "socket event count should parse")
-        require(summary["gui_event_count"] == 4, "GUI event count should parse")
+        require(summary["gui_event_count"] == 7, "GUI event count should parse")
         require(summary["invalid_row_count"] == 1, "invalid row count should parse")
+        require(
+            summary["first_socket_received_at_utc"] == "2026-05-29T00:00:00Z",
+            "first socket timestamp should summarize",
+        )
+        require(
+            summary["last_socket_responded_at_utc"] == "2026-05-29T00:00:00Z",
+            "last socket response timestamp should summarize",
+        )
+        require(
+            summary["first_gui_event_at_utc"] == "2026-05-29T00:00:00Z",
+            "first GUI lifecycle timestamp should summarize",
+        )
+        require(
+            summary["last_gui_event_at_utc"] == "2026-05-29T00:00:03Z",
+            "last GUI lifecycle timestamp should summarize",
+        )
         require(summary["events"]["recording_start_triggered"] == 1, "start trigger event should count")
+        require(summary["events"]["recording_start_queued"] == 1, "start queued event should count")
+        require(summary["events"]["recording_stop_scheduled"] == 1, "stop scheduled event should count")
         require(summary["events"]["recording_stop_triggered"] == 1, "stop trigger event should count")
+        require(summary["events"]["gui_command_accepted"] == 1, "accepted GUI event should count")
         require(len(summary["socket_request_events"]) == 1, "socket request event should summarize")
+        require(
+            summary["socket_request_events"][0]["row_index"] == 1,
+            "socket request event should preserve row index",
+        )
         require(
             summary["socket_request_events"][0]["source"] == "orange_citrus_orchestrator",
             "socket request event should preserve source",
+        )
+        require(
+            summary["socket_request_events"][0]["queued_for_gui_thread"] is True,
+            "socket request event should preserve queued_for_gui_thread",
+        )
+        accepted_events = module.event_log_lifecycle_events_for_request(
+            summary,
+            "start-req",
+            event_name="gui_command_accepted",
+        )
+        require(len(accepted_events) == 1, "accepted GUI event should summarize")
+        require(
+            accepted_events[0]["row_index"] == 2,
+            "accepted GUI event should preserve row index",
+        )
+        require(
+            accepted_events[0]["start_enabled"] is True,
+            "accepted GUI event should preserve start_enabled",
         )
         require(
             summary["events"]["recording_drain_forced_finalize_requested"] == 1,
             "forced-finalize event should count",
         )
         require(summary["has_start_triggered"], "start-trigger flag should be true")
+        require(summary["has_stop_scheduled"], "stop-scheduled flag should be true")
         require(summary["has_stop_triggered"], "stop-trigger flag should be true")
         require(
             summary["has_forced_finalize_requested"],
@@ -1231,8 +1432,29 @@ def test_orange_local_control_event_log_summary() -> None:
         )
         require(len(stop_events) == 1, "stop trigger lifecycle event should summarize")
         require(
+            stop_events[0]["row_index"] == 6,
+            "stop trigger lifecycle event should preserve row index",
+        )
+        require(
             stop_events[0]["method"] == "stop_recording",
             "lifecycle event should preserve stop method",
+        )
+        require(
+            stop_events[0]["grace_seconds"] == 0.0,
+            "lifecycle event should preserve stop grace",
+        )
+        finalize_events = module.event_log_lifecycle_events_for_request(
+            summary,
+            "stop-req",
+            event_name="recording_drain_finalized",
+        )
+        require(
+            finalize_events[0]["drain_timed_out"] is False,
+            "finalize event should preserve drain timeout status",
+        )
+        require(
+            finalize_events[0]["health"] == "ok",
+            "finalize event should preserve health",
         )
 
 
@@ -1244,9 +1466,9 @@ def test_orange_local_control_event_log_required_check() -> None:
     event_log = {
         "path": "/tmp/orange.events.jsonl",
         "exists": True,
-        "row_count": 5,
+        "row_count": 9,
         "socket_event_count": 2,
-        "gui_event_count": 3,
+        "gui_event_count": 7,
         "invalid_row_count": 0,
         "request_ids": [
             "op-log:orange:start_recording",
@@ -1255,20 +1477,24 @@ def test_orange_local_control_event_log_required_check() -> None:
         "operation_ids": ["op-log"],
         "socket_request_events": [
             {
+                "row_index": 1,
                 "request_id": "op-log:orange:start_recording",
                 "operation_id": "op-log",
                 "method": "start_recording",
                 "source": "orange_citrus_orchestrator",
                 "ok": True,
                 "accepted": True,
+                "queued_for_gui_thread": True,
             },
             {
+                "row_index": 5,
                 "request_id": "op-log:orange:stop_recording",
                 "operation_id": "op-log",
                 "method": "stop_recording",
                 "source": "orange_citrus_orchestrator",
                 "ok": True,
                 "accepted": True,
+                "queued_for_gui_thread": True,
             },
         ],
         "has_start_triggered": True,
@@ -1278,13 +1504,59 @@ def test_orange_local_control_event_log_required_check() -> None:
         "has_drain_finalized": True,
         "gui_lifecycle_events": [
             {
-                "event": "recording_start_triggered",
+                "row_index": 2,
+                "event": "gui_command_accepted",
                 "request_id": "op-log:orange:start_recording",
                 "operation_id": "op-log",
+                "method": "start_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "start_enabled": True,
+                "stop_enabled": True,
+                "stop_recording_enabled": True,
+                "citrus_completion_enabled": True,
+            },
+            {
+                "row_index": 3,
+                "event": "recording_start_queued",
+                "request_id": "op-log:orange:start_recording",
+                "operation_id": "op-log",
+                "method": "start_recording",
                 "command_source": "orange_citrus_orchestrator",
                 "reason": "orchestrator_start",
             },
             {
+                "row_index": 4,
+                "event": "recording_start_triggered",
+                "request_id": "op-log:orange:start_recording",
+                "operation_id": "op-log",
+                "method": "start_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_start",
+            },
+            {
+                "row_index": 6,
+                "event": "gui_command_accepted",
+                "request_id": "op-log:orange:stop_recording",
+                "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "start_enabled": True,
+                "stop_enabled": True,
+                "stop_recording_enabled": True,
+                "citrus_completion_enabled": True,
+            },
+            {
+                "row_index": 7,
+                "event": "recording_stop_scheduled",
+                "request_id": "op-log:orange:stop_recording",
+                "operation_id": "op-log",
+                "method": "stop_recording",
+                "command_source": "orange_citrus_orchestrator",
+                "reason": "orchestrator_stop",
+                "grace_seconds": 0.0,
+            },
+            {
+                "row_index": 8,
                 "event": "recording_stop_triggered",
                 "request_id": "op-log:orange:stop_recording",
                 "operation_id": "op-log",
@@ -1293,15 +1565,53 @@ def test_orange_local_control_event_log_required_check() -> None:
                 "reason": "orchestrator_stop",
             },
             {
+                "row_index": 9,
                 "event": "recording_drain_finalized",
                 "request_id": "op-log:orange:stop_recording",
                 "operation_id": "op-log",
                 "method": "stop_recording",
                 "command_source": "orange_citrus_orchestrator",
                 "reason": "orchestrator_stop",
+                "drain_timed_out": False,
+                "health": "ok",
+                "error_code": "",
             },
         ],
     }
+
+    def copy_event_log() -> dict[str, Any]:
+        copied = dict(event_log)
+        copied["socket_request_events"] = [
+            dict(row) for row in event_log["socket_request_events"]
+        ]
+        copied["gui_lifecycle_events"] = [
+            dict(row) for row in event_log["gui_lifecycle_events"]
+        ]
+        return copied
+
+    def mutate_socket_event(
+        copied: dict[str, Any],
+        *,
+        request_id: str,
+        field: str,
+        value: Any,
+    ) -> None:
+        for row in copied["socket_request_events"]:
+            if row.get("request_id") == request_id:
+                row[field] = value
+
+    def mutate_gui_event(
+        copied: dict[str, Any],
+        *,
+        request_id: str,
+        event_name: str,
+        field: str,
+        value: Any,
+    ) -> None:
+        for row in copied["gui_lifecycle_events"]:
+            if row.get("request_id") == request_id and row.get("event") == event_name:
+                row[field] = value
+
     ok_check = module.check_orange_local_control_event_log(
         event_log,
         required=True,
@@ -1310,10 +1620,189 @@ def test_orange_local_control_event_log_required_check() -> None:
         orange_status=status,
     )
     require(ok_check["ok"], f"valid event log should pass: {ok_check}")
+    request_chains = {
+        item["request_id"]: item for item in ok_check["request_chains"]
+    }
+    start_chain = request_chains["op-log:orange:start_recording"]
+    require(start_chain["socket_rows"] == 1, "start chain should summarize socket rows")
+    require(start_chain["has_socket"], "start chain should report socket presence")
+    require(start_chain["has_queued_socket"], "start chain should report queued socket presence")
+    require(
+        start_chain["has_gui_command_accepted"],
+        "start chain should report GUI accepted presence",
+    )
+    require(
+        start_chain["has_recording_start_queued"],
+        "start chain should report start queued presence",
+    )
+    require(
+        start_chain["has_recording_start_triggered"],
+        "start chain should report start trigger presence",
+    )
+    require(
+        start_chain["socket_methods"] == ["start_recording"],
+        "start chain should summarize socket method",
+    )
+    require(
+        start_chain["socket_sources"] == ["orange_citrus_orchestrator"],
+        "start chain should summarize socket source",
+    )
+    require(
+        start_chain["socket_ok_values"] == [True],
+        "start chain should summarize socket ok value",
+    )
+    require(
+        start_chain["socket_accepted_values"] == [True],
+        "start chain should summarize socket accepted value",
+    )
+    require(
+        start_chain["socket_queued_for_gui_thread_values"] == [True],
+        "start chain should summarize socket queued value",
+    )
+    require(
+        start_chain["gui_command_accepted_methods"] == ["start_recording"],
+        "start chain should summarize GUI accepted method",
+    )
+    require(
+        start_chain["gui_command_accepted_sources"] == ["orange_citrus_orchestrator"],
+        "start chain should summarize GUI accepted source",
+    )
+    require(
+        start_chain["gui_command_accepted_start_enabled_values"] == [True],
+        "start chain should summarize start enabled value",
+    )
+    require(
+        start_chain["recording_start_queued_methods"] == ["start_recording"],
+        "start chain should summarize start queued method",
+    )
+    require(
+        start_chain["recording_start_queued_sources"] == ["orange_citrus_orchestrator"],
+        "start chain should summarize start queued source",
+    )
+    require(
+        start_chain["recording_start_triggered_methods"] == ["start_recording"],
+        "start chain should summarize start trigger method",
+    )
+    require(
+        start_chain["recording_start_triggered_sources"] == ["orange_citrus_orchestrator"],
+        "start chain should summarize start trigger source",
+    )
+    require(
+        start_chain["queued_socket_row_indexes"] == [1],
+        "start chain should summarize queued socket row index",
+    )
+    require(
+        start_chain["gui_command_accepted_row_indexes"] == [2],
+        "start chain should summarize GUI accepted row index",
+    )
+    require(
+        start_chain["recording_start_queued_row_indexes"] == [3],
+        "start chain should summarize start queued row index",
+    )
+    require(
+        start_chain["recording_start_triggered_row_indexes"] == [4],
+        "start chain should summarize start trigger row index",
+    )
+    stop_chain = request_chains["op-log:orange:stop_recording"]
+    require(stop_chain["has_queued_socket"], "stop chain should report queued socket presence")
+    require(
+        stop_chain["has_recording_stop_scheduled"],
+        "stop chain should report stop scheduled presence",
+    )
+    require(
+        stop_chain["has_recording_stop_triggered"],
+        "stop chain should report stop trigger presence",
+    )
+    require(
+        stop_chain["has_recording_drain_finalized"],
+        "stop chain should report drain finalized presence",
+    )
+    require(
+        stop_chain["socket_methods"] == ["stop_recording"],
+        "stop chain should summarize socket method",
+    )
+    require(
+        stop_chain["recording_stop_scheduled_methods"] == ["stop_recording"],
+        "stop chain should summarize stop scheduled method",
+    )
+    require(
+        stop_chain["recording_stop_scheduled_sources"] == ["orange_citrus_orchestrator"],
+        "stop chain should summarize stop scheduled source",
+    )
+    require(
+        stop_chain["recording_stop_scheduled_reasons"] == ["orchestrator_stop"],
+        "stop chain should summarize stop scheduled reason",
+    )
+    require(
+        stop_chain["recording_stop_triggered_methods"] == ["stop_recording"],
+        "stop chain should summarize stop trigger method",
+    )
+    require(
+        stop_chain["recording_stop_triggered_sources"] == ["orange_citrus_orchestrator"],
+        "stop chain should summarize stop trigger source",
+    )
+    require(
+        stop_chain["recording_stop_triggered_reasons"] == ["orchestrator_stop"],
+        "stop chain should summarize stop trigger reason",
+    )
+    require(
+        stop_chain["recording_drain_finalized_methods"] == ["stop_recording"],
+        "stop chain should summarize drain finalized method",
+    )
+    require(
+        stop_chain["recording_drain_finalized_sources"] == ["orange_citrus_orchestrator"],
+        "stop chain should summarize drain finalized source",
+    )
+    require(
+        stop_chain["recording_drain_finalized_reasons"] == ["orchestrator_stop"],
+        "stop chain should summarize drain finalized reason",
+    )
+    require(
+        stop_chain["recording_drain_finalized_drain_timed_out_values"] == [False],
+        "stop chain should summarize clean drain-finalized timeout flag",
+    )
+    require(
+        stop_chain["recording_drain_finalized_healths"] == ["ok"],
+        "stop chain should summarize drain-finalized health",
+    )
+    require(
+        stop_chain["gui_command_accepted_stop_enabled_values"] == [True],
+        "stop chain should summarize stop enabled value",
+    )
+    require(
+        stop_chain["gui_command_accepted_stop_recording_enabled_values"] == [True],
+        "stop chain should summarize stop_recording enabled value",
+    )
+    require(
+        stop_chain["gui_command_accepted_citrus_completion_enabled_values"] == [True],
+        "stop chain should summarize Citrus completion enabled value",
+    )
+    require(
+        stop_chain["queued_socket_row_indexes"] == [5],
+        "stop chain should summarize queued socket row index",
+    )
+    require(
+        stop_chain["gui_command_accepted_row_indexes"] == [6],
+        "stop chain should summarize GUI accepted row index",
+    )
+    require(
+        stop_chain["recording_stop_scheduled_row_indexes"] == [7],
+        "stop chain should summarize stop scheduled row index",
+    )
+    require(
+        stop_chain["recording_stop_triggered_row_indexes"] == [8],
+        "stop chain should summarize stop trigger row index",
+    )
+    require(
+        stop_chain["recording_drain_finalized_row_indexes"] == [9],
+        "stop chain should summarize drain finalized row index",
+    )
 
     missing_start_socket_event_log = dict(event_log)
     missing_start_socket_event_log["socket_request_events"] = [
-        dict(event_log["socket_request_events"][1])
+        dict(row)
+        for row in event_log["socket_request_events"]
+        if row.get("request_id") != "op-log:orange:start_recording"
     ]
     missing_start_socket_check = module.check_orange_local_control_event_log(
         missing_start_socket_event_log,
@@ -1331,11 +1820,13 @@ def test_orange_local_control_event_log_required_check() -> None:
         "missing start socket row failure should name start socket request/response",
     )
 
-    rejected_start_socket_event_log = dict(event_log)
-    rejected_start_socket_event_log["socket_request_events"] = [
-        dict(row) for row in event_log["socket_request_events"]
-    ]
-    rejected_start_socket_event_log["socket_request_events"][0]["accepted"] = False
+    rejected_start_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        rejected_start_socket_event_log,
+        request_id="op-log:orange:start_recording",
+        field="accepted",
+        value=False,
+    )
     rejected_start_socket_check = module.check_orange_local_control_event_log(
         rejected_start_socket_event_log,
         required=True,
@@ -1352,11 +1843,83 @@ def test_orange_local_control_event_log_required_check() -> None:
         "rejected start socket row failure should name accepted state",
     )
 
-    bad_start_source_event_log = dict(event_log)
-    bad_start_source_event_log["gui_lifecycle_events"] = [
-        dict(row) for row in event_log["gui_lifecycle_events"]
-    ]
-    bad_start_source_event_log["gui_lifecycle_events"][0]["command_source"] = "unexpected"
+    unqueued_start_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        unqueued_start_socket_event_log,
+        request_id="op-log:orange:start_recording",
+        field="queued_for_gui_thread",
+        value=False,
+    )
+    unqueued_start_socket_check = module.check_orange_local_control_event_log(
+        unqueued_start_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not unqueued_start_socket_check["ok"],
+        "event log should fail when start socket row was not queued for GUI thread",
+    )
+    require(
+        any("queued_for_gui_thread" in failure for failure in unqueued_start_socket_check["failures"]),
+        "unqueued start socket row failure should name queued_for_gui_thread",
+    )
+
+    string_queued_start_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        string_queued_start_socket_event_log,
+        request_id="op-log:orange:start_recording",
+        field="queued_for_gui_thread",
+        value="true",
+    )
+    string_queued_start_socket_check = module.check_orange_local_control_event_log(
+        string_queued_start_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not string_queued_start_socket_check["ok"],
+        "event log should fail when start queued flag is a truthy string",
+    )
+    require(
+        any("queued_for_gui_thread" in failure for failure in string_queued_start_socket_check["failures"]),
+        "truthy-string queued flag failure should name queued_for_gui_thread",
+    )
+
+    missing_start_source_event_log = copy_event_log()
+    mutate_socket_event(
+        missing_start_source_event_log,
+        request_id="op-log:orange:start_recording",
+        field="source",
+        value="",
+    )
+    missing_start_source_check = module.check_orange_local_control_event_log(
+        missing_start_source_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_start_source_check["ok"],
+        "event log should fail when start socket source is empty",
+    )
+    require(
+        any("start socket request" in failure and "source is empty" in failure for failure in missing_start_source_check["failures"]),
+        "missing start source failure should name empty source",
+    )
+
+    bad_start_source_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_start_source_event_log,
+        request_id="op-log:orange:start_recording",
+        event_name="recording_start_triggered",
+        field="command_source",
+        value="unexpected",
+    )
     bad_start_source_check = module.check_orange_local_control_event_log(
         bad_start_source_event_log,
         required=True,
@@ -1373,9 +1936,157 @@ def test_orange_local_control_event_log_required_check() -> None:
         "bad start trigger source failure should name command_source",
     )
 
+    bad_start_method_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_start_method_event_log,
+        request_id="op-log:orange:start_recording",
+        event_name="recording_start_triggered",
+        field="method",
+        value="",
+    )
+    bad_start_method_check = module.check_orange_local_control_event_log(
+        bad_start_method_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_start_method_check["ok"],
+        "event log should fail when start trigger method is missing",
+    )
+    require(
+        any("recording_start_triggered" in failure and "method" in failure for failure in bad_start_method_check["failures"]),
+        "bad start trigger method failure should name method",
+    )
+
+    missing_start_accepted_event_log = dict(event_log)
+    missing_start_accepted_event_log["gui_lifecycle_events"] = [
+        dict(row)
+        for row in event_log["gui_lifecycle_events"]
+        if not (
+            row.get("event") == "gui_command_accepted"
+            and row.get("request_id") == "op-log:orange:start_recording"
+        )
+    ]
+    missing_start_accepted_check = module.check_orange_local_control_event_log(
+        missing_start_accepted_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_start_accepted_check["ok"],
+        "event log should fail when start request has no GUI accepted row",
+    )
+    require(
+        any("start GUI-thread gui_command_accepted" in failure for failure in missing_start_accepted_check["failures"]),
+        "missing start accepted row failure should name gui_command_accepted",
+    )
+
+    missing_start_queued_event_log = dict(event_log)
+    missing_start_queued_event_log["gui_lifecycle_events"] = [
+        dict(row)
+        for row in event_log["gui_lifecycle_events"]
+        if not (
+            row.get("event") == "recording_start_queued"
+            and row.get("request_id") == "op-log:orange:start_recording"
+        )
+    ]
+    missing_start_queued_check = module.check_orange_local_control_event_log(
+        missing_start_queued_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_start_queued_check["ok"],
+        "event log should fail when start request has no start queued row",
+    )
+    require(
+        any("recording_start_queued" in failure for failure in missing_start_queued_check["failures"]),
+        "missing start queued row failure should name recording_start_queued",
+    )
+
+    bad_start_enabled_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_start_enabled_event_log,
+        request_id="op-log:orange:start_recording",
+        event_name="gui_command_accepted",
+        field="start_enabled",
+        value=False,
+    )
+    bad_start_enabled_check = module.check_orange_local_control_event_log(
+        bad_start_enabled_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_start_enabled_check["ok"],
+        "event log should fail when start accepted row reports disabled start control",
+    )
+    require(
+        any("start_enabled" in failure for failure in bad_start_enabled_check["failures"]),
+        "bad start accepted row failure should name start_enabled",
+    )
+
+    string_start_enabled_event_log = copy_event_log()
+    mutate_gui_event(
+        string_start_enabled_event_log,
+        request_id="op-log:orange:start_recording",
+        event_name="gui_command_accepted",
+        field="start_enabled",
+        value="true",
+    )
+    string_start_enabled_check = module.check_orange_local_control_event_log(
+        string_start_enabled_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not string_start_enabled_check["ok"],
+        "event log should fail when start_enabled is a truthy string",
+    )
+    require(
+        any("start_enabled" in failure for failure in string_start_enabled_check["failures"]),
+        "truthy-string start_enabled failure should name start_enabled",
+    )
+
+    bad_start_order_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_start_order_event_log,
+        request_id="op-log:orange:start_recording",
+        event_name="gui_command_accepted",
+        field="row_index",
+        value=5,
+    )
+    bad_start_order_check = module.check_orange_local_control_event_log(
+        bad_start_order_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_start_order_check["ok"],
+        "event log should fail when start accepted row follows start queued",
+    )
+    require(
+        any("out-of-order" in failure and "recording_start_queued" in failure for failure in bad_start_order_check["failures"]),
+        "bad start order failure should name the start queued order",
+    )
+
     missing_socket_event_log = dict(event_log)
     missing_socket_event_log["socket_request_events"] = [
-        dict(event_log["socket_request_events"][0])
+        dict(row)
+        for row in event_log["socket_request_events"]
+        if row.get("request_id") != "op-log:orange:stop_recording"
     ]
     missing_socket_check = module.check_orange_local_control_event_log(
         missing_socket_event_log,
@@ -1393,11 +2104,13 @@ def test_orange_local_control_event_log_required_check() -> None:
         "missing stop socket row failure should name socket request/response",
     )
 
-    rejected_socket_event_log = dict(event_log)
-    rejected_socket_event_log["socket_request_events"] = [
-        dict(row) for row in event_log["socket_request_events"]
-    ]
-    rejected_socket_event_log["socket_request_events"][1]["accepted"] = False
+    rejected_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        rejected_socket_event_log,
+        request_id="op-log:orange:stop_recording",
+        field="accepted",
+        value=False,
+    )
     rejected_socket_check = module.check_orange_local_control_event_log(
         rejected_socket_event_log,
         required=True,
@@ -1414,11 +2127,59 @@ def test_orange_local_control_event_log_required_check() -> None:
         "rejected stop socket row failure should name accepted state",
     )
 
-    failed_socket_event_log = dict(event_log)
-    failed_socket_event_log["socket_request_events"] = [
-        dict(row) for row in event_log["socket_request_events"]
-    ]
-    failed_socket_event_log["socket_request_events"][1]["ok"] = False
+    unqueued_stop_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        unqueued_stop_socket_event_log,
+        request_id="op-log:orange:stop_recording",
+        field="queued_for_gui_thread",
+        value=False,
+    )
+    unqueued_stop_socket_check = module.check_orange_local_control_event_log(
+        unqueued_stop_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not unqueued_stop_socket_check["ok"],
+        "event log should fail when stop socket row was not queued for GUI thread",
+    )
+    require(
+        any("queued_for_gui_thread" in failure for failure in unqueued_stop_socket_check["failures"]),
+        "unqueued stop socket row failure should name queued_for_gui_thread",
+    )
+
+    string_accepted_stop_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        string_accepted_stop_socket_event_log,
+        request_id="op-log:orange:stop_recording",
+        field="accepted",
+        value="true",
+    )
+    string_accepted_stop_socket_check = module.check_orange_local_control_event_log(
+        string_accepted_stop_socket_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not string_accepted_stop_socket_check["ok"],
+        "event log should fail when stop accepted flag is a truthy string",
+    )
+    require(
+        any("accepted" in failure for failure in string_accepted_stop_socket_check["failures"]),
+        "truthy-string stop accepted failure should name accepted",
+    )
+
+    failed_socket_event_log = copy_event_log()
+    mutate_socket_event(
+        failed_socket_event_log,
+        request_id="op-log:orange:stop_recording",
+        field="ok",
+        value=False,
+    )
     failed_socket_check = module.check_orange_local_control_event_log(
         failed_socket_event_log,
         required=True,
@@ -1435,11 +2196,14 @@ def test_orange_local_control_event_log_required_check() -> None:
         "failed stop socket row failure should name ok state",
     )
 
-    bad_stop_event_log = dict(event_log)
-    bad_stop_event_log["gui_lifecycle_events"] = [
-        dict(row) for row in event_log["gui_lifecycle_events"]
-    ]
-    bad_stop_event_log["gui_lifecycle_events"][1]["method"] = "citrus_completion"
+    bad_stop_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_stop_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="recording_stop_triggered",
+        field="method",
+        value="citrus_completion",
+    )
     bad_stop_check = module.check_orange_local_control_event_log(
         bad_stop_event_log,
         required=True,
@@ -1454,6 +2218,281 @@ def test_orange_local_control_event_log_required_check() -> None:
     require(
         any("method" in failure for failure in bad_stop_check["failures"]),
         "stop_recording event-log failure should name method mismatch",
+    )
+
+    missing_stop_source_status = orange_status(True, True)
+    missing_stop_source_status["local_control"]["recording_stop"][
+        "request_id"
+    ] = "op-log:orange:stop_recording"
+    missing_stop_source_status["local_control"]["recording_stop"][
+        "operation_id"
+    ] = "op-log"
+    missing_stop_source_status["local_control"]["recording_stop"]["source"] = ""
+    missing_stop_source_check = module.check_orange_local_control_event_log(
+        event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=missing_stop_source_status,
+    )
+    require(
+        not missing_stop_source_check["ok"],
+        "event log should fail when final stop status has no command source",
+    )
+    require(
+        any("command_source/source" in failure for failure in missing_stop_source_check["failures"]),
+        "missing stop source failure should name source metadata",
+    )
+
+    missing_stop_method_status = orange_status(True, True)
+    missing_stop_method_status["local_control"]["recording_stop"][
+        "request_id"
+    ] = "op-log:orange:stop_recording"
+    missing_stop_method_status["local_control"]["recording_stop"][
+        "operation_id"
+    ] = "op-log"
+    missing_stop_method_status["local_control"]["recording_stop"]["method"] = ""
+    missing_stop_method_check = module.check_orange_local_control_event_log(
+        event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=missing_stop_method_status,
+    )
+    require(
+        not missing_stop_method_check["ok"],
+        "event log should fail when final stop status has no method",
+    )
+    require(
+        any("recording_stop.method" in failure for failure in missing_stop_method_check["failures"]),
+        "missing stop method failure should name method metadata",
+    )
+
+    missing_stop_accepted_event_log = dict(event_log)
+    missing_stop_accepted_event_log["gui_lifecycle_events"] = [
+        dict(row)
+        for row in event_log["gui_lifecycle_events"]
+        if not (
+            row.get("event") == "gui_command_accepted"
+            and row.get("request_id") == "op-log:orange:stop_recording"
+        )
+    ]
+    missing_stop_accepted_check = module.check_orange_local_control_event_log(
+        missing_stop_accepted_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_stop_accepted_check["ok"],
+        "event log should fail when stop request has no GUI accepted row",
+    )
+    require(
+        any("GUI-thread gui_command_accepted" in failure for failure in missing_stop_accepted_check["failures"]),
+        "missing stop accepted row failure should name gui_command_accepted",
+    )
+
+    missing_stop_scheduled_event_log = dict(event_log)
+    missing_stop_scheduled_event_log["gui_lifecycle_events"] = [
+        dict(row)
+        for row in event_log["gui_lifecycle_events"]
+        if not (
+            row.get("event") == "recording_stop_scheduled"
+            and row.get("request_id") == "op-log:orange:stop_recording"
+        )
+    ]
+    missing_stop_scheduled_check = module.check_orange_local_control_event_log(
+        missing_stop_scheduled_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not missing_stop_scheduled_check["ok"],
+        "event log should fail when stop request has no stop scheduled row",
+    )
+    require(
+        any("recording_stop_scheduled" in failure for failure in missing_stop_scheduled_check["failures"]),
+        "missing stop scheduled row failure should name recording_stop_scheduled",
+    )
+
+    bad_stop_accepted_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_stop_accepted_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="gui_command_accepted",
+        field="command_source",
+        value="unexpected",
+    )
+    bad_stop_accepted_check = module.check_orange_local_control_event_log(
+        bad_stop_accepted_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_stop_accepted_check["ok"],
+        "event log should fail when stop accepted source mismatches final status",
+    )
+    require(
+        any("gui_command_accepted" in failure and "command_source" in failure for failure in bad_stop_accepted_check["failures"]),
+        "bad stop accepted source failure should name gui_command_accepted",
+    )
+
+    citrus_request_id = "citrus_completion:op-log:completed:protocol_finished"
+    citrus_status = orange_status(
+        True,
+        True,
+        stop_method="citrus_completion",
+        stop_source="citrus",
+        operation_id="op-log",
+        terminal_state="completed",
+        reason="protocol_finished",
+    )
+    citrus_status["local_control"]["recording_stop"]["request_id"] = citrus_request_id
+    citrus_event_log = copy_event_log()
+    citrus_event_log["request_ids"] = [
+        "op-log:orange:start_recording",
+        citrus_request_id,
+    ]
+    for row in citrus_event_log["socket_request_events"]:
+        if row.get("request_id") == "op-log:orange:stop_recording":
+            row["request_id"] = citrus_request_id
+            row["method"] = "citrus_completion"
+            row["source"] = "citrus"
+    for row in citrus_event_log["gui_lifecycle_events"]:
+        if row.get("request_id") != "op-log:orange:stop_recording":
+            continue
+        row["request_id"] = citrus_request_id
+        row["method"] = "citrus_completion"
+        row["command_source"] = "citrus"
+        row["reason"] = "protocol_finished"
+        row["terminal_state"] = "completed"
+        if row.get("event") == "gui_command_accepted":
+            row["stop_enabled"] = False
+            row["stop_recording_enabled"] = False
+            row["citrus_completion_enabled"] = True
+    citrus_only_check = module.check_orange_local_control_event_log(
+        citrus_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="citrus_completion_notify",
+        orange_status=citrus_status,
+    )
+    require(
+        citrus_only_check["ok"],
+        f"Citrus-only completion stop event log should pass: {citrus_only_check}",
+    )
+    citrus_request_chains = {
+        item["request_id"]: item for item in citrus_only_check["request_chains"]
+    }
+    citrus_chain = citrus_request_chains[citrus_request_id]
+    require(
+        citrus_chain["gui_command_accepted_stop_enabled_values"] == [False],
+        "Citrus-only chain should preserve generic stop disabled value",
+    )
+    require(
+        citrus_chain["gui_command_accepted_citrus_completion_enabled_values"] == [True],
+        "Citrus-only chain should preserve Citrus completion enabled value",
+    )
+
+    bad_citrus_gate_event_log = copy.deepcopy(citrus_event_log)
+    mutate_gui_event(
+        bad_citrus_gate_event_log,
+        request_id=citrus_request_id,
+        event_name="gui_command_accepted",
+        field="citrus_completion_enabled",
+        value=False,
+    )
+    bad_citrus_gate_check = module.check_orange_local_control_event_log(
+        bad_citrus_gate_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="citrus_completion_notify",
+        orange_status=citrus_status,
+    )
+    require(
+        not bad_citrus_gate_check["ok"],
+        "Citrus-only event log should fail when Citrus completion gate is disabled",
+    )
+    require(
+        any("citrus_completion_enabled" in failure for failure in bad_citrus_gate_check["failures"]),
+        "bad Citrus gate failure should name citrus_completion_enabled",
+    )
+
+    bad_stop_enabled_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_stop_enabled_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="gui_command_accepted",
+        field="stop_enabled",
+        value=False,
+    )
+    bad_stop_enabled_check = module.check_orange_local_control_event_log(
+        bad_stop_enabled_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_stop_enabled_check["ok"],
+        "event log should fail when stop accepted row reports disabled stop control",
+    )
+    require(
+        any("stop_enabled" in failure for failure in bad_stop_enabled_check["failures"]),
+        "bad stop accepted row failure should name stop_enabled",
+    )
+
+    string_stop_enabled_event_log = copy_event_log()
+    mutate_gui_event(
+        string_stop_enabled_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="gui_command_accepted",
+        field="stop_enabled",
+        value="true",
+    )
+    string_stop_enabled_check = module.check_orange_local_control_event_log(
+        string_stop_enabled_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not string_stop_enabled_check["ok"],
+        "event log should fail when stop_enabled is a truthy string",
+    )
+    require(
+        any("stop_enabled" in failure for failure in string_stop_enabled_check["failures"]),
+        "truthy-string stop_enabled failure should name stop_enabled",
+    )
+
+    bad_stop_order_event_log = copy_event_log()
+    mutate_gui_event(
+        bad_stop_order_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="recording_drain_finalized",
+        field="row_index",
+        value=5,
+    )
+    bad_stop_order_check = module.check_orange_local_control_event_log(
+        bad_stop_order_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not bad_stop_order_check["ok"],
+        "event log should fail when stop finalize row precedes stop trigger",
+    )
+    require(
+        any("out-of-order" in failure and "recording_drain_finalized" in failure for failure in bad_stop_order_check["failures"]),
+        "bad stop order failure should name the drain-finalized order",
     )
 
     missing_check = module.check_orange_local_control_event_log(
@@ -1487,6 +2526,41 @@ def test_orange_local_control_event_log_required_check() -> None:
 
     timeout_event_log = dict(event_log)
     timeout_event_log["has_drain_timeout"] = True
+    timeout_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in event_log["gui_lifecycle_events"]
+    ] + [
+        {
+            "row_index": 10,
+            "event": "recording_drain_timeout",
+            "request_id": "op-log:orange:stop_recording",
+            "operation_id": "op-log",
+            "method": "stop_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_stop",
+            "forced_finalize_requested": True,
+            "health": "critical",
+            "error_code": "drain_timeout",
+        },
+    ]
+    mutate_gui_event(
+        timeout_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="recording_drain_finalized",
+        field="row_index",
+        value=12,
+    )
+    for field, value in (
+        ("drain_timed_out", True),
+        ("health", "warning"),
+        ("error_code", "drain_timeout"),
+    ):
+        mutate_gui_event(
+            timeout_event_log,
+            request_id="op-log:orange:stop_recording",
+            event_name="recording_drain_finalized",
+            field=field,
+            value=value,
+        )
     timeout_forced_check = module.check_orange_local_control_event_log(
         timeout_event_log,
         required=True,
@@ -1507,6 +2581,22 @@ def test_orange_local_control_event_log_required_check() -> None:
     )
 
     timeout_event_log["has_forced_finalize_requested"] = True
+    timeout_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in timeout_event_log["gui_lifecycle_events"]
+    ] + [
+        {
+            "row_index": 11,
+            "event": "recording_drain_forced_finalize_requested",
+            "request_id": "op-log:orange:stop_recording",
+            "operation_id": "op-log",
+            "method": "stop_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_stop",
+            "action": "stream_shutdown",
+            "health": "critical",
+            "error_code": "drain_timeout",
+        },
+    ]
     timeout_ok_check = module.check_orange_local_control_event_log(
         timeout_event_log,
         required=True,
@@ -1517,6 +2607,222 @@ def test_orange_local_control_event_log_required_check() -> None:
     require(
         timeout_ok_check["ok"],
         f"timeout event log with forced-finalize evidence should pass: {timeout_ok_check}",
+    )
+    timeout_chain = {
+        item["request_id"]: item for item in timeout_ok_check["request_chains"]
+    }["op-log:orange:stop_recording"]
+    require(
+        timeout_chain["has_recording_drain_timeout"],
+        "timeout chain should report drain-timeout evidence",
+    )
+    require(
+        timeout_chain["has_recording_drain_forced_finalize_requested"],
+        "timeout chain should report forced-finalize evidence",
+    )
+    require(
+        timeout_chain["recording_drain_timeout_row_indexes"] == [10],
+        "timeout chain should summarize drain-timeout row index",
+    )
+    require(
+        timeout_chain["recording_drain_forced_finalize_requested_row_indexes"] == [11],
+        "timeout chain should summarize forced-finalize row index",
+    )
+    require(
+        timeout_chain["recording_drain_timeout_methods"] == ["stop_recording"],
+        "timeout chain should summarize drain-timeout method",
+    )
+    require(
+        timeout_chain["recording_drain_timeout_forced_finalize_requested_values"] == [True],
+        "timeout chain should summarize timeout forced-finalize flag",
+    )
+    require(
+        timeout_chain["recording_drain_timeout_healths"] == ["critical"],
+        "timeout chain should summarize timeout health",
+    )
+    require(
+        timeout_chain["recording_drain_forced_finalize_requested_sources"]
+        == ["orange_citrus_orchestrator"],
+        "timeout chain should summarize forced-finalize source",
+    )
+    require(
+        timeout_chain["recording_drain_forced_finalize_requested_actions"]
+        == ["stream_shutdown"],
+        "timeout chain should summarize forced-finalize action",
+    )
+    require(
+        timeout_chain["recording_drain_finalized_drain_timed_out_values"] == [True],
+        "timeout chain should summarize timeout drain-finalized flag",
+    )
+    require(
+        timeout_chain["recording_drain_finalized_healths"] == ["warning"],
+        "timeout chain should summarize timeout drain-finalized health",
+    )
+
+    clean_status_with_timeout_events_check = module.check_orange_local_control_event_log(
+        timeout_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=status,
+    )
+    require(
+        not clean_status_with_timeout_events_check["ok"],
+        "event log should fail when request-specific timeout evidence conflicts with clean status",
+    )
+    require(
+        any(
+            "recording_drain_timeout" in failure
+            and "drain_timed_out is not true" in failure
+            for failure in clean_status_with_timeout_events_check["failures"]
+        ),
+        "stale timeout evidence failure should name drain_timed_out mismatch",
+    )
+    require(
+        any(
+            "recording_drain_forced_finalize_requested" in failure
+            and "forced_finalize_requested is not true" in failure
+            for failure in clean_status_with_timeout_events_check["failures"]
+        ),
+        "stale forced-finalize evidence failure should name forced finalize mismatch",
+    )
+
+    bad_timeout_order_event_log = copy_event_log()
+    bad_timeout_order_event_log["has_drain_timeout"] = True
+    bad_timeout_order_event_log["has_forced_finalize_requested"] = True
+    bad_timeout_order_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in event_log["gui_lifecycle_events"]
+    ] + [
+        {
+            "row_index": 5,
+            "event": "recording_drain_timeout",
+            "request_id": "op-log:orange:stop_recording",
+            "operation_id": "op-log",
+            "method": "stop_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_stop",
+            "forced_finalize_requested": True,
+            "health": "critical",
+            "error_code": "drain_timeout",
+        },
+        {
+            "row_index": 11,
+            "event": "recording_drain_forced_finalize_requested",
+            "request_id": "op-log:orange:stop_recording",
+            "operation_id": "op-log",
+            "method": "stop_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_stop",
+            "action": "stream_shutdown",
+            "health": "critical",
+            "error_code": "drain_timeout",
+        },
+    ]
+    mutate_gui_event(
+        bad_timeout_order_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="recording_drain_finalized",
+        field="row_index",
+        value=12,
+    )
+    for field, value in (
+        ("drain_timed_out", True),
+        ("health", "warning"),
+        ("error_code", "drain_timeout"),
+    ):
+        mutate_gui_event(
+            bad_timeout_order_event_log,
+            request_id="op-log:orange:stop_recording",
+            event_name="recording_drain_finalized",
+            field=field,
+            value=value,
+        )
+    bad_timeout_order_check = module.check_orange_local_control_event_log(
+        bad_timeout_order_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=timeout_status,
+    )
+    require(
+        not bad_timeout_order_check["ok"],
+        "event log should fail when drain timeout precedes stop trigger",
+    )
+    require(
+        any(
+            "out-of-order" in failure and "recording_drain_timeout" in failure
+            for failure in bad_timeout_order_check["failures"]
+        ),
+        "bad timeout order failure should name recording_drain_timeout",
+    )
+
+    bad_forced_order_event_log = copy_event_log()
+    bad_forced_order_event_log["has_drain_timeout"] = True
+    bad_forced_order_event_log["has_forced_finalize_requested"] = True
+    bad_forced_order_event_log["gui_lifecycle_events"] = [
+        dict(row) for row in event_log["gui_lifecycle_events"]
+    ] + [
+        {
+            "row_index": 10,
+            "event": "recording_drain_timeout",
+            "request_id": "op-log:orange:stop_recording",
+            "operation_id": "op-log",
+            "method": "stop_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_stop",
+            "forced_finalize_requested": True,
+            "health": "critical",
+            "error_code": "drain_timeout",
+        },
+        {
+            "row_index": 8,
+            "event": "recording_drain_forced_finalize_requested",
+            "request_id": "op-log:orange:stop_recording",
+            "operation_id": "op-log",
+            "method": "stop_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_stop",
+            "action": "stream_shutdown",
+            "health": "critical",
+            "error_code": "drain_timeout",
+        },
+    ]
+    mutate_gui_event(
+        bad_forced_order_event_log,
+        request_id="op-log:orange:stop_recording",
+        event_name="recording_drain_finalized",
+        field="row_index",
+        value=12,
+    )
+    for field, value in (
+        ("drain_timed_out", True),
+        ("health", "warning"),
+        ("error_code", "drain_timeout"),
+    ):
+        mutate_gui_event(
+            bad_forced_order_event_log,
+            request_id="op-log:orange:stop_recording",
+            event_name="recording_drain_finalized",
+            field=field,
+            value=value,
+        )
+    bad_forced_order_check = module.check_orange_local_control_event_log(
+        bad_forced_order_event_log,
+        required=True,
+        operation_id="op-log",
+        stop_policy="stop_recording",
+        orange_status=timeout_status,
+    )
+    require(
+        not bad_forced_order_check["ok"],
+        "event log should fail when forced finalize precedes drain timeout",
+    )
+    require(
+        any(
+            "out-of-order" in failure
+            and "recording_drain_forced_finalize_requested" in failure
+            for failure in bad_forced_order_check["failures"]
+        ),
+        "bad forced-finalize order failure should name forced-finalize event",
     )
 
     notify_status = orange_status(
@@ -1538,31 +2844,77 @@ def test_orange_local_control_event_log_required_check() -> None:
     ]
     notify_event_log["socket_request_events"] = [
         {
+            "row_index": 1,
             "request_id": "op-log:orange:start_recording",
             "operation_id": "op-log",
             "method": "start_recording",
             "source": "orange_citrus_orchestrator",
             "ok": True,
             "accepted": True,
+            "queued_for_gui_thread": True,
         },
         {
+            "row_index": 5,
             "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
             "operation_id": "op-log",
             "method": "citrus_completion",
             "source": "citrus",
             "ok": True,
             "accepted": True,
+            "queued_for_gui_thread": True,
         },
     ]
     notify_event_log["gui_lifecycle_events"] = [
         {
-            "event": "recording_start_triggered",
+            "row_index": 2,
+            "event": "gui_command_accepted",
             "request_id": "op-log:orange:start_recording",
             "operation_id": "op-log",
+            "method": "start_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "start_enabled": True,
+            "stop_enabled": True,
+        },
+        {
+            "row_index": 3,
+            "event": "recording_start_queued",
+            "request_id": "op-log:orange:start_recording",
+            "operation_id": "op-log",
+            "method": "start_recording",
             "command_source": "orange_citrus_orchestrator",
             "reason": "orchestrator_start",
         },
         {
+            "row_index": 4,
+            "event": "recording_start_triggered",
+            "request_id": "op-log:orange:start_recording",
+            "operation_id": "op-log",
+            "method": "start_recording",
+            "command_source": "orange_citrus_orchestrator",
+            "reason": "orchestrator_start",
+        },
+        {
+            "row_index": 6,
+            "event": "gui_command_accepted",
+            "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
+            "operation_id": "op-log",
+            "method": "citrus_completion",
+            "command_source": "citrus",
+            "start_enabled": True,
+            "stop_enabled": True,
+        },
+        {
+            "row_index": 7,
+            "event": "recording_stop_scheduled",
+            "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
+            "operation_id": "op-log",
+            "method": "citrus_completion",
+            "command_source": "citrus",
+            "terminal_state": "stopped",
+            "reason": "stopped_by_local_control",
+        },
+        {
+            "row_index": 8,
             "event": "recording_stop_triggered",
             "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
             "operation_id": "op-log",
@@ -1572,6 +2924,7 @@ def test_orange_local_control_event_log_required_check() -> None:
             "reason": "stopped_by_local_control",
         },
         {
+            "row_index": 9,
             "event": "recording_drain_finalized",
             "request_id": "citrus_completion:op-log:stopped:stopped_by_local_control",
             "operation_id": "op-log",
@@ -1579,6 +2932,9 @@ def test_orange_local_control_event_log_required_check() -> None:
             "command_source": "citrus",
             "terminal_state": "stopped",
             "reason": "stopped_by_local_control",
+            "drain_timed_out": False,
+            "health": "ok",
+            "error_code": "",
         },
     ]
     notify_ok_check = module.check_orange_local_control_event_log(
@@ -1597,7 +2953,13 @@ def test_orange_local_control_event_log_required_check() -> None:
     notify_bad_event_log["gui_lifecycle_events"] = [
         dict(row) for row in notify_event_log["gui_lifecycle_events"]
     ]
-    notify_bad_event_log["gui_lifecycle_events"][1]["command_source"] = "orange_citrus_orchestrator"
+    mutate_gui_event(
+        notify_bad_event_log,
+        request_id="citrus_completion:op-log:stopped:stopped_by_local_control",
+        event_name="recording_stop_triggered",
+        field="command_source",
+        value="orange_citrus_orchestrator",
+    )
     notify_bad_check = module.check_orange_local_control_event_log(
         notify_bad_event_log,
         required=True,
@@ -1698,8 +3060,62 @@ def test_failure_summary_uses_last_known_status_for_artifacts() -> None:
         recording_folder.mkdir()
         orange_log = root / "orange.log"
         citrus_log = root / "citrus.log"
+        orange_control_log = root / "orange.events.jsonl"
         orange_log.write_text("orange-log\n", encoding="utf-8")
         citrus_log.write_text("citrus-log\n", encoding="utf-8")
+        orange_control_log.write_text(
+            "\n".join(
+                json.dumps(row)
+                for row in [
+                    {
+                        "received_at_utc": "2026-05-29T00:00:00Z",
+                        "request": {
+                            "method": "start_recording",
+                            "request_id": "op-failure-artifacts:orange:start_recording",
+                            "source": "orange_citrus_orchestrator",
+                        },
+                        "response": {
+                            "method": "start_recording",
+                            "request_id": "op-failure-artifacts:orange:start_recording",
+                            "operation_id": "op-failure-artifacts",
+                            "ok": True,
+                            "accepted": True,
+                            "queued_for_gui_thread": True,
+                        },
+                    },
+                    {
+                        "schema_id": "orange.local_control.gui_event",
+                        "schema_version": 1,
+                        "event": "gui_command_accepted",
+                        "request_id": "op-failure-artifacts:orange:start_recording",
+                        "operation_id": "op-failure-artifacts",
+                        "method": "start_recording",
+                        "command_source": "orange_citrus_orchestrator",
+                        "start_enabled": True,
+                    },
+                    {
+                        "schema_id": "orange.local_control.gui_event",
+                        "schema_version": 1,
+                        "event": "recording_start_queued",
+                        "request_id": "op-failure-artifacts:orange:start_recording",
+                        "operation_id": "op-failure-artifacts",
+                        "method": "start_recording",
+                        "command_source": "orange_citrus_orchestrator",
+                    },
+                    {
+                        "schema_id": "orange.local_control.gui_event",
+                        "schema_version": 1,
+                        "event": "recording_start_triggered",
+                        "request_id": "op-failure-artifacts:orange:start_recording",
+                        "operation_id": "op-failure-artifacts",
+                        "method": "start_recording",
+                        "command_source": "orange_citrus_orchestrator",
+                    },
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         args = module.parse_args(
             [
                 "--execute",
@@ -1707,6 +3123,8 @@ def test_failure_summary_uses_last_known_status_for_artifacts() -> None:
                 "op-failure-artifacts",
                 "--orange-log",
                 str(orange_log),
+                "--orange-local-control-log",
+                str(orange_control_log),
                 "--citrus-log",
                 str(citrus_log),
             ]
@@ -1730,9 +3148,34 @@ def test_failure_summary_uses_last_known_status_for_artifacts() -> None:
             summary["citrus"]["perf_jsonl_path"] == "/tmp/citrus_perf.jsonl",
             "failure summary should retain the last known Citrus perf path",
         )
+        request_chains = {
+            item["request_id"]: item
+            for item in summary["orange"]["local_control_event_log_check"]["request_chains"]
+        }
+        start_chain = request_chains["op-failure-artifacts:orange:start_recording"]
+        require(
+            start_chain["queued_socket_row_indexes"] == [1],
+            "failure summary should retain queued start socket row evidence",
+        )
+        require(
+            start_chain["gui_command_accepted_row_indexes"] == [2],
+            "failure summary should retain GUI accepted row evidence",
+        )
+        require(
+            start_chain["recording_start_queued_row_indexes"] == [3],
+            "failure summary should retain start queued row evidence",
+        )
+        require(
+            start_chain["recording_start_triggered_row_indexes"] == [4],
+            "failure summary should retain start trigger row evidence",
+        )
         require(
             (recording_folder / "orchestrator" / "orange.log").exists(),
             "failure artifact persistence should copy logs when a recording folder was observed",
+        )
+        require(
+            (recording_folder / "orchestrator" / "orange_local_control.events.jsonl").exists(),
+            "failure artifact persistence should copy Orange local-control event log",
         )
 
 

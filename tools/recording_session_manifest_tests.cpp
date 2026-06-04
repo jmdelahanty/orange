@@ -1,6 +1,7 @@
 #include "session/recording_session.h"
 #include "NvEncoder/Logger.h"
 
+#include <cstdlib>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -89,7 +90,15 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
         {"request_id", "req-stop-1"},
         {"operation_id", "op-stop-1"},
         {"ack_state", "executed"},
-        {"received_at_utc", "2026-05-29T00:00:00Z"}
+        {"received_at_utc", "2026-05-29T00:00:00Z"},
+        {"event_log", {
+            {"source_path", "/tmp/orange_local_control.sock.events.jsonl"},
+            {"copied_path", "/tmp/orange_session_manifest_single/orange_local_control.events.jsonl"},
+            {"relative_path", "orange_local_control.events.jsonl"},
+            {"copied", true},
+            {"copied_at_utc", "2026-05-29T00:00:01Z"},
+            {"bytes", 512}
+        }}
     };
     options.cameras.push_back(make_camera_artifact("2010096", 300));
     options.recording_outputs.push_back(
@@ -126,6 +135,13 @@ void test_single_clip_manifest_preserves_full_and_crop_outputs()
     require(
         manifest["recording"]["control"].value("ack_state", std::string()) == "executed",
         "single-clip manifest should preserve local-control stop ACK state");
+    require(
+        manifest["recording"]["control"]["event_log"].value("relative_path", std::string()) ==
+            "orange_local_control.events.jsonl",
+        "single-clip manifest should preserve local-control event-log relative path");
+    require(
+        manifest["recording"]["control"]["event_log"].value("bytes", 0) == 512,
+        "single-clip manifest should preserve local-control event-log byte count");
 }
 
 void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
@@ -145,7 +161,15 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
         {"operation_id", "op-completion-1"},
         {"terminal_state", "completed"},
         {"ack_state", "executed"},
-        {"received_at_utc", "2026-05-29T00:01:00Z"}
+        {"received_at_utc", "2026-05-29T00:01:00Z"},
+        {"event_log", {
+            {"source_path", "/tmp/orange_local_control.sock.events.jsonl"},
+            {"copied_path", "/tmp/orange_session_manifest_rolling/orange_local_control.events.jsonl"},
+            {"relative_path", "orange_local_control.events.jsonl"},
+            {"copied", true},
+            {"copied_at_utc", "2026-05-29T00:01:01Z"},
+            {"bytes", 1024}
+        }}
     };
     options.camera_serials.push_back("2010096");
     options.recording_outputs.push_back(
@@ -198,6 +222,53 @@ void test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs()
     require(
         manifest["recording"]["control"].value("operation_id", std::string()) == "op-completion-1",
         "rolling manifest should preserve local-control stop operation id");
+    require(
+        manifest["recording"]["control"]["event_log"].value("relative_path", std::string()) ==
+            "orange_local_control.events.jsonl",
+        "rolling manifest should preserve local-control event-log relative path");
+    require(
+        manifest["recording"]["control"]["event_log"].value("bytes", 0) == 1024,
+        "rolling manifest should preserve local-control event-log byte count");
+}
+
+void test_camera_preferred_recording_sink_resolution()
+{
+    unsetenv("ORANGE_GUI_RECORDING_SINK_MODE");
+    unsetenv("ORANGE_GUI_DIAGNOSTIC_NO_FULL_FRAME");
+
+    AppStorageConfig app_config;
+    app_config.gui_recording_sink_mode = "real";
+    app_config.gui_recording_sink_mode_configured = false;
+
+    CameraParams cameras[2]{};
+    cameras[0].camera_serial = "2012632";
+    cameras[0].recording.preferred_sink_mode = "external_ipc";
+    cameras[1].camera_serial = "2010096";
+    cameras[1].recording.preferred_sink_mode.clear();
+
+    CameraEachSelect selections[2]{};
+    selections[0].record = true;
+    selections[1].record = true;
+
+    require(
+        orange::session::resolve_gui_recording_sink_mode(
+            &app_config, cameras, selections, 2) == "external_ipc",
+        "camera preferred external_ipc should resolve when app sink is not configured");
+
+    app_config.gui_recording_sink_mode_configured = true;
+    app_config.gui_recording_sink_mode = "real";
+    require(
+        orange::session::resolve_gui_recording_sink_mode(
+            &app_config, cameras, selections, 2) == "real",
+        "explicit app sink mode should override camera preference");
+
+    app_config.gui_recording_sink_mode_configured = false;
+    setenv("ORANGE_GUI_RECORDING_SINK_MODE", "real", 1);
+    require(
+        orange::session::resolve_gui_recording_sink_mode(
+            &app_config, cameras, selections, 2) == "real",
+        "environment sink mode should override camera preference");
+    unsetenv("ORANGE_GUI_RECORDING_SINK_MODE");
 }
 
 }  // namespace
@@ -214,6 +285,8 @@ int main()
          test_single_clip_manifest_preserves_full_and_crop_outputs},
         {"rolling_manifest_emits_session_aggregate_and_clip_crop_outputs",
          test_rolling_manifest_emits_session_aggregate_and_clip_crop_outputs},
+        {"camera_preferred_recording_sink_resolution",
+         test_camera_preferred_recording_sink_resolution},
     };
 
     for (const TestCase& test : tests) {

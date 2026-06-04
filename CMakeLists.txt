@@ -251,6 +251,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
+    "${SRC_DIR}/dish_top_rim_observation.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
     "${SRC_DIR}/spatial_layout_ui.cpp"
@@ -344,6 +345,14 @@ set(EVT_APERTURE_CHARACTERIZE_SOURCES
     "${SRC_DIR}/spatial_layout_schema.cpp"
 )
 
+set(EVT_STREAM_SMOKE_SOURCES
+    "tools/evt_stream_smoke.cpp"
+    "${SRC_DIR}/camera.cpp"
+    "${SRC_DIR}/project.cpp"
+    "${SRC_DIR}/spatial_calibration_snapshot.cpp"
+    "${SRC_DIR}/spatial_layout_schema.cpp"
+)
+
 set(NVENC_STRESS_LOAD_SOURCES
     "tools/nvenc_stress_load.cpp"
     ${NVENCODER_SOURCES}
@@ -365,6 +374,7 @@ add_executable(orange_client EXCLUDE_FROM_ALL ${ORANGE_CLIENT_SOURCES})
 add_executable(yolo_offline EXCLUDE_FROM_ALL ${YOLO_OFFLINE_SOURCES})
 add_executable(evt_lens_probe ${EVT_LENS_PROBE_SOURCES})
 add_executable(evt_aperture_characterize ${EVT_APERTURE_CHARACTERIZE_SOURCES})
+add_executable(evt_stream_smoke EXCLUDE_FROM_ALL ${EVT_STREAM_SMOKE_SOURCES})
 add_executable(nvenc_stress_load EXCLUDE_FROM_ALL ${NVENC_STRESS_LOAD_SOURCES})
 add_executable(external_recorder_ipc_probe EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_IPC_PROBE_SOURCES})
 add_executable(external_recorder_supervisor_plan EXCLUDE_FROM_ALL ${EXTERNAL_RECORDER_SUPERVISOR_PLAN_SOURCES})
@@ -472,6 +482,14 @@ if(BUILD_TESTING)
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/run_gui_fourcam_external_ipc_validation_tests.py")
 
     add_test(
+        NAME validate_gui_citrus_completion_recording_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/validate_gui_citrus_completion_recording_tests.py")
+
+    add_test(
+        NAME check_gui_citrus_completion_ready_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/check_gui_citrus_completion_ready_tests.py")
+
+    add_test(
         NAME orange_citrus_orchestrator_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/orange_citrus_orchestrator_tests.py")
 
@@ -490,6 +508,10 @@ if(BUILD_TESTING)
     add_test(
         NAME external_recorder_smoke_runner_tests
         COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/external_recorder_smoke_runner_tests.py")
+
+    add_test(
+        NAME evt_stream_smoke_wrapper_tests
+        COMMAND python3 "${CMAKE_SOURCE_DIR}/tools/evt_stream_smoke_wrapper_tests.py")
 
     add_executable(yolo_event_log_validation_tests
         "tools/yolo_event_log_validation_tests.cpp"
@@ -533,6 +555,15 @@ if(BUILD_TESTING)
     target_include_directories(spatial_calibration_snapshot_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(spatial_calibration_snapshot_tests PRIVATE cxx_std_17)
     add_test(NAME spatial_calibration_snapshot_tests COMMAND spatial_calibration_snapshot_tests)
+
+    add_executable(dish_top_rim_observation_tests
+        "tools/dish_top_rim_observation_tests.cpp"
+        "${SRC_DIR}/dish_top_rim_observation.cpp"
+    )
+    target_include_directories(dish_top_rim_observation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(dish_top_rim_observation_tests PRIVATE cxx_std_17)
+    target_link_libraries(dish_top_rim_observation_tests PRIVATE ${OpenCV_LIBS})
+    add_test(NAME dish_top_rim_observation_tests COMMAND dish_top_rim_observation_tests)
 
     add_executable(pose_event_log_tests
         "tools/pose_event_log_tests.cpp"
@@ -623,6 +654,7 @@ orange_configure_target(orange_client)
 orange_configure_target(yolo_offline)
 orange_configure_target(evt_lens_probe)
 orange_configure_target(evt_aperture_characterize)
+orange_configure_target(evt_stream_smoke)
 orange_configure_target(nvenc_stress_load)
 orange_configure_target(external_recorder_ipc_probe)
 orange_configure_target(external_recorder_supervisor_plan)
@@ -745,6 +777,17 @@ target_link_libraries(evt_lens_probe PRIVATE
 )
 
 target_link_libraries(evt_aperture_characterize PRIVATE
+    ${EVT_CAMERA_LIBRARY}
+    ${EVT_GENICAM_LIBRARY}
+    ${EVT_GIGE_LIBRARY}
+    ${CUDA_CUDART_LIBRARY}
+    ${CUDA_DRIVER_LIBRARY}
+    ${ENET_LIBRARY}
+    m
+    pthread
+)
+
+target_link_libraries(evt_stream_smoke PRIVATE
     ${EVT_CAMERA_LIBRARY}
     ${EVT_GENICAM_LIBRARY}
     ${EVT_GIGE_LIBRARY}

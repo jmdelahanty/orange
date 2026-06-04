@@ -301,10 +301,27 @@ void test_status_reports_completed_recording_after_streaming_stop_path()
             "completed recording folder should remain visible for orchestrator validation");
 }
 
+void test_status_reports_separate_stop_and_citrus_completion_gates()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.local_control_recording_stop.enabled = false;
+    status.local_control_recording_stop.citrus_completion_enabled = true;
+
+    const nlohmann::json json =
+        orange::control::LocalControlStatusSnapshotToJson(status);
+    require(
+        !json["local_control"]["recording_stop"]["enabled"].get<bool>(),
+        "generic stop_recording should stay disabled");
+    require(
+        json["local_control"]["citrus_completion_stop"]["enabled"].get<bool>(),
+        "Citrus completion stop should be independently enabled");
+}
+
 void test_status_reports_local_control_drain_timeout_telemetry()
 {
     LocalControlStatusSnapshot status = healthy_status();
     status.local_control_recording_stop.enabled = true;
+    status.local_control_recording_stop.citrus_completion_enabled = true;
     status.local_control_recording_stop.stop_triggered = true;
     status.local_control_recording_stop.drain_active = true;
     status.local_control_recording_stop.drain_timed_out = true;
@@ -379,9 +396,12 @@ void test_status_reports_finalized_after_drain_timeout_as_warning()
 {
     LocalControlStatusSnapshot status = healthy_status();
     status.local_control_recording_stop.enabled = true;
+    status.local_control_recording_stop.citrus_completion_enabled = true;
     status.local_control_recording_stop.stop_triggered = true;
     status.local_control_recording_stop.drain_active = false;
     status.local_control_recording_stop.drain_timed_out = true;
+    status.local_control_recording_stop.forced_finalize_requested = true;
+    status.local_control_recording_stop.forced_finalize_stream_stop_requested = true;
     status.local_control_recording_stop.drain_timeout_seconds = 60.0;
     status.local_control_recording_stop.drain_elapsed_seconds = 62.0;
     status.local_control_recording_stop.method = "stop_recording";
@@ -391,6 +411,8 @@ void test_status_reports_finalized_after_drain_timeout_as_warning()
         "2026-05-29T00:00:01Z";
     status.local_control_recording_stop.drain_completed_at_utc =
         "2026-05-29T00:01:03Z";
+    status.local_control_recording_stop.forced_finalize_requested_at_utc =
+        "2026-05-29T00:01:02Z";
     status.local_control_recording_stop.last_event =
         "finalized_after_drain_timeout";
 
@@ -405,6 +427,13 @@ void test_status_reports_finalized_after_drain_timeout_as_warning()
             "completed timed-out drain should report failed-timeout ACK state");
     require(stop["error_code"].get<std::string>() == "drain_timeout",
             "completed timed-out drain should retain drain_timeout error code");
+    require(stop["forced_finalize_requested"].get<bool>(),
+            "completed timed-out drain should report forced finalize request");
+    require(stop["forced_finalize_stream_stop_requested"].get<bool>(),
+            "completed timed-out drain should report forced stream-stop request");
+    require(stop["forced_finalize_requested_at_utc"].get<std::string>() ==
+                "2026-05-29T00:01:02Z",
+            "completed timed-out drain should retain forced finalize timestamp");
 }
 
 void test_status_reports_recording_stop_ack_states()
@@ -494,6 +523,197 @@ void test_append_local_control_event_log_creates_jsonl()
             "event log should preserve request id");
 }
 
+void test_server_start_truncates_local_control_event_log()
+{
+    const auto socket_path = temp_path("truncate_log.sock");
+    const auto log_path = temp_path("truncate_log/events.jsonl");
+    std::filesystem::remove(socket_path);
+    std::filesystem::create_directories(log_path.parent_path());
+    {
+        std::ofstream out(log_path);
+        out << "{\"stale\":true}\n";
+    }
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path, log_path);
+    server.Stop();
+
+    std::ifstream in(log_path);
+    require(static_cast<bool>(in), "event log should exist after server start");
+    const std::string contents(
+        (std::istreambuf_iterator<char>(in)),
+        std::istreambuf_iterator<char>());
+    require(contents.empty(), "server start should truncate stale event log contents");
+}
+
+void test_server_start_refuses_live_socket_without_truncating_log()
+{
+    const auto socket_path = temp_path("live_socket_refusal.sock");
+    const auto log_path = temp_path("live_socket_refusal/events.jsonl");
+    std::filesystem::remove(socket_path);
+    std::filesystem::remove_all(log_path.parent_path());
+
+    LocalControlServer first_server;
+    require_start_server(&first_server, socket_path, log_path);
+    first_server.UpdateStatus(healthy_status());
+
+    std::string append_error;
+    require(
+        AppendLocalControlEventLog(
+            log_path.string(),
+            {
+                {"schema_id", "orange.local_control.gui_event"},
+                {"schema_version", 1},
+                {"event", "first_server_row"},
+                {"event_at_utc", "2026-05-29T00:00:01Z"},
+                {"request_id", "first-server"},
+            },
+            &append_error),
+        "event log append should succeed before conflicting start: " + append_error);
+
+    LocalControlServer second_server;
+    std::string start_error;
+    const bool second_started =
+        second_server.Start({socket_path.string(), log_path.string()}, &start_error);
+    if (second_started) {
+        second_server.Stop();
+    }
+    require(!second_started, "second server start should refuse a live socket");
+    require(
+        start_error.find("already owned by another process") != std::string::npos,
+        "second server error should report socket ownership lock, got: " + start_error);
+
+    std::ifstream in(log_path);
+    require(static_cast<bool>(in), "event log should remain readable after failed start");
+    std::string line;
+    std::getline(in, line);
+    require(!line.empty(), "event log row should survive failed conflicting start");
+    const nlohmann::json row = nlohmann::json::parse(line);
+    require(
+        row["event"].get<std::string>() == "first_server_row",
+        "failed conflicting start must not truncate the running server log");
+
+    const nlohmann::json status =
+        send_request(socket_path, request_json("status", "status-after-conflict"));
+    require(status["ok"].get<bool>(), "first server should still answer after conflict");
+    first_server.Stop();
+}
+
+void test_server_start_refuses_lockless_live_socket_without_truncating_log()
+{
+    const auto socket_path = temp_path("lockless_live_socket.sock");
+    const auto log_path = temp_path("lockless_live_socket/events.jsonl");
+    std::filesystem::remove(socket_path);
+    std::filesystem::remove_all(log_path.parent_path());
+    std::filesystem::create_directories(log_path.parent_path());
+    {
+        std::ofstream out(log_path);
+        out << "{\"event\":\"existing_row\"}\n";
+    }
+
+    const int listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    require(listen_fd >= 0, "raw socket() should succeed");
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const std::string socket_text = socket_path.string();
+    std::strncpy(addr.sun_path, socket_text.c_str(), sizeof(addr.sun_path) - 1);
+    require(
+        bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0,
+        "raw bind() should succeed");
+    require(listen(listen_fd, 1) == 0, "raw listen() should succeed");
+
+    LocalControlServer server;
+    std::string error;
+    const bool started = server.Start({socket_path.string(), log_path.string()}, &error);
+    if (started) {
+        server.Stop();
+    }
+    close(listen_fd);
+    std::filesystem::remove(socket_path);
+
+    require(!started, "server start should refuse a lockless live socket");
+    require(
+        error.find("already registered by another process") != std::string::npos,
+        "server error should report registered live socket, got: " + error);
+
+    std::ifstream in(log_path);
+    require(static_cast<bool>(in), "event log should remain readable after lockless refusal");
+    std::string line;
+    std::getline(in, line);
+    require(
+        line.find("existing_row") != std::string::npos,
+        "lockless live socket refusal must not truncate existing event log");
+}
+
+void test_server_start_removes_stale_socket_and_truncates_log()
+{
+    const auto socket_path = temp_path("stale_socket_recovery.sock");
+    const auto log_path = temp_path("stale_socket_recovery/events.jsonl");
+    std::filesystem::remove(socket_path);
+    std::filesystem::remove_all(log_path.parent_path());
+    std::filesystem::create_directories(log_path.parent_path());
+    {
+        std::ofstream out(log_path);
+        out << "{\"event\":\"stale_row\"}\n";
+    }
+
+    const int stale_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    require(stale_fd >= 0, "raw stale socket() should succeed");
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    const std::string socket_text = socket_path.string();
+    std::strncpy(addr.sun_path, socket_text.c_str(), sizeof(addr.sun_path) - 1);
+    require(
+        bind(stale_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0,
+        "raw stale bind() should succeed");
+    close(stale_fd);
+    require(
+        std::filesystem::exists(socket_path),
+        "closed raw socket should leave a filesystem socket path");
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path, log_path);
+    server.UpdateStatus(healthy_status());
+    const nlohmann::json status =
+        send_request(socket_path, request_json("status", "status-after-stale-recovery"));
+    require(status["ok"].get<bool>(), "server should answer after stale socket recovery");
+    server.Stop();
+
+    std::ifstream in(log_path);
+    require(static_cast<bool>(in), "event log should exist after stale socket recovery");
+    const std::string contents(
+        (std::istreambuf_iterator<char>(in)),
+        std::istreambuf_iterator<char>());
+    require(contents.empty(), "stale socket recovery should truncate stale event log contents");
+}
+
+void test_server_start_fails_when_socket_parent_is_not_directory()
+{
+    const auto parent_path = temp_path("socket_parent_file");
+    const auto socket_path = parent_path / "control.sock";
+    const auto log_path = temp_path("socket_parent_file_log/events.jsonl");
+    std::filesystem::remove_all(parent_path);
+    std::filesystem::remove_all(log_path.parent_path());
+    {
+        std::ofstream out(parent_path);
+        out << "not a directory\n";
+    }
+
+    LocalControlServer server;
+    std::string error;
+    const bool started = server.Start({socket_path.string(), log_path.string()}, &error);
+    if (started) {
+        server.Stop();
+    }
+    require(!started, "server start should fail when socket parent is not a directory");
+    require(
+        error.find("failed to create local control socket directory") != std::string::npos,
+        "server error should name socket directory creation failure, got: " + error);
+    require(
+        !std::filesystem::exists(log_path),
+        "event log should not be initialized when socket directory creation fails");
+}
+
 void test_citrus_completion_is_diagnostic_ack_and_logged()
 {
     const auto socket_path = temp_path("completion.sock");
@@ -537,10 +757,17 @@ void test_citrus_completion_is_diagnostic_ack_and_logged()
     require(!first["effect"]["recording_lifecycle_mutated"].get<bool>(),
             "completion must not mutate recording lifecycle");
     require(duplicate["duplicate"].get<bool>(), "second completion request should be duplicate");
+    require(duplicate["ok"].get<bool>(), "duplicate completion request should still be ok");
+    require(duplicate["accepted"].get<bool>(),
+            "duplicate completion request should still be accepted");
     require(!duplicate["queued_for_gui_thread"].get<bool>(),
             "duplicate completion request should not queue again");
     require(same_operation_duplicate["duplicate"].get<bool>(),
             "same method and operation_id should be duplicate with a new request_id");
+    require(same_operation_duplicate["ok"].get<bool>(),
+            "same-operation duplicate should still be ok");
+    require(same_operation_duplicate["accepted"].get<bool>(),
+            "same-operation duplicate should still be accepted");
     require(!same_operation_duplicate["queued_for_gui_thread"].get<bool>(),
             "same-operation duplicate should not queue again");
     require(pending.size() == 1, "completion should queue exactly one pending command");
@@ -602,6 +829,61 @@ void test_citrus_completion_reports_deferred_lifecycle_mode_when_enabled()
             "completion response should report deferred GUI lifecycle action");
     require(!response["effect"]["recording_lifecycle_mutated"].get<bool>(),
             "socket thread must still not mutate recording lifecycle");
+}
+
+void test_citrus_completion_can_be_enabled_without_stop_recording()
+{
+    const auto socket_path = temp_path("completion_only_enabled.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    LocalControlServerOptions options;
+    options.socket_path = socket_path.string();
+    options.allow_gui_citrus_completion_commands = true;
+    std::string error;
+    require(server.Start(options, &error),
+            "server start should allow citrus_completion-only lifecycle mode");
+    wait_until_running(&server);
+    server.UpdateStatus(healthy_status());
+
+    const nlohmann::json completion_response = send_request(
+        socket_path,
+        request_json(
+            "citrus_completion",
+            "completion-only-req-1",
+            "completion-only-op-1",
+            {{"experiment_id", "citrus-exp-completion-only"},
+             {"terminal_state", "completed"},
+             {"grace_seconds", 0}}));
+    const nlohmann::json stop_response = send_request(
+        socket_path,
+        request_json(
+            "stop_recording",
+            "stop-should-stay-disabled-req-1",
+            "stop-should-stay-disabled-op-1",
+            {{"reason", "direct_stop_not_allowed"},
+             {"grace_seconds", 0}}));
+    const std::vector<PendingLocalControlCommand> pending =
+        server.DrainPendingCommands();
+    server.Stop();
+
+    require(completion_response["ok"].get<bool>(),
+            "citrus_completion should be accepted");
+    require(!completion_response["diagnostic_only"].get<bool>(),
+            "citrus_completion should be non-diagnostic when specifically enabled");
+    require(completion_response["queued_for_gui_thread"].get<bool>(),
+            "citrus_completion should queue for the GUI thread");
+    require(!stop_response["ok"].get<bool>(),
+            "stop_recording should remain disabled");
+    require(!stop_response["accepted"].get<bool>(),
+            "stop_recording should not be accepted");
+    require(stop_response["error"]["code"].get<std::string>() ==
+                "unsupported_in_diagnostic_mode",
+            "stop_recording should report diagnostic-mode unsupported");
+    require(pending.size() == 1,
+            "only the citrus_completion request should be queued");
+    require(pending[0].method == "citrus_completion",
+            "queued command should be citrus_completion");
 }
 
 void test_stop_recording_queues_when_lifecycle_mode_enabled()
@@ -773,6 +1055,8 @@ int main()
          test_citrus_readiness_requires_external_recorders_when_enabled},
         {"status_reports_completed_recording_after_streaming_stop_path",
          test_status_reports_completed_recording_after_streaming_stop_path},
+        {"status_reports_separate_stop_and_citrus_completion_gates",
+         test_status_reports_separate_stop_and_citrus_completion_gates},
         {"status_reports_local_control_drain_timeout_telemetry",
          test_status_reports_local_control_drain_timeout_telemetry},
         {"status_reports_finalized_after_drain_timeout_as_warning",
@@ -781,10 +1065,22 @@ int main()
          test_status_reports_recording_stop_ack_states},
         {"append_local_control_event_log_creates_jsonl",
          test_append_local_control_event_log_creates_jsonl},
+        {"server_start_truncates_local_control_event_log",
+         test_server_start_truncates_local_control_event_log},
+        {"server_start_refuses_live_socket_without_truncating_log",
+         test_server_start_refuses_live_socket_without_truncating_log},
+        {"server_start_refuses_lockless_live_socket_without_truncating_log",
+         test_server_start_refuses_lockless_live_socket_without_truncating_log},
+        {"server_start_removes_stale_socket_and_truncates_log",
+         test_server_start_removes_stale_socket_and_truncates_log},
+        {"server_start_fails_when_socket_parent_is_not_directory",
+         test_server_start_fails_when_socket_parent_is_not_directory},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",
          test_citrus_completion_reports_deferred_lifecycle_mode_when_enabled},
+        {"citrus_completion_can_be_enabled_without_stop_recording",
+         test_citrus_completion_can_be_enabled_without_stop_recording},
         {"stop_recording_queues_when_lifecycle_mode_enabled",
          test_stop_recording_queues_when_lifecycle_mode_enabled},
         {"start_recording_queues_when_start_mode_enabled",

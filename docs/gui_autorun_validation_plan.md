@@ -384,15 +384,21 @@ default, completion requests are logged/ACKed but do not stop recording, and
 `start_recording` / `stop_recording` are rejected. For orchestrated start
 tests, enable `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1`. For
 integrated stop tests, enable
-`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1` or the Citrus-specific alias
-`ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`; then accepted
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`; then accepted
 `citrus_completion` and `stop_recording` requests schedule a GUI-thread delayed
 stop that uses the same safe GUI/operator stop path as the recording button.
+For manual GUI sessions that should only accept Citrus finished signals, use
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`; that accepts
+`citrus_completion` without enabling generic `stop_recording`.
 Override the path with `ORANGE_GUI_LOCAL_CONTROL_SOCKET`, or disable the
 endpoint with `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1`.
 
-Citrus can opt into sending Orange completion notifications with
-`CITRUS_ORANGE_COMPLETION_NOTIFY=1`,
+Citrus can opt into sending Orange completion notifications through
+`/home/jeremy/citrus/system_config.yml`:
+`citrus_runtime.orange_completion.enabled=true`,
+`socket_path=/tmp/orange_local_control.sock`, `grace_seconds=10`,
+`retry_interval_seconds=2`, and `shutdown_flush_timeout_seconds=5`. The same
+settings can be overridden with `CITRUS_ORANGE_COMPLETION_NOTIFY=1`,
 `CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`, and
 `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`.
 
@@ -452,8 +458,18 @@ or replace it with `--orange-validation-command`.
 The profile also requires Orange's local-control JSONL event log by default.
 That gate is separate from artifact validation: before validators run, the
 orchestrator checks that the log contains socket request/response rows and
-GUI-thread `recording_start_triggered`, `recording_stop_triggered`, and
-`recording_drain_finalized` evidence for the same operation id. Use
+GUI-thread `gui_command_accepted`, `recording_start_queued`,
+`recording_start_triggered`,
+`recording_stop_scheduled`, `recording_stop_triggered`, and
+`recording_drain_finalized` evidence for the same operation id. Accepted GUI rows must show the relevant start/stop
+local-control gate enabled, socket rows must show `queued_for_gui_thread=true`,
+and summarized row indexes must show socket acceptance before GUI acceptance
+and GUI acceptance before start queueing, start queueing before start trigger,
+stop acceptance before stop scheduling, stop scheduling before stop trigger,
+and stop trigger before finalization. Drain-finalized rows must agree with the
+final stop status for `drain_timed_out`, `health`, and `error_code`, and
+timeout/forced-finalize rows must carry the critical timeout telemetry Orange
+emits at the point it requests stream shutdown. Use
 `--allow-missing-orange-event-log` only for diagnostic attach runs where that
 evidence is intentionally unavailable.
 
@@ -466,11 +482,16 @@ workers and runs the normal session finalizer. Status also reports
 `recording_stop.forced_finalize_stream_stop_requested=true` after that
 stream-stop request is issued. When the event-log gate is
 enabled, timeout status requires both `recording_drain_timeout` and
-`recording_drain_forced_finalize_requested` evidence. Even when
-`--allow-orange-drain-timeout` is used for diagnostic timeout runs, the
+`recording_drain_forced_finalize_requested` evidence for the same stop request
+id, with row ordering from stop trigger to timeout to forced-finalize request
+to drain finalization; timeout or forced-finalize rows for that stop request
+also fail if final Orange status says the stop completed cleanly. Even when `--allow-orange-drain-timeout` is used for diagnostic timeout runs, the
 orchestrator still requires the timeout status to show that forced finalization
-was armed and that the stream-stop path was requested after
-`finalized_after_drain_timeout`. The combined summary records this as
+was armed, `ack_state=failed_timeout`, `error_code=drain_timeout`, and that the
+stream-stop path was requested after `finalized_after_drain_timeout`. It also
+rejects status that reports a failed-timeout ACK, forced-finalize flags, or
+`state=finalized_after_drain_timeout` without `drain_timed_out=true`. The
+combined summary records this as
 `orange.local_control_stop_timeout_status_check` alongside the raw
 `local_control.recording_stop` status.
 

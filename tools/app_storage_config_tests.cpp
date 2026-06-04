@@ -6,6 +6,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <unistd.h>
 
 namespace {
@@ -113,6 +114,9 @@ void test_missing_config_uses_defaults()
     const AppStorageConfig config = load_from_path(root / "missing.json");
 
     require(config.gui_recording_sink_mode == "real", "default full-frame sink mode");
+    require(
+        !config.gui_recording_sink_mode_configured,
+        "default full-frame sink mode should not count as app-configured");
     require(config.gui_recording_record_for_seconds == 0, "default record_for_seconds");
     require(config.gui_recording_clip_seconds == 0, "default clip_seconds");
     require(config.gui_crop_recording_sink_mode == "in_process", "default crop sink mode");
@@ -125,6 +129,21 @@ void test_missing_config_uses_defaults()
     require(config.gui_ptp_register_read_decimate == 1, "default PTP decimate");
     require(config.gui_stream_downsample == -1, "default stream downsample unset");
     require(!config.gui_show_speed_graphs, "default speed graphs disabled");
+    require(
+        !config.gui_local_control_recording_start_enabled,
+        "default local-control recording start disabled");
+    require(
+        !config.gui_local_control_recording_stop_enabled,
+        "default local-control recording stop disabled");
+    require(
+        !config.gui_local_control_citrus_completion_stop_enabled,
+        "default Citrus completion stop disabled");
+    require(
+        !config.gui_local_control_exit_after_finalize,
+        "default local-control exit-after-finalize disabled");
+    require(
+        config.gui_local_control_drain_timeout_seconds == -1,
+        "default local-control drain timeout unset");
 
     std::filesystem::remove_all(root);
 }
@@ -170,6 +189,13 @@ void test_loads_gui_and_crop_defaults()
     },
     "telemetry": {
       "show_speed_graphs": true
+    },
+    "local_control": {
+      "recording_start_enabled": true,
+      "recording_stop_enabled": false,
+      "citrus_completion_stop_enabled": true,
+      "exit_after_finalize": false,
+      "drain_timeout_seconds": 75
     }
   }
 })json");
@@ -177,6 +203,7 @@ void test_loads_gui_and_crop_defaults()
     const AppStorageConfig config = load_from_path(config_path);
     require(config.default_detect_engine == "/tmp/detect.engine", "detect engine should load");
     require(config.gui_recording_sink_mode == "external_ipc", "full-frame sink mode should load");
+    require(config.gui_recording_sink_mode_configured, "full-frame sink mode should be app-configured");
     require(config.gui_recording_record_for_seconds == 6, "record_for_seconds should load");
     require(config.gui_recording_clip_seconds == 2, "clip_seconds should load");
     require(config.gui_crop_recording_sink_mode == "external_ipc", "crop sink mode should load");
@@ -199,6 +226,59 @@ void test_loads_gui_and_crop_defaults()
     require(config.gui_swap_interval == 1, "citrus-safe swap interval should apply");
     require(config.gui_frame_max_fps == 30, "citrus-safe frame cap should apply");
     require(config.gui_show_speed_graphs, "speed graph flag should load");
+    require(config.gui_local_control_recording_start_enabled, "local-control start should load");
+    require(
+        !config.gui_local_control_recording_stop_enabled,
+        "explicit local-control stop false should load");
+    require(
+        config.gui_local_control_citrus_completion_stop_enabled,
+        "Citrus completion stop should load");
+    require(
+        !config.gui_local_control_exit_after_finalize,
+        "exit-after-finalize false should load");
+    require(
+        config.gui_local_control_drain_timeout_seconds == 75,
+        "local-control drain timeout should load");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_loads_manual_gui_citrus_completion_profile()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "gui": {
+    "local_control": {
+      "recording_start_enabled": false,
+      "recording_stop_enabled": false,
+      "citrus_completion_stop_enabled": true,
+      "exit_after_finalize": false,
+      "drain_timeout_seconds": 60
+    }
+  }
+})json");
+
+    const AppStorageConfig config = load_from_path(config_path);
+    require(
+        !config.gui_local_control_recording_start_enabled,
+        "manual GUI profile should keep socket start disabled");
+    require(
+        !config.gui_local_control_recording_stop_enabled,
+        "manual GUI profile should keep generic socket stop disabled");
+    require(
+        config.gui_local_control_citrus_completion_stop_enabled,
+        "manual GUI profile should accept Citrus completion stop");
+    require(
+        !config.gui_local_control_exit_after_finalize,
+        "manual GUI profile should keep GUI open after finalization");
+    require(
+        config.gui_local_control_drain_timeout_seconds == 60,
+        "manual GUI profile should load bounded local-control drain timeout");
 
     std::filesystem::remove_all(root);
 }
@@ -221,6 +301,154 @@ void test_real_crop_sink_aliases_in_process()
 
     const AppStorageConfig config = load_from_path(config_path);
     require(config.gui_crop_recording_sink_mode == "in_process", "real should alias in_process");
+
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "recording": {
+    "crop": {
+      "sink_mode": "inprocess"
+    }
+  }
+})json");
+
+    const AppStorageConfig inprocess_config = load_from_path(config_path);
+    require(
+        inprocess_config.gui_crop_recording_sink_mode == "in_process",
+        "inprocess should alias in_process");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_empty_app_sink_mode_is_not_configured()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "recording": {
+    "sink_mode": ""
+  }
+})json");
+
+    const AppStorageConfig config = load_from_path(config_path);
+    require(config.gui_recording_sink_mode == "real", "empty app sink should fall back to real");
+    require(
+        !config.gui_recording_sink_mode_configured,
+        "empty app sink should allow camera preferred_sink_mode to resolve the session");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_camera_config_scan_ignores_editor_and_temp_files()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_dir = root / "Fred";
+    std::filesystem::create_directories(config_dir);
+    write_text(config_dir / "2012632.json", R"json({"device_serial_number":"2012632"})json");
+    write_text(config_dir / ".2012632.json.swp", "not json");
+    write_text(config_dir / ".hidden.json", R"json({"device_serial_number":"hidden"})json");
+    write_text(config_dir / "2012632.json.tmp", "not json");
+    write_text(config_dir / "notes.txt", "not json");
+    std::filesystem::create_directories(config_dir / "nested.json");
+
+    std::vector<std::string> camera_config_files;
+    update_camera_configs(camera_config_files, config_dir.string());
+
+    require(camera_config_files.size() == 1, "scanner should only include visible regular .json files");
+    require(
+        std::filesystem::path(camera_config_files[0]).filename() == "2012632.json",
+        "scanner should include the Fred camera config");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_camera_config_loads_lens_control_flag()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "2012632.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.camera.config",
+  "schema_version": 4,
+  "device_serial_number": "2012632",
+  "camera_scan_type": "area_scan",
+  "gpio_connector_variant": "area_scan_12_pin",
+  "gpio_recipe": "",
+  "name": "Cam2012632",
+  "width": 2464,
+  "height": 2064,
+  "frame_rate": 250,
+  "gain": 256,
+  "exposure": 300,
+  "pixel_format": "BayerRG8",
+  "color_temp": "CT_Off",
+  "source_gpu_id": 0,
+  "gpu_direct": true,
+  "focus_uart_bootstrap": false,
+  "lens_control_enabled": false,
+  "color": true,
+  "focus": 0,
+  "iris": 0,
+  "recording": {
+    "preferred_sink_mode": "external_ipc"
+  },
+  "sync_mode": "free_run",
+  "trigger": {
+    "enabled": false,
+    "selector": "AcquisitionStart",
+    "source": "Software",
+    "activation": "RisingEdge"
+  },
+  "ptp": {
+    "enabled": false
+  },
+  "gpio": {
+    "nodes": []
+  }
+})json");
+
+    CameraParams params{};
+    load_camera_json_config_files(config_path.string(), &params, 0, 1);
+    require(!params.lens_control_enabled, "lens_control_enabled=false should load");
+    require(
+        params.recording.preferred_sink_mode == "external_ipc",
+        "recording.preferred_sink_mode should load");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_camera_config_lens_control_defaults_enabled()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "2012632.json";
+    write_text(
+        config_path,
+        R"json({
+  "name": "Cam2012632",
+  "width": 2464,
+  "height": 2064,
+  "frame_rate": 250,
+  "gain": 256,
+  "exposure": 300,
+  "pixel_format": "BayerRG8",
+  "color_temp": "CT_Off",
+  "source_gpu_id": 0,
+  "gpu_direct": true,
+  "color": true,
+  "focus": 0,
+  "iris": 0
+})json");
+
+    CameraParams params{};
+    load_camera_json_config_files(config_path.string(), &params, 0, 1);
+    require(params.lens_control_enabled, "legacy camera config should default lens control on");
 
     std::filesystem::remove_all(root);
 }
@@ -355,6 +583,28 @@ void test_invalid_speed_graph_type_fails()
     std::filesystem::remove_all(root);
 }
 
+void test_invalid_local_control_field_fails()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path config_path = root / "default.json";
+    write_text(
+        config_path,
+        R"json({
+  "schema_id": "orange.app.config",
+  "schema_version": 1,
+  "gui": {
+    "local_control": {
+      "citrus_completion_stop_enabled": "yes"
+    }
+  }
+})json");
+
+    require_load_fails(
+        config_path,
+        "gui.local_control.citrus_completion_stop_enabled must be a boolean");
+    std::filesystem::remove_all(root);
+}
+
 }  // namespace
 
 int main()
@@ -367,13 +617,23 @@ int main()
     const TestCase tests[] = {
         {"missing_config_uses_defaults", &test_missing_config_uses_defaults},
         {"loads_gui_and_crop_defaults", &test_loads_gui_and_crop_defaults},
+        {"loads_manual_gui_citrus_completion_profile",
+         &test_loads_manual_gui_citrus_completion_profile},
         {"real_crop_sink_aliases_in_process", &test_real_crop_sink_aliases_in_process},
+        {"empty_app_sink_mode_is_not_configured",
+         &test_empty_app_sink_mode_is_not_configured},
+        {"camera_config_scan_ignores_editor_and_temp_files",
+         &test_camera_config_scan_ignores_editor_and_temp_files},
+        {"camera_config_loads_lens_control_flag", &test_camera_config_loads_lens_control_flag},
+        {"camera_config_lens_control_defaults_enabled",
+         &test_camera_config_lens_control_defaults_enabled},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},
         {"invalid_crop_queue_depth_fails", &test_invalid_crop_queue_depth_fails},
         {"invalid_crop_recorder_gpu_fails", &test_invalid_crop_recorder_gpu_fails},
         {"invalid_crop_recorder_gpu_map_fails", &test_invalid_crop_recorder_gpu_map_fails},
         {"invalid_stream_downsample_fails", &test_invalid_stream_downsample_fails},
         {"invalid_speed_graph_type_fails", &test_invalid_speed_graph_type_fails},
+        {"invalid_local_control_field_fails", &test_invalid_local_control_field_fails},
     };
 
     for (const auto& test : tests) {

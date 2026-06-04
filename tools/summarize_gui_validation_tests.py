@@ -827,11 +827,41 @@ def test_recording_session_summary_reports_local_control_stop() -> None:
                     "error_code": "drain_timeout",
                     "last_event": "finalized_after_drain_timeout",
                     "last_event_at_utc": "2026-05-29T00:41:04Z",
+                    "event_log": {
+                        "source_path": "/tmp/orange_local_control.sock.events.jsonl",
+                        "copied_path": str(root / "orange_local_control.events.jsonl"),
+                        "relative_path": "orange_local_control.events.jsonl",
+                        "copied": True,
+                        "copied_at_utc": "2026-05-29T00:41:04Z",
+                        "bytes": 1024,
+                        "copy_error": "",
+                    },
                 }
             },
         }
         write_text(root / "recording_snapshot.json", json.dumps(snapshot) + "\n")
         write_text(root / "recording_session.json", json.dumps(manifest) + "\n")
+        write_text(
+            root / "orange_local_control.events.jsonl",
+            json.dumps(
+                {
+                    "schema_id": "orange.local_control.gui_event",
+                    "schema_version": 1,
+                    "event": "gui_command_accepted",
+                    "event_at_utc": "2026-05-29T00:40:53Z",
+                    "request_id": "op-001:orange:stop_recording",
+                    "operation_id": "op-001",
+                    "method": "stop_recording",
+                    "command_source": "orange_citrus_fourcam_profile",
+                    "start_enabled": False,
+                    "stop_enabled": True,
+                    "stop_recording_enabled": True,
+                    "citrus_completion_enabled": True,
+                },
+                sort_keys=True,
+            )
+            + "\n",
+        )
 
         summary = summarize.summarize(root, steady_after_frame=50, ffprobe="ffprobe")
         session = summary["recording_session"]
@@ -877,6 +907,36 @@ def test_recording_session_summary_reports_local_control_stop() -> None:
         require(
             local_control_stop["last_event"] == "finalized_after_drain_timeout",
             "local-control stop final event should be summarized",
+        )
+        event_log = local_control_stop["event_log"]
+        require(
+            event_log["relative_path"] == "orange_local_control.events.jsonl",
+            "local-control event log relative path should be summarized",
+        )
+        require(
+            event_log["copied"] is True,
+            "local-control event log copy status should be summarized",
+        )
+        require(
+            event_log["bytes"] == 1024,
+            "local-control event log size should be summarized",
+        )
+        accepted_gate = local_control_stop["accepted_gate"]
+        require(
+            accepted_gate["row_count"] == 1,
+            "local-control accepted gate row count should be summarized",
+        )
+        require(
+            accepted_gate["start_enabled_values"] == [False],
+            "local-control accepted start gate should be summarized",
+        )
+        require(
+            accepted_gate["generic_stop_enabled_values"] == [True],
+            "local-control accepted generic stop gate should be summarized",
+        )
+        require(
+            accepted_gate["citrus_completion_enabled_values"] == [True],
+            "local-control accepted Citrus stop gate should be summarized",
         )
 
 

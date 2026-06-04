@@ -56,8 +56,6 @@ def test_citrus_completion_dry_run_defaults_operation_id() -> None:
         [
             "--dry-run",
             "citrus-completion",
-            "--request-id",
-            "completion-req",
             "--experiment-id",
             "citrus-exp-1",
             "--terminal-state",
@@ -73,12 +71,46 @@ def test_citrus_completion_dry_run_defaults_operation_id() -> None:
     payload = parse_stdout_json(result)
     require(payload["method"] == "citrus_completion", "completion method")
     require(payload["source"] == "citrus", "completion should default to Citrus source")
-    require(payload["operation_id"] == "citrus-exp-1", "operation defaults to experiment id")
+    expected_id = "citrus_completion:citrus-exp-1:completed:protocol_finished"
+    require(
+        payload["request_id"] == expected_id,
+        "completion request id should default to the stable Citrus retry key",
+    )
+    require(
+        payload["operation_id"] == expected_id,
+        "completion operation should default to the stable Citrus retry key",
+    )
     params = payload["params"]
     require(params["experiment_id"] == "citrus-exp-1", "experiment id")
     require(params["terminal_state"] == "completed", "terminal state")
     require(params["reason"] == "protocol_finished", "reason")
     require(params["grace_seconds"] == 7.5, "grace seconds")
+
+
+def test_citrus_completion_explicit_request_id_keeps_stable_operation_id() -> None:
+    result = run_client(
+        [
+            "--dry-run",
+            "citrus-completion",
+            "--request-id",
+            "completion-req",
+            "--experiment-id",
+            "citrus-exp-1",
+            "--terminal-state",
+            "stopped",
+            "--reason",
+            "stopped_by_local_control",
+        ]
+    )
+
+    require(result.returncode == 0, f"dry-run failed: {result.stderr}")
+    payload = parse_stdout_json(result)
+    require(payload["request_id"] == "completion-req", "explicit request id should win")
+    require(
+        payload["operation_id"]
+        == "citrus_completion:citrus-exp-1:stopped:stopped_by_local_control",
+        "completion operation should still default to the stable terminal-state key",
+    )
 
 
 def test_citrus_completion_dry_run_defaults_grace_seconds() -> None:
@@ -189,6 +221,7 @@ def main() -> int:
     tests = [
         test_status_dry_run_builds_schema_request,
         test_citrus_completion_dry_run_defaults_operation_id,
+        test_citrus_completion_explicit_request_id_keeps_stable_operation_id,
         test_citrus_completion_dry_run_defaults_grace_seconds,
         test_citrus_completion_source_can_be_overridden,
         test_start_stop_dry_run_include_operation_ids,

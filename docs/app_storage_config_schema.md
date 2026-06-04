@@ -85,7 +85,7 @@ Missing-file behavior should remain non-fatal:
     "default_detect_engine": ""
   },
   "recording": {
-    "sink_mode": "real",
+    "sink_mode": "",
     "recording_control": {
       "record_for_seconds": 0,
       "clip_seconds": 0
@@ -114,6 +114,13 @@ Missing-file behavior should remain non-fatal:
     },
     "telemetry": {
       "show_speed_graphs": false
+    },
+    "local_control": {
+      "recording_start_enabled": false,
+      "recording_stop_enabled": false,
+      "citrus_completion_stop_enabled": true,
+      "exit_after_finalize": false,
+      "drain_timeout_seconds": 60
     }
   },
   "storage": {
@@ -187,6 +194,7 @@ scripts/update_app_config_display_profile.py \
   --profile citrus_safe \
   --stream-downsample 4 \
   --hide-speed-graphs \
+  --manual-citrus-completion-control \
   --crop-recording-sink-mode external_ipc \
   --crop-external-encode-queue-depth 128 \
   --crop-frame-pool-size 256 \
@@ -248,6 +256,81 @@ Environment precedence:
 
 - `ORANGE_GUI_SHOW_SPEED_GRAPHS` wins when set.
 
+### `gui.local_control`
+
+Type:
+
+- object
+
+Meaning:
+
+- optional defaults for the Orange GUI local-control socket lifecycle commands
+
+Fields:
+
+- `recording_start_enabled`: boolean
+- `recording_stop_enabled`: boolean
+- `citrus_completion_stop_enabled`: boolean
+- `exit_after_finalize`: boolean
+- `drain_timeout_seconds`: integer in `[0,86400]` or `null`
+
+Recommended configured-workstation default:
+
+```json
+{
+  "recording_start_enabled": false,
+  "recording_stop_enabled": false,
+  "citrus_completion_stop_enabled": true,
+  "exit_after_finalize": false,
+  "drain_timeout_seconds": 60
+}
+```
+
+That leaves the operator in control of camera streaming and recording start,
+while allowing Citrus `citrus_completion` requests to schedule the same
+recording stop path as the GUI stop button. The GUI remains open after
+finalization unless `exit_after_finalize` is explicitly enabled. If a machine
+has no app config at all, Orange's built-in fallback remains more conservative:
+all local-control recording lifecycle commands are disabled.
+
+For manual GUI sessions that should not accept Citrus completion-stop, set:
+
+```json
+{
+  "citrus_completion_stop_enabled": false
+}
+```
+
+Use `scripts/update_app_config_display_profile.py --manual-citrus-completion-control`
+to apply the full manual-session profile without preserving stale orchestrator
+start/stop settings.
+
+Environment precedence:
+
+- `ORANGE_GUI_*` local-control env vars take precedence over their generic
+  `ORANGE_*` counterparts when both are set.
+- `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START` and
+  `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START` override
+  `recording_start_enabled`; use `1`/`true` to enable and `0`/`false` to
+  disable.
+- `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP`,
+  `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP`, and
+  `gui.local_control.recording_stop_enabled` control the generic
+  `stop_recording` command. Env values override app config; enabled generic
+  stop also allows `citrus_completion`.
+- `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP`,
+  `ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP`, and
+  `gui.local_control.citrus_completion_stop_enabled` control the Citrus-only
+  `citrus_completion` stop path. Env values override app config. Use this for
+  normal manual GUI sessions where Citrus should end the current recording but
+  generic socket stop should remain disabled.
+- `ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE` and
+  `ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE` override
+  `exit_after_finalize`.
+- `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` and
+  `ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` override
+  `drain_timeout_seconds`.
+
 ### `storage.default_recording_root`
 
 Type:
@@ -280,6 +363,7 @@ Type:
 
 Current supported values:
 
+- empty string or omitted
 - `real`
 - `preprocess_only`
 - `immediate_recycle`
@@ -293,9 +377,19 @@ Meaning:
 
 Recommended default:
 
-- `real`
+- empty string or omitted
+
+With no selected camera preference, empty or omitted resolves to `real`. Leaving
+the field empty is preferred for general app configs because camera profiles can
+then opt into `external_ipc` when their throughput profile needs it.
 
 `ORANGE_GUI_RECORDING_SINK_MODE` still overrides this field for diagnostics.
+If this field is omitted from the app config, selected camera configs may set
+`recording.preferred_sink_mode` to choose the GUI session sink. Any selected
+recording camera that prefers `external_ipc` makes the session use
+`external_ipc`. An explicit app-level `recording.sink_mode` wins over camera
+preferences, so keep this field omitted when you want camera profiles to drive
+the default.
 
 `external_ipc` is the first GUI/session path for process-isolated recording.
 On record start, Orange materializes the external recorder contract, starts the
@@ -387,7 +481,7 @@ Meaning:
 
 Fields:
 
-- `sink_mode`: one of `in_process`, `real`, or `external_ipc`
+- `sink_mode`: one of `in_process`, `inprocess`, `real`, or `external_ipc`
 - `frame_pool_size`: integer in `[1,512]` or `null`
 - `external_ipc.encode_queue_depth`: integer in `[1,4096]`
 - `external_ipc.recorder_gpu_id`: integer in `[0,255]` or `null`
@@ -408,9 +502,10 @@ Recommended default:
 }
 ```
 
-`sink_mode = "real"` is accepted as an alias for `in_process`, matching the
-full-frame sink-mode naming. `external_ipc` routes crop frames through the
-supervised external crop recorder path when crop recording is enabled.
+`sink_mode = "real"` and `sink_mode = "inprocess"` are accepted as aliases for
+`in_process`, matching the full-frame sink-mode naming and common command-line
+shorthand. `external_ipc` routes crop frames through the supervised external
+crop recorder path when crop recording is enabled.
 
 `frame_pool_size = null` keeps Orange's built-in crop producer default. For the
 current four-camera Orange/Citrus co-run, the launcher still supplies
@@ -589,7 +684,8 @@ Current implementation status:
   explicitly
 - `recording.sink_mode`, `recording.recording_control.*`, and
   `recording.ptp_register_read_decimate` are used by the GUI unless overridden
-  by environment or launcher values
+  by environment or launcher values; if `recording.sink_mode` is omitted, the
+  GUI can use selected camera `recording.preferred_sink_mode` values
 - `recording.crop.sink_mode`, `recording.crop.frame_pool_size`, and
   `recording.crop.external_ipc.*` are applied to the GUI by setting the
   existing worker/session environment controls when those env vars are not
@@ -599,7 +695,8 @@ Current implementation status:
 - `storage.latest_recording.*` now controls the local, canonical, and `/run`
   pointer writes emitted by the recording snapshot path
 - `gui.display` controls direct GUI display pacing defaults, and
-  `scripts/update_app_config_display_profile.py` can update those fields
+  `scripts/update_app_config_display_profile.py` can update those fields,
+  `gui.local_control`, and crop recording defaults
   without hand-editing JSON
 
 The pointer outputs should then use the resolved base folder plus the configured

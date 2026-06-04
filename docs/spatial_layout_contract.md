@@ -10,6 +10,11 @@ recording-snapshot writer and Citrus/H5 consumer path are still pending.
 
 Field-level schema details now live in `docs/spatial_layout_schema.md`.
 
+For the current circular single-arena dish-mask workflow, including
+Hough-circle/operator confirmation, Orange-native mask artifacts, Palette
+export mapping, and Citrus H5 snapshot expectations, see
+`docs/dish_top_rim_observation_design.md`.
+
 ## Problem
 
 We want all of these at once:

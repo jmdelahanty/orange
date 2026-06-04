@@ -190,6 +190,10 @@ bool write_rolling_clip_index_artifacts(const std::string& recording_folder,
                                         RecordingSessionIndexArtifacts* artifacts_out = nullptr,
                                         std::string* error_out = nullptr);
 
+std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_config,
+                                            const CameraParams* cameras_params = nullptr,
+                                            const CameraEachSelect* cameras_select = nullptr,
+                                            int num_cameras = 0);
 void create_recording_pipelines_for_stream(RecordingSessionState* state,
                                            CameraParams* cameras_params,
                                            CameraEachSelect* cameras_select,

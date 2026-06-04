@@ -244,17 +244,99 @@ std::string artifact_path_string(const std::filesystem::path& folder,
     return relative_paths ? file_name : (folder / file_name).string();
 }
 
-std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_config)
+std::string resolve_camera_preferred_recording_sink_mode(
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    const int num_cameras,
+    std::vector<std::string>* preferred_serials_out)
+{
+    if (preferred_serials_out) {
+        preferred_serials_out->clear();
+    }
+    if (!cameras_params || !cameras_select || num_cameras <= 0) {
+        return {};
+    }
+
+    bool wants_external_ipc = false;
+    bool wants_real = false;
+    for (int i = 0; i < num_cameras; ++i) {
+        if (!cameras_select[i].record) {
+            continue;
+        }
+        const std::string raw_preference =
+            cameras_params[i].recording.preferred_sink_mode;
+        if (raw_preference.empty()) {
+            continue;
+        }
+        const std::string preference = normalize_recording_sink_mode(raw_preference);
+        if (preference == "external_ipc") {
+            wants_external_ipc = true;
+        } else if (preference == "real") {
+            wants_real = true;
+        } else {
+            continue;
+        }
+        if (preferred_serials_out) {
+            preferred_serials_out->push_back(cameras_params[i].camera_serial);
+        }
+    }
+
+    if (wants_external_ipc) {
+        return "external_ipc";
+    }
+    if (wants_real) {
+        return "real";
+    }
+    return {};
+}
+
+std::string resolve_gui_recording_sink_mode_impl(const AppStorageConfig* app_storage_config,
+                                                 const CameraParams* cameras_params,
+                                                 const CameraEachSelect* cameras_select,
+                                                 const int num_cameras)
 {
     std::string requested;
-    if (app_storage_config && !app_storage_config->gui_recording_sink_mode.empty()) {
+    std::string source = "built_in_default";
+    if (app_storage_config &&
+        app_storage_config->gui_recording_sink_mode_configured &&
+        !app_storage_config->gui_recording_sink_mode.empty()) {
         requested = app_storage_config->gui_recording_sink_mode;
+        source = "app_config";
+    } else {
+        std::vector<std::string> preferred_serials;
+        const std::string camera_preference =
+            resolve_camera_preferred_recording_sink_mode(
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                &preferred_serials);
+        if (!camera_preference.empty()) {
+            requested = camera_preference;
+            source = "camera_preference";
+            std::ostringstream serials;
+            for (size_t i = 0; i < preferred_serials.size(); ++i) {
+                if (i > 0) {
+                    serials << ",";
+                }
+                serials << preferred_serials[i];
+            }
+            std::cout << "[recording_session] GUI recording sink mode from camera preference: "
+                      << requested;
+            if (!preferred_serials.empty()) {
+                std::cout << " serials=" << serials.str();
+            }
+            std::cout << std::endl;
+        } else if (app_storage_config && !app_storage_config->gui_recording_sink_mode.empty()) {
+            requested = app_storage_config->gui_recording_sink_mode;
+        }
     }
     if (const char* env = std::getenv("ORANGE_GUI_RECORDING_SINK_MODE")) {
         requested = env;
+        source = "environment";
     }
     if (env_flag_enabled("ORANGE_GUI_DIAGNOSTIC_NO_FULL_FRAME")) {
         requested = "immediate_recycle";
+        source = "diagnostic_no_full_frame";
     }
 
     std::string normalized = normalize_recording_sink_mode(requested);
@@ -265,6 +347,7 @@ std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_
     }
     if (normalized != "real") {
         std::cout << "[recording_session] GUI recording sink mode: " << normalized
+                  << " source=" << source
                   << " (full-frame video disabled for non-real sink modes)" << std::endl;
     }
     return normalized;
@@ -324,7 +407,8 @@ std::string normalize_crop_recording_sink_mode(std::string requested)
     std::transform(requested.begin(), requested.end(), requested.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
-    if (requested.empty() || requested == "real" || requested == "in_process") {
+    if (requested.empty() || requested == "real" || requested == "in_process" ||
+        requested == "inprocess") {
         return "in_process";
     }
     if (requested == "external_ipc") {
@@ -886,6 +970,18 @@ nlohmann::json make_clip_index_row(const nlohmann::json& manifest,
 }
 
 }  // namespace
+
+std::string resolve_gui_recording_sink_mode(const AppStorageConfig* app_storage_config,
+                                            const CameraParams* cameras_params,
+                                            const CameraEachSelect* cameras_select,
+                                            const int num_cameras)
+{
+    return resolve_gui_recording_sink_mode_impl(
+        app_storage_config,
+        cameras_params,
+        cameras_select,
+        num_cameras);
+}
 
 nlohmann::json build_recording_control_json(const RecordingControlConfig& config)
 {
@@ -1575,7 +1671,12 @@ void create_recording_pipelines_for_stream(RecordingSessionState* state,
 
     state->recording_pipelines.clear();
     state->recording_pipelines.resize(num_cameras);
-    state->recording_sink_mode = resolve_gui_recording_sink_mode(app_storage_config);
+    state->recording_sink_mode =
+        resolve_gui_recording_sink_mode(
+            app_storage_config,
+            cameras_params,
+            cameras_select,
+            num_cameras);
     state->gui_recording_control = resolve_gui_recording_control(app_storage_config);
     state->crop_recording_sink_mode = resolve_gui_crop_recording_sink_mode();
     state->external_recorder_contract_config =

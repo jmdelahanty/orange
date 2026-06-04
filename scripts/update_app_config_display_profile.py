@@ -138,9 +138,87 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="Set gui.telemetry.show_speed_graphs=false.",
     )
+    start_group = parser.add_mutually_exclusive_group()
+    start_group.add_argument(
+        "--enable-local-control-recording-start",
+        dest="local_control_recording_start",
+        action="store_true",
+        default=None,
+        help="Set gui.local_control.recording_start_enabled=true.",
+    )
+    start_group.add_argument(
+        "--disable-local-control-recording-start",
+        dest="local_control_recording_start",
+        action="store_false",
+        help="Set gui.local_control.recording_start_enabled=false.",
+    )
+    stop_group = parser.add_mutually_exclusive_group()
+    stop_group.add_argument(
+        "--enable-local-control-recording-stop",
+        dest="local_control_recording_stop",
+        action="store_true",
+        default=None,
+        help="Set gui.local_control.recording_stop_enabled=true.",
+    )
+    stop_group.add_argument(
+        "--disable-local-control-recording-stop",
+        dest="local_control_recording_stop",
+        action="store_false",
+        help="Set gui.local_control.recording_stop_enabled=false.",
+    )
+    citrus_stop_group = parser.add_mutually_exclusive_group()
+    citrus_stop_group.add_argument(
+        "--enable-citrus-completion-stop",
+        dest="local_control_citrus_completion_stop",
+        action="store_true",
+        default=None,
+        help="Set gui.local_control.citrus_completion_stop_enabled=true.",
+    )
+    citrus_stop_group.add_argument(
+        "--disable-citrus-completion-stop",
+        dest="local_control_citrus_completion_stop",
+        action="store_false",
+        help="Set gui.local_control.citrus_completion_stop_enabled=false.",
+    )
+    exit_group = parser.add_mutually_exclusive_group()
+    exit_group.add_argument(
+        "--enable-local-control-exit-after-finalize",
+        dest="local_control_exit_after_finalize",
+        action="store_true",
+        default=None,
+        help="Set gui.local_control.exit_after_finalize=true.",
+    )
+    exit_group.add_argument(
+        "--disable-local-control-exit-after-finalize",
+        dest="local_control_exit_after_finalize",
+        action="store_false",
+        help="Set gui.local_control.exit_after_finalize=false.",
+    )
+    drain_timeout_group = parser.add_mutually_exclusive_group()
+    drain_timeout_group.add_argument(
+        "--local-control-drain-timeout-seconds",
+        type=nonnegative_int_in_range(86400),
+        default=None,
+        help="Set gui.local_control.drain_timeout_seconds.",
+    )
+    drain_timeout_group.add_argument(
+        "--clear-local-control-drain-timeout-seconds",
+        action="store_true",
+        help="Set gui.local_control.drain_timeout_seconds=null.",
+    )
+    parser.add_argument(
+        "--manual-citrus-completion-control",
+        action="store_true",
+        help=(
+            "Store the normal manual-GUI Citrus completion profile: disable "
+            "socket recording start and generic stop_recording, enable only "
+            "citrus_completion stop, keep the GUI open after finalization, "
+            "and set a 60s drain timeout unless explicitly overridden."
+        ),
+    )
     parser.add_argument(
         "--crop-recording-sink-mode",
-        choices=["in_process", "real", "external_ipc"],
+        choices=["in_process", "inprocess", "real", "external_ipc"],
         default=None,
         help="Optional recording.crop.sink_mode value.",
     )
@@ -263,6 +341,45 @@ def update_display_config(payload: dict[str, Any], args: argparse.Namespace) -> 
         telemetry = dict(telemetry)
         telemetry["show_speed_graphs"] = args.show_speed_graphs
         gui["telemetry"] = telemetry
+
+    if (
+        args.manual_citrus_completion_control
+        or args.local_control_recording_start is not None
+        or args.local_control_recording_stop is not None
+        or args.local_control_citrus_completion_stop is not None
+        or args.local_control_exit_after_finalize is not None
+        or args.local_control_drain_timeout_seconds is not None
+        or args.clear_local_control_drain_timeout_seconds
+    ):
+        local_control = gui.get("local_control")
+        if local_control is None:
+            local_control = {}
+        if not isinstance(local_control, dict):
+            raise SystemExit("gui.local_control must be a JSON object")
+        local_control = dict(local_control)
+        if args.manual_citrus_completion_control:
+            local_control["recording_start_enabled"] = False
+            local_control["recording_stop_enabled"] = False
+            local_control["citrus_completion_stop_enabled"] = True
+            local_control["exit_after_finalize"] = False
+            local_control["drain_timeout_seconds"] = 60
+        if args.local_control_recording_start is not None:
+            local_control["recording_start_enabled"] = args.local_control_recording_start
+        if args.local_control_recording_stop is not None:
+            local_control["recording_stop_enabled"] = args.local_control_recording_stop
+        if args.local_control_citrus_completion_stop is not None:
+            local_control["citrus_completion_stop_enabled"] = (
+                args.local_control_citrus_completion_stop
+            )
+        if args.local_control_exit_after_finalize is not None:
+            local_control["exit_after_finalize"] = args.local_control_exit_after_finalize
+        if args.local_control_drain_timeout_seconds is not None:
+            local_control["drain_timeout_seconds"] = (
+                args.local_control_drain_timeout_seconds
+            )
+        elif args.clear_local_control_drain_timeout_seconds:
+            local_control["drain_timeout_seconds"] = None
+        gui["local_control"] = local_control
 
     out["gui"] = gui
 

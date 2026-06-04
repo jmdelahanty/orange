@@ -6,6 +6,7 @@ Status: design/TODO. No runtime implementation yet.
 
 Related docs:
 
+- `docs/dish_top_rim_observation_design.md`
 - `docs/spatial_layout_contract.md`
 - `docs/spatial_layout_schema.md`
 - Citrus `docs/coordinate_systems.md`

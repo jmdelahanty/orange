@@ -202,20 +202,86 @@ def test_discovers_all_camera_json_files() -> None:
             "launcher output should show GUI clip rollover disabled by default",
         )
         require(
-            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0" in result.stdout,
-            "launcher output should show local-control recording start disabled by default",
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=<app config/default>" in result.stdout,
+            "launcher output should show local-control recording start comes from app config by default",
         )
         require(
-            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=0" in result.stdout,
-            "launcher output should show local-control recording stop disabled by default",
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=<app config/default>" in result.stdout,
+            "launcher output should show local-control recording stop comes from app config by default",
         )
         require(
-            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=0" in result.stdout,
-            "launcher output should show Citrus completion stop disabled by default",
+            "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=<app config/default>" in result.stdout,
+            "launcher output should show Citrus completion stop comes from app config by default",
+        )
+        require(
+            "scripts/validate_gui_citrus_completion_recording.py --stop-all"
+            in result.stdout,
+            "launcher output should include the STOP ALL Citrus shortcut validator",
+        )
+        require(
+            "--expect-local-control-stop-terminal-state stopped" in result.stdout,
+            "launcher output should include STOP ALL terminal-state validation",
+        )
+        require(
+            "--expect-local-control-stop-reason stopped_by_local_control" in result.stdout,
+            "launcher output should include STOP ALL reason validation",
+        )
+        require(
+            "scripts/validate_gui_citrus_completion_recording.py --natural-completion"
+            in result.stdout,
+            "launcher output should include the natural-completion Citrus shortcut validator",
+        )
+        require(
+            "--expect-local-control-stop-terminal-state completed" in result.stdout,
+            "launcher output should include natural-completion terminal-state validation",
+        )
+        require(
+            "--expect-local-control-stop-reason protocol_finished" in result.stdout,
+            "launcher output should include natural-completion reason validation",
         )
         require(
             "ORANGE_GUI_PTP_STACK_MODE=off" in result.stdout,
             "launcher output should show host PTP preflight off by default for manual runs",
+        )
+        require(
+            "scripts/check_gui_citrus_completion_ready.py --check-socket"
+            in result.stdout,
+            "launcher output should include the manual Citrus config preflight",
+        )
+        require(
+            "scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120"
+            in result.stdout,
+            "launcher output should include the strict live Orange socket preflight",
+        )
+        require(
+            "ORANGE_CITRUS_HANDOFF=/tmp/orange_manual_citrus_completion_handoff.json"
+            in result.stdout,
+            "launcher output should include the manual Citrus handoff path",
+        )
+        require(
+            'ORANGE_RECORDING_FOLDER=$(scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120 --write-handoff "${ORANGE_CITRUS_HANDOFF}" --print-recording-folder)'
+            in result.stdout,
+            "launcher output should include exact recording-folder capture command",
+        )
+        require(
+            'eval "$(scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --print-citrus-env)"'
+            in result.stdout,
+            "launcher output should include Citrus env export from the verified handoff",
+        )
+        require(
+            'scripts/validate_gui_citrus_completion_recording.py "${ORANGE_RECORDING_FOLDER}" --stop-all'
+            in result.stdout,
+            "launcher output should include exact-folder STOP ALL validation command",
+        )
+        require(
+            'scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --stop-all'
+            in result.stdout,
+            "launcher output should include handoff STOP ALL validation command",
+        )
+        require(
+            'scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --print-validation-command --natural-completion'
+            in result.stdout,
+            "launcher output should include handoff natural-completion validation command printer",
         )
         require(
             "ORANGE_CROP_EXTERNAL_ENCODE_QUEUE_DEPTH=64" in result.stdout,
@@ -1780,6 +1846,28 @@ def test_gui_privilege_wrapper_accepts_crop_recorder_envs() -> None:
     )
 
 
+def test_gui_privilege_wrapper_accepts_inprocess_sink_alias() -> None:
+    result = subprocess.run(
+        [
+            str(GUI_WRAPPER_SCRIPT),
+            "--dry-run",
+            "--env",
+            "ORANGE_CROP_RECORDING_SINK_MODE=inprocess",
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+
+    require(result.returncode == 0, f"wrapper should accept inprocess sink alias: {result.stderr}")
+    require(
+        "ORANGE_CROP_RECORDING_SINK_MODE=inprocess" in result.stdout,
+        "wrapper dry-run should include the inprocess sink alias",
+    )
+
+
 def test_gui_privilege_wrapper_accepts_app_config_envs() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -1915,6 +2003,7 @@ def main() -> int:
         test_gui_privilege_wrapper_rejects_bad_ptp_stack_mode,
         test_gui_privilege_wrapper_accepts_recording_control_envs,
         test_gui_privilege_wrapper_accepts_crop_recorder_envs,
+        test_gui_privilege_wrapper_accepts_inprocess_sink_alias,
         test_gui_privilege_wrapper_accepts_app_config_envs,
         test_gui_privilege_wrapper_accepts_local_control_envs,
         test_gui_privilege_wrapper_rejects_missing_app_config_env,

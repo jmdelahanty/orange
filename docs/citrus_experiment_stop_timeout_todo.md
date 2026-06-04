@@ -44,7 +44,9 @@ Refs:
 - Recording stop in `orange-jeremy` is currently user-driven from the UI toggle.
 - Citrus now has its first opt-in real-GUI autorun and local-control socket
   slice with `status`, `start_experiment`, and `stop_experiment`.
-- Citrus now has an opt-in Orange completion notifier:
+- Citrus now has an opt-in Orange completion notifier. It can be enabled in
+  `/home/jeremy/citrus/system_config.yml` under
+  `citrus_runtime.orange_completion`, or overridden with
   `CITRUS_ORANGE_COMPLETION_NOTIFY=1`,
   `CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`, and
   `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`.
@@ -53,7 +55,8 @@ Refs:
 
 Explicit limitation note (current state):
 
-- Citrus completion emission is opt-in, not enabled by default.
+- Citrus completion emission is opt-in; enable it through Citrus app config for
+  ordinary runs or env overrides for one-off validation.
 - Orange/Citrus orchestrator live validation has passed for both the
   orchestrator-owned `stop_recording` path and the Citrus-owned
   `citrus_completion` notifier path. The induced drain-timeout path has also
@@ -238,7 +241,9 @@ Refs:
       `local_control.recording_stop` and fail by default when
       `drain_timed_out=true`.
 - [x] Expose pollable stop ACK state in `local_control.recording_stop.ack_state`
-      and its `citrus_completion_stop` compatibility alias:
+      and `local_control.citrus_completion_stop.ack_state`. The two status
+      objects share the same scheduler/drain state but report separate
+      `enabled` gates:
   - accepted,
   - executed,
   - failed_timeout.
@@ -257,8 +262,16 @@ Refs:
 - [x] Make the orchestrator preserve and summarize the Orange local-control
       JSONL event log as a run artifact.
 - [x] Add an orchestrator gate for that event log so production-profile runs
-      require matching socket rows and GUI-thread start/stop/drain lifecycle
-      evidence before validators can pass.
+      require matching socket rows plus GUI-thread `gui_command_accepted` and
+      start/stop/drain lifecycle evidence before validators can pass. The
+      socket rows must show `queued_for_gui_thread=true`, accepted GUI rows
+      must show the relevant start/stop local-control gate enabled, and
+      summarized row indexes must prove the lifecycle evidence is ordered,
+      including `recording_start_queued` before `recording_start_triggered`
+      and `recording_stop_scheduled` before `recording_stop_triggered`.
+      Drain-timeout evidence must also be request-specific rather than only a
+      global event-log flag, and ordered between stop trigger and drain
+      finalization.
 - [x] Require forced-finalize event-log evidence when Orange status reports a
       local-control drain timeout.
 - [x] Expose whether the forced-finalize path has requested Orange's existing
@@ -292,9 +305,9 @@ Refs:
     `reason=stopped_by_local_control`, and `ack_state=executed`.
 - [ ] Test manual STOP ALL in Citrus.
   - Launch Orange with
-    `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --citrus-display-safe --manual-local-control`
-    so the GUI remains operator-owned but Citrus completion/stop requests are
-    enabled.
+    `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --citrus-display-safe --manual-citrus-completion-control`
+    so the GUI remains operator-owned, all autorun sub-actions are disabled,
+    and only Citrus completion-stop requests are enabled.
   - Start recording manually in Orange, start the Citrus experiment, then click
     STOP ALL in Citrus.
   - Expected Orange artifact: `recording.control.method="citrus_completion"`,
@@ -303,7 +316,7 @@ Refs:
     terminal reason, `recording.control.command_source="citrus"`, and
     `recording.control.ack_state="executed"`.
   - Validation command shape:
-    `scripts/validate_gui_ptp_recording.py --latest-complete --expect-local-control-stop-method citrus_completion --expect-local-control-stop-command-source citrus --expect-local-control-stop-terminal-state stopped --expect-local-control-stop-reason stopped_by_local_control --expect-local-control-stop-ack-state executed`.
+    `scripts/validate_gui_ptp_recording.py --latest-complete --expect-local-control-stop-method citrus_completion --expect-local-control-stop-command-source citrus --expect-local-control-stop-terminal-state stopped --expect-local-control-stop-reason stopped_by_local_control --expect-local-control-stop-ack-state executed --expect-local-control-generic-stop-enabled 0 --expect-local-control-citrus-stop-enabled 1 --require-orange-local-control-event-log`.
 - [x] Test duplicate stop-control packets:
   - socket-layer duplicate `request_id`,
   - socket-layer duplicate `method + operation_id`,

@@ -84,6 +84,7 @@ struct CameraParams{
     int num_cameras;
     bool gpu_direct;
     bool focus_uart_bootstrap = false;
+    bool lens_control_enabled = true;
     bool need_reorder;
     std::string config_schema_id;
     int config_schema_version = 0;

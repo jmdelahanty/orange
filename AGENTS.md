@@ -651,6 +651,50 @@ multi-GPU split-GOP throughput.
   Citrus renders at `120 Hz`. Orange-only GUI validation can use the fast
   profile: `swap_interval=0`, GUI frame cap `60`, and display preview cap
   `15`.
+- Manual Orange GUI + Citrus STOP ALL/completion validation is still the
+  remaining end-to-end gate for the local-control completion path. Launch
+  Orange with:
+  `scripts/run_gui_fourcam_external_ipc_validation.sh --hidden-crop-preview --citrus-display-safe --manual-citrus-completion-control`.
+  That profile sets `ORANGE_GUI_AUTORUN=0`, disables all autorun sub-actions
+  (`ORANGE_GUI_AUTORUN_ENABLE_* = 0` and
+  `ORANGE_GUI_AUTORUN_START_RECORDING=0`), explicitly disables socket
+  `start_recording` and generic socket `stop_recording`, enables only Citrus
+  `citrus_completion`, and keeps Orange open after finalization. After STOP
+  ALL in Citrus, validate with:
+  `scripts/validate_gui_ptp_recording.py --latest-complete --expect-local-control-stop-method citrus_completion --expect-local-control-stop-command-source citrus --expect-local-control-stop-terminal-state stopped --expect-local-control-stop-reason stopped_by_local_control --expect-local-control-stop-ack-state executed --expect-local-control-generic-stop-enabled 0 --expect-local-control-citrus-stop-enabled 1 --require-orange-local-control-event-log`.
+  The shorter equivalent is
+  `scripts/validate_gui_citrus_completion_recording.py --stop-all`.
+  For a natural protocol finish, use
+  `scripts/validate_gui_citrus_completion_recording.py --natural-completion`.
+  Before launching Orange, `scripts/check_gui_citrus_completion_ready.py --check-socket`
+  validates the app-config gates. After Orange is running and before starting
+  Citrus, `scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120`
+  requires the live socket gates and Orange's recording/readiness state to
+  match the manual Citrus profile.
+  To avoid `--latest-complete` ambiguity, capture the exact folder with
+  `ORANGE_CITRUS_HANDOFF=/tmp/orange_manual_citrus_completion_handoff.json`
+  followed by
+  `ORANGE_RECORDING_FOLDER=$(scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120 --write-handoff "${ORANGE_CITRUS_HANDOFF}" --print-recording-folder)`.
+  The handoff stores its own absolute path and the exact validation command
+  arrays. Citrus can now use `/home/jeremy/citrus/system_config.yml` for the
+  Orange completion notifier:
+  `citrus_runtime.orange_completion.enabled=true`,
+  `socket_path=/tmp/orange_local_control.sock`, `grace_seconds=10`,
+  `retry_interval_seconds=2`, and
+  `shutdown_flush_timeout_seconds=5`. The handoff env export is still useful as
+  a run-specific override/check:
+  `eval "$(scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --print-citrus-env)"`.
+  Citrus should treat Orange `ok=true, accepted=true` and duplicate
+  `ok=true, duplicate=true` ACKs as delivered; Orange does not queue duplicate
+  `citrus_completion` requests a second time.
+  Validate from the handoff after Citrus finishes with
+  `scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --stop-all`
+  or `--natural-completion`.
+  `scripts/summarize_gui_validation.py --latest-complete` should show
+  `Local-Control Accepted Gates: ... generic_stop_enabled=[False]
+  citrus_completion_enabled=[True]`.
+  Full operator sequence:
+  `docs/manual_orange_citrus_completion_runbook.md`.
 - Four-camera crop external queue depth `128` is validated only as a short-run
   load absorber. The strict single-clip run peaked at crop queue high-water
   `52/52/51/47`; the strict rolling run peaked at `22/44/40/42`. Keep longer

@@ -105,6 +105,86 @@ def read_csv_rows(path: Path) -> list[dict[str, str]]:
         return []
 
 
+def read_jsonl_dicts(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    value = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    rows.append(value)
+    except OSError:
+        return []
+    return rows
+
+
+def unique_bool_values(rows: list[dict[str, Any]], key: str) -> list[bool]:
+    values = {row.get(key) for row in rows if isinstance(row.get(key), bool)}
+    return sorted(values)
+
+
+def local_control_event_log_path(
+    recording_folder: Path,
+    control: dict[str, Any],
+) -> Path | None:
+    event_log = control.get("event_log")
+    event_log = event_log if isinstance(event_log, dict) else {}
+    if not event_log:
+        return None
+    relative_path = str(event_log.get("relative_path") or "")
+    if relative_path:
+        return recording_folder / relative_path
+    for key in ("copied_path", "source_path"):
+        value = str(event_log.get(key) or "")
+        if value:
+            return path_from_recording_folder(recording_folder, value)
+    return None
+
+
+def summarize_local_control_accepted_gate(
+    recording_folder: Path,
+    control: dict[str, Any],
+) -> dict[str, Any]:
+    request_id = str(control.get("request_id") or "")
+    if not request_id:
+        return {}
+    event_log_path = local_control_event_log_path(recording_folder, control)
+    if event_log_path is None:
+        return {}
+    accepted_rows = [
+        row
+        for row in read_jsonl_dicts(event_log_path)
+        if row.get("schema_id") == "orange.local_control.gui_event"
+        and row.get("event") == "gui_command_accepted"
+        and str(row.get("request_id") or "") == request_id
+    ]
+    if not accepted_rows:
+        return {
+            "path": str(event_log_path),
+            "row_count": 0,
+        }
+    return {
+        "path": str(event_log_path),
+        "row_count": len(accepted_rows),
+        "start_enabled_values": unique_bool_values(accepted_rows, "start_enabled"),
+        "generic_stop_enabled_values": unique_bool_values(
+            accepted_rows,
+            "stop_recording_enabled",
+        ),
+        "legacy_stop_enabled_values": unique_bool_values(accepted_rows, "stop_enabled"),
+        "citrus_completion_enabled_values": unique_bool_values(
+            accepted_rows,
+            "citrus_completion_enabled",
+        ),
+    }
+
+
 def external_detach_queue_high_water(summary_path: Path) -> int | None:
     name = summary_path.name
     if not name.endswith("_summary.json"):
@@ -1456,7 +1536,7 @@ def summarize_videos(recording_folder: Path, ffprobe: str) -> dict[str, Any]:
     return out
 
 
-def summarize_recording_session(manifest: dict[str, Any]) -> dict[str, Any]:
+def summarize_recording_session(recording_folder: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(manifest, dict) or not manifest:
         return {}
 
@@ -1499,12 +1579,16 @@ def summarize_recording_session(manifest: dict[str, Any]) -> dict[str, Any]:
             "error_code",
             "last_event",
             "last_event_at_utc",
+            "event_log",
         )
         summary["local_control_stop"] = {
             key: control.get(key)
             for key in keys
             if key in control
         }
+        accepted_gate = summarize_local_control_accepted_gate(recording_folder, control)
+        if accepted_gate:
+            summary["local_control_stop"]["accepted_gate"] = accepted_gate
     return summary
 
 
@@ -1524,7 +1608,7 @@ def summarize(recording_folder: Path, steady_after_frame: int, ffprobe: str) -> 
         "recording_folder": str(recording_folder),
         "recording_id": snapshot.get("recording_id"),
         "timestamp_utc": snapshot.get("timestamp_utc"),
-        "recording_session": summarize_recording_session(manifest),
+        "recording_session": summarize_recording_session(recording_folder, manifest),
         "sync": snapshot.get("sync") if isinstance(snapshot.get("sync"), dict) else {},
         "system_cpu": system_cpu,
         "system_cpu_kernel_cmdline_cpu_option_values": normalized_kernel_cpu_options(system_cpu),
@@ -1557,6 +1641,12 @@ def fmt_s_unit(value: Any) -> str:
 
 def fmt_int(value: Any) -> str:
     return "n/a" if value is None else str(value)
+
+
+def fmt_list(value: Any) -> str:
+    if isinstance(value, list):
+        return "[" + ",".join(str(item) for item in value) + "]"
+    return str(value)
 
 
 def fmt_bytes(value: Any) -> str:
@@ -1619,6 +1709,29 @@ def print_human(summary: dict[str, Any]) -> None:
                 "forced_stream_stop="
                 f"{local_control_stop.get('forced_finalize_stream_stop_requested', 'unknown')}"
             )
+            event_log = local_control_stop.get("event_log")
+            event_log = event_log if isinstance(event_log, dict) else {}
+            if event_log:
+                print(
+                    "Local-Control Event Log: "
+                    f"copied={event_log.get('copied', 'unknown')} "
+                    f"relative_path={event_log.get('relative_path', 'unknown')} "
+                    f"bytes={event_log.get('bytes', 'unknown')} "
+                    f"copy_error={event_log.get('copy_error', '')}"
+                )
+            accepted_gate = local_control_stop.get("accepted_gate")
+            accepted_gate = accepted_gate if isinstance(accepted_gate, dict) else {}
+            if accepted_gate:
+                print(
+                    "Local-Control Accepted Gates: "
+                    f"rows={fmt_int(accepted_gate.get('row_count'))} "
+                    "start_enabled="
+                    f"{fmt_list(accepted_gate.get('start_enabled_values', []))} "
+                    "generic_stop_enabled="
+                    f"{fmt_list(accepted_gate.get('generic_stop_enabled_values', []))} "
+                    "citrus_completion_enabled="
+                    f"{fmt_list(accepted_gate.get('citrus_completion_enabled_values', []))}"
+                )
     sync = summary.get("sync", {})
     print(f"Sync: mode={sync.get('mode', 'unknown')} camera_sync_enabled={sync.get('camera_sync_enabled', 'unknown')}")
 

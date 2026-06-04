@@ -1,5 +1,7 @@
 #include "orange_local_control.h"
 
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -224,11 +226,12 @@ std::string recording_stop_ack_state(
 }
 
 nlohmann::json recording_stop_to_json(
-    const LocalControlRecordingStopSnapshot& snapshot)
+    const LocalControlRecordingStopSnapshot& snapshot,
+    const bool enabled)
 {
     const std::string state = recording_stop_state(snapshot);
     return {
-        {"enabled", snapshot.enabled},
+        {"enabled", enabled},
         {"state", state},
         {"health", recording_stop_health(snapshot)},
         {"ack_state", recording_stop_ack_state(snapshot)},
@@ -296,6 +299,158 @@ bool allow_gui_stop_recording(const LocalControlServerOptions& options)
            options.allow_gui_lifecycle_commands;
 }
 
+bool allow_gui_citrus_completion(const LocalControlServerOptions& options)
+{
+    return options.allow_gui_citrus_completion_commands ||
+           options.allow_gui_stop_recording_commands ||
+           options.allow_gui_lifecycle_commands;
+}
+
+bool prepare_event_log_directory(const std::filesystem::path& log_path,
+                                 std::string* error_out)
+{
+    if (!log_path.parent_path().empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(log_path.parent_path(), ec);
+        if (ec) {
+            set_error(error_out,
+                      "failed to create local control event log directory: " +
+                          log_path.parent_path().string() + ": " + ec.message());
+            return false;
+        }
+    }
+    return true;
+}
+
+bool InitializeLocalControlEventLog(const std::string& event_log_path,
+                                    std::string* error_out)
+{
+    if (event_log_path.empty()) {
+        return true;
+    }
+    const std::lock_guard<std::mutex> lock(g_event_log_mutex);
+    const std::filesystem::path log_path(event_log_path);
+    if (!prepare_event_log_directory(log_path, error_out)) {
+        return false;
+    }
+    std::ofstream out(event_log_path, std::ios::trunc);
+    if (!out) {
+        set_error(error_out,
+                  "failed to initialize local control event log: " + event_log_path);
+        return false;
+    }
+    return true;
+}
+
+std::string socket_lock_path_for_socket(const std::string& socket_path)
+{
+    return socket_path + ".lock";
+}
+
+bool acquire_socket_path_lock(const std::string& socket_path,
+                              int* lock_fd_out,
+                              std::string* lock_path_out,
+                              std::string* error_out)
+{
+    if (!lock_fd_out) {
+        set_error(error_out, "lock fd output pointer is null");
+        return false;
+    }
+    *lock_fd_out = -1;
+    const std::string lock_path = socket_lock_path_for_socket(socket_path);
+    const int fd = open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0666);
+    if (fd < 0) {
+        set_error(error_out,
+                  "failed to open local control socket lock " + lock_path + ": " +
+                      std::strerror(errno));
+        return false;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        const int lock_errno = errno;
+        close(fd);
+        if (lock_errno == EWOULDBLOCK || lock_errno == EAGAIN) {
+            set_error(error_out,
+                      "local control socket path is already owned by another process: " +
+                          socket_path);
+        } else {
+            set_error(error_out,
+                      "failed to lock local control socket path " + socket_path + ": " +
+                          std::strerror(lock_errno));
+        }
+        return false;
+    }
+    *lock_fd_out = fd;
+    if (lock_path_out) {
+        *lock_path_out = lock_path;
+    }
+    return true;
+}
+
+bool unix_socket_path_is_registered(const std::string& socket_path)
+{
+    std::ifstream in("/proc/net/unix");
+    if (!in) {
+        return false;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        const std::size_t last_space = line.find_last_of(" \t");
+        if (last_space == std::string::npos || last_space + 1 >= line.size()) {
+            continue;
+        }
+        if (line.substr(last_space + 1) == socket_path) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool prepare_socket_path_for_bind(const std::string& socket_path,
+                                  std::string* error_out)
+{
+    const std::filesystem::path path(socket_path);
+    std::error_code exists_error;
+    if (!std::filesystem::exists(path, exists_error)) {
+        if (exists_error) {
+            set_error(error_out,
+                      "failed to stat local control socket path " + socket_path + ": " +
+                          exists_error.message());
+            return false;
+        }
+        return true;
+    }
+    std::error_code status_error;
+    const std::filesystem::file_status status =
+        std::filesystem::symlink_status(path, status_error);
+    if (status_error) {
+        set_error(error_out,
+                  "failed to stat local control socket path " + socket_path + ": " +
+                      status_error.message());
+        return false;
+    }
+    if (status.type() != std::filesystem::file_type::socket) {
+        set_error(error_out,
+                  "local control socket path exists and is not a socket: " + socket_path);
+        return false;
+    }
+    if (unix_socket_path_is_registered(socket_path)) {
+        set_error(error_out,
+                  "local control socket path is already registered by another process: " +
+                      socket_path);
+        return false;
+    }
+
+    std::error_code unlink_error;
+    std::filesystem::remove(path, unlink_error);
+    if (unlink_error) {
+        set_error(error_out,
+                  "failed to remove stale local control socket path " + socket_path + ": " +
+                      unlink_error.message());
+        return false;
+    }
+    return true;
+}
+
 bool recorder_ready_when_required(const RecorderReadinessSnapshot& snapshot,
                                   const bool recorder_required)
 {
@@ -315,15 +470,8 @@ bool AppendLocalControlEventLog(const std::string& event_log_path,
     }
     const std::lock_guard<std::mutex> lock(g_event_log_mutex);
     const std::filesystem::path log_path(event_log_path);
-    if (!log_path.parent_path().empty()) {
-        std::error_code ec;
-        std::filesystem::create_directories(log_path.parent_path(), ec);
-        if (ec) {
-            set_error(error_out,
-                      "failed to create local control event log directory: " +
-                          log_path.parent_path().string() + ": " + ec.message());
-            return false;
-        }
+    if (!prepare_event_log_directory(log_path, error_out)) {
+        return false;
     }
     std::ofstream out(event_log_path, std::ios::app);
     if (!out) {
@@ -473,9 +621,13 @@ nlohmann::json LocalControlStatusSnapshotToJson(
              {"recording_start",
               recording_start_to_json(snapshot.local_control_recording_start)},
              {"recording_stop",
-              recording_stop_to_json(snapshot.local_control_recording_stop)},
+              recording_stop_to_json(
+                  snapshot.local_control_recording_stop,
+                  snapshot.local_control_recording_stop.enabled)},
              {"citrus_completion_stop",
-              recording_stop_to_json(snapshot.local_control_recording_stop)},
+              recording_stop_to_json(
+                  snapshot.local_control_recording_stop,
+                  snapshot.local_control_recording_stop.citrus_completion_enabled)},
          }},
     };
 }
@@ -598,7 +750,11 @@ bool LocalControlServer::Start(const LocalControlServerOptions& options,
 
     options_ = options;
     stop_requested_.store(false, std::memory_order_release);
+    owns_socket_path_.store(false, std::memory_order_release);
+    owns_socket_path_lock_.store(false, std::memory_order_release);
     listen_fd_ = -1;
+    socket_lock_fd_ = -1;
+    socket_lock_path_.clear();
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         last_error_.clear();
@@ -630,9 +786,12 @@ void LocalControlServer::Stop()
     if (thread_.joinable()) {
         thread_.join();
     }
-    if (!options_.socket_path.empty()) {
+    if (owns_socket_path_.load(std::memory_order_acquire) &&
+        !options_.socket_path.empty()) {
         unlink(options_.socket_path.c_str());
+        owns_socket_path_.store(false, std::memory_order_release);
     }
+    ReleaseSocketPathLock();
     running_.store(false, std::memory_order_release);
 }
 
@@ -662,6 +821,17 @@ void LocalControlServer::SetLastError(const std::string& error)
     last_error_ = error;
 }
 
+void LocalControlServer::ReleaseSocketPathLock()
+{
+    if (socket_lock_fd_ >= 0) {
+        flock(socket_lock_fd_, LOCK_UN);
+        close(socket_lock_fd_);
+        socket_lock_fd_ = -1;
+    }
+    owns_socket_path_lock_.store(false, std::memory_order_release);
+    socket_lock_path_.clear();
+}
+
 void LocalControlServer::ServeLoop()
 {
     listen_fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -675,21 +845,54 @@ void LocalControlServer::ServeLoop()
     addr.sun_family = AF_UNIX;
     std::strncpy(addr.sun_path, options_.socket_path.c_str(), sizeof(addr.sun_path) - 1);
 
-    unlink(options_.socket_path.c_str());
     const std::filesystem::path socket_parent =
         std::filesystem::path(options_.socket_path).parent_path();
     if (!socket_parent.empty()) {
         std::error_code ec;
         std::filesystem::create_directories(socket_parent, ec);
+        if (ec) {
+            SetLastError(
+                "failed to create local control socket directory " +
+                socket_parent.string() + ": " + ec.message());
+            close(listen_fd_);
+            listen_fd_ = -1;
+            running_.store(false, std::memory_order_release);
+            return;
+        }
+    }
+    std::string lock_path_error;
+    if (!acquire_socket_path_lock(
+            options_.socket_path,
+            &socket_lock_fd_,
+            &socket_lock_path_,
+            &lock_path_error)) {
+        SetLastError(lock_path_error);
+        close(listen_fd_);
+        listen_fd_ = -1;
+        running_.store(false, std::memory_order_release);
+        return;
+    }
+    owns_socket_path_lock_.store(true, std::memory_order_release);
+
+    std::string socket_path_error;
+    if (!prepare_socket_path_for_bind(options_.socket_path, &socket_path_error)) {
+        SetLastError(socket_path_error);
+        close(listen_fd_);
+        listen_fd_ = -1;
+        ReleaseSocketPathLock();
+        running_.store(false, std::memory_order_release);
+        return;
     }
     if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
         SetLastError("bind(" + options_.socket_path + ") failed: " +
                      std::string(std::strerror(errno)));
         close(listen_fd_);
         listen_fd_ = -1;
+        ReleaseSocketPathLock();
         running_.store(false, std::memory_order_release);
         return;
     }
+    owns_socket_path_.store(true, std::memory_order_release);
     chmod(options_.socket_path.c_str(), static_cast<mode_t>(options_.socket_mode));
 
     if (listen(listen_fd_, 8) != 0) {
@@ -697,6 +900,25 @@ void LocalControlServer::ServeLoop()
                      std::string(std::strerror(errno)));
         close(listen_fd_);
         listen_fd_ = -1;
+        running_.store(false, std::memory_order_release);
+        if (owns_socket_path_.load(std::memory_order_acquire)) {
+            unlink(options_.socket_path.c_str());
+            owns_socket_path_.store(false, std::memory_order_release);
+        }
+        ReleaseSocketPathLock();
+        return;
+    }
+
+    std::string event_log_error;
+    if (!InitializeLocalControlEventLog(options_.event_log_path, &event_log_error)) {
+        SetLastError(event_log_error);
+        close(listen_fd_);
+        listen_fd_ = -1;
+        if (owns_socket_path_.load(std::memory_order_acquire)) {
+            unlink(options_.socket_path.c_str());
+            owns_socket_path_.store(false, std::memory_order_release);
+        }
+        ReleaseSocketPathLock();
         running_.store(false, std::memory_order_release);
         return;
     }
@@ -744,7 +966,11 @@ void LocalControlServer::ServeLoop()
         close(listen_fd_);
         listen_fd_ = -1;
     }
-    unlink(options_.socket_path.c_str());
+    if (owns_socket_path_.load(std::memory_order_acquire)) {
+        unlink(options_.socket_path.c_str());
+        owns_socket_path_.store(false, std::memory_order_release);
+    }
+    ReleaseSocketPathLock();
     running_.store(false, std::memory_order_release);
 }
 
@@ -792,7 +1018,7 @@ void LocalControlServer::HandleClient(const int client_fd)
     const char* data = rendered.data();
     std::size_t remaining = rendered.size();
     while (remaining > 0) {
-        const ssize_t written = write(client_fd, data, remaining);
+        const ssize_t written = send(client_fd, data, remaining, MSG_NOSIGNAL);
         if (written < 0) {
             if (errno == EINTR) {
                 continue;
@@ -837,6 +1063,8 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
     bool queued_for_gui_thread = false;
     const bool start_recording_allowed = allow_gui_start_recording(options_);
     const bool stop_recording_allowed = allow_gui_stop_recording(options_);
+    const bool citrus_completion_allowed =
+        allow_gui_citrus_completion(options_);
     {
         std::lock_guard<std::mutex> lock(state_mutex_);
         const auto inserted = accepted_request_ids_.insert(parsed.request_id);
@@ -874,7 +1102,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             {"ok", true},
             {"accepted", true},
             {"duplicate", duplicate},
-            {"diagnostic_only", !stop_recording_allowed},
+            {"diagnostic_only", !citrus_completion_allowed},
             {"queued_for_gui_thread", queued_for_gui_thread},
             {"request_id", parsed.request_id},
             {"operation_id", parsed.operation_id},
@@ -967,7 +1195,7 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
              {"code", "unsupported_in_diagnostic_mode"},
              {"message",
               parsed.method == "stop_recording"
-                  ? "stop_recording requires ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1 or ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1"
+                  ? "stop_recording requires ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1"
                   : "start_recording requires ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1"},
          }},
         {"status", LocalControlStatusSnapshotToJson(status_snapshot)},

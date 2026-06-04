@@ -5,7 +5,7 @@
     "default_detect_engine": ""
   },
   "recording": {
-    "sink_mode": "real",
+    "sink_mode": "",
     "recording_control": {
       "record_for_seconds": 0,
       "clip_seconds": 0
@@ -34,6 +34,13 @@
     },
     "telemetry": {
       "show_speed_graphs": false
+    },
+    "local_control": {
+      "recording_start_enabled": false,
+      "recording_stop_enabled": false,
+      "citrus_completion_stop_enabled": true,
+      "exit_after_finalize": false,
+      "drain_timeout_seconds": 60
     }
   },
   "storage": {

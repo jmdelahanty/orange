@@ -28,6 +28,7 @@ struct RecorderReadinessSnapshot {
 
 struct LocalControlRecordingStopSnapshot {
     bool enabled = false;
+    bool citrus_completion_enabled = false;
     bool scheduled = false;
     bool stop_triggered = false;
     bool drain_active = false;
@@ -97,6 +98,7 @@ struct LocalControlServerOptions {
     bool allow_gui_lifecycle_commands = false;
     bool allow_gui_start_recording_commands = false;
     bool allow_gui_stop_recording_commands = false;
+    bool allow_gui_citrus_completion_commands = false;
 };
 
 struct ParsedLocalControlRequest {
@@ -153,6 +155,7 @@ private:
     nlohmann::json HandleRequest(const nlohmann::json& request);
     void LogEvent(const nlohmann::json& event);
     void SetLastError(const std::string& error);
+    void ReleaseSocketPathLock();
 
     LocalControlServerOptions options_;
     mutable std::mutex status_mutex_;
@@ -165,7 +168,11 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
+    std::atomic<bool> owns_socket_path_{false};
+    std::atomic<bool> owns_socket_path_lock_{false};
     int listen_fd_ = -1;
+    int socket_lock_fd_ = -1;
+    std::string socket_lock_path_;
 };
 
 }  // namespace orange::control

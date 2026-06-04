@@ -11,6 +11,7 @@ and Citrus-side consumption are still pending.
 Related documents:
 
 - `docs/calibration_artifact_contract.md`
+- `docs/dish_top_rim_observation_design.md`
 - `docs/spatial_layout_contract.md`
 - `docs/recording_metadata.md`
 

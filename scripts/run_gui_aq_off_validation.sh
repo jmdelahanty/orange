@@ -637,6 +637,10 @@ for note in notes:
     print(f"note: {note}")
 PY
 
+LOCAL_CONTROL_RECORDING_START_DISPLAY="${ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START:-${ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START:-<app config/default>}}"
+LOCAL_CONTROL_RECORDING_STOP_DISPLAY="${ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP:-${ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP:-<app config/default>}}"
+LOCAL_CONTROL_CITRUS_STOP_DISPLAY="${ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP:-${ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP:-<app config/default>}}"
+
 cat <<EOF
 Launching Orange GUI for AQ-off validation.
 
@@ -683,9 +687,9 @@ Validation environment:
   ORANGE_GUI_AUTORUN_START_RECORDING=${GUI_AUTORUN_START_RECORDING}
   ORANGE_GUI_RECORD_FOR_SECONDS=${GUI_RECORD_FOR_SECONDS:-<app config/disabled>}
   ORANGE_GUI_CLIP_SECONDS=${GUI_CLIP_SECONDS:-<app config/disabled>}
-  ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=${ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START:-${ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START:-0}}
-  ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=${ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP:-${ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP:-0}}
-  ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=${ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP:-${ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP:-0}}
+  ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=${LOCAL_CONTROL_RECORDING_START_DISPLAY}
+  ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=${LOCAL_CONTROL_RECORDING_STOP_DISPLAY}
+  ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=${LOCAL_CONTROL_CITRUS_STOP_DISPLAY}
   ORANGE_GUI_PTP_STACK_MODE=${GUI_PTP_STACK_MODE}
   ORANGE_CROP_PREVIEW_MAX_FPS=${ORANGE_CROP_PREVIEW_MAX_FPS:-<camera config/default>}
   ORANGE_CROP_PREVIEW_DISABLE=${ORANGE_CROP_PREVIEW_DISABLE:-0}
@@ -717,6 +721,42 @@ Or validate the newest artifact with:
   scripts/validate_gui_ptp_recording.py --latest
 Or validate the newest real recording artifact with:
   scripts/validate_gui_ptp_recording.py --latest-complete
+Before launching Orange, preflight the manual Citrus completion app-config with:
+  scripts/check_gui_citrus_completion_ready.py --check-socket
+After Orange is running and before starting Citrus, require live socket gates with:
+  scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120
+To capture the exact Orange artifact path for post-run validation:
+  ORANGE_CITRUS_HANDOFF=/tmp/orange_manual_citrus_completion_handoff.json
+  ORANGE_RECORDING_FOLDER=\$(scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120 --write-handoff "\${ORANGE_CITRUS_HANDOFF}" --print-recording-folder)
+If Citrus /home/jeremy/citrus/system_config.yml already enables
+  citrus_runtime.orange_completion.enabled=true
+  citrus_runtime.orange_completion.socket_path=/tmp/orange_local_control.sock
+  citrus_runtime.orange_completion.grace_seconds=10
+the handoff export is optional. To override/check the Citrus completion-notify
+environment from that verified handoff:
+  eval "\$(scripts/validate_gui_citrus_completion_recording.py --handoff "\${ORANGE_CITRUS_HANDOFF}" --print-citrus-env)"
+For a manual GUI run stopped by Citrus STOP ALL, validate the stop handoff
+and Orange GUI-thread lifecycle evidence with:
+  scripts/validate_gui_citrus_completion_recording.py --stop-all
+Or target the exact folder captured before Citrus:
+  scripts/validate_gui_citrus_completion_recording.py "\${ORANGE_RECORDING_FOLDER}" --stop-all
+Or use the handoff JSON captured before Citrus:
+  scripts/validate_gui_citrus_completion_recording.py --handoff "\${ORANGE_CITRUS_HANDOFF}" --stop-all
+Or print the exact handoff-stored STOP ALL validation command:
+  scripts/validate_gui_citrus_completion_recording.py --handoff "\${ORANGE_CITRUS_HANDOFF}" --print-validation-command --stop-all
+Equivalent expanded command:
+  scripts/validate_gui_ptp_recording.py --latest-complete --expect-local-control-stop-method citrus_completion --expect-local-control-stop-command-source citrus --expect-local-control-stop-terminal-state stopped --expect-local-control-stop-reason stopped_by_local_control --expect-local-control-stop-ack-state executed --expect-local-control-generic-stop-enabled 0 --expect-local-control-citrus-stop-enabled 1 --require-orange-local-control-event-log
+For a manual GUI run stopped by natural Citrus protocol completion, validate
+the stop handoff and Orange GUI-thread lifecycle evidence with:
+  scripts/validate_gui_citrus_completion_recording.py --natural-completion
+Or target the exact folder captured before Citrus:
+  scripts/validate_gui_citrus_completion_recording.py "\${ORANGE_RECORDING_FOLDER}" --natural-completion
+Or use the handoff JSON captured before Citrus:
+  scripts/validate_gui_citrus_completion_recording.py --handoff "\${ORANGE_CITRUS_HANDOFF}" --natural-completion
+Or print the exact handoff-stored natural-completion validation command:
+  scripts/validate_gui_citrus_completion_recording.py --handoff "\${ORANGE_CITRUS_HANDOFF}" --print-validation-command --natural-completion
+Equivalent expanded command:
+  scripts/validate_gui_ptp_recording.py --latest-complete --expect-local-control-stop-method citrus_completion --expect-local-control-stop-command-source citrus --expect-local-control-stop-terminal-state completed --expect-local-control-stop-reason protocol_finished --expect-local-control-stop-ack-state executed --expect-local-control-generic-stop-enabled 0 --expect-local-control-citrus-stop-enabled 1 --require-orange-local-control-event-log
 For a compact artifact health, crop fanout, and GUI timing summary, use:
   scripts/summarize_gui_validation.py --latest-complete
 For full-frame GUI external IPC rolling runs, validate the external recorder

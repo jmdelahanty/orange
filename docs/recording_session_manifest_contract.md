@@ -237,7 +237,14 @@ The top-level rolling manifest uses this shape:
       "stop_triggered_at_utc": "2026-05-29T00:00:00Z",
       "drain_completed": true,
       "drain_timed_out": false,
-      "ack_state": "executed"
+      "ack_state": "executed",
+      "event_log": {
+        "source_path": "/tmp/orange_local_control.sock.events.jsonl",
+        "copied_path": "/path/to/recording/orange_local_control.events.jsonl",
+        "relative_path": "orange_local_control.events.jsonl",
+        "copied": true,
+        "copied_at_utc": "2026-05-29T00:00:01Z"
+      }
     },
     "drain_completed": true,
     "actual_recording_duration_s": 18.0,
@@ -313,6 +320,17 @@ The top-level rolling manifest uses this shape:
   ]
 }
 ```
+
+For GUI local-control stops, `recording.control` is the durable stop
+provenance. Clean finalized drains use `ack_state="executed"`. If
+`drain_timed_out=true`, the manifest must carry
+`forced_finalize_requested=true`, `error_code="drain_timeout"`, and
+`ack_state="failed_timeout"`. Once that timed-out drain is completed, it must
+also carry `forced_finalize_stream_stop_requested=true` and
+`last_event="finalized_after_drain_timeout"`. A forced-finalize flag without
+`drain_timed_out=true` is invalid. A failed-timeout ACK without
+`drain_timed_out=true`, forced-finalize evidence, and
+`error_code="drain_timeout"` is also invalid.
 
 The top-level manifest is the stable discovery entrypoint. Consumers should use
 the `clips[*].directory` entries to enumerate clip folders and then read each

@@ -1051,13 +1051,28 @@ static std::string normalize_app_crop_recording_sink_mode(std::string value)
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
-    if (value.empty() || value == "real" || value == "in_process") {
+    if (value.empty() || value == "real" || value == "in_process" || value == "inprocess") {
         return "in_process";
     }
     if (value == "external_ipc") {
         return value;
     }
     return std::string();
+}
+
+static std::string normalize_camera_preferred_recording_sink_mode(std::string value)
+{
+    value = trim_ascii_copy(std::move(value));
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (value.empty() || value == "default" || value == "auto" || value == "app") {
+        return {};
+    }
+    if (value == "real" || value == "external_ipc") {
+        return value;
+    }
+    return {};
 }
 
 static bool apply_app_config_display_profile(AppStorageConfig* config,
@@ -1116,6 +1131,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.default_detect_engine.clear();
     config.default_recording_root = default_recording_root_for_orange_root(orange_root_dir_str);
     config.gui_recording_sink_mode = "real";
+    config.gui_recording_sink_mode_configured = false;
     config.gui_recording_record_for_seconds = 0;
     config.gui_recording_clip_seconds = 0;
     config.gui_crop_recording_sink_mode = "in_process";
@@ -1132,6 +1148,11 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
     config.gui_swap_interval = -1;
     config.gui_frame_max_fps = -1;
     config.gui_show_speed_graphs = false;
+    config.gui_local_control_recording_start_enabled = false;
+    config.gui_local_control_recording_stop_enabled = false;
+    config.gui_local_control_citrus_completion_stop_enabled = false;
+    config.gui_local_control_exit_after_finalize = false;
+    config.gui_local_control_drain_timeout_seconds = -1;
     config.write_local_pointer = true;
     config.canonical_pointer_root = default_canonical_pointer_root_for_orange_root(orange_root_dir_str);
     config.write_run_pointer = true;
@@ -1232,6 +1253,7 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                 trim_ascii_copy(recording["sink_mode"].get<std::string>());
             if (!sink_mode.empty()) {
                 config.gui_recording_sink_mode = sink_mode;
+                config.gui_recording_sink_mode_configured = true;
             }
         }
         if (recording.contains("recording_control")) {
@@ -1528,6 +1550,53 @@ bool load_app_storage_config(const std::string& orange_root_dir_str,
                     &config.gui_show_speed_graphs,
                     error_out,
                     "gui.telemetry")) {
+                if (error_out && error_out->find(config_path.string()) == std::string::npos) {
+                    *error_out += " in " + config_path.string();
+                }
+                return false;
+            }
+        }
+        if (gui.contains("local_control")) {
+            if (!gui["local_control"].is_object()) {
+                if (error_out) {
+                    *error_out = "gui.local_control must be an object in " +
+                                 config_path.string();
+                }
+                return false;
+            }
+            const nlohmann::json& local_control = gui["local_control"];
+            if (!read_optional_bool_field(
+                    local_control,
+                    "recording_start_enabled",
+                    &config.gui_local_control_recording_start_enabled,
+                    error_out,
+                    "gui.local_control") ||
+                !read_optional_bool_field(
+                    local_control,
+                    "recording_stop_enabled",
+                    &config.gui_local_control_recording_stop_enabled,
+                    error_out,
+                    "gui.local_control") ||
+                !read_optional_bool_field(
+                    local_control,
+                    "citrus_completion_stop_enabled",
+                    &config.gui_local_control_citrus_completion_stop_enabled,
+                    error_out,
+                    "gui.local_control") ||
+                !read_optional_bool_field(
+                    local_control,
+                    "exit_after_finalize",
+                    &config.gui_local_control_exit_after_finalize,
+                    error_out,
+                    "gui.local_control") ||
+                !read_optional_bounded_int_field(
+                    local_control,
+                    "drain_timeout_seconds",
+                    &config.gui_local_control_drain_timeout_seconds,
+                    0,
+                    86400,
+                    error_out,
+                    "gui.local_control")) {
                 if (error_out && error_out->find(config_path.string()) == std::string::npos) {
                     *error_out += " in " + config_path.string();
                 }
@@ -2352,6 +2421,8 @@ void normalize_camera_recording_config(CameraRecordingConfig* config) {
         return;
     }
 
+    config->preferred_sink_mode =
+        normalize_camera_preferred_recording_sink_mode(config->preferred_sink_mode);
     config->encode.codec = lower_ascii_copy(config->encode.codec);
     config->encode.preset = lower_ascii_copy(config->encode.preset);
     config->encode.tuning = lower_ascii_copy(config->encode.tuning);
@@ -2450,6 +2521,37 @@ bool parse_camera_recording_json_impl(const nlohmann::json& recording_json,
 
     CameraRecordingConfig recording;
     recording.profile_name = recording_json.value("profile_name", recording.profile_name);
+    if (recording_json.contains("preferred_sink_mode")) {
+        if (!recording_json["preferred_sink_mode"].is_string()) {
+            if (error_out) {
+                *error_out = "recording.preferred_sink_mode must be a string";
+            }
+            return false;
+        }
+        const std::string raw_preferred_sink_mode =
+            trim_ascii_copy(recording_json["preferred_sink_mode"].get<std::string>());
+        std::string normalized_raw_preferred_sink_mode = raw_preferred_sink_mode;
+        std::transform(
+            normalized_raw_preferred_sink_mode.begin(),
+            normalized_raw_preferred_sink_mode.end(),
+            normalized_raw_preferred_sink_mode.begin(),
+            [](unsigned char c) {
+                return static_cast<char>(std::tolower(c));
+            });
+        recording.preferred_sink_mode =
+            normalize_camera_preferred_recording_sink_mode(raw_preferred_sink_mode);
+        if (recording.preferred_sink_mode.empty() &&
+            !raw_preferred_sink_mode.empty() &&
+            normalized_raw_preferred_sink_mode != "default" &&
+            normalized_raw_preferred_sink_mode != "auto" &&
+            normalized_raw_preferred_sink_mode != "app") {
+            if (error_out) {
+                *error_out =
+                    "recording.preferred_sink_mode must be real, external_ipc, default, auto, app, or empty";
+            }
+            return false;
+        }
+    }
 
     if (recording_json.contains("encode") && recording_json["encode"].is_object()) {
         const nlohmann::json& encode = recording_json["encode"];
@@ -2575,6 +2677,9 @@ nlohmann::json build_camera_recording_json_impl(const CameraRecordingConfig& rec
 
     nlohmann::json recording_json = build_recording_strategy_json_object(recording.strategy);
     recording_json["profile_name"] = recording.profile_name;
+    if (!recording.preferred_sink_mode.empty()) {
+        recording_json["preferred_sink_mode"] = recording.preferred_sink_mode;
+    }
     recording_json["encode"] = {
         {"codec", recording.encode.codec},
         {"preset", recording.encode.preset},
@@ -2728,6 +2833,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->gpio_nodes.clear();
     camera_params->recording = CameraRecordingConfig();
     camera_params->crop_pipeline = CameraCropPipelineConfig();
+    camera_params->lens_control_enabled = true;
 }
 
 void parse_gpio_nodes_from_json(const nlohmann::json& camera_config, CameraParams* camera_params) {
@@ -2927,6 +3033,7 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
     camera_config["source_gpu_id"] = camera_params.gpu_id;
     camera_config["gpu_direct"] = camera_params.gpu_direct;
     camera_config["focus_uart_bootstrap"] = camera_params.focus_uart_bootstrap;
+    camera_config["lens_control_enabled"] = camera_params.lens_control_enabled;
     camera_config["color"] = camera_params.color;
     camera_config["focus"] = camera_params.focus;
     camera_config["iris"] = camera_params.iris;
@@ -3021,6 +3128,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     camera_params->gpu_id_runtime_overridden = false;
     camera_params->gpu_direct = camera_config["gpu_direct"];
     camera_params->focus_uart_bootstrap = camera_config.value("focus_uart_bootstrap", false);
+    camera_params->lens_control_enabled = camera_config.value("lens_control_enabled", true);
     camera_params->color = camera_config["color"];
     camera_params->focus = camera_config["focus"];
     camera_params->iris = camera_config["iris"];
@@ -3825,6 +3933,7 @@ void init_galvo_camera_params(CameraParams* camera_params, int camera_id, int nu
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
+    camera_params->lens_control_enabled = true;
     camera_params->need_reorder = false;
     camera_params->color = true;
     camera_params->iris = 0;
@@ -3845,6 +3954,7 @@ void init_65MP_camera_params_mono(CameraParams* camera_params, int camera_id, in
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
+    camera_params->lens_control_enabled = true;
     camera_params->need_reorder = false;
     camera_params->focus = 4311;
     camera_params->camera_id = camera_id;
@@ -3867,6 +3977,7 @@ void init_65MP_camera_params_color(CameraParams* camera_params, int camera_id, i
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
+    camera_params->lens_control_enabled = true;
     camera_params->need_reorder = false;
     camera_params->focus = 4419;
     camera_params->camera_id = camera_id;
@@ -3891,6 +4002,7 @@ void init_7MP_camera_params_color(CameraParams* camera_params, int camera_id, in
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
+    camera_params->lens_control_enabled = true;
     camera_params->need_reorder = false;
     camera_params->focus = 345;
     camera_params->camera_id = camera_id;
@@ -3914,6 +4026,7 @@ void init_7MP_camera_params_mono(CameraParams* camera_params, int camera_id, int
     camera_params->num_cameras = num_cameras;
     camera_params->gpu_direct = false;
     camera_params->focus_uart_bootstrap = false;
+    camera_params->lens_control_enabled = true;
     camera_params->need_reorder = false;
     camera_params->focus = 4700;
     camera_params->camera_id = camera_id;
@@ -4003,11 +4116,27 @@ void update_camera_configs(std::vector<std::string>& camera_config_files, std::s
     // ... (implementation from project.h)
     camera_config_files.clear();
     std::string camera_config_dir = input_folder;
-    for (const auto &entry : std::filesystem::directory_iterator(camera_config_dir))
+    std::error_code ec;
+    std::filesystem::directory_iterator entries(camera_config_dir, ec);
+    if (ec) {
+        std::cerr << "Failed to scan camera config directory `"
+                  << camera_config_dir << "`: " << ec.message() << std::endl;
+        return;
+    }
+    for (const auto &entry : entries)
     {
-        std::string entry_str = entry.path().string();
-        if (entry_str.find(".json") != std::string::npos)
-            camera_config_files.push_back(entry_str);
+        std::error_code entry_ec;
+        if (!entry.is_regular_file(entry_ec) || entry_ec) {
+            continue;
+        }
+        const std::filesystem::path path = entry.path();
+        const std::string filename = path.filename().string();
+        if (!filename.empty() && filename.front() == '.') {
+            continue;
+        }
+        if (path.extension() == ".json") {
+            camera_config_files.push_back(path.string());
+        }
     }
     std::sort(camera_config_files.begin(), camera_config_files.end());
 }

@@ -1114,8 +1114,15 @@ evidence there, including `drain_completed`, `drain_completed_at_utc`,
 `forced_finalize_stream_stop_requested`, terminal `ack_state`, `health`,
 `error_code`, and `last_event` / `last_event_at_utc`. A clean finalized stop
 must persist `ack_state="executed"`; a drain-timeout path must persist
-`ack_state="failed_timeout"`. The GUI validator rejects contradictory persisted
-stop-control evidence when local-control stop expectations are enabled.
+`ack_state="failed_timeout"`. Conversely, a persisted failed-timeout ACK is
+valid only with `drain_timed_out=true`, `forced_finalize_requested=true`, and
+`error_code="drain_timeout"`. Forced-finalize fields are timeout-only:
+`forced_finalize_requested=true` requires `drain_timed_out=true`, and a
+completed timeout must also carry
+`forced_finalize_stream_stop_requested=true` with
+`last_event="finalized_after_drain_timeout"`. The GUI validator rejects
+contradictory persisted stop-control evidence when local-control stop
+expectations are enabled.
 
 This derived diagnosis is intentionally script-owned. It should not be treated
 as a persisted Orange snapshot schema field.

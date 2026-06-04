@@ -50,25 +50,116 @@ request/response rows and GUI-thread lifecycle rows with
 start queued/ignored/triggered/failed, stop scheduled/kept/ignored/triggered,
 drain timeout, drain finalized, and optional exit-after-finalize transitions.
 Set `ORANGE_GUI_LOCAL_CONTROL_DISABLE=1` or `ORANGE_LOCAL_CONTROL_DISABLE=1` to
-disable the endpoint for a diagnostic run.
-Local-control recording stop is disabled by default; enable it only for
-integrated control tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`
-or `ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`. The older Citrus-specific
-aliases `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` and
-`ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` also enable the same recording-stop
-gate.
-Local-control recording start is disabled by default; enable it only for
-orchestrator tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1` or
-`ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START=1`.
+disable the endpoint for a diagnostic run. If both GUI-specific and generic
+local-control env vars are present, the `ORANGE_GUI_*` value wins; this lets a
+GUI launcher explicitly set `ORANGE_GUI_LOCAL_CONTROL_DISABLE=0` even if a
+stale generic `ORANGE_LOCAL_CONTROL_DISABLE=1` remains in the shell.
+Local-control recording stop is disabled by default. For integrated control
+tests, enable it with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1` or
+`ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`. These env vars are true
+overrides of app config: `1`/`true` enables and `0`/`false` disables generic
+`stop_recording`. Enabled generic stop also allows `citrus_completion`. The
+Citrus-specific aliases `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` and
+`ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1` enable only
+`citrus_completion`, leaving generic `stop_recording` disabled; set them to
+`0`/`false` to override an app-config Citrus gate off. For ordinary manual GUI
+sessions, Citrus completion-stop can be enabled
+persistently in app config with
+`gui.local_control.citrus_completion_stop_enabled = true`; keep
+`gui.local_control.recording_start_enabled = false` when the operator should
+still start recording manually.
+The app-config updater can set this without hand-editing JSON:
 
-For a hands-on four-camera Orange GUI session that should still accept Citrus
+```bash
+scripts/update_app_config_display_profile.py \
+  --profile citrus_safe \
+  --manual-citrus-completion-control
+```
+
+Local-control recording start is disabled by default; enable it only for
+orchestrator tests with `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1`,
+`ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START=1`, or
+`gui.local_control.recording_start_enabled = true`. As with the stop gates,
+env values override app config in both directions.
+
+For a hands-on four-camera Orange GUI session that should accept only Citrus
 STOP ALL / completion-stop requests, use the four-camera launcher option
-`--manual-local-control`. It sets `ORANGE_GUI_AUTORUN=0`, keeps
-`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START` disabled so the operator owns
-recording start, and enables `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1`
-plus `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`. It also keeps
+`--manual-citrus-completion-control`. It sets `ORANGE_GUI_AUTORUN=0`, keeps
+all autorun sub-actions disabled (`ORANGE_GUI_AUTORUN_ENABLE_STREAM=0`,
+`ORANGE_GUI_AUTORUN_ENABLE_RECORD=0`, `ORANGE_GUI_AUTORUN_ENABLE_YOLO=0`,
+`ORANGE_GUI_AUTORUN_ENABLE_CROP=0`, and
+`ORANGE_GUI_AUTORUN_START_RECORDING=0`), sets
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0` so the operator owns
+recording start, sets `ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=0`, and
+enables `ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1`. It also keeps
 `ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0` so the GUI remains open after
-manual validation.
+manual validation. Use `--manual-local-control` only when the same manual
+session should also accept generic `stop_recording` socket requests.
+
+After a manual Orange GUI + Citrus run, validate the latest complete Orange
+artifact with the Citrus-completion shortcut. Use `--natural-completion` when
+the Citrus protocol ended on its own, or `--stop-all` when the operator used
+Citrus STOP ALL:
+
+```bash
+scripts/validate_gui_citrus_completion_recording.py --natural-completion
+scripts/validate_gui_citrus_completion_recording.py --stop-all
+```
+
+Before launching Orange, the manual profile can be preflighted without changing
+Orange state:
+
+```bash
+scripts/check_gui_citrus_completion_ready.py --check-socket
+```
+
+That command validates app-config local-control gates and, if the Orange socket
+is live, confirms the running GUI has socket `start_recording` and generic
+`stop_recording` disabled while Citrus completion-stop is enabled. After Orange
+is running and before starting Citrus, use the stricter live-socket gate:
+
+```bash
+scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready
+```
+
+That profile requires the live socket, local-control start/generic-stop
+disabled, Citrus completion-stop enabled, `recording_active=true`,
+`ready_for_citrus_experiment=true`, and a non-empty recording folder.
+Add `--wait-seconds 120` when running it during the operator start-recording
+step.
+
+The preflight's default app-config lookup matches Orange:
+`ORANGE_APP_CONFIG_PATH`, then `ORANGE_GUI_APP_CONFIG_PATH`, then the
+`SUDO_USER`/`HOME` Orange data root.
+
+For an exact-folder live validation, capture Orange's active recording folder
+and write a handoff JSON after the strict preflight succeeds:
+
+```bash
+ORANGE_CITRUS_HANDOFF=/tmp/orange_manual_citrus_completion_handoff.json
+ORANGE_RECORDING_FOLDER=$(scripts/check_gui_citrus_completion_ready.py --require-manual-citrus-ready --wait-seconds 120 --write-handoff "${ORANGE_CITRUS_HANDOFF}" --print-recording-folder)
+eval "$(scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --print-citrus-env)"
+scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --stop-all
+```
+
+The handoff JSON includes its own absolute path, the exact Orange folder, the
+Orange status response that proved readiness, the Citrus completion env values,
+and handoff-based validation command arrays for STOP ALL and natural completion
+outcomes. The handoff-aware validator audits the embedded status response
+before dispatching the artifact validator, and can print shell exports for Citrus with
+`scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --print-citrus-env`.
+Those shell exports are an override/check path, not the only supported Citrus
+configuration path. Citrus can instead read the matching notify settings from
+`/home/jeremy/citrus/system_config.yml`; the export path remains useful for
+one-off runs because it checks that Citrus notification is enabled, the Citrus
+socket equals the proven Orange socket, and the completion grace seconds value
+is numeric and nonnegative.
+It can also print the handoff-stored exact validation command with
+`scripts/validate_gui_citrus_completion_recording.py --handoff "${ORANGE_CITRUS_HANDOFF}" --print-validation-command --natural-completion`
+or `--stop-all`.
+
+The step-by-step operator runbook lives in
+`docs/manual_orange_citrus_completion_runbook.md`.
 
 The GUI validation launcher and installed sudo wrapper forward these variables
 when paths point under `/tmp`, `/run/user/1000`, or
@@ -77,10 +168,12 @@ when paths point under `/tmp`, `/run/user/1000`, or
 The endpoint acknowledges `status`, `citrus_completion`, opt-in
 `start_recording`, and opt-in `stop_recording`. Accepted mutating requests are
 deduplicated by both `request_id` and `method + operation_id`, queued onto a
-thread-safe bridge, and drained by the GUI thread. With the recording-stop gate disabled, Citrus
-completion requests are logged only and `stop_recording` is rejected. With the
-gate enabled and Orange actively recording, both `citrus_completion` and
-`stop_recording` schedule a delayed stop using `params.grace_seconds`.
+thread-safe bridge, and drained by the GUI thread. With the Citrus-only stop
+gate enabled, `citrus_completion` can schedule a delayed recording stop while
+generic `stop_recording` remains disabled. With the generic recording-stop gate
+enabled, both `citrus_completion` and `stop_recording` can schedule a delayed
+stop. With both stop gates disabled, Citrus completion requests are logged only
+and `stop_recording` is rejected.
 If that field is omitted, Orange resolves `citrus_completion` to a 10-second
 grace period and `stop_recording` to an immediate `0`-second stop. The client
 utility also defaults `citrus-completion --grace-seconds` to `10.0` and uses
@@ -88,6 +181,17 @@ utility also defaults `citrus-completion --grace-seconds` to `10.0` and uses
 With the recording-start gate enabled, when Orange is streaming but not already
 recording or finalizing, `start_recording` goes through the same GUI-thread
 recording preflight and operator start path as the record button.
+
+When a local-control stop actually finalizes a normal GUI recording, Orange
+also copies the local-control JSONL event log into the recording folder as
+`orange_local_control.events.jsonl` and patches `recording_session.json` under
+`recording.control.event_log`. That makes the socket ACK and GUI-thread
+lifecycle evidence travel with the recording artifact instead of depending on
+the current contents of `/tmp`. When that manifest field is present,
+`scripts/validate_gui_ptp_recording.py` audits the copied log even without an
+explicit `--orange-local-control-event-log` path. The live JSONL event log is
+truncated when the Orange local-control server starts, so copied manual-run
+logs are scoped to the current GUI process.
 
 Use the client utility to inspect or send requests:
 
@@ -105,6 +209,12 @@ scripts/orange_local_control_client.py \
   --grace-seconds 10
 ```
 
+For `citrus-completion`, the client defaults both `request_id` and
+`operation_id` to the same stable Citrus retry key:
+`citrus_completion:<experiment_id>:<terminal_state>:<reason>`. Passing
+`--request-id` overrides only the request id; the operation id still defaults
+to the terminal-state key unless `--operation-id` is also provided.
+
 `start-recording` and `stop-recording` subcommands render/send the v1 schema.
 `start-recording` requires the recording-start gate above; `stop-recording`
 requires the recording-stop gate above.
@@ -119,8 +229,8 @@ payload:
   "schema_id": "orange.local_control.request",
   "schema_version": 1,
   "method": "citrus_completion",
-  "request_id": "uuid-or-run-unique-id",
-  "operation_id": "citrus-experiment-id-or-orchestrator-phase-id",
+  "request_id": "citrus_completion:citrus-exp-42:completed:protocol_finished",
+  "operation_id": "citrus_completion:citrus-exp-42:completed:protocol_finished",
   "source": "citrus",
   "sent_at_utc": "2026-05-28T20:10:00Z",
   "params": {
@@ -167,8 +277,8 @@ Orange readiness means more than process started. Status reports:
 - `local_control.recording_start`: whether local-control recording start is
   enabled, whether a start request is pending, the current request/operation
   ids, source/reason, and the latest GUI-thread event
-- `local_control.recording_stop`: whether local-control recording stop is
-  enabled, whether a stop is scheduled, whether one has triggered, the current
+- `local_control.recording_stop`: whether generic `stop_recording` is enabled,
+  whether a stop is scheduled, whether one has triggered, the current
   method/request/operation/experiment ids, terminal state/reason, remaining
   deadline seconds, drain telemetry, derived stop `state`, derived `ack_state`,
   derived `health`,
@@ -177,8 +287,12 @@ Orange readiness means more than process started. Status reports:
   `forced_finalize_requested`, `forced_finalize_stream_stop_requested`,
   `drain_timeout_seconds`, `drain_elapsed_seconds`,
   `stop_triggered_at_utc`, and `drain_completed_at_utc`.
-- `local_control.citrus_completion_stop`: compatibility alias for the same
-  recording-stop status
+- `local_control.citrus_completion_stop`: same scheduler/drain status, but
+  with the `enabled` gate for Citrus `citrus_completion`
+
+Status gate fields are JSON booleans, not string flags. Orchestrators should
+not treat `"true"`/`"false"` strings as readiness, timeout, active/armed, or
+forced-finalize booleans.
 
 `ack_state` is the pollable local-control acknowledgment state for Citrus and
 orchestrators: `accepted` after the GUI thread schedules the stop, `executing`
@@ -214,8 +328,8 @@ Every response is one JSON object:
   "duplicate": false,
   "diagnostic_only": true,
   "queued_for_gui_thread": true,
-  "request_id": "uuid-or-run-unique-id",
-  "operation_id": "citrus-experiment-id-or-orchestrator-phase-id",
+  "request_id": "citrus_completion:citrus-exp-42:completed:protocol_finished",
+  "operation_id": "citrus_completion:citrus-exp-42:completed:protocol_finished",
   "method": "citrus_completion",
   "responded_at_utc": "2026-05-28T20:10:00Z",
   "effect": {
@@ -226,6 +340,11 @@ Every response is one JSON object:
   "status": {}
 }
 ```
+
+The response gate fields are JSON booleans, not string flags. Orchestrator
+clients should treat `ok`, `accepted`, `duplicate`,
+`diagnostic_only`, and `queued_for_gui_thread` as invalid if they arrive as
+truthy strings such as `"true"`.
 
 For `citrus_completion`, Orange validates, logs, queues the request for
 GUI-thread handling, and acknowledges it. For `start_recording` and
@@ -279,8 +398,10 @@ records drain lifecycle evidence: `drain_completed`,
 `forced_finalize_stream_stop_requested`, terminal `ack_state`, `health`,
 `error_code`, and the final `last_event` / `last_event_at_utc` values. Clean
 finalization persists `ack_state="executed"`; drain timeout persists
-`ack_state="failed_timeout"`. The GUI validator checks these fields for internal
-consistency when local-control stop expectations are enabled.
+`ack_state="failed_timeout"`. A failed-timeout ACK is valid only with
+`drain_timed_out=true`, forced-finalize evidence, and
+`error_code="drain_timeout"`. The GUI validator checks these fields for
+internal consistency when local-control stop expectations are enabled.
 
 Orange also records local-control drain observability after a triggered stop.
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` sets the telemetry threshold,
@@ -359,20 +480,42 @@ reports `output.perf_jsonl_enabled`, `output.perf_jsonl_path`, and
 has actually started/configured the experiment. Use the exact
 `perf_jsonl_path` from status instead of globbing Citrus output directories.
 
-Current Citrus validation: Citrus builds, its unit suite passes with 84 tests,
+Earlier Citrus validation: Citrus built, its unit suite passed with 84 tests,
 and a real-display smoke on `DISPLAY=:1` answered `status` on DP-3 at
-`1920x1080 @ 120Hz` with render loop active. Orange completion notification was
-disabled by default, as intended.
+`1920x1080 @ 120Hz` with render loop active. At that time Orange completion
+notification was disabled by default. Newer Citrus builds can enable the same
+notify path through app config or env overrides.
 
 Updated Citrus notifier slice: Citrus can now opt into notifying Orange after a
-terminal experiment state with:
+terminal experiment state through app config:
+
+```yaml
+citrus_runtime:
+  orange_completion:
+    enabled: true
+    socket_path: /tmp/orange_local_control.sock
+    grace_seconds: 10
+    retry_interval_seconds: 2
+    shutdown_flush_timeout_seconds: 5
+```
+
+The same values can be overridden per process with:
 
 - `CITRUS_ORANGE_COMPLETION_NOTIFY=1`
+- `CITRUS_ORANGE_COMPLETION_ENABLED=1`
 - `CITRUS_ORANGE_LOCAL_CONTROL_SOCKET=/tmp/orange_local_control.sock`
 - `CITRUS_ORANGE_COMPLETION_GRACE_SECONDS=10`
+- `CITRUS_ORANGE_COMPLETION_RETRY_INTERVAL_SECONDS=2`
+- `CITRUS_ORANGE_COMPLETION_SHUTDOWN_FLUSH_TIMEOUT_SECONDS=5`
 
 Citrus uses stable retry request ids shaped like
 `citrus_completion:<experiment_id>:<terminal_state>:<reason>`.
+Orange returns `ok=true` and `accepted=true` for the first valid request.
+Duplicate `request_id` values or duplicate `method + operation_id` values are
+also acknowledged with `ok=true`, `accepted=true`, and `duplicate=true`, but
+they are not queued to the GUI thread a second time. When Citrus autorun exits
+after completion, Citrus should wait up to `shutdown_flush_timeout_seconds` for
+one of those ACKs before closing.
 Terminal states are stable and machine-parseable:
 
 - `completed`
@@ -452,14 +595,40 @@ local-control JSONL event log path (`--orange-local-control-log`, or
 folder's orchestrator artifact directory when artifact copying is enabled. It
 can also require that log with `--require-orange-local-control-event-log`; in
 that mode a run fails unless the log has matching socket request/response rows,
-GUI-thread `recording_start_triggered` evidence, and, for stop policies other
-than `none`, `recording_stop_triggered` plus `recording_drain_finalized`
-evidence for the operation. The four-camera profile enables this requirement
-by default, with `--allow-missing-orange-event-log` only for diagnostics. The
-gate also requires timeout diagnostics to contain both `recording_drain_timeout` and
-`recording_drain_forced_finalize_requested` when Orange status reports
-`local_control.recording_stop.drain_timed_out=true`. It
-also sets
+GUI-thread `gui_command_accepted`, `recording_start_queued`, and
+`recording_start_triggered` evidence, and, for stop policies other than `none`,
+`gui_command_accepted`, `recording_stop_scheduled`,
+`recording_stop_triggered`, and `recording_drain_finalized` evidence for the
+operation. The four-camera profile enables this requirement by default, with
+`--allow-missing-orange-event-log` only for diagnostics. The
+compact event-log summary preserves socket and GUI event timestamps plus
+lifecycle detail fields such as grace seconds, drain timeout, forced-finalize,
+health, and error code; the raw JSONL is copied alongside it for full event
+detail. Mutating socket rows must include `queued_for_gui_thread=true`, proving
+the socket thread handed the command to the GUI control loop. The summary also
+preserves physical `row_index` order and the gate uses it to require queued
+socket acceptance before GUI acceptance, GUI acceptance before start queueing,
+start queueing before start trigger, stop acceptance before stop scheduling,
+stop scheduling before stop trigger, and stop trigger before drain
+finalization. The
+`orange.local_control_event_log_check.request_chains[]` summary records the
+per-request row counts, row indexes, presence booleans, observed
+method/source values, socket ACK booleans, terminal metadata, and GUI
+enabled-gate values used for that audit. Timeout and forced-finalize rows are
+also folded into the stop request chain. The gate also requires timeout
+diagnostics to contain both
+`recording_drain_timeout` and `recording_drain_forced_finalize_requested` when
+Orange status reports `local_control.recording_stop.drain_timed_out=true`, and
+those rows must match the final stop request id rather than only existing
+somewhere in the log. Their row order must show stop trigger before drain
+timeout, drain timeout before forced-finalize request, and forced-finalize
+request before drain finalization.
+For manual Citrus-only validation, `scripts/validate_gui_ptp_recording.py`
+can additionally assert the final stop request's GUI-thread gate values with
+`--expect-local-control-generic-stop-enabled 0` and
+`--expect-local-control-citrus-stop-enabled 1`; those checks require the copied
+or explicit Orange local-control event log.
+The orchestrated GUI autorun path also sets
 `ORANGE_GUI_AUTORUN_START_RECORDING=0` and
 `ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0`, so an Orange GUI autorun launcher
 can open cameras and start streaming while leaving recording start/stop to the
@@ -510,20 +679,47 @@ the combined summary also records
 `orange.local_control_event_log_check`, and missing/invalid lifecycle evidence
 fails the orchestrator before post-run validators execute. Required event-log
 checks are request-specific. The start request must have an accepted `ok=true`
-socket request/response row and a matching `recording_start_triggered` GUI
-lifecycle row. The stop request must have an accepted `ok=true` socket
-request/response row, a stop-trigger GUI lifecycle row, and a drain-finalized
-GUI lifecycle row matching the final Orange stop request id and final stop
-metadata: method, command source, operation id, terminal state, and reason when
-present. `citrus_completion_notify` runs additionally require the final stop
-metadata and those socket/lifecycle events to show `method=citrus_completion`
-and `command_source=citrus` / socket `source=citrus`. Use
+socket request/response row with a nonempty source and
+`queued_for_gui_thread=true`, a matching `gui_command_accepted` row with
+`start_enabled=true`, a matching `recording_start_queued` row, and a matching
+`recording_start_triggered` GUI lifecycle row with `method=start_recording`.
+The stop request must have an accepted
+`ok=true` socket request/response row with `queued_for_gui_thread=true`, a
+matching `gui_command_accepted` row with the method-specific gate enabled
+(`stop_enabled=true` for `stop_recording`, or `citrus_completion_enabled=true`
+for Citrus-owned completion stop), a stop-scheduled GUI lifecycle row, a
+stop-trigger GUI lifecycle row, and a drain-finalized GUI lifecycle row
+matching the final Orange stop request id and final stop
+metadata: method, command source, operation id, terminal state, and reason
+when present. The final stop status
+must include method, command source/source, and operation id, so those
+comparisons cannot silently degrade. When summarized row indexes are available,
+those rows must appear in lifecycle order. Drain-finalized rows must also agree
+with the final stop status for `drain_timed_out`, `health`, and `error_code`;
+timeout rows must carry `forced_finalize_requested=true`,
+`health=critical`, and `error_code=drain_timeout`, and forced-finalize rows
+must identify the `stream_shutdown` action.
+`citrus_completion_notify` runs additionally require the final stop metadata
+and those socket/lifecycle events to show `method=citrus_completion` and
+`command_source=citrus` / socket `source=citrus`. Use
 `--allow-orange-drain-timeout` only for diagnostic runs where the timeout is an
 expected observation rather than a pass/fail gate. That flag does not allow an
 inconsistent timeout status: if `drain_timed_out=true`, the orchestrator still
-requires `forced_finalize_requested=true`, and once Orange reports
+requires request-specific `recording_drain_timeout` and
+`recording_drain_forced_finalize_requested` event-log rows,
+`forced_finalize_requested=true`, `ack_state=failed_timeout`,
+`error_code=drain_timeout`, and lifecycle row ordering from stop trigger
+through timeout, forced-finalize request, and drain finalization. Conversely,
+request-specific timeout or forced-finalize rows are treated as contradictory
+if the final Orange stop status does not report the matching timeout and
+forced-finalize flags. The status-only check also rejects
+`ack_state=failed_timeout`, forced-finalize flags, or
+`state=finalized_after_drain_timeout` unless `drain_timed_out=true`. Once Orange reports
 `finalized_after_drain_timeout` it also requires
-`forced_finalize_stream_stop_requested=true`.
+`forced_finalize_stream_stop_requested=true`. The artifact validator applies
+the same invariant to persisted `recording.control`: forced-finalize fields
+are timeout-only, and completed timeouts must persist both the forced
+stream-stop marker and `last_event="finalized_after_drain_timeout"`.
 
 When Orange itself sees a local-control drain exceed
 `ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS` /

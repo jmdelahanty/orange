@@ -333,7 +333,7 @@ scripts/run_orange_citrus_fourcam_orchestrator.sh \
   --citrus-run-seconds 6
 ```
 
-Manual Orange GUI session with Citrus/STOP ALL local-control stop enabled:
+Manual Orange GUI session with Citrus/STOP ALL completion-stop enabled:
 
 ```bash
 cd /home/jeremy/orange-gop-split-a16
@@ -344,13 +344,21 @@ DISPLAY=:1 \
   ./scripts/run_gui_fourcam_external_ipc_validation.sh \
     --hidden-crop-preview \
     --citrus-display-safe \
-    --manual-local-control
+    --manual-citrus-completion-control
 ```
 
-This leaves recording start operator-owned in the GUI, enables Orange
-`citrus_completion` / recording-stop local control, and keeps Orange open after
-finalization. Use this mode for the manual Citrus STOP ALL validation; a plain
-manual GUI launch leaves those stop gates disabled.
+This sets `ORANGE_GUI_AUTORUN=0`, disables every autorun sub-action, sets
+`ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0`, enables Orange
+`citrus_completion` local control without enabling generic `stop_recording`,
+and keeps Orange open after finalization. Use this mode for the manual Citrus
+STOP ALL validation when you want launcher-level overrides independent of app
+config. A plain manual GUI launch uses `gui.local_control` from app config; on
+`pancake0`, the installed app config currently enables Citrus completion-stop
+while keeping socket `start_recording` and generic `stop_recording` disabled.
+Citrus can also source the matching notify settings from
+`/home/jeremy/citrus/system_config.yml` under
+`citrus_runtime.orange_completion`; the handoff env export remains a useful
+per-run override/check for the Orange socket and grace seconds.
 
 After clicking STOP ALL in Citrus and waiting for Orange finalization, validate
 the stopped-terminal control metadata with:
@@ -361,7 +369,22 @@ scripts/validate_gui_ptp_recording.py --latest-complete \
   --expect-local-control-stop-command-source citrus \
   --expect-local-control-stop-terminal-state stopped \
   --expect-local-control-stop-reason stopped_by_local_control \
-  --expect-local-control-stop-ack-state executed
+  --expect-local-control-stop-ack-state executed \
+  --expect-local-control-generic-stop-enabled 0 \
+  --expect-local-control-citrus-stop-enabled 1 \
+  --require-orange-local-control-event-log
+```
+
+The shorter equivalent is:
+
+```bash
+scripts/validate_gui_citrus_completion_recording.py --stop-all
+```
+
+For a natural Citrus protocol finish, use:
+
+```bash
+scripts/validate_gui_citrus_completion_recording.py --natural-completion
 ```
 
 Earlier GUI-only no-lens-safe single-clip run:
@@ -486,12 +509,23 @@ without sending its own Orange stop request, and validates that
 the final Orange status before artifact validation and records
 `orange.local_control_citrus_notify_stop_status_check` in the combined summary.
 When Orange local-control event-log evidence is required, the event-log gate
-also verifies that the start request has accepted `ok=true` socket and
-GUI-trigger evidence. It then checks the accepted stop socket row plus the
-stop-trigger and drain-finalized GUI lifecycle events for the final Orange stop
-request id against Orange's final stop method/source, operation id, and
-terminal metadata. For this direct-notifier profile, those stop rows must carry
-the Citrus completion method/source.
+also verifies that the start request has accepted `ok=true` socket with
+`queued_for_gui_thread=true`, GUI-thread `gui_command_accepted` with
+`start_enabled=true`, `recording_start_queued`, and GUI-trigger evidence. It
+then checks the accepted stop socket row with `queued_for_gui_thread=true`,
+`gui_command_accepted` with the relevant stop gate enabled
+(`stop_enabled=true` for `stop_recording`, or `citrus_completion_enabled=true`
+for Citrus-owned completion stop), stop-scheduled, stop-trigger, and
+drain-finalized GUI lifecycle events for the final Orange stop request id
+against Orange's final stop method/source, operation id, and terminal metadata.
+The summarized row indexes must show socket acceptance before GUI acceptance,
+GUI acceptance before start queueing, start queueing before start trigger, and
+stop acceptance before stop scheduling, stop scheduling before stop trigger,
+and stop trigger before finalization. For this direct-notifier profile, those
+stop rows must carry the Citrus completion method/source. Timeout and
+forced-finalize evidence, when present, is checked against the same stop
+request id and must appear between stop trigger and drain finalization in
+timeout -> forced-finalize order.
 
 To run the same path as a STOP ALL-like diagnostic where Citrus stops itself
 before notifying Orange, add a finite Citrus run duration:

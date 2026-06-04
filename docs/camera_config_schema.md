@@ -3,12 +3,15 @@
 ## Identifier
 
 - `schema_id = "orange.camera.config"`
-- `schema_version = 3`
+- `schema_version = 4`
 
 ## Compatibility
 
 - Legacy camera configs without schema metadata still load.
-- Saving a camera config rewrites it into schema version 3.
+- Saving a camera config rewrites it into schema version 4.
+- `source_gpu_id` is the schema-v4 GPU placement field. Legacy configs may use
+  `gpu_id`; Orange accepts it as an alias while loading, but saved configs use
+  `source_gpu_id`.
 - Explicit config metadata wins. If `camera_scan_type` or `gpio_connector_variant` is missing, Orange tries to infer it from `device_model_name`.
 - The current operator-facing behavior and recipe expansions are documented in [camera_gpio_configuration_guide.md](/home/jeremy/orange-jeremy/docs/camera_gpio_configuration_guide.md).
 
@@ -24,9 +27,10 @@ Existing image and lens fields remain at the top level:
 - `exposure`
 - `pixel_format`
 - `color_temp`
-- `gpu_id`
+- `source_gpu_id`
 - `gpu_direct`
 - `focus_uart_bootstrap`
+- `lens_control_enabled`
 - `color`
 - `focus`
 - `iris`
@@ -198,7 +202,7 @@ Notes:
 }
 ```
 
-Supported node types in schema version 3:
+Supported node types in schema version 3 and later:
 
 - `enum`
 - `bool`
@@ -209,6 +213,37 @@ Runtime behavior:
 - Each requested node is applied by name during camera open.
 - Missing nodes or failed writes are treated as configuration errors.
 - `gpio.nodes` is generic and camera-specific; recipe validation does not guarantee that ad hoc node writes are valid on every model.
+
+## `recording`
+
+```json
+"recording": {
+  "preferred_sink_mode": "external_ipc",
+  "profile_name": "fred_single_session_hevc_250fps_p1",
+  "encode": {
+    "codec": "hevc",
+    "preset": "p1",
+    "gop_length": 25
+  }
+}
+```
+
+Notes:
+
+- `preferred_sink_mode` is a camera-profile preference for GUI recording
+  sessions. Supported values are `real`, `external_ipc`, `default`, `auto`,
+  `app`, or an empty string.
+- `default`, `auto`, `app`, and empty string mean no camera-level preference.
+- Environment still wins: `ORANGE_GUI_RECORDING_SINK_MODE` overrides camera and
+  app config.
+- Explicit app config still wins: `recording.sink_mode` in the app config
+  overrides camera preferences.
+- If no environment or app-level sink is set, the GUI resolves the session sink
+  from the selected cameras. Any selected recording camera that prefers
+  `external_ipc` makes the session use `external_ipc`.
+- Use `preferred_sink_mode = "external_ipc"` for high-throughput camera
+  profiles where process-isolated recording is the normal performance path,
+  including single-camera profiles such as `Cam2012632 @ 250 fps`.
 
 ## `crop_pipeline`
 
@@ -238,12 +273,33 @@ Notes:
 - Use `Save to config` from the camera properties panel to persist the currently
   selected session crop size back to a camera JSON.
 
+## Lens Control
+
+```json
+"lens_control_enabled": true,
+"focus_uart_bootstrap": false,
+"focus": 345,
+"iris": 0
+```
+
+Notes:
+
+- `lens_control_enabled` defaults to `true` for legacy configs.
+- Set `lens_control_enabled = false` for lensless cameras or cameras whose
+  mounted optics should not receive EVT `Focus`/`Iris` node writes.
+- When disabled, Orange skips startup focus/iris writes in
+  `open_camera_with_params` and ignores GUI focus/iris slider writes for that
+  camera.
+- `focus_uart_bootstrap` only controls the optional UART bootstrap path for
+  focus range discovery. It does not, by itself, disable ordinary focus/iris
+  writes.
+
 ## Example
 
 ```json
 {
   "schema_id": "orange.camera.config",
-  "schema_version": 1,
+  "schema_version": 4,
   "device_model_name": "HB-7000SC",
   "device_serial_number": "2002496",
   "camera_scan_type": "area_scan",
@@ -258,10 +314,11 @@ Notes:
   "focus": 345,
   "exposure": 2500,
   "pixel_format": "BayerRG8",
-  "gpu_id": 0,
+  "source_gpu_id": 0,
   "color_temp": "CT_3000K",
   "gpu_direct": false,
   "focus_uart_bootstrap": false,
+  "lens_control_enabled": true,
   "color": true,
   "offset_x": 0,
   "offset_y": 0,

@@ -127,6 +127,183 @@ def test_stream_and_telemetry_options_update_config() -> None:
         )
 
 
+def test_local_control_options_update_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.app.config",
+                    "schema_version": 1,
+                    "gui": {
+                        "local_control": {
+                            "recording_start_enabled": True,
+                            "recording_stop_enabled": False,
+                            "drain_timeout_seconds": 60,
+                        }
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "citrus_safe",
+                "--disable-local-control-recording-start",
+                "--enable-local-control-recording-stop",
+                "--enable-citrus-completion-stop",
+                "--enable-local-control-exit-after-finalize",
+                "--local-control-drain-timeout-seconds",
+                "75",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        local_control = json.loads(path.read_text(encoding="utf-8"))["gui"][
+            "local_control"
+        ]
+        require(
+            local_control["recording_start_enabled"] is False,
+            "local-control start should disable",
+        )
+        require(
+            local_control["recording_stop_enabled"] is True,
+            "local-control stop should enable",
+        )
+        require(
+            local_control["citrus_completion_stop_enabled"] is True,
+            "Citrus completion stop should enable",
+        )
+        require(
+            local_control["exit_after_finalize"] is True,
+            "exit-after-finalize should enable",
+        )
+        require(
+            local_control["drain_timeout_seconds"] == 75,
+            "drain timeout should update",
+        )
+
+
+def test_manual_citrus_completion_control_profile_updates_config() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_id": "orange.app.config",
+                    "schema_version": 1,
+                    "gui": {
+                        "local_control": {
+                            "recording_start_enabled": True,
+                            "recording_stop_enabled": True,
+                            "citrus_completion_stop_enabled": False,
+                            "exit_after_finalize": True,
+                            "drain_timeout_seconds": 5,
+                        }
+                    },
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "citrus_safe",
+                "--manual-citrus-completion-control",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        local_control = json.loads(path.read_text(encoding="utf-8"))["gui"][
+            "local_control"
+        ]
+        require(
+            local_control["recording_start_enabled"] is False,
+            "manual profile should disable socket recording start",
+        )
+        require(
+            local_control["recording_stop_enabled"] is False,
+            "manual profile should disable generic stop_recording",
+        )
+        require(
+            local_control["citrus_completion_stop_enabled"] is True,
+            "manual profile should enable Citrus completion stop",
+        )
+        require(
+            local_control["exit_after_finalize"] is False,
+            "manual profile should keep GUI open after finalization",
+        )
+        require(
+            local_control["drain_timeout_seconds"] == 60,
+            "manual profile should set the default drain timeout",
+        )
+
+
+def test_manual_citrus_completion_control_allows_explicit_drain_timeout() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "citrus_safe",
+                "--manual-citrus-completion-control",
+                "--local-control-drain-timeout-seconds",
+                "90",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        local_control = json.loads(path.read_text(encoding="utf-8"))["gui"][
+            "local_control"
+        ]
+        require(
+            local_control["citrus_completion_stop_enabled"] is True,
+            "manual profile should still enable Citrus completion stop",
+        )
+        require(
+            local_control["drain_timeout_seconds"] == 90,
+            "explicit drain timeout should override the manual profile default",
+        )
+
+
+def test_clear_local_control_drain_timeout() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--clear-local-control-drain-timeout-seconds",
+            ]
+        )
+
+        require(result.returncode == 0, f"update failed: {result.stderr}")
+        local_control = json.loads(path.read_text(encoding="utf-8"))["gui"][
+            "local_control"
+        ]
+        require(
+            local_control["drain_timeout_seconds"] is None,
+            "drain timeout should clear to null",
+        )
+
+
 def test_crop_options_update_config() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "default.json"
@@ -319,6 +496,25 @@ def test_invalid_stream_downsample_fails() -> None:
         )
 
 
+def test_invalid_local_control_drain_timeout_fails() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "default.json"
+
+        result = run_update(
+            [
+                "--config",
+                str(path),
+                "--profile",
+                "fast",
+                "--local-control-drain-timeout-seconds",
+                "86401",
+            ]
+        )
+
+        require(result.returncode != 0, "invalid drain timeout should fail")
+        require("must be in [0,86400]" in result.stderr, "failure should explain range")
+
+
 def test_invalid_crop_queue_depth_fails() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "default.json"
@@ -362,12 +558,17 @@ def main() -> int:
         test_citrus_safe_profile_updates_existing_config,
         test_explicit_values_override_profile_defaults,
         test_stream_and_telemetry_options_update_config,
+        test_local_control_options_update_config,
+        test_manual_citrus_completion_control_profile_updates_config,
+        test_manual_citrus_completion_control_allows_explicit_drain_timeout,
+        test_clear_local_control_drain_timeout,
         test_crop_options_update_config,
         test_clear_crop_recorder_gpu_config,
         test_clear_crop_frame_pool_size,
         test_dry_run_does_not_write,
         test_invalid_value_fails,
         test_invalid_stream_downsample_fails,
+        test_invalid_local_control_drain_timeout_fails,
         test_invalid_crop_queue_depth_fails,
         test_invalid_crop_recorder_gpu_fails,
     ]

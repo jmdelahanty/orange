@@ -36,7 +36,7 @@ std::string normalize_crop_recording_sink_mode(std::string value)
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
         return static_cast<char>(std::tolower(c));
     });
-    if (value.empty() || value == "real" || value == "in_process") {
+    if (value.empty() || value == "real" || value == "in_process" || value == "inprocess") {
         return "in_process";
     }
     if (value == "external_ipc") {

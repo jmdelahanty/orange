@@ -61,6 +61,7 @@
 #include <iomanip>
 #include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <cctype>
 #include <filesystem>
@@ -161,6 +162,8 @@ struct GuiRecordingRunState {
 
 struct GuiLocalControlStopSchedulerState {
     bool enabled = false;
+    bool stop_recording_enabled = false;
+    bool citrus_completion_enabled = false;
     bool scheduled = false;
     bool stop_triggered = false;
     bool drain_completed = false;
@@ -264,11 +267,11 @@ std::string gui_trim_ascii_whitespace(const std::string& input)
     return input.substr(start, end - start);
 }
 
-bool gui_env_flag_enabled(const char* name, const bool default_value = false)
+std::optional<bool> gui_env_flag_value(const char* name)
 {
     const char* raw = std::getenv(name);
     if (!raw || !*raw) {
-        return default_value;
+        return std::nullopt;
     }
     const std::string value = gui_lower_ascii(raw);
     if (value == "1" || value == "true" || value == "yes" || value == "on") {
@@ -279,7 +282,29 @@ bool gui_env_flag_enabled(const char* name, const bool default_value = false)
     }
     std::cerr << "[GUI][autorun] Ignoring invalid " << name << "='"
               << raw << "'" << std::endl;
+    return std::nullopt;
+}
+
+bool gui_env_flag_enabled(const char* name, const bool default_value = false)
+{
+    if (const std::optional<bool> value = gui_env_flag_value(name)) {
+        return *value;
+    }
     return default_value;
+}
+
+bool gui_env_flag_override(
+    const char* gui_name,
+    const char* generic_name,
+    const bool fallback)
+{
+    if (const std::optional<bool> value = gui_env_flag_value(gui_name)) {
+        return *value;
+    }
+    if (const std::optional<bool> value = gui_env_flag_value(generic_name)) {
+        return *value;
+    }
+    return fallback;
 }
 
 std::string gui_env_string_or_empty(const char* name)
@@ -290,28 +315,53 @@ std::string gui_env_string_or_empty(const char* name)
 
 bool gui_local_control_disabled()
 {
-    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_DISABLE", false) ||
-           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_DISABLE", false);
+    return gui_env_flag_override(
+        "ORANGE_GUI_LOCAL_CONTROL_DISABLE",
+        "ORANGE_LOCAL_CONTROL_DISABLE",
+        false);
 }
 
-bool gui_local_control_recording_stop_enabled()
+bool gui_local_control_stop_recording_enabled(
+    const AppStorageConfig* app_storage_config)
 {
-    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP", false) ||
-           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP", false) ||
-           gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP", false) ||
-           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP", false);
+    return gui_env_flag_override(
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP",
+        "ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP",
+        app_storage_config &&
+            app_storage_config->gui_local_control_recording_stop_enabled);
 }
 
-bool gui_local_control_recording_start_enabled()
+bool gui_local_control_citrus_completion_stop_enabled(
+    const AppStorageConfig* app_storage_config)
 {
-    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START", false) ||
-           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START", false);
+    if (gui_local_control_stop_recording_enabled(app_storage_config)) {
+        return true;
+    }
+    return gui_env_flag_override(
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP",
+        "ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP",
+        app_storage_config &&
+            app_storage_config->gui_local_control_citrus_completion_stop_enabled);
 }
 
-bool gui_local_control_exit_after_finalize_enabled()
+bool gui_local_control_recording_start_enabled(
+    const AppStorageConfig* app_storage_config)
 {
-    return gui_env_flag_enabled("ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE", false) ||
-           gui_env_flag_enabled("ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE", false);
+    return gui_env_flag_override(
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START",
+        "ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START",
+        app_storage_config &&
+            app_storage_config->gui_local_control_recording_start_enabled);
+}
+
+bool gui_local_control_exit_after_finalize_enabled(
+    const AppStorageConfig* app_storage_config)
+{
+    return gui_env_flag_override(
+        "ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE",
+        "ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE",
+        app_storage_config &&
+            app_storage_config->gui_local_control_exit_after_finalize);
 }
 
 std::string gui_local_control_socket_path()
@@ -356,6 +406,95 @@ void gui_log_local_control_event(
     }
 }
 
+void gui_copy_local_control_event_log_to_recording_session(
+    const std::string& event_log_path,
+    const std::string& recording_folder)
+{
+    if (event_log_path.empty() || recording_folder.empty()) {
+        return;
+    }
+
+    const std::filesystem::path source_path(event_log_path);
+    const std::filesystem::path recording_dir(recording_folder);
+    const std::filesystem::path target_path =
+        recording_dir / "orange_local_control.events.jsonl";
+    const std::filesystem::path manifest_path =
+        recording_dir / "recording_session.json";
+    if (!std::filesystem::exists(source_path) ||
+        !std::filesystem::exists(manifest_path)) {
+        return;
+    }
+
+    nlohmann::json manifest;
+    {
+        std::ifstream in(manifest_path);
+        if (!in) {
+            return;
+        }
+        try {
+            in >> manifest;
+        } catch (const std::exception& ex) {
+            std::cerr << "[GUI][local_control] failed to parse recording_session"
+                      << " for event-log capture path=" << manifest_path
+                      << " error=" << ex.what() << std::endl;
+            return;
+        }
+    }
+
+    nlohmann::json* control = nullptr;
+    if (manifest.contains("recording") &&
+        manifest["recording"].is_object() &&
+        manifest["recording"].contains("control") &&
+        manifest["recording"]["control"].is_object()) {
+        control = &manifest["recording"]["control"];
+    }
+    if (!control) {
+        return;
+    }
+
+    std::error_code copy_error;
+    std::filesystem::create_directories(recording_dir, copy_error);
+    copy_error.clear();
+    std::error_code equivalent_error;
+    const bool already_in_place =
+        std::filesystem::exists(target_path) &&
+        std::filesystem::equivalent(source_path, target_path, equivalent_error);
+    if (!already_in_place) {
+        std::filesystem::copy_file(
+            source_path,
+            target_path,
+            std::filesystem::copy_options::overwrite_existing,
+            copy_error);
+    }
+
+    nlohmann::json event_log = {
+        {"source_path", source_path.string()},
+        {"copied_path", target_path.string()},
+        {"relative_path", target_path.filename().string()},
+        {"copied", !copy_error},
+        {"copied_at_utc", get_current_utc_timestamp()},
+        {"copy_error", copy_error ? copy_error.message() : ""}
+    };
+    if (!copy_error) {
+        std::error_code size_error;
+        const auto size = std::filesystem::file_size(target_path, size_error);
+        if (!size_error) {
+            event_log["bytes"] = size;
+        }
+    }
+    (*control)["event_log"] = std::move(event_log);
+
+    std::string manifest_error;
+    if (!orange::session::write_recording_session_manifest(
+            manifest_path.string(),
+            manifest,
+            &manifest_error)) {
+        std::cerr << "[GUI][local_control] failed to update recording_session"
+                  << " with event-log capture path=" << manifest_path
+                  << " error=" << manifest_error << std::endl;
+    }
+}
+
 int gui_env_int(const char* name, const int default_value, const int min_value)
 {
     const char* raw = std::getenv(name);
@@ -377,13 +516,22 @@ int gui_env_int(const char* name, const int default_value, const int min_value)
     return static_cast<int>(parsed);
 }
 
-int gui_local_control_drain_timeout_seconds()
+int gui_local_control_drain_timeout_seconds(
+    const AppStorageConfig* app_storage_config)
 {
     if (const char* raw = std::getenv("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS");
         raw && *raw) {
         return gui_env_int("ORANGE_GUI_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
     }
-    return gui_env_int("ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
+    if (const char* raw = std::getenv("ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS");
+        raw && *raw) {
+        return gui_env_int("ORANGE_LOCAL_CONTROL_DRAIN_TIMEOUT_SECONDS", 60, 0);
+    }
+    if (app_storage_config &&
+        app_storage_config->gui_local_control_drain_timeout_seconds >= 0) {
+        return app_storage_config->gui_local_control_drain_timeout_seconds;
+    }
+    return 60;
 }
 
 int gui_local_control_diagnostic_finalize_stall_seconds()
@@ -3644,7 +3792,8 @@ orange::control::LocalControlRecordingStopSnapshot gui_control_stop_snapshot(
     const GuiLocalControlStopSchedulerState& scheduler)
 {
     orange::control::LocalControlRecordingStopSnapshot snapshot;
-    snapshot.enabled = scheduler.enabled;
+    snapshot.enabled = scheduler.stop_recording_enabled;
+    snapshot.citrus_completion_enabled = scheduler.citrus_completion_enabled;
     snapshot.scheduled = scheduler.scheduled;
     snapshot.stop_triggered = scheduler.stop_triggered;
     snapshot.grace_seconds = scheduler.grace_seconds;
@@ -3761,9 +3910,13 @@ void gui_reset_local_control_stop_scheduler_for_recording_start(
         return;
     }
     const bool enabled = scheduler->enabled;
+    const bool stop_recording_enabled = scheduler->stop_recording_enabled;
+    const bool citrus_completion_enabled = scheduler->citrus_completion_enabled;
     const double drain_timeout_seconds = scheduler->drain_timeout_seconds;
     *scheduler = GuiLocalControlStopSchedulerState{};
     scheduler->enabled = enabled;
+    scheduler->stop_recording_enabled = stop_recording_enabled;
+    scheduler->citrus_completion_enabled = citrus_completion_enabled;
     scheduler->drain_timeout_seconds = drain_timeout_seconds;
     gui_note_local_control_stop_event(scheduler, "recording_started");
 }
@@ -3860,7 +4013,11 @@ void gui_drain_local_control_commands(
             std::cout << " experiment_id=" << experiment_it->get<std::string>();
         }
         std::cout << " stop_enabled="
-                  << (stop_scheduler && stop_scheduler->enabled ? 1 : 0)
+                  << (stop_scheduler && stop_scheduler->stop_recording_enabled ? 1 : 0)
+                  << " stop_recording_enabled="
+                  << (stop_scheduler && stop_scheduler->stop_recording_enabled ? 1 : 0)
+                  << " citrus_completion_enabled="
+                  << (stop_scheduler && stop_scheduler->citrus_completion_enabled ? 1 : 0)
                   << " start_enabled="
                   << (start_request && start_request->enabled ? 1 : 0)
                   << std::endl;
@@ -3871,7 +4028,12 @@ void gui_drain_local_control_commands(
             {"operation_id", command.operation_id},
             {"command_source", command.source},
             {"received_at_utc", command.received_at_utc},
-            {"stop_enabled", stop_scheduler && stop_scheduler->enabled},
+            {"stop_enabled",
+             stop_scheduler && stop_scheduler->stop_recording_enabled},
+            {"stop_recording_enabled",
+             stop_scheduler && stop_scheduler->stop_recording_enabled},
+            {"citrus_completion_enabled",
+             stop_scheduler && stop_scheduler->citrus_completion_enabled},
             {"start_enabled", start_request && start_request->enabled},
         };
         const auto experiment_it_for_log = command.params.find("experiment_id");
@@ -3894,10 +4056,12 @@ void gui_drain_local_control_commands(
                     event_log_path,
                     {
                         {"event", "recording_start_ignored"},
+                        {"method", command.method},
                         {"request_id", command.request_id},
                         {"operation_id", command.operation_id},
                         {"command_source", command.source},
                         {"reason", "start_control_disabled"},
+                        {"received_at_utc", command.received_at_utc},
                     });
                 continue;
             }
@@ -3912,10 +4076,12 @@ void gui_drain_local_control_commands(
                     event_log_path,
                     {
                         {"event", "recording_start_ignored"},
+                        {"method", command.method},
                         {"request_id", command.request_id},
                         {"operation_id", command.operation_id},
                         {"command_source", command.source},
                         {"reason", "start_already_pending"},
+                        {"received_at_utc", command.received_at_utc},
                         {"pending_request_id", start_request->request_id},
                     });
                 continue;
@@ -3939,6 +4105,7 @@ void gui_drain_local_control_commands(
                 event_log_path,
                 {
                     {"event", "recording_start_queued"},
+                    {"method", "start_recording"},
                     {"request_id", start_request->request_id},
                     {"operation_id", start_request->operation_id},
                     {"command_source", start_request->source},
@@ -3954,7 +4121,11 @@ void gui_drain_local_control_commands(
         if (!stop_scheduler || !stop_command) {
             continue;
         }
-        if (!stop_scheduler->enabled) {
+        const bool method_stop_enabled =
+            command.method == "stop_recording"
+                ? stop_scheduler->stop_recording_enabled
+                : stop_scheduler->citrus_completion_enabled;
+        if (!method_stop_enabled) {
             gui_note_local_control_stop_event(stop_scheduler, "ignored_disabled");
             std::cout << "[GUI][local_control] recording stop ignored"
                       << " method=" << command.method
@@ -3969,6 +4140,7 @@ void gui_drain_local_control_commands(
                     {"operation_id", command.operation_id},
                     {"command_source", command.source},
                     {"reason", "stop_control_disabled"},
+                    {"received_at_utc", command.received_at_utc},
                 });
             continue;
         }
@@ -3987,6 +4159,7 @@ void gui_drain_local_control_commands(
                     {"operation_id", command.operation_id},
                     {"command_source", command.source},
                     {"reason", "orange_not_recording"},
+                    {"received_at_utc", command.received_at_utc},
                 });
             continue;
         }
@@ -4027,6 +4200,7 @@ void gui_drain_local_control_commands(
                     {"command_source", command.source},
                     {"existing_request_id", stop_scheduler->request_id},
                     {"policy", "earliest_deadline"},
+                    {"received_at_utc", command.received_at_utc},
                 });
             continue;
         }
@@ -4239,6 +4413,7 @@ void gui_poll_local_control_drain_timeout(
             {"experiment_id", stop_scheduler->experiment_id},
             {"terminal_state", stop_scheduler->terminal_state},
             {"reason", stop_scheduler->reason},
+            {"received_at_utc", stop_scheduler->received_at_utc},
             {"elapsed_seconds", elapsed},
             {"timeout_seconds", stop_scheduler->drain_timeout_seconds},
             {"active_recorders", active_recorders},
@@ -4295,6 +4470,7 @@ void gui_request_local_control_forced_finalize_if_needed(
             {"experiment_id", stop_scheduler->experiment_id},
             {"terminal_state", stop_scheduler->terminal_state},
             {"reason", stop_scheduler->reason},
+            {"received_at_utc", stop_scheduler->received_at_utc},
             {"forced_finalize_requested_at_utc",
              stop_scheduler->forced_finalize_requested_at_utc},
             {"action", "stream_shutdown"},
@@ -4305,7 +4481,8 @@ void gui_request_local_control_forced_finalize_if_needed(
 
 void gui_mark_local_control_drain_completed(
     GuiLocalControlStopSchedulerState* stop_scheduler,
-    const std::string& event_log_path)
+    const std::string& event_log_path,
+    const std::string& recording_folder)
 {
     if (!stop_scheduler || !stop_scheduler->stop_triggered) {
         return;
@@ -4336,11 +4513,15 @@ void gui_mark_local_control_drain_completed(
                 {"experiment_id", stop_scheduler->experiment_id},
                 {"terminal_state", stop_scheduler->terminal_state},
                 {"reason", stop_scheduler->reason},
+                {"received_at_utc", stop_scheduler->received_at_utc},
                 {"drain_timed_out", stop_scheduler->drain_timed_out},
                 {"drain_completed_at_utc", stop_scheduler->drain_completed_at_utc},
                 {"health", stop_scheduler->drain_timed_out ? "warning" : "ok"},
                 {"error_code", stop_scheduler->drain_timed_out ? "drain_timeout" : ""},
             });
+        gui_copy_local_control_event_log_to_recording_session(
+            event_log_path,
+            recording_folder);
     }
 }
 
@@ -6839,10 +7020,12 @@ bool gui_poll_local_control_start_request(
             event_log_path,
             {
                 {"event", "recording_start_ignored"},
+                {"method", "start_recording"},
                 {"request_id", request_id},
                 {"operation_id", operation_id},
                 {"command_source", start_request->source},
                 {"reason", reason},
+                {"received_at_utc", start_request->received_at_utc},
             });
     };
 
@@ -6901,10 +7084,12 @@ bool gui_poll_local_control_start_request(
         event_log_path,
         {
             {"event", started ? "recording_start_triggered" : "recording_start_failed"},
+            {"method", "start_recording"},
             {"request_id", request_id},
             {"operation_id", operation_id},
             {"command_source", start_request->source},
             {"reason", start_request->reason},
+            {"received_at_utc", start_request->received_at_utc},
         });
     return started;
 }
@@ -7147,14 +7332,19 @@ int main(int argc, char **args) {
     GuiRecordingRunState gui_recording_run;
     GuiLocalControlStartRequestState gui_local_control_start_request;
     gui_local_control_start_request.enabled =
-        gui_local_control_recording_start_enabled();
+        gui_local_control_recording_start_enabled(&app_storage_config);
     GuiLocalControlStopSchedulerState gui_local_control_stop_scheduler;
+    gui_local_control_stop_scheduler.stop_recording_enabled =
+        gui_local_control_stop_recording_enabled(&app_storage_config);
+    gui_local_control_stop_scheduler.citrus_completion_enabled =
+        gui_local_control_citrus_completion_stop_enabled(&app_storage_config);
     gui_local_control_stop_scheduler.enabled =
-        gui_local_control_recording_stop_enabled();
+        gui_local_control_stop_scheduler.stop_recording_enabled ||
+        gui_local_control_stop_scheduler.citrus_completion_enabled;
     gui_local_control_stop_scheduler.drain_timeout_seconds =
-        gui_local_control_drain_timeout_seconds();
+        gui_local_control_drain_timeout_seconds(&app_storage_config);
     const bool gui_local_control_exit_after_finalize =
-        gui_local_control_exit_after_finalize_enabled();
+        gui_local_control_exit_after_finalize_enabled(&app_storage_config);
     bool gui_local_control_exit_pending_after_finalize = false;
     bool gui_local_control_exit_stream_stop_requested = false;
     GuiDisplayFrameRateStats gui_display_frame_rate_stats;
@@ -7166,12 +7356,13 @@ int main(int argc, char **args) {
         control_options.event_log_path =
             gui_local_control_log_path(control_options.socket_path);
         gui_local_control_event_log_path = control_options.event_log_path;
-        control_options.allow_gui_lifecycle_commands =
-            gui_local_control_stop_scheduler.enabled;
+        control_options.allow_gui_lifecycle_commands = false;
         control_options.allow_gui_start_recording_commands =
             gui_local_control_start_request.enabled;
         control_options.allow_gui_stop_recording_commands =
-            gui_local_control_stop_scheduler.enabled;
+            gui_local_control_stop_scheduler.stop_recording_enabled;
+        control_options.allow_gui_citrus_completion_commands =
+            gui_local_control_stop_scheduler.citrus_completion_enabled;
         std::string control_error;
         if (!gui_local_control_server.Start(control_options, &control_error)) {
             std::cerr << "[GUI][local_control] failed to start: "
@@ -8731,7 +8922,8 @@ int main(int argc, char **args) {
                             gui_display_frame_rate_stats.Finish();
                             gui_mark_local_control_drain_completed(
                                 &gui_local_control_stop_scheduler,
-                                gui_local_control_event_log_path);
+                                gui_local_control_event_log_path,
+                                gui_recording_run.recording_folder);
                             std::cout << "[GUI][recording] Finalized recording session during stream shutdown."
                                       << std::endl;
                         }
@@ -8846,7 +9038,8 @@ int main(int argc, char **args) {
                 gui_mark_recording_finished(&gui_session_timing);
                 gui_mark_local_control_drain_completed(
                     &gui_local_control_stop_scheduler,
-                    gui_local_control_event_log_path);
+                    gui_local_control_event_log_path,
+                    gui_recording_run.recording_folder);
                 if (gui_local_control_exit_after_finalize &&
                     gui_local_control_stop_scheduler.stop_triggered) {
                     gui_local_control_exit_pending_after_finalize = true;

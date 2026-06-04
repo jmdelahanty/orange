@@ -30,6 +30,7 @@ struct AppStorageConfig {
     std::string default_detect_engine;
     std::string default_recording_root;
     std::string gui_recording_sink_mode = "real";
+    bool gui_recording_sink_mode_configured = false;
     int gui_recording_record_for_seconds = 0;
     int gui_recording_clip_seconds = 0;
     std::string gui_crop_recording_sink_mode = "in_process";
@@ -46,6 +47,11 @@ struct AppStorageConfig {
     int gui_swap_interval = -1;
     int gui_frame_max_fps = -1;
     bool gui_show_speed_graphs = false;
+    bool gui_local_control_recording_start_enabled = false;
+    bool gui_local_control_recording_stop_enabled = false;
+    bool gui_local_control_citrus_completion_stop_enabled = false;
+    bool gui_local_control_exit_after_finalize = false;
+    int gui_local_control_drain_timeout_seconds = -1;
     bool write_local_pointer = true;
     std::string canonical_pointer_root;
     bool write_run_pointer = true;

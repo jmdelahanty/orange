@@ -169,7 +169,28 @@ Orange's local-control JSONL event log by default and uses an operation-scoped
 `/tmp/<operation_id>_orange_local_control.events.jsonl` path, so a profile run
 must show both socket-level requests and GUI-thread start/stop/drain lifecycle
 events for the operation before it can pass without copying stale rows from an
-older shared socket log. For bounded local-control smokes,
+older shared socket log. The compact summary keeps socket/GUI timestamps and
+timeout/health lifecycle details so the copied `orchestrator_summary.json`
+can be used as a first-pass audit artifact before opening the raw JSONL. The
+start and stop requests must show both an accepted socket response with
+`queued_for_gui_thread=true` and a GUI-thread `gui_command_accepted` row with
+the relevant local-control gate enabled before their trigger/finalize lifecycle
+rows; the start request must also show a `recording_start_queued` row before
+the start trigger, and stop requests must show `recording_stop_scheduled`
+before the stop trigger. The start trigger is required to identify
+`method=start_recording`, matching the accepted socket request. The event-log
+summary preserves row indexes, and the gate uses them to reject out-of-order
+command acceptance, start queueing, stop scheduling, trigger, and finalization
+evidence. The same gate checks final drain status consistency: finalized rows
+must match final `drain_timed_out`, `health`, and `error_code` status, and
+timeout rows must carry the expected forced-finalize timeout telemetry. The
+check result includes a compact
+`request_chains[]` audit for the expected start and stop request ids, including
+row indexes, presence booleans, observed method/source values, socket ACK
+booleans, terminal metadata, enabled-gate values, and any timeout /
+forced-finalize evidence tied to that stop request, so the copied orchestrator
+summary can be inspected without manually filtering the raw event arrays.
+For bounded local-control smokes,
 `--citrus-run-seconds <seconds>` is owned by the orchestrator: it starts Citrus
 through local control, waits for active/armed state, sends `stop_experiment`
 after that active runtime, and only then asks Orange to stop/drain/finalize.

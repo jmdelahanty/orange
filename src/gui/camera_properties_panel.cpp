@@ -257,12 +257,18 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             update_gain_value(&ecams[selected_camera].camera, slider_gain, &cameras_params[selected_camera]);
         }
 
+        if (!cameras_params[selected_camera].lens_control_enabled) {
+            ImGui::BeginDisabled();
+        }
         if (ImGui::SliderInt("Focus", &slider_focus, cameras_params[selected_camera].focus_min, cameras_params[selected_camera].focus_max, "%d")) {
             update_focus_value(&ecams[selected_camera].camera, slider_focus, &cameras_params[selected_camera]);
         }
 
         if (ImGui::SliderInt("Iris", &slider_iris, cameras_params[selected_camera].iris_min, cameras_params[selected_camera].iris_max, "%d")) {
             update_iris_value(&ecams[selected_camera].camera, slider_iris, &cameras_params[selected_camera]);
+        }
+        if (!cameras_params[selected_camera].lens_control_enabled) {
+            ImGui::EndDisabled();
         }
 
         if (ImGui::SliderInt("Exposure", &slider_exposure, cameras_params[selected_camera].exposure_min, cameras_params[selected_camera].exposure_max, "%d")) {
@@ -276,7 +282,7 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         }
 
         ImGui::Separator();
-        ImGui::Text("Schema: orange.camera.config v3");
+        ImGui::Text("Schema: orange.camera.config v4");
         ImGui::TextWrapped("Device model: %s", cameras_params[selected_camera].device_model.empty()
                                                    ? "(unknown)"
                                                    : cameras_params[selected_camera].device_model.c_str());
@@ -287,7 +293,15 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         ImGui::TextDisabled("Edit crop settings in the main Orange panel; Save to config persists them for this camera.");
 
         ImGui::Separator();
+        ImGui::Checkbox("Lens Control", &cameras_params[selected_camera].lens_control_enabled);
+        if (!cameras_params[selected_camera].lens_control_enabled) {
+            ImGui::BeginDisabled();
+        }
         ImGui::Checkbox("Focus UART Bootstrap", &cameras_params[selected_camera].focus_uart_bootstrap);
+        if (!cameras_params[selected_camera].lens_control_enabled) {
+            ImGui::EndDisabled();
+            ImGui::TextDisabled("Lens control is disabled; startup focus/iris writes are skipped.");
+        }
         const std::string previous_sync_mode = cameras_params[selected_camera].sync_mode;
         if (combo_select_string("Sync Mode",
                                 &cameras_params[selected_camera].sync_mode,

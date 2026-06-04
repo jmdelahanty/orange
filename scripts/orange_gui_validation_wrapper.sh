@@ -221,7 +221,7 @@ validate_env_item() {
       }
       ;;
     ORANGE_GUI_RECORDING_SINK_MODE|ORANGE_CROP_RECORDING_SINK_MODE)
-      [[ "$value" =~ ^(real|external_ipc|in_process|none|disabled|preprocess_only)$ ]] || {
+      [[ "$value" =~ ^(real|external_ipc|in_process|inprocess|none|disabled|preprocess_only)$ ]] || {
         echo "Invalid $key: $value" >&2
         return 2
       }

@@ -85,6 +85,79 @@ def test_drain_timeout_requests_forced_stream_shutdown() -> None:
     )
 
 
+def test_local_control_env_flags_override_app_config() -> None:
+    orange = read("src/orange.cpp")
+    override_body = function_body(orange, "gui_env_flag_override")
+    require(
+        "gui_env_flag_value(gui_name)" in override_body,
+        "local-control env override helper must inspect GUI-specific env first",
+    )
+    require(
+        "gui_env_flag_value(generic_name)" in override_body,
+        "local-control env override helper must inspect generic env second",
+    )
+    require(
+        "return fallback;" in override_body,
+        "local-control env override helper must fall back to app config/default",
+    )
+
+    disabled_body = function_body(orange, "gui_local_control_disabled")
+    require(
+        "gui_env_flag_override(\n"
+        "        \"ORANGE_GUI_LOCAL_CONTROL_DISABLE\",\n"
+        "        \"ORANGE_LOCAL_CONTROL_DISABLE\"" in disabled_body,
+        "GUI-specific local-control disable flag must override stale generic disable env",
+    )
+    require(
+        "gui_env_flag_enabled(\"ORANGE_GUI_LOCAL_CONTROL_DISABLE\", false) ||"
+        not in disabled_body,
+        "local-control disable must not OR GUI-specific and generic env flags",
+    )
+
+    stop_enabled_body = function_body(orange, "gui_local_control_stop_recording_enabled")
+    require(
+        "gui_env_flag_override(\n"
+        "        \"ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP\",\n"
+        "        \"ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_STOP\"" in stop_enabled_body,
+        "generic stop_recording gate must allow explicit env false to override app config true",
+    )
+    require(
+        "gui_env_flag_enabled(\"ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP\", false) ||"
+        not in stop_enabled_body,
+        "generic stop_recording gate must not OR env and app config",
+    )
+
+    citrus_enabled_body = function_body(
+        orange,
+        "gui_local_control_citrus_completion_stop_enabled",
+    )
+    require(
+        "if (gui_local_control_stop_recording_enabled(app_storage_config))" in citrus_enabled_body,
+        "generic stop_recording enabled should continue to imply Citrus completion stop",
+    )
+    require(
+        "gui_env_flag_override(\n"
+        "        \"ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP\",\n"
+        "        \"ORANGE_LOCAL_CONTROL_ENABLE_CITRUS_STOP\"" in citrus_enabled_body,
+        "Citrus-only stop gate must allow explicit env false to override app config true",
+    )
+
+    start_enabled_body = function_body(orange, "gui_local_control_recording_start_enabled")
+    require(
+        "gui_env_flag_override(\n"
+        "        \"ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START\",\n"
+        "        \"ORANGE_LOCAL_CONTROL_ENABLE_RECORDING_START\"" in start_enabled_body,
+        "recording start gate must allow explicit env false to override app config true",
+    )
+    exit_enabled_body = function_body(orange, "gui_local_control_exit_after_finalize_enabled")
+    require(
+        "gui_env_flag_override(\n"
+        "        \"ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE\",\n"
+        "        \"ORANGE_LOCAL_CONTROL_EXIT_AFTER_FINALIZE\"" in exit_enabled_body,
+        "exit-after-finalize gate must allow explicit env false to override app config true",
+    )
+
+
 def test_stop_commands_keep_gui_thread_lifecycle_authority() -> None:
     orange = read("src/orange.cpp")
     body = function_body(orange, "gui_drain_local_control_commands")
@@ -142,6 +215,7 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
     orange = read("src/orange.cpp")
     manifest_body = function_body(orange, "gui_local_control_stop_manifest_control")
     for needle, description in (
+        ('{"received_at_utc", scheduler.received_at_utc}', "request receive timestamp"),
         ('{"drain_completed", false}', "initial drain-completed state"),
         ('{"drain_timed_out", scheduler.drain_timed_out}', "initial drain-timeout state"),
         (
@@ -186,6 +260,130 @@ def test_recording_session_stop_control_carries_drain_evidence() -> None:
         "gui_update_local_control_stop_manifest_for_finalized_drain(run);" in finalize_body,
         "recording finalizer must update stop-control evidence before writing the manifest",
     )
+    copy_body = function_body(orange, "gui_copy_local_control_event_log_to_recording_session")
+    for needle, description in (
+        ('"orange_local_control.events.jsonl"', "artifact-local event-log filename"),
+        ('(*control)["event_log"] = std::move(event_log);', "manifest event-log metadata patch"),
+        ('{"relative_path", target_path.filename().string()}', "relative event-log path"),
+        ('{"copied", !copy_error}', "copy status"),
+        ('event_log["bytes"] = size;', "copied byte count"),
+    ):
+        require(needle in copy_body, f"event-log capture helper must write {description}")
+    drain_body = function_body(orange, "gui_mark_local_control_drain_completed")
+    require(
+        "gui_copy_local_control_event_log_to_recording_session(\n"
+        "            event_log_path,\n"
+        "            recording_folder);"
+        in drain_body,
+        "drain-finalized local-control path must capture the event log into the recording folder",
+    )
+
+
+def test_local_control_event_log_preserves_request_provenance() -> None:
+    orange = read("src/orange.cpp")
+
+    drain_body = function_body(orange, "gui_drain_local_control_commands")
+    for needle, description in (
+        ('{"event", "recording_start_queued"}', "start queued event"),
+        ('{"method", "start_recording"}', "start queued method"),
+        (
+            '{"received_at_utc", start_request->received_at_utc}',
+            "start queued receive timestamp",
+        ),
+        ('{"event", "recording_stop_scheduled"}', "stop scheduled event"),
+        (
+            '{"received_at_utc", stop_scheduler->received_at_utc}',
+            "stop scheduled receive timestamp",
+        ),
+        ('{"event", "recording_stop_schedule_kept"}', "stop schedule-kept event"),
+        (
+            '{"received_at_utc", command.received_at_utc}',
+            "ignored/schedule-kept command receive timestamp",
+        ),
+    ):
+        require(needle in drain_body, f"GUI command drain must log {description}")
+
+    start_body = function_body(orange, "gui_poll_local_control_start_request")
+    for needle, description in (
+        (
+            '{"event", started ? "recording_start_triggered" : "recording_start_failed"}',
+            "start trigger/failure event",
+        ),
+        ('{"method", "start_recording"}', "start trigger/failure method"),
+        (
+            '{"received_at_utc", start_request->received_at_utc}',
+            "start trigger/failure receive timestamp",
+        ),
+    ):
+        require(needle in start_body, f"start polling must log {description}")
+
+    stop_body = function_body(orange, "gui_poll_local_control_stop_scheduler")
+    for needle, description in (
+        ('{"event", "recording_stop_triggered"}', "stop triggered event"),
+        (
+            '{"received_at_utc", stop_scheduler->received_at_utc}',
+            "stop triggered receive timestamp",
+        ),
+    ):
+        require(needle in stop_body, f"stop polling must log {description}")
+
+    timeout_body = function_body(orange, "gui_poll_local_control_drain_timeout")
+    for needle, description in (
+        ('{"event", "recording_drain_timeout"}', "drain-timeout event"),
+        (
+            '{"received_at_utc", stop_scheduler->received_at_utc}',
+            "drain-timeout receive timestamp",
+        ),
+        (
+            '{"forced_finalize_requested", stop_scheduler->forced_finalize_requested}',
+            "drain-timeout forced-finalize flag",
+        ),
+        ('{"health", "critical"}', "drain-timeout critical health"),
+        ('{"error_code", "drain_timeout"}', "drain-timeout error code"),
+    ):
+        require(needle in timeout_body, f"drain-timeout polling must log {description}")
+
+    force_body = function_body(orange, "gui_request_local_control_forced_finalize_if_needed")
+    for needle, description in (
+        (
+            '{"event", "recording_drain_forced_finalize_requested"}',
+            "forced-finalize event",
+        ),
+        (
+            '{"received_at_utc", stop_scheduler->received_at_utc}',
+            "forced-finalize receive timestamp",
+        ),
+        ('{"action", "stream_shutdown"}', "forced-finalize stream-shutdown action"),
+        ('{"health", "critical"}', "forced-finalize critical health"),
+        ('{"error_code", "drain_timeout"}', "forced-finalize error code"),
+    ):
+        require(needle in force_body, f"forced-finalize helper must log {description}")
+
+    finalized_body = function_body(orange, "gui_mark_local_control_drain_completed")
+    for needle, description in (
+        ('{"event", "recording_drain_finalized"}', "drain-finalized event"),
+        (
+            '{"received_at_utc", stop_scheduler->received_at_utc}',
+            "drain-finalized receive timestamp",
+        ),
+        (
+            '{"drain_completed_at_utc", stop_scheduler->drain_completed_at_utc}',
+            "drain completion timestamp",
+        ),
+        (
+            '{"drain_timed_out", stop_scheduler->drain_timed_out}',
+            "drain-finalized timeout flag",
+        ),
+        (
+            '{"health", stop_scheduler->drain_timed_out ? "warning" : "ok"}',
+            "drain-finalized health",
+        ),
+        (
+            '{"error_code", stop_scheduler->drain_timed_out ? "drain_timeout" : ""}',
+            "drain-finalized error code",
+        ),
+    ):
+        require(needle in finalized_body, f"drain completion must log {description}")
 
 
 def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
@@ -230,9 +428,11 @@ def test_diagnostic_finalize_stall_can_exercise_drain_timeout() -> None:
 def main() -> int:
     tests = [
         test_drain_timeout_requests_forced_stream_shutdown,
+        test_local_control_env_flags_override_app_config,
         test_stop_commands_keep_gui_thread_lifecycle_authority,
         test_completion_and_stop_grace_defaults_are_distinct,
         test_recording_session_stop_control_carries_drain_evidence,
+        test_local_control_event_log_preserves_request_provenance,
         test_diagnostic_finalize_stall_can_exercise_drain_timeout,
     ]
     for test in tests:

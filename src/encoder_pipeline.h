@@ -112,6 +112,7 @@ struct CameraRecordingResourcesConfig {
 
 struct CameraRecordingConfig {
     std::string profile_name;
+    std::string preferred_sink_mode;
     CameraRecordingEncodeConfig encode;
     CameraRecordingOutputConfig output;
     RecordingStrategyConfig strategy;

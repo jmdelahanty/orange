@@ -309,15 +309,67 @@ def test_manual_local_control_profile_disables_autorun_and_enables_stop() -> Non
     for expected in [
         "ORANGE_GUI_AUTORUN=0",
         "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_STREAM=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_RECORD=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_YOLO=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_CROP=0",
+        "ORANGE_GUI_AUTORUN_START_RECORDING=0",
         "ORANGE_GUI_LOCAL_CONTROL_DISABLE=0",
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0",
         "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1",
         "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1",
         "ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0",
     ]:
         require(expected in result.stdout, f"manual local-control env should include {expected}")
     require(
-        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=1" not in result.stdout,
-        "manual local-control profile should leave recording start operator-owned",
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=<app config/default>"
+        not in result.stdout,
+        "manual local-control profile should not defer recording start gate to app config",
+    )
+
+
+def test_manual_citrus_completion_profile_disables_autorun_and_enables_only_citrus_stop() -> None:
+    result = run_profile(
+        ["--manual-citrus-completion-control", "--print-exec-env-only"]
+    )
+    require(result.returncode == 0, f"profile failed: {result.stderr}")
+    for expected in [
+        "ORANGE_GUI_AUTORUN=0",
+        "ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_STREAM=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_RECORD=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_YOLO=0",
+        "ORANGE_GUI_AUTORUN_ENABLE_CROP=0",
+        "ORANGE_GUI_AUTORUN_START_RECORDING=0",
+        "ORANGE_GUI_LOCAL_CONTROL_DISABLE=0",
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0",
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=0",
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1",
+        "ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0",
+    ]:
+        require(
+            expected in result.stdout,
+            f"manual Citrus-completion env should include {expected}",
+        )
+    require(
+        "ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=<app config/default>"
+        not in result.stdout,
+        "manual Citrus-completion profile should not defer recording start gate to app config",
+    )
+
+
+def test_manual_local_control_options_conflict() -> None:
+    result = run_profile(
+        [
+            "--manual-local-control",
+            "--manual-citrus-completion-control",
+            "--print-exec-env-only",
+        ]
+    )
+    require(result.returncode != 0, "conflicting manual local-control modes should fail")
+    require(
+        "conflicts" in result.stderr,
+        "conflicting manual local-control modes should explain the conflict",
     )
 
 
@@ -453,6 +505,8 @@ def main() -> int:
         test_disabled_preview_profile_validate_only,
         test_print_exec_env_only_contains_profile_env,
         test_manual_local_control_profile_disables_autorun_and_enables_stop,
+        test_manual_citrus_completion_profile_disables_autorun_and_enables_only_citrus_stop,
+        test_manual_local_control_options_conflict,
         test_overrides_are_preserved,
         test_empty_isolation_overrides_disable_validation_gates,
         test_yolo_affinity_overrides_are_preserved_in_exec_env,

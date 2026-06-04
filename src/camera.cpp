@@ -1152,11 +1152,23 @@ void update_color_temperature(Emergent::CEmergentCamera *camera, std::string col
 
 void update_focus_value(Emergent::CEmergentCamera *camera, int focus_value, CameraParams *camera_params)
 {
+    if (camera_params && !camera_params->lens_control_enabled) {
+        std::cout << camera_params->camera_serial
+                  << " [update_focus_value] Lens control disabled; skipping focus write."
+                  << std::endl;
+        return;
+    }
     (void)set_focus_value_checked(camera, focus_value, camera_params, "update_focus_value");
 }
 
 void update_iris_value(Emergent::CEmergentCamera *camera, int iris_value, CameraParams *camera_params)
 {
+    if (camera_params && !camera_params->lens_control_enabled) {
+        std::cout << camera_params->camera_serial
+                  << " [update_iris_value] Lens control disabled; skipping iris write."
+                  << std::endl;
+        return;
+    }
     (void)set_iris_value_checked(camera, iris_value, camera_params, "update_iris_value");
 }
 
@@ -1236,16 +1248,106 @@ void update_exposure_framerate_value(Emergent::CEmergentCamera *camera, int expo
 
 void update_frame_rate_value(Emergent::CEmergentCamera *camera, int frame_rate_val, CameraParams *camera_params)
 {
-    get_camera_uint32_param_range(
+    if (camera == nullptr || camera_params == nullptr) {
+        return;
+    }
+
+    const unsigned int requested =
+        frame_rate_val < 0 ? 0u : static_cast<unsigned int>(frame_rate_val);
+    const bool have_range = get_camera_uint32_param_range(
         camera,
         "FrameRate",
         &camera_params->frame_rate_min,
         &camera_params->frame_rate_max,
         &camera_params->frame_rate_inc);
-    if (frame_rate_val >= camera_params->frame_rate_min && frame_rate_val <= camera_params->frame_rate_max)
-    {
-        EVT_CameraSetUInt32Param(camera, "FrameRate", frame_rate_val);
-        camera_params->frame_rate = frame_rate_val;
+    if (!have_range) {
+        std::cout << camera_params->camera_serial
+                  << " [update_frame_rate_value] FrameRate set FAIL: unable to query range."
+                  << std::endl;
+        return;
+    }
+
+    auto range_string = [&]() {
+        std::ostringstream oss;
+        oss << "[" << camera_params->frame_rate_min << ","
+            << camera_params->frame_rate_max << "]";
+        if (camera_params->frame_rate_inc > 0) {
+            oss << " inc=" << camera_params->frame_rate_inc;
+        }
+        return oss.str();
+    };
+
+    auto update_readback = [&]() -> bool {
+        unsigned int readback = 0;
+        const EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, "FrameRate", &readback);
+        if (get_err != EVT_SUCCESS) {
+            std::cout << camera_params->camera_serial
+                      << " [update_frame_rate_value] FrameRate readback failed: "
+                      << get_evt_error_string(get_err)
+                      << std::endl;
+            return false;
+        }
+        camera_params->frame_rate = readback;
+        return true;
+    };
+
+    if (requested < camera_params->frame_rate_min ||
+        requested > camera_params->frame_rate_max) {
+        const bool readback_ok = update_readback();
+        std::cout << camera_params->camera_serial
+                  << " [update_frame_rate_value] FrameRate set WARN: requested="
+                  << requested
+                  << " out of range=" << range_string();
+        if (readback_ok) {
+            std::cout << " current=" << camera_params->frame_rate;
+        }
+        std::cout << std::endl;
+        return;
+    }
+
+    const EVT_ERROR set_err = EVT_CameraSetUInt32Param(camera, "FrameRate", requested);
+    if (set_err != EVT_SUCCESS) {
+        const bool readback_ok = update_readback();
+        std::cout << camera_params->camera_serial
+                  << " [update_frame_rate_value] FrameRate set FAIL: requested="
+                  << requested
+                  << " error=" << get_evt_error_string(set_err)
+                  << " range=" << range_string();
+        if (readback_ok) {
+            std::cout << " current=" << camera_params->frame_rate;
+        }
+        std::cout << std::endl;
+        return;
+    }
+
+    unsigned int readback = 0;
+    const EVT_ERROR get_err = EVT_CameraGetUInt32Param(camera, "FrameRate", &readback);
+    if (get_err != EVT_SUCCESS) {
+        camera_params->frame_rate = requested;
+        std::cout << camera_params->camera_serial
+                  << " [update_frame_rate_value] FrameRate set WARN: requested="
+                  << requested
+                  << " set ok, readback failed: " << get_evt_error_string(get_err)
+                  << " range=" << range_string()
+                  << std::endl;
+        return;
+    }
+
+    camera_params->frame_rate = readback;
+    if (readback == requested) {
+        std::cout << camera_params->camera_serial
+                  << " [update_frame_rate_value] FrameRate set PASS: requested="
+                  << requested
+                  << " readback=" << readback
+                  << " range=" << range_string()
+                  << std::endl;
+    } else {
+        std::cout << camera_params->camera_serial
+                  << " [update_frame_rate_value] FrameRate set WARN: requested="
+                  << requested
+                  << " readback=" << readback
+                  << " range=" << range_string()
+                  << std::endl;
     }
 }
 
@@ -1337,13 +1439,19 @@ void open_camera_with_params(Emergent::CEmergentCamera *camera,
     // check_camera_errors(EVT_CameraSetUInt32Param(camera, "FrameRate", camera_params->frame_rate));
     // printf("FrameRate Set to: \t%d\n", camera_params.frame_rate);
     update_frame_rate_value(camera, camera_params->frame_rate, camera_params);
-    const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
-    const int configured_iris = static_cast<int>(camera_params->iris);
-    const bool iris_ok = set_startup_iris_value_checked(camera, configured_iris, camera_params, "open_camera_with_params");
-    std::cout << camera_params->camera_serial
-              << " [open_camera_with_params] Lens init summary: focus=" << (focus_ok ? "PASS" : "FAIL")
-              << " iris=" << (iris_ok ? "PASS" : "FAIL")
-              << std::endl;
+    if (camera_params->lens_control_enabled) {
+        const bool focus_ok = set_focus_value_checked(camera, static_cast<int>(camera_params->focus), camera_params, "open_camera_with_params");
+        const int configured_iris = static_cast<int>(camera_params->iris);
+        const bool iris_ok = set_startup_iris_value_checked(camera, configured_iris, camera_params, "open_camera_with_params");
+        std::cout << camera_params->camera_serial
+                  << " [open_camera_with_params] Lens init summary: focus=" << (focus_ok ? "PASS" : "FAIL")
+                  << " iris=" << (iris_ok ? "PASS" : "FAIL")
+                  << std::endl;
+    } else {
+        std::cout << camera_params->camera_serial
+                  << " [open_camera_with_params] Lens control disabled; skipping startup focus/iris writes."
+                  << std::endl;
+    }
 
     apply_configured_runtime_mode(camera, camera_params, "open_camera_with_params");
 }

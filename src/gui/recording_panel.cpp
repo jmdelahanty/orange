@@ -182,7 +182,9 @@ std::string effective_gui_recording_sink_mode(const AppStorageConfig* app_storag
     if (const char* env = nonempty_env("ORANGE_GUI_RECORDING_SINK_MODE")) {
         return normalized_ascii(env);
     }
-    if (app_storage_config && !app_storage_config->gui_recording_sink_mode.empty()) {
+    if (app_storage_config &&
+        app_storage_config->gui_recording_sink_mode_configured &&
+        !app_storage_config->gui_recording_sink_mode.empty()) {
         return normalized_ascii(app_storage_config->gui_recording_sink_mode);
     }
     return "real";

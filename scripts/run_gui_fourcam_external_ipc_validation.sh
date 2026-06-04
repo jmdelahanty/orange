@@ -4,7 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREVIEW_MODE="${ORANGE_GUI_FOURCAM_PREVIEW_MODE:-hidden}"
 DISPLAY_PROFILE="${ORANGE_GUI_FOURCAM_DISPLAY_PROFILE:-fast}"
-MANUAL_LOCAL_CONTROL=0
+MANUAL_LOCAL_CONTROL_MODE="none"
 
 usage() {
   cat <<'EOF'
@@ -36,7 +36,11 @@ Options:
   --warmup-seconds <seconds>  Override autorun stream warmup duration.
   --clip-seconds <seconds>    Enable GUI rolling clips with this clip duration.
   --manual-local-control      Disable autorun, keep the GUI operator-owned,
-                              and enable local-control/Citrus stop requests.
+                              and enable generic stop_recording plus Citrus
+                              completion-stop requests.
+  --manual-citrus-completion-control
+                             Disable autorun, keep the GUI operator-owned,
+                             and enable only Citrus completion-stop requests.
   --allow-main-video-content-failure <serials>
                              Treat listed no-lens/invalid-content cameras as
                              allowed main-video content failures in printed
@@ -131,7 +135,19 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --manual-local-control)
-      MANUAL_LOCAL_CONTROL=1
+      if [[ "${MANUAL_LOCAL_CONTROL_MODE}" != "none" ]]; then
+        echo "--manual-local-control conflicts with --manual-citrus-completion-control" >&2
+        exit 2
+      fi
+      MANUAL_LOCAL_CONTROL_MODE="full"
+      shift
+      ;;
+    --manual-citrus-completion-control)
+      if [[ "${MANUAL_LOCAL_CONTROL_MODE}" != "none" ]]; then
+        echo "--manual-citrus-completion-control conflicts with --manual-local-control" >&2
+        exit 2
+      fi
+      MANUAL_LOCAL_CONTROL_MODE="citrus_completion"
       shift
       ;;
     --allow-main-video-content-failure)
@@ -196,14 +212,38 @@ case "${DISPLAY_PROFILE}" in
     ;;
 esac
 
-if (( MANUAL_LOCAL_CONTROL )); then
-  export ORANGE_GUI_AUTORUN=0
-  export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0
-  export ORANGE_GUI_LOCAL_CONTROL_DISABLE=0
-  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1
-  export ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1
-  export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
-fi
+case "${MANUAL_LOCAL_CONTROL_MODE}" in
+  none)
+    ;;
+  full)
+    export ORANGE_GUI_AUTORUN=0
+    export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0
+    export ORANGE_GUI_AUTORUN_ENABLE_STREAM=0
+    export ORANGE_GUI_AUTORUN_ENABLE_RECORD=0
+    export ORANGE_GUI_AUTORUN_ENABLE_YOLO=0
+    export ORANGE_GUI_AUTORUN_ENABLE_CROP=0
+    export ORANGE_GUI_AUTORUN_START_RECORDING=0
+    export ORANGE_GUI_LOCAL_CONTROL_DISABLE=0
+    export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0
+    export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=1
+    export ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1
+    export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
+    ;;
+  citrus_completion)
+    export ORANGE_GUI_AUTORUN=0
+    export ORANGE_GUI_AUTORUN_EXIT_AFTER_FINALIZE=0
+    export ORANGE_GUI_AUTORUN_ENABLE_STREAM=0
+    export ORANGE_GUI_AUTORUN_ENABLE_RECORD=0
+    export ORANGE_GUI_AUTORUN_ENABLE_YOLO=0
+    export ORANGE_GUI_AUTORUN_ENABLE_CROP=0
+    export ORANGE_GUI_AUTORUN_START_RECORDING=0
+    export ORANGE_GUI_LOCAL_CONTROL_DISABLE=0
+    export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_START=0
+    export ORANGE_GUI_LOCAL_CONTROL_ENABLE_RECORDING_STOP=0
+    export ORANGE_GUI_LOCAL_CONTROL_ENABLE_CITRUS_STOP=1
+    export ORANGE_GUI_LOCAL_CONTROL_EXIT_AFTER_FINALIZE=0
+    ;;
+esac
 
 export ORANGE_GUI_CONFIG_DIR="${ORANGE_GUI_CONFIG_DIR:-/home/jeremy/orange_data/config/local/100_cam4_ptp_fourcam}"
 export ORANGE_GUI_EXPECT_CAMERAS="${ORANGE_GUI_EXPECT_CAMERAS:-2010093,2010094,2010095,2010096}"
