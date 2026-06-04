@@ -378,57 +378,59 @@ inline bool release_worker_entry_to_recycle(
     return release_worker_entry_to_recycle(&recycle_queue, entry);
 }
 
-class WorkerEntryRetainedRefGuard {
+class WorkerEntryRefGuard {
 public:
-    WorkerEntryRetainedRefGuard(
+    WorkerEntryRefGuard(
         SafeQueue<WORKER_ENTRY*>* recycle_queue,
         WORKER_ENTRY* entry,
         WorkerEntryReleaseContext context,
-        bool owns_retained_ref)
+        bool owns_ref)
         : recycle_queue_(recycle_queue),
           entry_(entry),
           context_(context),
-          owns_retained_ref_(owns_retained_ref)
+          owns_ref_(owns_ref)
     {
     }
 
-    WorkerEntryRetainedRefGuard(const WorkerEntryRetainedRefGuard&) = delete;
-    WorkerEntryRetainedRefGuard& operator=(const WorkerEntryRetainedRefGuard&) = delete;
+    WorkerEntryRefGuard(const WorkerEntryRefGuard&) = delete;
+    WorkerEntryRefGuard& operator=(const WorkerEntryRefGuard&) = delete;
 
-    WorkerEntryRetainedRefGuard(WorkerEntryRetainedRefGuard&& other) noexcept
+    WorkerEntryRefGuard(WorkerEntryRefGuard&& other) noexcept
         : recycle_queue_(other.recycle_queue_),
           entry_(other.entry_),
           context_(other.context_),
-          owns_retained_ref_(other.owns_retained_ref_)
+          owns_ref_(other.owns_ref_)
     {
-        other.owns_retained_ref_ = false;
+        other.owns_ref_ = false;
     }
 
-    WorkerEntryRetainedRefGuard& operator=(WorkerEntryRetainedRefGuard&& other) noexcept = delete;
+    WorkerEntryRefGuard& operator=(WorkerEntryRefGuard&& other) noexcept = delete;
 
-    ~WorkerEntryRetainedRefGuard()
+    ~WorkerEntryRefGuard()
     {
-        if (owns_retained_ref_) {
+        if (owns_ref_) {
             release_worker_entry_to_recycle(recycle_queue_, entry_, context_);
         }
     }
 
     void Dismiss()
     {
-        owns_retained_ref_ = false;
+        owns_ref_ = false;
     }
 
     bool active() const
     {
-        return owns_retained_ref_;
+        return owns_ref_;
     }
 
 private:
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
     WORKER_ENTRY* entry_ = nullptr;
     WorkerEntryReleaseContext context_{};
-    bool owns_retained_ref_ = false;
+    bool owns_ref_ = false;
 };
+
+using WorkerEntryRetainedRefGuard = WorkerEntryRefGuard;
 
 template <typename WorkerT>
 inline bool retain_and_enqueue_worker_entry(

@@ -2015,6 +2015,13 @@ void acquire_frames(
             // This allows us to efficiently manage resources and avoid unnecessary processing.
             if (dispatch_count > 0) {
                 current_entry->ref_count.store(1);
+                WorkerEntryRefGuard acquisition_base_ref_guard(
+                    resources->recycle_queue,
+                    current_entry,
+                    WorkerEntryReleaseContext{
+                        camera_params->camera_serial.c_str(),
+                        "acquisition_base_ref"},
+                    true);
                 if (will_yolo) {
                     current_entry->yolo_dispatch_ready_host_ns = steady_clock_now_ns();
                 }
@@ -2107,7 +2114,7 @@ void acquire_frames(
                             "recording"});
                     bool recording_accepted = false;
                     if (recording_retained) {
-                        WorkerEntryRetainedRefGuard recording_ref_guard(
+                        WorkerEntryRefGuard recording_ref_guard(
                             resources->recycle_queue,
                             current_entry,
                             WorkerEntryReleaseContext{
@@ -2232,12 +2239,6 @@ void acquire_frames(
                 if (!dispatch_yolo_before_recording && will_yolo) {
                     enqueue_yolo();
                 }
-                release_worker_entry_to_recycle(
-                    resources->recycle_queue,
-                    current_entry,
-                    WorkerEntryReleaseContext{
-                        camera_params->camera_serial.c_str(),
-                        "acquisition_base_ref"});
 
             } else {
                 // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above

@@ -187,7 +187,7 @@ void test_context_diagnostic_accounting_tracks_camera_and_worker()
     require(camera_counts.retain_after_release == 1, "camera should aggregate retain failures");
 }
 
-void test_retained_ref_guard_releases_when_submit_throws()
+void test_ref_guard_releases_retained_ref_when_submit_throws()
 {
     reset_worker_entry_release_diagnostics_for_tests();
     SafeQueue<WORKER_ENTRY*> recycle_queue;
@@ -201,7 +201,7 @@ void test_retained_ref_guard_releases_when_submit_throws()
 
     bool caught = false;
     try {
-        WorkerEntryRetainedRefGuard guard(&recycle_queue, &entry, context, true);
+        WorkerEntryRefGuard guard(&recycle_queue, &entry, context, true);
         throw std::runtime_error("synthetic submit failure");
     } catch (const std::runtime_error&) {
         caught = true;
@@ -217,6 +217,50 @@ void test_retained_ref_guard_releases_when_submit_throws()
     require(
         worker_entry_release_underflow_count().load(std::memory_order_acquire) == 0,
         "guard compensation should not count as underflow");
+}
+
+void test_ref_guard_releases_acquisition_base_ref_when_fanout_throws()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    SafeQueue<WORKER_ENTRY*> recycle_queue;
+    WORKER_ENTRY entry{};
+    entry.ref_count.store(1, std::memory_order_release);
+    entry.gpu_direct_mode = false;
+    const WorkerEntryReleaseContext base_context{"2010096", "acquisition_base_ref"};
+    const WorkerEntryReleaseContext worker_context{"2010096", "unit_test_worker_ref"};
+
+    require(retain_worker_entry(&entry, worker_context), "worker retain should succeed after base ref");
+    require(entry.ref_count.load(std::memory_order_acquire) == 2, "base plus worker refs should be active");
+
+    bool caught = false;
+    try {
+        WorkerEntryRefGuard base_guard(&recycle_queue, &entry, base_context, true);
+        throw std::runtime_error("synthetic fanout failure");
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    require(caught, "synthetic fanout failure should propagate");
+    require(entry.ref_count.load(std::memory_order_acquire) == 1, "base guard should release only base ref");
+    WORKER_ENTRY* recycled = nullptr;
+    require(!recycle_queue.pop(recycled), "base guard should not recycle while worker ref remains");
+
+    require(
+        release_worker_entry_to_recycle(recycle_queue, &entry, worker_context),
+        "worker release should recycle after base ref was released");
+    require(entry.ref_count.load(std::memory_order_acquire) == 0, "all refs should be released");
+    require(recycle_queue.pop(recycled), "entry should recycle after final worker release");
+    require(recycled == &entry, "recycled entry should match source entry");
+    require(!recycle_queue.pop(recycled), "entry should recycle exactly once");
+    require(
+        worker_entry_release_double_release_count().load(std::memory_order_acquire) == 0,
+        "base guard unwind should not count as double release");
+    require(
+        worker_entry_release_underflow_count().load(std::memory_order_acquire) == 0,
+        "base guard unwind should not count as underflow");
+    require(
+        worker_entry_retain_after_release_count().load(std::memory_order_acquire) == 0,
+        "base guard unwind should not count as retain-after-release");
 }
 
 void test_null_entry_is_noop()
@@ -411,7 +455,8 @@ int main()
         test_retain_and_enqueue_succeeds_when_worker_accepts();
         test_retain_and_enqueue_releases_when_worker_rejects();
         test_context_diagnostic_accounting_tracks_camera_and_worker();
-        test_retained_ref_guard_releases_when_submit_throws();
+        test_ref_guard_releases_retained_ref_when_submit_throws();
+        test_ref_guard_releases_acquisition_base_ref_when_fanout_throws();
         test_null_entry_is_noop();
         test_non_final_release_decrements_without_recycling();
         test_final_release_recycles_exactly_once();
