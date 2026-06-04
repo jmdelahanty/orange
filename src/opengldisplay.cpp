@@ -123,7 +123,12 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     WORKER_ENTRY* discarded_frame = nullptr;
 
     while ((discarded_frame = GetObjectFromQueueIn()) != nullptr) {
-        release_worker_entry_to_recycle(m_recycle_queue, latest_frame);
+        release_worker_entry_to_recycle(
+            m_recycle_queue,
+            latest_frame,
+            WorkerEntryReleaseContext{
+                camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                "opengl_display_discard"});
         latest_frame = discarded_frame;
     }
 
@@ -221,7 +226,12 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
             last_display_log_time_ = now;
         }
 
-        release_worker_entry_to_recycle(m_recycle_queue, latest_frame);
+        release_worker_entry_to_recycle(
+            m_recycle_queue,
+            latest_frame,
+            WorkerEntryReleaseContext{
+                camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                "opengl_display"});
         return true;
     }
 
@@ -298,7 +308,12 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
     
     // --- Cleanup and recycle ---
-    release_worker_entry_to_recycle(m_recycle_queue, latest_frame);
+    release_worker_entry_to_recycle(
+        m_recycle_queue,
+        latest_frame,
+        WorkerEntryReleaseContext{
+            camera_params ? camera_params->camera_serial.c_str() : nullptr,
+            "opengl_display"});
 
     return false; // This worker doesn't pass items to its own output queue
 }

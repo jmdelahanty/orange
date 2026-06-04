@@ -45,9 +45,12 @@ void append_unique_gpu_id(std::vector<int>* gpu_ids, int gpu_id)
     }
 }
 
-void release_recording_entry_to_recycle(SafeQueue<WORKER_ENTRY*>* recycle_queue, WORKER_ENTRY* entry)
+void release_recording_entry_to_recycle(
+    SafeQueue<WORKER_ENTRY*>* recycle_queue,
+    WORKER_ENTRY* entry,
+    const WorkerEntryReleaseContext& context = WorkerEntryReleaseContext{})
 {
-    release_worker_entry_to_recycle(recycle_queue, entry);
+    release_worker_entry_to_recycle(recycle_queue, entry, context);
 }
 
 bool recording_ingress_env_flag_enabled(const char* name, bool default_value = false)
@@ -110,7 +113,10 @@ protected:
             return false;
         }
         in_flight_.fetch_add(1, std::memory_order_relaxed);
-        release_recording_entry_to_recycle(recycle_queue_, entry);
+        release_recording_entry_to_recycle(
+            recycle_queue_,
+            entry,
+            WorkerEntryReleaseContext{nullptr, threadName});
 
         const auto now = std::chrono::steady_clock::now();
         frame_counter_++;
@@ -265,7 +271,10 @@ protected:
             failures_.fetch_add(1, std::memory_order_relaxed);
         }
         if (release_entry_now) {
-            release_recording_entry_to_recycle(recycle_queue_, entry);
+            release_recording_entry_to_recycle(
+                recycle_queue_,
+                entry,
+                WorkerEntryReleaseContext{camera_serial_.c_str(), threadName});
         }
         if (deferred_release_) {
             poll_protocol_lines(false);
@@ -452,7 +461,10 @@ private:
             released_entry = it->second;
             pending_release_entries_.erase(it);
         }
-        release_recording_entry_to_recycle(recycle_queue_, released_entry);
+        release_recording_entry_to_recycle(
+            recycle_queue_,
+            released_entry,
+            WorkerEntryReleaseContext{camera_serial_.c_str(), "external_ipc_release"});
         frames_released_.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
@@ -802,7 +814,10 @@ private:
                   << (reason ? reason : "cleanup") << std::endl;
         for (auto& [frame_id, entry] : pending) {
             (void)frame_id;
-            release_recording_entry_to_recycle(recycle_queue_, entry);
+            release_recording_entry_to_recycle(
+                recycle_queue_,
+                entry,
+                WorkerEntryReleaseContext{camera_serial_.c_str(), "external_ipc_cleanup"});
         }
     }
 
@@ -1328,5 +1343,8 @@ bool RecordingIngress::requires_owned_cuda_source() const
 
 void RecordingIngress::release_entry(WORKER_ENTRY* entry)
 {
-    release_recording_entry_to_recycle(recycle_queue_, entry);
+    release_recording_entry_to_recycle(
+        recycle_queue_,
+        entry,
+        WorkerEntryReleaseContext{camera_serial_.c_str(), "recording_ingress"});
 }

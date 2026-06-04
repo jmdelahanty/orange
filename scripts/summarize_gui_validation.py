@@ -1038,6 +1038,9 @@ def summarize_pipeline(recording_folder: Path) -> dict[str, Any]:
         "external_ipc_frames_acked",
         "external_ipc_failures",
         "external_ipc_ack_timeouts",
+        "worker_entry_release_underflows",
+        "worker_entry_double_releases",
+        "worker_entry_retain_after_release_count",
         "display_q",
         "display_preview_max_fps",
         "display_preview_eligible",
@@ -1829,7 +1832,10 @@ def print_human(summary: dict[str, Any]) -> None:
                 f"  Cam{serial}: dropped={fmt_int(final.get('camera_dropped_frames'))} "
                 f"get_frame_errors={fmt_int(final.get('get_frame_errors'))} "
                 f"enc_fail={fmt_int(final.get('enc_fail'))} "
-                f"enc_slow={fmt_int(final.get('enc_slow'))}"
+                f"enc_slow={fmt_int(final.get('enc_slow'))} "
+                f"release_underflows={fmt_int(final.get('worker_entry_release_underflows'))} "
+                f"double_releases={fmt_int(final.get('worker_entry_double_releases'))} "
+                f"retain_after_release={fmt_int(final.get('worker_entry_retain_after_release_count'))}"
             )
     else:
         print("  no Cam*_pipeline_perf.csv files found")

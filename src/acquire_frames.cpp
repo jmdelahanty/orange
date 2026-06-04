@@ -203,6 +203,9 @@ struct PipelinePerfSample {
     int pending_requeues = -1;
     uint64_t acquisition_resource_starvations = 0;
     uint64_t worker_enqueue_rejections = 0;
+    uint64_t worker_entry_release_underflows = 0;
+    uint64_t worker_entry_double_releases = 0;
+    uint64_t worker_entry_retain_after_release_count = 0;
     int preprocess_buffers_available = -1;
     int preprocess_events_available = -1;
     uint64_t preprocess_resource_waits = 0;
@@ -662,6 +665,9 @@ public:
               << sample.pending_requeues << ","
               << sample.acquisition_resource_starvations << ","
               << sample.worker_enqueue_rejections << ","
+              << sample.worker_entry_release_underflows << ","
+              << sample.worker_entry_double_releases << ","
+              << sample.worker_entry_retain_after_release_count << ","
               << sample.preprocess_buffers_available << ","
               << sample.preprocess_events_available << ","
               << sample.preprocess_resource_waits << ","
@@ -745,7 +751,9 @@ private:
                  "yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
-                 "acq_starve,worker_enqueue_rejections,pre_buffers,pre_events,pre_waits,pre_drops,"
+                 "acq_starve,worker_enqueue_rejections,worker_entry_release_underflows,worker_entry_double_releases,"
+                 "worker_entry_retain_after_release_count,"
+                 "pre_buffers,pre_events,pre_waits,pre_drops,"
                  "detect_priority_gated_frames,detect_priority_waited_frames,detect_priority_wait_timeouts,"
                  "detect_priority_wait_total_ns,detect_priority_wait_max_ns,"
                  "enc_fail,enc_slow,"
@@ -862,6 +870,12 @@ private:
             totals["external_ipc_failures"] = last_sample_.external_ipc_failures;
             totals["external_ipc_ack_timeouts"] = last_sample_.external_ipc_ack_timeouts;
             totals["worker_enqueue_rejections"] = last_sample_.worker_enqueue_rejections;
+            totals["worker_entry_release_underflows"] =
+                last_sample_.worker_entry_release_underflows;
+            totals["worker_entry_double_releases"] =
+                last_sample_.worker_entry_double_releases;
+            totals["worker_entry_retain_after_release_count"] =
+                last_sample_.worker_entry_retain_after_release_count;
             totals["submitted_frames"] = last_sample_.submitted_frames;
             totals["enqueue_rejected_frames"] = last_sample_.enqueue_rejected_frames;
             totals["primary_routed_frames"] = last_sample_.primary_routed_frames;
@@ -1186,6 +1200,12 @@ void acquire_frames(
         summary["recording_frames_assigned_total"] = recording_frames_assigned;
         summary["last_recording_frame_id"] = recording_frames_assigned;
         summary["worker_enqueue_rejections"] = worker_enqueue_rejections;
+        summary["worker_entry_release_underflows"] =
+            worker_entry_release_underflow_count().load(std::memory_order_relaxed);
+        summary["worker_entry_double_releases"] =
+            worker_entry_release_double_release_count().load(std::memory_order_relaxed);
+        summary["worker_entry_retain_after_release_count"] =
+            worker_entry_retain_after_release_count().load(std::memory_order_relaxed);
         summary["recording_ingress_submitted_frames"] = recording_stats.submitted_frames;
         summary["recording_ingress_enqueue_rejected_frames"] =
             recording_stats.enqueue_rejected_frames;
@@ -1259,6 +1279,12 @@ void acquire_frames(
         sample.pending_requeues = static_cast<int>(pending_requeues.size());
         sample.acquisition_resource_starvations = acquisition_resource_starvations;
         sample.worker_enqueue_rejections = worker_enqueue_rejections;
+        sample.worker_entry_release_underflows =
+            worker_entry_release_underflow_count().load(std::memory_order_relaxed);
+        sample.worker_entry_double_releases =
+            worker_entry_release_double_release_count().load(std::memory_order_relaxed);
+        sample.worker_entry_retain_after_release_count =
+            worker_entry_retain_after_release_count().load(std::memory_order_relaxed);
         sample.preprocess_buffers_available = recording_stats.preprocess_buffers_available;
         sample.preprocess_events_available = recording_stats.preprocess_events_available;
         sample.preprocess_resource_waits = recording_stats.preprocess_resource_waits;
@@ -1945,7 +1971,7 @@ void acquire_frames(
                     current_entry->camera_frame_struct = frame_to_requeue;
                 }
 
-                auto release_fanout_ref = [&](const char* worker_name) {
+                auto log_fanout_enqueue_rejected = [&](const char* worker_name) {
                     worker_enqueue_rejections++;
                     std::cerr << "[ACQ] Worker enqueue rejected"
                               << " cam=" << camera_params->camera_serial
@@ -1955,7 +1981,15 @@ void acquire_frames(
                               << " recording_frame=" << current_entry->recording_frame_id
                               << " rejections=" << worker_enqueue_rejections
                               << std::endl;
-                    release_worker_entry_to_recycle(resources->recycle_queue, current_entry);
+                };
+
+                auto release_retained_fanout_ref = [&](const char* worker_name) {
+                    release_worker_entry_to_recycle(
+                        resources->recycle_queue,
+                        current_entry,
+                        WorkerEntryReleaseContext{
+                            camera_params->camera_serial.c_str(),
+                            worker_name});
                 };
 
                 auto mark_yolo_enqueue_failed = [&]() {
@@ -1980,10 +2014,19 @@ void acquire_frames(
                     current_entry->yolo_enqueue_host_ns = steady_clock_now_ns();
                     current_entry->yolo_queue_depth_at_enqueue =
                         yolo_worker->GetCountQueueInSize();
-                    current_entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
-                    if (!yolo_worker->PutObjectToQueueIn(current_entry)) {
+                    bool enqueue_rejected = false;
+                    if (!retain_and_enqueue_worker_entry(
+                            yolo_worker,
+                            resources->recycle_queue,
+                            current_entry,
+                            WorkerEntryReleaseContext{
+                                camera_params->camera_serial.c_str(),
+                                "yolo"},
+                            &enqueue_rejected)) {
                         mark_yolo_enqueue_failed();
-                        release_fanout_ref("yolo");
+                        if (enqueue_rejected) {
+                            log_fanout_enqueue_rejected("yolo");
+                        }
                         return false;
                     }
                     return true;
@@ -1992,9 +2035,17 @@ void acquire_frames(
                     detect_priority_recording && will_record && will_yolo;
 
                 if (will_display) {
-                    current_entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
-                    if (!openGLDisplay->PutObjectToQueueIn(current_entry)) {
-                        release_fanout_ref("display");
+                    bool enqueue_rejected = false;
+                    if (!retain_and_enqueue_worker_entry(
+                            openGLDisplay,
+                            resources->recycle_queue,
+                            current_entry,
+                            WorkerEntryReleaseContext{
+                                camera_params->camera_serial.c_str(),
+                                "display"},
+                            &enqueue_rejected) &&
+                        enqueue_rejected) {
+                        log_fanout_enqueue_rejected("display");
                     }
                 }
                 if (dispatch_yolo_before_recording) {
@@ -2004,10 +2055,18 @@ void acquire_frames(
                     if (will_yolo) {
                         current_entry->yolo_before_recording_submit_host_ns = steady_clock_now_ns();
                     }
-                    current_entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
-                    const bool recording_accepted = recording_ingress->SubmitFrame(current_entry);
+                    const bool recording_retained = retain_worker_entry(
+                        current_entry,
+                        WorkerEntryReleaseContext{
+                            camera_params->camera_serial.c_str(),
+                            "recording"});
+                    const bool recording_accepted =
+                        recording_retained && recording_ingress->SubmitFrame(current_entry);
                     if (!recording_accepted) {
-                        release_fanout_ref("recording");
+                        if (recording_retained) {
+                            log_fanout_enqueue_rejected("recording");
+                            release_retained_fanout_ref("recording");
+                        }
                     }
                     if (will_yolo) {
                         current_entry->yolo_after_recording_submit_host_ns = steady_clock_now_ns();
@@ -2117,7 +2176,12 @@ void acquire_frames(
                 if (!dispatch_yolo_before_recording && will_yolo) {
                     enqueue_yolo();
                 }
-                release_worker_entry_to_recycle(resources->recycle_queue, current_entry);
+                release_worker_entry_to_recycle(
+                    resources->recycle_queue,
+                    current_entry,
+                    WorkerEntryReleaseContext{
+                        camera_params->camera_serial.c_str(),
+                        "acquisition_base_ref"});
 
             } else {
                 // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above

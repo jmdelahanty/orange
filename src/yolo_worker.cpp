@@ -1170,13 +1170,16 @@ void YoloWorker::SetENetTarget(EnetContext* host_ctx, ENetPeer* target_peer)
 bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     static thread_local bool affinity_set = false;
     static thread_local YoloThreadSchedulingSnapshot scheduling_snapshot;
+    const WorkerEntryReleaseContext release_context{
+        associated_camera_params_ ? associated_camera_params_->camera_serial.c_str() : nullptr,
+        threadName};
     if (!affinity_set) {
         scheduling_snapshot = ApplyYoloAffinity(associated_camera_params_, threadName);
         ApplyYoloRealtimeScheduling(associated_camera_params_, threadName);
         affinity_set = true;
     }
     if (!yolov8_instance_ || !entry || !entry->d_image) {
-        release_worker_entry_to_recycle(m_recycle_queue, entry);
+        release_worker_entry_to_recycle(m_recycle_queue, entry, release_context);
         return false;
     }
 
@@ -1766,15 +1769,25 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             if (inline_crop_producer) {
                 m_crop_worker->ProcessEntryInline(entry);
             } else {
-                // Increment the reference count because another worker will now use this entry.
-                entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
-                if (!m_crop_worker->PutObjectToQueueIn(entry)) {
+                bool enqueue_rejected = false;
+                if (!retain_and_enqueue_worker_entry(
+                        m_crop_worker,
+                        m_recycle_queue,
+                        entry,
+                        WorkerEntryReleaseContext{
+                            associated_camera_params_
+                                ? associated_camera_params_->camera_serial.c_str()
+                                : nullptr,
+                            "yolo_crop"},
+                        &enqueue_rejected) &&
+                    enqueue_rejected) {
                     std::cerr << "[YOLO] Crop worker enqueue rejected"
-                              << " cam=" << associated_camera_params_->camera_serial
+                              << " cam=" << (associated_camera_params_
+                                                 ? associated_camera_params_->camera_serial
+                                                 : "unknown")
                               << " frame=" << entry->frame_id
                               << " recording_frame=" << entry->recording_frame_id
                               << std::endl;
-                    release_worker_entry_to_recycle(m_recycle_queue, entry);
                 }
             }
         }
@@ -2031,7 +2044,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     }
 
     // Reference counting for recycling the WORKER_ENTRY.
-    release_worker_entry_to_recycle(m_recycle_queue, entry);
+    release_worker_entry_to_recycle(m_recycle_queue, entry, release_context);
 
     // This worker doesn't pass an item to its own output queue so we return false
     return false;

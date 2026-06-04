@@ -640,7 +640,12 @@ void EncoderPreprocessWorker::drain_pending_source_releases(bool synchronize_all
 
 void EncoderPreprocessWorker::release_source_entry(WORKER_ENTRY* entry)
 {
-    release_worker_entry_to_recycle(m_recycle_queue_, entry);
+    release_worker_entry_to_recycle(
+        m_recycle_queue_,
+        entry,
+        WorkerEntryReleaseContext{
+            camera_params_ ? camera_params_->camera_serial.c_str() : nullptr,
+            threadName});
 }
 
 bool EncoderPreprocessWorker::IsDrained()

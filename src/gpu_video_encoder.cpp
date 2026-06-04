@@ -451,13 +451,23 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
     if (!recording_enabled && !draining)
     {
         // IMPORTANT: We must still manage the lifecycle of the frame entry to avoid leaks.
-        release_worker_entry_to_recycle(m_recycle_queue, entry);
+        release_worker_entry_to_recycle(
+            m_recycle_queue,
+            entry,
+            WorkerEntryReleaseContext{
+                camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                threadName});
         return false;
     }
 
     if (!is_recording_) {
         std::cerr << "[" << this->threadName << "] Warning: Dropping frame because encoder is not recording." << std::endl;
-        release_worker_entry_to_recycle(m_recycle_queue, entry);
+        release_worker_entry_to_recycle(
+            m_recycle_queue,
+            entry,
+            WorkerEntryReleaseContext{
+                camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                threadName});
         return false;
     }
 
@@ -717,7 +727,12 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         NVTX_RANGE_PUSH("Reference_Count_Management");
         // Handle reference counting and GPU Direct camera buffer management
         ENCODER_CTX_LOG("Handling reference count", entry->frame_id);
-        if (release_worker_entry_to_recycle(m_recycle_queue, entry)) {
+        if (release_worker_entry_to_recycle(
+                m_recycle_queue,
+                entry,
+                WorkerEntryReleaseContext{
+                    camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                    threadName})) {
             NVTX_RANGE_PUSH("Last_Worker_Cleanup");
             std::cout << "[GPUEncoder] Frame " << worker_entry_frame_id
                       << " - Last worker recycled entry" << std::endl;
@@ -733,7 +748,12 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         std::cerr << "[GPUVideoEncoder] Exception in WorkerFunction: " << e.what() << std::endl;
         
         // Handle reference counting even on error
-        release_worker_entry_to_recycle(m_recycle_queue, entry);
+        release_worker_entry_to_recycle(
+            m_recycle_queue,
+            entry,
+            WorkerEntryReleaseContext{
+                camera_params ? camera_params->camera_serial.c_str() : nullptr,
+                threadName});
         NVTX_RANGE_POP();
         
         return false;

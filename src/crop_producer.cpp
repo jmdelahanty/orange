@@ -195,7 +195,12 @@ CropProducer::~CropProducer()
 
 void CropProducer::release_entry(WORKER_ENTRY* entry)
 {
-    release_worker_entry_to_recycle(recycle_queue_, entry);
+    release_worker_entry_to_recycle(
+        recycle_queue_,
+        entry,
+        WorkerEntryReleaseContext{
+            camera_params_ ? camera_params_->camera_serial.c_str() : nullptr,
+            "crop_producer"});
 }
 
 void CropProducer::ReleaseSourceEntry(WORKER_ENTRY*& entry)
