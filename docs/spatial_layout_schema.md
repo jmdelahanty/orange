@@ -37,6 +37,14 @@ Embedded runtime payload versions:
   or both.
 - `dish_mask` names the observed usable boundary in camera space. In v1 that
   may be the inner experimental area if the outer dish rim is not visible.
+- For the current circular single-arena V0, `dish_mask` may be sourced from
+  `orange.calibration.dish_top_rim_observation`. In that case the
+  observation's operator-confirmed `accepted_mask` is the load-bearing circular
+  geometry used for `dish_mask.valid_geometry`.
+- The Hough-detected circle is proposal/provenance. The operator-confirmed
+  accepted circle is the geometry used for runtime gating and export.
+- Palette `dish_mask` metadata is an adapter/export view from the Orange
+  artifact. It is not the native spatial-layout payload.
 - `layout_id` and `zone_id` are the authoritative stable identifiers. Runtime
   camera-pixel overlays are convenience outputs for a specific recording.
 - Canonical `arena_layout` geometry is authored in layout space. Resolved
@@ -62,6 +70,9 @@ Embedded runtime payload versions:
 - Orange may represent that single-circle slice as both a circular `dish_mask`
   and a trivial one-zone `arena_layout` with `zone_id = "z0"` so downstream
   consumers can already use the general runtime contract shape.
+- In that single-circle slice, `arena_layout` remains the canonical
+  Citrus-owned dish/arena identity, while `dish_mask` remains Orange's
+  camera-space evidence about the visible and valid dish region.
 - The current Orange UI may use an approximate camera-space circle fit to an
   inverse-projected Citrus contour as a preview/registration seed when
   homography is available.
@@ -267,6 +278,51 @@ Compatibility note:
   `valid_geometry`, and `edge_margin_px` instead.
 - UI and detection flows may describe this as the `experimental area` when that
   is the visible boundary the operator is fitting.
+
+#### Circular top-rim V0 mapping
+
+When a circular mask is sourced from
+`orange.calibration.dish_top_rim_observation`, the runtime mapping is:
+
+```text
+observation.accepted_mask
+  -> dish_mask.runtime.geometry.valid_geometry
+```
+
+If the observation also contains a non-eroded accepted or observed rim circle,
+that circle maps to `outer_geometry`. If the observation only has one accepted
+circle, Orange may set `outer_geometry` to that circle and derive
+`valid_geometry` by subtracting `edge_margin_px`.
+
+Recommended runtime source fields:
+
+```json
+{
+  "source": "dish_top_rim_observation",
+  "source_artifact": {
+    "artifact_id": "dishrim_20260601_120000_2012632",
+    "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
+    "artifact_schema_version": 1,
+    "fingerprint": "fnv1a64:..."
+  },
+  "source_array_role": "images_full",
+  "operator_confirmed": true,
+  "review_overlay": {
+    "path": "overlays/top_rim_fit.png",
+    "sha256": "..."
+  }
+}
+```
+
+Rules:
+
+- `source_artifact` should reference the Orange-native observation artifact,
+  not a Palette export.
+- `source_array_role` must match the coordinate system of the circle values.
+- `operator_confirmed` should be true before using the mask for default
+  runtime gating.
+- Review overlays are for operator trust and audit; consumers should not parse
+  geometry from overlay pixels.
 
 ### `registration`
 

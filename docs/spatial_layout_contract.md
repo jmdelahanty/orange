@@ -79,6 +79,64 @@ Practical consequence:
 - the single-circle slice should validate ownership and snapshot flow before we
   expand authoring around multi-zone layouts
 
+## Mapping To Dish Top-Rim Observation
+
+The current circular-dish implementation path is documented in
+`docs/dish_top_rim_observation_design.md`. It maps onto the spatial layout
+contract as follows:
+
+```text
+orange.calibration.dish_top_rim_observation
+  -> dish_mask
+  -> optional view_registration input or preview
+  -> resolved runtime overlays
+  -> recording_snapshot.json and Citrus H5 calibration snapshot
+```
+
+Layer mapping:
+
+- `dish_top_rim_observation.observed_boundary` is the physical top-rim
+  evidence in `camera_native_pixels`.
+- `dish_top_rim_observation.accepted_mask` is the operator-confirmed circular
+  mask used as the V0 load-bearing geometry.
+- `dish_mask.outer_geometry` should represent the accepted or observed top-rim
+  circle when the top rim is the usable physical boundary.
+- `dish_mask.valid_geometry` should represent the inward-eroded accepted circle
+  used to gate detections.
+- `arena_layout` remains the Citrus-owned canonical dish/arena definition and
+  should not be replaced by the Orange Hough result.
+- `view_registration` may use the accepted circle as evidence for
+  `translation` or `similarity`, or may record
+  `existing_homography_preview` semantics when Citrus homography is used only
+  for review.
+- resolved runtime overlays are derived per-recording camera-pixel geometry
+  and remain convenience outputs.
+
+The Orange top-rim artifact is therefore a producer for `dish_mask`, not a
+replacement for `arena_layout`.
+
+For V0, the load-bearing geometry is the operator-confirmed circle:
+
+```text
+dish_top_rim_observation.accepted_mask.circle
+  -> dish_mask.valid_geometry.circle
+```
+
+If Orange also records a non-eroded rim circle, that maps to
+`dish_mask.outer_geometry.circle`. If only one confirmed circle is available,
+Orange may use the same circle as `outer_geometry` and derive
+`valid_geometry` by applying the configured `edge_margin_px`.
+
+Citrus H5 should snapshot both sides:
+
+- the Orange artifact reference, accepted circle, source coordinate system, and
+  visible review overlay checksum
+- the Citrus canvas/arena/homography identity and accepted transform semantics
+  used during the experiment
+
+Palette compatibility remains an export mapping from the Orange artifact. It
+is not the native spatial-layout storage model.
+
 ## V1 Geometry Scope
 
 Canonical layout geometry types in v1:

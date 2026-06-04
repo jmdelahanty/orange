@@ -163,6 +163,56 @@ Citrus may map points into:
 Those mapped values are derived previews. The authoritative Orange observation
 remains the camera-space source geometry plus source images.
 
+## Mapping To Spatial Layout
+
+This artifact is a concrete V0 producer for the existing spatial layout layers.
+It does not introduce a fourth canonical geometry model.
+
+Mapping:
+
+```text
+dish_top_rim_observation.observed_boundary
+  -> spatial_layout.dish_mask.outer_geometry
+
+dish_top_rim_observation.accepted_mask or valid_detection_region
+  -> spatial_layout.dish_mask.valid_geometry
+
+Citrus canonical dish/arena definition
+  -> spatial_layout.arena_layout
+
+Orange/Citrus accepted alignment semantics
+  -> spatial_layout.view_registration
+
+derived camera-pixel zone/mask geometry
+  -> resolved runtime overlays
+```
+
+Interpretation:
+
+- `dish_mask` is the camera-space valid-region layer. The top-rim artifact is
+  one way to produce it.
+- `arena_layout` is still the canonical Citrus dish/arena identity. The Hough
+  circle must not become the canonical arena layout.
+- `view_registration` may use the accepted circle as evidence for a
+  `translation` or `similarity` fit, but a top-rim circle is not a replacement
+  homography.
+- resolved runtime overlays are per-recording convenience outputs for drawing,
+  gating, and H5 snapshots.
+
+For the first circular single-arena implementation, the expected spatial-layout
+runtime shape is:
+
+```text
+one dish_mask.valid_geometry circle
+one arena_layout zone, usually zone_id = "z0"
+zero or one view_registration suggestion/accepted fit
+```
+
+The recording snapshot and Citrus H5 output should keep both references:
+
+- Orange source artifact and accepted mask
+- Citrus layout/homography/registration state used during the experiment
+
 ## Relationship To Homography
 
 Citrus already owns homography artifacts and mappings. V0 should not create new
