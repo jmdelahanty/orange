@@ -487,12 +487,17 @@ inline bool retain_and_enqueue_worker_entry_ref(
     if (!worker || !retain_worker_entry_ref(entry, context)) {
         return false;
     }
+    auto retained_ref_guard = make_worker_entry_ref_guard(
+        entry,
+        context,
+        std::forward<ReleaseFn>(release_fn),
+        true);
     if (worker->PutObjectToQueueIn(entry)) {
+        retained_ref_guard.Dismiss();
         return true;
     }
     if (enqueue_rejected) {
         *enqueue_rejected = true;
     }
-    release_fn(entry, context);
     return false;
 }

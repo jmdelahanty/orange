@@ -17,6 +17,7 @@ struct HostWorkerEntry {
 
 struct FakeWorker {
     bool accept = true;
+    bool throw_on_enqueue = false;
     int enqueue_attempts = 0;
     HostWorkerEntry* last_entry = nullptr;
 
@@ -24,6 +25,9 @@ struct FakeWorker {
     {
         enqueue_attempts++;
         last_entry = entry;
+        if (throw_on_enqueue) {
+            throw std::runtime_error("synthetic enqueue failure");
+        }
         return accept;
     }
 };
@@ -249,6 +253,45 @@ void test_retain_and_enqueue_compensates_when_worker_rejects()
     require(recycled.empty(), "rejected enqueue should not recycle while base ref remains");
 }
 
+void test_retain_and_enqueue_compensates_when_worker_throws()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    std::vector<HostWorkerEntry*> recycled;
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+    FakeWorker worker;
+    worker.throw_on_enqueue = true;
+    bool enqueue_rejected = false;
+
+    bool caught = false;
+    try {
+        (void)retain_and_enqueue_worker_entry_ref(
+            &worker,
+            &entry,
+            WorkerEntryReleaseContext{"2010096", "host_enqueue_throw"},
+            HostRelease{&recycled},
+            &enqueue_rejected);
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    require(caught, "worker enqueue exception should propagate");
+    require(!enqueue_rejected, "throwing enqueue should not report explicit rejection");
+    require(worker.enqueue_attempts == 1, "throwing enqueue should call worker once");
+    require(worker.last_entry == &entry, "throwing enqueue should pass entry");
+    require(entry.ref_count.load(std::memory_order_acquire) == 1, "throwing enqueue should release retained ref");
+    require(recycled.empty(), "throwing enqueue should not recycle while base ref remains");
+    require(
+        worker_entry_release_double_release_count().load(std::memory_order_acquire) == 0,
+        "throwing enqueue compensation should not count as double release");
+    require(
+        worker_entry_release_underflow_count().load(std::memory_order_acquire) == 0,
+        "throwing enqueue compensation should not count as underflow");
+    require(
+        worker_entry_retain_after_release_count().load(std::memory_order_acquire) == 0,
+        "throwing enqueue compensation should not count as retain-after-release");
+}
+
 void test_ref_guard_releases_on_exception_and_recycles_after_last_ref()
 {
     reset_worker_entry_release_diagnostics_for_tests();
@@ -297,6 +340,7 @@ int main()
         test_context_diagnostics_are_tracked();
         test_retain_and_enqueue_succeeds_when_worker_accepts();
         test_retain_and_enqueue_compensates_when_worker_rejects();
+        test_retain_and_enqueue_compensates_when_worker_throws();
         test_ref_guard_releases_on_exception_and_recycles_after_last_ref();
     } catch (const std::exception& e) {
         std::cerr << "worker_entry_ownership_core_host_tests failed: "
