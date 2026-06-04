@@ -1,4 +1,5 @@
 #include "orange_local_control.h"
+#include "projected_center_preflight.h"
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -93,7 +94,8 @@ bool is_mutating_method(const std::string& method)
 {
     return method == "start_recording" ||
            method == "stop_recording" ||
-           method == "citrus_completion";
+           method == "citrus_completion" ||
+           IsProjectedCenterPreflightMethod(method);
 }
 
 std::string request_string_or_empty(const nlohmann::json& request, const char* key)
@@ -665,7 +667,8 @@ bool ParseLocalControlRequest(const nlohmann::json& request,
     if (parsed.method != "status" &&
         parsed.method != "start_recording" &&
         parsed.method != "stop_recording" &&
-        parsed.method != "citrus_completion") {
+        parsed.method != "citrus_completion" &&
+        !IsProjectedCenterPreflightMethod(parsed.method)) {
         set_error(error_out, "unsupported method: " + parsed.method);
         return false;
     }
@@ -1093,6 +1096,37 @@ nlohmann::json LocalControlServer::HandleRequest(const nlohmann::json& request)
             pending_commands_.push_back(std::move(command));
             queued_for_gui_thread = true;
         }
+    }
+
+    if (IsProjectedCenterPreflightMethod(parsed.method)) {
+        const ProjectedCenterPreflightResult preflight =
+            BuildProjectedCenterVerificationPreflight(
+                status_snapshot,
+                parsed.params,
+                received_at_utc);
+        nlohmann::json response = {
+            {"schema_id", kLocalControlResponseSchemaId},
+            {"schema_version", kLocalControlSchemaVersion},
+            {"ok", true},
+            {"accepted", preflight.passed},
+            {"duplicate", duplicate},
+            {"diagnostic_only", true},
+            {"mutation_allowed", false},
+            {"queued_for_gui_thread", false},
+            {"request_id", parsed.request_id},
+            {"operation_id", parsed.operation_id},
+            {"method", parsed.method},
+            {"responded_at_utc", utc_now()},
+            {"status", LocalControlStatusSnapshotToJson(status_snapshot)},
+            {"effect",
+             {
+                 {"preflight_projected_center_verification", preflight.effect},
+             }},
+        };
+        LogEvent({{"received_at_utc", received_at_utc},
+                  {"request", request},
+                  {"response", response}});
+        return response;
     }
 
     if (parsed.method == "citrus_completion") {

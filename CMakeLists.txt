@@ -244,6 +244,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/video_encode_profile.cpp"
     "${SRC_DIR}/recording_output_utils.cpp"
     "${SRC_DIR}/orange_local_control.cpp"
+    "${SRC_DIR}/projected_center_preflight.cpp"
     "${SRC_DIR}/global.cpp"
     "${SRC_DIR}/image_writer_worker.cpp"
     "${SRC_DIR}/gui/camera_properties_panel.cpp"
@@ -638,6 +639,7 @@ if(BUILD_TESTING)
     add_executable(orange_local_control_tests
         "tools/orange_local_control_tests.cpp"
         "${SRC_DIR}/orange_local_control.cpp"
+        "${SRC_DIR}/projected_center_preflight.cpp"
     )
     target_include_directories(orange_local_control_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(orange_local_control_tests PRIVATE cxx_std_17)

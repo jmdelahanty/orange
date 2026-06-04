@@ -142,6 +142,37 @@ LocalControlStatusSnapshot healthy_status()
     return status;
 }
 
+LocalControlStatusSnapshot preflight_ready_status()
+{
+    LocalControlStatusSnapshot status = healthy_status();
+    status.autorun_stage = "streaming";
+    status.recording_active = false;
+    status.recording_finalizing = false;
+    status.recording_finalized = false;
+    status.active_recorders = 0;
+    return status;
+}
+
+nlohmann::json projected_center_preflight_params(
+    const std::string& camera_serial = "2010096")
+{
+    return {
+        {"camera_serial", camera_serial},
+        {"capture_mode", "visible_projected_crosshair_verification"},
+        {"projector_visible_to_camera", true},
+        {"exposure_us_requested", 150000.0},
+        {"exposure_us_readback", 150000.0},
+        {"frame_rate_hz_requested", 2.0},
+        {"frame_rate_hz_readback", 2.0},
+        {"filter_state", "operator_confirmed_removed"},
+    };
+}
+
+const nlohmann::json& preflight_effect(const nlohmann::json& response)
+{
+    return response["effect"]["preflight_projected_center_verification"];
+}
+
 void wait_until_running(LocalControlServer* server)
 {
     const auto start = std::chrono::steady_clock::now();
@@ -714,6 +745,234 @@ void test_server_start_fails_when_socket_parent_is_not_directory()
         "event log should not be initialized when socket directory creation fails");
 }
 
+void test_projected_center_preflight_requires_operation_id()
+{
+    std::string error;
+    require(!ParseLocalControlRequest(
+                request_json(
+                    "preflight_projected_center_verification",
+                    "preflight-missing-operation",
+                    "",
+                    projected_center_preflight_params()),
+                nullptr,
+                &error),
+            "preflight without operation_id should fail");
+    require(
+        error.find("operation_id") != std::string::npos,
+        "preflight missing operation should mention operation_id");
+}
+
+void test_projected_center_preflight_2010096_fails_without_suppression()
+{
+    const auto socket_path = temp_path("preflight_2010096_missing_suppression.sock");
+    std::filesystem::remove(socket_path);
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path);
+    server.UpdateStatus(preflight_ready_status());
+
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-req-1",
+            "preflight-op-1",
+            projected_center_preflight_params("2010096")));
+    server.Stop();
+
+    require(response["ok"].get<bool>(), "preflight validation request should be ok");
+    require(!response["accepted"].get<bool>(), "missing suppression should fail preflight");
+    require(response["diagnostic_only"].get<bool>(), "preflight should be diagnostic-only");
+    require(!response["mutation_allowed"].get<bool>(), "preflight should disallow mutation");
+    const nlohmann::json& effect = preflight_effect(response);
+    require(effect["status"].get<std::string>() == "fail", "preflight effect should fail");
+    require(
+        effect["light_trigger_suppression"]["required"].get<bool>(),
+        "2010096 should require light trigger suppression");
+    require(
+        effect["blocking_reasons"].dump().find("light_trigger_suppression") != std::string::npos,
+        "blocking reasons should mention light trigger suppression");
+}
+
+void test_projected_center_preflight_2010096_passes_with_pinout_disabled()
+{
+    const auto socket_path = temp_path("preflight_2010096_pinout.sock");
+    std::filesystem::remove(socket_path);
+
+    nlohmann::json params = projected_center_preflight_params("2010096");
+    params["light_trigger_suppression"] = {
+        {"method", "pinout_disabled"},
+        {"trigger_output_disabled_readback", true},
+    };
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path);
+    server.UpdateStatus(preflight_ready_status());
+    const nlohmann::json first = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-pinout-req-1",
+            "preflight-pinout-op",
+            params));
+    const nlohmann::json duplicate = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-pinout-req-1",
+            "preflight-pinout-op",
+            params));
+    const nlohmann::json same_operation_duplicate = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-pinout-req-2",
+            "preflight-pinout-op",
+            params));
+    const std::vector<PendingLocalControlCommand> pending = server.DrainPendingCommands();
+    server.Stop();
+
+    require(first["ok"].get<bool>(), "pinout preflight response should be ok");
+    require(first["accepted"].get<bool>(), "pinout preflight should pass");
+    require(!first["queued_for_gui_thread"].get<bool>(), "preflight should not queue GUI command");
+    require(preflight_effect(first)["status"].get<std::string>() == "pass", "effect status pass");
+    require(
+        preflight_effect(first)["light_trigger_suppression"]["method"].get<std::string>() ==
+            "pinout_disabled",
+        "effect should preserve pinout method");
+    require(duplicate["duplicate"].get<bool>(), "duplicate request_id should be marked duplicate");
+    require(
+        same_operation_duplicate["duplicate"].get<bool>(),
+        "duplicate operation_id should be marked duplicate");
+    require(pending.empty(), "preflight must not create pending commands");
+}
+
+void test_projected_center_preflight_2010096_passes_with_outlets_off()
+{
+    const auto socket_path = temp_path("preflight_2010096_outlets.sock");
+    std::filesystem::remove(socket_path);
+
+    nlohmann::json params = projected_center_preflight_params("2010096");
+    params["light_trigger_suppression"] = {
+        {"method", "pancake_batter_outlets_7_8_off"},
+        {"outlets", nlohmann::json::array({7, 8})},
+        {"outlets_confirmed_off", true},
+    };
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path);
+    server.UpdateStatus(preflight_ready_status());
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-outlets-req",
+            "preflight-outlets-op",
+            params));
+    server.Stop();
+
+    require(response["accepted"].get<bool>(), "outlets preflight should pass");
+    require(
+        preflight_effect(response)["light_trigger_suppression"]["method"].get<std::string>() ==
+            "pancake_batter_outlets_7_8_off",
+        "effect should preserve outlet method");
+    require(
+        preflight_effect(response)["light_trigger_suppression"]["outlets"]["outlets_confirmed_off"].get<bool>(),
+        "outlets confirmation should be visible");
+}
+
+void test_projected_center_preflight_fails_missing_filter_confirmation()
+{
+    const auto socket_path = temp_path("preflight_missing_filter.sock");
+    std::filesystem::remove(socket_path);
+    nlohmann::json params = projected_center_preflight_params("2010095");
+    params["filter_state"] = "unknown";
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path);
+    server.UpdateStatus(preflight_ready_status());
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-filter-req",
+            "preflight-filter-op",
+            params));
+    server.Stop();
+
+    require(!response["accepted"].get<bool>(), "missing filter confirmation should fail");
+    require(
+        preflight_effect(response)["blocking_reasons"].dump().find("filter_not_operator_confirmed_removed") !=
+            std::string::npos,
+        "blocking reason should name missing filter confirmation");
+    require(
+        !preflight_effect(response)["light_trigger_suppression"]["required"].get<bool>(),
+        "non-2010096 should not require suppression by default");
+}
+
+void test_projected_center_preflight_fails_exposure_and_frame_rate_thresholds()
+{
+    const auto socket_path = temp_path("preflight_thresholds.sock");
+    std::filesystem::remove(socket_path);
+    nlohmann::json params = projected_center_preflight_params("2010095");
+    params["exposure_us_requested"] = 99999.0;
+    params["exposure_us_readback"] = 50000.0;
+    params["frame_rate_hz_requested"] = 6.0;
+    params["frame_rate_hz_readback"] = 10.0;
+
+    LocalControlServer server;
+    require_start_server(&server, socket_path);
+    server.UpdateStatus(preflight_ready_status());
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-thresholds-req",
+            "preflight-thresholds-op",
+            params));
+    server.Stop();
+
+    const nlohmann::json& effect = preflight_effect(response);
+    require(!response["accepted"].get<bool>(), "threshold failures should fail preflight");
+    require(effect["exposure_us_min_required"].get<double>() == 100000.0,
+            "default min exposure should be visible");
+    require(effect["frame_rate_hz_max_allowed"].get<double>() == 5.0,
+            "default max frame rate should be visible");
+    const std::string reasons = effect["blocking_reasons"].dump();
+    require(reasons.find("exposure_us_requested_below_minimum") != std::string::npos,
+            "requested exposure threshold reason");
+    require(reasons.find("exposure_us_readback_below_minimum") != std::string::npos,
+            "readback exposure threshold reason");
+    require(reasons.find("frame_rate_hz_requested_above_maximum") != std::string::npos,
+            "requested frame rate threshold reason");
+    require(reasons.find("frame_rate_hz_readback_above_maximum") != std::string::npos,
+            "readback frame rate threshold reason");
+}
+
+void test_projected_center_preflight_rejects_recording_active()
+{
+    const auto socket_path = temp_path("preflight_recording_active.sock");
+    std::filesystem::remove(socket_path);
+
+    nlohmann::json params = projected_center_preflight_params("2010095");
+    LocalControlServer server;
+    require_start_server(&server, socket_path);
+    server.UpdateStatus(healthy_status());
+    const nlohmann::json response = send_request(
+        socket_path,
+        request_json(
+            "preflight_projected_center_verification",
+            "preflight-recording-req",
+            "preflight-recording-op",
+            params));
+    server.Stop();
+
+    require(!response["accepted"].get<bool>(), "recording-active status should fail preflight");
+    require(
+        preflight_effect(response)["blocking_reasons"].dump().find("recording_active") != std::string::npos,
+        "recording-active reason should be visible");
+}
+
 void test_citrus_completion_is_diagnostic_ack_and_logged()
 {
     const auto socket_path = temp_path("completion.sock");
@@ -1075,6 +1334,20 @@ int main()
          test_server_start_removes_stale_socket_and_truncates_log},
         {"server_start_fails_when_socket_parent_is_not_directory",
          test_server_start_fails_when_socket_parent_is_not_directory},
+        {"projected_center_preflight_requires_operation_id",
+         test_projected_center_preflight_requires_operation_id},
+        {"projected_center_preflight_2010096_fails_without_suppression",
+         test_projected_center_preflight_2010096_fails_without_suppression},
+        {"projected_center_preflight_2010096_passes_with_pinout_disabled",
+         test_projected_center_preflight_2010096_passes_with_pinout_disabled},
+        {"projected_center_preflight_2010096_passes_with_outlets_off",
+         test_projected_center_preflight_2010096_passes_with_outlets_off},
+        {"projected_center_preflight_fails_missing_filter_confirmation",
+         test_projected_center_preflight_fails_missing_filter_confirmation},
+        {"projected_center_preflight_fails_exposure_and_frame_rate_thresholds",
+         test_projected_center_preflight_fails_exposure_and_frame_rate_thresholds},
+        {"projected_center_preflight_rejects_recording_active",
+         test_projected_center_preflight_rejects_recording_active},
         {"citrus_completion_is_diagnostic_ack_and_logged",
          test_citrus_completion_is_diagnostic_ack_and_logged},
         {"citrus_completion_reports_deferred_lifecycle_mode_when_enabled",
