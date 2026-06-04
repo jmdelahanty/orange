@@ -206,6 +206,12 @@ struct PipelinePerfSample {
     uint64_t worker_entry_release_underflows = 0;
     uint64_t worker_entry_double_releases = 0;
     uint64_t worker_entry_retain_after_release_count = 0;
+    uint64_t worker_entry_release_underflows_global = 0;
+    uint64_t worker_entry_double_releases_global = 0;
+    uint64_t worker_entry_retain_after_release_global = 0;
+    uint64_t worker_entry_release_underflows_camera = 0;
+    uint64_t worker_entry_double_releases_camera = 0;
+    uint64_t worker_entry_retain_after_release_camera = 0;
     int preprocess_buffers_available = -1;
     int preprocess_events_available = -1;
     uint64_t preprocess_resource_waits = 0;
@@ -668,6 +674,12 @@ public:
               << sample.worker_entry_release_underflows << ","
               << sample.worker_entry_double_releases << ","
               << sample.worker_entry_retain_after_release_count << ","
+              << sample.worker_entry_release_underflows_global << ","
+              << sample.worker_entry_double_releases_global << ","
+              << sample.worker_entry_retain_after_release_global << ","
+              << sample.worker_entry_release_underflows_camera << ","
+              << sample.worker_entry_double_releases_camera << ","
+              << sample.worker_entry_retain_after_release_camera << ","
               << sample.preprocess_buffers_available << ","
               << sample.preprocess_events_available << ","
               << sample.preprocess_resource_waits << ","
@@ -753,6 +765,8 @@ private:
                  "yolo_events,yolo_events_low,pending_requeues,"
                  "acq_starve,worker_enqueue_rejections,worker_entry_release_underflows,worker_entry_double_releases,"
                  "worker_entry_retain_after_release_count,"
+                 "worker_entry_release_underflows_global,worker_entry_double_releases_global,worker_entry_retain_after_release_global,"
+                 "worker_entry_release_underflows_camera,worker_entry_double_releases_camera,worker_entry_retain_after_release_camera,"
                  "pre_buffers,pre_events,pre_waits,pre_drops,"
                  "detect_priority_gated_frames,detect_priority_waited_frames,detect_priority_wait_timeouts,"
                  "detect_priority_wait_total_ns,detect_priority_wait_max_ns,"
@@ -876,6 +890,18 @@ private:
                 last_sample_.worker_entry_double_releases;
             totals["worker_entry_retain_after_release_count"] =
                 last_sample_.worker_entry_retain_after_release_count;
+            totals["worker_entry_release_underflows_global"] =
+                last_sample_.worker_entry_release_underflows_global;
+            totals["worker_entry_double_releases_global"] =
+                last_sample_.worker_entry_double_releases_global;
+            totals["worker_entry_retain_after_release_global"] =
+                last_sample_.worker_entry_retain_after_release_global;
+            totals["worker_entry_release_underflows_camera"] =
+                last_sample_.worker_entry_release_underflows_camera;
+            totals["worker_entry_double_releases_camera"] =
+                last_sample_.worker_entry_double_releases_camera;
+            totals["worker_entry_retain_after_release_camera"] =
+                last_sample_.worker_entry_retain_after_release_camera;
             totals["submitted_frames"] = last_sample_.submitted_frames;
             totals["enqueue_rejected_frames"] = last_sample_.enqueue_rejected_frames;
             totals["primary_routed_frames"] = last_sample_.primary_routed_frames;
@@ -1206,6 +1232,20 @@ void acquire_frames(
             worker_entry_release_double_release_count().load(std::memory_order_relaxed);
         summary["worker_entry_retain_after_release_count"] =
             worker_entry_retain_after_release_count().load(std::memory_order_relaxed);
+        summary["worker_entry_release_underflows_global"] =
+            worker_entry_release_underflow_count().load(std::memory_order_relaxed);
+        summary["worker_entry_double_releases_global"] =
+            worker_entry_release_double_release_count().load(std::memory_order_relaxed);
+        summary["worker_entry_retain_after_release_global"] =
+            worker_entry_retain_after_release_count().load(std::memory_order_relaxed);
+        const WorkerEntryRefCountDiagnosticCounts camera_ref_count_counts =
+            worker_entry_ref_count_diagnostic_counts_for_camera(camera_params->camera_serial);
+        summary["worker_entry_release_underflows_camera"] =
+            camera_ref_count_counts.release_underflows;
+        summary["worker_entry_double_releases_camera"] =
+            camera_ref_count_counts.double_releases;
+        summary["worker_entry_retain_after_release_camera"] =
+            camera_ref_count_counts.retain_after_release;
         summary["recording_ingress_submitted_frames"] = recording_stats.submitted_frames;
         summary["recording_ingress_enqueue_rejected_frames"] =
             recording_stats.enqueue_rejected_frames;
@@ -1285,6 +1325,20 @@ void acquire_frames(
             worker_entry_release_double_release_count().load(std::memory_order_relaxed);
         sample.worker_entry_retain_after_release_count =
             worker_entry_retain_after_release_count().load(std::memory_order_relaxed);
+        sample.worker_entry_release_underflows_global =
+            sample.worker_entry_release_underflows;
+        sample.worker_entry_double_releases_global =
+            sample.worker_entry_double_releases;
+        sample.worker_entry_retain_after_release_global =
+            sample.worker_entry_retain_after_release_count;
+        const WorkerEntryRefCountDiagnosticCounts camera_ref_count_counts =
+            worker_entry_ref_count_diagnostic_counts_for_camera(camera_params->camera_serial);
+        sample.worker_entry_release_underflows_camera =
+            camera_ref_count_counts.release_underflows;
+        sample.worker_entry_double_releases_camera =
+            camera_ref_count_counts.double_releases;
+        sample.worker_entry_retain_after_release_camera =
+            camera_ref_count_counts.retain_after_release;
         sample.preprocess_buffers_available = recording_stats.preprocess_buffers_available;
         sample.preprocess_events_available = recording_stats.preprocess_events_available;
         sample.preprocess_resource_waits = recording_stats.preprocess_resource_waits;
@@ -1983,15 +2037,6 @@ void acquire_frames(
                               << std::endl;
                 };
 
-                auto release_retained_fanout_ref = [&](const char* worker_name) {
-                    release_worker_entry_to_recycle(
-                        resources->recycle_queue,
-                        current_entry,
-                        WorkerEntryReleaseContext{
-                            camera_params->camera_serial.c_str(),
-                            worker_name});
-                };
-
                 auto mark_yolo_enqueue_failed = [&]() {
                     current_entry->yolo_dispatched = false;
                     current_entry->has_detections = false;
@@ -2060,12 +2105,23 @@ void acquire_frames(
                         WorkerEntryReleaseContext{
                             camera_params->camera_serial.c_str(),
                             "recording"});
-                    const bool recording_accepted =
-                        recording_retained && recording_ingress->SubmitFrame(current_entry);
+                    bool recording_accepted = false;
+                    if (recording_retained) {
+                        WorkerEntryRetainedRefGuard recording_ref_guard(
+                            resources->recycle_queue,
+                            current_entry,
+                            WorkerEntryReleaseContext{
+                                camera_params->camera_serial.c_str(),
+                                "recording"},
+                            true);
+                        recording_accepted = recording_ingress->SubmitFrame(current_entry);
+                        if (recording_accepted) {
+                            recording_ref_guard.Dismiss();
+                        }
+                    }
                     if (!recording_accepted) {
                         if (recording_retained) {
                             log_fanout_enqueue_rejected("recording");
-                            release_retained_fanout_ref("recording");
                         }
                     }
                     if (will_yolo) {

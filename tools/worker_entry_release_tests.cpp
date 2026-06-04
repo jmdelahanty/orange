@@ -135,6 +135,90 @@ void test_retain_and_enqueue_releases_when_worker_rejects()
         "worker rejection after successful retain should not count as retain-after-release");
 }
 
+void test_context_diagnostic_accounting_tracks_camera_and_worker()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    SafeQueue<WORKER_ENTRY*> recycle_queue;
+
+    WORKER_ENTRY double_release_entry{};
+    double_release_entry.ref_count.store(0, std::memory_order_release);
+    require(
+        !release_worker_entry_to_recycle(
+            recycle_queue,
+            &double_release_entry,
+            WorkerEntryReleaseContext{"2010096", "unit_test_release_stage"}),
+        "context double release should be rejected");
+
+    WORKER_ENTRY underflow_entry{};
+    underflow_entry.ref_count.store(-1, std::memory_order_release);
+    require(
+        !release_worker_entry_to_recycle(
+            recycle_queue,
+            &underflow_entry,
+            WorkerEntryReleaseContext{"2010096", "unit_test_release_stage"}),
+        "context underflow should be rejected");
+
+    WORKER_ENTRY retain_entry{};
+    retain_entry.ref_count.store(0, std::memory_order_release);
+    require(
+        !retain_worker_entry(
+            &retain_entry,
+            WorkerEntryReleaseContext{"2010096", "unit_test_retain_stage"}),
+        "context retain-after-release should be rejected");
+
+    const WorkerEntryRefCountDiagnosticCounts release_counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(
+            WorkerEntryReleaseContext{"2010096", "unit_test_release_stage"});
+    require(release_counts.double_releases == 1, "context should count double releases");
+    require(release_counts.release_underflows == 1, "context should count release underflows");
+    require(release_counts.retain_after_release == 0, "release context should not count retain failures");
+
+    const WorkerEntryRefCountDiagnosticCounts retain_counts =
+        worker_entry_ref_count_diagnostic_counts_for_context(
+            WorkerEntryReleaseContext{"2010096", "unit_test_retain_stage"});
+    require(retain_counts.double_releases == 0, "retain context should not count double releases");
+    require(retain_counts.release_underflows == 0, "retain context should not count underflows");
+    require(retain_counts.retain_after_release == 1, "retain context should count retain failures");
+
+    const WorkerEntryRefCountDiagnosticCounts camera_counts =
+        worker_entry_ref_count_diagnostic_counts_for_camera("2010096");
+    require(camera_counts.double_releases == 1, "camera should aggregate double releases");
+    require(camera_counts.release_underflows == 1, "camera should aggregate release underflows");
+    require(camera_counts.retain_after_release == 1, "camera should aggregate retain failures");
+}
+
+void test_retained_ref_guard_releases_when_submit_throws()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    SafeQueue<WORKER_ENTRY*> recycle_queue;
+    WORKER_ENTRY entry{};
+    entry.ref_count.store(1, std::memory_order_release);
+    entry.gpu_direct_mode = false;
+    const WorkerEntryReleaseContext context{"2010096", "unit_test_recording_submit"};
+
+    require(retain_worker_entry(&entry, context), "recording retain should succeed before submit");
+    require(entry.ref_count.load(std::memory_order_acquire) == 2, "recording retain should increment ref count");
+
+    bool caught = false;
+    try {
+        WorkerEntryRetainedRefGuard guard(&recycle_queue, &entry, context, true);
+        throw std::runtime_error("synthetic submit failure");
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    require(caught, "synthetic submit failure should propagate");
+    require(entry.ref_count.load(std::memory_order_acquire) == 1, "guard should release retained submit ref");
+    WORKER_ENTRY* recycled = nullptr;
+    require(!recycle_queue.pop(recycled), "guard should not recycle while base ref remains");
+    require(
+        worker_entry_release_double_release_count().load(std::memory_order_acquire) == 0,
+        "guard compensation should not count as double release");
+    require(
+        worker_entry_release_underflow_count().load(std::memory_order_acquire) == 0,
+        "guard compensation should not count as underflow");
+}
+
 void test_null_entry_is_noop()
 {
     reset_worker_entry_release_diagnostics_for_tests();
@@ -326,6 +410,8 @@ int main()
         test_retain_from_negative_ref_count_fails_without_increment();
         test_retain_and_enqueue_succeeds_when_worker_accepts();
         test_retain_and_enqueue_releases_when_worker_rejects();
+        test_context_diagnostic_accounting_tracks_camera_and_worker();
+        test_retained_ref_guard_releases_when_submit_throws();
         test_null_entry_is_noop();
         test_non_final_release_decrements_without_recycling();
         test_final_release_recycles_exactly_once();

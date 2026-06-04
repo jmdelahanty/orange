@@ -1041,6 +1041,12 @@ def summarize_pipeline(recording_folder: Path) -> dict[str, Any]:
         "worker_entry_release_underflows",
         "worker_entry_double_releases",
         "worker_entry_retain_after_release_count",
+        "worker_entry_release_underflows_global",
+        "worker_entry_double_releases_global",
+        "worker_entry_retain_after_release_global",
+        "worker_entry_release_underflows_camera",
+        "worker_entry_double_releases_camera",
+        "worker_entry_retain_after_release_camera",
         "display_q",
         "display_preview_max_fps",
         "display_preview_eligible",
@@ -1833,9 +1839,12 @@ def print_human(summary: dict[str, Any]) -> None:
                 f"get_frame_errors={fmt_int(final.get('get_frame_errors'))} "
                 f"enc_fail={fmt_int(final.get('enc_fail'))} "
                 f"enc_slow={fmt_int(final.get('enc_slow'))} "
-                f"release_underflows={fmt_int(final.get('worker_entry_release_underflows'))} "
-                f"double_releases={fmt_int(final.get('worker_entry_double_releases'))} "
-                f"retain_after_release={fmt_int(final.get('worker_entry_retain_after_release_count'))}"
+                f"release_underflows_camera={fmt_int(final.get('worker_entry_release_underflows_camera'))} "
+                f"double_releases_camera={fmt_int(final.get('worker_entry_double_releases_camera'))} "
+                f"retain_after_release_camera={fmt_int(final.get('worker_entry_retain_after_release_camera'))} "
+                f"release_underflows_global={fmt_int(final.get('worker_entry_release_underflows_global'))} "
+                f"double_releases_global={fmt_int(final.get('worker_entry_double_releases_global'))} "
+                f"retain_after_release_global={fmt_int(final.get('worker_entry_retain_after_release_global'))}"
             )
     else:
         print("  no Cam*_pipeline_perf.csv files found")
