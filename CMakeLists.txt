@@ -455,6 +455,13 @@ if(BUILD_TESTING)
     target_link_libraries(threadworker_tests PRIVATE Threads::Threads)
     add_test(NAME threadworker_tests COMMAND threadworker_tests)
 
+    add_executable(worker_entry_ownership_core_host_tests
+        "tools/worker_entry_ownership_core_host_tests.cpp"
+    )
+    target_include_directories(worker_entry_ownership_core_host_tests PRIVATE "${SRC_DIR}")
+    target_compile_features(worker_entry_ownership_core_host_tests PRIVATE cxx_std_17)
+    add_test(NAME worker_entry_ownership_core_host_tests COMMAND worker_entry_ownership_core_host_tests)
+
     add_executable(worker_entry_release_tests
         "tools/worker_entry_release_tests.cpp"
     )
