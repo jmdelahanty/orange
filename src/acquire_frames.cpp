@@ -2107,23 +2107,18 @@ void acquire_frames(
                     if (will_yolo) {
                         current_entry->yolo_before_recording_submit_host_ns = steady_clock_now_ns();
                     }
-                    const bool recording_retained = retain_worker_entry(
+                    WorkerEntryLease recording_lease = TryRetainWorkerEntryLease(
+                        resources->recycle_queue,
                         current_entry,
                         WorkerEntryReleaseContext{
                             camera_params->camera_serial.c_str(),
                             "recording"});
+                    const bool recording_retained = recording_lease.active();
                     bool recording_accepted = false;
-                    if (recording_retained) {
-                        WorkerEntryRefGuard recording_ref_guard(
-                            resources->recycle_queue,
-                            current_entry,
-                            WorkerEntryReleaseContext{
-                                camera_params->camera_serial.c_str(),
-                                "recording"},
-                            true);
+                    if (recording_lease) {
                         recording_accepted = recording_ingress->SubmitFrame(current_entry);
                         if (recording_accepted) {
-                            recording_ref_guard.Dismiss();
+                            recording_lease.TransferToConsumer();
                         }
                     }
                     if (!recording_accepted) {

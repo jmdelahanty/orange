@@ -473,6 +473,66 @@ make_worker_entry_ref_guard(
         owns_ref);
 }
 
+template <typename EntryT, typename ReleaseFn>
+class WorkerEntryRefLeaseCore {
+public:
+    WorkerEntryRefLeaseCore(
+        EntryT* entry,
+        WorkerEntryReleaseContext context,
+        ReleaseFn release_fn,
+        bool owns_ref)
+        : guard_(make_worker_entry_ref_guard(
+              entry,
+              context,
+              std::move(release_fn),
+              owns_ref))
+    {
+    }
+
+    WorkerEntryRefLeaseCore(const WorkerEntryRefLeaseCore&) = delete;
+    WorkerEntryRefLeaseCore& operator=(const WorkerEntryRefLeaseCore&) = delete;
+    WorkerEntryRefLeaseCore(WorkerEntryRefLeaseCore&& other) noexcept = default;
+    WorkerEntryRefLeaseCore& operator=(WorkerEntryRefLeaseCore&& other) noexcept = delete;
+
+    bool active() const
+    {
+        return guard_.active();
+    }
+
+    explicit operator bool() const
+    {
+        return active();
+    }
+
+    void TransferToConsumer()
+    {
+        guard_.Dismiss();
+    }
+
+    void Dismiss()
+    {
+        TransferToConsumer();
+    }
+
+private:
+    WorkerEntryRefGuardCore<EntryT, ReleaseFn> guard_;
+};
+
+template <typename EntryT, typename ReleaseFn>
+inline WorkerEntryRefLeaseCore<EntryT, std::decay_t<ReleaseFn>>
+try_retain_worker_entry_ref_lease(
+    EntryT* entry,
+    WorkerEntryReleaseContext context,
+    ReleaseFn&& release_fn)
+{
+    const bool retained = retain_worker_entry_ref(entry, context);
+    return WorkerEntryRefLeaseCore<EntryT, std::decay_t<ReleaseFn>>(
+        entry,
+        context,
+        std::forward<ReleaseFn>(release_fn),
+        retained);
+}
+
 template <typename WorkerT, typename EntryT, typename ReleaseFn>
 inline bool retain_and_enqueue_worker_entry_ref(
     WorkerT* worker,

@@ -39,6 +39,19 @@ void require(bool condition, const std::string& message)
     }
 }
 
+void require_no_ownership_diagnostics(const std::string& message)
+{
+    require(
+        worker_entry_release_double_release_count().load(std::memory_order_acquire) == 0,
+        message + ": double release count should be zero");
+    require(
+        worker_entry_release_underflow_count().load(std::memory_order_acquire) == 0,
+        message + ": underflow count should be zero");
+    require(
+        worker_entry_retain_after_release_count().load(std::memory_order_acquire) == 0,
+        message + ": retain-after-release count should be zero");
+}
+
 struct HostRecycle {
     std::vector<HostWorkerEntry*>* recycled = nullptr;
 
@@ -292,6 +305,116 @@ void test_retain_and_enqueue_compensates_when_worker_throws()
         "throwing enqueue compensation should not count as retain-after-release");
 }
 
+void test_retained_lease_creation_increments_ref_count()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    std::vector<HostWorkerEntry*> recycled;
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+
+    {
+        auto lease = try_retain_worker_entry_ref_lease(
+            &entry,
+            WorkerEntryReleaseContext{"2010096", "host_lease_create"},
+            HostRelease{&recycled});
+        require(lease.active(), "successful retained lease should be active");
+        require(static_cast<bool>(lease), "successful retained lease should convert to true");
+        require(entry.ref_count.load(std::memory_order_acquire) == 2, "successful retained lease should increment");
+    }
+
+    require(entry.ref_count.load(std::memory_order_acquire) == 1, "lease destructor should release retained ref");
+    require(recycled.empty(), "lease destructor should not recycle while base ref remains");
+    require_no_ownership_diagnostics("successful retained lease");
+}
+
+void test_failed_retain_creates_inactive_lease()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    std::vector<HostWorkerEntry*> recycled;
+    HostWorkerEntry entry;
+    entry.ref_count.store(0, std::memory_order_release);
+
+    {
+        auto lease = try_retain_worker_entry_ref_lease(
+            &entry,
+            WorkerEntryReleaseContext{"2010096", "host_lease_failed_retain"},
+            HostRelease{&recycled});
+        require(!lease.active(), "failed retained lease should be inactive");
+        require(!static_cast<bool>(lease), "failed retained lease should convert to false");
+    }
+
+    require(entry.ref_count.load(std::memory_order_acquire) == 0, "failed lease should not change ref count");
+    require(recycled.empty(), "failed lease should not recycle");
+    require(
+        worker_entry_retain_after_release_count().load(std::memory_order_acquire) == 1,
+        "failed lease retain should count retain-after-release");
+    require(
+        worker_entry_release_double_release_count().load(std::memory_order_acquire) == 0,
+        "failed lease should not count double release");
+    require(
+        worker_entry_release_underflow_count().load(std::memory_order_acquire) == 0,
+        "failed lease should not count underflow");
+}
+
+void test_lease_transfer_prevents_release()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    std::vector<HostWorkerEntry*> recycled;
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+    const WorkerEntryReleaseContext context{"2010096", "host_lease_transfer"};
+
+    {
+        auto lease = try_retain_worker_entry_ref_lease(
+            &entry,
+            context,
+            HostRelease{&recycled});
+        require(lease.active(), "lease should be active before transfer");
+        require(entry.ref_count.load(std::memory_order_acquire) == 2, "lease should retain before transfer");
+        lease.TransferToConsumer();
+        require(!lease.active(), "transferred lease should become inactive");
+    }
+
+    require(entry.ref_count.load(std::memory_order_acquire) == 2, "transferred lease should not release on destruction");
+    require(recycled.empty(), "transferred lease should not recycle");
+    require_no_ownership_diagnostics("transferred lease");
+
+    require(
+        !release_worker_entry_ref(&entry, context, HostRecycle{&recycled}),
+        "consumer release should leave base ref active");
+    require(entry.ref_count.load(std::memory_order_acquire) == 1, "consumer release should drop to base ref");
+    require(
+        release_worker_entry_ref(&entry, context, HostRecycle{&recycled}),
+        "base release should recycle final ref");
+    require(recycled.size() == 1 && recycled[0] == &entry, "final base release should recycle once");
+}
+
+void test_lease_releases_on_exception_unwind()
+{
+    reset_worker_entry_release_diagnostics_for_tests();
+    std::vector<HostWorkerEntry*> recycled;
+    HostWorkerEntry entry;
+    entry.ref_count.store(1, std::memory_order_release);
+
+    bool caught = false;
+    try {
+        auto lease = try_retain_worker_entry_ref_lease(
+            &entry,
+            WorkerEntryReleaseContext{"2010096", "host_lease_exception"},
+            HostRelease{&recycled});
+        require(lease.active(), "lease should be active before exception");
+        require(entry.ref_count.load(std::memory_order_acquire) == 2, "lease should retain before exception");
+        throw std::runtime_error("synthetic lease unwind");
+    } catch (const std::runtime_error&) {
+        caught = true;
+    }
+
+    require(caught, "synthetic lease exception should propagate");
+    require(entry.ref_count.load(std::memory_order_acquire) == 1, "lease should release retained ref on unwind");
+    require(recycled.empty(), "lease unwind should not recycle while base ref remains");
+    require_no_ownership_diagnostics("lease exception unwind");
+}
+
 void test_ref_guard_releases_on_exception_and_recycles_after_last_ref()
 {
     reset_worker_entry_release_diagnostics_for_tests();
@@ -341,6 +464,10 @@ int main()
         test_retain_and_enqueue_succeeds_when_worker_accepts();
         test_retain_and_enqueue_compensates_when_worker_rejects();
         test_retain_and_enqueue_compensates_when_worker_throws();
+        test_retained_lease_creation_increments_ref_count();
+        test_failed_retain_creates_inactive_lease();
+        test_lease_transfer_prevents_release();
+        test_lease_releases_on_exception_unwind();
         test_ref_guard_releases_on_exception_and_recycles_after_last_ref();
     } catch (const std::exception& e) {
         std::cerr << "worker_entry_ownership_core_host_tests failed: "

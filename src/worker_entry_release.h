@@ -112,6 +112,64 @@ private:
 
 using WorkerEntryRetainedRefGuard = WorkerEntryRefGuard;
 
+class WorkerEntryLease {
+public:
+    WorkerEntryLease(
+        SafeQueue<WORKER_ENTRY*>* recycle_queue,
+        WORKER_ENTRY* entry,
+        WorkerEntryReleaseContext context)
+        : lease_(try_retain_worker_entry_ref_lease(
+              entry,
+              context,
+              WorkerEntryRecycleReleaseFn{recycle_queue}))
+    {
+    }
+
+    WorkerEntryLease(const WorkerEntryLease&) = delete;
+    WorkerEntryLease& operator=(const WorkerEntryLease&) = delete;
+    WorkerEntryLease(WorkerEntryLease&& other) noexcept = default;
+    WorkerEntryLease& operator=(WorkerEntryLease&& other) noexcept = delete;
+
+    bool active() const
+    {
+        return lease_.active();
+    }
+
+    explicit operator bool() const
+    {
+        return active();
+    }
+
+    void TransferToConsumer()
+    {
+        lease_.TransferToConsumer();
+    }
+
+    void Dismiss()
+    {
+        TransferToConsumer();
+    }
+
+private:
+    WorkerEntryRefLeaseCore<WORKER_ENTRY, WorkerEntryRecycleReleaseFn> lease_;
+};
+
+inline WorkerEntryLease TryRetainWorkerEntryLease(
+    SafeQueue<WORKER_ENTRY*>* recycle_queue,
+    WORKER_ENTRY* entry,
+    WorkerEntryReleaseContext context)
+{
+    return WorkerEntryLease(recycle_queue, entry, context);
+}
+
+inline WorkerEntryLease TryRetainWorkerEntryLease(
+    SafeQueue<WORKER_ENTRY*>& recycle_queue,
+    WORKER_ENTRY* entry,
+    WorkerEntryReleaseContext context)
+{
+    return TryRetainWorkerEntryLease(&recycle_queue, entry, context);
+}
+
 template <typename WorkerT>
 inline bool retain_and_enqueue_worker_entry(
     WorkerT* worker,
