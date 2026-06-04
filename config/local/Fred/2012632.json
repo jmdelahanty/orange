@@ -1,0 +1,87 @@
+{
+  "camera_scan_type": "area_scan",
+  "color": true,
+  "color_temp": "CT_Off",
+  "crop_pipeline": {
+    "crop_size_px": 256,
+    "preview_max_fps": 15
+  },
+  "device_serial_number": "2012632",
+  "device_model_name": "HB-5000SBC",
+  "exposure": 300,
+  "focus": 0,
+  "focus_uart_bootstrap": false,
+  "frame_rate": 250,
+  "gain": 256,
+  "gpio": {
+    "nodes": []
+  },
+  "gpio_connector_variant": "area_scan_12_pin",
+  "gpio_recipe": "",
+  "gpu_direct": true,
+  "height": 2064,
+  "iris": 0,
+  "lens_control_enabled": false,
+  "name": "Cam2012632",
+  "offset_x": 0,
+  "offset_y": 0,
+  "pixel_format": "BayerRG8",
+  "ptp": {
+    "enabled": false
+  },
+  "recording": {
+    "preferred_sink_mode": "external_ipc",
+    "constraints": {
+      "preferred_topology_class": "",
+      "require_peer_access": false
+    },
+    "encode": {
+      "aq": "off",
+      "codec": "hevc",
+      "gop_length": 25,
+      "nvenc_direct_input": false,
+      "preset": "p1",
+      "quality_value": 20,
+      "rate_control_mode": "vbr",
+      "temporal_aq": "off",
+      "tuning": "ll"
+    },
+    "mode": "single_session",
+    "output": {
+      "downsample_factor": 1,
+      "mode": "factor",
+      "requested_height": 2064,
+      "requested_width": 2464
+    },
+    "profile_name": "fred_single_session_hevc_250fps_p1",
+    "resources": {
+      "acquire_work_entries": 0,
+      "encoder_entry_pool_size": 0
+    },
+    "split_gop": {
+      "encoder_gpu_ids": [],
+      "max_buffered_bytes": 0,
+      "max_inflight_gops": 0,
+      "placement": "single_gpu",
+      "source_encoder_policy": "local_only",
+      "strict": false,
+      "transfer_mode": "auto",
+      "writer_queue": {
+        "fail_on_overflow": true,
+        "max_bytes": 0,
+        "max_packets": 0
+      }
+    }
+  },
+  "schema_id": "orange.camera.config",
+  "schema_version": 4,
+  "source_gpu_id": 0,
+  "sync_mode": "free_run",
+  "trigger": {
+    "activation": "RisingEdge",
+    "enabled": false,
+    "selector": "AcquisitionStart",
+    "source": "Software"
+  },
+  "width": 2464
+}
