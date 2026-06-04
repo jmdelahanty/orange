@@ -1,4 +1,5 @@
 #include "crop_producer.h"
+#include "worker_entry_release.h"
 
 #include "kernel.cuh"
 #include "pose_worker.h"
@@ -194,16 +195,7 @@ CropProducer::~CropProducer()
 
 void CropProducer::release_entry(WORKER_ENTRY* entry)
 {
-    if (!entry) {
-        return;
-    }
-
-    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-        }
-        recycle_queue_.push(entry);
-    }
+    release_worker_entry_to_recycle(recycle_queue_, entry);
 }
 
 void CropProducer::ReleaseSourceEntry(WORKER_ENTRY*& entry)

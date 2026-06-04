@@ -38,8 +38,11 @@ int COffThreadMachine::StartThread(const char *tName) {
     threadName[sizeof(threadName) - 1] = 0;
   }
 
+  threadOn = 1;
+
 #if defined(__GNUC__)
   if (pthread_create(&threadHandle, nullptr, MachineThread, (void *)this) != 0) {
+    threadOn = 0;
     return ECHILD;
   }
 
@@ -53,6 +56,7 @@ int COffThreadMachine::StartThread(const char *tName) {
 #else // Windows
   if (!(threadHandle =
             CreateThread(nullptr, 0, MachineThread, (void *)this, 0, nullptr))) {
+    threadOn = 0;
     return ECHILD;
   }
   // TODO: SetThreadDescription(threadHandle, …) on Win10+
@@ -65,11 +69,10 @@ void COffThreadMachine::StopThread() {
   if (!threadHandle)
     return; // nothing to do – already joined / never started
 
-  // Signal the worker to exit if it is still running.
-  if (threadOn) {
-    threadOn = 0;
-    DoStopThread();
-  }
+  // Signal the worker to exit. This must run even if the newly-created thread
+  // has not yet entered MachineThread.
+  threadOn = 0;
+  DoStopThread();
 
 #if defined(__GNUC__)
   pthread_join(threadHandle, nullptr);
@@ -104,7 +107,6 @@ THREAD_FUNCTION COffThreadMachine::MachineThread(void *arg) {
 #endif
   }
 
-  self->threadOn = 1;
   self->ThreadRunning();
   self->threadOn = 0; // mark finished before exiting
   return 0;

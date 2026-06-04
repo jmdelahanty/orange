@@ -696,11 +696,18 @@ bool PoseWorker::TryEnqueueCrop(CropFrame* crop_frame)
         return false;
     }
 
+    if (!PutObjectToQueueIn(crop_frame)) {
+        std::cerr << "[PoseWorker] enqueue rejected after stop"
+                  << " worker=" << threadName
+                  << " frame=" << crop_frame->frame.local_frame_id
+                  << " recording_frame=" << crop_frame->frame.recording_frame_id
+                  << std::endl;
+        return false;
+    }
     frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
     if (record_active) {
         run_frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
     }
-    PutObjectToQueueIn(crop_frame);
     return true;
 }
 

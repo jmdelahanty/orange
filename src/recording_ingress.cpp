@@ -22,6 +22,7 @@
 #include "encoder_preprocess_worker.h"
 #include "external_recorder_ipc_protocol.h"
 #include "threadworker.h"
+#include "worker_entry_release.h"
 
 namespace {
 constexpr uint8_t kRouteModePrimary = 0;
@@ -46,18 +47,7 @@ void append_unique_gpu_id(std::vector<int>* gpu_ids, int gpu_id)
 
 void release_recording_entry_to_recycle(SafeQueue<WORKER_ENTRY*>* recycle_queue, WORKER_ENTRY* entry)
 {
-    if (!entry) {
-        return;
-    }
-    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) != 1) {
-        return;
-    }
-    if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-        EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-    }
-    if (recycle_queue) {
-        recycle_queue->push(entry);
-    }
+    release_worker_entry_to_recycle(recycle_queue, entry);
 }
 
 bool recording_ingress_env_flag_enabled(const char* name, bool default_value = false)
@@ -195,7 +185,7 @@ public:
             drain_requested_ = true;
             drain_reason_ = reason && *reason ? reason : "recording_draining";
         }
-        PutObjectToQueueIn(nullptr);
+        (void)PutObjectToQueueIn(nullptr);
     }
     void ResetConnection()
     {
@@ -246,7 +236,7 @@ protected:
                     in_flight_.load(std::memory_order_relaxed) > 0 ||
                     GetCountQueueIn() > 0) {
                     usleep(1000);
-                    PutObjectToQueueIn(nullptr);
+                    (void)PutObjectToQueueIn(nullptr);
                     return false;
                 }
 
@@ -897,7 +887,8 @@ RecordingIngress::RecordingIngress(EncoderPreprocessWorker* primary_preprocess_w
       recording_gop_length_(std::max<uint32_t>(1u, recording_gop_length)),
       resolved_recording_config_(resolved_recording_config),
       recycle_queue_(recycle_queue),
-      recording_sink_mode_(normalize_recording_sink_mode(recording_sink_mode))
+      recording_sink_mode_(normalize_recording_sink_mode(recording_sink_mode)),
+      camera_serial_(camera_serial.empty() ? "unknown" : camera_serial)
 {
     if (recording_sink_mode_.empty()) {
         throw std::runtime_error("Unsupported recording sink mode: " + recording_sink_mode);
@@ -1030,7 +1021,7 @@ void RecordingIngress::increment_last_route_mode_helper()
     last_route_mode_.store(kRouteModeHelper, std::memory_order_relaxed);
 }
 
-void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
+bool RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
 {
     if (entry) {
         entry->recording_submit_host_ns = recording_ingress_now_ns();
@@ -1053,7 +1044,7 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
             entry->recording_route_helper = false;
         }
         release_entry(entry);
-        return;
+        return true;
     }
 
     if (recording_sink_mode_ == "threaded_handoff_only") {
@@ -1068,8 +1059,16 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
             entry->recording_target_gpu_id = primary_encode_gpu_id_;
             entry->recording_route_helper = false;
         }
-        threaded_handoff_worker_->PutObjectToQueueIn(entry);
-        return;
+        if (!threaded_handoff_worker_->PutObjectToQueueIn(entry)) {
+            enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed);
+            std::cerr << "[RecordingIngress] threaded_handoff_only enqueue rejected"
+                      << " cam=" << camera_serial_
+                      << " frame=" << (entry ? entry->frame_id : 0)
+                      << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
+                      << std::endl;
+            return false;
+        }
+        return true;
     }
 
     if (recording_sink_mode_ == "external_ipc") {
@@ -1084,8 +1083,16 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
             entry->recording_target_gpu_id = primary_encode_gpu_id_;
             entry->recording_route_helper = false;
         }
-        external_ipc_handoff_worker_->PutObjectToQueueIn(entry);
-        return;
+        if (!external_ipc_handoff_worker_->PutObjectToQueueIn(entry)) {
+            enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed);
+            std::cerr << "[RecordingIngress] external_ipc enqueue rejected"
+                      << " cam=" << camera_serial_
+                      << " frame=" << (entry ? entry->frame_id : 0)
+                      << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
+                      << std::endl;
+            return false;
+        }
+        return true;
     }
 
     if (!primary_preprocess_worker_) {
@@ -1141,7 +1148,17 @@ void RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
     if (entry) {
         entry->recording_target_gpu_id = target_gpu_id;
     }
-    target_worker->PutObjectToQueueIn(entry);
+    if (!target_worker->PutObjectToQueueIn(entry)) {
+        enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed);
+        std::cerr << "[RecordingIngress] preprocess enqueue rejected"
+                  << " cam=" << camera_serial_
+                  << " frame=" << (entry ? entry->frame_id : 0)
+                  << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
+                  << " target_gpu=" << target_gpu_id
+                  << std::endl;
+        return false;
+    }
+    return true;
 }
 
 RecordingIngressStats RecordingIngress::GetStats() const
@@ -1226,6 +1243,7 @@ RecordingIngressStats RecordingIngress::GetStats() const
     stats.helper_requested_frames = helper_requested_frames_.load(std::memory_order_relaxed);
     stats.helper_fallback_frames = helper_fallback_frames_.load(std::memory_order_relaxed);
     stats.helper_dispatched_frames = helper_dispatched_frames_.load(std::memory_order_relaxed);
+    stats.enqueue_rejected_frames = enqueue_rejected_frames_.load(std::memory_order_relaxed);
     stats.last_target_gpu_id = last_target_gpu_id_.load(std::memory_order_relaxed);
     stats.last_route_mode =
         last_route_mode_.load(std::memory_order_relaxed) == kRouteModeHelper ? "helper" : "primary";

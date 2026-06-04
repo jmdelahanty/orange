@@ -725,11 +725,18 @@ bool CropAndEncodeWorker::TryEnqueueJob(CropEncodeJob* job)
         return false;
     }
 
+    if (!PutObjectToQueueIn(job)) {
+        std::cerr << "[CropAndEncodeWorker] enqueue rejected after stop"
+                  << " worker=" << threadName
+                  << " frame=" << job->frame.local_frame_id
+                  << " recording_frame=" << job->frame.recording_frame_id
+                  << std::endl;
+        return false;
+    }
     jobs_enqueued_.fetch_add(1, std::memory_order_relaxed);
     if (record_active) {
         ++run_jobs_enqueued_;
     }
-    PutObjectToQueueIn(job);
     return true;
 }
 

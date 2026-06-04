@@ -5,6 +5,7 @@
 #include "kernel.cuh"
 #include "npp_utils.h"
 #include "nvtx_profiling.h"
+#include "worker_entry_release.h"
 #include <npp.h>
 #include <nppi.h>
 #include <nppi_color_conversion.h>
@@ -639,15 +640,7 @@ void EncoderPreprocessWorker::drain_pending_source_releases(bool synchronize_all
 
 void EncoderPreprocessWorker::release_source_entry(WORKER_ENTRY* entry)
 {
-    if (!entry) {
-        return;
-    }
-    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-        }
-        m_recycle_queue_.push(entry);
-    }
+    release_worker_entry_to_recycle(m_recycle_queue_, entry);
 }
 
 bool EncoderPreprocessWorker::IsDrained()
@@ -790,7 +783,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             camera_control_->recording_draining &&
             pending_source_release_count_.load(std::memory_order_relaxed) > 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            PutObjectToQueueIn(nullptr);
+            (void)PutObjectToQueueIn(nullptr);
         }
         return false;
     }
@@ -1288,9 +1281,16 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     // Pass the prepared frame and its completion event to the hardware encoder.
-    if (m_hw_worker_) {
-        m_hw_worker_->PutObjectToQueueIn(encoder_entry);
+    if (m_hw_worker_ && m_hw_worker_->PutObjectToQueueIn(encoder_entry)) {
+        encoder_entry = nullptr;
     } else {
+        if (m_hw_worker_) {
+            std::cerr << "[EncoderPreprocessWorker] Hardware worker enqueue rejected"
+                      << " cam=" << camera_params_->camera_serial
+                      << " frame=" << entry->frame_id
+                      << " recording_frame=" << entry->recording_frame_id
+                      << std::endl;
+        }
         // If there's no hardware worker, recycle the resources.
         free_encoder_entries_.push(encoder_entry);
         free_events_.push(event);

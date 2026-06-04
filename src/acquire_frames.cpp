@@ -22,6 +22,7 @@
 #include "fsuid_guard.h"
 #include "latency_stats.h"
 #include "project.h"
+#include "worker_entry_release.h"
 #include "yolo_event_log.h"
 #include <atomic>
 #include <algorithm>
@@ -201,6 +202,7 @@ struct PipelinePerfSample {
     int yolo_events_low_watermark = -1;
     int pending_requeues = -1;
     uint64_t acquisition_resource_starvations = 0;
+    uint64_t worker_enqueue_rejections = 0;
     int preprocess_buffers_available = -1;
     int preprocess_events_available = -1;
     uint64_t preprocess_resource_waits = 0;
@@ -216,6 +218,7 @@ struct PipelinePerfSample {
     uint64_t external_ipc_failures = 0;
     uint64_t external_ipc_ack_timeouts = 0;
     uint64_t submitted_frames = 0;
+    uint64_t enqueue_rejected_frames = 0;
     uint64_t primary_routed_frames = 0;
     uint64_t helper_requested_frames = 0;
     uint64_t helper_fallback_frames = 0;
@@ -301,6 +304,7 @@ struct AcquisitionCadenceProbeSample {
     int yolo_events_low_watermark = -1;
     size_t pending_requeues = 0;
     uint64_t acquisition_resource_starvations = 0;
+    uint64_t worker_enqueue_rejections = 0;
     uint64_t camera_dropped_frames = 0;
     uint64_t get_frame_errors = 0;
     int last_get_frame_error_code = 0;
@@ -375,6 +379,7 @@ public:
               << sample.yolo_events_low_watermark << ","
               << sample.pending_requeues << ","
               << sample.acquisition_resource_starvations << ","
+              << sample.worker_enqueue_rejections << ","
               << sample.camera_dropped_frames << ","
               << sample.get_frame_errors << ","
               << sample.last_get_frame_error_code << ","
@@ -388,6 +393,7 @@ public:
               << sample.helper_enqueue_available_events << ","
               << sample.helper_enqueue_delay_ns << ","
               << sample.ingress_stats.submitted_frames << ","
+              << sample.ingress_stats.enqueue_rejected_frames << ","
               << sample.ingress_stats.primary_routed_frames << ","
               << sample.ingress_stats.helper_requested_frames << ","
               << sample.ingress_stats.helper_fallback_frames << ","
@@ -449,11 +455,12 @@ private:
                  "direct,ring_copy,"
                  "free_entries,free_entries_low,free_events,free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,acq_starve,"
+                 "worker_enqueue_rejections,"
                  "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
                  "recording_submit_host_ns,receive_to_submit_ns,"
                  "recording_target_gpu_id,recording_helper_requested,recording_route_helper,"
                  "helper_enqueue_q,helper_enqueue_buffers,helper_enqueue_events,helper_enqueue_delay_ns,"
-                 "submitted_frames,primary_routed_frames,helper_requested_frames,"
+                 "submitted_frames,enqueue_rejected_frames,primary_routed_frames,helper_requested_frames,"
                  "helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
                  "pre_q,enc_q,pre_buffers,pre_events,pre_waits,pre_drops,enc_fail,enc_slow\n";
         std::cout << "[ACQ_CADENCE] Cam " << serial
@@ -560,6 +567,7 @@ void dump_recording_submit_history(const CameraParams* camera_params,
                   << " direct=" << (entry.use_direct_pointer ? 1 : 0)
                   << " ring_copy=" << (entry.use_ring_copy ? 1 : 0)
                   << " submitted=" << entry.ingress_stats.submitted_frames
+                  << " enqueue_rejected=" << entry.ingress_stats.enqueue_rejected_frames
                   << " primary_routed=" << entry.ingress_stats.primary_routed_frames
                   << " helper_requested=" << entry.ingress_stats.helper_requested_frames
                   << " helper_fallback=" << entry.ingress_stats.helper_fallback_frames
@@ -653,6 +661,7 @@ public:
               << sample.yolo_events_low_watermark << ","
               << sample.pending_requeues << ","
               << sample.acquisition_resource_starvations << ","
+              << sample.worker_enqueue_rejections << ","
               << sample.preprocess_buffers_available << ","
               << sample.preprocess_events_available << ","
               << sample.preprocess_resource_waits << ","
@@ -668,6 +677,7 @@ public:
               << sample.external_ipc_failures << ","
               << sample.external_ipc_ack_timeouts << ","
               << sample.submitted_frames << ","
+              << sample.enqueue_rejected_frames << ","
               << sample.primary_routed_frames << ","
               << sample.helper_requested_frames << ","
               << sample.helper_fallback_frames << ","
@@ -735,12 +745,12 @@ private:
                  "yolo_q,pre_q,enc_q,"
                  "acq_free_entries,acq_free_entries_low,acq_free_events,acq_free_events_low,"
                  "yolo_events,yolo_events_low,pending_requeues,"
-                 "acq_starve,pre_buffers,pre_events,pre_waits,pre_drops,"
+                 "acq_starve,worker_enqueue_rejections,pre_buffers,pre_events,pre_waits,pre_drops,"
                  "detect_priority_gated_frames,detect_priority_waited_frames,detect_priority_wait_timeouts,"
                  "detect_priority_wait_total_ns,detect_priority_wait_max_ns,"
                  "enc_fail,enc_slow,"
                  "external_ipc_frames_acked,external_ipc_failures,external_ipc_ack_timeouts,"
-                 "submitted_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
+                 "submitted_frames,enqueue_rejected_frames,primary_routed_frames,helper_requested_frames,helper_fallback_frames,helper_dispatched_frames,last_target_gpu_id,last_route_mode,"
                  "camera_dropped_frames,get_frame_errors,last_get_frame_error_code,"
                  "gpu_direct,gpu_ring,gpu_copy\n";
         file_ << std::fixed << std::setprecision(6);
@@ -851,7 +861,9 @@ private:
             totals["external_ipc_frames_acked"] = last_sample_.external_ipc_frames_acked;
             totals["external_ipc_failures"] = last_sample_.external_ipc_failures;
             totals["external_ipc_ack_timeouts"] = last_sample_.external_ipc_ack_timeouts;
+            totals["worker_enqueue_rejections"] = last_sample_.worker_enqueue_rejections;
             totals["submitted_frames"] = last_sample_.submitted_frames;
+            totals["enqueue_rejected_frames"] = last_sample_.enqueue_rejected_frames;
             totals["primary_routed_frames"] = last_sample_.primary_routed_frames;
             totals["helper_requested_frames"] = last_sample_.helper_requested_frames;
             totals["helper_fallback_frames"] = last_sample_.helper_fallback_frames;
@@ -879,6 +891,7 @@ private:
         if (have_last_sample_) {
             summary["routing"] = {
                 {"submitted_frames", last_sample_.submitted_frames},
+                {"enqueue_rejected_frames", last_sample_.enqueue_rejected_frames},
                 {"primary_routed_frames", last_sample_.primary_routed_frames},
                 {"helper_requested_frames", last_sample_.helper_requested_frames},
                 {"helper_fallback_frames", last_sample_.helper_fallback_frames},
@@ -1101,6 +1114,7 @@ void acquire_frames(
     int free_entries_low = free_entries_available;
     int free_events_low = free_events_available;
     int yolo_events_low = yolo_events_available;
+    uint64_t worker_enqueue_rejections = 0;
     struct PendingRequeue {
         Emergent::CEmergentCamera* camera;
         Emergent::CEmergentFrame* frame;
@@ -1171,7 +1185,10 @@ void acquire_frames(
         summary["sync_observed_frame_count_source"] = "successful_EVT_CameraGetFrame";
         summary["recording_frames_assigned_total"] = recording_frames_assigned;
         summary["last_recording_frame_id"] = recording_frames_assigned;
+        summary["worker_enqueue_rejections"] = worker_enqueue_rejections;
         summary["recording_ingress_submitted_frames"] = recording_stats.submitted_frames;
+        summary["recording_ingress_enqueue_rejected_frames"] =
+            recording_stats.enqueue_rejected_frames;
         summary["encoded_frames_total"] = nullptr;
         summary["encoded_frame_count_source"] = "not_available_in_ptp_sync_summary";
         summary["encoded_frame_count_authoritative_artifacts"] = {
@@ -1241,6 +1258,7 @@ void acquire_frames(
         sample.yolo_events_low_watermark = yolo_events_low;
         sample.pending_requeues = static_cast<int>(pending_requeues.size());
         sample.acquisition_resource_starvations = acquisition_resource_starvations;
+        sample.worker_enqueue_rejections = worker_enqueue_rejections;
         sample.preprocess_buffers_available = recording_stats.preprocess_buffers_available;
         sample.preprocess_events_available = recording_stats.preprocess_events_available;
         sample.preprocess_resource_waits = recording_stats.preprocess_resource_waits;
@@ -1256,6 +1274,7 @@ void acquire_frames(
         sample.external_ipc_failures = recording_stats.external_ipc_failures;
         sample.external_ipc_ack_timeouts = recording_stats.external_ipc_ack_timeouts;
         sample.submitted_frames = recording_stats.submitted_frames;
+        sample.enqueue_rejected_frames = recording_stats.enqueue_rejected_frames;
         sample.primary_routed_frames = recording_stats.primary_routed_frames;
         sample.helper_requested_frames = recording_stats.helper_requested_frames;
         sample.helper_fallback_frames = recording_stats.helper_fallback_frames;
@@ -1900,7 +1919,13 @@ void acquire_frames(
             if (camera_select->frame_save_state == State_Write_New_Frame && image_writer) {
                 ImageWriter_Entry* save_job = new ImageWriter_Entry();
                 save_job->event_ptr = current_event;
-                image_writer->PutObjectToQueueIn(save_job);
+                if (!image_writer->PutObjectToQueueIn(save_job)) {
+                    delete save_job;
+                    std::cerr << "[ACQ] Image writer enqueue rejected"
+                              << " cam=" << camera_params->camera_serial
+                              << " frame=" << current_entry->frame_id
+                              << std::endl;
+                }
             }
             
             // Create a dispatch counter to track how many workers will process this frame
@@ -1909,7 +1934,7 @@ void acquire_frames(
             // If no workers are active, we return the frame to the free queue.
             // This allows us to efficiently manage resources and avoid unnecessary processing.
             if (dispatch_count > 0) {
-                current_entry->ref_count.store(dispatch_count);
+                current_entry->ref_count.store(1);
                 if (will_yolo) {
                     current_entry->yolo_dispatch_ready_host_ns = steady_clock_now_ns();
                 }
@@ -1920,16 +1945,58 @@ void acquire_frames(
                     current_entry->camera_frame_struct = frame_to_requeue;
                 }
 
-                auto enqueue_yolo = [&]() {
+                auto release_fanout_ref = [&](const char* worker_name) {
+                    worker_enqueue_rejections++;
+                    std::cerr << "[ACQ] Worker enqueue rejected"
+                              << " cam=" << camera_params->camera_serial
+                              << " worker=" << worker_name
+                              << " frame=" << current_entry->frame_id
+                              << " camera_frame=" << current_entry->camera_frame_id
+                              << " recording_frame=" << current_entry->recording_frame_id
+                              << " rejections=" << worker_enqueue_rejections
+                              << std::endl;
+                    release_worker_entry_to_recycle(resources->recycle_queue, current_entry);
+                };
+
+                auto mark_yolo_enqueue_failed = [&]() {
+                    current_entry->yolo_dispatched = false;
+                    current_entry->has_detections = false;
+                    current_entry->detections_ready.store(true, std::memory_order_release);
+                    if (current_entry->yolo_input_ready_event) {
+                        cudaEventRecord(current_entry->yolo_input_ready_event, stream);
+                        current_entry->yolo_input_ready_event_recorded.store(
+                            true,
+                            std::memory_order_release);
+                    }
+                    if (current_entry->yolo_completion_event) {
+                        cudaEventRecord(*current_entry->yolo_completion_event, stream);
+                        current_entry->yolo_completion_event_recorded.store(
+                            true,
+                            std::memory_order_release);
+                    }
+                };
+
+                auto enqueue_yolo = [&]() -> bool {
                     current_entry->yolo_enqueue_host_ns = steady_clock_now_ns();
                     current_entry->yolo_queue_depth_at_enqueue =
                         yolo_worker->GetCountQueueInSize();
-                    yolo_worker->PutObjectToQueueIn(current_entry);
+                    current_entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
+                    if (!yolo_worker->PutObjectToQueueIn(current_entry)) {
+                        mark_yolo_enqueue_failed();
+                        release_fanout_ref("yolo");
+                        return false;
+                    }
+                    return true;
                 };
                 const bool dispatch_yolo_before_recording =
                     detect_priority_recording && will_record && will_yolo;
 
-                if (will_display) openGLDisplay->PutObjectToQueueIn(current_entry);
+                if (will_display) {
+                    current_entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
+                    if (!openGLDisplay->PutObjectToQueueIn(current_entry)) {
+                        release_fanout_ref("display");
+                    }
+                }
                 if (dispatch_yolo_before_recording) {
                     enqueue_yolo();
                 }
@@ -1937,7 +2004,11 @@ void acquire_frames(
                     if (will_yolo) {
                         current_entry->yolo_before_recording_submit_host_ns = steady_clock_now_ns();
                     }
-                    recording_ingress->SubmitFrame(current_entry);
+                    current_entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
+                    const bool recording_accepted = recording_ingress->SubmitFrame(current_entry);
+                    if (!recording_accepted) {
+                        release_fanout_ref("recording");
+                    }
                     if (will_yolo) {
                         current_entry->yolo_after_recording_submit_host_ns = steady_clock_now_ns();
                     }
@@ -2011,6 +2082,7 @@ void acquire_frames(
                     cadence_sample.pending_requeues = pending_requeues.size();
                     cadence_sample.acquisition_resource_starvations =
                         acquisition_resource_starvations;
+                    cadence_sample.worker_enqueue_rejections = worker_enqueue_rejections;
                     cadence_sample.camera_dropped_frames = camera_state.dropped_frames;
                     cadence_sample.get_frame_errors = camera_state.get_frame_errors;
                     cadence_sample.last_get_frame_error_code =
@@ -2045,6 +2117,7 @@ void acquire_frames(
                 if (!dispatch_yolo_before_recording && will_yolo) {
                     enqueue_yolo();
                 }
+                release_worker_entry_to_recycle(resources->recycle_queue, current_entry);
 
             } else {
                 // FRAME_IPC: Important - even if no workers are active, we still sent the frame IPC above

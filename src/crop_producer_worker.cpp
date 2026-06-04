@@ -164,19 +164,19 @@ bool CropProducerWorker::ForwardRecordingDrainIfReady()
     if (crop_producer_) {
         crop_producer_->DrainPending(false);
         if (!crop_producer_->DrainReady()) {
-            PutObjectToQueueIn(nullptr);
+            (void)PutObjectToQueueIn(nullptr);
             return false;
         }
     }
 
     if (crop_worker_) {
-        crop_worker_->PutObjectToQueueIn(nullptr);
+        (void)crop_worker_->PutObjectToQueueIn(nullptr);
     }
     if (crop_preview_worker_) {
-        crop_preview_worker_->PutObjectToQueueIn(nullptr);
+        (void)crop_preview_worker_->PutObjectToQueueIn(nullptr);
     }
     if (pose_worker_) {
-        pose_worker_->PutObjectToQueueIn(nullptr);
+        (void)pose_worker_->PutObjectToQueueIn(nullptr);
     }
     recording_drain_forwarded_ = true;
     CloseRecording();
@@ -196,7 +196,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
             !ForwardRecordingDrainIfReady() &&
             GetCountQueueInSize() == 0) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            PutObjectToQueueIn(nullptr);
+            (void)PutObjectToQueueIn(nullptr);
         }
         return false;
     }

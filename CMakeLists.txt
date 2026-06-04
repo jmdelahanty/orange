@@ -445,6 +445,26 @@ if(BUILD_TESTING)
     target_compile_features(gui_display_frame_rate_tests PRIVATE cxx_std_17)
     add_test(NAME gui_display_frame_rate_tests COMMAND gui_display_frame_rate_tests)
 
+    add_executable(threadworker_tests
+        "tools/threadworker_tests.cpp"
+        "${SRC_DIR}/offthreadmachine.cpp"
+    )
+    target_include_directories(threadworker_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(threadworker_tests PRIVATE cxx_std_17)
+    target_link_libraries(threadworker_tests PRIVATE Threads::Threads)
+    add_test(NAME threadworker_tests COMMAND threadworker_tests)
+
+    add_executable(worker_entry_release_tests
+        "tools/worker_entry_release_tests.cpp"
+    )
+    target_include_directories(worker_entry_release_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(worker_entry_release_tests PRIVATE cxx_std_17)
+    target_link_libraries(worker_entry_release_tests PRIVATE
+        ${EVT_CAMERA_LIBRARY}
+        ${EVT_GENICAM_LIBRARY}
+        ${EVT_GIGE_LIBRARY})
+    add_test(NAME worker_entry_release_tests COMMAND worker_entry_release_tests)
+
     add_executable(external_crop_recorder_config_tests
         "tools/external_crop_recorder_config_tests.cpp"
         "${SRC_DIR}/session/external_crop_recorder_config.cpp"

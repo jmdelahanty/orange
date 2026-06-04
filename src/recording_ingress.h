@@ -41,6 +41,7 @@ struct RecordingIngressStats {
     uint64_t helper_requested_frames = 0;
     uint64_t helper_fallback_frames = 0;
     uint64_t helper_dispatched_frames = 0;
+    uint64_t enqueue_rejected_frames = 0;
     int last_target_gpu_id = -1;
     std::string last_route_mode = "primary";
 };
@@ -60,7 +61,7 @@ public:
                      const std::string& camera_serial = "");
     ~RecordingIngress();
 
-    void SubmitFrame(WORKER_ENTRY* entry);
+    bool SubmitFrame(WORKER_ENTRY* entry);
     RecordingIngressStats GetStats() const;
     bool IsDrained() const;
     bool uses_external_ipc() const;
@@ -91,6 +92,7 @@ private:
     ResolvedRecordingConfig resolved_recording_config_;
     SafeQueue<WORKER_ENTRY*>* recycle_queue_ = nullptr;
     std::string recording_sink_mode_ = "real";
+    std::string camera_serial_;
     std::unique_ptr<ThreadedHandoffWorker> threaded_handoff_worker_;
     std::unique_ptr<ExternalIpcHandoffWorker> external_ipc_handoff_worker_;
     std::vector<int> route_gpu_ids_;
@@ -100,6 +102,7 @@ private:
     std::atomic<uint64_t> helper_requested_frames_{0};
     std::atomic<uint64_t> helper_fallback_frames_{0};
     std::atomic<uint64_t> helper_dispatched_frames_{0};
+    std::atomic<uint64_t> enqueue_rejected_frames_{0};
     std::atomic<int> last_target_gpu_id_{-1};
     std::atomic<uint8_t> last_route_mode_{0};
 };

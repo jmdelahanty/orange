@@ -14,6 +14,7 @@
 #include "cuda_context_debug.h"
 #include "nvtx_profiling.h"
 #include "project.h"
+#include "worker_entry_release.h"
 
 namespace {
 constexpr uint64_t kLegacyMinQualityBitrate = 10000000ULL;
@@ -450,31 +451,18 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
     if (!recording_enabled && !draining)
     {
         // IMPORTANT: We must still manage the lifecycle of the frame entry to avoid leaks.
-        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
-        {
-            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct)
-            {
-                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-            }
-            m_recycle_queue.push(entry);
-        }
+        release_worker_entry_to_recycle(m_recycle_queue, entry);
         return false;
     }
 
     if (!is_recording_) {
         std::cerr << "[" << this->threadName << "] Warning: Dropping frame because encoder is not recording." << std::endl;
-        if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1)
-        {
-            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct)
-            {
-                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-            }
-            m_recycle_queue.push(entry);
-        }
+        release_worker_entry_to_recycle(m_recycle_queue, entry);
         return false;
     }
 
     ck(cudaSetDevice(camera_params->gpu_id));
+    const auto worker_entry_frame_id = entry->frame_id;
 
     // Log entry into function
     ENCODER_CTX_LOG("=== ENTERING WorkerFunction ===", entry->frame_id);
@@ -729,39 +717,14 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         NVTX_RANGE_PUSH("Reference_Count_Management");
         // Handle reference counting and GPU Direct camera buffer management
         ENCODER_CTX_LOG("Handling reference count", entry->frame_id);
-        int remaining_refs = entry->ref_count.fetch_sub(1, std::memory_order_acq_rel);
-        
-        if (remaining_refs == 1) {
+        if (release_worker_entry_to_recycle(m_recycle_queue, entry)) {
             NVTX_RANGE_PUSH("Last_Worker_Cleanup");
-            // This is the last worker - handle cleanup
-            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-                NVTX_CAMERA("GPU_Direct_Camera_Requeue");
-                // GPU Direct: Requeue the camera buffer now that all workers are done
-                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-                std::cout << "[GPUEncoder] GPU DIRECT Frame " << entry->frame_id 
-                          << " - Last worker requeued camera buffer" << std::endl;
-                ENCODER_CTX_LOG("GPU Direct camera buffer requeued by last worker", entry->frame_id);
-            }
-            
-            NVTX_RANGE_PUSH("Reset_Entry_Fields");
-            // Reset GPU Direct fields for recycling
-            entry->gpu_direct_mode = false;
-            entry->owns_memory = true;
-            entry->camera_buffer_ptr = nullptr;
-            entry->camera_instance = nullptr;
-            entry->camera_frame_struct = nullptr;
-            NVTX_RANGE_POP();
-            
-            NVTX_QUEUE("Recycle_Worker_Entry");
-            // Recycle the worker entry
-            m_recycle_queue.push(entry);
-            
-            std::cout << "[GPUEncoder] Frame " << entry->frame_id 
+            std::cout << "[GPUEncoder] Frame " << worker_entry_frame_id
                       << " - Last worker recycled entry" << std::endl;
             NVTX_RANGE_POP(); // Last_Worker_Cleanup
         } else {
-            std::cout << "[GPUEncoder] Frame " << entry->frame_id 
-                      << " - Worker finished, " << (remaining_refs - 1) << " workers remaining" << std::endl;
+            std::cout << "[GPUEncoder] Frame " << worker_entry_frame_id
+                      << " - Worker finished, more workers remaining" << std::endl;
         }
         NVTX_RANGE_POP(); // Reference_Count_Management
 
@@ -770,24 +733,13 @@ bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
         std::cerr << "[GPUVideoEncoder] Exception in WorkerFunction: " << e.what() << std::endl;
         
         // Handle reference counting even on error
-        int remaining_refs = entry->ref_count.fetch_sub(1, std::memory_order_acq_rel);
-        if (remaining_refs == 1) {
-            if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-                EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-            }
-            entry->gpu_direct_mode = false;
-            entry->owns_memory = true;
-            entry->camera_buffer_ptr = nullptr;
-            entry->camera_instance = nullptr;
-            entry->camera_frame_struct = nullptr;
-            m_recycle_queue.push(entry);
-        }
+        release_worker_entry_to_recycle(m_recycle_queue, entry);
         NVTX_RANGE_POP();
         
         return false;
     }
     
-    ENCODER_CTX_LOG("=== EXITING WorkerFunction ===", entry->frame_id);
+    ENCODER_CTX_LOG("=== EXITING WorkerFunction ===", worker_entry_frame_id);
     return false;
 }
 

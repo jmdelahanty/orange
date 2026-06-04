@@ -13,6 +13,7 @@
 #include "global.h"
 #include <npp.h> // For NPP APIs
 #include "yolo_worker.h"
+#include "worker_entry_release.h"
 #include <algorithm>
 #include <cstring>
 
@@ -122,12 +123,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     WORKER_ENTRY* discarded_frame = nullptr;
 
     while ((discarded_frame = GetObjectFromQueueIn()) != nullptr) {
-        if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            if (latest_frame->gpu_direct_mode && latest_frame->camera_instance && latest_frame->camera_frame_struct) {
-                EVT_CameraQueueFrame(latest_frame->camera_instance, latest_frame->camera_frame_struct);
-            }
-            m_recycle_queue.push(latest_frame);
-        }
+        release_worker_entry_to_recycle(m_recycle_queue, latest_frame);
         latest_frame = discarded_frame;
     }
 
@@ -225,12 +221,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
             last_display_log_time_ = now;
         }
 
-        if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            if (latest_frame->gpu_direct_mode && latest_frame->camera_instance && latest_frame->camera_frame_struct) {
-                EVT_CameraQueueFrame(latest_frame->camera_instance, latest_frame->camera_frame_struct);
-            }
-            m_recycle_queue.push(latest_frame);
-        }
+        release_worker_entry_to_recycle(m_recycle_queue, latest_frame);
         return true;
     }
 
@@ -307,12 +298,7 @@ bool COpenGLDisplay::WorkerFunction(WORKER_ENTRY* f)
     }
     
     // --- Cleanup and recycle ---
-    if (latest_frame->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (latest_frame->gpu_direct_mode && latest_frame->camera_instance && latest_frame->camera_frame_struct) {
-            EVT_CameraQueueFrame(latest_frame->camera_instance, latest_frame->camera_frame_struct);
-        }
-        m_recycle_queue.push(latest_frame);
-    }
+    release_worker_entry_to_recycle(m_recycle_queue, latest_frame);
 
     return false; // This worker doesn't pass items to its own output queue
 }

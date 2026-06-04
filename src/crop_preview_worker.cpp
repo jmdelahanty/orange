@@ -213,7 +213,15 @@ bool CropPreviewWorker::TryEnqueuePreview(CropPreviewJob* job)
         return false;
     }
 
-    PutObjectToQueueIn(job);
+    if (!PutObjectToQueueIn(job)) {
+        std::cerr << "[CropPreviewWorker] enqueue rejected after stop"
+                  << " worker=" << threadName
+                  << " frame=" << job->frame.local_frame_id
+                  << " recording_frame=" << job->frame.recording_frame_id
+                  << std::endl;
+        release_job(job);
+        return false;
+    }
     return true;
 }
 

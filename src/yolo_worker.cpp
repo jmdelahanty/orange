@@ -24,6 +24,7 @@
 #include "project.h"
 #include "fsuid_guard.h"
 #include "nvtx_profiling.h"
+#include "worker_entry_release.h"
 #include <atomic>
 #include <condition_variable>
 #include <deque>
@@ -1175,9 +1176,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
         affinity_set = true;
     }
     if (!yolov8_instance_ || !entry || !entry->d_image) {
-        if (entry && entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-            m_recycle_queue.push(entry);
-        }
+        release_worker_entry_to_recycle(m_recycle_queue, entry);
         return false;
     }
 
@@ -1769,7 +1768,14 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
             } else {
                 // Increment the reference count because another worker will now use this entry.
                 entry->ref_count.fetch_add(1, std::memory_order_acq_rel);
-                m_crop_worker->PutObjectToQueueIn(entry);
+                if (!m_crop_worker->PutObjectToQueueIn(entry)) {
+                    std::cerr << "[YOLO] Crop worker enqueue rejected"
+                              << " cam=" << associated_camera_params_->camera_serial
+                              << " frame=" << entry->frame_id
+                              << " recording_frame=" << entry->recording_frame_id
+                              << std::endl;
+                    release_worker_entry_to_recycle(m_recycle_queue, entry);
+                }
             }
         }
 
@@ -2025,12 +2031,7 @@ bool YoloWorker::WorkerFunction(WORKER_ENTRY* entry) {
     }
 
     // Reference counting for recycling the WORKER_ENTRY.
-    if (entry->ref_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
-        if (entry->gpu_direct_mode && entry->camera_instance && entry->camera_frame_struct) {
-            EVT_CameraQueueFrame(entry->camera_instance, entry->camera_frame_struct);
-        }
-        m_recycle_queue.push(entry);
-    }
+    release_worker_entry_to_recycle(m_recycle_queue, entry);
 
     // This worker doesn't pass an item to its own output queue so we return false
     return false;

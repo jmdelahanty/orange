@@ -21,6 +21,7 @@ public:
     CThreadWorker(const char* name);
     virtual ~CThreadWorker();
 
+    int StartThread(const char* tName = nullptr);
     void SetID(int i) { id = i; }
     int GetID() const { return id; }
 
@@ -28,7 +29,7 @@ public:
     int GetMyWork() const { return myWork; }
 
     // Type-safe methods using templates
-    void PutObjectToQueueIn(T* f);
+    bool PutObjectToQueueIn(T* f);
     void GetObjectsFromQueueOut(std::vector<T*>& items);
     T* GetObjectFromQueueOut();
     void PutObjectToQueueOut(T* f);
@@ -122,6 +123,23 @@ CThreadWorker<T>::~CThreadWorker()
 }
 
 template<typename T>
+int CThreadWorker<T>::StartThread(const char* tName)
+{
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        stopRequested = false;
+    }
+    const int result = COffThreadMachine::StartThread(tName);
+    if (result != 0) {
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        if (!this->IsMachineOn()) {
+            stopRequested = true;
+        }
+    }
+    return result;
+}
+
+template<typename T>
 void CThreadWorker<T>::Reset()
 {
     this->ResetInner();
@@ -133,7 +151,9 @@ void CThreadWorker<T>::ResetInner()
 {
     {
         std::lock_guard<std::mutex> lock(mutexQueueIn);
-        stopRequested = false;
+        if (this->IsMachineOn()) {
+            stopRequested = false;
+        }
     }
     myWork = 0;
     countQueueIn = 0;
@@ -158,14 +178,14 @@ void CThreadWorker<T>::ResetInner()
 }
 
 template<typename T>
-void CThreadWorker<T>::PutObjectToQueueIn(T* f)
+bool CThreadWorker<T>::PutObjectToQueueIn(T* f)
 {
     std::unique_lock<std::mutex> lock(mutexQueueIn);
     queueInNotFullCv.wait(lock, [this]() {
         return queueIn.size() < static_cast<size_t>(maxQueueSize) || stopRequested;
     });
     if (stopRequested) {
-        return;
+        return false;
     }
     queueIn.push(f);
     countQueueIn++;
@@ -176,6 +196,7 @@ void CThreadWorker<T>::PutObjectToQueueIn(T* f)
     OnQueueInEnqueued(f, countQueueIn);
     lock.unlock();
     queueInNotEmptyCv.notify_one();
+    return true;
 }
 
 template<typename T>
@@ -305,7 +326,9 @@ void CThreadWorker<T>::ThreadRunning()
 
     {
         std::lock_guard<std::mutex> lock(mutexQueueIn);
-        stopRequested = false;
+        if (this->IsMachineOn()) {
+            stopRequested = false;
+        }
     }
 
     while (true)
