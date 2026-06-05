@@ -36,6 +36,32 @@ double elapsed_ms(uint64_t start_ns, uint64_t end_ns)
     return static_cast<double>(end_ns - start_ns) / 1000000.0;
 }
 
+void release_pose_crop_lease_after_stream_noexcept(
+    CropFrameLease& crop_frame_lease,
+    cudaStream_t stream,
+    const char* worker_name)
+{
+    if (!crop_frame_lease) {
+        return;
+    }
+
+    const CropFrame* crop_frame = crop_frame_lease.get();
+    try {
+        crop_frame_lease.ReleaseAfterStream(stream);
+    } catch (const std::exception& ex) {
+        std::cerr << "[PoseWorker] Failed to defer CropFrame release"
+                  << " worker=" << (worker_name ? worker_name : "unknown")
+                  << " frame=" << (crop_frame ? crop_frame->frame.local_frame_id : 0)
+                  << " recording_frame="
+                  << (crop_frame ? crop_frame->frame.recording_frame_id : 0)
+                  << ": " << ex.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[PoseWorker] Failed to defer CropFrame release"
+                  << " worker=" << (worker_name ? worker_name : "unknown")
+                  << " with unknown exception." << std::endl;
+    }
+}
+
 struct LatencySummary {
     size_t count = 0;
     double mean_ms = 0.0;
@@ -671,8 +697,9 @@ void PoseWorker::CloseRecording()
     reset_run_counters();
 }
 
-bool PoseWorker::TryEnqueueCrop(CropFrame* crop_frame)
+bool PoseWorker::TryEnqueueCrop(CropFrameLease crop_frame_lease)
 {
+    CropFrame* crop_frame = crop_frame_lease.get();
     if (!crop_frame) {
         return false;
     }
@@ -704,6 +731,7 @@ bool PoseWorker::TryEnqueueCrop(CropFrame* crop_frame)
                   << std::endl;
         return false;
     }
+    crop_frame_lease.Transfer();
     frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
     if (record_active) {
         run_frames_enqueued_.fetch_add(1, std::memory_order_relaxed);
@@ -718,91 +746,102 @@ bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
         return false;
     }
 
-    ck(cudaSetDevice(camera_params_->gpu_id));
-    if (crop_frame->crop_ready_event) {
-        ck(cudaStreamWaitEvent(stream_, crop_frame->crop_ready_event, 0));
-    }
-    const uint64_t pose_start_host_ns = steady_now_ns();
-    std::string pose_status = "no_result";
-    std::string pose_error;
-    std::vector<pose_event_log::PoseInstanceRecord> poses;
-    if (tensorrt_backend_) {
-        try {
-            tensorrt_backend_->infer(
-                *crop_frame,
-                &pose_status,
-                &pose_error,
-                &poses);
-        } catch (const std::exception& ex) {
-            pose_status = "failed";
-            pose_error = ex.what();
-            std::cerr << "[PoseWorker] TensorRT pose inference failed for "
-                      << threadName << ": " << ex.what() << std::endl;
-        }
-    }
+    CropFrameLease crop_frame_lease(
+        crop_producer_,
+        crop_frame,
+        CropFrameLease::RetainMode::AdoptExisting);
 
-    frames_processed_.fetch_add(1, std::memory_order_relaxed);
-    const bool record_active =
-        crop_frame->frame.recording_frame_id > 0 && !crop_frame->frame.recording_folder.empty();
-    if (record_active) {
-        run_frames_processed_.fetch_add(1, std::memory_order_relaxed);
-    }
-    const uint64_t pose_done_host_ns = steady_now_ns();
+    try {
+        ck(cudaSetDevice(camera_params_->gpu_id));
+        if (crop_frame->crop_ready_event) {
+            ck(cudaStreamWaitEvent(stream_, crop_frame->crop_ready_event, 0));
+        }
+        const uint64_t pose_start_host_ns = steady_now_ns();
+        std::string pose_status = "no_result";
+        std::string pose_error;
+        std::vector<pose_event_log::PoseInstanceRecord> poses;
+        if (tensorrt_backend_) {
+            try {
+                tensorrt_backend_->infer(
+                    *crop_frame,
+                    &pose_status,
+                    &pose_error,
+                    &poses);
+            } catch (const std::exception& ex) {
+                pose_status = "failed";
+                pose_error = ex.what();
+                std::cerr << "[PoseWorker] TensorRT pose inference failed for "
+                          << threadName << ": " << ex.what() << std::endl;
+            }
+        }
 
-    if (record_active) {
-        std::lock_guard<std::mutex> lock(recording_mutex_);
-        if (crop_frame->frame.acquisition_receive_host_ns > 0 &&
-            crop_frame->frame.yolo_detect_done_host_ns > 0) {
-            capture_to_detect_done_samples_ms_.push_back(elapsed_ms(
-                crop_frame->frame.acquisition_receive_host_ns,
-                crop_frame->frame.yolo_detect_done_host_ns));
+        frames_processed_.fetch_add(1, std::memory_order_relaxed);
+        const bool record_active =
+            crop_frame->frame.recording_frame_id > 0 && !crop_frame->frame.recording_folder.empty();
+        if (record_active) {
+            run_frames_processed_.fetch_add(1, std::memory_order_relaxed);
         }
-        if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
-            crop_frame->frame.crop_producer_worker_start_host_ns > 0) {
-            detect_to_crop_worker_start_samples_ms_.push_back(elapsed_ms(
-                crop_frame->frame.yolo_detect_done_host_ns,
-                crop_frame->frame.crop_producer_worker_start_host_ns));
-        }
-        if (crop_frame->frame.crop_producer_worker_start_host_ns > 0 &&
-            crop_frame->frame.crop_ready_host_ns > 0) {
-            crop_worker_start_to_crop_ready_samples_ms_.push_back(elapsed_ms(
-                crop_frame->frame.crop_producer_worker_start_host_ns,
-                crop_frame->frame.crop_ready_host_ns));
-        }
-        if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
-            crop_frame->frame.crop_ready_host_ns > 0) {
-            detect_to_crop_ready_samples_ms_.push_back(elapsed_ms(
-                crop_frame->frame.yolo_detect_done_host_ns,
-                crop_frame->frame.crop_ready_host_ns));
-        }
-        if (crop_frame->frame.crop_ready_host_ns > 0) {
-            crop_ready_to_pose_start_samples_ms_.push_back(elapsed_ms(
-                crop_frame->frame.crop_ready_host_ns,
-                pose_start_host_ns));
-        }
-        pose_start_to_pose_done_samples_ms_.push_back(elapsed_ms(
-            pose_start_host_ns,
-            pose_done_host_ns));
-        if (crop_frame->frame.acquisition_receive_host_ns > 0) {
-            capture_to_pose_done_samples_ms_.push_back(elapsed_ms(
-                crop_frame->frame.acquisition_receive_host_ns,
+        const uint64_t pose_done_host_ns = steady_now_ns();
+
+        if (record_active) {
+            std::lock_guard<std::mutex> lock(recording_mutex_);
+            if (crop_frame->frame.acquisition_receive_host_ns > 0 &&
+                crop_frame->frame.yolo_detect_done_host_ns > 0) {
+                capture_to_detect_done_samples_ms_.push_back(elapsed_ms(
+                    crop_frame->frame.acquisition_receive_host_ns,
+                    crop_frame->frame.yolo_detect_done_host_ns));
+            }
+            if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
+                crop_frame->frame.crop_producer_worker_start_host_ns > 0) {
+                detect_to_crop_worker_start_samples_ms_.push_back(elapsed_ms(
+                    crop_frame->frame.yolo_detect_done_host_ns,
+                    crop_frame->frame.crop_producer_worker_start_host_ns));
+            }
+            if (crop_frame->frame.crop_producer_worker_start_host_ns > 0 &&
+                crop_frame->frame.crop_ready_host_ns > 0) {
+                crop_worker_start_to_crop_ready_samples_ms_.push_back(elapsed_ms(
+                    crop_frame->frame.crop_producer_worker_start_host_ns,
+                    crop_frame->frame.crop_ready_host_ns));
+            }
+            if (crop_frame->frame.yolo_detect_done_host_ns > 0 &&
+                crop_frame->frame.crop_ready_host_ns > 0) {
+                detect_to_crop_ready_samples_ms_.push_back(elapsed_ms(
+                    crop_frame->frame.yolo_detect_done_host_ns,
+                    crop_frame->frame.crop_ready_host_ns));
+            }
+            if (crop_frame->frame.crop_ready_host_ns > 0) {
+                crop_ready_to_pose_start_samples_ms_.push_back(elapsed_ms(
+                    crop_frame->frame.crop_ready_host_ns,
+                    pose_start_host_ns));
+            }
+            pose_start_to_pose_done_samples_ms_.push_back(elapsed_ms(
+                pose_start_host_ns,
                 pose_done_host_ns));
+            if (crop_frame->frame.acquisition_receive_host_ns > 0) {
+                capture_to_pose_done_samples_ms_.push_back(elapsed_ms(
+                    crop_frame->frame.acquisition_receive_host_ns,
+                    pose_done_host_ns));
+            }
         }
-    }
 
-    if (record_active) {
-        pose_event_logger_.Enqueue(build_pose_event_record(
-            crop_frame->frame,
-            pose_start_host_ns,
-            pose_done_host_ns,
-            pose_status,
-            pose_error,
-            poses));
-    }
-    publish_pose_result_v2(crop_frame->frame, pose_status, poses);
+        if (record_active) {
+            pose_event_logger_.Enqueue(build_pose_event_record(
+                crop_frame->frame,
+                pose_start_host_ns,
+                pose_done_host_ns,
+                pose_status,
+                pose_error,
+                poses));
+        }
+        publish_pose_result_v2(crop_frame->frame, pose_status, poses);
 
-    if (crop_producer_) {
-        crop_producer_->RecycleAfterConsumerStream(crop_frame, stream_);
+        crop_frame_lease.ReleaseAfterStream(stream_);
+    } catch (...) {
+        release_pose_crop_lease_after_stream_noexcept(
+            crop_frame_lease,
+            stream_,
+            threadName);
+        throw;
     }
     return false;
 }

@@ -73,12 +73,12 @@ public:
         }
 
         std::lock_guard<std::mutex> lock(mutex_);
-        if (!owns_locked(object)) {
+        size_t index = 0;
+        if (!index_for_locked(object, index)) {
             ++invalid_returns_;
             return false;
         }
 
-        const size_t index = static_cast<size_t>(object - storage_.data());
         if (!in_use_[index]) {
             ++double_returns_;
             return false;
@@ -93,7 +93,8 @@ public:
     bool Owns(T* object) const
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        return owns_locked(object);
+        size_t index = 0;
+        return index_for_locked(object, index);
     }
 
     Stats GetStats() const
@@ -113,14 +114,36 @@ public:
     const std::string& name() const { return name_; }
 
 private:
-    bool owns_locked(T* object) const
+    bool index_for_locked(T* object, size_t& index) const
     {
         if (!object || storage_.empty()) {
             return false;
         }
-        const T* begin = storage_.data();
-        const T* end = begin + storage_.size();
-        return object >= begin && object < end;
+
+        const auto base = reinterpret_cast<std::uintptr_t>(storage_.data());
+        const auto address = reinterpret_cast<std::uintptr_t>(object);
+        if (address < base) {
+            return false;
+        }
+
+        const std::uintptr_t offset = address - base;
+        if (offset % sizeof(T) != 0) {
+            return false;
+        }
+
+        const auto candidate_index = static_cast<size_t>(offset / sizeof(T));
+        if (candidate_index >= storage_.size()) {
+            return false;
+        }
+
+        const auto candidate_address =
+            reinterpret_cast<std::uintptr_t>(&storage_[candidate_index]);
+        if (candidate_address != address) {
+            return false;
+        }
+
+        index = candidate_index;
+        return true;
     }
 
     std::string name_;

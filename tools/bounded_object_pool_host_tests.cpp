@@ -66,11 +66,20 @@ void test_borrow_return_and_reset()
 void test_invalid_and_double_return()
 {
     BoundedObjectPool<TestObject, TestObjectReset> pool("test", 1);
+    BoundedObjectPool<TestObject, TestObjectReset> other_pool("other", 1);
     TestObject outside;
 
     assert(!pool.Return(&outside));
     auto stats = pool.GetStats();
     assert(stats.invalid_returns == 1);
+
+    TestObject* other_object = other_pool.Borrow();
+    assert(other_object != nullptr);
+    assert(!pool.Owns(other_object));
+    assert(!pool.Return(other_object));
+    stats = pool.GetStats();
+    assert(stats.invalid_returns == 2);
+    assert(other_pool.Return(other_object));
 
     TestObject* object = pool.Borrow();
     assert(object != nullptr);

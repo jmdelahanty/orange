@@ -12,6 +12,7 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <utility>
 
 namespace {
 constexpr int kCropSourceReleaseEventPoolSize = 256;
@@ -811,12 +812,16 @@ CropProducer::ProduceResult CropProducer::Produce(
 
     if (pose_worker_) {
         NoteConsumerOffered(Consumer::kPose);
-        active_crop_frame->active_leases.fetch_add(1, std::memory_order_acq_rel);
-        if (pose_worker_->TryEnqueueCrop(active_crop_frame)) {
-            NoteConsumerAccepted(Consumer::kPose);
-        } else {
-            release_crop_frame_lease(active_crop_frame);
+        CropFrameLease pose_lease(this, active_crop_frame, CropFrameLease::RetainMode::RetainNew);
+        try {
+            if (pose_worker_->TryEnqueueCrop(std::move(pose_lease))) {
+                NoteConsumerAccepted(Consumer::kPose);
+            } else {
+                NoteConsumerDropped(Consumer::kPose);
+            }
+        } catch (...) {
             NoteConsumerDropped(Consumer::kPose);
+            throw;
         }
     }
 

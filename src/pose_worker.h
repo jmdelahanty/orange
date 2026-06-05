@@ -24,7 +24,7 @@ public:
     ~PoseWorker() override;
 
     void SetMaxQueueSize(int size);
-    bool TryEnqueueCrop(CropFrame* crop_frame);
+    bool TryEnqueueCrop(CropFrameLease crop_frame_lease);
     void RotateRecordingFolder(const std::string& recording_folder);
     void CloseRecording();
 

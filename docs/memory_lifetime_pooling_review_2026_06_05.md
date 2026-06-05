@@ -33,6 +33,34 @@ based hot queues.
 No large fixed-size stack buffers were found in the core acquisition, display,
 YOLO, recording, crop, or IPC hot loops.
 
+## Follow-Up Implementation Status
+
+The main review follow-ups are now implemented for the active crop/pose path:
+
+- Legacy `GPUVideoEncoder` was retired from active GUI and `orange_client`
+  targets; shared recording structs live in `src/recording_writer_types.h`.
+- `CropEncodeJob` and `CropPreviewJob` wrappers are no longer allocated per
+  job. `CropProducerWorker` owns bounded encode and preview job pools, and
+  workers return completed or rejected jobs to those pools.
+- `BoundedObjectPool` invalid-return detection no longer uses relational
+  comparisons on unrelated typed pointers. It derives a candidate index from
+  integer addresses and validates alignment plus exact element address.
+- `CropFrameLease` now covers the producer handoff, recording crop consumer,
+  preview crop consumer, and pose crop consumer. The pose boundary retains a
+  lease before enqueue, transfers only after `PoseWorker` accepts the queue
+  item, and adopts the queued crop frame in `PoseWorker::WorkerFunction` before
+  stream-ordered release.
+
+Latest targeted crop/pose validation after the pose lease migration:
+
+- Artifact:
+  `/home/jeremy/orange_data/exp/unsorted/2010096_headless_real_yolo_pose_noop_synthetic_center_box_a16_gpu5_lease_smoke_20260604_213118`
+- `2010096`: `408` frames, `0` camera frame-id gaps, `0` GetFrame errors,
+  `0` preprocess drops, `0` encode failures.
+- Crop/pose ownership summary: `produced=408`, `recycled=408`,
+  `lease_releases=816`, `pose_accepted=408`, `pose_dropped=0`,
+  `crop_pool_misses=0`.
+
 ## Findings
 
 ### 1. Legacy GPUVideoEncoder Color Path Allocates Per Frame
@@ -110,24 +138,28 @@ The same pattern appears in acquisition pending requeue tracking:
 The pending depth is bounded by consumer progress, but not by a fixed-capacity
 ring in the current static structure.
 
-### 4. Crop Job Wrappers Are Allocated Per Job
+### 4. Crop Job Wrappers Now Use Bounded Pools
 
-Classification: `confirmed hot-path allocation`
-Severity: medium.
+Classification: `setup/control-plane allocation after remediation`
+Severity: low.
 
-The crop image buffers are pooled, but job wrappers are heap allocated:
+The original review found per-job heap allocation for crop job wrappers. That
+has since been remediated: crop image buffers and the small job wrapper objects
+are now owned by bounded `CropProducerWorker` pools.
 
-- `src/crop_producer_worker.cpp:204`: `std::make_unique<CropEncodeJob>()`
-- `src/crop_producer_worker.cpp:414`: `new CropPreviewJob()`
-- `src/crop_producer_worker.cpp:427`: `new CropPreviewJob()`
-- `src/crop_and_encode_worker.cpp:1175`: worker takes ownership through
-  `std::unique_ptr<CropEncodeJob>`
-- `src/crop_preview_worker.cpp:282`: worker takes ownership through
-  `std::unique_ptr<CropPreviewJob>`
+- `src/crop_producer_worker.h`: producer-owned bounded pools for
+  `CropEncodeJob` and `CropPreviewJob`.
+- `src/crop_producer_worker.cpp`: producers borrow job wrappers before enqueue
+  and return them on enqueue rejection.
+- `src/crop_and_encode_worker.cpp`: encode workers return completed encode jobs
+  to the producer pool instead of deleting them.
+- `src/crop_preview_worker.cpp`: preview workers return completed preview jobs
+  to the producer pool instead of deleting them.
 
-Preview is cadence limited, so the preview job allocation is lower risk. The
-recording crop job allocation happens at crop worker rate and is a reasonable
-small hardening target after the legacy encoder path is checked.
+Pool exhaustion is explicit through job-pool miss counters, and invalid or
+double returns are tracked through bounded-pool return-error counters surfaced
+in crop sidecar summaries. The remaining runtime risk is pool sizing, not
+steady hot-path heap churn.
 
 ### 5. External IPC Descriptors Allocate Per Frame
 
