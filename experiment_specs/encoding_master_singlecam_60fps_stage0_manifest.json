@@ -1,0 +1,128 @@
+{
+  "schema_id": "orange.encoding_master_experiment.manifest",
+  "schema_version": 1,
+  "experiment_id": "encoding_master_singlecam_60fps_stage0",
+  "notes": "First live-fish master encoding experiment slice. Run one camera first, then promote only survivors to four-camera tests.",
+  "defaults": {
+    "camera_serials": ["2010096"],
+    "analytics_gpu_id": 5,
+    "artifact_root": "/tmp/orange_encoding_master",
+    "analytics_output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "duration_s": 6,
+    "warmup_s": 1,
+    "orange_client": "/home/jeremy/orange-gop-split-a16/targets/release/orange_client",
+    "benchmark": "/usr/local/bin/orange-local-benchmark",
+    "sudo": true,
+    "verify_external_recorder": true,
+    "yolo_perf_log": true,
+    "yolo_perf_sample": 1
+  },
+  "runs": [
+    {
+      "run_id": "stage0_p1_lossless_gop1_4shard",
+      "stage": "stage0",
+      "description": "Lossless all-intra reference, P1, four A16 shards.",
+      "base_spec": "experiment_specs/2010096_external_ipc_lossless_60fps_gop1_p1_a16_gpu5_6_7_8.json",
+      "tags": ["lossless", "reference", "four_shard"],
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p1",
+          "tuning": "lossless",
+          "gop": 1,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "tuning": ["lossless"],
+        "rate_control_mode": ["cqp"],
+        "quality_value": [20],
+        "gop_length": [1]
+      }
+    },
+    {
+      "run_id": "stage0_p7_lossless_gop1_4shard",
+      "stage": "stage0",
+      "description": "Lossless all-intra reference, P7, four A16 shards.",
+      "base_spec": "experiment_specs/2010096_external_ipc_lossless_60fps_gop1_p1_a16_gpu5_6_7_8.json",
+      "tags": ["lossless", "reference", "four_shard"],
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p7",
+          "tuning": "lossless",
+          "gop": 1,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p7"],
+        "tuning": ["lossless"],
+        "rate_control_mode": ["cqp"],
+        "quality_value": [20],
+        "gop_length": [1]
+      }
+    },
+    {
+      "run_id": "stage0_p5_hq_vbr150_gop30_4shard",
+      "stage": "stage0",
+      "description": "P5 HQ VBR 150 Mbps baseline, GOP 30, four A16 shards.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "tags": ["vbr", "hq", "baseline", "four_shard"],
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "gop": 30,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [30]
+      }
+    },
+    {
+      "run_id": "stage0_p7_hq_vbr150_gop30_4shard",
+      "stage": "stage0",
+      "description": "P7 HQ VBR 150 Mbps, GOP 30, four A16 shards.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "tags": ["vbr", "hq", "four_shard"],
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p7",
+          "tuning": "hq",
+          "gop": 30,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p7"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [30]
+      }
+    }
+  ]
+}
