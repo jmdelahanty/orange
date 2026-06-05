@@ -18,7 +18,7 @@
     "nvenc_direct_input": false,
     "yolo_worker": {
       "mode": "real",
-      "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine",
+      "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
       "decimate": 1,
       "publish_live_ipc": false,
       "timeout_ms": 500,

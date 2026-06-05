@@ -286,7 +286,7 @@ ORANGE_YOLO_PERF_LOG=1 ORANGE_YOLO_PERF_SAMPLE=1 \
   --record-folder /home/jeremy/orange_data/exp/headless_real_yolo_smoke \
   --recording-sink-mode preprocess_only \
   --duration 30 \
-  --yolo-engine /home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine
+  --yolo-engine /home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine
 ```
 
 Experiment spec smoke shape:
@@ -310,17 +310,17 @@ sudo -n /usr/local/bin/orange-local-benchmark \
   "recording_sink_mode": "preprocess_only",
   "yolo_worker": {
     "mode": "real",
-    "engine_path": "/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine",
+    "engine_path": "/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine",
     "decimate": 1,
     "publish_live_ipc": false
   }
 }
 ```
 
-Local engine inventory checked on 2026-04-25:
+Local engine inventory checked on 2026-06-05:
 
-- App default:
-  `/home/jeremy/orange_data/detect/omnifin0_cedar_shadow_v007_detect_20260206-235656_25f3fbcb_fp16.engine`
+- Current default/spec engine:
+  `/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine`
 - Camera-config historical engine:
   `/home/jeremy/orange_data/detect/cam2010096_detect_v12_fp16.engine`
 - Additional historical engine:

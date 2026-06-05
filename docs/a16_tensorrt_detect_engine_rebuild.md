@@ -12,6 +12,19 @@ Rebuilding the existing ONNX detect model directly on an A16 GPU produced a
 material detect-path improvement without changing Orange's hot-path ownership,
 external recorder, PTP, YOLO worker, or CUDA graph code.
 
+## Default Engine Update, 2026-06-05
+
+Checked-in headless experiment specs and the GUI AQ-off validation launcher now
+default to the newest validated high-effort A16 detect engine in the local
+deployment directory:
+
+```text
+/home/jeremy/orange_data/detect/detect_all_available_detect_training_v004_yolo11n_trt_20260520_a16_gpu5_trt100_fp16_bo5_avg32.engine
+```
+
+The validation results below remain historical measurements for the earlier
+Omnifin/Cedar/Shadow `bo5_avg32` high-effort candidate.
+
 Standalone TensorRT on A16 GPU `5`:
 
 ```text
