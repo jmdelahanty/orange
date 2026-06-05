@@ -1,3 +1,8 @@
+// Retired legacy headless acquisition implementation. It is intentionally not
+// compiled into the current GUI or orange_client targets. Keep this file only
+// as historical reference while the modern headless path lives in
+// orange_headless_client.cpp + acquire_frames.cpp + ModernRecordingPipeline.
+
 #include "NvEncoder/NvCodecUtils.h"
 #include "gpu_video_encoder.h"
 #include "acquire_frames_headless.h"

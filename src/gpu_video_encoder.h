@@ -1,36 +1,18 @@
 // src/gpu_video_encoder.h
+//
+// Retired legacy in-process headless encoder path. Current GUI/headless
+// recording uses RecordingIngress/ModernRecordingPipeline/EncoderHwWorker.
 
 #ifndef ORANGE_GPU_VIDEO_ENCODER
 #define ORANGE_GPU_VIDEO_ENCODER
 
 #include "threadworker.h"
 #include "video_capture.h"
-#include "FFmpegWriter.h"
-#include "NvEncoder/NvEncoderCuda.h"
-#include "NvEncoder/NvEncoderCLIOptions.h"
 #include "image_processing.h"
+#include "recording_writer_types.h"
 #include "thread.h" // For SafeQueue
 #include <chrono> // For FPS tracking
 #include <cuda.h> // For CUcontext
-
-struct Writer
-{
-    std::string video_file;
-    std::string keyframe_file;
-    std::string metadata_file;
-    FFmpegWriter *video = nullptr;
-    std::ofstream* metadata = nullptr;
-};
-
-struct EncoderContext
-{
-    NV_ENC_BUFFER_FORMAT eFormat;
-    NvEncoderInitParam encodeCLIOptions;
-    CUcontext cuContext;
-    unsigned long long num_frame_encode = 0;
-    std::vector<std::vector<uint8_t>> vPacket;
-    NvEncoderCuda *pEnc;
-};
 
 class GPUVideoEncoder : public CThreadWorker<WORKER_ENTRY>
 {

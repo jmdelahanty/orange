@@ -14,7 +14,6 @@
 
 // Forward declare worker classes to break include cycles
 class COpenGLDisplay;
-class GPUVideoEncoder;
 class YoloWorker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;

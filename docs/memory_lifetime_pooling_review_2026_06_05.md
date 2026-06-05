@@ -22,12 +22,13 @@ large frame buffers, CUDA events, crop frames, encoder preprocess entries, and
 external recorder slots are generally pooled. Recent `WORKER_ENTRY`
 retain/release hardening also made ownership transfer much clearer and safer.
 
-The biggest confirmed issue is the legacy `GPUVideoEncoder` color path, which
-does per-frame `cudaMalloc`/`cudaFree` if that path is still active. The next
-most important allocation sources are per-packet FFmpeg/NVENC packet copying,
-small crop job object allocation, per-frame external IPC string construction,
-YOLO event/IPC allocation when detections or logs are enabled, and queue growth
-from `std::queue`/`std::deque` based hot queues.
+The legacy `GPUVideoEncoder` color path had the biggest confirmed per-frame
+allocation risk, but it has since been retired from the current GUI and
+`orange_client` build targets. The next most important allocation sources are
+per-packet FFmpeg/NVENC packet copying, small crop job object allocation,
+per-frame external IPC string construction, YOLO event/IPC allocation when
+detections or logs are enabled, and queue growth from `std::queue`/`std::deque`
+based hot queues.
 
 No large fixed-size stack buffers were found in the core acquisition, display,
 YOLO, recording, crop, or IPC hot loops.
@@ -37,7 +38,7 @@ YOLO, recording, crop, or IPC hot loops.
 ### 1. Legacy GPUVideoEncoder Color Path Allocates Per Frame
 
 Classification: `confirmed hot-path allocation`
-Severity: high if this path is still reachable.
+Severity: retired from active builds; high only if this path is revived.
 
 `src/gpu_video_encoder.cpp` allocates a temporary RGB buffer inside
 `GPUVideoEncoder::WorkerFunction`:
@@ -53,10 +54,11 @@ success, and recycle decisions:
 - `src/gpu_video_encoder.cpp:725`
 - `src/gpu_video_encoder.cpp:737`
 
-If this worker is no longer used by production recording, the risk is mostly
-maintenance debt. If it is still reachable for color recording, the temporary
-RGB buffer should be preallocated or the path should be retired in favor of the
-newer preprocess/encoder pipeline.
+This worker is no longer used by the current GUI or `orange_client` build
+targets. Shared `Writer`/`EncoderContext` types were moved to
+`src/recording_writer_types.h`, and `src/gpu_video_encoder.cpp` was removed from
+the active target source lists. Treat this file as archival legacy code unless a
+future task explicitly revives it.
 
 ### 2. In-Process Encoded Packet Writing Allocates Per Packet
 
@@ -320,8 +322,8 @@ should be used for production-like runs to avoid first-use tails.
 
 ## Risky or Suspicious Areas
 
-- The old `GPUVideoEncoder` should be treated as unsafe for color hot-path use
-  until proven inactive or fixed.
+- The old `GPUVideoEncoder` remains unsafe for color hot-path use if revived,
+  but it is no longer part of the current GUI or `orange_client` build targets.
 - `std::queue` and `std::deque` hot queues can allocate at high-water marks.
   This is probably not steady churn, but it can create startup or burst jitter.
 - Crop job wrappers are unpooled despite the crop image buffers being pooled.
@@ -333,23 +335,20 @@ should be used for production-like runs to avoid first-use tails.
 
 ## Recommended Next Hardening Tasks
 
-1. Confirm whether `GPUVideoEncoder` is still reachable. If yes, preallocate
-   `d_rgb_temp_` or remove the path.
-2. Add a small fixed pool for `CropEncodeJob` and `CropPreviewJob`.
-3. Add allocation profiling around a real four-camera GUI external IPC run to
+1. Add a small fixed pool for `CropEncodeJob` and `CropPreviewJob`.
+2. Add allocation profiling around a real four-camera GUI external IPC run to
    distinguish one-time queue growth from steady churn.
-4. Consider fixed-capacity queues for the hottest worker handoffs and
+3. Consider fixed-capacity queues for the hottest worker handoffs and
    acquisition pending requeues.
-5. Reserve/reuse YOLO detection and SHAMAN conversion buffers.
-6. Replace per-frame `std::ostringstream` IPC descriptors with reusable fixed
+4. Reserve/reuse YOLO detection and SHAMAN conversion buffers.
+5. Replace per-frame `std::ostringstream` IPC descriptors with reusable fixed
    buffers or a binary frame descriptor if CPU jitter remains visible.
-7. Keep display/YOLO synchronization correctness-first until event-backed
+6. Keep display/YOLO synchronization correctness-first until event-backed
    source/PBO ownership is designed; do not remove syncs merely to reduce
    apparent latency.
 
 ## Best Next Implementation Target
 
-First verify and fix or retire the legacy `GPUVideoEncoder` per-frame
-`cudaMalloc`/`cudaFree` path. If it is inactive, the next best target is a small
-pooled job allocator for `CropEncodeJob` and `CropPreviewJob`, because it is
-local, reviewable, and directly removes confirmed crop-path heap churn.
+The next best target is a small pooled job allocator for `CropEncodeJob` and
+`CropPreviewJob`, because it is local, reviewable, and directly removes
+confirmed crop-path heap churn.

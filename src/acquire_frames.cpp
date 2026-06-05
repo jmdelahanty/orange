@@ -11,7 +11,6 @@
 #include "global.h"
 #include "thread.h"
 #include "opengldisplay.h"
-#include "gpu_video_encoder.h"
 #include "yolo_worker.h"
 #include "image_writer_worker.h"
 #include "crop_and_encode_worker.h"

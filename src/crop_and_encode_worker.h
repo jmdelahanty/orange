@@ -4,7 +4,7 @@
 #include "crop_pipeline_types.h"
 #include "threadworker.h"
 #include "video_capture.h"
-#include "gpu_video_encoder.h" // For Writer struct
+#include "recording_writer_types.h"
 #include "FFmpegWriter.h"
 #include "NvEncoder/NvEncoderCuda.h"
 #include "image_processing.h"

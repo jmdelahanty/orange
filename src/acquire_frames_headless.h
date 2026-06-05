@@ -1,3 +1,7 @@
+// Retired legacy headless acquisition entry point. It is not part of the
+// current CMake targets; orange_headless_client.cpp uses acquire_frames.cpp and
+// ModernRecordingPipeline instead.
+
 #ifndef ORANGE_ACQUIRE_FRAMES_HEADLESS
 #define ORANGE_ACQUIRE_FRAMES_HEADLESS
 #include "video_capture.h"

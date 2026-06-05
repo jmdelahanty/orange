@@ -1,4 +1,8 @@
 // src/gpu_video_encoder.cpp
+//
+// Retired legacy in-process encoder implementation. It is intentionally not
+// compiled into the current GUI or orange_client targets; modern recording uses
+// RecordingIngress/ModernRecordingPipeline/EncoderHwWorker.
 
 #include "gpu_video_encoder.h"
 #include "fsuid_guard.h"

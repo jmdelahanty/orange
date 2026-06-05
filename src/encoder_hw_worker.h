@@ -5,7 +5,7 @@
 
 #include "threadworker.h"
 #include "video_capture.h"
-#include "gpu_video_encoder.h"
+#include "recording_writer_types.h"
 #include <chrono>
 #include <condition_variable>
 #include <deque>

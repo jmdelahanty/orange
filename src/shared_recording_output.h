@@ -14,7 +14,7 @@
 
 #include "FFmpegWriter.h"
 #include "encoder_pipeline.h"
-#include "gpu_video_encoder.h"
+#include "recording_writer_types.h"
 
 struct CameraParams;
 

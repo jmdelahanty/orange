@@ -15,7 +15,6 @@
 #include "NvEncoder/NvCodecUtils.h"
 
 class COpenGLDisplay;
-class GPUVideoEncoder;
 class YoloWorker;
 class ImageWriterWorker;
 class CropAndEncodeWorker;
