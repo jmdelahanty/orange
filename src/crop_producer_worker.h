@@ -1,11 +1,13 @@
 #ifndef ORANGE_CROP_PRODUCER_WORKER_H
 #define ORANGE_CROP_PRODUCER_WORKER_H
 
+#include "bounded_object_pool.h"
 #include "crop_pipeline_types.h"
 #include "threadworker.h"
 #include "video_capture.h"
 
 #include <atomic>
+#include <cstddef>
 #include <mutex>
 #include <memory>
 #include <string>
@@ -16,6 +18,19 @@ class PoseWorker;
 
 class CropProducerWorker : public CThreadWorker<WORKER_ENTRY> {
 public:
+    static constexpr size_t kDefaultEncodeJobPoolSize = 512;
+    static constexpr size_t kDefaultPreviewJobPoolSize = 64;
+
+    struct CropJobPoolCounters {
+        size_t capacity = 0;
+        size_t available = 0;
+        size_t active = 0;
+        size_t high_water = 0;
+        uint64_t misses_total = 0;
+        uint64_t invalid_returns_total = 0;
+        uint64_t double_returns_total = 0;
+    };
+
     struct RecordingCounters {
         uint64_t jobs_offered = 0;
         uint64_t jobs_enqueued = 0;
@@ -24,6 +39,8 @@ public:
         uint64_t blank_jobs_enqueued = 0;
         uint64_t dropped_jobs_offered = 0;
         uint64_t dropped_jobs_enqueued = 0;
+        CropJobPoolCounters encode_job_pool;
+        CropJobPoolCounters preview_job_pool;
     };
 
     static constexpr int kDefaultCropSize = CameraCropPipelineConfig::kDefaultCropSizePx;
@@ -48,6 +65,10 @@ public:
     void CloseRecording();
     void ResetRecordingCounters();
     RecordingCounters GetRecordingCounters() const;
+    CropEncodeJob* BorrowCropEncodeJob();
+    void ReturnCropEncodeJob(CropEncodeJob* job);
+    CropPreviewJob* BorrowCropPreviewJob();
+    void ReturnCropPreviewJob(CropPreviewJob* job);
     bool ProcessEntryInline(WORKER_ENTRY* entry);
 
 protected:
@@ -56,6 +77,18 @@ protected:
 private:
     bool ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_source_entry);
     bool ForwardRecordingDrainIfReady();
+    void log_job_pool_miss(const char* pool_name, uint64_t misses_total) const;
+
+    struct CropEncodeJobReset {
+        void operator()(CropEncodeJob& job) const { job.ResetForReuse(); }
+    };
+    struct CropPreviewJobReset {
+        void operator()(CropPreviewJob& job) const { job.ResetForReuse(); }
+    };
+    using CropEncodeJobPool = BoundedObjectPool<CropEncodeJob, CropEncodeJobReset>;
+    using CropPreviewJobPool = BoundedObjectPool<CropPreviewJob, CropPreviewJobReset>;
+    static CropJobPoolCounters ToCropJobPoolCounters(const CropEncodeJobPool::Stats& stats);
+    static CropJobPoolCounters ToCropJobPoolCounters(const CropPreviewJobPool::Stats& stats);
 
     CameraParams* camera_params_ = nullptr;
     SafeQueue<WORKER_ENTRY*>& recycle_queue_;
@@ -84,6 +117,8 @@ private:
     std::string current_recording_folder_;
     bool recording_drain_forwarded_ = false;
     std::mutex process_mutex_;
+    CropEncodeJobPool encode_job_pool_;
+    CropPreviewJobPool preview_job_pool_;
 };
 
 #endif  // ORANGE_CROP_PRODUCER_WORKER_H

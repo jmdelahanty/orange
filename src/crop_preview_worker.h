@@ -2,7 +2,7 @@
 #define ORANGE_CROP_PREVIEW_WORKER_H
 
 #include "crop_preview_cadence.h"
-#include "crop_producer.h"
+#include "crop_pipeline_types.h"
 #include "threadworker.h"
 #include "video_capture.h"
 
@@ -10,11 +10,7 @@
 #include <cstdint>
 #include <mutex>
 
-struct CropPreviewJob {
-    CropFrameSnapshot frame;
-    CropFrame* crop_frame = nullptr;
-    bool blank_preview = false;
-};
+class CropProducerWorker;
 
 class CropPreviewWorker : public CThreadWorker<CropPreviewJob> {
 public:
@@ -42,6 +38,7 @@ public:
     ~CropPreviewWorker() override;
 
     void SetMaxQueueSize(int size);
+    void SetCropProducerWorker(CropProducerWorker* crop_producer_worker) { crop_producer_worker_ = crop_producer_worker; }
     void SetPreviewDisplayEnabled(bool enabled);
     CropPreviewCadence::Decision EvaluateOffer(bool blank_preview);
     bool TryEnqueuePreview(CropPreviewJob* job);
@@ -67,6 +64,7 @@ private:
 
     CameraParams* camera_params_ = nullptr;
     CropProducer* crop_producer_ = nullptr;
+    CropProducerWorker* crop_producer_worker_ = nullptr;
     int crop_width_ = CameraCropPipelineConfig::kDefaultCropSizePx;
     int crop_height_ = CameraCropPipelineConfig::kDefaultCropSizePx;
     unsigned char* d_cropped_rgba_ = nullptr;

@@ -827,6 +827,16 @@ void CropAndEncodeWorker::RotateRecordingFolder(const std::string& recording_fol
         << "producer_dropped_jobs_offered,producer_dropped_jobs_enqueued,"
         << "consumer_jobs_enqueued,consumer_queue_full_drops,consumer_queue_high_water,"
         << "crop_frame_pool_size,"
+        << "producer_encode_job_pool_capacity,producer_encode_job_pool_available,"
+        << "producer_encode_job_pool_active,producer_encode_job_pool_high_water,"
+        << "producer_encode_job_pool_misses_total,"
+        << "producer_encode_job_pool_invalid_returns_total,"
+        << "producer_encode_job_pool_double_returns_total,"
+        << "producer_preview_job_pool_capacity,producer_preview_job_pool_available,"
+        << "producer_preview_job_pool_active,producer_preview_job_pool_high_water,"
+        << "producer_preview_job_pool_misses_total,"
+        << "producer_preview_job_pool_invalid_returns_total,"
+        << "producer_preview_job_pool_double_returns_total,"
         << "producer_recording_crop_frame_offered,producer_recording_crop_frame_accepted,"
         << "producer_recording_crop_frame_dropped,"
         << "producer_preview_crop_frame_offered,producer_preview_crop_frame_accepted,"
@@ -888,6 +898,20 @@ void CropAndEncodeWorker::write_sidecar_summary()
         << run_queue_full_drops_ << ','
         << run_queue_high_water_ << ','
         << (crop_producer_ ? crop_producer_->crop_frame_pool_size() : 0) << ','
+        << producer_counters.encode_job_pool.capacity << ','
+        << producer_counters.encode_job_pool.available << ','
+        << producer_counters.encode_job_pool.active << ','
+        << producer_counters.encode_job_pool.high_water << ','
+        << producer_counters.encode_job_pool.misses_total << ','
+        << producer_counters.encode_job_pool.invalid_returns_total << ','
+        << producer_counters.encode_job_pool.double_returns_total << ','
+        << producer_counters.preview_job_pool.capacity << ','
+        << producer_counters.preview_job_pool.available << ','
+        << producer_counters.preview_job_pool.active << ','
+        << producer_counters.preview_job_pool.high_water << ','
+        << producer_counters.preview_job_pool.misses_total << ','
+        << producer_counters.preview_job_pool.invalid_returns_total << ','
+        << producer_counters.preview_job_pool.double_returns_total << ','
         << fanout_counters.recording_crop_frame_offered << ','
         << fanout_counters.recording_crop_frame_accepted << ','
         << fanout_counters.recording_crop_frame_dropped << ','
@@ -1166,18 +1190,47 @@ bool CropAndEncodeWorker::drain_ready()
     return GetCountQueueInSize() == 0;
 }
 
+void CropAndEncodeWorker::release_job(CropEncodeJob* job)
+{
+    if (!job) {
+        return;
+    }
+
+    if (job->crop_frame && crop_producer_) {
+        try {
+            ck(cudaSetDevice(camera_params_->gpu_id));
+            ck(cudaStreamWaitEvent(m_stream, job->crop_frame->crop_ready_event, 0));
+            crop_producer_->RecycleAfterConsumerStream(job->crop_frame, m_stream);
+        } catch (const std::exception& e) {
+            std::cerr << "[CropAndEncodeWorker] Failed to release pooled crop job frame "
+                      << job->frame.local_frame_id
+                      << ": " << e.what()
+                      << "; returning crop frame immediately." << std::endl;
+            crop_producer_->RecycleNow(job->crop_frame);
+        }
+        job->crop_frame = nullptr;
+    }
+
+    if (crop_producer_worker_) {
+        crop_producer_worker_->ReturnCropEncodeJob(job);
+    } else {
+        std::cerr << "[CropAndEncodeWorker] No CropProducerWorker set; pooled CropEncodeJob "
+                  << "for frame " << job->frame.local_frame_id
+                  << " cannot be returned." << std::endl;
+    }
+}
+
 
 bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
     // Set the correct CUDA device for this worker's operations.
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);
 
-    std::unique_ptr<CropEncodeJob> job(raw_job);
     if (camera_control_ && !camera_control_->record_video && is_recording_ &&
         external_crop_ipc_) {
         external_crop_ipc_->NotifyDrain("crop_recording_draining");
     }
-    if (!job) {
+    if (!raw_job) {
         if (camera_control_ && !camera_control_->record_video && is_recording_) {
             if (!camera_control_->recording_draining || drain_ready()) {
                 finalize_recording();
@@ -1185,6 +1238,17 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
         }
         return false;
     }
+    struct JobGuard {
+        CropAndEncodeWorker* owner = nullptr;
+        CropEncodeJob* job = nullptr;
+        ~JobGuard()
+        {
+            if (owner && job) {
+                owner->release_job(job);
+            }
+        }
+    } job_guard{this, raw_job};
+    CropEncodeJob* job = raw_job;
 
     CropFrameSnapshot& frame = job->frame;
     CropEncodePerfSample& perf = job->perf;
@@ -1254,6 +1318,7 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
             if (active_crop_frame && crop_producer_) {
                 crop_producer_->RecycleAfterConsumerStream(active_crop_frame, m_stream);
                 active_crop_frame = nullptr;
+                job->crop_frame = nullptr;
             }
 
             // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
@@ -1346,6 +1411,7 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                 crop_producer_->RecycleAfterConsumerStream(active_crop_frame, m_stream);
             }
             active_crop_frame = nullptr;
+            job->crop_frame = nullptr;
         } catch (const std::exception& e) {
             std::cerr << "[CropAndEncodeWorker] Failed to defer crop frame recycle for frame "
                       << frame.local_frame_id
@@ -1364,6 +1430,7 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                 crop_producer_->RecycleNow(active_crop_frame);
             }
             active_crop_frame = nullptr;
+            job->crop_frame = nullptr;
         }
     }
     if (crop_producer_) {

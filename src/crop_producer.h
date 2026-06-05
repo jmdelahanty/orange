@@ -35,6 +35,33 @@ struct CropFrameSnapshot {
     float detection_y = 0.0f;
     float detection_w = 0.0f;
     float detection_h = 0.0f;
+
+    void ResetForReuse()
+    {
+        recording_frame_id = 0;
+        local_frame_id = 0;
+        camera_frame_id = 0;
+        timestamp = 0;
+        timestamp_sys = 0;
+        recording_folder.clear();
+        source_width = 0;
+        source_height = 0;
+        acquisition_receive_host_ns = 0;
+        yolo_detect_done_host_ns = 0;
+        crop_producer_worker_start_host_ns = 0;
+        crop_ready_host_ns = 0;
+        has_detection = false;
+        blank_frame = false;
+        detection_confidence = 0.0f;
+        crop_x = 0;
+        crop_y = 0;
+        crop_w = 0;
+        crop_h = 0;
+        detection_x = 0.0f;
+        detection_y = 0.0f;
+        detection_w = 0.0f;
+        detection_h = 0.0f;
+    }
 };
 
 struct CropFrame {

@@ -326,7 +326,8 @@ should be used for production-like runs to avoid first-use tails.
   but it is no longer part of the current GUI or `orange_client` build targets.
 - `std::queue` and `std::deque` hot queues can allocate at high-water marks.
   This is probably not steady churn, but it can create startup or burst jitter.
-- Crop job wrappers are unpooled despite the crop image buffers being pooled.
+- Crop job wrappers were converted to bounded producer-owned pools after this
+  review. Monitor job-pool miss/return-error counters in crop sidecar summaries.
 - External IPC descriptor construction is small but per-frame.
 - YOLO event logging and SHAMAN conversion can allocate on positive-detection
   frames.
@@ -335,20 +336,19 @@ should be used for production-like runs to avoid first-use tails.
 
 ## Recommended Next Hardening Tasks
 
-1. Add a small fixed pool for `CropEncodeJob` and `CropPreviewJob`.
-2. Add allocation profiling around a real four-camera GUI external IPC run to
+1. Add allocation profiling around a real four-camera GUI external IPC run to
    distinguish one-time queue growth from steady churn.
-3. Consider fixed-capacity queues for the hottest worker handoffs and
+2. Consider fixed-capacity queues for the hottest worker handoffs and
    acquisition pending requeues.
-4. Reserve/reuse YOLO detection and SHAMAN conversion buffers.
-5. Replace per-frame `std::ostringstream` IPC descriptors with reusable fixed
+3. Reserve/reuse YOLO detection and SHAMAN conversion buffers.
+4. Replace per-frame `std::ostringstream` IPC descriptors with reusable fixed
    buffers or a binary frame descriptor if CPU jitter remains visible.
-6. Keep display/YOLO synchronization correctness-first until event-backed
+5. Keep display/YOLO synchronization correctness-first until event-backed
    source/PBO ownership is designed; do not remove syncs merely to reduce
    apparent latency.
 
 ## Best Next Implementation Target
 
-The next best target is a small pooled job allocator for `CropEncodeJob` and
-`CropPreviewJob`, because it is local, reviewable, and directly removes
-confirmed crop-path heap churn.
+The next best target is allocation profiling around a real four-camera GUI
+external IPC run. Use it to separate one-time queue growth from steady churn
+before replacing broader worker queues or descriptor-building paths.

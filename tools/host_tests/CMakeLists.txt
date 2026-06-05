@@ -13,8 +13,19 @@ target_include_directories(worker_entry_ownership_core_host_tests PRIVATE
     "${ORANGE_REPO_ROOT}/src"
 )
 
+add_executable(bounded_object_pool_host_tests
+    "${ORANGE_REPO_ROOT}/tools/bounded_object_pool_host_tests.cpp"
+)
+target_include_directories(bounded_object_pool_host_tests PRIVATE
+    "${ORANGE_REPO_ROOT}/src"
+)
+
 enable_testing()
 add_test(
     NAME worker_entry_ownership_core_host_tests
     COMMAND worker_entry_ownership_core_host_tests
+)
+add_test(
+    NAME bounded_object_pool_host_tests
+    COMMAND bounded_object_pool_host_tests
 )

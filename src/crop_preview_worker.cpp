@@ -1,5 +1,6 @@
 #include "crop_preview_worker.h"
 
+#include "crop_producer_worker.h"
 #include "kernel.cuh"
 
 #include <algorithm>
@@ -281,10 +282,20 @@ void CropPreviewWorker::OnQueueInDequeued(CropPreviewJob* job, int /*queue_depth
 
 bool CropPreviewWorker::WorkerFunction(CropPreviewJob* raw_job)
 {
-    std::unique_ptr<CropPreviewJob> job(raw_job);
-    if (!job) {
+    if (!raw_job) {
         return false;
     }
+    struct JobGuard {
+        CropPreviewWorker* owner = nullptr;
+        CropPreviewJob* job = nullptr;
+        ~JobGuard()
+        {
+            if (owner && job) {
+                owner->release_job(job);
+            }
+        }
+    } job_guard{this, raw_job};
+    CropPreviewJob* job = raw_job;
     struct ActiveJobGuard {
         std::atomic<int>* active_jobs = nullptr;
         ~ActiveJobGuard()
@@ -335,7 +346,6 @@ bool CropPreviewWorker::WorkerFunction(CropPreviewJob* raw_job)
                   << job->frame.local_frame_id << ": " << e.what() << std::endl;
     }
 
-    release_job(job.release());
     if (crop_producer_) {
         crop_producer_->DrainPending(false);
     }
@@ -496,10 +506,24 @@ void CropPreviewWorker::release_job(CropPreviewJob* job)
         return;
     }
     if (job->crop_frame && crop_producer_) {
-        ck(cudaSetDevice(camera_params_->gpu_id));
-        ck(cudaStreamWaitEvent(stream_, job->crop_frame->crop_ready_event, 0));
-        crop_producer_->RecycleAfterConsumerStream(job->crop_frame, stream_);
+        try {
+            ck(cudaSetDevice(camera_params_->gpu_id));
+            ck(cudaStreamWaitEvent(stream_, job->crop_frame->crop_ready_event, 0));
+            crop_producer_->RecycleAfterConsumerStream(job->crop_frame, stream_);
+        } catch (const std::exception& e) {
+            std::cerr << "[CropPreviewWorker] Failed to release pooled preview job frame "
+                      << job->frame.local_frame_id
+                      << ": " << e.what()
+                      << "; returning crop frame immediately." << std::endl;
+            crop_producer_->RecycleNow(job->crop_frame);
+        }
         job->crop_frame = nullptr;
     }
-    delete job;
+    if (crop_producer_worker_) {
+        crop_producer_worker_->ReturnCropPreviewJob(job);
+    } else {
+        std::cerr << "[CropPreviewWorker] No CropProducerWorker set; pooled CropPreviewJob "
+                  << "for frame " << job->frame.local_frame_id
+                  << " cannot be returned." << std::endl;
+    }
 }

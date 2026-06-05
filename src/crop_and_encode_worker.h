@@ -68,6 +68,7 @@ private:
     void write_perf_row(const CropFrameSnapshot& frame, const CropEncodePerfSample& sample);
     void write_sidecar_summary();
     void reset_recording_counters();
+    void release_job(CropEncodeJob* job);
 
     uint64_t last_frame_id_used_ = 0;
     CameraParams* camera_params_;

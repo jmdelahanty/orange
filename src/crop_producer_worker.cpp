@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -45,7 +46,9 @@ CropProducerWorker::CropProducerWorker(
       recycle_queue_(recycle_queue),
       camera_control_(camera_control),
       crop_width_(SanitizeCropSize(crop_size_px)),
-      crop_height_(SanitizeCropSize(crop_size_px))
+      crop_height_(SanitizeCropSize(crop_size_px)),
+      encode_job_pool_("CropEncodeJob", kDefaultEncodeJobPoolSize),
+      preview_job_pool_("CropPreviewJob", kDefaultPreviewJobPoolSize)
 {
     crop_producer_ = std::make_unique<CropProducer>(
         camera_params_,
@@ -66,17 +69,25 @@ CropProducerWorker::~CropProducerWorker()
               << " blank_jobs=" << blank_jobs_enqueued_
               << " dropped_jobs_offered=" << dropped_jobs_offered_
               << " dropped_jobs=" << dropped_jobs_enqueued_
+              << " encode_job_pool_misses=" << encode_job_pool_.GetStats().borrow_misses
+              << " preview_job_pool_misses=" << preview_job_pool_.GetStats().borrow_misses
               << std::endl;
 }
 
 void CropProducerWorker::SetCropAndEncodeWorker(CropAndEncodeWorker* crop_worker)
 {
     crop_worker_ = crop_worker;
+    if (crop_worker_) {
+        crop_worker_->SetCropProducerWorker(this);
+    }
 }
 
 void CropProducerWorker::SetCropPreviewWorker(CropPreviewWorker* crop_preview_worker)
 {
     crop_preview_worker_ = crop_preview_worker;
+    if (crop_preview_worker_) {
+        crop_preview_worker_->SetCropProducerWorker(this);
+    }
 }
 
 void CropProducerWorker::SetPoseWorker(PoseWorker* pose_worker)
@@ -133,7 +144,100 @@ CropProducerWorker::RecordingCounters CropProducerWorker::GetRecordingCounters()
     counters.blank_jobs_enqueued = run_blank_jobs_enqueued_.load(std::memory_order_relaxed);
     counters.dropped_jobs_offered = run_dropped_jobs_offered_.load(std::memory_order_relaxed);
     counters.dropped_jobs_enqueued = run_dropped_jobs_enqueued_.load(std::memory_order_relaxed);
+    counters.encode_job_pool = ToCropJobPoolCounters(encode_job_pool_.GetStats());
+    counters.preview_job_pool = ToCropJobPoolCounters(preview_job_pool_.GetStats());
     return counters;
+}
+
+CropProducerWorker::CropJobPoolCounters CropProducerWorker::ToCropJobPoolCounters(
+    const CropEncodeJobPool::Stats& stats)
+{
+    CropJobPoolCounters counters;
+    counters.capacity = stats.capacity;
+    counters.available = stats.available;
+    counters.active = stats.active;
+    counters.high_water = stats.high_water;
+    counters.misses_total = stats.borrow_misses;
+    counters.invalid_returns_total = stats.invalid_returns;
+    counters.double_returns_total = stats.double_returns;
+    return counters;
+}
+
+CropProducerWorker::CropJobPoolCounters CropProducerWorker::ToCropJobPoolCounters(
+    const CropPreviewJobPool::Stats& stats)
+{
+    CropJobPoolCounters counters;
+    counters.capacity = stats.capacity;
+    counters.available = stats.available;
+    counters.active = stats.active;
+    counters.high_water = stats.high_water;
+    counters.misses_total = stats.borrow_misses;
+    counters.invalid_returns_total = stats.invalid_returns;
+    counters.double_returns_total = stats.double_returns;
+    return counters;
+}
+
+void CropProducerWorker::log_job_pool_miss(const char* pool_name, uint64_t misses_total) const
+{
+    if (misses_total <= 8 || (misses_total & (misses_total - 1)) == 0) {
+        std::cerr << "[CropProducerWorker] " << pool_name
+                  << " pool exhausted for camera "
+                  << (camera_params_ ? camera_params_->camera_serial : "unknown")
+                  << " misses_total=" << misses_total
+                  << std::endl;
+    }
+}
+
+CropEncodeJob* CropProducerWorker::BorrowCropEncodeJob()
+{
+    CropEncodeJob* job = encode_job_pool_.Borrow();
+    if (!job) {
+        log_job_pool_miss(
+            "CropEncodeJob",
+            encode_job_pool_.GetStats().borrow_misses);
+    }
+    return job;
+}
+
+void CropProducerWorker::ReturnCropEncodeJob(CropEncodeJob* job)
+{
+    if (!job) {
+        return;
+    }
+    if (!encode_job_pool_.Return(job)) {
+        const auto stats = encode_job_pool_.GetStats();
+        std::cerr << "[CropProducerWorker] Failed to return CropEncodeJob for camera "
+                  << (camera_params_ ? camera_params_->camera_serial : "unknown")
+                  << " invalid_returns=" << stats.invalid_returns
+                  << " double_returns=" << stats.double_returns
+                  << std::endl;
+    }
+}
+
+CropPreviewJob* CropProducerWorker::BorrowCropPreviewJob()
+{
+    CropPreviewJob* job = preview_job_pool_.Borrow();
+    if (!job) {
+        log_job_pool_miss(
+            "CropPreviewJob",
+            preview_job_pool_.GetStats().borrow_misses);
+    }
+    return job;
+}
+
+void CropProducerWorker::ReturnCropPreviewJob(CropPreviewJob* job)
+{
+    if (!job) {
+        return;
+    }
+    if (!preview_job_pool_.Return(job)) {
+        const auto stats = preview_job_pool_.GetStats();
+        std::cerr << "[CropProducerWorker] Failed to return CropPreviewJob for camera "
+                  << (camera_params_ ? camera_params_->camera_serial : "unknown")
+                  << " invalid_returns=" << stats.invalid_returns
+                  << " double_returns=" << stats.double_returns
+                  << std::endl;
+    }
 }
 
 bool CropProducerWorker::ProcessEntryInline(WORKER_ENTRY* entry)
@@ -201,7 +305,30 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         return false;
     }
 
-    std::unique_ptr<CropEncodeJob> job = std::make_unique<CropEncodeJob>();
+    CropEncodeJob* job = BorrowCropEncodeJob();
+    if (!job) {
+        if (release_source_entry && crop_producer_) {
+            crop_producer_->ReleaseSourceEntry(entry);
+        }
+        if (crop_producer_) {
+            crop_producer_->DrainPending(false);
+        }
+        if (camera_control_ && camera_control_->recording_draining) {
+            ForwardRecordingDrainIfReady();
+        }
+        return false;
+    }
+    struct EncodeJobReturnGuard {
+        CropProducerWorker* owner = nullptr;
+        CropEncodeJob*& job;
+        ~EncodeJobReturnGuard()
+        {
+            if (owner && job) {
+                owner->ReturnCropEncodeJob(job);
+                job = nullptr;
+            }
+        }
+    } encode_job_guard{this, job};
     CropFrameSnapshot& frame = job->frame;
     CropEncodePerfSample& perf = job->perf;
     frame.crop_producer_worker_start_host_ns = steady_now_ns();
@@ -231,8 +358,14 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         }
     };
 
-    auto enqueue_job = [&](std::unique_ptr<CropEncodeJob> ready_job) {
+    auto return_encode_job = [&](CropEncodeJob*& finished_job) {
+        ReturnCropEncodeJob(finished_job);
+        finished_job = nullptr;
+    };
+
+    auto enqueue_job = [&](CropEncodeJob*& ready_job) {
         if (!crop_worker_ || !ready_job) {
+            return_encode_job(ready_job);
             return false;
         }
         const bool has_crop_frame = ready_job->crop_frame != nullptr;
@@ -258,7 +391,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                 run_dropped_jobs_offered_.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        if (!crop_worker_->TryEnqueueJob(ready_job.get())) {
+        if (!crop_worker_->TryEnqueueJob(ready_job)) {
             queue_full_drops_++;
             if (has_crop_frame && crop_producer_) {
                 crop_producer_->NoteConsumerDropped(CropProducer::Consumer::kRecording);
@@ -270,6 +403,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                 crop_producer_->RecycleNow(ready_job->crop_frame);
                 ready_job->crop_frame = nullptr;
             }
+            return_encode_job(ready_job);
             return false;
         }
         if (has_crop_frame && crop_producer_) {
@@ -291,7 +425,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                 run_dropped_jobs_enqueued_.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        ready_job.release();
+        ready_job = nullptr;
         return true;
     };
 
@@ -301,7 +435,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                 crop_producer_->RecycleNow(preview_job->crop_frame);
                 preview_job->crop_frame = nullptr;
             }
-            delete preview_job;
+            ReturnCropPreviewJob(preview_job);
             return false;
         }
         const bool has_crop_frame = preview_job->crop_frame != nullptr;
@@ -332,7 +466,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
             perf.drop_reason = "source_smaller_than_crop";
             perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
             if (frame_should_encode) {
-                (void)enqueue_job(std::move(job));
+                (void)enqueue_job(job);
             }
             if (release_source_entry) {
                 crop_producer_->ReleaseSourceEntry(entry);
@@ -395,7 +529,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                     perf.drop_reason = produce_result.drop_reason;
                     perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
                     if (frame_should_encode) {
-                        (void)enqueue_job(std::move(job));
+                        (void)enqueue_job(job);
                     }
                     if (crop_producer_) {
                         crop_producer_->DrainPending(false);
@@ -411,11 +545,16 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
 
             if (preview_needs_crop_frame && job->crop_frame && crop_producer_) {
                 crop_producer_->RetainLease(job->crop_frame);
-                CropPreviewJob* preview_job = new CropPreviewJob();
-                preview_job->frame = frame;
-                preview_job->crop_frame = job->crop_frame;
-                preview_job->blank_preview = false;
-                (void)enqueue_preview_job(preview_job);
+                CropPreviewJob* preview_job = BorrowCropPreviewJob();
+                if (preview_job) {
+                    preview_job->frame = frame;
+                    preview_job->crop_frame = job->crop_frame;
+                    preview_job->blank_preview = false;
+                    (void)enqueue_preview_job(preview_job);
+                } else {
+                    crop_producer_->RecycleNow(job->crop_frame);
+                    crop_producer_->NoteConsumerDropped(CropProducer::Consumer::kPreview);
+                }
             }
         } else {
             frame.blank_frame = true;
@@ -424,10 +563,12 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
                 const CropPreviewCadence::Decision preview_decision =
                     crop_preview_worker_->EvaluateOffer(true);
                 if (preview_decision.update) {
-                    CropPreviewJob* preview_job = new CropPreviewJob();
-                    preview_job->frame = frame;
-                    preview_job->blank_preview = true;
-                    (void)enqueue_preview_job(preview_job);
+                    CropPreviewJob* preview_job = BorrowCropPreviewJob();
+                    if (preview_job) {
+                        preview_job->frame = frame;
+                        preview_job->blank_preview = true;
+                        (void)enqueue_preview_job(preview_job);
+                    }
                 }
             }
             if (release_source_entry) {
@@ -436,7 +577,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         }
 
         if (job->crop_frame && crop_worker_ && frame_should_encode) {
-            (void)enqueue_job(std::move(job));
+            (void)enqueue_job(job);
             release_producer_handoff_lease();
             if (crop_producer_) {
                 crop_producer_->DrainPending(false);
@@ -445,7 +586,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         }
 
         if (!has_detection && crop_worker_ && frame_should_encode) {
-            (void)enqueue_job(std::move(job));
+            (void)enqueue_job(job);
             if (crop_producer_) {
                 crop_producer_->DrainPending(false);
             }
@@ -463,7 +604,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
         perf.drop_reason = "exception";
         perf.total_ms = elapsed_ms(perf.worker_start_steady_ns, steady_now_ns());
         if (frame_should_encode) {
-            (void)enqueue_job(std::move(job));
+            (void)enqueue_job(job);
         }
         if (crop_producer_) {
             crop_producer_->DrainPending(false);
