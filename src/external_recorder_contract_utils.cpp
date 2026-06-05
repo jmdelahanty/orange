@@ -343,6 +343,8 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
         set_json_default(&stream, "codec", camera.recording.encode.codec);
         set_json_default(&stream, "preset", camera.recording.encode.preset);
         set_json_default(&stream, "tuning", camera.recording.encode.tuning);
+        set_json_default(&stream, "rate_control_mode", camera.recording.encode.rate_control_mode);
+        set_json_default(&stream, "quality_value", camera.recording.encode.quality_value);
         set_json_default(&stream, "gop", camera.recording.encode.gop_length > 0
                                      ? camera.recording.encode.gop_length
                                      : std::max(1, camera_frame_rate));

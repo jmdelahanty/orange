@@ -59,6 +59,8 @@ struct Options {
     std::string codec = "hevc";
     std::string preset = "p1";
     std::string tuning = "ll";
+    std::string rate_control_mode = "vbr";
+    uint32_t quality_value = 20;
     uint32_t gop = 25;
     uint32_t bitrate_bps = 150000000;
     uint32_t max_bitrate_bps = 150000000;
@@ -181,6 +183,8 @@ void signal_handler(int)
         << "  --codec <hevc|h264>   Default hevc.\n"
         << "  --preset <p1|p3|p5|p7> Default p1.\n"
         << "  --tuning <ll|ull|hq|lossless> Default ll.\n"
+        << "  --rate-control <vbr|cqp> Default vbr. Ignored for lossless tuning.\n"
+        << "  --quality <int>      CQP QP value for --rate-control cqp. Default 20.\n"
         << "  --gop <int>           GOP length. Default 25.\n"
         << "  --bitrate-bps <int>   Average bitrate. Default 150000000.\n"
         << "  --max-bitrate-bps <int> Max bitrate. Default 150000000.\n"
@@ -361,6 +365,10 @@ Options parse_options(int argc, char** argv)
             options.preset = lower_ascii(consume(arg.c_str()));
         } else if (arg == "--tuning") {
             options.tuning = lower_ascii(consume(arg.c_str()));
+        } else if (arg == "--rate-control") {
+            options.rate_control_mode = lower_ascii(consume(arg.c_str()));
+        } else if (arg == "--quality" || arg == "--cq" || arg == "--qp") {
+            options.quality_value = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--gop") {
             options.gop = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--bitrate-bps") {
@@ -432,6 +440,12 @@ Options parse_options(int argc, char** argv)
     }
     if (options.codec != "hevc" && options.codec != "h264") {
         throw std::runtime_error("--codec must be hevc or h264");
+    }
+    if (options.rate_control_mode != "vbr" && options.rate_control_mode != "cqp") {
+        throw std::runtime_error("--rate-control must be vbr or cqp");
+    }
+    if (options.quality_value > 51) {
+        throw std::runtime_error("--quality must be <= 51");
     }
     if (options.routing_policy.empty()) {
         throw std::runtime_error("--routing-policy must not be empty");
@@ -1136,6 +1150,17 @@ void configure_encoder_params(const Options& options,
         encode_config->rcParams.enableLookahead = 0;
         encode_config->rcParams.lowDelayKeyFrameScale = 0;
         encode_config->gopLength = 1;
+    } else if (options.rate_control_mode == "cqp") {
+        const uint8_t qp = static_cast<uint8_t>(std::min<uint32_t>(51, options.quality_value));
+        encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_CONSTQP;
+        encode_config->rcParams.constQP = {qp, qp, qp};
+        encode_config->rcParams.averageBitRate = 0;
+        encode_config->rcParams.maxBitRate = 0;
+        encode_config->rcParams.vbvBufferSize = 0;
+        encode_config->rcParams.enableAQ = 0;
+        encode_config->rcParams.enableTemporalAQ = 0;
+        encode_config->rcParams.enableLookahead = 0;
+        encode_config->rcParams.lowDelayKeyFrameScale = 0;
     } else {
         const bool low_latency = options.tuning == "ll" || options.tuning == "ull";
         encode_config->rcParams.rateControlMode = NV_ENC_PARAMS_RC_VBR;
@@ -3584,6 +3609,8 @@ void write_summary_json(const Options& options,
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
     out << "  \"preset\": \"" << json_escape(options.preset) << "\",\n";
     out << "  \"tuning\": \"" << json_escape(options.tuning) << "\",\n";
+    out << "  \"rate_control_mode\": \"" << json_escape(options.rate_control_mode) << "\",\n";
+    out << "  \"quality_value\": " << options.quality_value << ",\n";
     out << "  \"fps\": " << options.fps << ",\n";
     out << "  \"encode_max_fps\": " << options.encode_max_fps << ",\n";
     out << "  \"encode_queue_depth\": " << options.encode_queue_depth << ",\n";

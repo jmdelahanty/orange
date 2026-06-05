@@ -720,6 +720,8 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         stream_plan.codec = options.default_codec;
         stream_plan.preset = options.default_preset;
         stream_plan.tuning = options.default_tuning;
+        stream_plan.rate_control_mode = options.default_rate_control_mode;
+        stream_plan.quality_value = options.default_quality_value;
         stream_plan.gop = options.default_gop;
         stream_plan.bitrate_bps = options.default_bitrate_bps;
         stream_plan.max_bitrate_bps = options.default_max_bitrate_bps;
@@ -845,6 +847,17 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
             !read_string_field(stream, "codec", &stream_plan.codec, error_out, context) ||
             !read_string_field(stream, "preset", &stream_plan.preset, error_out, context) ||
             !read_string_field(stream, "tuning", &stream_plan.tuning, error_out, context) ||
+            !read_string_field(stream,
+                               "rate_control_mode",
+                               &stream_plan.rate_control_mode,
+                               error_out,
+                               context) ||
+            !read_int_field(stream,
+                            "quality_value",
+                            &stream_plan.quality_value,
+                            error_out,
+                            context,
+                            0) ||
             !read_int_field(stream, "gop", &stream_plan.gop, error_out, context, 1) ||
             !read_u64_field(stream,
                             "terminal_tail_coalesce_frames",
@@ -1076,6 +1089,10 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         stream.preset,
         "--tuning",
         stream.tuning,
+        "--rate-control",
+        stream.rate_control_mode,
+        "--quality",
+        std::to_string(stream.quality_value),
         "--gop",
         std::to_string(stream.gop),
         "--bitrate-bps",
@@ -1170,6 +1187,8 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"codec", stream.codec},
             {"preset", stream.preset},
             {"tuning", stream.tuning},
+            {"rate_control_mode", stream.rate_control_mode},
+            {"quality_value", stream.quality_value},
             {"gop", stream.gop},
             {"terminal_tail_coalesce_frames", stream.terminal_tail_coalesce_frames},
             {"bitrate_bps", stream.bitrate_bps},

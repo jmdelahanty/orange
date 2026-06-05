@@ -644,8 +644,14 @@ def summarize_resolved(resolved: ResolvedRun) -> None:
             "fps": summary.get("fps", stream.get("encode_fps", "")),
             "encode_max_fps": summary.get("encode_max_fps", stream.get("encode_max_fps", "")),
             "gop": stream.get("gop", first_item(resolved.spec.get("matrix", {}).get("gop_length"), "")),
-            "rate_control_mode": first_item(resolved.spec.get("matrix", {}).get("rate_control_mode"), ""),
-            "quality_value": first_item(resolved.spec.get("matrix", {}).get("quality_value"), ""),
+            "rate_control_mode": summary.get(
+                "rate_control_mode",
+                stream.get("rate_control_mode", first_item(resolved.spec.get("matrix", {}).get("rate_control_mode"), "")),
+            ),
+            "quality_value": summary.get(
+                "quality_value",
+                stream.get("quality_value", first_item(resolved.spec.get("matrix", {}).get("quality_value"), "")),
+            ),
             "bitrate_bps": stream.get("bitrate_bps", ""),
             "max_bitrate_bps": stream.get("max_bitrate_bps", ""),
             "vbv_buffer_size": stream.get("vbv_buffer_size", ""),

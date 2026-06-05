@@ -1,0 +1,249 @@
+{
+  "schema_id": "orange.encoding_master_experiment.manifest",
+  "schema_version": 1,
+  "experiment_id": "encoding_master_all_stages_smoke",
+  "notes": "Representative pass through every documented encoding master stage. This is not the full exhaustive matrix; it proves each stage has an executable path.",
+  "defaults": {
+    "artifact_root": "/tmp/orange_encoding_master",
+    "analytics_output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "duration_s": 6,
+    "warmup_s": 1,
+    "orange_client": "/home/jeremy/orange-gop-split-a16/targets/release/orange_client",
+    "benchmark": "/usr/local/bin/orange-local-benchmark",
+    "sudo": true,
+    "verify_external_recorder": true,
+    "yolo_perf_log": true,
+    "yolo_perf_sample": 1
+  },
+  "runs": [
+    {
+      "run_id": "stage0_p5_hq_vbr150_gop30_reference",
+      "stage": "stage0",
+      "description": "Stage 0 reference sanity run.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "gop": 30,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [30],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000]
+      }
+    },
+    {
+      "run_id": "stage1_p5_hq_vbr250_gop30_bitrate_cap",
+      "stage": "stage1",
+      "description": "Stage 1 bitrate-capped VBR representative.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "gop": 30,
+          "bitrate_bps": 250000000,
+          "max_bitrate_bps": 250000000,
+          "vbv_buffer_size": 250000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [30],
+        "target_bitrate_bps": [250000000],
+        "max_bitrate_bps": [250000000],
+        "vbv_buffer_size": [250000000]
+      }
+    },
+    {
+      "run_id": "stage2_p5_hq_cqp20_gop30_fixed_qp",
+      "stage": "stage2",
+      "description": "Stage 2 fixed-QP representative using external recorder CQP.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "rate_control_mode": "cqp",
+          "quality_value": 20,
+          "gop": 30,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["cqp"],
+        "quality_value": [20],
+        "gop_length": [30]
+      }
+    },
+    {
+      "run_id": "stage3_p5_hq_vbr150_gop5_short_gop",
+      "stage": "stage3",
+      "description": "Stage 3 GOP sweep short-GOP point.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "gop": 5,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [5],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000]
+      }
+    },
+    {
+      "run_id": "stage3_p5_hq_vbr150_gop60_long_gop",
+      "stage": "stage3",
+      "description": "Stage 3 GOP sweep long-GOP point.",
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "gop": 60,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [60],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000]
+      }
+    },
+    {
+      "run_id": "stage4_p7_lossless_gop1_diagnostic",
+      "stage": "stage4",
+      "description": "Stage 4 lossless diagnostic.",
+      "base_spec": "experiment_specs/2010096_external_ipc_lossless_60fps_gop1_p1_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p7",
+          "tuning": "lossless",
+          "rate_control_mode": "cqp",
+          "quality_value": 0,
+          "gop": 1,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p7"],
+        "tuning": ["lossless"],
+        "rate_control_mode": ["cqp"],
+        "quality_value": [0],
+        "gop_length": [1]
+      }
+    },
+    {
+      "run_id": "stage5_p5_hq_vbr150_gop30_short_soak",
+      "stage": "stage5",
+      "description": "Stage 5 short soak placeholder for finalist workflow.",
+      "duration_s": 12,
+      "base_spec": "experiment_specs/2010096_external_ipc_split_gop_60fps_gop30_p7_hq_a16_gpu5_6_7_8.json",
+      "stream_overrides": {
+        "2010096": {
+          "expected_shard_gpu_ids": [5, 6, 7, 8],
+          "preset": "p5",
+          "tuning": "hq",
+          "rate_control_mode": "vbr",
+          "quality_value": 20,
+          "gop": 30,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000,
+          "encode_queue_depth": 32,
+          "encode_fps": 60,
+          "encode_max_fps": 0
+        }
+      },
+      "matrix_overrides": {
+        "preset": ["p5"],
+        "tuning": ["hq"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [30],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000]
+      }
+    },
+    {
+      "run_id": "stage6_fourcam_installed_rig_p1_ll_100fps_smoke",
+      "stage": "stage6",
+      "description": "Stage 6 installed four-camera rig smoke using the existing 100 FPS PTP external IPC spec.",
+      "base_spec": "experiment_specs/2010093_2010094_2010095_2010096_headless_real_yolo_aq_off_100fps_ptp_external_ipc_supervised.json",
+      "matrix_overrides": {
+        "preset": ["p1"],
+        "tuning": ["ll"],
+        "rate_control_mode": ["vbr"],
+        "quality_value": [20],
+        "gop_length": [25],
+        "target_bitrate_bps": [150000000],
+        "max_bitrate_bps": [150000000],
+        "vbv_buffer_size": [150000000]
+      }
+    }
+  ]
+}

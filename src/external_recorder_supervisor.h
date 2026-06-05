@@ -21,6 +21,8 @@ struct SupervisorPlanOptions {
     std::string default_codec = "hevc";
     std::string default_preset = "p1";
     std::string default_tuning = "ll";
+    std::string default_rate_control_mode = "vbr";
+    int default_quality_value = 20;
     int default_gop = 25;
     uint64_t default_bitrate_bps = 150000000;
     uint64_t default_max_bitrate_bps = 150000000;
@@ -58,6 +60,8 @@ struct RecorderStreamPlan {
     std::string codec = "hevc";
     std::string preset = "p1";
     std::string tuning = "ll";
+    std::string rate_control_mode = "vbr";
+    int quality_value = 20;
     int gop = 25;
     uint64_t terminal_tail_coalesce_frames = 0;
     uint64_t bitrate_bps = 150000000;
