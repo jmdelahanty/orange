@@ -660,7 +660,19 @@ void EncoderPreprocessWorker::release_source_after_stream_work(
 
     if (m_stream) {
         source_release_fallback_stream_syncs_.fetch_add(1, std::memory_order_relaxed);
-        ck(cudaStreamSynchronize(m_stream));
+        const cudaError_t sync_status = cudaStreamSynchronize(m_stream);
+        if (sync_status != cudaSuccess) {
+            std::cerr << "[SOURCE_RELEASE] Fallback stream sync failed before source release"
+                      << " camera=" << (camera_params_ ? camera_params_->camera_serial : "unknown")
+                      << " recording_frame=" << sample.recording_frame_id
+                      << " local_frame=" << sample.local_frame_id
+                      << " preprocess_gpu=" << preprocess_gpu_id_
+                      << " error=" << cudaGetErrorString(sync_status)
+                      << std::endl;
+            cudaGetLastError();
+        }
+        // The stream has surfaced completion or failure for queued work. Release
+        // deterministically so a source frame cannot wedge the recycle pool.
     }
 
     SourceReleaseSample fallback_sample = sample;
@@ -836,6 +848,75 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
 
     in_flight_.fetch_add(1, std::memory_order_relaxed);
+    struct InFlightGuard {
+        std::atomic<int>* in_flight = nullptr;
+
+        ~InFlightGuard()
+        {
+            if (in_flight) {
+                in_flight->fetch_sub(1, std::memory_order_relaxed);
+            }
+        }
+    } in_flight_guard{&in_flight_};
+
+    // Own the WORKER_ENTRY source ref until it has either been released
+    // immediately or protected by the event/sync-backed stream-release path.
+    struct SourceEntryGuard {
+        EncoderPreprocessWorker* owner = nullptr;
+        WORKER_ENTRY* entry = nullptr;
+        cudaEvent_t** event = nullptr;
+        bool* event_recorded = nullptr;
+        SourceReleaseSample* sample = nullptr;
+        bool use_stream_release = false;
+
+        ~SourceEntryGuard()
+        {
+            if (!owner || !entry) {
+                return;
+            }
+            if (use_stream_release) {
+                SourceReleaseSample empty_sample;
+                owner->release_source_after_stream_work(
+                    entry,
+                    event ? *event : nullptr,
+                    event_recorded ? *event_recorded : false,
+                    sample ? *sample : empty_sample);
+                if (event) {
+                    *event = nullptr;
+                }
+            } else {
+                owner->release_source_entry(entry);
+            }
+        }
+
+        void UseStreamRelease(cudaEvent_t** event_in,
+                              bool* event_recorded_in,
+                              SourceReleaseSample* sample_in)
+        {
+            event = event_in;
+            event_recorded = event_recorded_in;
+            sample = sample_in;
+            use_stream_release = true;
+        }
+
+        void ReleaseAfterStreamWork()
+        {
+            if (!owner || !entry) {
+                return;
+            }
+            SourceReleaseSample empty_sample;
+            owner->release_source_after_stream_work(
+                entry,
+                event ? *event : nullptr,
+                event_recorded ? *event_recorded : false,
+                sample ? *sample : empty_sample);
+            if (event) {
+                *event = nullptr;
+            }
+            entry = nullptr;
+        }
+    } source_entry_guard{this, entry};
+
     NVTX_ENCODE_DYNAMIC(BuildRecordingNvtxLabel(
         "Recording preprocess worker",
         camera_params_->camera_serial,
@@ -905,8 +986,6 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
                 cudaGetLastError();
             }
         }
-        release_source_entry(entry);
-        in_flight_.fetch_sub(1, std::memory_order_relaxed);
         return false;
     }
 
@@ -1037,6 +1116,113 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     ENCODER_WORKER_ENTRY* encoder_entry = nullptr;
     cudaEvent_t* event = nullptr;
     int direct_input_slot_id = -1;
+    struct EncoderResourceGuard {
+        EncoderPreprocessWorker* owner = nullptr;
+        ENCODER_WORKER_ENTRY** entry = nullptr;
+        cudaEvent_t** event = nullptr;
+        int* direct_input_slot_id = nullptr;
+        uint64_t frame_id = 0;
+        uint64_t recording_frame_id = 0;
+        bool buffer_counter_borrowed = false;
+        bool event_counter_borrowed = false;
+        bool stream_work_queued = false;
+        bool active = true;
+
+        ~EncoderResourceGuard()
+        {
+            ReturnToPools();
+        }
+
+        void MarkBufferCounterBorrowed()
+        {
+            buffer_counter_borrowed = true;
+        }
+
+        void MarkEventCounterBorrowed()
+        {
+            event_counter_borrowed = true;
+        }
+
+        void MarkStreamWorkQueued()
+        {
+            stream_work_queued = true;
+        }
+
+        void TransferToConsumer()
+        {
+            active = false;
+            if (entry) {
+                *entry = nullptr;
+            }
+            if (event) {
+                *event = nullptr;
+            }
+            if (direct_input_slot_id) {
+                *direct_input_slot_id = -1;
+            }
+        }
+
+        void ReturnToPools()
+        {
+            if (!active || !owner) {
+                return;
+            }
+
+            if (stream_work_queued && owner->m_stream) {
+                // If queued preprocess work may still touch the encoder buffer,
+                // synchronize before returning it to the free pool.
+                const cudaError_t sync_status = cudaStreamSynchronize(owner->m_stream);
+                if (sync_status != cudaSuccess) {
+                    std::cerr << "[EncoderPreprocessWorker] Preprocess stream sync failed before "
+                              << "returning encoder resources"
+                              << " camera=" << (owner->camera_params_
+                                                   ? owner->camera_params_->camera_serial
+                                                   : "unknown")
+                              << " recording_frame=" << recording_frame_id
+                              << " local_frame=" << frame_id
+                              << " preprocess_gpu=" << owner->preprocess_gpu_id_
+                              << " error=" << cudaGetErrorString(sync_status)
+                              << std::endl;
+                    cudaGetLastError();
+                }
+            }
+
+            if (entry && *entry) {
+                if ((*entry)->direct_input) {
+                    (*entry)->d_prepared_frame = nullptr;
+                }
+                (*entry)->slot_id = -1;
+                (*entry)->direct_input = false;
+                (*entry)->preprocess_complete_event = nullptr;
+                (*entry)->cross_gpu_copy_performed = false;
+                owner->free_encoder_entries_.push(*entry);
+                *entry = nullptr;
+            }
+            if (event && *event) {
+                owner->free_events_.push(*event);
+                *event = nullptr;
+            }
+            if (direct_input_slot_id && *direct_input_slot_id >= 0) {
+                owner->free_direct_input_slots_.push(*direct_input_slot_id);
+                *direct_input_slot_id = -1;
+            }
+            if (buffer_counter_borrowed) {
+                owner->available_buffers_.fetch_add(1, std::memory_order_relaxed);
+                buffer_counter_borrowed = false;
+            }
+            if (event_counter_borrowed) {
+                owner->available_events_.fetch_add(1, std::memory_order_relaxed);
+                event_counter_borrowed = false;
+            }
+            active = false;
+        }
+    } encoder_resource_guard{
+        this,
+        &encoder_entry,
+        &event,
+        &direct_input_slot_id,
+        entry->frame_id,
+        entry->recording_frame_id};
     
     int retry_count = 0;
     while (((!free_encoder_entries_.pop(encoder_entry)) ||
@@ -1062,17 +1248,16 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     
     if (!encoder_entry || !event || (direct_input_enabled_ && direct_input_slot_id < 0)) {
         frames_dropped_++;
-
-        release_source_entry(entry);
-        in_flight_.fetch_sub(1, std::memory_order_relaxed);
         return false;
     }
     
     // Successfully acquired resources - update counters
     if (direct_input_enabled_ || encoder_entry->d_prepared_frame) {
         available_buffers_--;
+        encoder_resource_guard.MarkBufferCounterBorrowed();
     }
     available_events_--;
+    encoder_resource_guard.MarkEventCounterBorrowed();
     encoder_entry->preprocess_complete_event = event;
     encoder_entry->slot_id = direct_input_slot_id;
     encoder_entry->direct_input = direct_input_enabled_;
@@ -1097,6 +1282,10 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     source_release_sample.receive_host_ns = entry->acquisition_receive_host_ns;
     source_release_sample.submit_host_ns = entry->recording_submit_host_ns;
     source_release_sample.worker_start_host_ns = worker_start_host_ns;
+    source_entry_guard.UseStreamRelease(
+        &source_release_event,
+        &source_release_event_recorded,
+        &source_release_sample);
 
 #if PIPELINE_PROFILE
     bool sample_preprocess = false;
@@ -1110,6 +1299,7 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
 #endif
 
     // Wait for the raw frame data to be ready from the acquisition thread.
+    encoder_resource_guard.MarkStreamWorkQueued();
     cudaEvent_t* source_ready_event = entry->delayed_consumer_event();
     if (source_ready_event) {
         NVTX_SYNC_DYNAMIC(BuildRecordingNvtxLabel(
@@ -1190,6 +1380,8 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
             ck(cudaEventRecord(*source_release_event, m_stream));
             source_release_event_recorded = true;
             source_release_event_record_host_ns = helper_host_now_ns();
+            source_release_sample.source_safe_event_record_host_ns =
+                source_release_event_record_host_ns;
         }
         encoder_entry->cross_gpu_copy_performed = helper_copy_bytes > 0;
         cross_gpu_copy_performed = helper_copy_bytes > 0;
@@ -1283,6 +1475,8 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
         ck(cudaEventRecord(*source_release_event, m_stream));
         source_release_event_recorded = true;
         source_release_event_record_host_ns = helper_host_now_ns();
+        source_release_sample.source_safe_event_record_host_ns =
+            source_release_event_record_host_ns;
     }
     }
     if (sample_helper_cross_gpu) {
@@ -1305,35 +1499,22 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     source_release_sample.cross_gpu_copy = cross_gpu_copy_performed;
     source_release_sample.source_safe_event_record_host_ns =
         source_release_event_record_host_ns;
-    release_source_after_stream_work(
-        entry,
-        source_release_event,
-        source_release_event_recorded,
-        source_release_sample);
+    const uint64_t source_frame_id = entry->frame_id;
+    const uint64_t source_recording_frame_id = entry->recording_frame_id;
+    source_entry_guard.ReleaseAfterStreamWork();
 
     // Pass the prepared frame and its completion event to the hardware encoder.
     if (m_hw_worker_ && m_hw_worker_->PutObjectToQueueIn(encoder_entry)) {
-        encoder_entry = nullptr;
+        encoder_resource_guard.TransferToConsumer();
     } else {
         if (m_hw_worker_) {
             std::cerr << "[EncoderPreprocessWorker] Hardware worker enqueue rejected"
                       << " cam=" << camera_params_->camera_serial
-                      << " frame=" << entry->frame_id
-                      << " recording_frame=" << entry->recording_frame_id
+                      << " frame=" << source_frame_id
+                      << " recording_frame=" << source_recording_frame_id
                       << std::endl;
         }
-        // If there's no hardware worker, recycle the resources.
-        free_encoder_entries_.push(encoder_entry);
-        free_events_.push(event);
-        if (direct_input_enabled_ && direct_input_slot_id >= 0) {
-            free_direct_input_slots_.push(direct_input_slot_id);
-            available_buffers_++;
-        } else {
-            available_buffers_++;
-        }
-        available_events_++;
     }
-    in_flight_.fetch_sub(1, std::memory_order_relaxed);
 
     // Measure total preprocessing time
     auto preprocess_end = std::chrono::steady_clock::now();
