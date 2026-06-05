@@ -917,8 +917,10 @@ private:
     bool active_ = false;
 };
 
-std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
-                                        const std::vector<int>& selected_indices);
+std::vector<int> collect_unique_gpu_ids(
+    const CameraParams* cameras_params,
+    const std::vector<int>& selected_indices,
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr);
 void start_headless_gpu_dmon_monitor(HeadlessGpuDmonMonitor* monitor,
                                      const std::string& recording_folder,
                                      const std::vector<int>& gpu_ids);
@@ -4331,7 +4333,8 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
     const yolo_event_log::SyntheticYoloEventConfig& yolo_event_log_config =
         yolo_event_log::SyntheticYoloEventConfig{},
     const HeadlessYoloWorkerConfig& yolo_worker_config = HeadlessYoloWorkerConfig{},
-    const HeadlessPoseWorkerConfig& pose_worker_config = HeadlessPoseWorkerConfig{})
+    const HeadlessPoseWorkerConfig& pose_worker_config = HeadlessPoseWorkerConfig{},
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract = nullptr)
 {
     std::cout << "start camera sthread..." << std::endl;
     if (thread_failure_state) {
@@ -4624,7 +4627,10 @@ bool start_camera_thread(std::vector<std::thread> &camera_threads,
             start_headless_gpu_dmon_monitor(
                 gpu_dmon_monitor,
                 record_folder,
-                collect_unique_gpu_ids(cameras_params, selected_indices));
+                collect_unique_gpu_ids(
+                    cameras_params,
+                    selected_indices,
+                    external_recorder_contract));
         }
 
         if (enable_recording) {
@@ -5630,8 +5636,10 @@ std::string join_ints_csv(const std::vector<int>& values)
     return out.str();
 }
 
-std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
-                                        const std::vector<int>& selected_indices)
+std::vector<int> collect_unique_gpu_ids(
+    const CameraParams* cameras_params,
+    const std::vector<int>& selected_indices,
+    const HeadlessExternalRecorderContractConfig* external_recorder_contract)
 {
     std::vector<int> gpu_ids;
     std::unordered_set<int> seen;
@@ -5642,6 +5650,52 @@ std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
         if (seen.insert(gpu_id).second) {
             gpu_ids.push_back(gpu_id);
         }
+    };
+    auto append_json_gpu_id = [&](const nlohmann::json& stream, const char* key) {
+        if (!stream.is_object() || !stream.contains(key) || !stream[key].is_number_integer()) {
+            return;
+        }
+        append_gpu_id(stream[key].get<int>());
+    };
+    auto append_external_stream_gpus = [&](const nlohmann::json& stream) {
+        append_json_gpu_id(stream, "analytics_gpu_id");
+        append_json_gpu_id(stream, "recorder_gpu_id");
+        if (!stream.is_object() ||
+            !stream.contains("expected_shard_gpu_ids") ||
+            !stream["expected_shard_gpu_ids"].is_array()) {
+            return;
+        }
+        for (const nlohmann::json& gpu_id : stream["expected_shard_gpu_ids"]) {
+            if (gpu_id.is_number_integer()) {
+                append_gpu_id(gpu_id.get<int>());
+            }
+        }
+    };
+    auto find_external_stream_for_camera =
+        [&](const std::string& serial) -> const nlohmann::json* {
+        if (!external_recorder_contract ||
+            !external_recorder_contract->enabled() ||
+            !external_recorder_contract->streams.is_object() ||
+            serial.empty()) {
+            return nullptr;
+        }
+        auto by_serial = external_recorder_contract->streams.find(serial);
+        if (by_serial != external_recorder_contract->streams.end() && by_serial->is_object()) {
+            return &(*by_serial);
+        }
+        for (auto it = external_recorder_contract->streams.begin();
+             it != external_recorder_contract->streams.end();
+             ++it) {
+            if (!it.value().is_object()) {
+                continue;
+            }
+            const nlohmann::json& stream = it.value();
+            if (stream.value("camera_serial", std::string()) == serial ||
+                stream.value("stream_id", std::string()) == serial) {
+                return &stream;
+            }
+        }
+        return nullptr;
     };
 
     for (int idx : selected_indices) {
@@ -5654,6 +5708,10 @@ std::vector<int> collect_unique_gpu_ids(const CameraParams* cameras_params,
             for (int helper_gpu_id : camera.recording.strategy.split_gop.encoder_gpu_ids) {
                 append_gpu_id(helper_gpu_id);
             }
+        }
+        if (const nlohmann::json* stream =
+                find_external_stream_for_camera(camera.camera_serial)) {
+            append_external_stream_gpus(*stream);
         }
     }
     std::sort(gpu_ids.begin(), gpu_ids.end());
@@ -8153,7 +8211,8 @@ int run_local_recording_session(const HeadlessCliOptions& options, bool print_in
         initial_recording_output_folder,
         options.yolo_event_log,
         options.yolo_worker,
-        options.pose_worker);
+        options.pose_worker,
+        &options.external_recorder_contract);
 
     if (!started) {
         stop_supervised_external_recorder();

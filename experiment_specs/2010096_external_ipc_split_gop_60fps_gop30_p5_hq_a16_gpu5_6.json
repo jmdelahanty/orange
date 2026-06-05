@@ -1,0 +1,83 @@
+{
+  "experiment_id": "2010096_external_ipc_split_gop_60fps_gop30_p5_hq_a16_gpu5_6",
+  "notes": "Single-camera external IPC split-GOP HEVC capacity test for 4512x4512 at 60 fps, GOP 30, preset P5, tuning HQ, sharded across A16 GPUs 5 and 6.",
+  "selection": {
+    "camera_serials": ["2010096"],
+    "gpu_ids": [5]
+  },
+  "fixed": {
+    "duration_s": 12,
+    "warmup_s": 2,
+    "display": false,
+    "yolo": false,
+    "stream_only": false,
+    "sync_mode": "free_run",
+    "recording_sink_mode": "external_ipc",
+    "config_folder": "/home/jeremy/orange-gop-split-a16/config/validated_split_gop_hevc_60fps_gop30_recabled_a16",
+    "output_root": "/home/jeremy/orange_data/exp/unsorted",
+    "nvenc_direct_input": false,
+    "external_recorder_contract": {
+      "schema_id": "orange.external_recorder.contract",
+      "schema_version": 1,
+      "mode": "diagnostic_ipc_v1",
+      "supervise_processes": true,
+      "artifact_root": "/tmp/orange_external_recorder_2010096_60fps_gop30_p5_hq",
+      "session_id": "2010096_external_ipc_split_gop_60fps_gop30_p5_hq_a16_gpu5_6",
+      "require_summary": true,
+      "require_status": true,
+      "require_status_runtime": true,
+      "require_storage_preflight": true,
+      "require_protocol_hello": true,
+      "require_video_sanity": true,
+      "require_merged_mp4": true,
+      "require_gop_routing": true,
+      "streams": {
+        "2010096": {
+          "stream_id": "2010096",
+          "camera_serial": "2010096",
+          "analytics_gpu_id": 5,
+          "recorder_gpu_id": 5,
+          "expected_shard_gpu_ids": [5, 6],
+          "routing_policy": "gop_modulo",
+          "summary_json": "/tmp/orange_external_recorder_2010096_60fps_gop30_p5_hq/external_recorder_summary.json",
+          "status_json": "/tmp/orange_external_recorder_2010096_60fps_gop30_p5_hq/external_recorder_status.json",
+          "video_sanity_json": "/tmp/orange_external_recorder_2010096_60fps_gop30_p5_hq/external_video_sanity.json",
+          "mp4": "/tmp/orange_external_recorder_2010096_60fps_gop30_p5_hq/Cam2010096_external.mp4",
+          "gop_routing_csv": "/tmp/orange_external_recorder_2010096_60fps_gop30_p5_hq/external_gop_routing.csv",
+          "encode_fps": 60,
+          "encode_max_fps": 0,
+          "encode_queue_depth": 32,
+          "prewarm_slots": 4,
+          "prewarm_bytes": 20358144,
+          "prewarm_peer_copy": true,
+          "codec": "hevc",
+          "preset": "p5",
+          "tuning": "hq",
+          "gop": 30,
+          "bitrate_bps": 150000000,
+          "max_bitrate_bps": 150000000,
+          "vbv_buffer_size": 150000000
+        }
+      }
+    }
+  },
+  "matrix": {
+    "codec": ["hevc"],
+    "preset": ["p5"],
+    "tuning": ["hq"],
+    "rate_control_mode": ["vbr"],
+    "quality_value": [20],
+    "gop_length": [30],
+    "aq": ["off"],
+    "temporal_aq": ["off"],
+    "lookahead": ["off"]
+  },
+  "policy": {
+    "target_fps_tolerance_pct": 2.0,
+    "require_zero_acq_starve": true,
+    "require_zero_pre_drops": true,
+    "require_zero_enc_fail": true,
+    "require_zero_camera_drops": true,
+    "require_valid_video_content": false
+  }
+}
