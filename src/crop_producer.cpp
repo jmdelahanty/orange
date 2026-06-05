@@ -8,6 +8,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -70,6 +71,111 @@ int env_int_or_default(const char* name, int default_value, int min_value, int m
     return static_cast<int>(parsed);
 }
 }  // namespace
+
+CropFrameLease::CropFrameLease(CropProducer* producer,
+                               CropFrame* crop_frame,
+                               RetainMode retain_mode)
+{
+    Reset(producer, crop_frame, retain_mode);
+}
+
+CropFrameLease::~CropFrameLease()
+{
+    ReleaseNowNoexcept();
+}
+
+CropFrameLease::CropFrameLease(CropFrameLease&& other) noexcept
+    : producer_(other.producer_),
+      crop_frame_(other.crop_frame_)
+{
+    other.producer_ = nullptr;
+    other.crop_frame_ = nullptr;
+}
+
+CropFrameLease& CropFrameLease::operator=(CropFrameLease&& other) noexcept
+{
+    if (this != &other) {
+        ReleaseNowNoexcept();
+        producer_ = other.producer_;
+        crop_frame_ = other.crop_frame_;
+        other.producer_ = nullptr;
+        other.crop_frame_ = nullptr;
+    }
+    return *this;
+}
+
+void CropFrameLease::Reset(CropProducer* producer,
+                           CropFrame* crop_frame,
+                           RetainMode retain_mode)
+{
+    ReleaseNowNoexcept();
+    producer_ = producer;
+    crop_frame_ = crop_frame;
+    if (producer_ && crop_frame_ && retain_mode == RetainMode::RetainNew) {
+        producer_->RetainLease(crop_frame_);
+    }
+}
+
+CropFrame* CropFrameLease::Transfer()
+{
+    CropFrame* crop_frame = crop_frame_;
+    producer_ = nullptr;
+    crop_frame_ = nullptr;
+    return crop_frame;
+}
+
+void CropFrameLease::ReleaseNow()
+{
+    CropProducer* producer = producer_;
+    CropFrame* crop_frame = crop_frame_;
+    if (!crop_frame) {
+        return;
+    }
+    if (!producer) {
+        std::cerr << "[CropFrameLease] Cannot release CropFrame "
+                  << crop_frame->frame.local_frame_id
+                  << ": producer is null." << std::endl;
+        producer_ = nullptr;
+        crop_frame_ = nullptr;
+        return;
+    }
+    producer->RecycleNow(crop_frame);
+    producer_ = nullptr;
+    crop_frame_ = nullptr;
+}
+
+void CropFrameLease::ReleaseAfterStream(cudaStream_t consumer_stream)
+{
+    CropProducer* producer = producer_;
+    CropFrame* crop_frame = crop_frame_;
+    if (!crop_frame) {
+        return;
+    }
+    if (!producer) {
+        std::cerr << "[CropFrameLease] Cannot defer CropFrame release for frame "
+                  << crop_frame->frame.local_frame_id
+                  << ": producer is null." << std::endl;
+        producer_ = nullptr;
+        crop_frame_ = nullptr;
+        return;
+    }
+    producer->RecycleAfterConsumerStream(crop_frame, consumer_stream);
+    producer_ = nullptr;
+    crop_frame_ = nullptr;
+}
+
+void CropFrameLease::ReleaseNowNoexcept()
+{
+    try {
+        ReleaseNow();
+    } catch (const std::exception& e) {
+        std::cerr << "[CropFrameLease] ReleaseNow failed: "
+                  << e.what() << std::endl;
+    } catch (...) {
+        std::cerr << "[CropFrameLease] ReleaseNow failed with unknown exception."
+                  << std::endl;
+    }
+}
 
 CropProducer::CropProducer(
     CameraParams* camera_params,

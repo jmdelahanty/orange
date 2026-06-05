@@ -10,6 +10,7 @@
 #include <vector>
 
 class PoseWorker;
+class CropProducer;
 
 struct CropFrameSnapshot {
     uint64_t recording_frame_id = 0;
@@ -120,6 +121,41 @@ struct CropFrame {
         }
         return *this;
     }
+};
+
+class CropFrameLease {
+public:
+    enum class RetainMode {
+        AdoptExisting,
+        RetainNew
+    };
+
+    CropFrameLease() = default;
+    CropFrameLease(CropProducer* producer,
+                   CropFrame* crop_frame,
+                   RetainMode retain_mode = RetainMode::AdoptExisting);
+    ~CropFrameLease();
+
+    CropFrameLease(const CropFrameLease&) = delete;
+    CropFrameLease& operator=(const CropFrameLease&) = delete;
+    CropFrameLease(CropFrameLease&& other) noexcept;
+    CropFrameLease& operator=(CropFrameLease&& other) noexcept;
+
+    CropFrame* get() const { return crop_frame_; }
+    explicit operator bool() const { return crop_frame_ != nullptr; }
+
+    void Reset(CropProducer* producer,
+               CropFrame* crop_frame,
+               RetainMode retain_mode = RetainMode::AdoptExisting);
+    CropFrame* Transfer();
+    void ReleaseNow();
+    void ReleaseAfterStream(cudaStream_t consumer_stream);
+
+private:
+    void ReleaseNowNoexcept();
+
+    CropProducer* producer_ = nullptr;
+    CropFrame* crop_frame_ = nullptr;
 };
 
 struct CropProducerPerfSample {

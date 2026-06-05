@@ -1197,18 +1197,19 @@ void CropAndEncodeWorker::release_job(CropEncodeJob* job)
     }
 
     if (job->crop_frame && crop_producer_) {
+        CropFrameLease crop_frame_lease(crop_producer_, job->crop_frame);
+        job->crop_frame = nullptr;
         try {
             ck(cudaSetDevice(camera_params_->gpu_id));
-            ck(cudaStreamWaitEvent(m_stream, job->crop_frame->crop_ready_event, 0));
-            crop_producer_->RecycleAfterConsumerStream(job->crop_frame, m_stream);
+            ck(cudaStreamWaitEvent(m_stream, crop_frame_lease.get()->crop_ready_event, 0));
+            crop_frame_lease.ReleaseAfterStream(m_stream);
         } catch (const std::exception& e) {
             std::cerr << "[CropAndEncodeWorker] Failed to release pooled crop job frame "
                       << job->frame.local_frame_id
                       << ": " << e.what()
                       << "; returning crop frame immediately." << std::endl;
-            crop_producer_->RecycleNow(job->crop_frame);
+            crop_frame_lease.ReleaseNow();
         }
-        job->crop_frame = nullptr;
     }
 
     if (crop_producer_worker_) {
@@ -1253,6 +1254,8 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
     CropFrameSnapshot& frame = job->frame;
     CropEncodePerfSample& perf = job->perf;
     CropFrame* active_crop_frame = job->crop_frame;
+    CropFrameLease active_crop_frame_lease(crop_producer_, active_crop_frame);
+    job->crop_frame = nullptr;
     CropFrame* timing_crop_frame = active_crop_frame;
 
     const bool frame_should_encode =
@@ -1316,9 +1319,8 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
             }
 
             if (active_crop_frame && crop_producer_) {
-                crop_producer_->RecycleAfterConsumerStream(active_crop_frame, m_stream);
+                active_crop_frame_lease.ReleaseAfterStream(m_stream);
                 active_crop_frame = nullptr;
-                job->crop_frame = nullptr;
             }
 
             // --- RECORDING LOGIC (ONLY RUNS IF RECORDING IS ON) ---
@@ -1407,11 +1409,8 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
     // Cleanup and recycle the entry
     if (active_crop_frame) {
         try {
-            if (crop_producer_) {
-                crop_producer_->RecycleAfterConsumerStream(active_crop_frame, m_stream);
-            }
+            active_crop_frame_lease.ReleaseAfterStream(m_stream);
             active_crop_frame = nullptr;
-            job->crop_frame = nullptr;
         } catch (const std::exception& e) {
             std::cerr << "[CropAndEncodeWorker] Failed to defer crop frame recycle for frame "
                       << frame.local_frame_id
@@ -1426,11 +1425,8 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
                           << ": " << cudaGetErrorString(status) << std::endl;
                 cudaGetLastError();
             }
-            if (crop_producer_) {
-                crop_producer_->RecycleNow(active_crop_frame);
-            }
+            active_crop_frame_lease.ReleaseNow();
             active_crop_frame = nullptr;
-            job->crop_frame = nullptr;
         }
     }
     if (crop_producer_) {

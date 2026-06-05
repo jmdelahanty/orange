@@ -506,18 +506,19 @@ void CropPreviewWorker::release_job(CropPreviewJob* job)
         return;
     }
     if (job->crop_frame && crop_producer_) {
+        CropFrameLease crop_frame_lease(crop_producer_, job->crop_frame);
+        job->crop_frame = nullptr;
         try {
             ck(cudaSetDevice(camera_params_->gpu_id));
-            ck(cudaStreamWaitEvent(stream_, job->crop_frame->crop_ready_event, 0));
-            crop_producer_->RecycleAfterConsumerStream(job->crop_frame, stream_);
+            ck(cudaStreamWaitEvent(stream_, crop_frame_lease.get()->crop_ready_event, 0));
+            crop_frame_lease.ReleaseAfterStream(stream_);
         } catch (const std::exception& e) {
             std::cerr << "[CropPreviewWorker] Failed to release pooled preview job frame "
                       << job->frame.local_frame_id
                       << ": " << e.what()
                       << "; returning crop frame immediately." << std::endl;
-            crop_producer_->RecycleNow(job->crop_frame);
+            crop_frame_lease.ReleaseNow();
         }
-        job->crop_frame = nullptr;
     }
     if (crop_producer_worker_) {
         crop_producer_worker_->ReturnCropPreviewJob(job);
