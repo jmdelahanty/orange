@@ -183,6 +183,33 @@ Questions:
 - does quality degrade at keyframe cadence?
 - does split-GOP routing become too bursty at longer GOPs?
 
+Single-encoder discriminator:
+
+Before assuming GOP 1 is cheap because it removes inter-frame dependency, also
+test one camera with exactly one external encoder shard. This separates
+all-intra encoder capacity from split-GOP multi-shard capacity.
+
+Checked-in manifest:
+
+```text
+experiment_specs/encoding_master_singlecam_60fps_gop1_single_encoder_manifest.json
+```
+
+Initial result on 2026-06-05 with `2010096`, `60 fps`, `GOP=1`,
+`VBR 150 Mbps`, one external shard on GPU `5`:
+
+- `P5 HQ`: acquired `421` frames with `0` camera gaps/errors, but encoded
+  `327/421` and dropped `94`; queue high-water `31/32`.
+- `P7 HQ`: acquired `421` frames with `0` camera gaps/errors, but encoded
+  `141/421` and dropped `280`; queue high-water `31/32`.
+- Both partial MP4s passed decoded video sanity, so this was an encoder
+  throughput failure, not a camera or content failure.
+
+Interpretation: for this frame size and rate, GOP 1 HQ is not sustainable on a
+single external encoder at these settings. The previous one-camera GOP 1
+successes used four shard GPUs, so they should be treated as split-GOP
+multi-encoder results, not single-encoder capacity results.
+
 ### Stage 4: Lossless Diagnostics
 
 Purpose: decide whether lossless is a reference-only tool or a plausible
