@@ -30,7 +30,35 @@ for fish detail.
 /tmp/orange_encoding_master/encoding_master_all_stages_smoke_20260605_224416
 /tmp/orange_encoding_master/encoding_master_singlecam_60fps_gop1_single_encoder_20260605_230133
 /tmp/orange_encoding_master/encoding_master_singlecam_60fps_two_encoder_p5_p7_20260605_234339
+/tmp/orange_encoding_master/encoding_master_singlecam_60fps_two_encoder_lossless_20260605_235048
+/tmp/orange_encoding_master/encoding_master_singlecam_60fps_two_encoder_lossless_20260605_235307
 ```
+
+## NVENC Preset/Tuning Notes
+
+NVIDIA's Video Codec SDK documentation describes preset and tuning as separate
+controls:
+
+- tuning info selects the use case, including high quality, low latency,
+  ultra-low latency, and lossless;
+- P1 through P7 presets are available for each tuning info and control the
+  performance/quality tradeoff by selecting encoder tools;
+- P1 is the highest-performance end, and P7 is the lowest-performance /
+  highest-quality end for lossy encoding.
+
+For lossless, "quality" should not be read the same way as lossy HQ tuning. If
+the lossless encode is truly lossless for the prepared input format, decoded
+content should already be exact; preset differences are mainly throughput,
+encoder tool behavior, and possibly compressed size. NVIDIA's preset migration
+guide maps older HEVC `LosslessHP` behavior to newer lossless+CQP settings near
+P2 for Turing/Ampere, so P1/P2/P5/P7 is a useful future lossless curve if we
+want more detail than the current P1/P5/P7 check.
+
+References:
+
+- https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-video-encoder-api-prog-guide/index.html
+- https://docs.nvidia.com/video-technologies/video-codec-sdk/13.0/nvenc-preset-migration-guide/index.html
+- https://developer.nvidia.com/blog/introducing-video-codec-sdk-10-presets/
 
 ## Two-Encoder P5/P7 Matrix
 
@@ -102,6 +130,50 @@ Interpretation:
   encoder.
 - Prior GOP 1 successes must be interpreted as multi-shard capacity results,
   not single-encoder capacity results.
+
+## Two-Encoder Lossless Matrix
+
+Manifest:
+
+```text
+experiment_specs/encoding_master_singlecam_60fps_two_encoder_lossless_manifest.json
+```
+
+Run roots:
+
+```text
+/tmp/orange_encoding_master/encoding_master_singlecam_60fps_two_encoder_lossless_20260605_235048
+/tmp/orange_encoding_master/encoding_master_singlecam_60fps_two_encoder_lossless_20260605_235307
+```
+
+All rows used:
+
+- camera `2010096`;
+- `4512x4512 @ 60 fps`;
+- external IPC recorder;
+- two shards on GPUs `5,6`;
+- HEVC lossless tuning;
+- GOP 1;
+- CQP quality value `0`;
+- video sanity enabled.
+
+| Setting | Result | Encoded | Drops | Queue | Encode p95 | Mbps | TB/day/cam |
+| --- | --- | ---: | ---: | --- | ---: | ---: | ---: |
+| P1 lossless GOP1 | pass | 420 | 0 | 4/32 | 1.545 ms | 752.1 | 8.12 |
+| P5 lossless GOP1 | pass | 421 | 0 | 4/32 | 1.526 ms | 750.6 | 8.11 |
+| P7 lossless GOP1 | pass | 421 | 0 | 3/32 | 2.107 ms | 753.6 | 8.14 |
+
+Interpretation:
+
+- Lossless is sustainable for one `60 fps` camera on two encoder shards for
+  P1, P5, and P7.
+- File size is essentially unchanged across these presets in this short run:
+  about `750-754 Mbps` or `8.1 TB/day/cam`.
+- The limiting issue for lossless is storage footprint, not encoder throughput,
+  at least for this one-camera two-shard test.
+- Because lossless should already preserve the prepared input exactly, do not
+  treat P7 lossless as inherently "more visually correct" than P1/P5 lossless
+  without a decoded-equality check against a pre-encoder reference.
 
 ## Four-Shard Single-Camera Reference
 
