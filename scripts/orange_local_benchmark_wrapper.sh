@@ -13,6 +13,7 @@ YOLO_PERF_SAMPLE=""
 ANALYTICS_EARLY_OWNED_FRAME=""
 YOLO_READY_EVENT_FASTPATH=""
 YOLO_DETACH_INPUT=""
+PREPROCESS_DEFER_SOURCE_RELEASE=""
 ALLOWED_SPEC_DIR_1="$ORANGE_ROOT/experiment_specs"
 ALLOWED_SPEC_DIR_2="/tmp"
 ALLOWED_SPEC_DIR_3="$EXPERIMENT_ORANGE_ROOT/experiment_specs"
@@ -35,6 +36,8 @@ Options:
                                       Export ORANGE_ANALYTICS_EARLY_OWNED_FRAME.
   --yolo-ready-event-fastpath <0|1>  Export ORANGE_YOLO_READY_EVENT_FASTPATH.
   --yolo-detach-input <0|1>          Export ORANGE_YOLO_DETACH_INPUT.
+  --preprocess-defer-source-release <0|1>
+                                      Export ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE.
 
 Behavior:
   - Runs orange_client in local experiment mode as root.
@@ -152,6 +155,13 @@ while [[ $# -gt 0 ]]; do
       YOLO_DETACH_INPUT="$1"
       shift
       ;;
+    --preprocess-defer-source-release)
+      shift
+      [[ $# -gt 0 ]] || { echo "--preprocess-defer-source-release requires a value." >&2; exit 2; }
+      [[ "$1" =~ ^[01]$ ]] || { echo "--preprocess-defer-source-release must be 0 or 1." >&2; exit 2; }
+      PREPROCESS_DEFER_SOURCE_RELEASE="$1"
+      shift
+      ;;
     *)
       break
       ;;
@@ -196,6 +206,10 @@ export_optional_runtime_env() {
   if [[ -n "$YOLO_DETACH_INPUT" ]]; then
     echo "[sudo-wrapper] yolo_detach_input=$YOLO_DETACH_INPUT"
     export ORANGE_YOLO_DETACH_INPUT="$YOLO_DETACH_INPUT"
+  fi
+  if [[ -n "$PREPROCESS_DEFER_SOURCE_RELEASE" ]]; then
+    echo "[sudo-wrapper] preprocess_defer_source_release=$PREPROCESS_DEFER_SOURCE_RELEASE"
+    export ORANGE_PREPROCESS_DEFER_SOURCE_RELEASE="$PREPROCESS_DEFER_SOURCE_RELEASE"
   fi
 }
 

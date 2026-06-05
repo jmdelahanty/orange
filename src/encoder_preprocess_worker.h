@@ -135,6 +135,10 @@ private:
                               cudaEvent_t* event,
                               const SourceReleaseSample& sample);
     void drain_pending_source_releases(bool synchronize_all);
+    void release_source_after_stream_work(WORKER_ENTRY* entry,
+                                          cudaEvent_t* event,
+                                          bool event_recorded,
+                                          const SourceReleaseSample& sample);
     void release_source_entry(WORKER_ENTRY* entry);
     bool ensure_peer_access_enabled(int source_gpu_id);
     void record_detect_priority_wait(uint64_t wait_ns, bool timeout);
@@ -187,6 +191,7 @@ private:
     int64_t helper_copy_delay_ns_ = 0;
     std::atomic<int> pending_source_release_count_{0};
     std::atomic<uint64_t> source_release_event_misses_{0};
+    std::atomic<uint64_t> source_release_fallback_stream_syncs_{0};
     std::atomic<uint64_t> detect_priority_gated_frames_{0};
     std::atomic<uint64_t> detect_priority_waited_frames_{0};
     std::atomic<uint64_t> detect_priority_wait_timeouts_{0};
