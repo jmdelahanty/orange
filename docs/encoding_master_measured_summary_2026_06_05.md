@@ -23,6 +23,63 @@ This is a throughput answer only. The visual-quality question is still whether
 `P5 HQ 150 Mbps`, `P5 HQ 250 Mbps`, or another rate-control point is sufficient
 for fish detail.
 
+For lossless, one `4512x4512 @ 60 fps` camera with exactly two external encoder
+shards is sustainable for P1, P5, and P7, but it costs about `8.1 TB/day/cam`.
+That is likely storage-prohibitive for multi-camera week-scale recordings unless
+lossless is used only as a short reference capture.
+
+## Best Current Candidates
+
+| Use case | Current measured candidate | Why | Main caveat |
+| --- | --- | --- | --- |
+| Best practical two-shard HQ | `P5 HQ VBR250 GOP5` | `0` drops, queue `4/32`, higher tested bitrate | `2.76 TB/day/cam`; needs visual review |
+| Storage-friendlier two-shard HQ | `P5 HQ VBR150 GOP5` | `0` drops, queue `4/32`, about `1.64 TB/day/cam` | may or may not preserve enough fish detail |
+| Lower-latency GOP shape | `GOP5` over `GOP30` for P5 HQ | much lower queue age and encode p95 in short runs | more frequent keyframes may affect size/quality tradeoffs |
+| Highest measured lossy preset on two shards | `P5 HQ` | all tested P5 HQ rows passed | P7 HQ failed on two shards |
+| Lossless reference | `P1/P5/P7 lossless GOP1` | all passed on two shards | about `8.1 TB/day/cam`; not yet decoded-equality checked |
+| Four-camera known-good external IPC | `P1 LL VBR150 GOP25 @ 100 fps` | existing four-camera smoke passed | not a HQ/lossless quality setting |
+
+## What We Can Answer
+
+- Highest currently measured lossy quality across exactly two encoder shards:
+  `P5 HQ`; `P7 HQ` is not sustainable at `60 fps` for this frame size.
+- Whether two-shard lossless can keep up for one camera: yes, for P1/P5/P7
+  lossless GOP1.
+- Whether one encoder can handle GOP1 HQ at `60 fps`: no, both P5 HQ and P7 HQ
+  dropped frames on one shard.
+- Whether four shards can make P7 HQ pass for one camera: yes, but it is
+  queue-stressed and should not be extrapolated to four cameras.
+
+## What We Cannot Answer Yet
+
+- Whether four installed cameras can all run `P5 HQ VBR150/250 GOP5` at
+  `60 fps` with `2` shards per camera.
+- Whether `P5 HQ 150 Mbps` is visually sufficient for fish detail compared with
+  `P5 HQ 250 Mbps` or lossless reference clips.
+- Whether CQP settings such as QP16/QP20/QP24 give a better quality/storage
+  point than VBR150/VBR250.
+- Whether P2 lossless is a better migration-compatible point than P1/P5/P7 for
+  the lossless tuning case.
+- Whether longer soaks show mux/write/storage drift that is not visible in
+  short `6 s` runs.
+
+## Storage Scale
+
+Approximate projections from measured one-camera rows:
+
+| Setting | TB/day/cam | TB/day/4 cams | TB/day/8 cams | TB/week/8 cams |
+| --- | ---: | ---: | ---: | ---: |
+| P5 HQ VBR150 GOP5 | 1.64 | 6.54 | 13.09 | 91.6 |
+| P5 HQ VBR250 GOP5 | 2.76 | 11.02 | 22.05 | 154.3 |
+| P5 HQ VBR150 GOP30 | 1.65 | 6.60 | 13.20 | 92.4 |
+| P5 HQ VBR250 GOP30 | 2.71 | 10.85 | 21.69 | 151.8 |
+| Lossless GOP1 | 8.1 | 32.4 | 64.9 | 454.6 |
+
+Interpretation: the colleague's week-scale/eight-camera target makes storage a
+first-order constraint. Lossless is useful as a reference or short diagnostic,
+but the practical production search should focus on visually acceptable lossy
+settings unless a very large storage budget is available.
+
 ## Measured Artifact Roots
 
 ```text
