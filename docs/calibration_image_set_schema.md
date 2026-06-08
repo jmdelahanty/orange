@@ -5,8 +5,8 @@ that Citrus can import, preview, fit, and accept into Citrus-owned calibration
 state.
 
 Date anchored: 2026-06-08.
-Status: draft schema. No runtime writer is required by this document yet. The
-current implemented top-rim writer remains
+Status: implemented for Spatial Layout generic image-set saves and still draft
+for Citrus import/acceptance. The specialized top-rim writer remains
 `orange.calibration.dish_top_rim_observation`.
 
 Related documents:
@@ -72,8 +72,8 @@ Recommended package layout:
 <artifact_id>/
 |-- manifest.json
 |-- image_set.json
-|-- images/
-|   |-- <role>.png
+|-- captures/
+|   |-- <purpose>_<timestamp>.png
 |   `-- ...
 |-- overlays/
 |   `-- ...
@@ -88,6 +88,10 @@ Recommended package layout:
 
 `purpose` describes the calibration task the image set supports. V1 values:
 
+- `arena_projection`: camera observation of the Citrus arena/experimental
+  definition as projected onto the target plane. This is not the authoritative
+  Citrus arena definition; it is a captured image of how that definition lands
+  in camera space.
 - `homography_grid`: projected grid, dots, checkerboard, or equivalent pattern
   used by Citrus to fit camera-to-display homography.
 - `scale_image`: ruler, dot grid, USAF target, or other known-size target used
@@ -98,9 +102,14 @@ Recommended package layout:
   fit has already been accepted.
 - `crosshair_alignment`: image set with projected Citrus crosshair or center
   marker used to compare projected center and observed dish/camera center.
+- `camera_arena_calibration_set`: aggregate Orange artifact used by the
+  Spatial Layout UI to collect multiple purpose-specific captures for one
+  camera/arena during a calibration session. Individual entries in `images[]`
+  carry their own `purpose`, `target_plane`, and `capture` metadata.
 
 Do not encode the plane into `purpose`. Use `target_plane` for physical plane
-semantics.
+semantics. Use `target_plane = "multiple"` only for aggregate containers whose
+individual `images[]` entries carry their own target planes.
 
 ## Target Plane
 
@@ -112,6 +121,7 @@ observed feature lives. V1 uses Citrus-style names:
 - `tank_bottom_inner_surface`
 - `estimated_fish_plane`
 - `dish_top_rim`
+- `multiple`
 - `unknown`
 
 Plane material or rig-specific construction should be metadata, not a new plane
@@ -150,6 +160,163 @@ All `orange.calibration.image_set` payloads require:
 is allowed for compatibility, but artifacts meant to seed Citrus homography or
 scale work should use full-resolution camera-native images whenever possible.
 
+## Spatial Layout V0 Save Workflow
+
+The Spatial Layout UI can save generic `orange.calibration.image_set` artifacts
+piecewise from the currently captured full-resolution snapshot. This is an
+acquisition/provenance workflow, not a fitting workflow.
+
+The UI groups the daily workflow into tabs:
+
+- `Projection Surface`: arena projection and homography-grid captures at the
+  projector/diffuser plane. These default to visible-projector metadata and
+  `suppress_mapped_strobe`. For rigs using the HOYA R72 IR filter, these
+  defaults mark the capture filter state as removed while preserving the normal
+  runtime filter state as installed.
+- `Estimated Fish Plane`: scale and crosshair captures near the fish/tank-bottom
+  plane. Scale captures default to the mapped TTL NIR pulse path so ruler/target
+  images remain visible to the camera; scale captures default to the HOYA R72
+  filter installed.
+- `Dish / Valid Area`: daily dish top-rim and valid-area/mask review. This tab
+  prepares top-rim capture metadata and does not imply a Citrus runtime geometry
+  update by itself.
+
+The operator selects:
+
+- `purpose`: `arena_projection`, `homography_grid`, `scale_image`, or
+  `crosshair_alignment`
+- `target_plane`: for example `projected_surface` or `estimated_fish_plane`
+- image role: for example `grid_on`, `scale_target`, or `crosshair_on`
+- optional projected-pattern or scale-target descriptors
+- the same capture metadata used by the top-rim save path, including filter
+  state, illumination wavelength metadata, projector state, and operator notes
+
+Each Spatial Layout save belongs to a calibration session. The first save in the
+UI creates a session automatically; `Start New Calibration Session` starts a new
+container for later saves. The session is scoped to the operator's current
+calibration workflow, normally one rig/canvas/day, rather than one camera or one
+single capture.
+
+Generic calibration images are grouped by camera and Citrus arena inside the
+session. Each click on `Save Calibration Image Set` appends one full-resolution
+capture to the same camera/arena image-set artifact:
+
+```text
+calibrations/sessions/calsess_<timestamp>_<canvas>/
+|-- session.json
+|-- session_index.json
+`-- artifacts/
+    `-- Cam<serial>_<arena_id>/
+        |-- captures/
+        |   |-- arena_projection_<timestamp>.png
+        |   |-- homography_grid_<timestamp>.png
+        |   |-- scale_image_<timestamp>.png
+        |   `-- crosshair_alignment_<timestamp>.png
+        |-- image_set.json
+        `-- manifest.json
+```
+
+The folder name is intentionally descriptive rather than sequence-based:
+`Cam2010096_arena_4`, not `001`. Capture filenames are purpose-first and
+timestamped so they remain understandable when copied out of the session. The
+top-level `image_set.json` uses:
+
+```text
+purpose = "camera_arena_calibration_set"
+target_plane = "multiple"
+```
+
+and each `images[]` entry carries the specific capture `purpose`,
+`target_plane`, `capture`, checksum, coordinate space, and relative image path.
+
+The save also updates the session artifact registry in `artifacts/index.json`
+and the session-level `session_index.json`. The source image is written in
+full-resolution camera-native coordinates. If the current capture came from the
+downsampled live preview, the UI must reject the save; use `Capture
+Full-Resolution Stream Snapshot` first.
+
+This supports daily piecewise acquisition:
+
+1. Save an `arena_projection` image showing the projected Citrus arena extent
+   at the projection surface.
+2. Save a specialized `dish_top_rim` observation when the rim is visible.
+3. Save a `homography_grid` image at the projection surface, or an explicitly
+   labeled alternate plane if the setup supports it.
+4. Save a `scale_image` at the desired physical plane.
+5. Save a `crosshair_alignment` image for center checks.
+
+Citrus should import these image sets, preview/focus the relevant fit, and own
+any accepted homography, scale, or runtime experimental-area correction.
+Orange's generic image-set artifact does not silently mutate Citrus config.
+
+## Plane-Specific Runtime Transform Roadmap
+
+The current Orange implementation captures and labels calibration observations;
+it does not make Citrus use a new plane-specific transform during experiments.
+This distinction matters because the rig can have multiple physical planes:
+
+- `projected_surface`: diffuser/frosted acrylic plane where the projector image
+  is formed and where the current Citrus homography is usually calibrated.
+- `tank_bottom_inner_surface`: physical bottom of the tank/dish.
+- `estimated_fish_plane`: approximate fish body plane just above the tank
+  bottom, used for perceived size and position reasoning.
+- `dish_top_rim`: rim plane used for daily valid-area/detection-mask review.
+
+The long-term plane-specific runtime model would let Citrus store and select
+plane-labeled mappings, for example:
+
+```text
+H_camera_to_canvas_at_projected_surface
+H_camera_to_canvas_at_estimated_fish_plane
+px_per_mm_at_projected_surface
+px_per_mm_at_estimated_fish_plane
+dish_top_rim_valid_detection_mask_camera_px
+```
+
+Then Citrus could explicitly choose the right mapping for each runtime job:
+
+- projector drawing and projector-surface calibration:
+  `projected_surface`
+- fish position interpretation and perceived size checks:
+  `estimated_fish_plane`
+- detection gating / invalid prediction rejection:
+  `dish_top_rim` or the accepted camera-space valid mask
+
+For V0, Orange should only produce immutable acquisition artifacts with
+`purpose`, `target_plane`, full-resolution image paths, checksums, and capture
+metadata. Citrus can import those artifacts, preview the relevant fit, and
+persist diagnostic measurements. Citrus should not change stimulus sizing or
+runtime containment based on an `estimated_fish_plane` scale image until a
+plane-specific runtime-transform contract has been designed and accepted.
+
+Implementation checklist:
+
+- Orange V0 acquisition
+  - save generic `arena_projection` image sets
+  - save `dish_top_rim` observation and image-set companion
+  - save generic `homography_grid` image sets
+  - save generic `scale_image` image sets
+  - save generic `crosshair_alignment` image sets
+  - preserve `target_plane`, filter/illumination/projector state, rig context,
+    and full-resolution camera-native coordinates
+- Citrus import and preview
+  - import `orange.calibration.image_set`
+  - preview homography fit from `homography_grid`
+  - preview scale fit from `scale_image`
+  - preview center/crosshair correction from `crosshair_alignment`
+  - recompute everything from Orange camera-space artifacts plus Citrus-owned
+    rig/homography/tank-design state
+- Citrus acceptance
+  - write accepted Citrus-owned homography/scale/center-correction artifacts
+  - reference source Orange artifact IDs/checksums
+  - include target-plane assumptions and operator acceptance
+  - persist accepted state to Citrus config/session/H5 as appropriate
+- Runtime use
+  - select plane-specific transform/scale by runtime task
+  - keep diagnostic fish-plane scale separate from active stimulus behavior
+    until explicitly enabled
+  - record which plane transform and mask were active in each experiment
+
 ## Camera
 
 Required fields:
@@ -187,16 +354,78 @@ Recommended fields:
 - `gain`
 - `filter_state`
 - `runtime_filter_state`
+- `light_handling`
 - `light_state`
 - `projector_state`
 - `projector_visible_to_camera`
 - `requires_camera_mount_unchanged`
 - `requires_filter_reinstalled_repeatably`
 
-Use explicit `filter_state` and `light_state` values because some Orange rigs
-normally run with 850 nm bandpass filters and TTL-driven infrared strobes. A
-visible-light calibration image may require filter removal, different exposure,
-and a nonstandard illumination/preflight state.
+Use explicit `filter_state`, `light_handling`, and `light_state` values because
+some Orange rigs normally run with 850 nm bandpass filters and TTL-driven
+infrared strobes. A visible-light calibration image may require filter removal,
+different exposure, and a nonstandard illumination/preflight state, while a
+`scale_image` may intentionally keep the IR strobe active so a ruler or scale
+target is visible to the camera.
+
+`light_handling` records operator intent for the capture:
+
+- `leave_current`: do not intentionally change mapped lighting state.
+- `suppress_mapped_strobe`: suppress an exposure-synchronized mapped strobe for
+  the capture.
+- `keep_or_restore_mapped_pulse`: keep or restore the normal mapped
+  exposure-pulse state before capture.
+- `force_manual_active`: intentionally force a mapped output active.
+- `operator_manual`: operator handled lighting outside Orange.
+
+The Spatial Layout UI sets purpose-specific defaults but lets the operator
+override them. `arena_projection`, `homography_grid`, and `crosshair_alignment`
+default to `suppress_mapped_strobe`; `scale_image` defaults to
+`keep_or_restore_mapped_pulse`.
+
+When a camera has an exposed `nir_strobe_trigger` Rig I/O output mapping, the
+Spatial Layout UI can apply the selected light handling before capture. The
+light-control camera does not have to be the camera being calibrated; for
+example, one rig camera may own the TTL strobe output while another camera is
+capturing the calibration image.
+
+- `suppress_mapped_strobe` captures the current mapped GPO state and forces the
+  mapped output inactive.
+- `keep_or_restore_mapped_pulse` restores the captured state when available, or
+  restores the mapping's normal output mode.
+- `force_manual_active` captures the current state and forces the mapped output
+  active.
+
+These actions are explicit operator clicks, not automatic side effects of
+saving an artifact. They are disabled while recording/finalization is active and
+when `gpio_pinout_access = "not_exposed"`.
+
+The normal operator path is a paired preflight/restore action:
+
+- Prefer `Capture Averaged Full-Resolution Snapshot` for static calibration
+  targets when the existing stream exposure is usable. This collects a bounded
+  number of full-resolution stream frames without changing camera exposure or
+  frame rate, computes a temporal mean, and records
+  `capture_mode = "temporal_mean_stream_frames_v1"`,
+  `source_frame_count`, and the source frame range in the artifact metadata.
+- `Prepare Calibration Capture` applies the selected light handling and
+  temporarily sets the selected image-capture camera to `FrameRate = 10 fps`
+  and `Exposure = 10000 us` where the camera permits those values. This is
+  useful when normal-exposure averaging is still too dim or quantized near
+  black. Orange applies this as an app-level calibration capture profile:
+  it snapshots the current camera/light state first, writes camera control
+  nodes sequentially, verifies/readbacks through the camera API, and rolls back
+  already-applied state if a later step fails. The underlying camera API writes
+  are not hardware-atomic. V0 targets the selected capture camera and the
+  selected light-control camera; a future all-camera profile should snapshot all
+  target states before applying settings camera by camera.
+- `Restore Camera Config State` restores the selected camera's captured
+  exposure/frame-rate and restores the mapped strobe output to its config-defined
+  normal pulse mode.
+
+This temporary preflight state is not saved to the camera config. If the
+operator saves an image set after preparing the capture, the artifact records
+the actual current exposure and frame rate in its capture metadata.
 
 ## Images
 
@@ -240,6 +469,22 @@ authority to mutate Citrus config. Citrus should validate and resolve them
 during import.
 
 ## Purpose-Specific Fields
+
+### `arena_projection`
+
+Recommended:
+
+- `projected_pattern.pattern_id`
+- `projected_pattern.type = "arena_fill"` or equivalent
+- `projected_pattern.source = "citrus_arena_definition"`
+- `projected_pattern.target_plane`
+- `rig_context.arena_id`
+- `rig_context.citrus_config_ref`
+
+This purpose captures the projected Citrus arena/experimental definition as a
+camera image. It is not the authoritative arena definition itself. Citrus owns
+the arena definition and may use this image as a visual/provenance artifact
+when previewing the projection surface and camera/arena association.
 
 ### `homography_grid`
 
@@ -364,6 +609,7 @@ Those names are compatibility details, not the canonical Orange contract.
     "runtime_filter_state": "850nm_bandpass_installed",
     "exposure_us": 500000,
     "frame_rate_hz": 1.0,
+    "light_handling": "suppress_mapped_strobe",
     "light_state": "visible_projector_only",
     "projector_state": "grid_on",
     "projector_visible_to_camera": true,

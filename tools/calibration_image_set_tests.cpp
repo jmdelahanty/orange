@@ -1,5 +1,6 @@
 #include "calibration_image_set.h"
 
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -61,7 +62,15 @@ orange::calibration::CalibrationImageSetRequest make_request()
     request.capture.has_exposure_us = true;
     request.capture.frame_rate_hz = 1.0;
     request.capture.has_frame_rate_hz = true;
+    request.capture.light_handling = "suppress_mapped_strobe";
     request.capture.light_state = "visible_projector_only";
+    request.capture.illumination_spectrum = "broadband_visible";
+    request.capture.illumination_source = "visible_projector";
+    request.capture.illumination_min_wavelength_nm = 400.0;
+    request.capture.has_illumination_min_wavelength_nm = true;
+    request.capture.illumination_max_wavelength_nm = 700.0;
+    request.capture.has_illumination_max_wavelength_nm = true;
+    request.capture.illumination_wavelength_confidence = "approximate_range";
     request.capture.projector_state = "grid_on";
     request.capture.projector_visible_to_camera = true;
     request.capture.has_projector_visible_to_camera = true;
@@ -129,6 +138,24 @@ void test_writer_emits_core_shape()
     require(image_set["camera"]["image_shape"].value("width", 0) == 4512, "camera width");
     require(image_set["capture"].value("timestamp_utc", "") == "2026-06-08T19:45:00Z", "timestamp");
     require(image_set["capture"].value("projector_visible_to_camera", false), "projector visible");
+    require(
+        image_set["capture"].value("light_handling", "") == "suppress_mapped_strobe",
+        "light handling");
+    require(
+        image_set["capture"]["illumination"].value("spectrum", "") == "broadband_visible",
+        "illumination spectrum");
+    require(
+        image_set["capture"]["illumination"].value("source", "") == "visible_projector",
+        "illumination source");
+    require(
+        std::abs(image_set["capture"]["illumination"].value("min_wavelength_nm", 0.0) - 400.0) < 0.001,
+        "illumination min wavelength");
+    require(
+        std::abs(image_set["capture"]["illumination"].value("max_wavelength_nm", 0.0) - 700.0) < 0.001,
+        "illumination max wavelength");
+    require(
+        image_set["capture"]["illumination"].value("wavelength_confidence", "") == "approximate_range",
+        "illumination confidence");
     require(image_set["images"].size() == 1, "one image");
     require(image_set["images"][0].value("role", "") == "grid_on", "image role");
     require(image_set["images"][0].value("checksum_algorithm", "") == "fnv1a64", "checksum algorithm");
@@ -156,6 +183,70 @@ void test_rejects_invalid_purpose()
     require(error.find("purpose") != std::string::npos, "invalid purpose error should mention purpose");
 }
 
+void test_accepts_arena_projection_purpose()
+{
+    using namespace orange::calibration;
+
+    const std::filesystem::path root = make_temp_root();
+    const std::filesystem::path output_path = root / "arena_projection_image_set.json";
+
+    CalibrationImageSetRequest request = make_request();
+    request.artifact_id = "calimg_20260608_2010093_arena_projection";
+    request.purpose = "arena_projection";
+    request.target_plane = "projected_surface";
+    request.images[0].role = "projected_arena";
+    request.projected_pattern = {
+        {"pattern_id", "citrus_arena_projection"},
+        {"type", "arena_fill"},
+        {"source", "citrus_arena_definition"},
+        {"target_plane", "projected_surface"}
+    };
+
+    CalibrationImageSetWriteResult result;
+    std::string error;
+    require(
+        write_calibration_image_set_json_file(output_path.string(), request, &result, &error),
+        "arena_projection purpose should be accepted: " + error);
+
+    const nlohmann::json image_set = read_json(output_path);
+    require(image_set.value("purpose", "") == "arena_projection", "arena_projection purpose emitted");
+    require(image_set["images"][0].value("role", "") == "projected_arena", "projected_arena role emitted");
+    require(
+        image_set["projected_pattern"].value("type", "") == "arena_fill",
+        "arena_projection pattern type emitted");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_accepts_aggregate_camera_arena_set()
+{
+    using namespace orange::calibration;
+
+    const std::filesystem::path root = make_temp_root();
+    const std::filesystem::path output_path = root / "aggregate_image_set.json";
+
+    CalibrationImageSetRequest request = make_request();
+    request.artifact_id = "Cam2010093_arena_1";
+    request.purpose = "camera_arena_calibration_set";
+    request.target_plane = "multiple";
+    request.images[0].role = "grid_on";
+    request.images[0].path = "captures/homography_grid_2026_06_08T19_45_00Z.png";
+
+    CalibrationImageSetWriteResult result;
+    std::string error;
+    require(
+        write_calibration_image_set_json_file(output_path.string(), request, &result, &error),
+        "camera_arena_calibration_set purpose should be accepted: " + error);
+
+    const nlohmann::json image_set = read_json(output_path);
+    require(
+        image_set.value("purpose", "") == "camera_arena_calibration_set",
+        "aggregate purpose emitted");
+    require(image_set.value("target_plane", "") == "multiple", "aggregate target plane emitted");
+
+    std::filesystem::remove_all(root);
+}
+
 void test_rejects_missing_image_checksum()
 {
     using namespace orange::calibration;
@@ -179,6 +270,8 @@ int main()
     try {
         test_writer_emits_core_shape();
         test_rejects_invalid_purpose();
+        test_accepts_arena_projection_purpose();
+        test_accepts_aggregate_camera_arena_set();
         test_rejects_missing_image_checksum();
     } catch (const std::exception& ex) {
         std::cerr << "calibration_image_set_tests failed: " << ex.what() << std::endl;

@@ -26,6 +26,12 @@ struct SpatialSnapshotResult {
     uint64_t recording_frame_id = 0;
     uint64_t camera_timestamp_ns = 0;
     uint64_t timestamp_sys_ns = 0;
+    uint32_t requested_frame_count = 1;
+    uint32_t completed_frame_count = 1;
+    uint64_t first_local_frame_id = 0;
+    uint64_t last_local_frame_id = 0;
+    uint64_t first_camera_frame_id = 0;
+    uint64_t last_camera_frame_id = 0;
     std::vector<unsigned char> rgba;
 };
 
@@ -43,7 +49,8 @@ public:
     bool RequestSnapshot(
         const std::string& operation_id,
         uint64_t* request_id_out,
-        std::string* error_out);
+        std::string* error_out,
+        uint32_t frame_count = 1);
     bool HasPendingRequest() const;
     bool TryClaimNextFrame();
     void CompleteClaimedRequestWithError(const std::string& error);
@@ -61,10 +68,36 @@ private:
     struct ClaimedRequest {
         uint64_t request_id = 0;
         std::string operation_id;
+        uint32_t target_frame_count = 1;
+    };
+
+    struct AverageAccumulator {
+        uint64_t request_id = 0;
+        std::string operation_id;
+        uint32_t target_frame_count = 1;
+        uint32_t captured_frame_count = 0;
+        int width = 0;
+        int height = 0;
+        int pixel_format = 0;
+        uint64_t first_local_frame_id = 0;
+        uint64_t last_local_frame_id = 0;
+        uint64_t first_camera_frame_id = 0;
+        uint64_t last_camera_frame_id = 0;
+        uint64_t first_camera_timestamp_ns = 0;
+        uint64_t last_camera_timestamp_ns = 0;
+        uint64_t first_timestamp_sys_ns = 0;
+        uint64_t last_timestamp_sys_ns = 0;
+        std::vector<uint32_t> rgba_sums;
     };
 
     ClaimedRequest current_claimed_request_locked() const;
     void complete_result(SpatialSnapshotResult result);
+    bool accumulate_frame_or_complete(
+        const ClaimedRequest& request,
+        const SpatialSnapshotResult& frame,
+        SpatialSnapshotResult* completed_result,
+        std::string* error_out);
+    void reset_active_request_locked();
     bool copy_entry_to_rgba(
         const WORKER_ENTRY& entry,
         SpatialSnapshotResult* result,
@@ -79,6 +112,7 @@ private:
     uint64_t next_request_id_ = 0;
     ClaimedRequest pending_request_;
     ClaimedRequest in_flight_request_;
+    AverageAccumulator average_accumulator_;
     bool has_completed_result_ = false;
     SpatialSnapshotResult completed_result_;
 

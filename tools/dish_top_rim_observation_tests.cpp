@@ -64,7 +64,13 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
     request.capture.capture_mode = "session_local_operator_still";
     request.capture.filter_state = "removed";
     request.capture.runtime_filter_state = "850nm_bandpass_installed";
-    request.capture.light_state = "visible_projector_only";
+    request.capture.light_handling = "keep_or_restore_mapped_pulse";
+    request.capture.light_state = "ttl_nir_strobe_active";
+    request.capture.illumination_spectrum = "narrowband_nir";
+    request.capture.illumination_source = "custom_ttl_nir_strobe";
+    request.capture.illumination_center_wavelength_nm = 855.0;
+    request.capture.has_illumination_center_wavelength_nm = true;
+    request.capture.illumination_wavelength_confidence = "nominal";
     request.capture.projector_state = "projector_off";
     request.capture.projector_visible_to_camera = true;
     request.capture.exposure_us = 500000.0;
@@ -184,8 +190,23 @@ void test_artifact_write_and_snapshot()
         observation["runtime_verification"].value("status", "") == "unknown",
         "runtime verification preserved");
     require(
-        observation["capture"].value("light_state", "") == "visible_projector_only",
+        observation["capture"].value("light_handling", "") == "keep_or_restore_mapped_pulse",
+        "capture light handling preserved");
+    require(
+        observation["capture"].value("light_state", "") == "ttl_nir_strobe_active",
         "capture light state preserved");
+    require(
+        observation["capture"]["illumination"].value("spectrum", "") == "narrowband_nir",
+        "capture illumination spectrum preserved");
+    require(
+        observation["capture"]["illumination"].value("source", "") == "custom_ttl_nir_strobe",
+        "capture illumination source preserved");
+    require(
+        std::abs(observation["capture"]["illumination"].value("center_wavelength_nm", 0.0) - 855.0) < 0.001,
+        "capture illumination center wavelength preserved");
+    require(
+        observation["capture"]["illumination"].value("wavelength_confidence", "") == "nominal",
+        "capture illumination confidence preserved");
     require(
         observation["capture"].value("projector_state", "") == "projector_off",
         "capture projector state preserved");
@@ -207,7 +228,16 @@ void test_artifact_write_and_snapshot()
     require(
         image_set["capture"].value("capture_mode", "") == request.capture.capture_mode,
         "image-set capture mode");
-    require(image_set["capture"].value("light_state", "") == "visible_projector_only", "image-set light state");
+    require(
+        image_set["capture"].value("light_handling", "") == "keep_or_restore_mapped_pulse",
+        "image-set light handling");
+    require(image_set["capture"].value("light_state", "") == "ttl_nir_strobe_active", "image-set light state");
+    require(
+        image_set["capture"]["illumination"].value("spectrum", "") == "narrowband_nir",
+        "image-set illumination spectrum");
+    require(
+        std::abs(image_set["capture"]["illumination"].value("center_wavelength_nm", 0.0) - 855.0) < 0.001,
+        "image-set illumination center wavelength");
     require(image_set["images"].size() == 1, "image-set source image count");
     require(image_set["images"][0].value("role", "") == "source", "image-set source role");
     require(

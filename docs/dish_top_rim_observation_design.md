@@ -964,9 +964,13 @@ Current Orange UI capture modes:
   thread to fan out one full-resolution `WORKER_ENTRY` to a snapshot worker.
   The snapshot worker copies the full camera frame into snapshot-owned memory,
   releases the acquisition frame promptly, then returns RGBA bytes to the
-  Spatial Layout UI. This is the preferred artifact capture mode for TTL-lit
-  rigs because the GUI preview can remain downsampled while the saved
-  top-rim observation stays in full-resolution camera coordinates.
+  Spatial Layout UI.
+- `temporal_mean_stream_frames_v1`: requests the same acquisition fanout path
+  for a bounded number of full-resolution frames, averages them in the snapshot
+  worker, and returns one RGBA image. This is the preferred artifact capture
+  mode for static calibration targets when the normal stream exposure is usable,
+  because it improves signal/noise without temporarily changing camera exposure
+  or frame rate.
 
 Important limitation: `live_stream_preview_snapshot` captures the displayed GUI
 preview. If display downsampling is active, Orange marks the capture as
@@ -974,15 +978,19 @@ preview. If display downsampling is active, Orange marks the capture as
 space, not full camera-native pixels. The Spatial Layout UI must not save a
 top-rim observation artifact from that downsampled capture. Use it for operator
 review and workflow validation only. To save the artifact while streaming with
-downsampled preview, use `full_resolution_stream_snapshot`.
+downsampled preview, use `full_resolution_stream_snapshot` or
+`temporal_mean_stream_frames_v1`.
 
 The full-resolution stream snapshot path is an optional acquisition fanout
 consumer, not a separate camera open/start/stop path. It follows the
 `WORKER_ENTRY` retain/enqueue/release lease model documented in
 `docs/threading_model_overview.md`: retain only when a snapshot request is
-pending, copy the full-resolution frame into snapshot-owned memory, release the
-acquisition frame promptly, then run Hough fitting and UI review from the
-snapshot-owned copy.
+pending, copy each requested full-resolution frame into snapshot-owned memory,
+release the acquisition frame promptly, then run Hough fitting and UI review
+from the snapshot-owned copy. Averaged captures record `source_frame_count`,
+the local/camera frame ranges, and
+`temporal_compositing_method = "temporal_mean_stream_frames_v1"` in the saved
+capture metadata.
 
 Current Spatial Layout detection controls expose Hough `dp`, `param1`,
 `param2`, minimum distance fraction, radius range fractions, radius adjustment,
@@ -991,11 +999,64 @@ After Hough detection, the detected circle center/radius can also be edited
 directly before using it to seed the registration.
 
 The Spatial Layout UI also exposes optional capture metadata fields for
-`filter_state`, `runtime_filter_state`, `light_state`, `projector_state`,
-`projector_visible_to_camera`, repeatable filter reinstall requirements, and
-operator notes. These fields document the calibration preflight state when an
-operator saves a top-rim observation or image-set companion. They do not make
-daily image-set capture mandatory for every recording.
+`filter_state`, `runtime_filter_state`, `light_handling`, `light_state`,
+`projector_state`, `projector_visible_to_camera`, structured illumination
+wavelength metadata, repeatable filter reinstall requirements, and operator
+notes. These fields document the calibration preflight state when an operator
+saves a top-rim observation or image-set companion. They do not make daily
+image-set capture mandatory for every recording.
+
+`light_state` should remain a categorical state such as
+`ttl_nir_strobe_active`, `visible_projector_only`, or `lights_off`. Wavelength
+information belongs under `capture.illumination`:
+`light_handling` separately records operator intent, such as
+`leave_current`, `suppress_mapped_strobe`, or `keep_or_restore_mapped_pulse`.
+When an exposed `nir_strobe_trigger` Rig I/O output mapping is available, the
+Spatial Layout UI can explicitly apply those handling choices before capture;
+artifact saving itself does not silently toggle lights.
+The Spatial Layout workflow tabs group this under `Dish / Valid Area`, separate
+from projection-surface homography captures and estimated-fish-plane scale
+captures.
+
+```json
+{
+  "spectrum": "narrowband_nir",
+  "source": "custom_ttl_nir_strobe",
+  "center_wavelength_nm": 855.0,
+  "wavelength_confidence": "nominal"
+}
+```
+
+For broadband visible light, use a wavelength range rather than a fake center
+wavelength:
+
+```json
+{
+  "spectrum": "broadband_visible",
+  "source": "visible_projector",
+  "min_wavelength_nm": 400.0,
+  "max_wavelength_nm": 700.0,
+  "wavelength_confidence": "approximate_range"
+}
+```
+
+Initial UI presets include the current Orange/Citrus rig IR filter:
+
+```text
+installed: HOYA Creative Filter Infrared R72 67 mm (Kenko Tokina)
+removed: HOYA Creative Filter Infrared R72 67 mm (Kenko Tokina)
+```
+
+The HOYA/Kenko R72 filter should be treated as filter transmission metadata,
+not as the illumination wavelength. It is an IR long-pass filter that blocks
+most visible light and passes near-infrared light above roughly 720 nm. A
+calibration image can therefore record both an installed R72 filter and a
+separate illumination source such as a nominal 855 nm TTL NIR strobe.
+
+Light-state presets include TTL NIR strobe, visible projector, ambient room
+light, external continuous visible light, external continuous IR/NIR light, and
+lights-off states. Projector-state presets include off, black/idle, crosshair,
+homography grid, scale pattern, and normal stimulus active states.
 
 The Hough proposal is a separate overlay from the applied registered top-rim
 mask. The proposal should remain visible on top of the registration overlay

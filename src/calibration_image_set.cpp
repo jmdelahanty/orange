@@ -1,5 +1,7 @@
 #include "calibration_image_set.h"
 
+#include "fsuid_guard.h"
+
 #include <filesystem>
 #include <fstream>
 
@@ -16,7 +18,9 @@ bool set_error(std::string* error_out, const std::string& message)
 
 bool is_allowed_purpose(const std::string& value)
 {
-    return value == "homography_grid" ||
+    return value == "camera_arena_calibration_set" ||
+           value == "arena_projection" ||
+           value == "homography_grid" ||
            value == "scale_image" ||
            value == "dish_top_rim" ||
            value == "crosshair_alignment";
@@ -24,7 +28,8 @@ bool is_allowed_purpose(const std::string& value)
 
 bool is_allowed_target_plane(const std::string& value)
 {
-    return value == "projected_surface" ||
+    return value == "multiple" ||
+           value == "projected_surface" ||
            value == "tank_bottom_outer_surface" ||
            value == "tank_bottom_inner_surface" ||
            value == "estimated_fish_plane" ||
@@ -46,6 +51,8 @@ bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& value,
                      std::string* error_out)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (!out.is_open()) {
@@ -163,6 +170,20 @@ nlohmann::json capture_to_json(const CalibrationImageSetCaptureContext& capture)
     if (capture.has_recording_frame_id) {
         out["recording_frame_id"] = capture.recording_frame_id;
     }
+    if (capture.has_source_frame_count) {
+        out["source_frame_count"] = capture.source_frame_count;
+    }
+    if (!capture.temporal_compositing_method.empty()) {
+        out["temporal_compositing_method"] = capture.temporal_compositing_method;
+    }
+    if (capture.has_local_frame_range) {
+        out["first_local_frame_id"] = capture.first_local_frame_id;
+        out["last_local_frame_id"] = capture.last_local_frame_id;
+    }
+    if (capture.has_camera_frame_range) {
+        out["first_camera_frame_id"] = capture.first_camera_frame_id;
+        out["last_camera_frame_id"] = capture.last_camera_frame_id;
+    }
     if (!capture.capture_mode.empty()) {
         out["capture_mode"] = capture.capture_mode;
     }
@@ -181,8 +202,37 @@ nlohmann::json capture_to_json(const CalibrationImageSetCaptureContext& capture)
     if (!capture.runtime_filter_state.empty()) {
         out["runtime_filter_state"] = capture.runtime_filter_state;
     }
+    if (!capture.light_handling.empty()) {
+        out["light_handling"] = capture.light_handling;
+    }
     if (!capture.light_state.empty()) {
         out["light_state"] = capture.light_state;
+    }
+    nlohmann::json illumination = nlohmann::json::object();
+    if (!capture.illumination_spectrum.empty()) {
+        illumination["spectrum"] = capture.illumination_spectrum;
+    }
+    if (!capture.illumination_source.empty()) {
+        illumination["source"] = capture.illumination_source;
+    }
+    if (capture.has_illumination_center_wavelength_nm) {
+        illumination["center_wavelength_nm"] = capture.illumination_center_wavelength_nm;
+    }
+    if (capture.has_illumination_min_wavelength_nm) {
+        illumination["min_wavelength_nm"] = capture.illumination_min_wavelength_nm;
+    }
+    if (capture.has_illumination_max_wavelength_nm) {
+        illumination["max_wavelength_nm"] = capture.illumination_max_wavelength_nm;
+    }
+    if (capture.has_illumination_bandwidth_fwhm_nm) {
+        illumination["bandwidth_fwhm_nm"] = capture.illumination_bandwidth_fwhm_nm;
+    }
+    if (!capture.illumination_wavelength_confidence.empty()) {
+        illumination["wavelength_confidence"] =
+            capture.illumination_wavelength_confidence;
+    }
+    if (!illumination.empty()) {
+        out["illumination"] = illumination;
     }
     if (!capture.projector_state.empty()) {
         out["projector_state"] = capture.projector_state;

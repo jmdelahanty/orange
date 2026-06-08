@@ -37,6 +37,8 @@
     "purpose": {
       "type": "string",
       "enum": [
+        "camera_arena_calibration_set",
+        "arena_projection",
         "homography_grid",
         "scale_image",
         "dish_top_rim",
@@ -46,6 +48,7 @@
     "target_plane": {
       "type": "string",
       "enum": [
+        "multiple",
         "projected_surface",
         "tank_bottom_outer_surface",
         "tank_bottom_inner_surface",
@@ -158,6 +161,32 @@
           "type": "integer",
           "minimum": 0
         },
+        "source_frame_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "temporal_compositing_method": {
+          "type": "string",
+          "examples": [
+            "temporal_mean_stream_frames_v1"
+          ]
+        },
+        "first_local_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_local_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "first_camera_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "last_camera_frame_id": {
+          "type": "integer",
+          "minimum": 0
+        },
         "capture_mode": {
           "type": "string"
         },
@@ -178,8 +207,66 @@
         "runtime_filter_state": {
           "type": "string"
         },
+        "light_handling": {
+          "type": "string",
+          "examples": [
+            "leave_current",
+            "suppress_mapped_strobe",
+            "keep_or_restore_mapped_pulse",
+            "force_manual_active",
+            "operator_manual"
+          ]
+        },
         "light_state": {
           "type": "string"
+        },
+        "illumination": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "spectrum": {
+              "type": "string",
+              "examples": [
+                "narrowband_nir",
+                "broadband_visible",
+                "unknown_ir_nir",
+                "none"
+              ]
+            },
+            "source": {
+              "type": "string",
+              "examples": [
+                "custom_ttl_nir_strobe",
+                "visible_projector",
+                "ambient_room_light"
+              ]
+            },
+            "center_wavelength_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "min_wavelength_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "max_wavelength_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "bandwidth_fwhm_nm": {
+              "type": "number",
+              "minimum": 0
+            },
+            "wavelength_confidence": {
+              "type": "string",
+              "examples": [
+                "nominal",
+                "measured",
+                "approximate_range",
+                "unknown"
+              ]
+            }
+          }
         },
         "projector_state": {
           "type": "string"
@@ -367,6 +454,24 @@
         },
         "image_shape": {
           "$ref": "#/$defs/image_shape"
+        },
+        "purpose": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "capture": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "projected_pattern": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "scale_target": {
+          "type": "object",
+          "additionalProperties": true
         },
         "description": {
           "type": "string"

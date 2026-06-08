@@ -7865,7 +7865,10 @@ int main(int argc, char **args) {
                     cameras_params,
                     num_cameras,
                     color_temps,
-                    selected_local_config_folder);
+                    selected_local_config_folder,
+                    camera_control->record_video ||
+                        camera_control->recording_draining ||
+                        gui_recording_run.finalizing);
                 gui_frame_timing.camera_properties_draw_ms += gui_elapsed_ms(
                     camera_properties_draw_start,
                     std::chrono::steady_clock::now());

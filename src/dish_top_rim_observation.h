@@ -6,6 +6,7 @@
 
 #include <opencv2/core.hpp>
 
+#include <cstdint>
 #include <string>
 
 namespace orange::calibration {
@@ -52,9 +53,30 @@ struct DishTopRimHoughParams {
 struct DishTopRimCaptureContext {
     std::string operation_id;
     std::string capture_mode = "session_local_operator_still";
+    uint32_t source_frame_count = 1;
+    bool has_source_frame_count = false;
+    std::string temporal_compositing_method;
+    uint64_t first_local_frame_id = 0;
+    uint64_t last_local_frame_id = 0;
+    bool has_local_frame_range = false;
+    uint64_t first_camera_frame_id = 0;
+    uint64_t last_camera_frame_id = 0;
+    bool has_camera_frame_range = false;
     std::string filter_state = "unknown";
     std::string runtime_filter_state = "unknown";
+    std::string light_handling = "leave_current";
     std::string light_state;
+    std::string illumination_spectrum = "unknown";
+    std::string illumination_source = "unknown";
+    double illumination_center_wavelength_nm = 0.0;
+    bool has_illumination_center_wavelength_nm = false;
+    double illumination_min_wavelength_nm = 0.0;
+    bool has_illumination_min_wavelength_nm = false;
+    double illumination_max_wavelength_nm = 0.0;
+    bool has_illumination_max_wavelength_nm = false;
+    double illumination_bandwidth_fwhm_nm = 0.0;
+    bool has_illumination_bandwidth_fwhm_nm = false;
+    std::string illumination_wavelength_confidence = "unknown";
     std::string projector_state;
     bool projector_visible_to_camera = false;
     double exposure_us = 0.0;

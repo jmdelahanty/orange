@@ -14,13 +14,18 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <condition_variable>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
+#include <mutex>
+#include <optional>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -57,9 +62,25 @@ constexpr const char* kSpatialLayoutMeasurementFilename = "measurement.json";
 constexpr const char* kSpatialLayoutManifestFilename = "manifest.json";
 constexpr const char* kSpatialLayoutArenaLayoutRuntimeFilename = "arena_layout_runtime.json";
 constexpr const char* kSpatialLayoutDishMaskRuntimeFilename = "dish_mask_runtime.json";
+constexpr const char* kCalibrationSessionSchemaId = "orange.calibration.session";
+constexpr int kCalibrationSessionSchemaVersion = 1;
+constexpr const char* kCalibrationSessionIndexSchemaId = "orange.calibration.session_index";
+constexpr int kCalibrationSessionIndexSchemaVersion = 1;
+constexpr const char* kCalibrationSessionFilename = "session.json";
+constexpr const char* kCalibrationSessionIndexFilename = "session_index.json";
 constexpr const char* kLoadSpatialLayoutDialogId = "LoadSpatialLayoutArtifact";
 constexpr const char* kLoadCitrusArenaConfigDialogId = "LoadCitrusArenaConfig";
 constexpr int kProjectedCircleSampleCount = 96;
+constexpr const char* kExperimentalAreaZoneId = "experimental_area";
+constexpr const char* kExperimentalAreaZoneLabel = "Experimental Area";
+constexpr const char* kHoyaR72FilterInstalled =
+    "installed: HOYA Creative Filter Infrared R72 67 mm (Kenko Tokina)";
+constexpr const char* kHoyaR72FilterRemoved =
+    "removed: HOYA Creative Filter Infrared R72 67 mm (Kenko Tokina)";
+constexpr const char* kCalibrationCaptureProfileId =
+    "spatial_layout_visible_long_exposure_v1";
+constexpr unsigned int kCalibrationCaptureFrameRateHz = 10;
+constexpr unsigned int kCalibrationCaptureExposureUs = 10000;
 
 struct Point2d {
     double x = 0.0;
@@ -72,6 +93,14 @@ struct SpatialLayoutPersistedFiles {
     std::filesystem::path manifest_path;
     std::filesystem::path arena_layout_runtime_path;
     std::filesystem::path dish_mask_runtime_path;
+};
+
+struct GenericCalibrationImageSetFiles {
+    std::filesystem::path artifact_dir;
+    std::filesystem::path image_set_path;
+    std::filesystem::path manifest_path;
+    std::filesystem::path source_frame_path;
+    std::filesystem::path source_frame_relative_path;
 };
 
 Point2d transform_point(const std::array<double, 9>& matrix, double x, double y);
@@ -116,6 +145,1077 @@ std::string sanitize_artifact_component(const std::string& value)
     return sanitized;
 }
 
+bool render_string_preset_combo(
+    const char* label,
+    std::string* value,
+    const char* const* presets,
+    int preset_count)
+{
+    if (value == nullptr || presets == nullptr || preset_count <= 0) {
+        return false;
+    }
+
+    const char* preview = value->empty() ? "unknown" : value->c_str();
+    bool changed = false;
+    if (ImGui::BeginCombo(label, preview)) {
+        for (int idx = 0; idx < preset_count; ++idx) {
+            const char* preset = presets[idx] ? presets[idx] : "";
+            const bool selected = *value == preset;
+            if (ImGui::Selectable(preset, selected)) {
+                *value = preset;
+                changed = true;
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+
+void apply_illumination_preset(SpatialLayoutUiState* ui_state, const std::string& preset)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    if (preset == "custom_ttl_nir_strobe_855nm") {
+        ui_state->calibration_light_state = "ttl_nir_strobe_active";
+        ui_state->calibration_illumination_spectrum = "narrowband_nir";
+        ui_state->calibration_illumination_source = "custom_ttl_nir_strobe";
+        ui_state->calibration_illumination_center_wavelength_nm = 855.0;
+        ui_state->calibration_has_illumination_center_wavelength_nm = true;
+        ui_state->calibration_has_illumination_min_wavelength_nm = false;
+        ui_state->calibration_has_illumination_max_wavelength_nm = false;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "nominal";
+    } else if (preset == "visible_projector_broadband") {
+        ui_state->calibration_light_state = "visible_projector_only";
+        ui_state->calibration_illumination_spectrum = "broadband_visible";
+        ui_state->calibration_illumination_source = "visible_projector";
+        ui_state->calibration_has_illumination_center_wavelength_nm = false;
+        ui_state->calibration_illumination_min_wavelength_nm = 400.0;
+        ui_state->calibration_has_illumination_min_wavelength_nm = true;
+        ui_state->calibration_illumination_max_wavelength_nm = 700.0;
+        ui_state->calibration_has_illumination_max_wavelength_nm = true;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "approximate_range";
+    } else if (preset == "ambient_room_light_visible") {
+        ui_state->calibration_light_state = "ambient_room_light";
+        ui_state->calibration_illumination_spectrum = "broadband_visible";
+        ui_state->calibration_illumination_source = "ambient_room_light";
+        ui_state->calibration_has_illumination_center_wavelength_nm = false;
+        ui_state->calibration_illumination_min_wavelength_nm = 400.0;
+        ui_state->calibration_has_illumination_min_wavelength_nm = true;
+        ui_state->calibration_illumination_max_wavelength_nm = 700.0;
+        ui_state->calibration_has_illumination_max_wavelength_nm = true;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "approximate_range";
+    } else if (preset == "external_continuous_visible_light") {
+        ui_state->calibration_light_state = "external_continuous_visible_light";
+        ui_state->calibration_illumination_spectrum = "broadband_visible";
+        ui_state->calibration_illumination_source = "external_continuous_visible_light";
+        ui_state->calibration_has_illumination_center_wavelength_nm = false;
+        ui_state->calibration_illumination_min_wavelength_nm = 400.0;
+        ui_state->calibration_has_illumination_min_wavelength_nm = true;
+        ui_state->calibration_illumination_max_wavelength_nm = 700.0;
+        ui_state->calibration_has_illumination_max_wavelength_nm = true;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "approximate_range";
+    } else if (preset == "external_continuous_ir_nir_light") {
+        ui_state->calibration_light_state = "external_continuous_ir_nir_light";
+        ui_state->calibration_illumination_spectrum = "unknown_ir_nir";
+        ui_state->calibration_illumination_source = "external_continuous_ir_nir_light";
+        ui_state->calibration_has_illumination_center_wavelength_nm = false;
+        ui_state->calibration_has_illumination_min_wavelength_nm = false;
+        ui_state->calibration_has_illumination_max_wavelength_nm = false;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "unknown";
+    } else if (preset == "lights_off") {
+        ui_state->calibration_light_state = "lights_off";
+        ui_state->calibration_illumination_spectrum = "none";
+        ui_state->calibration_illumination_source = "none";
+        ui_state->calibration_has_illumination_center_wavelength_nm = false;
+        ui_state->calibration_has_illumination_min_wavelength_nm = false;
+        ui_state->calibration_has_illumination_max_wavelength_nm = false;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "not_applicable";
+    } else if (preset == "unknown") {
+        ui_state->calibration_light_state = "unknown";
+        ui_state->calibration_illumination_spectrum = "unknown";
+        ui_state->calibration_illumination_source = "unknown";
+        ui_state->calibration_has_illumination_center_wavelength_nm = false;
+        ui_state->calibration_has_illumination_min_wavelength_nm = false;
+        ui_state->calibration_has_illumination_max_wavelength_nm = false;
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm = false;
+        ui_state->calibration_illumination_wavelength_confidence = "unknown";
+    }
+}
+
+std::string make_spatial_rig_io_connection_key(const CameraParams& camera_params,
+                                               const CameraRigIoConnection& connection)
+{
+    return camera_params.camera_serial + ":" + connection.camera_line + ":" + connection.purpose;
+}
+
+const CameraRigIoConnection* find_mapped_nir_strobe_output_connection(const CameraParams& camera_params)
+{
+    for (const CameraRigIoConnection& connection : camera_params.rig_io_connections) {
+        if (connection.purpose == "nir_strobe_trigger" && connection.direction == "output") {
+            return &connection;
+        }
+    }
+    return nullptr;
+}
+
+bool camera_has_exposed_mapped_nir_strobe(const CameraParams& camera_params)
+{
+    return camera_params.gpio_pinout_access == "exposed" &&
+           find_mapped_nir_strobe_output_connection(camera_params) != nullptr;
+}
+
+bool calibration_light_handling_needs_mapped_strobe(const std::string& requested_handling)
+{
+    const std::string handling = requested_handling.empty() ? "leave_current" : requested_handling;
+    return handling == "suppress_mapped_strobe" ||
+           handling == "keep_or_restore_mapped_pulse" ||
+           handling == "force_manual_active";
+}
+
+void set_calibration_preflight_result(SpatialLayoutUiState* ui_state,
+                                      const bool ok,
+                                      const std::string& message)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    if (ok) {
+        ui_state->calibration_preflight_status = message;
+        ui_state->calibration_preflight_error.clear();
+    } else {
+        ui_state->calibration_preflight_error = message;
+        ui_state->calibration_preflight_status.clear();
+    }
+}
+
+void clear_calibration_capture_profile_state(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_capture_profile_active = false;
+    ui_state->calibration_capture_profile_id.clear();
+    ui_state->calibration_capture_profile_operation_id.clear();
+    ui_state->calibration_capture_profile_camera_serial.clear();
+    ui_state->calibration_capture_profile_light_camera_serial.clear();
+}
+
+void mark_calibration_capture_profile_active(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams& capture_params,
+    const CameraParams* light_params)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_capture_profile_active = true;
+    ui_state->calibration_capture_profile_id = kCalibrationCaptureProfileId;
+    ui_state->calibration_capture_profile_operation_id =
+        std::string(kCalibrationCaptureProfileId) + "_" +
+        sanitize_artifact_component(get_current_utc_timestamp()) +
+        "_Cam" + sanitize_artifact_component(capture_params.camera_serial);
+    ui_state->calibration_capture_profile_camera_serial = capture_params.camera_serial;
+    ui_state->calibration_capture_profile_light_camera_serial =
+        light_params ? light_params->camera_serial : "";
+}
+
+void mark_calibration_capture_profile_active_for_cameras(
+    SpatialLayoutUiState* ui_state,
+    CameraParams* cameras_params,
+    const std::vector<int>& camera_indices,
+    const CameraParams* light_params)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    std::ostringstream camera_serials;
+    for (size_t idx = 0; idx < camera_indices.size(); ++idx) {
+        const int camera_index = camera_indices[idx];
+        if (camera_index < 0 || cameras_params == nullptr) {
+            continue;
+        }
+        if (camera_serials.tellp() > 0) {
+            camera_serials << ",";
+        }
+        camera_serials << cameras_params[camera_index].camera_serial;
+    }
+    ui_state->calibration_capture_profile_active = true;
+    ui_state->calibration_capture_profile_id = kCalibrationCaptureProfileId;
+    ui_state->calibration_capture_profile_operation_id =
+        std::string(kCalibrationCaptureProfileId) + "_" +
+        sanitize_artifact_component(get_current_utc_timestamp()) +
+        "_all_open_cameras";
+    ui_state->calibration_capture_profile_camera_serial =
+        "all_open:" + camera_serials.str();
+    ui_state->calibration_capture_profile_light_camera_serial =
+        light_params ? light_params->camera_serial : "";
+}
+
+bool set_camera_uint32_param_for_calibration(
+    Emergent::CEmergentCamera* camera,
+    CameraParams* camera_params,
+    const char* node_name,
+    const unsigned int requested_value,
+    unsigned int* cached_value,
+    unsigned int* cached_min,
+    unsigned int* cached_max,
+    unsigned int* cached_inc,
+    std::string* status_out)
+{
+    if (camera == nullptr || camera_params == nullptr || node_name == nullptr ||
+        cached_value == nullptr || cached_min == nullptr || cached_max == nullptr ||
+        cached_inc == nullptr) {
+        if (status_out) {
+            *status_out = "Calibration capture settings failed: camera parameter input was invalid.";
+        }
+        return false;
+    }
+
+    if (!get_camera_uint32_param_range(camera, node_name, cached_min, cached_max, cached_inc)) {
+        if (status_out) {
+            *status_out = std::string("Calibration capture settings failed: unable to query ") +
+                          node_name + " range for camera " + camera_params->camera_serial + ".";
+        }
+        return false;
+    }
+
+    const unsigned int clamped_value = std::clamp(requested_value, *cached_min, *cached_max);
+    const EVT_ERROR set_err =
+        Emergent::EVT_CameraSetUInt32Param(camera, node_name, clamped_value);
+    if (set_err != EVT_SUCCESS) {
+        if (status_out) {
+            std::ostringstream oss;
+            oss << "Calibration capture settings failed: " << node_name
+                << " requested=" << requested_value
+                << " clamped=" << clamped_value
+                << " camera=" << camera_params->camera_serial
+                << " error=" << get_evt_error_string(set_err) << ".";
+            *status_out = oss.str();
+        }
+        return false;
+    }
+
+    unsigned int readback = 0;
+    const EVT_ERROR get_err =
+        Emergent::EVT_CameraGetUInt32Param(camera, node_name, &readback);
+    if (get_err != EVT_SUCCESS) {
+        *cached_value = clamped_value;
+        if (status_out) {
+            std::ostringstream oss;
+            oss << "Calibration capture settings warning: " << node_name
+                << " set to " << clamped_value
+                << " for camera " << camera_params->camera_serial
+                << ", but readback failed: " << get_evt_error_string(get_err) << ".";
+            *status_out = oss.str();
+        }
+        return true;
+    }
+
+    *cached_value = readback;
+    if (status_out) {
+        std::ostringstream oss;
+        oss << node_name << " requested=" << requested_value
+            << " applied=" << readback;
+        if (readback != requested_value) {
+            oss << " range=[" << *cached_min << "," << *cached_max << "]";
+            if (*cached_inc > 0) {
+                oss << " inc=" << *cached_inc;
+            }
+        }
+        *status_out = oss.str();
+    }
+    return true;
+}
+
+bool capture_calibration_acquisition_restore_state_if_needed(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams& camera_params)
+{
+    if (ui_state == nullptr) {
+        return true;
+    }
+    for (const CalibrationCaptureCameraRestoreState& restore_state :
+         ui_state->calibration_capture_restore_states) {
+        if (restore_state.valid &&
+            restore_state.camera_serial == camera_params.camera_serial) {
+            return true;
+        }
+    }
+    CalibrationCaptureCameraRestoreState restore_state;
+    restore_state.valid = true;
+    restore_state.camera_serial = camera_params.camera_serial;
+    restore_state.exposure_us = camera_params.exposure;
+    restore_state.frame_rate_hz = camera_params.frame_rate;
+    ui_state->calibration_capture_restore_states.push_back(std::move(restore_state));
+    return true;
+}
+
+CalibrationCaptureCameraRestoreState* find_calibration_capture_restore_state(
+    SpatialLayoutUiState* ui_state,
+    const std::string& camera_serial)
+{
+    if (ui_state == nullptr) {
+        return nullptr;
+    }
+    for (CalibrationCaptureCameraRestoreState& restore_state :
+         ui_state->calibration_capture_restore_states) {
+        if (restore_state.valid && restore_state.camera_serial == camera_serial) {
+            return &restore_state;
+        }
+    }
+    return nullptr;
+}
+
+bool has_calibration_capture_restore_state(
+    const SpatialLayoutUiState* ui_state,
+    const std::string& camera_serial)
+{
+    if (ui_state == nullptr) {
+        return false;
+    }
+    for (const CalibrationCaptureCameraRestoreState& restore_state :
+         ui_state->calibration_capture_restore_states) {
+        if (restore_state.valid && restore_state.camera_serial == camera_serial) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void clear_calibration_capture_restore_state(
+    SpatialLayoutUiState* ui_state,
+    const std::string& camera_serial)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    auto& restore_states = ui_state->calibration_capture_restore_states;
+    restore_states.erase(
+        std::remove_if(
+            restore_states.begin(),
+            restore_states.end(),
+            [&](const CalibrationCaptureCameraRestoreState& restore_state) {
+                return restore_state.camera_serial == camera_serial;
+            }),
+        restore_states.end());
+}
+
+bool restore_calibration_capture_settings_to_camera(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecam,
+    CameraParams* camera_params,
+    bool recording_mutation_locked,
+    std::string* status_out);
+
+bool apply_calibration_capture_settings_to_camera(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecam,
+    CameraParams* camera_params,
+    const bool recording_mutation_locked,
+    std::string* status_out)
+{
+    if (ecam == nullptr || camera_params == nullptr) {
+        if (status_out) {
+            *status_out = "Calibration capture settings failed: selected camera is not open.";
+        }
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "Calibration capture settings blocked while recording/finalizing.";
+        }
+        return false;
+    }
+
+    capture_calibration_acquisition_restore_state_if_needed(ui_state, *camera_params);
+
+    std::string frame_status;
+    if (!set_camera_uint32_param_for_calibration(
+            &ecam->camera,
+            camera_params,
+            "FrameRate",
+            kCalibrationCaptureFrameRateHz,
+            &camera_params->frame_rate,
+            &camera_params->frame_rate_min,
+            &camera_params->frame_rate_max,
+            &camera_params->frame_rate_inc,
+            &frame_status)) {
+        if (status_out) {
+            *status_out = frame_status;
+        }
+        return false;
+    }
+
+    std::string exposure_status;
+    if (!set_camera_uint32_param_for_calibration(
+            &ecam->camera,
+            camera_params,
+            "Exposure",
+            kCalibrationCaptureExposureUs,
+            &camera_params->exposure,
+            &camera_params->exposure_min,
+            &camera_params->exposure_max,
+            &camera_params->exposure_inc,
+            &exposure_status)) {
+        if (status_out) {
+            std::string restore_status;
+            restore_calibration_capture_settings_to_camera(
+                ui_state,
+                ecam,
+                camera_params,
+                recording_mutation_locked,
+                &restore_status);
+            *status_out = exposure_status + " Restore attempted: " + restore_status;
+        }
+        return false;
+    }
+
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "Calibration capture settings applied to " << camera_params->camera_serial
+            << ": " << frame_status << "; " << exposure_status << ".";
+        *status_out = oss.str();
+    }
+    return true;
+}
+
+bool restore_calibration_capture_settings_to_camera(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecam,
+    CameraParams* camera_params,
+    const bool recording_mutation_locked,
+    std::string* status_out)
+{
+    if (ui_state == nullptr || ecam == nullptr || camera_params == nullptr) {
+        if (status_out) {
+            *status_out = "Calibration capture restore failed: selected camera is not open.";
+        }
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "Calibration capture restore blocked while recording/finalizing.";
+        }
+        return false;
+    }
+    const CalibrationCaptureCameraRestoreState* restore_state =
+        find_calibration_capture_restore_state(ui_state, camera_params->camera_serial);
+    if (restore_state == nullptr) {
+        if (status_out) {
+            *status_out = "Calibration capture restore skipped: no saved settings for this camera.";
+        }
+        return false;
+    }
+
+    std::string exposure_status;
+    if (!set_camera_uint32_param_for_calibration(
+            &ecam->camera,
+            camera_params,
+            "Exposure",
+            restore_state->exposure_us,
+            &camera_params->exposure,
+            &camera_params->exposure_min,
+            &camera_params->exposure_max,
+            &camera_params->exposure_inc,
+            &exposure_status)) {
+        if (status_out) {
+            *status_out = exposure_status;
+        }
+        return false;
+    }
+
+    std::string frame_status;
+    if (!set_camera_uint32_param_for_calibration(
+            &ecam->camera,
+            camera_params,
+            "FrameRate",
+            restore_state->frame_rate_hz,
+            &camera_params->frame_rate,
+            &camera_params->frame_rate_min,
+            &camera_params->frame_rate_max,
+            &camera_params->frame_rate_inc,
+            &frame_status)) {
+        if (status_out) {
+            *status_out = frame_status;
+        }
+        return false;
+    }
+
+    clear_calibration_capture_restore_state(ui_state, camera_params->camera_serial);
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "Calibration capture settings restored for " << camera_params->camera_serial
+            << ": " << exposure_status << "; " << frame_status << ".";
+        *status_out = oss.str();
+    }
+    return true;
+}
+
+bool capture_calibration_light_restore_state_if_needed(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecam,
+    const CameraParams& camera_params,
+    const CameraRigIoConnection& connection,
+    const std::string& connection_key,
+    std::string* status_out)
+{
+    if (ui_state == nullptr) {
+        if (status_out) {
+            *status_out = "Calibration light action failed: UI state is null.";
+        }
+        return false;
+    }
+    if (ui_state->calibration_light_restore_state.valid &&
+        ui_state->calibration_light_restore_key == connection_key) {
+        return true;
+    }
+
+    CameraRigIoOutputState captured_state;
+    if (!read_rig_io_output_diagnostic_state(
+            ecam ? &ecam->camera : nullptr,
+            &camera_params,
+            connection,
+            &captured_state,
+            status_out)) {
+        return false;
+    }
+    ui_state->calibration_light_restore_state = std::move(captured_state);
+    ui_state->calibration_light_restore_key = connection_key;
+    return true;
+}
+
+bool restore_calibration_mapped_strobe_pulse(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecam,
+    const CameraParams& camera_params,
+    const CameraRigIoConnection& connection,
+    const std::string& connection_key,
+    std::string* status_out)
+{
+    if (ui_state != nullptr &&
+        ui_state->calibration_light_restore_state.valid &&
+        ui_state->calibration_light_restore_key == connection_key) {
+        return restore_rig_io_output_diagnostic_state(
+            ecam ? &ecam->camera : nullptr,
+            &camera_params,
+            ui_state->calibration_light_restore_state,
+            status_out);
+    }
+    return restore_rig_io_output_normal_mode(
+        ecam ? &ecam->camera : nullptr,
+        &camera_params,
+        connection,
+        status_out);
+}
+
+bool apply_calibration_light_handling_to_camera(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecam,
+    const CameraParams& camera_params,
+    const bool recording_mutation_locked,
+    const std::string& requested_handling,
+    std::string* status_out)
+{
+    const std::string handling = requested_handling.empty() ? "leave_current" : requested_handling;
+    if (handling == "leave_current") {
+        if (status_out) {
+            *status_out = "Calibration light handling left current light/GPO state unchanged.";
+        }
+        return true;
+    }
+    if (handling == "operator_manual") {
+        if (status_out) {
+            *status_out = "Calibration light handling recorded as operator_manual; no Orange GPO write was made.";
+        }
+        return true;
+    }
+
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "Calibration light action blocked while recording/finalizing.";
+        }
+        return false;
+    }
+    if (camera_params.gpio_pinout_access == "not_exposed") {
+        if (status_out) {
+            *status_out =
+                "Calibration light action blocked: GPIO pinout access is not exposed for the light-control camera.";
+        }
+        return false;
+    }
+
+    const CameraRigIoConnection* connection =
+        find_mapped_nir_strobe_output_connection(camera_params);
+    if (connection == nullptr) {
+        if (status_out) {
+            *status_out =
+                "Calibration light action failed: light-control camera has no nir_strobe_trigger output mapping.";
+        }
+        return false;
+    }
+    const std::string connection_key =
+        make_spatial_rig_io_connection_key(camera_params, *connection);
+
+    if (handling == "suppress_mapped_strobe") {
+        std::string capture_status;
+        if (!capture_calibration_light_restore_state_if_needed(
+                ui_state,
+                ecam,
+                camera_params,
+                *connection,
+                connection_key,
+                &capture_status)) {
+            if (status_out) {
+                *status_out = capture_status;
+            }
+            return false;
+        }
+        if (!set_rig_io_output_diagnostic(
+                ecam ? &ecam->camera : nullptr,
+                &camera_params,
+                *connection,
+                false,
+                status_out)) {
+            return false;
+        }
+        if (ui_state != nullptr) {
+            ui_state->calibration_light_state = "ttl_nir_strobe_inactive";
+        }
+        return true;
+    }
+
+    if (handling == "keep_or_restore_mapped_pulse") {
+        if (!restore_calibration_mapped_strobe_pulse(
+                ui_state,
+                ecam,
+                camera_params,
+                *connection,
+                connection_key,
+                status_out)) {
+            return false;
+        }
+        if (ui_state != nullptr) {
+            ui_state->calibration_light_state = "ttl_nir_strobe_active";
+        }
+        return true;
+    }
+
+    if (handling == "force_manual_active") {
+        std::string capture_status;
+        if (!capture_calibration_light_restore_state_if_needed(
+                ui_state,
+                ecam,
+                camera_params,
+                *connection,
+                connection_key,
+                &capture_status)) {
+            if (status_out) {
+                *status_out = capture_status;
+            }
+            return false;
+        }
+        if (!set_rig_io_output_diagnostic(
+                ecam ? &ecam->camera : nullptr,
+                &camera_params,
+                *connection,
+                true,
+                status_out)) {
+            return false;
+        }
+        if (ui_state != nullptr) {
+            ui_state->calibration_light_state = "ttl_nir_strobe_active";
+        }
+        return true;
+    }
+
+    if (status_out) {
+        *status_out = "Calibration light action failed: unsupported light_handling `" + handling + "`.";
+    }
+    return false;
+}
+
+bool restore_calibration_capture_preflight(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* capture_ecam,
+    CameraParams* capture_params,
+    CameraEmergent* light_ecam,
+    const CameraParams* light_params,
+    const bool mapped_strobe_available,
+    const bool recording_mutation_locked,
+    std::string* status_out)
+{
+    bool ok = true;
+    std::vector<std::string> statuses;
+
+    if (ui_state != nullptr && capture_params != nullptr &&
+        has_calibration_capture_restore_state(ui_state, capture_params->camera_serial)) {
+        std::string capture_status;
+        const bool capture_ok = restore_calibration_capture_settings_to_camera(
+            ui_state,
+            capture_ecam,
+            capture_params,
+            recording_mutation_locked,
+            &capture_status);
+        ok &= capture_ok;
+        statuses.push_back(capture_status);
+    } else {
+        statuses.push_back("Capture settings already match the current loaded/original state for the selected camera.");
+    }
+
+    if (mapped_strobe_available && light_ecam != nullptr && light_params != nullptr) {
+        std::string light_status;
+        bool light_ok = false;
+        const CameraRigIoConnection* connection =
+            find_mapped_nir_strobe_output_connection(*light_params);
+        if (connection == nullptr) {
+            light_status = "Mapped strobe restore failed: light-control camera mapping disappeared.";
+        } else if (recording_mutation_locked) {
+            light_status = "Mapped strobe restore blocked while recording/finalizing.";
+        } else {
+            const std::string connection_key =
+                make_spatial_rig_io_connection_key(*light_params, *connection);
+            light_ok = restore_calibration_mapped_strobe_pulse(
+                ui_state,
+                light_ecam,
+                *light_params,
+                *connection,
+                connection_key,
+                &light_status);
+            if (light_ok && ui_state != nullptr) {
+                if (ui_state->calibration_light_restore_key == connection_key) {
+                    ui_state->calibration_light_restore_state = CameraRigIoOutputState{};
+                    ui_state->calibration_light_restore_key.clear();
+                }
+                ui_state->calibration_light_state = "ttl_nir_strobe_active";
+            }
+        }
+        ok &= light_ok;
+        statuses.push_back(light_status);
+    } else {
+        statuses.push_back("No mapped strobe restore was available.");
+    }
+
+    if (ok) {
+        clear_calibration_capture_profile_state(ui_state);
+    }
+
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "Calibration restore " << (ok ? "complete" : "incomplete") << ": ";
+        for (size_t i = 0; i < statuses.size(); ++i) {
+            if (i > 0) {
+                oss << " ";
+            }
+            oss << statuses[i];
+        }
+        *status_out = oss.str();
+    }
+    return ok;
+}
+
+bool prepare_calibration_capture_preflight(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* capture_ecam,
+    CameraParams* capture_params,
+    CameraEmergent* light_ecam,
+    const CameraParams* light_params,
+    const bool mapped_strobe_available,
+    const bool recording_mutation_locked,
+    const std::string& requested_light_handling,
+    std::string* status_out)
+{
+    if (capture_ecam == nullptr || capture_params == nullptr) {
+        if (status_out) {
+            *status_out = "Calibration prepare failed: selected capture camera is not open.";
+        }
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "Calibration prepare blocked while recording/finalizing.";
+        }
+        return false;
+    }
+
+    const bool needs_mapped_strobe =
+        calibration_light_handling_needs_mapped_strobe(requested_light_handling);
+    CameraEmergent* action_light_ecam =
+        mapped_strobe_available ? light_ecam : capture_ecam;
+    const CameraParams* action_light_params =
+        mapped_strobe_available ? light_params : capture_params;
+    if (needs_mapped_strobe && !mapped_strobe_available) {
+        if (status_out) {
+            *status_out = "Calibration prepare failed: no exposed nir_strobe_trigger light-control camera is available.";
+        }
+        return false;
+    }
+
+    std::string light_status;
+    const bool light_ok = apply_calibration_light_handling_to_camera(
+        ui_state,
+        action_light_ecam,
+        *action_light_params,
+        recording_mutation_locked,
+        requested_light_handling,
+        &light_status);
+    if (!light_ok) {
+        if (status_out) {
+            *status_out = light_status;
+        }
+        return false;
+    }
+
+    std::string capture_status;
+    const bool capture_ok = apply_calibration_capture_settings_to_camera(
+        ui_state,
+        capture_ecam,
+        capture_params,
+        recording_mutation_locked,
+        &capture_status);
+    if (!capture_ok) {
+        std::string restore_status;
+        restore_calibration_capture_preflight(
+            ui_state,
+            capture_ecam,
+            capture_params,
+            light_ecam,
+            light_params,
+            mapped_strobe_available,
+            recording_mutation_locked,
+            &restore_status);
+        if (status_out) {
+            *status_out = capture_status + " Restore attempted: " + restore_status;
+        }
+        return false;
+    }
+
+    mark_calibration_capture_profile_active(
+        ui_state,
+        *capture_params,
+        mapped_strobe_available ? light_params : nullptr);
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "Calibration capture profile " << kCalibrationCaptureProfileId
+            << " prepared transactionally: " << light_status << " "
+            << capture_status;
+        *status_out = oss.str();
+    }
+    return true;
+}
+
+bool restore_calibration_capture_preflight_all_cameras(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params,
+    int num_cameras,
+    CameraEmergent* light_ecam,
+    const CameraParams* light_params,
+    const bool mapped_strobe_available,
+    const bool recording_mutation_locked,
+    std::string* status_out)
+{
+    if (ui_state == nullptr || ecams == nullptr || cameras_params == nullptr || num_cameras <= 0) {
+        if (status_out) {
+            *status_out = "All-camera calibration restore failed: no open cameras are available.";
+        }
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "All-camera calibration restore blocked while recording/finalizing.";
+        }
+        return false;
+    }
+
+    bool ok = true;
+    int restored_count = 0;
+    std::vector<std::string> statuses;
+    for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
+        CameraParams* camera_params = &cameras_params[camera_index];
+        if (!has_calibration_capture_restore_state(ui_state, camera_params->camera_serial)) {
+            continue;
+        }
+        std::string camera_status;
+        const bool camera_ok = restore_calibration_capture_settings_to_camera(
+            ui_state,
+            &ecams[camera_index],
+            camera_params,
+            recording_mutation_locked,
+            &camera_status);
+        ok &= camera_ok;
+        if (camera_ok) {
+            ++restored_count;
+        }
+        statuses.push_back(camera_status);
+    }
+    if (restored_count == 0 && statuses.empty()) {
+        statuses.push_back("No saved camera timing settings needed restore.");
+    }
+
+    if (mapped_strobe_available && light_ecam != nullptr && light_params != nullptr) {
+        std::string light_status;
+        bool light_ok = false;
+        const CameraRigIoConnection* connection =
+            find_mapped_nir_strobe_output_connection(*light_params);
+        if (connection == nullptr) {
+            light_status = "Mapped strobe restore failed: light-control camera mapping disappeared.";
+        } else {
+            const std::string connection_key =
+                make_spatial_rig_io_connection_key(*light_params, *connection);
+            light_ok = restore_calibration_mapped_strobe_pulse(
+                ui_state,
+                light_ecam,
+                *light_params,
+                *connection,
+                connection_key,
+                &light_status);
+            if (light_ok) {
+                if (ui_state->calibration_light_restore_key == connection_key) {
+                    ui_state->calibration_light_restore_state = CameraRigIoOutputState{};
+                    ui_state->calibration_light_restore_key.clear();
+                }
+                ui_state->calibration_light_state = "ttl_nir_strobe_active";
+            }
+        }
+        ok &= light_ok;
+        statuses.push_back(light_status);
+    } else {
+        statuses.push_back("No mapped strobe restore was available.");
+    }
+
+    if (ok && ui_state->calibration_capture_restore_states.empty()) {
+        clear_calibration_capture_profile_state(ui_state);
+    }
+
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "All-camera calibration restore "
+            << (ok ? "complete" : "incomplete")
+            << " (" << restored_count << " camera(s) restored): ";
+        for (size_t idx = 0; idx < statuses.size(); ++idx) {
+            if (idx > 0) {
+                oss << " ";
+            }
+            oss << statuses[idx];
+        }
+        *status_out = oss.str();
+    }
+    return ok;
+}
+
+bool prepare_calibration_capture_preflight_all_cameras(
+    SpatialLayoutUiState* ui_state,
+    CameraEmergent* ecams,
+    CameraParams* cameras_params,
+    int num_cameras,
+    CameraEmergent* light_ecam,
+    const CameraParams* light_params,
+    const bool mapped_strobe_available,
+    const bool recording_mutation_locked,
+    const std::string& requested_light_handling,
+    std::string* status_out)
+{
+    if (ui_state == nullptr || ecams == nullptr || cameras_params == nullptr || num_cameras <= 0) {
+        if (status_out) {
+            *status_out = "All-camera calibration prepare failed: no open cameras are available.";
+        }
+        return false;
+    }
+    if (recording_mutation_locked) {
+        if (status_out) {
+            *status_out = "All-camera calibration prepare blocked while recording/finalizing.";
+        }
+        return false;
+    }
+
+    const bool needs_mapped_strobe =
+        calibration_light_handling_needs_mapped_strobe(requested_light_handling);
+    if (needs_mapped_strobe && !mapped_strobe_available) {
+        if (status_out) {
+            *status_out = "All-camera calibration prepare failed: no exposed nir_strobe_trigger light-control camera is available.";
+        }
+        return false;
+    }
+
+    CameraEmergent* action_light_ecam =
+        mapped_strobe_available ? light_ecam : &ecams[0];
+    const CameraParams* action_light_params =
+        mapped_strobe_available ? light_params : &cameras_params[0];
+
+    std::string light_status;
+    const bool light_ok = apply_calibration_light_handling_to_camera(
+        ui_state,
+        action_light_ecam,
+        *action_light_params,
+        recording_mutation_locked,
+        requested_light_handling,
+        &light_status);
+    if (!light_ok) {
+        if (status_out) {
+            *status_out = light_status;
+        }
+        return false;
+    }
+
+    std::vector<int> prepared_indices;
+    for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
+        std::string camera_status;
+        const bool camera_ok = apply_calibration_capture_settings_to_camera(
+            ui_state,
+            &ecams[camera_index],
+            &cameras_params[camera_index],
+            recording_mutation_locked,
+            &camera_status);
+        if (!camera_ok) {
+            std::string restore_status;
+            restore_calibration_capture_preflight_all_cameras(
+                ui_state,
+                ecams,
+                cameras_params,
+                num_cameras,
+                light_ecam,
+                light_params,
+                mapped_strobe_available,
+                recording_mutation_locked,
+                &restore_status);
+            if (status_out) {
+                std::ostringstream oss;
+                oss << "All-camera calibration prepare failed after light handling was applied: "
+                    << camera_status << " Rollback attempted: " << restore_status;
+                *status_out = oss.str();
+            }
+            return false;
+        }
+        prepared_indices.push_back(camera_index);
+    }
+
+    mark_calibration_capture_profile_active_for_cameras(
+        ui_state,
+        cameras_params,
+        prepared_indices,
+        mapped_strobe_available ? light_params : nullptr);
+
+    if (status_out) {
+        std::ostringstream oss;
+        oss << "All-camera calibration capture profile " << kCalibrationCaptureProfileId
+            << " prepared transactionally: " << light_status
+            << " Applied 10 FPS / 10 ms to " << prepared_indices.size()
+            << " camera(s).";
+        *status_out = oss.str();
+    }
+    return true;
+}
+
 void fnv1a64_update_bytes(uint64_t* hash, const void* data, size_t size)
 {
     if (hash == nullptr || data == nullptr) {
@@ -143,6 +1243,65 @@ std::string compute_json_fingerprint(const nlohmann::json& value)
     oss << kCalibrationFingerprintAlgorithm << ':'
         << std::hex << std::nouppercase << hash;
     return oss.str();
+}
+
+std::string compute_file_fingerprint(const std::filesystem::path& path, std::string* error_out)
+{
+    std::ifstream in(path, std::ios::in | std::ios::binary);
+    if (!in.is_open()) {
+        if (error_out) {
+            *error_out = "Failed to open file for fingerprinting: " + path.string();
+        }
+        return "";
+    }
+
+    uint64_t hash = kFnv1a64Offset;
+    std::array<char, 64 * 1024> buffer{};
+    while (in.good()) {
+        in.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+        const std::streamsize count = in.gcount();
+        if (count > 0) {
+            fnv1a64_update_bytes(&hash, buffer.data(), static_cast<size_t>(count));
+        }
+    }
+    if (in.bad()) {
+        if (error_out) {
+            *error_out = "Failed while reading file for fingerprinting: " + path.string();
+        }
+        return "";
+    }
+
+    std::ostringstream oss;
+    oss << kCalibrationFingerprintAlgorithm << ':'
+        << std::hex << std::nouppercase << hash;
+    return oss.str();
+}
+
+bool write_image_file(const std::filesystem::path& path, const cv::Mat& image, std::string* error_out)
+{
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
+    std::filesystem::create_directories(path.parent_path());
+    if (image.empty()) {
+        if (error_out) {
+            *error_out = "Cannot write empty image: " + path.string();
+        }
+        return false;
+    }
+    try {
+        if (!cv::imwrite(path.string(), image)) {
+            if (error_out) {
+                *error_out = "cv::imwrite failed: " + path.string();
+            }
+            return false;
+        }
+    } catch (const std::exception& ex) {
+        if (error_out) {
+            *error_out = std::string("cv::imwrite exception for ") + path.string() + ": " + ex.what();
+        }
+        return false;
+    }
+    return true;
 }
 
 bool write_json_file(const std::filesystem::path& path,
@@ -197,6 +1356,265 @@ bool read_json_file(const std::filesystem::path& path,
     return true;
 }
 
+std::filesystem::path calibration_base_dir_from_artifact_root(const std::string& artifact_root_dir)
+{
+    const std::filesystem::path root(artifact_root_dir.empty() ? "." : artifact_root_dir);
+    if (root.filename() == "artifacts" && !root.parent_path().empty()) {
+        return root.parent_path();
+    }
+    return root;
+}
+
+std::filesystem::path calibration_sessions_dir_from_artifact_root(const std::string& artifact_root_dir)
+{
+    return calibration_base_dir_from_artifact_root(artifact_root_dir) / "sessions";
+}
+
+std::string build_spatial_calibration_session_id(
+    const SpatialLayoutUiState* ui_state,
+    const std::string& timestamp)
+{
+    std::ostringstream oss;
+    oss << "calsess_" << sanitize_artifact_component(timestamp);
+    if (ui_state != nullptr && ui_state->citrus_template.available) {
+        if (!ui_state->citrus_template.source_canvas_name.empty()) {
+            oss << "_" << sanitize_artifact_component(ui_state->citrus_template.source_canvas_name);
+        }
+    }
+    return oss.str();
+}
+
+bool ensure_directory_for_spatial_session(const std::filesystem::path& path, std::string* error_out)
+{
+    try {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::filesystem::create_directories(path);
+    } catch (const std::exception& ex) {
+        if (error_out) {
+            *error_out = "Failed to create calibration session directory " +
+                         path.string() + ": " + ex.what();
+        }
+        return false;
+    }
+    return true;
+}
+
+bool write_spatial_calibration_session_manifest(
+    const SpatialLayoutUiState* ui_state,
+    const CameraParams& selected_camera,
+    const std::string& artifact_root_dir,
+    const std::filesystem::path& session_dir,
+    const std::filesystem::path& session_artifact_root,
+    std::string* error_out)
+{
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Cannot write calibration session manifest with null UI state.";
+        }
+        return false;
+    }
+    nlohmann::json context = {
+        {"initial_camera_serial", selected_camera.camera_serial},
+        {"initial_camera_name", selected_camera.camera_name}
+    };
+    if (ui_state->citrus_template.available) {
+        nlohmann::json citrus = nlohmann::json::object();
+        if (!ui_state->citrus_template.source_rig_name.empty()) {
+            citrus["rig_id"] = ui_state->citrus_template.source_rig_name;
+        }
+        if (!ui_state->citrus_template.source_canvas_name.empty()) {
+            citrus["canvas_id"] = ui_state->citrus_template.source_canvas_name;
+        }
+        if (!ui_state->citrus_template.source_arena_name.empty()) {
+            citrus["arena_id"] = ui_state->citrus_template.source_arena_name;
+        }
+        if (!ui_state->citrus_template.source_camera_id.empty()) {
+            citrus["camera_id"] = ui_state->citrus_template.source_camera_id;
+        }
+        if (!citrus.empty()) {
+            context["citrus"] = citrus;
+        }
+    }
+
+    const nlohmann::json session = {
+        {"schema_id", kCalibrationSessionSchemaId},
+        {"schema_version", kCalibrationSessionSchemaVersion},
+        {"session_id", ui_state->calibration_session_id},
+        {"created_utc", ui_state->calibration_session_created_utc},
+        {"producer", "orange_spatial_layout_ui"},
+        {"artifact_root_legacy", artifact_root_dir},
+        {"session_dir", session_dir.generic_string()},
+        {"artifacts_dir", session_artifact_root.generic_string()},
+        {"context", context},
+        {"files", {
+            {"session_index", kCalibrationSessionIndexFilename},
+            {"artifacts_dir", "artifacts"}
+        }}
+    };
+    return write_json_file(session_dir / kCalibrationSessionFilename, session, error_out);
+}
+
+bool ensure_spatial_calibration_session(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams& selected_camera,
+    const std::string& artifact_root_dir,
+    std::string* session_artifact_root_out,
+    std::string* error_out)
+{
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Spatial layout UI state is null.";
+        }
+        return false;
+    }
+    if (artifact_root_dir.empty()) {
+        if (error_out) {
+            *error_out = "Calibration artifact root directory is empty.";
+        }
+        return false;
+    }
+
+    const std::filesystem::path sessions_dir =
+        calibration_sessions_dir_from_artifact_root(artifact_root_dir);
+    if (ui_state->calibration_session_id.empty()) {
+        ui_state->calibration_session_created_utc = get_current_utc_timestamp();
+        ui_state->calibration_session_id =
+            build_spatial_calibration_session_id(
+                ui_state,
+                ui_state->calibration_session_created_utc);
+        ui_state->calibration_session_dir =
+            (sessions_dir / ui_state->calibration_session_id).generic_string();
+    } else if (ui_state->calibration_session_dir.empty()) {
+        ui_state->calibration_session_dir =
+            (sessions_dir / ui_state->calibration_session_id).generic_string();
+    }
+    if (ui_state->calibration_session_created_utc.empty()) {
+        ui_state->calibration_session_created_utc = get_current_utc_timestamp();
+    }
+
+    const std::filesystem::path session_dir(ui_state->calibration_session_dir);
+    const std::filesystem::path session_artifact_root = session_dir / "artifacts";
+    if (!ensure_directory_for_spatial_session(session_artifact_root, error_out)) {
+        return false;
+    }
+    if (!write_spatial_calibration_session_manifest(
+            ui_state,
+            selected_camera,
+            artifact_root_dir,
+            session_dir,
+            session_artifact_root,
+            error_out)) {
+        return false;
+    }
+    if (session_artifact_root_out) {
+        *session_artifact_root_out = session_artifact_root.generic_string();
+    }
+    return true;
+}
+
+void clear_spatial_calibration_session(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_session_id.clear();
+    ui_state->calibration_session_dir.clear();
+    ui_state->calibration_session_created_utc.clear();
+}
+
+bool update_spatial_calibration_session_index(
+    const std::string& session_dir_string,
+    const std::string& session_artifact_root_string,
+    const nlohmann::json& manifest,
+    std::string* error_out)
+{
+    if (session_dir_string.empty()) {
+        return true;
+    }
+    if (!manifest.is_object()) {
+        if (error_out) {
+            *error_out = "Cannot update calibration session index with non-object manifest.";
+        }
+        return false;
+    }
+    const std::filesystem::path session_dir(session_dir_string);
+    const std::filesystem::path session_artifact_root(session_artifact_root_string);
+    if (!ensure_directory_for_spatial_session(session_dir, error_out)) {
+        return false;
+    }
+
+    const std::string artifact_id = manifest.value("artifact_id", "");
+    if (artifact_id.empty()) {
+        if (error_out) {
+            *error_out = "Cannot update calibration session index: artifact manifest has no artifact_id.";
+        }
+        return false;
+    }
+    const std::filesystem::path index_path = session_dir / kCalibrationSessionIndexFilename;
+    nlohmann::json index = nlohmann::json::object();
+    if (std::filesystem::exists(index_path) &&
+        !read_json_file(index_path, &index, error_out)) {
+        return false;
+    }
+    if (!index.is_object()) {
+        index = nlohmann::json::object();
+    }
+    if (!index.contains("artifact_order") || !index["artifact_order"].is_array()) {
+        index["artifact_order"] = nlohmann::json::array();
+    }
+    if (!index.contains("artifacts_by_id") || !index["artifacts_by_id"].is_object()) {
+        index["artifacts_by_id"] = nlohmann::json::object();
+    }
+
+    const std::string session_id = session_dir.filename().generic_string();
+    index["schema_id"] = kCalibrationSessionIndexSchemaId;
+    index["schema_version"] = kCalibrationSessionIndexSchemaVersion;
+    index["session_id"] = session_id;
+    index["session_dir"] = session_dir.generic_string();
+    index["artifacts_dir"] = session_artifact_root.generic_string();
+    index["updated_utc"] =
+        manifest.value("updated_utc", manifest.value("created_utc", get_current_utc_timestamp()));
+
+    bool already_ordered = false;
+    for (const auto& value : index["artifact_order"]) {
+        if (value.is_string() && value.get<std::string>() == artifact_id) {
+            already_ordered = true;
+            break;
+        }
+    }
+    if (!already_ordered) {
+        index["artifact_order"].push_back(artifact_id);
+    }
+
+    std::error_code rel_error;
+    const std::filesystem::path manifest_path =
+        session_artifact_root / artifact_id / kSpatialLayoutManifestFilename;
+    std::filesystem::path relative_manifest =
+        std::filesystem::relative(manifest_path, session_dir, rel_error);
+    if (rel_error || relative_manifest.empty()) {
+        relative_manifest = std::filesystem::path("artifacts") / artifact_id / kSpatialLayoutManifestFilename;
+    }
+
+    nlohmann::json entry = {
+        {"artifact_id", artifact_id},
+        {"artifact_schema_id", manifest.value("artifact_schema_id", "")},
+        {"artifact_schema_version", manifest.value("artifact_schema_version", 0)},
+        {"created_utc", manifest.value("created_utc", "")},
+        {"relative_manifest_path", relative_manifest.generic_string()},
+        {"fingerprint", manifest.value("calibration_ref", nlohmann::json::object()).value("fingerprint", "")}
+    };
+    if (manifest.contains("summary")) {
+        entry["summary"] = manifest["summary"];
+    }
+    if (manifest.contains("producer")) {
+        entry["producer"] = manifest["producer"];
+    }
+    index["artifacts_by_id"][artifact_id] = entry;
+    index["artifact_count"] = index["artifacts_by_id"].size();
+    return write_json_file(index_path, index, error_out);
+}
+
 std::string build_arena_layout_artifact_id(
     const std::string& prefix_base,
     const CameraParams& camera_params,
@@ -206,6 +1624,33 @@ std::string build_arena_layout_artifact_id(
     oss << "arenalayout_" << sanitize_artifact_component(prefix_base)
         << "_" << sanitize_artifact_component(timestamp_label)
         << "_Cam" << camera_params.camera_serial;
+    return oss.str();
+}
+
+std::string build_camera_arena_calibration_image_set_artifact_id(
+    const SpatialLayoutUiState* ui_state,
+    const CameraParams& camera_params)
+{
+    std::ostringstream oss;
+    oss << "Cam" << sanitize_artifact_component(camera_params.camera_serial);
+    std::string arena = "arena_unknown";
+    if (ui_state != nullptr &&
+        ui_state->citrus_template.available &&
+        !ui_state->citrus_template.source_arena_name.empty()) {
+        arena = ui_state->citrus_template.source_arena_name;
+    }
+    oss << "_" << sanitize_artifact_component(arena);
+    return oss.str();
+}
+
+std::string build_calibration_capture_filename(
+    const std::string& purpose,
+    const std::string& timestamp_label)
+{
+    std::ostringstream oss;
+    oss << sanitize_artifact_component(purpose.empty() ? std::string("capture") : purpose)
+        << "_" << sanitize_artifact_component(timestamp_label)
+        << ".png";
     return oss.str();
 }
 
@@ -219,6 +1664,24 @@ SpatialLayoutPersistedFiles make_spatial_layout_persisted_files(
     files.manifest_path = files.artifact_dir / kSpatialLayoutManifestFilename;
     files.arena_layout_runtime_path = files.artifact_dir / kSpatialLayoutArenaLayoutRuntimeFilename;
     files.dish_mask_runtime_path = files.artifact_dir / kSpatialLayoutDishMaskRuntimeFilename;
+    return files;
+}
+
+GenericCalibrationImageSetFiles make_generic_calibration_image_set_files(
+    const std::string& artifact_root_dir,
+    const std::string& artifact_id,
+    const std::string& source_frame_filename)
+{
+    GenericCalibrationImageSetFiles files;
+    files.artifact_dir = std::filesystem::path(artifact_root_dir) / artifact_id;
+    files.image_set_path = files.artifact_dir / "image_set.json";
+    files.manifest_path = files.artifact_dir / "manifest.json";
+    const std::filesystem::path capture_filename =
+        source_frame_filename.empty()
+            ? std::filesystem::path("source_frame.png")
+            : std::filesystem::path(source_frame_filename).filename();
+    files.source_frame_relative_path = std::filesystem::path("captures") / capture_filename;
+    files.source_frame_path = files.artifact_dir / files.source_frame_relative_path;
     return files;
 }
 
@@ -364,6 +1827,51 @@ LayoutGeometry default_outer_geometry()
     return geometry;
 }
 
+ArenaLayoutZone make_experimental_area_zone(const LayoutGeometry& outer_geometry)
+{
+    ArenaLayoutZone zone;
+    zone.zone_id = kExperimentalAreaZoneId;
+    zone.has_zone_index = true;
+    zone.zone_index = 0;
+    zone.display_label = kExperimentalAreaZoneLabel;
+    zone.geometry = outer_geometry;
+    return zone;
+}
+
+bool has_single_experimental_area_zone(const SpatialLayoutUiState& ui_state)
+{
+    return ui_state.layout_artifact.layout.zones.size() == 1 &&
+           ui_state.layout_artifact.layout.zones.front().zone_id == kExperimentalAreaZoneId;
+}
+
+void sync_single_experimental_area_zone(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr || !has_single_experimental_area_zone(*ui_state)) {
+        return;
+    }
+
+    ArenaLayoutZone& zone = ui_state->layout_artifact.layout.zones.front();
+    zone.has_zone_index = true;
+    zone.zone_index = 0;
+    if (zone.display_label.empty() || zone.display_label == "Zone 0") {
+        zone.display_label = kExperimentalAreaZoneLabel;
+    }
+    zone.geometry = ui_state->layout_artifact.layout.outer_geometry;
+    ui_state->selected_zone_index = 0;
+}
+
+void reset_to_single_experimental_area_zone(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+
+    ui_state->layout_artifact.layout.zones.clear();
+    ui_state->layout_artifact.layout.zones.push_back(
+        make_experimental_area_zone(ui_state->layout_artifact.layout.outer_geometry));
+    ui_state->selected_zone_index = 0;
+}
+
 ArenaLayoutZone make_default_zone(const LayoutGeometry& outer_geometry, int zone_index)
 {
     ArenaLayoutZone zone;
@@ -406,7 +1914,7 @@ void initialize_spatial_layout_defaults(SpatialLayoutUiState* ui_state)
     artifact.layout_id = "layout_preview";
     artifact.layout.coordinate_space = CoordinateSpace::kLayoutUnits;
     artifact.layout.outer_geometry = default_outer_geometry();
-    artifact.layout.zones.push_back(make_default_zone(artifact.layout.outer_geometry, 0));
+    artifact.layout.zones.push_back(make_experimental_area_zone(artifact.layout.outer_geometry));
     artifact.provenance.source = ArenaLayoutProvenanceSource::kManualTemplate;
     artifact.provenance.ordering_rule = "row_major_top_left";
     artifact.provenance.notes = "Preview-only layout authoring state.";
@@ -462,6 +1970,9 @@ void clear_citrus_template_import(SpatialLayoutUiState* ui_state)
         return;
     }
     ui_state->citrus_template = {};
+    ui_state->citrus_canvas_templates.clear();
+    ui_state->citrus_canvas_template_index = -1;
+    ui_state->citrus_canvas_config_path.clear();
     ui_state->has_citrus_projected_circle = false;
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
     ui_state->citrus_import_status.clear();
@@ -787,103 +2298,43 @@ bool load_homography_matrix_from_citrus_sidecar(const std::filesystem::path& con
     return true;
 }
 
-bool import_citrus_single_circle_template(SpatialLayoutUiState* ui_state,
-                                          const CameraParams& selected_camera,
-                                          const std::filesystem::path& config_path,
-                                          std::string* status_out,
-                                          std::string* error_out)
+std::string citrus_template_display_label(const CitrusSpatialTemplateState& template_state)
 {
-    if (ui_state == nullptr) {
+    std::ostringstream label;
+    label << (template_state.source_arena_name.empty()
+                  ? std::string("arena_unknown")
+                  : template_state.source_arena_name);
+    if (!template_state.source_camera_id.empty()) {
+        label << " / Cam" << template_state.source_camera_id;
+    }
+    if (!template_state.source_config_name.empty() &&
+        template_state.source_config_name != template_state.source_arena_name) {
+        label << " / " << template_state.source_config_name;
+    }
+    return label.str();
+}
+
+bool build_citrus_single_circle_template_state(
+    const std::filesystem::path& config_path,
+    const nlohmann::json& arena_json,
+    const std::string& arena_name,
+    const nlohmann::json& camera_calibration_json,
+    CitrusSpatialTemplateState* template_state_out,
+    std::string* error_out)
+{
+    if (template_state_out == nullptr) {
         if (error_out) {
-            *error_out = "Spatial layout UI state is null.";
+            *error_out = "Null Citrus template destination.";
         }
         return false;
     }
-
-    nlohmann::json root;
-    if (!read_json_file(config_path, &root, error_out)) {
-        return false;
-    }
-    if (!root.is_object()) {
+    if (!arena_json.is_object() || !camera_calibration_json.is_object()) {
         if (error_out) {
-            *error_out = "Citrus arena config root must be a JSON object.";
+            *error_out = "Citrus arena/camera calibration entries must be JSON objects.";
         }
         return false;
     }
-
-    const nlohmann::json* matched_arena = nullptr;
-    const nlohmann::json* matched_camera_calibration = nullptr;
-    std::string matched_arena_name;
-    std::vector<std::string> available_camera_ids;
-
-    auto try_match_arena = [&](const nlohmann::json& arena_json, const std::string& arena_name) -> bool {
-        if (!arena_json.is_object()) {
-            return false;
-        }
-        if (!arena_json.contains("camera_calibrations") || !arena_json.at("camera_calibrations").is_array()) {
-            return false;
-        }
-        for (const auto& camera_json : arena_json.at("camera_calibrations")) {
-            if (!camera_json.is_object()) {
-                continue;
-            }
-            const std::string camera_id = camera_json.value("camera_id", "");
-            if (!camera_id.empty()) {
-                available_camera_ids.push_back(camera_id);
-            }
-            if (camera_id == selected_camera.camera_serial) {
-                matched_arena = &arena_json;
-                matched_camera_calibration = &camera_json;
-                matched_arena_name = arena_name;
-                return true;
-            }
-        }
-        return false;
-    };
-
-    if (root.contains("arenas") && root.at("arenas").is_object()) {
-        for (auto it = root.at("arenas").begin(); it != root.at("arenas").end(); ++it) {
-            if (try_match_arena(it.value(), it.key())) {
-                break;
-            }
-        }
-    } else {
-        const std::string fallback_arena_name = root.value("config_name", config_path.stem().string());
-        if (!try_match_arena(root, fallback_arena_name)) {
-            if (root.contains("camera_calibrations") &&
-                root.at("camera_calibrations").is_array() &&
-                root.at("camera_calibrations").size() == 1 &&
-                root.contains("experimental_area_shape")) {
-                matched_arena = &root;
-                matched_camera_calibration = &root.at("camera_calibrations")[0];
-                matched_arena_name = fallback_arena_name;
-                const std::string fallback_camera_id =
-                    matched_camera_calibration->value("camera_id", "");
-                if (!fallback_camera_id.empty()) {
-                    available_camera_ids.push_back(fallback_camera_id);
-                }
-            }
-        }
-    }
-
-    if (matched_arena == nullptr || matched_camera_calibration == nullptr) {
-        if (error_out) {
-            std::ostringstream oss;
-            oss << "No Citrus arena entry matched selected camera "
-                << selected_camera.camera_serial;
-            if (!available_camera_ids.empty()) {
-                std::sort(available_camera_ids.begin(), available_camera_ids.end());
-                available_camera_ids.erase(
-                    std::unique(available_camera_ids.begin(), available_camera_ids.end()),
-                    available_camera_ids.end());
-                oss << ". Available camera_ids: " << join_strings(available_camera_ids, ", ");
-            }
-            *error_out = oss.str();
-        }
-        return false;
-    }
-
-    if (!json_string_equals_ignore_case(*matched_arena, "experimental_area_shape", "CIRCLE")) {
+    if (!json_string_equals_ignore_case(arena_json, "experimental_area_shape", "CIRCLE")) {
         if (error_out) {
             *error_out = "Citrus import v1 currently supports only experimental_area_shape = CIRCLE.";
         }
@@ -895,50 +2346,177 @@ bool import_citrus_single_circle_template(SpatialLayoutUiState* ui_state,
     template_state.source_config_path = config_path.string();
     template_state.source_canvas_name = config_path.parent_path().filename().string();
     template_state.source_rig_name = config_path.parent_path().parent_path().filename().string();
-    template_state.source_arena_name = matched_arena_name;
-    template_state.source_config_name = matched_arena->value("config_name", matched_arena_name);
-    template_state.source_camera_id = matched_camera_calibration->value("camera_id", "");
-    template_state.source_dish_type_name = matched_arena->value("selected_dish_type_name", "");
+    template_state.source_arena_name = arena_name;
+    template_state.source_config_name = arena_json.value("config_name", arena_name);
+    template_state.source_camera_id = camera_calibration_json.value("camera_id", "");
+    template_state.source_dish_type_name = arena_json.value("selected_dish_type_name", "");
     const bool has_arena_center =
-        parse_optional_json_number(*matched_camera_calibration, "arena_center_x_px", &template_state.arena_center_x_px) &&
-        parse_optional_json_number(*matched_camera_calibration, "arena_center_y_px", &template_state.arena_center_y_px);
+        parse_optional_json_number(camera_calibration_json, "arena_center_x_px", &template_state.arena_center_x_px) &&
+        parse_optional_json_number(camera_calibration_json, "arena_center_y_px", &template_state.arena_center_y_px);
     const bool has_arena_size =
-        parse_optional_json_number(*matched_camera_calibration, "arena_width_px", &template_state.arena_width_px) &&
-        parse_optional_json_number(*matched_camera_calibration, "arena_height_px", &template_state.arena_height_px);
+        parse_optional_json_number(camera_calibration_json, "arena_width_px", &template_state.arena_width_px) &&
+        parse_optional_json_number(camera_calibration_json, "arena_height_px", &template_state.arena_height_px);
     template_state.has_arena_canvas_region =
         has_arena_center &&
         has_arena_size &&
         template_state.arena_width_px > 0.0 &&
         template_state.arena_height_px > 0.0;
 
-    if (!parse_required_json_number(*matched_arena, "experimental_area_center_x_px",
+    if (!parse_required_json_number(arena_json, "experimental_area_center_x_px",
                                     &template_state.experimental_area_center_x_px, error_out) ||
-        !parse_required_json_number(*matched_arena, "experimental_area_center_y_px",
+        !parse_required_json_number(arena_json, "experimental_area_center_y_px",
                                     &template_state.experimental_area_center_y_px, error_out) ||
-        !parse_required_json_number(*matched_arena, "experimental_area_radius_px",
+        !parse_required_json_number(arena_json, "experimental_area_radius_px",
                                     &template_state.experimental_area_radius_px, error_out)) {
         return false;
     }
-    if (matched_arena->contains("experimental_area_radius_mm") &&
-        matched_arena->at("experimental_area_radius_mm").is_number()) {
+    if (arena_json.contains("experimental_area_radius_mm") &&
+        arena_json.at("experimental_area_radius_mm").is_number()) {
         template_state.has_radius_mm = true;
         template_state.experimental_area_radius_mm =
-            matched_arena->at("experimental_area_radius_mm").get<double>();
+            arena_json.at("experimental_area_radius_mm").get<double>();
     }
-    if (matched_camera_calibration->contains("pixels_per_mm_projector") &&
-        matched_camera_calibration->at("pixels_per_mm_projector").is_number()) {
+    if (camera_calibration_json.contains("pixels_per_mm_projector") &&
+        camera_calibration_json.at("pixels_per_mm_projector").is_number()) {
         template_state.has_pixels_per_mm_projector = true;
         template_state.pixels_per_mm_projector =
-            matched_camera_calibration->at("pixels_per_mm_projector").get<double>();
+            camera_calibration_json.at("pixels_per_mm_projector").get<double>();
     }
 
     std::string homography_error;
-    const bool loaded_homography = load_homography_matrix_from_citrus_sidecar(
+    load_homography_matrix_from_citrus_sidecar(
         config_path,
         template_state.source_config_name,
         template_state.source_camera_id,
         &template_state,
         &homography_error);
+
+    *template_state_out = std::move(template_state);
+    return true;
+}
+
+bool collect_citrus_single_circle_templates(
+    const std::filesystem::path& config_path,
+    const nlohmann::json& root,
+    std::vector<CitrusSpatialTemplateState>* templates_out,
+    std::vector<std::string>* available_camera_ids_out,
+    std::string* error_out)
+{
+    if (templates_out == nullptr) {
+        if (error_out) {
+            *error_out = "Null Citrus template list destination.";
+        }
+        return false;
+    }
+    templates_out->clear();
+    if (available_camera_ids_out != nullptr) {
+        available_camera_ids_out->clear();
+    }
+
+    auto append_arena_templates =
+        [&](const nlohmann::json& arena_json, const std::string& arena_name) -> bool {
+            if (!arena_json.is_object() ||
+                !arena_json.contains("camera_calibrations") ||
+                !arena_json.at("camera_calibrations").is_array()) {
+                return true;
+            }
+            for (const auto& camera_json : arena_json.at("camera_calibrations")) {
+                if (!camera_json.is_object()) {
+                    continue;
+                }
+                const std::string camera_id = camera_json.value("camera_id", "");
+                if (!camera_id.empty() && available_camera_ids_out != nullptr) {
+                    available_camera_ids_out->push_back(camera_id);
+                }
+                if (!json_string_equals_ignore_case(arena_json, "experimental_area_shape", "CIRCLE")) {
+                    continue;
+                }
+                CitrusSpatialTemplateState template_state;
+                std::string template_error;
+                if (!build_citrus_single_circle_template_state(
+                        config_path,
+                        arena_json,
+                        arena_name,
+                        camera_json,
+                        &template_state,
+                        &template_error)) {
+                    if (error_out) {
+                        std::ostringstream oss;
+                        oss << "Failed to import Citrus arena " << arena_name;
+                        if (!camera_id.empty()) {
+                            oss << " camera " << camera_id;
+                        }
+                        if (!template_error.empty()) {
+                            oss << ": " << template_error;
+                        }
+                        *error_out = oss.str();
+                    }
+                    return false;
+                }
+                templates_out->push_back(std::move(template_state));
+            }
+            return true;
+        };
+
+    if (root.contains("arenas") && root.at("arenas").is_object()) {
+        for (auto it = root.at("arenas").begin(); it != root.at("arenas").end(); ++it) {
+            if (!append_arena_templates(it.value(), it.key())) {
+                return false;
+            }
+        }
+    } else {
+        const std::string fallback_arena_name = root.value("config_name", config_path.stem().string());
+        if (!append_arena_templates(root, fallback_arena_name)) {
+            return false;
+        }
+    }
+
+    if (available_camera_ids_out != nullptr) {
+        std::sort(available_camera_ids_out->begin(), available_camera_ids_out->end());
+        available_camera_ids_out->erase(
+            std::unique(available_camera_ids_out->begin(), available_camera_ids_out->end()),
+            available_camera_ids_out->end());
+    }
+
+    if (templates_out->empty()) {
+        if (error_out) {
+            std::ostringstream oss;
+            oss << "No supported Citrus single-circle arena templates found in "
+                << config_path.string();
+            if (available_camera_ids_out != nullptr && !available_camera_ids_out->empty()) {
+                oss << ". Available camera_ids: "
+                    << join_strings(*available_camera_ids_out, ", ");
+            }
+            *error_out = oss.str();
+        }
+        return false;
+    }
+    return true;
+}
+
+int find_citrus_template_index_for_camera(
+    const SpatialLayoutUiState& ui_state,
+    const std::string& camera_serial)
+{
+    if (camera_serial.empty()) {
+        return -1;
+    }
+    for (size_t idx = 0; idx < ui_state.citrus_canvas_templates.size(); ++idx) {
+        if (ui_state.citrus_canvas_templates[idx].source_camera_id == camera_serial) {
+            return static_cast<int>(idx);
+        }
+    }
+    return -1;
+}
+
+bool apply_citrus_template_to_spatial_layout(
+    SpatialLayoutUiState* ui_state,
+    const CitrusSpatialTemplateState& template_state,
+    std::string* status_out)
+{
+    if (ui_state == nullptr || !template_state.available) {
+        return false;
+    }
 
     ui_state->citrus_template = template_state;
     ui_state->has_citrus_projected_circle = false;
@@ -961,21 +2539,14 @@ bool import_citrus_single_circle_template(SpatialLayoutUiState* ui_state,
         sanitize_artifact_component(template_state.source_config_name);
     ui_state->layout_artifact.layout.coordinate_space = CoordinateSpace::kLayoutUnits;
     ui_state->layout_artifact.layout.outer_geometry = imported_outer;
-    ui_state->layout_artifact.layout.zones.clear();
-    ArenaLayoutZone zone;
-    zone.zone_id = "z0";
-    zone.has_zone_index = true;
-    zone.zone_index = 0;
-    zone.display_label = "Experimental Area";
-    zone.geometry = imported_outer;
-    ui_state->layout_artifact.layout.zones.push_back(std::move(zone));
+    reset_to_single_experimental_area_zone(ui_state);
     ui_state->layout_artifact.context.canvas_id = template_state.source_canvas_name;
     ui_state->layout_artifact.context.dish_design_id = template_state.source_dish_type_name;
     ui_state->layout_artifact.provenance.source = ArenaLayoutProvenanceSource::kImportedTemplate;
     ui_state->layout_artifact.provenance.ordering_rule = "single_circle_imported_from_citrus";
     ui_state->layout_artifact.provenance.notes =
-        "Imported from Citrus config " + config_path.string() +
-        " for camera " + selected_camera.camera_serial + ".";
+        "Imported from Citrus config " + template_state.source_config_path +
+        " for camera " + template_state.source_camera_id + ".";
     ui_state->selected_zone_index = 0;
 
     ui_state->registration.layout_coordinate_space = ui_state->layout_artifact.layout.coordinate_space;
@@ -984,10 +2555,10 @@ bool import_citrus_single_circle_template(SpatialLayoutUiState* ui_state,
     }
 
     std::ostringstream status;
-    status << "Imported Citrus circle from " << template_state.source_canvas_name
+    status << "Selected Citrus circle from " << template_state.source_canvas_name
            << " / " << template_state.source_config_name
            << " for camera " << template_state.source_camera_id;
-    if (loaded_homography && template_state.has_canvas_to_camera_homography) {
+    if (template_state.has_canvas_to_camera_homography) {
         double preview_rms = 0.0;
         std::string preview_error;
         if (update_citrus_projected_circle_preview(ui_state, &preview_rms, &preview_error)) {
@@ -996,12 +2567,119 @@ bool import_citrus_single_circle_template(SpatialLayoutUiState* ui_state,
         } else {
             status << ". Homography loaded but preview seed failed (" << preview_error << ").";
         }
-    } else if (!homography_error.empty()) {
-        status << ". Homography sidecar issue: " << homography_error;
     } else {
         status << ". No homography sidecar found.";
     }
 
+    if (status_out) {
+        *status_out = status.str();
+    }
+    return true;
+}
+
+bool select_citrus_template_by_index(
+    SpatialLayoutUiState* ui_state,
+    int index,
+    std::string* status_out,
+    std::string* error_out)
+{
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Spatial layout UI state is null.";
+        }
+        return false;
+    }
+    if (index < 0 || index >= static_cast<int>(ui_state->citrus_canvas_templates.size())) {
+        if (error_out) {
+            *error_out = "Citrus canvas template index is out of range.";
+        }
+        return false;
+    }
+    ui_state->citrus_canvas_template_index = index;
+    if (!apply_citrus_template_to_spatial_layout(
+            ui_state,
+            ui_state->citrus_canvas_templates[static_cast<size_t>(index)],
+            status_out)) {
+        if (error_out) {
+            *error_out = "Failed to apply Citrus canvas template.";
+        }
+        return false;
+    }
+    return true;
+}
+
+bool import_citrus_canvas_templates(SpatialLayoutUiState* ui_state,
+                                    const CameraParams& selected_camera,
+                                    const std::filesystem::path& config_path,
+                                    std::string* status_out,
+                                    std::string* error_out)
+{
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Spatial layout UI state is null.";
+        }
+        return false;
+    }
+
+    nlohmann::json root;
+    if (!read_json_file(config_path, &root, error_out)) {
+        return false;
+    }
+    if (!root.is_object()) {
+        if (error_out) {
+            *error_out = "Citrus canvas config root must be a JSON object.";
+        }
+        return false;
+    }
+
+    std::vector<CitrusSpatialTemplateState> templates;
+    std::vector<std::string> available_camera_ids;
+    if (!collect_citrus_single_circle_templates(
+            config_path,
+            root,
+            &templates,
+            &available_camera_ids,
+            error_out)) {
+        return false;
+    }
+
+    ui_state->citrus_canvas_templates = std::move(templates);
+    ui_state->citrus_canvas_config_path = config_path.string();
+    ui_state->citrus_canvas_template_index = -1;
+
+    int selected_index = find_citrus_template_index_for_camera(
+        *ui_state,
+        selected_camera.camera_serial);
+    if (selected_index < 0 && !ui_state->citrus_canvas_templates.empty()) {
+        selected_index = 0;
+    }
+
+    std::string selected_status;
+    std::string selected_error;
+    if (!select_citrus_template_by_index(
+            ui_state,
+            selected_index,
+            &selected_status,
+            &selected_error)) {
+        if (error_out) {
+            *error_out = selected_error;
+        }
+        return false;
+    }
+
+    std::ostringstream status;
+    status << "Loaded Citrus canvas " << config_path.parent_path().filename().string()
+           << " with " << ui_state->citrus_canvas_templates.size()
+           << " supported single-circle arena template(s). "
+           << selected_status;
+    if (ui_state->citrus_template.source_camera_id != selected_camera.camera_serial) {
+        status << " No template matched selected Orange camera "
+               << selected_camera.camera_serial << ".";
+        if (!available_camera_ids.empty()) {
+            status << " Available camera_ids: "
+                   << join_strings(available_camera_ids, ", ") << ".";
+        }
+    }
     if (status_out) {
         *status_out = status.str();
     }
@@ -1610,6 +3288,11 @@ bool capture_single_camera_frame(
     ui_state->captured_camera_serial = camera_params->camera_serial;
     ui_state->captured_source_array_role = "images_full";
     ui_state->captured_capture_mode = "single_camera_direct_still";
+    ui_state->captured_source_frame_count = 1;
+    ui_state->captured_first_local_frame_id = 0;
+    ui_state->captured_last_local_frame_id = 0;
+    ui_state->captured_first_camera_frame_id = 0;
+    ui_state->captured_last_camera_frame_id = 0;
     ui_state->preview_error.clear();
 
     std::ostringstream status;
@@ -1672,6 +3355,11 @@ bool capture_live_stream_preview_texture(
     ui_state->captured_source_array_role =
         camera_select.downsample > 1 ? "images_ds" : "images_full";
     ui_state->captured_capture_mode = "live_stream_preview_snapshot";
+    ui_state->captured_source_frame_count = 1;
+    ui_state->captured_first_local_frame_id = 0;
+    ui_state->captured_last_local_frame_id = 0;
+    ui_state->captured_first_camera_frame_id = 0;
+    ui_state->captured_last_camera_frame_id = 0;
     ui_state->has_capture = true;
     ui_state->preview_error.clear();
     clear_detected_experimental_area_circle(ui_state);
@@ -1733,10 +3421,18 @@ bool apply_full_resolution_stream_snapshot(
     ui_state->captured_rgba = result.rgba;
     ui_state->captured_camera_serial = result.camera_serial;
     ui_state->captured_source_array_role = "images_full";
-    ui_state->captured_capture_mode = "full_resolution_stream_snapshot";
+    ui_state->captured_capture_mode =
+        result.capture_mode.empty() ? "full_resolution_stream_snapshot" : result.capture_mode;
+    ui_state->captured_source_frame_count =
+        std::max<uint32_t>(1u, result.completed_frame_count);
+    ui_state->captured_first_local_frame_id = result.first_local_frame_id;
+    ui_state->captured_last_local_frame_id = result.last_local_frame_id;
+    ui_state->captured_first_camera_frame_id = result.first_camera_frame_id;
+    ui_state->captured_last_camera_frame_id = result.last_camera_frame_id;
     ui_state->has_capture = true;
     ui_state->pending_full_res_snapshot_request_id = 0;
     ui_state->pending_full_res_snapshot_camera_serial.clear();
+    ui_state->pending_full_res_snapshot_target_frame_count = 1;
     ui_state->preview_error.clear();
     clear_detected_experimental_area_circle(ui_state);
 
@@ -1763,6 +3459,13 @@ bool apply_full_resolution_stream_snapshot(
            << " from " << result.camera_serial
            << " frame=" << result.local_frame_id
            << " camera_frame=" << result.camera_frame_id;
+    if (ui_state->captured_source_frame_count > 1) {
+        status << " averaged_frames=" << ui_state->captured_source_frame_count
+               << " local_frame_range=" << ui_state->captured_first_local_frame_id
+               << "-" << ui_state->captured_last_local_frame_id
+               << " camera_frame_range=" << ui_state->captured_first_camera_frame_id
+               << "-" << ui_state->captured_last_camera_frame_id;
+    }
     ui_state->preview_status = status.str();
     return true;
 }
@@ -1902,6 +3605,7 @@ bool save_spatial_layout_artifact(
     SpatialLayoutUiState* ui_state,
     const CameraParams& selected_camera,
     const std::string& artifact_root_dir,
+    const std::string& session_dir,
     std::string* status_out,
     std::string* error_out)
 {
@@ -1980,6 +3684,13 @@ bool save_spatial_layout_artifact(
         !write_json_file(files.manifest_path, manifest_json, error_out)) {
         return false;
     }
+    if (!update_spatial_calibration_session_index(
+            session_dir,
+            artifact_root_dir,
+            manifest_json,
+            error_out)) {
+        return false;
+    }
     if (!update_calibration_artifact_registry(artifact_root_dir, manifest_json, error_out)) {
         return false;
     }
@@ -1987,6 +3698,10 @@ bool save_spatial_layout_artifact(
     ui_state->layout_artifact = std::move(artifact);
     if (status_out) {
         *status_out = "Saved arena layout artifact to " + files.artifact_dir.string();
+        if (!session_dir.empty()) {
+            *status_out += " in calibration session " +
+                           std::filesystem::path(session_dir).filename().generic_string();
+        }
     }
     return true;
 }
@@ -2054,6 +3769,60 @@ bool captured_frame_to_gray8(const SpatialLayoutUiState& ui_state, cv::Mat* imag
     return true;
 }
 
+void apply_captured_frame_provenance_to_capture(
+    const SpatialLayoutUiState& ui_state,
+    orange::calibration::CalibrationImageSetCaptureContext* capture)
+{
+    if (capture == nullptr) {
+        return;
+    }
+    capture->source_frame_count = std::max<uint32_t>(1u, ui_state.captured_source_frame_count);
+    capture->has_source_frame_count = true;
+    if (capture->source_frame_count > 1 ||
+        ui_state.captured_capture_mode == "temporal_mean_stream_frames_v1") {
+        capture->temporal_compositing_method = "temporal_mean_stream_frames_v1";
+    }
+    if (ui_state.captured_first_local_frame_id != 0 ||
+        ui_state.captured_last_local_frame_id != 0) {
+        capture->first_local_frame_id = ui_state.captured_first_local_frame_id;
+        capture->last_local_frame_id = ui_state.captured_last_local_frame_id;
+        capture->has_local_frame_range = true;
+    }
+    if (ui_state.captured_first_camera_frame_id != 0 ||
+        ui_state.captured_last_camera_frame_id != 0) {
+        capture->first_camera_frame_id = ui_state.captured_first_camera_frame_id;
+        capture->last_camera_frame_id = ui_state.captured_last_camera_frame_id;
+        capture->has_camera_frame_range = true;
+    }
+}
+
+void apply_captured_frame_provenance_to_capture(
+    const SpatialLayoutUiState& ui_state,
+    orange::calibration::DishTopRimCaptureContext* capture)
+{
+    if (capture == nullptr) {
+        return;
+    }
+    capture->source_frame_count = std::max<uint32_t>(1u, ui_state.captured_source_frame_count);
+    capture->has_source_frame_count = true;
+    if (capture->source_frame_count > 1 ||
+        ui_state.captured_capture_mode == "temporal_mean_stream_frames_v1") {
+        capture->temporal_compositing_method = "temporal_mean_stream_frames_v1";
+    }
+    if (ui_state.captured_first_local_frame_id != 0 ||
+        ui_state.captured_last_local_frame_id != 0) {
+        capture->first_local_frame_id = ui_state.captured_first_local_frame_id;
+        capture->last_local_frame_id = ui_state.captured_last_local_frame_id;
+        capture->has_local_frame_range = true;
+    }
+    if (ui_state.captured_first_camera_frame_id != 0 ||
+        ui_state.captured_last_camera_frame_id != 0) {
+        capture->first_camera_frame_id = ui_state.captured_first_camera_frame_id;
+        capture->last_camera_frame_id = ui_state.captured_last_camera_frame_id;
+        capture->has_camera_frame_range = true;
+    }
+}
+
 orange::calibration::DishTopRimHoughParams make_top_rim_hough_params(
     const SpatialLayoutUiState& ui_state,
     const orange::calibration::DishTopRimCircle& accepted_circle,
@@ -2094,13 +3863,682 @@ orange::calibration::DishTopRimHoughParams make_top_rim_hough_params(
     return params;
 }
 
-bool save_dish_top_rim_observation_from_spatial_layout(
+struct TopRimObservationSaveJob {
+    std::string artifact_root_dir;
+    std::string session_dir;
+    orange::calibration::DishTopRimObservationRequest request;
+    orange::calibration::DishTopRimHoughParams hough_params;
+    orange::calibration::DishTopRimCircle accepted_circle;
+    cv::Mat source_gray;
+};
+
+struct TopRimObservationSaveResult {
+    bool ok = false;
+    std::string status;
+    std::string error;
+};
+
+TopRimObservationSaveResult run_top_rim_observation_save_job(TopRimObservationSaveJob job)
+{
+    TopRimObservationSaveResult save_result;
+    try {
+        orange::calibration::DishTopRimObservationWriteResult write_result;
+        if (!orange::calibration::write_dish_top_rim_observation_artifact(
+                job.artifact_root_dir,
+                job.request,
+                job.source_gray,
+                job.hough_params,
+                job.accepted_circle,
+                &write_result,
+                &save_result.error)) {
+            save_result.ok = false;
+            if (save_result.error.empty()) {
+                save_result.error = "Top-rim observation save failed.";
+            }
+            return save_result;
+        }
+
+        const orange::calibration::DishTopRimObservationArtifactPaths paths =
+            orange::calibration::make_dish_top_rim_observation_artifact_paths(
+                job.artifact_root_dir,
+                write_result.artifact_id);
+        if (!update_spatial_calibration_session_index(
+                job.session_dir,
+                job.artifact_root_dir,
+                write_result.manifest,
+                &save_result.error)) {
+            save_result.ok = false;
+            return save_result;
+        }
+        save_result.ok = true;
+        save_result.status =
+            "Saved top-rim observation to " + write_result.artifact_dir +
+            ", image-set companion to " + paths.image_set_json_path +
+            " and spatial dish-mask runtime export to " +
+            paths.spatial_dish_mask_runtime_export_path;
+    } catch (const std::exception& ex) {
+        save_result.ok = false;
+        save_result.error = std::string("Top-rim observation save threw: ") + ex.what();
+    } catch (...) {
+        save_result.ok = false;
+        save_result.error = "Top-rim observation save threw an unknown exception.";
+    }
+    return save_result;
+}
+
+class TopRimObservationSaveWorker {
+public:
+    TopRimObservationSaveWorker()
+        : worker_thread_(&TopRimObservationSaveWorker::thread_main, this)
+    {
+    }
+
+    ~TopRimObservationSaveWorker()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_requested_ = true;
+        }
+        cv_.notify_all();
+        if (worker_thread_.joinable()) {
+            worker_thread_.join();
+        }
+    }
+
+    TopRimObservationSaveWorker(const TopRimObservationSaveWorker&) = delete;
+    TopRimObservationSaveWorker& operator=(const TopRimObservationSaveWorker&) = delete;
+
+    bool Submit(TopRimObservationSaveJob job, std::string* error_out)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stop_requested_) {
+            if (error_out) {
+                *error_out = "Top-rim save worker is stopping.";
+            }
+            return false;
+        }
+        if (running_ || queued_job_.has_value()) {
+            if (error_out) {
+                *error_out = "A top-rim observation save is already running.";
+            }
+            return false;
+        }
+        queued_job_ = std::move(job);
+        running_ = true;
+        cv_.notify_one();
+        return true;
+    }
+
+    bool IsBusy() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return running_ || queued_job_.has_value();
+    }
+
+    bool PopCompleted(TopRimObservationSaveResult* result_out)
+    {
+        if (result_out == nullptr) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (completed_results_.empty()) {
+            return false;
+        }
+        *result_out = std::move(completed_results_.front());
+        completed_results_.pop_front();
+        return true;
+    }
+
+private:
+    void thread_main()
+    {
+        for (;;) {
+            std::optional<TopRimObservationSaveJob> job;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] {
+                    return stop_requested_ || queued_job_.has_value();
+                });
+                if (stop_requested_ && !queued_job_.has_value()) {
+                    return;
+                }
+                job = std::move(queued_job_);
+                queued_job_.reset();
+            }
+
+            TopRimObservationSaveResult result =
+                run_top_rim_observation_save_job(std::move(*job));
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                running_ = false;
+                completed_results_.push_back(std::move(result));
+            }
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::thread worker_thread_;
+    bool stop_requested_ = false;
+    bool running_ = false;
+    std::optional<TopRimObservationSaveJob> queued_job_;
+    std::deque<TopRimObservationSaveResult> completed_results_;
+};
+
+TopRimObservationSaveWorker& top_rim_observation_save_worker()
+{
+    static TopRimObservationSaveWorker worker;
+    return worker;
+}
+
+void poll_top_rim_observation_save_worker(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    TopRimObservationSaveResult result;
+    while (top_rim_observation_save_worker().PopCompleted(&result)) {
+        if (result.ok) {
+            ui_state->persistence_status = result.status;
+            ui_state->persistence_error.clear();
+        } else {
+            ui_state->persistence_error =
+                result.error.empty() ? "Top-rim observation save failed." : result.error;
+            ui_state->persistence_status.clear();
+        }
+    }
+}
+
+struct GenericCalibrationImageSetSaveJob {
+    std::string artifact_root_dir;
+    std::string session_dir;
+    std::string image_role;
+    std::string image_description;
+    std::string capture_filename;
+    cv::Mat source_gray;
+    orange::calibration::CalibrationImageSetRequest request;
+};
+
+struct GenericCalibrationImageSetSaveResult {
+    bool ok = false;
+    std::string status;
+    std::string error;
+};
+
+nlohmann::json make_generic_calibration_image_set_manifest(
+    const orange::calibration::CalibrationImageSetRequest& request,
+    const GenericCalibrationImageSetFiles& files,
+    const nlohmann::json& image_set,
+    const std::string& image_set_fingerprint)
+{
+    nlohmann::json available_purposes = nlohmann::json::array();
+    if (image_set.contains("available_purposes") &&
+        image_set["available_purposes"].is_array()) {
+        available_purposes = image_set["available_purposes"];
+    }
+    const int image_count =
+        image_set.contains("images") && image_set["images"].is_array()
+            ? static_cast<int>(image_set["images"].size())
+            : 0;
+    const std::string latest_source_frame =
+        files.source_frame_relative_path.generic_string();
+    return {
+        {"schema_id", kCalibrationManifestSchemaId},
+        {"schema_version", kCalibrationManifestSchemaVersion},
+        {"artifact_id", request.artifact_id},
+        {"artifact_schema_id", orange::calibration::kCalibrationImageSetSchemaId},
+        {"artifact_schema_version", orange::calibration::kCalibrationImageSetSchemaVersion},
+        {"created_utc", image_set.value("created_utc", request.created_utc)},
+        {"updated_utc", request.created_utc},
+        {"producer", "orange_spatial_layout_ui"},
+        {"calibration_ref", {
+            {"artifact_id", request.artifact_id},
+            {"artifact_schema_id", orange::calibration::kCalibrationImageSetSchemaId},
+            {"artifact_schema_version", orange::calibration::kCalibrationImageSetSchemaVersion},
+            {"fingerprint", image_set_fingerprint}
+        }},
+        {"files", {
+            {"image_set_json", files.image_set_path.filename().generic_string()},
+            {"latest_source_frame", latest_source_frame},
+            {"captures_dir", "captures"}
+        }},
+        {"summary", {
+            {"purpose", "camera_arena_calibration_set"},
+            {"target_plane", "multiple"},
+            {"latest_purpose", request.purpose},
+            {"latest_target_plane", request.target_plane},
+            {"available_purposes", available_purposes},
+            {"image_count", image_count},
+            {"coordinate_space", request.coordinate_space},
+            {"camera_serial", request.camera.serial},
+            {"capture_mode", request.capture.capture_mode}
+        }}
+    };
+}
+
+nlohmann::json make_generic_calibration_image_set_image_entry(
+    const orange::calibration::CalibrationImageSetRequest& request,
+    const orange::calibration::CalibrationImageSetImageRef& image)
+{
+    orange::calibration::CalibrationImageSetRequest single_image_request = request;
+    single_image_request.images.clear();
+    single_image_request.images.push_back(image);
+    const nlohmann::json single_image_set =
+        orange::calibration::calibration_image_set_to_json(single_image_request);
+
+    nlohmann::json entry = single_image_set["images"].at(0);
+    entry["purpose"] = request.purpose;
+    entry["target_plane"] = request.target_plane;
+    entry["capture"] = single_image_set.value("capture", nlohmann::json::object());
+    if (!request.projected_pattern.empty()) {
+        entry["projected_pattern"] = request.projected_pattern;
+    }
+    if (!request.scale_target.empty()) {
+        entry["scale_target"] = request.scale_target;
+    }
+    if (!request.operator_notes.empty()) {
+        entry["operator_notes"] = request.operator_notes;
+    }
+    return entry;
+}
+
+nlohmann::json make_empty_aggregate_calibration_image_set(
+    const orange::calibration::CalibrationImageSetRequest& request)
+{
+    orange::calibration::CalibrationImageSetRequest aggregate_request = request;
+    aggregate_request.purpose = "camera_arena_calibration_set";
+    aggregate_request.target_plane = "multiple";
+    aggregate_request.images.clear();
+    aggregate_request.projected_pattern = nlohmann::json::object();
+    aggregate_request.scale_target = nlohmann::json::object();
+    aggregate_request.observations = nlohmann::json::object();
+    aggregate_request.review_artifacts = nlohmann::json::object();
+    aggregate_request.operator_notes.clear();
+
+    nlohmann::json image_set =
+        orange::calibration::calibration_image_set_to_json(aggregate_request);
+    image_set["images"] = nlohmann::json::array();
+    image_set["description"] =
+        "Session-scoped camera/arena calibration image set assembled by Orange Spatial Layout.";
+    return image_set;
+}
+
+void refresh_aggregate_calibration_image_set_summary(nlohmann::json* image_set)
+{
+    if (image_set == nullptr) {
+        return;
+    }
+    if (!image_set->contains("images") || !(*image_set)["images"].is_array()) {
+        (*image_set)["images"] = nlohmann::json::array();
+    }
+
+    nlohmann::json available_purposes = nlohmann::json::array();
+    for (const auto& image : (*image_set)["images"]) {
+        const std::string purpose = image.value("purpose", "");
+        if (purpose.empty()) {
+            continue;
+        }
+        bool already_present = false;
+        for (const auto& existing : available_purposes) {
+            if (existing.is_string() && existing.get<std::string>() == purpose) {
+                already_present = true;
+                break;
+            }
+        }
+        if (!already_present) {
+            available_purposes.push_back(purpose);
+        }
+    }
+
+    (*image_set)["purpose"] = "camera_arena_calibration_set";
+    (*image_set)["target_plane"] = "multiple";
+    (*image_set)["available_purposes"] = available_purposes;
+    (*image_set)["image_count"] = (*image_set)["images"].size();
+}
+
+GenericCalibrationImageSetSaveResult run_generic_calibration_image_set_save_job(
+    GenericCalibrationImageSetSaveJob job)
+{
+    GenericCalibrationImageSetSaveResult result;
+    try {
+        const GenericCalibrationImageSetFiles files =
+            make_generic_calibration_image_set_files(
+                job.artifact_root_dir,
+                job.request.artifact_id,
+                job.capture_filename);
+        if (!write_image_file(files.source_frame_path, job.source_gray, &result.error)) {
+            result.ok = false;
+            return result;
+        }
+
+        const std::string source_checksum =
+            compute_file_fingerprint(files.source_frame_path, &result.error);
+        if (source_checksum.empty()) {
+            result.ok = false;
+            return result;
+        }
+
+        job.request.images.clear();
+        const orange::calibration::CalibrationImageSetImageRef image_ref{
+            job.image_role.empty() ? std::string("source") : job.image_role,
+            files.source_frame_relative_path.generic_string(),
+            kCalibrationFingerprintAlgorithm,
+            source_checksum,
+            "camera_native_pixels",
+            orange::calibration::CalibrationImageSetShape{
+                job.request.camera.image_shape.height,
+                job.request.camera.image_shape.width},
+            job.image_description};
+
+        nlohmann::json image_set = nlohmann::json::object();
+        if (std::filesystem::exists(files.image_set_path)) {
+            if (!read_json_file(files.image_set_path, &image_set, &result.error)) {
+                result.ok = false;
+                return result;
+            }
+            if (!image_set.is_object()) {
+                result.ok = false;
+                result.error = "Existing image_set.json is not a JSON object: " +
+                               files.image_set_path.generic_string();
+                return result;
+            }
+        } else {
+            image_set = make_empty_aggregate_calibration_image_set(job.request);
+        }
+        if (!image_set.contains("created_utc") ||
+            !image_set["created_utc"].is_string() ||
+            image_set["created_utc"].get<std::string>().empty()) {
+            image_set["created_utc"] = job.request.created_utc;
+        }
+        image_set["schema_id"] = orange::calibration::kCalibrationImageSetSchemaId;
+        image_set["schema_version"] = orange::calibration::kCalibrationImageSetSchemaVersion;
+        image_set["artifact_id"] = job.request.artifact_id;
+        image_set["coordinate_space"] = job.request.coordinate_space;
+        image_set.erase("projected_pattern");
+        image_set.erase("scale_target");
+        image_set.erase("observations");
+        image_set.erase("operator_notes");
+        image_set["updated_utc"] = job.request.created_utc;
+        image_set["camera"] =
+            orange::calibration::calibration_image_set_to_json(job.request).at("camera");
+        if (!job.request.rig_context.empty()) {
+            image_set["rig_context"] = job.request.rig_context;
+        }
+        image_set["capture"] =
+            orange::calibration::calibration_image_set_to_json(job.request).at("capture");
+        image_set["latest_capture"] = {
+            {"purpose", job.request.purpose},
+            {"target_plane", job.request.target_plane},
+            {"path", files.source_frame_relative_path.generic_string()},
+            {"timestamp_utc", job.request.capture.timestamp_utc}
+        };
+        if (!image_set.contains("images") || !image_set["images"].is_array()) {
+            image_set["images"] = nlohmann::json::array();
+        }
+        image_set["images"].push_back(
+            make_generic_calibration_image_set_image_entry(job.request, image_ref));
+        refresh_aggregate_calibration_image_set_summary(&image_set);
+
+        if (!write_json_file(files.image_set_path, image_set, &result.error)) {
+            result.ok = false;
+            return result;
+        }
+
+        const std::string image_set_fingerprint =
+            compute_json_fingerprint(image_set);
+        const nlohmann::json manifest =
+            make_generic_calibration_image_set_manifest(
+                job.request,
+                files,
+                image_set,
+                image_set_fingerprint);
+        if (!write_json_file(files.manifest_path, manifest, &result.error)) {
+            result.ok = false;
+            return result;
+        }
+        if (!update_spatial_calibration_session_index(
+                job.session_dir,
+                job.artifact_root_dir,
+                manifest,
+                &result.error)) {
+            result.ok = false;
+            return result;
+        }
+        if (!update_calibration_artifact_registry(job.artifact_root_dir, manifest, &result.error)) {
+            result.ok = false;
+            return result;
+        }
+
+        result.ok = true;
+        result.status =
+            "Saved " + job.request.purpose + " capture to " +
+            files.source_frame_path.generic_string() +
+            " and updated image_set.json (" +
+            std::to_string(image_set.value("image_count", 0)) + " images).";
+    } catch (const std::exception& ex) {
+        result.ok = false;
+        result.error = std::string("Calibration image-set save threw: ") + ex.what();
+    } catch (...) {
+        result.ok = false;
+        result.error = "Calibration image-set save threw an unknown exception.";
+    }
+    return result;
+}
+
+class GenericCalibrationImageSetSaveWorker {
+public:
+    GenericCalibrationImageSetSaveWorker()
+        : worker_thread_(&GenericCalibrationImageSetSaveWorker::thread_main, this)
+    {
+    }
+
+    ~GenericCalibrationImageSetSaveWorker()
+    {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stop_requested_ = true;
+        }
+        cv_.notify_all();
+        if (worker_thread_.joinable()) {
+            worker_thread_.join();
+        }
+    }
+
+    GenericCalibrationImageSetSaveWorker(const GenericCalibrationImageSetSaveWorker&) = delete;
+    GenericCalibrationImageSetSaveWorker& operator=(const GenericCalibrationImageSetSaveWorker&) = delete;
+
+    bool Submit(GenericCalibrationImageSetSaveJob job, std::string* error_out)
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stop_requested_) {
+            if (error_out) {
+                *error_out = "Calibration image-set save worker is stopping.";
+            }
+            return false;
+        }
+        if (running_ || queued_job_.has_value()) {
+            if (error_out) {
+                *error_out = "A calibration image-set save is already running.";
+            }
+            return false;
+        }
+        queued_job_ = std::move(job);
+        running_ = true;
+        cv_.notify_one();
+        return true;
+    }
+
+    bool IsBusy() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return running_ || queued_job_.has_value();
+    }
+
+    bool PopCompleted(GenericCalibrationImageSetSaveResult* result_out)
+    {
+        if (result_out == nullptr) {
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (completed_results_.empty()) {
+            return false;
+        }
+        *result_out = std::move(completed_results_.front());
+        completed_results_.pop_front();
+        return true;
+    }
+
+private:
+    void thread_main()
+    {
+        for (;;) {
+            std::optional<GenericCalibrationImageSetSaveJob> job;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] {
+                    return stop_requested_ || queued_job_.has_value();
+                });
+                if (stop_requested_ && !queued_job_.has_value()) {
+                    return;
+                }
+                job = std::move(queued_job_);
+                queued_job_.reset();
+            }
+
+            GenericCalibrationImageSetSaveResult result =
+                run_generic_calibration_image_set_save_job(std::move(*job));
+
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                running_ = false;
+                completed_results_.push_back(std::move(result));
+            }
+        }
+    }
+
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::thread worker_thread_;
+    bool stop_requested_ = false;
+    bool running_ = false;
+    std::optional<GenericCalibrationImageSetSaveJob> queued_job_;
+    std::deque<GenericCalibrationImageSetSaveResult> completed_results_;
+};
+
+GenericCalibrationImageSetSaveWorker& generic_calibration_image_set_save_worker()
+{
+    static GenericCalibrationImageSetSaveWorker worker;
+    return worker;
+}
+
+void poll_generic_calibration_image_set_save_worker(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    GenericCalibrationImageSetSaveResult result;
+    while (generic_calibration_image_set_save_worker().PopCompleted(&result)) {
+        if (result.ok) {
+            ui_state->persistence_status = result.status;
+            ui_state->persistence_error.clear();
+        } else {
+            ui_state->persistence_error =
+                result.error.empty() ? "Calibration image-set save failed." : result.error;
+            ui_state->persistence_status.clear();
+        }
+    }
+}
+
+void apply_calibration_image_set_purpose_defaults(
+    SpatialLayoutUiState* ui_state,
+    const std::string& purpose)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_image_set_purpose = purpose;
+    if (purpose == "homography_grid") {
+        ui_state->calibration_filter_state = kHoyaR72FilterRemoved;
+        ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+        ui_state->calibration_image_set_target_plane = "projected_surface";
+        ui_state->calibration_image_set_image_role = "grid_on";
+        ui_state->calibration_image_set_projected_pattern_id = "citrus_homography_grid_v1";
+        ui_state->calibration_image_set_projected_pattern_type = "dot_grid";
+        ui_state->calibration_light_handling = "suppress_mapped_strobe";
+        apply_illumination_preset(ui_state, "visible_projector_broadband");
+        ui_state->calibration_projector_state = "homography_grid_on";
+        ui_state->calibration_projector_visible_to_camera = true;
+    } else if (purpose == "arena_projection") {
+        ui_state->calibration_filter_state = kHoyaR72FilterRemoved;
+        ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+        ui_state->calibration_image_set_target_plane = "projected_surface";
+        ui_state->calibration_image_set_image_role = "projected_arena";
+        ui_state->calibration_image_set_projected_pattern_id = "citrus_arena_projection";
+        ui_state->calibration_image_set_projected_pattern_type = "arena_fill";
+        ui_state->calibration_light_handling = "suppress_mapped_strobe";
+        apply_illumination_preset(ui_state, "visible_projector_broadband");
+        ui_state->calibration_projector_state = "normal_stimulus_active";
+        ui_state->calibration_projector_visible_to_camera = true;
+    } else if (purpose == "scale_image") {
+        ui_state->calibration_filter_state = kHoyaR72FilterInstalled;
+        ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+        ui_state->calibration_image_set_target_plane = "estimated_fish_plane";
+        ui_state->calibration_image_set_image_role = "scale_target";
+        ui_state->calibration_light_handling = "keep_or_restore_mapped_pulse";
+        apply_illumination_preset(ui_state, "custom_ttl_nir_strobe_855nm");
+        ui_state->calibration_projector_state = "off";
+        ui_state->calibration_projector_visible_to_camera = false;
+    } else if (purpose == "crosshair_alignment") {
+        ui_state->calibration_filter_state = kHoyaR72FilterRemoved;
+        ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+        ui_state->calibration_image_set_target_plane = "estimated_fish_plane";
+        ui_state->calibration_image_set_image_role = "crosshair_on";
+        ui_state->calibration_image_set_projected_pattern_id = "citrus_crosshair_alignment";
+        ui_state->calibration_image_set_projected_pattern_type = "crosshair";
+        ui_state->calibration_light_handling = "suppress_mapped_strobe";
+        apply_illumination_preset(ui_state, "visible_projector_broadband");
+        ui_state->calibration_projector_state = "crosshair_on";
+        ui_state->calibration_projector_visible_to_camera = true;
+    }
+}
+
+void apply_calibration_workflow_tab_defaults(SpatialLayoutUiState* ui_state, const int tab)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    if (tab == 0) {
+        if (ui_state->calibration_image_set_purpose != "arena_projection" &&
+            ui_state->calibration_image_set_purpose != "homography_grid") {
+            apply_calibration_image_set_purpose_defaults(ui_state, "homography_grid");
+        }
+    } else if (tab == 1) {
+        if (ui_state->calibration_image_set_purpose != "scale_image" &&
+            ui_state->calibration_image_set_purpose != "crosshair_alignment") {
+            apply_calibration_image_set_purpose_defaults(ui_state, "scale_image");
+        }
+    } else if (tab == 2) {
+        ui_state->calibration_light_handling = "keep_or_restore_mapped_pulse";
+        apply_illumination_preset(ui_state, "custom_ttl_nir_strobe_855nm");
+        ui_state->calibration_projector_state = "off";
+        ui_state->calibration_projector_visible_to_camera = false;
+    }
+}
+
+bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     SpatialLayoutUiState* ui_state,
     const CameraParams& selected_camera,
     const std::string& artifact_root_dir,
-    std::string* status_out,
+    TopRimObservationSaveJob* job_out,
     std::string* error_out)
 {
+    if (job_out == nullptr) {
+        if (error_out) {
+            *error_out = "Top-rim save job destination is null.";
+        }
+        return false;
+    }
     if (ui_state == nullptr) {
         if (error_out) {
             *error_out = "Spatial layout UI state is null.";
@@ -2146,8 +4584,13 @@ bool save_dish_top_rim_observation_from_spatial_layout(
         return false;
     }
 
+    TopRimObservationSaveJob job;
+    job.artifact_root_dir = artifact_root_dir;
+    job.accepted_circle = accepted_circle;
+    job.source_gray = std::move(source_gray);
+
     const std::string timestamp = get_current_utc_timestamp();
-    orange::calibration::DishTopRimObservationRequest request;
+    auto& request = job.request;
     request.artifact_id =
         orange::calibration::build_dish_top_rim_observation_artifact_id(
             selected_camera.camera_serial,
@@ -2164,13 +4607,37 @@ bool save_dish_top_rim_observation_from_spatial_layout(
     request.capture.capture_mode = ui_state->captured_capture_mode.empty()
                                        ? "session_local_operator_still"
                                        : ui_state->captured_capture_mode;
+    apply_captured_frame_provenance_to_capture(*ui_state, &request.capture);
     const auto metadata_or_unknown = [](const std::string& value) {
         return value.empty() ? std::string("unknown") : value;
     };
     request.capture.filter_state = metadata_or_unknown(ui_state->calibration_filter_state);
     request.capture.runtime_filter_state =
         metadata_or_unknown(ui_state->calibration_runtime_filter_state);
+    request.capture.light_handling = metadata_or_unknown(ui_state->calibration_light_handling);
     request.capture.light_state = metadata_or_unknown(ui_state->calibration_light_state);
+    request.capture.illumination_spectrum =
+        metadata_or_unknown(ui_state->calibration_illumination_spectrum);
+    request.capture.illumination_source =
+        metadata_or_unknown(ui_state->calibration_illumination_source);
+    request.capture.illumination_center_wavelength_nm =
+        ui_state->calibration_illumination_center_wavelength_nm;
+    request.capture.has_illumination_center_wavelength_nm =
+        ui_state->calibration_has_illumination_center_wavelength_nm;
+    request.capture.illumination_min_wavelength_nm =
+        ui_state->calibration_illumination_min_wavelength_nm;
+    request.capture.has_illumination_min_wavelength_nm =
+        ui_state->calibration_has_illumination_min_wavelength_nm;
+    request.capture.illumination_max_wavelength_nm =
+        ui_state->calibration_illumination_max_wavelength_nm;
+    request.capture.has_illumination_max_wavelength_nm =
+        ui_state->calibration_has_illumination_max_wavelength_nm;
+    request.capture.illumination_bandwidth_fwhm_nm =
+        ui_state->calibration_illumination_bandwidth_fwhm_nm;
+    request.capture.has_illumination_bandwidth_fwhm_nm =
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm;
+    request.capture.illumination_wavelength_confidence =
+        metadata_or_unknown(ui_state->calibration_illumination_wavelength_confidence);
     request.capture.projector_state = metadata_or_unknown(ui_state->calibration_projector_state);
     request.capture.projector_visible_to_camera =
         ui_state->calibration_projector_visible_to_camera;
@@ -2219,36 +4686,201 @@ bool save_dish_top_rim_observation_from_spatial_layout(
         request.image_set_rig_context = rig_context;
     }
 
-    const orange::calibration::DishTopRimHoughParams hough_params =
-        make_top_rim_hough_params(
-            *ui_state,
-            accepted_circle,
-            ui_state->captured_texture_width,
-            ui_state->captured_texture_height);
+    job.hough_params = make_top_rim_hough_params(
+        *ui_state,
+        accepted_circle,
+        ui_state->captured_texture_width,
+        ui_state->captured_texture_height);
 
-    orange::calibration::DishTopRimObservationWriteResult result;
-    if (!orange::calibration::write_dish_top_rim_observation_artifact(
-            artifact_root_dir,
-            request,
-            source_gray,
-            hough_params,
-            accepted_circle,
-            &result,
-            error_out)) {
+    *job_out = std::move(job);
+    return true;
+}
+
+bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams& selected_camera,
+    const std::string& artifact_root_dir,
+    GenericCalibrationImageSetSaveJob* job_out,
+    std::string* error_out)
+{
+    if (job_out == nullptr) {
+        if (error_out) {
+            *error_out = "Calibration image-set save job destination is null.";
+        }
+        return false;
+    }
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Spatial layout UI state is null.";
+        }
+        return false;
+    }
+    if (artifact_root_dir.empty()) {
+        if (error_out) {
+            *error_out = "Calibration artifact root directory is empty.";
+        }
+        return false;
+    }
+    const std::string source_array_role =
+        ui_state->captured_source_array_role.empty()
+            ? "images_full"
+            : ui_state->captured_source_array_role;
+    if (source_array_role != "images_full") {
+        if (error_out) {
+            *error_out =
+                "Calibration image sets must be saved in full-resolution camera coordinates. "
+                "Use Capture Full-Resolution Stream Snapshot before saving this artifact.";
+        }
         return false;
     }
 
-    const orange::calibration::DishTopRimObservationArtifactPaths paths =
-        orange::calibration::make_dish_top_rim_observation_artifact_paths(
-            artifact_root_dir,
-            result.artifact_id);
-    if (status_out) {
-        *status_out =
-            "Saved top-rim observation to " + result.artifact_dir +
-            ", image-set companion to " + paths.image_set_json_path +
-            " and spatial dish-mask runtime export to " +
-            paths.spatial_dish_mask_runtime_export_path;
+    cv::Mat source_gray;
+    if (!captured_frame_to_gray8(*ui_state, &source_gray, error_out)) {
+        return false;
     }
+
+    const auto metadata_or_unknown = [](const std::string& value) {
+        return value.empty() ? std::string("unknown") : value;
+    };
+
+    const std::string timestamp = get_current_utc_timestamp();
+    GenericCalibrationImageSetSaveJob job;
+    job.artifact_root_dir = artifact_root_dir;
+    job.image_role =
+        ui_state->calibration_image_set_image_role.empty()
+            ? "source"
+            : ui_state->calibration_image_set_image_role;
+    job.image_description =
+        "full-resolution source frame for " +
+        metadata_or_unknown(ui_state->calibration_image_set_purpose);
+    job.capture_filename = build_calibration_capture_filename(
+        ui_state->calibration_image_set_purpose,
+        timestamp);
+    job.source_gray = std::move(source_gray);
+
+    auto& request = job.request;
+    request.artifact_id =
+        build_camera_arena_calibration_image_set_artifact_id(ui_state, selected_camera);
+    request.created_utc = timestamp;
+    request.purpose = metadata_or_unknown(ui_state->calibration_image_set_purpose);
+    request.target_plane = metadata_or_unknown(ui_state->calibration_image_set_target_plane);
+    request.coordinate_space = "camera_native_pixels";
+    request.camera.serial = selected_camera.camera_serial;
+    request.camera.name = selected_camera.camera_name;
+    request.camera.image_shape.height = ui_state->captured_texture_height;
+    request.camera.image_shape.width = ui_state->captured_texture_width;
+    request.camera.pixel_format = selected_camera.pixel_format.empty()
+                                      ? "captured_rgba_converted_to_gray8"
+                                      : selected_camera.pixel_format;
+    request.camera.configured_height = selected_camera.height;
+    request.camera.configured_width = selected_camera.width;
+
+    request.capture.operation_id =
+        "spatial_layout_image_set_" + request.artifact_id +
+        "_" + sanitize_artifact_component(request.purpose) +
+        "_" + sanitize_artifact_component(timestamp);
+    request.capture.timestamp_utc = timestamp;
+    request.capture.capture_mode = ui_state->captured_capture_mode.empty()
+                                       ? "session_local_operator_still"
+                                       : ui_state->captured_capture_mode;
+    apply_captured_frame_provenance_to_capture(*ui_state, &request.capture);
+    request.capture.exposure_us = static_cast<double>(selected_camera.exposure);
+    request.capture.has_exposure_us = true;
+    request.capture.frame_rate_hz = static_cast<double>(selected_camera.frame_rate);
+    request.capture.has_frame_rate_hz = true;
+    request.capture.filter_state = metadata_or_unknown(ui_state->calibration_filter_state);
+    request.capture.runtime_filter_state =
+        metadata_or_unknown(ui_state->calibration_runtime_filter_state);
+    request.capture.light_handling = metadata_or_unknown(ui_state->calibration_light_handling);
+    request.capture.light_state = metadata_or_unknown(ui_state->calibration_light_state);
+    request.capture.illumination_spectrum =
+        metadata_or_unknown(ui_state->calibration_illumination_spectrum);
+    request.capture.illumination_source =
+        metadata_or_unknown(ui_state->calibration_illumination_source);
+    request.capture.illumination_center_wavelength_nm =
+        ui_state->calibration_illumination_center_wavelength_nm;
+    request.capture.has_illumination_center_wavelength_nm =
+        ui_state->calibration_has_illumination_center_wavelength_nm;
+    request.capture.illumination_min_wavelength_nm =
+        ui_state->calibration_illumination_min_wavelength_nm;
+    request.capture.has_illumination_min_wavelength_nm =
+        ui_state->calibration_has_illumination_min_wavelength_nm;
+    request.capture.illumination_max_wavelength_nm =
+        ui_state->calibration_illumination_max_wavelength_nm;
+    request.capture.has_illumination_max_wavelength_nm =
+        ui_state->calibration_has_illumination_max_wavelength_nm;
+    request.capture.illumination_bandwidth_fwhm_nm =
+        ui_state->calibration_illumination_bandwidth_fwhm_nm;
+    request.capture.has_illumination_bandwidth_fwhm_nm =
+        ui_state->calibration_has_illumination_bandwidth_fwhm_nm;
+    request.capture.illumination_wavelength_confidence =
+        metadata_or_unknown(ui_state->calibration_illumination_wavelength_confidence);
+    request.capture.projector_state = metadata_or_unknown(ui_state->calibration_projector_state);
+    request.capture.projector_visible_to_camera =
+        ui_state->calibration_projector_visible_to_camera;
+    request.capture.has_projector_visible_to_camera = true;
+    request.capture.requires_camera_mount_unchanged = true;
+    request.capture.has_requires_camera_mount_unchanged = true;
+    request.capture.requires_filter_reinstalled_repeatably =
+        ui_state->calibration_requires_filter_reinstalled_repeatably;
+    request.capture.has_requires_filter_reinstalled_repeatably = true;
+
+    if (ui_state->citrus_template.available) {
+        if (!ui_state->citrus_template.source_rig_name.empty()) {
+            request.rig_context["rig_id"] = ui_state->citrus_template.source_rig_name;
+        }
+        if (!ui_state->citrus_template.source_canvas_name.empty()) {
+            request.rig_context["canvas_id"] = ui_state->citrus_template.source_canvas_name;
+        }
+        if (!ui_state->citrus_template.source_arena_name.empty()) {
+            request.rig_context["arena_id"] = ui_state->citrus_template.source_arena_name;
+        }
+        if (!ui_state->citrus_template.source_camera_id.empty()) {
+            request.rig_context["camera_id"] = ui_state->citrus_template.source_camera_id;
+        }
+        if (!ui_state->citrus_template.source_config_path.empty() ||
+            !ui_state->citrus_template.source_config_name.empty()) {
+            request.rig_context["citrus_config_ref"] = {
+                {"source", "spatial_layout_import"},
+                {"path", ui_state->citrus_template.source_config_path},
+                {"config_name", ui_state->citrus_template.source_config_name}
+            };
+        }
+        if (ui_state->citrus_template.has_camera_to_canvas_homography) {
+            request.rig_context["citrus_homography_ref"] = {
+                {"available", true},
+                {"source", "citrus_homography_sidecar"},
+                {"direction", "camera_view_px_to_final_display_canvas_px"}
+            };
+        }
+    }
+
+    if (request.purpose == "homography_grid" || request.purpose == "crosshair_alignment") {
+        request.projected_pattern = {
+            {"pattern_id", metadata_or_unknown(ui_state->calibration_image_set_projected_pattern_id)},
+            {"type", metadata_or_unknown(ui_state->calibration_image_set_projected_pattern_type)},
+            {"source", "operator_entered"},
+            {"target_plane", request.target_plane}
+        };
+    }
+    if (request.purpose == "scale_image") {
+        request.scale_target = {
+            {"target_type", metadata_or_unknown(ui_state->calibration_image_set_scale_target_type)},
+            {"source", "operator_entered"},
+            {"target_plane", request.target_plane}
+        };
+    }
+    request.citrus_preview = {
+        {"available", false},
+        {"diagnostic_only", true},
+        {"authority", "citrus_recomputes_before_acceptance"}
+    };
+    request.operator_notes =
+        ui_state->calibration_image_set_notes.empty()
+            ? ui_state->calibration_operator_notes
+            : ui_state->calibration_image_set_notes;
+
+    *job_out = std::move(job);
     return true;
 }
 
@@ -3035,11 +5667,18 @@ void render_zone_editor(SpatialLayoutUiState* ui_state)
 
     if (ui_state->layout_artifact.layout.zones.empty()) {
         ImGui::TextDisabled("No zones yet.");
-        if (ImGui::Button("Add zone")) {
-            ui_state->layout_artifact.layout.zones.push_back(
-                make_default_zone(ui_state->layout_artifact.layout.outer_geometry, 0));
-            ui_state->selected_zone_index = 0;
+        if (ImGui::Button("Use experimental area as single zone")) {
+            reset_to_single_experimental_area_zone(ui_state);
         }
+        return;
+    }
+
+    sync_single_experimental_area_zone(ui_state);
+    const bool single_experimental_area_zone = has_single_experimental_area_zone(*ui_state);
+    if (single_experimental_area_zone) {
+        ImGui::TextDisabled("Single-zone mode: zone 0 mirrors the experimental area.");
+    } else if (ImGui::Button("Reset to single experimental-area zone")) {
+        reset_to_single_experimental_area_zone(ui_state);
         return;
     }
 
@@ -3070,6 +5709,7 @@ void render_zone_editor(SpatialLayoutUiState* ui_state)
 
     ArenaLayoutZone& zone =
         ui_state->layout_artifact.layout.zones[static_cast<size_t>(ui_state->selected_zone_index)];
+    ImGui::BeginDisabled(single_experimental_area_zone);
     ImGui::InputText("Zone ID", &zone.zone_id);
     ImGui::Checkbox("Has zone index", &zone.has_zone_index);
     if (zone.has_zone_index) {
@@ -3078,6 +5718,7 @@ void render_zone_editor(SpatialLayoutUiState* ui_state)
     }
     ImGui::InputText("Display label", &zone.display_label);
     render_layout_geometry_editor("Zone", &zone.geometry);
+    ImGui::EndDisabled();
 
     if (ImGui::Button("Add zone")) {
         const int next_index = static_cast<int>(ui_state->layout_artifact.layout.zones.size());
@@ -3086,11 +5727,13 @@ void render_zone_editor(SpatialLayoutUiState* ui_state)
         ui_state->selected_zone_index = next_index;
     }
     ImGui::SameLine();
+    ImGui::BeginDisabled(single_experimental_area_zone);
     if (ImGui::Button("Remove zone") && !ui_state->layout_artifact.layout.zones.empty()) {
         ui_state->layout_artifact.layout.zones.erase(
             ui_state->layout_artifact.layout.zones.begin() + ui_state->selected_zone_index);
         ui_state->selected_zone_index = std::max(0, ui_state->selected_zone_index - 1);
     }
+    ImGui::EndDisabled();
 }
 
 } // namespace
@@ -3110,8 +5753,14 @@ void clear_spatial_layout_texture(SpatialLayoutUiState* ui_state)
     ui_state->captured_camera_serial.clear();
     ui_state->captured_source_array_role = "images_full";
     ui_state->captured_capture_mode = "single_camera_direct_still";
+    ui_state->captured_source_frame_count = 1;
+    ui_state->captured_first_local_frame_id = 0;
+    ui_state->captured_last_local_frame_id = 0;
+    ui_state->captured_first_camera_frame_id = 0;
+    ui_state->captured_last_camera_frame_id = 0;
     ui_state->pending_full_res_snapshot_request_id = 0;
     ui_state->pending_full_res_snapshot_camera_serial.clear();
+    ui_state->pending_full_res_snapshot_target_frame_count = 1;
     ui_state->captured_canvas_view.fit_requested = true;
     ui_state->captured_canvas_view.last_image_width = 0;
     ui_state->captured_canvas_view.last_image_height = 0;
@@ -3144,6 +5793,9 @@ void render_spatial_layout_window(
         ImGui::End();
         return;
     }
+
+    poll_top_rim_observation_save_worker(ui_state);
+    poll_generic_calibration_image_set_save_worker(ui_state);
 
     if (num_cameras <= 0 ||
         cameras_params == nullptr ||
@@ -3181,6 +5833,26 @@ void render_spatial_layout_window(
     }
 
     CameraParams& selected_camera = cameras_params[ui_state->selected_camera];
+    if (!ui_state->citrus_canvas_templates.empty()) {
+        const int matching_citrus_index =
+            find_citrus_template_index_for_camera(*ui_state, selected_camera.camera_serial);
+        if (matching_citrus_index >= 0 &&
+            matching_citrus_index != ui_state->citrus_canvas_template_index) {
+            std::string status;
+            std::string error;
+            if (select_citrus_template_by_index(
+                    ui_state,
+                    matching_citrus_index,
+                    &status,
+                    &error)) {
+                ui_state->citrus_import_status =
+                    status + " Auto-selected from loaded Citrus canvas for selected Orange camera.";
+                ui_state->citrus_import_error.clear();
+            } else {
+                ui_state->citrus_import_error = error;
+            }
+        }
+    }
     SpatialSnapshotWorker* selected_snapshot_worker =
         spatial_snapshot_workers ? spatial_snapshot_workers[ui_state->selected_camera] : nullptr;
     if (selected_snapshot_worker) {
@@ -3193,18 +5865,34 @@ void render_spatial_layout_window(
                     &snapshot_error)) {
                 ui_state->pending_full_res_snapshot_request_id = 0;
                 ui_state->pending_full_res_snapshot_camera_serial.clear();
+                ui_state->pending_full_res_snapshot_target_frame_count = 1;
                 ui_state->preview_error = snapshot_error;
                 ui_state->preview_status = "Full-resolution stream snapshot failed.";
             }
         }
     }
-    ImGui::Text("Current settings: focus=%u iris=%u exposure=%u gain=%u size=%ux%u",
+    ImGui::Text("Current settings: focus=%u iris=%u exposure=%u frame_rate=%u gain=%u size=%ux%u",
                 selected_camera.focus,
                 selected_camera.iris,
                 selected_camera.exposure,
+                selected_camera.frame_rate,
                 selected_camera.gain,
                 selected_camera.width,
                 selected_camera.height);
+
+    const ImGuiTableFlags layout_table_flags =
+        ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_BordersInnerV |
+        ImGuiTableFlags_SizingStretchProp;
+    if (!ImGui::BeginTable("SpatialLayoutPanels", 2, layout_table_flags, ImGui::GetContentRegionAvail())) {
+        ImGui::End();
+        return;
+    }
+    ImGui::TableSetupColumn("Controls", ImGuiTableColumnFlags_WidthStretch, 0.46f);
+    ImGui::TableSetupColumn("Fit Preview", ImGuiTableColumnFlags_WidthStretch, 0.54f);
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::BeginChild("SpatialLayoutControlsPanel", ImVec2(0.0f, 0.0f), false);
 
     const bool can_capture =
         !camera_control->subscribe &&
@@ -3278,10 +5966,49 @@ void render_spatial_layout_window(
         } else {
             ui_state->pending_full_res_snapshot_request_id = request_id;
             ui_state->pending_full_res_snapshot_camera_serial = selected_camera.camera_serial;
+            ui_state->pending_full_res_snapshot_target_frame_count = 1;
             ui_state->preview_error.clear();
             ui_state->preview_status =
                 "Waiting for full-resolution stream snapshot from " +
                 selected_camera.camera_serial + ".";
+        }
+    }
+    ImGui::EndDisabled();
+    ui_state->calibration_average_frame_count =
+        std::clamp(ui_state->calibration_average_frame_count, 2, 256);
+    ImGui::SetNextItemWidth(120.0f);
+    ImGui::InputInt("Average frames", &ui_state->calibration_average_frame_count, 1, 10);
+    ui_state->calibration_average_frame_count =
+        std::clamp(ui_state->calibration_average_frame_count, 2, 256);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_capture_full_resolution_stream_snapshot);
+    if (ImGui::Button("Capture Averaged Full-Resolution Snapshot")) {
+        std::string request_error;
+        uint64_t request_id = 0;
+        std::ostringstream operation_id;
+        operation_id << "spatial_layout_avg_full_res_"
+                     << selected_camera.camera_serial
+                     << "_n" << ui_state->calibration_average_frame_count;
+        if (!selected_snapshot_worker ||
+            !selected_snapshot_worker->RequestSnapshot(
+                operation_id.str(),
+                &request_id,
+                &request_error,
+                static_cast<uint32_t>(ui_state->calibration_average_frame_count))) {
+            ui_state->preview_error = request_error.empty()
+                                          ? "Failed to request averaged full-resolution stream snapshot."
+                                          : request_error;
+            ui_state->preview_status = "Averaged full-resolution stream snapshot request failed.";
+        } else {
+            ui_state->pending_full_res_snapshot_request_id = request_id;
+            ui_state->pending_full_res_snapshot_camera_serial = selected_camera.camera_serial;
+            ui_state->pending_full_res_snapshot_target_frame_count =
+                static_cast<uint32_t>(ui_state->calibration_average_frame_count);
+            ui_state->preview_error.clear();
+            ui_state->preview_status =
+                "Waiting for averaged full-resolution stream snapshot from " +
+                selected_camera.camera_serial + " (" +
+                std::to_string(ui_state->calibration_average_frame_count) + " frames).";
         }
     }
     ImGui::EndDisabled();
@@ -3292,8 +6019,10 @@ void render_spatial_layout_window(
     }
     if (full_res_request_pending_for_selected) {
         ImGui::TextDisabled(
-            "Full-resolution snapshot request %llu is waiting for the next acquisition frame.",
-            static_cast<unsigned long long>(ui_state->pending_full_res_snapshot_request_id));
+            "Full-resolution snapshot request %llu is collecting %u frame(s).",
+            static_cast<unsigned long long>(ui_state->pending_full_res_snapshot_request_id),
+            static_cast<unsigned int>(
+                std::max<uint32_t>(1u, ui_state->pending_full_res_snapshot_target_frame_count)));
     } else if (camera_control->subscribe && !can_capture_full_resolution_stream_snapshot) {
         ImGui::TextDisabled("Full-resolution stream snapshot worker is not available for the selected camera.");
     }
@@ -3303,14 +6032,14 @@ void render_spatial_layout_window(
         ui_state->citrus_template.source_camera_id.empty() ||
         ui_state->citrus_template.source_camera_id == selected_camera.camera_serial;
 
-    ImGui::SeparatorText("Citrus Single-Circle Import");
-    if (ImGui::Button("Import Citrus Arena Config...")) {
+    ImGui::SeparatorText("Citrus Canvas Import");
+    if (ImGui::Button("Import Citrus Canvas Config...")) {
         IGFD::FileDialogConfig config;
         config.path = default_citrus_rigs_root();
         config.countSelectionMax = 1;
         ImGuiFileDialog::Instance()->OpenDialog(
             kLoadCitrusArenaConfigDialogId,
-            "Choose Citrus Arena Config JSON",
+            "Choose Citrus Canvas Config JSON",
             ".json",
             config);
     }
@@ -3339,8 +6068,49 @@ void render_spatial_layout_window(
         clear_citrus_template_import(ui_state);
     }
 
+    if (!ui_state->citrus_canvas_templates.empty()) {
+        std::vector<std::string> template_labels_storage;
+        std::vector<const char*> template_labels;
+        template_labels_storage.reserve(ui_state->citrus_canvas_templates.size());
+        template_labels.reserve(ui_state->citrus_canvas_templates.size());
+        for (const CitrusSpatialTemplateState& template_state : ui_state->citrus_canvas_templates) {
+            template_labels_storage.push_back(citrus_template_display_label(template_state));
+        }
+        for (const std::string& label : template_labels_storage) {
+            template_labels.push_back(label.c_str());
+        }
+        ui_state->citrus_canvas_template_index =
+            clamp_index(
+                ui_state->citrus_canvas_template_index,
+                static_cast<int>(ui_state->citrus_canvas_templates.size()));
+        int selected_template_index = ui_state->citrus_canvas_template_index;
+        if (ImGui::Combo(
+                "Citrus canvas arena/camera",
+                &selected_template_index,
+                template_labels.data(),
+                static_cast<int>(template_labels.size())) &&
+            selected_template_index != ui_state->citrus_canvas_template_index) {
+            std::string status;
+            std::string error;
+            if (!select_citrus_template_by_index(
+                    ui_state,
+                    selected_template_index,
+                    &status,
+                    &error)) {
+                ui_state->citrus_import_error = error;
+            } else {
+                ui_state->citrus_import_status = status;
+                ui_state->citrus_import_error.clear();
+                rebuild_schema_preview(ui_state, &selected_camera);
+            }
+        }
+        if (!ui_state->citrus_canvas_config_path.empty()) {
+            ImGui::TextDisabled("%s", ui_state->citrus_canvas_config_path.c_str());
+        }
+    }
+
     if (!ui_state->citrus_template.available) {
-        ImGui::TextDisabled("Import a Citrus arena config to seed the single circular experimental area.");
+        ImGui::TextDisabled("Import a Citrus canvas config to seed the single circular experimental area.");
     } else {
         ImGui::TextWrapped(
             "Imported: rig=%s canvas=%s arena=%s config=%s camera=%s",
@@ -3545,14 +6315,443 @@ void render_spatial_layout_window(
 
     ImGui::SeparatorText("Zones");
     render_zone_editor(ui_state);
+    sync_single_experimental_area_zone(ui_state);
 
     rebuild_schema_preview(ui_state, &selected_camera);
 
+    ImGui::SeparatorText("Calibration Workflow");
+    if (ImGui::BeginTabBar("SpatialCalibrationWorkflowTabs")) {
+        if (ImGui::BeginTabItem("Projection Surface")) {
+            if (ui_state->calibration_workflow_tab != 0) {
+                ui_state->calibration_workflow_tab = 0;
+                apply_calibration_workflow_tab_defaults(ui_state, 0);
+            }
+            ImGui::TextWrapped(
+                "Use for Citrus arena projection and homography images at the projector/diffuser plane. "
+                "These captures usually suppress mapped NIR strobe pulses and rely on visible projector output.");
+            if (ImGui::Button("Arena projection defaults")) {
+                apply_calibration_image_set_purpose_defaults(ui_state, "arena_projection");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Homography grid defaults")) {
+                apply_calibration_image_set_purpose_defaults(ui_state, "homography_grid");
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Estimated Fish Plane")) {
+            if (ui_state->calibration_workflow_tab != 1) {
+                ui_state->calibration_workflow_tab = 1;
+                apply_calibration_workflow_tab_defaults(ui_state, 1);
+            }
+            ImGui::TextWrapped(
+                "Use for ruler/scale and crosshair images near the fish/tank-bottom plane. "
+                "Scale images usually keep or restore the mapped TTL NIR pulse path so the target is visible to the camera.");
+            if (ImGui::Button("Scale image defaults")) {
+                apply_calibration_image_set_purpose_defaults(ui_state, "scale_image");
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Crosshair alignment defaults")) {
+                apply_calibration_image_set_purpose_defaults(ui_state, "crosshair_alignment");
+            }
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Dish / Valid Area")) {
+            if (ui_state->calibration_workflow_tab != 2) {
+                ui_state->calibration_workflow_tab = 2;
+                apply_calibration_workflow_tab_defaults(ui_state, 2);
+            }
+            ImGui::TextWrapped(
+                "Use for daily dish top-rim fits and valid-area/mask artifacts. "
+                "This tab prepares capture metadata for top-rim observation saves; Citrus still owns accepted runtime geometry.");
+            if (ImGui::Button("Top-rim capture defaults")) {
+                apply_calibration_workflow_tab_defaults(ui_state, 2);
+            }
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
     ImGui::SeparatorText("Calibration Capture Metadata");
-    ImGui::InputText("Filter state", &ui_state->calibration_filter_state);
-    ImGui::InputText("Runtime filter state", &ui_state->calibration_runtime_filter_state);
-    ImGui::InputText("Light state", &ui_state->calibration_light_state);
-    ImGui::InputText("Projector state", &ui_state->calibration_projector_state);
+    static constexpr const char* kFilterStatePresets[] = {
+        "unknown",
+        kHoyaR72FilterInstalled,
+        kHoyaR72FilterRemoved,
+        "no_filter_installed"
+    };
+    static constexpr const char* kRuntimeFilterStatePresets[] = {
+        "unknown",
+        kHoyaR72FilterInstalled,
+        kHoyaR72FilterRemoved,
+        "not_applicable"
+    };
+    static constexpr const char* kLightStatePresets[] = {
+        "unknown",
+        "ttl_nir_strobe_active",
+        "ttl_nir_strobe_inactive",
+        "visible_projector_only",
+        "ambient_room_light",
+        "external_continuous_visible_light",
+        "external_continuous_ir_nir_light",
+        "lights_off"
+    };
+    static constexpr const char* kLightHandlingPresets[] = {
+        "leave_current",
+        "suppress_mapped_strobe",
+        "keep_or_restore_mapped_pulse",
+        "force_manual_active",
+        "operator_manual"
+    };
+    static constexpr const char* kProjectorStatePresets[] = {
+        "unknown",
+        "off",
+        "black_or_idle",
+        "crosshair_on",
+        "homography_grid_on",
+        "scale_pattern_on",
+        "normal_stimulus_active"
+    };
+    static constexpr const char* kIlluminationSpectrumPresets[] = {
+        "unknown",
+        "narrowband_nir",
+        "unknown_ir_nir",
+        "broadband_visible",
+        "broadband_visible_nir",
+        "none"
+    };
+    static constexpr const char* kIlluminationSourcePresets[] = {
+        "unknown",
+        "custom_ttl_nir_strobe",
+        "visible_projector",
+        "ambient_room_light",
+        "external_continuous_visible_light",
+        "external_continuous_ir_nir_light",
+        "none"
+    };
+    static constexpr const char* kIlluminationConfidencePresets[] = {
+        "unknown",
+        "nominal",
+        "measured",
+        "approximate_range",
+        "not_applicable"
+    };
+    static constexpr const char* kIlluminationPresetIds[] = {
+        "unknown",
+        "custom_ttl_nir_strobe_855nm",
+        "visible_projector_broadband",
+        "ambient_room_light_visible",
+        "external_continuous_visible_light",
+        "external_continuous_ir_nir_light",
+        "lights_off"
+    };
+    static constexpr const char* kIlluminationPresetLabels[] = {
+        "Unknown",
+        "Custom TTL NIR strobe, 855 nm nominal",
+        "Visible projector, broadband visible",
+        "Ambient room light, broadband visible",
+        "External continuous visible light",
+        "External continuous IR/NIR light",
+        "Lights off"
+    };
+    render_string_preset_combo(
+        "Filter state",
+        &ui_state->calibration_filter_state,
+        kFilterStatePresets,
+        IM_ARRAYSIZE(kFilterStatePresets));
+    render_string_preset_combo(
+        "Runtime filter state",
+        &ui_state->calibration_runtime_filter_state,
+        kRuntimeFilterStatePresets,
+        IM_ARRAYSIZE(kRuntimeFilterStatePresets));
+    render_string_preset_combo(
+        "Light handling",
+        &ui_state->calibration_light_handling,
+        kLightHandlingPresets,
+        IM_ARRAYSIZE(kLightHandlingPresets));
+    if (ImGui::BeginCombo("Illumination preset", "Apply preset...")) {
+        for (int idx = 0; idx < IM_ARRAYSIZE(kIlluminationPresetIds); ++idx) {
+            if (ImGui::Selectable(kIlluminationPresetLabels[idx])) {
+                apply_illumination_preset(ui_state, kIlluminationPresetIds[idx]);
+            }
+        }
+        ImGui::EndCombo();
+    }
+    render_string_preset_combo(
+        "Illumination source",
+        &ui_state->calibration_illumination_source,
+        kIlluminationSourcePresets,
+        IM_ARRAYSIZE(kIlluminationSourcePresets));
+    const std::string selected_light_handling =
+        ui_state->calibration_light_handling.empty()
+            ? "leave_current"
+            : ui_state->calibration_light_handling;
+    const bool light_handling_needs_mapped_strobe =
+        calibration_light_handling_needs_mapped_strobe(selected_light_handling);
+    std::vector<int> light_control_camera_indices;
+    light_control_camera_indices.reserve(num_cameras);
+    for (int i = 0; i < num_cameras; ++i) {
+        if (camera_has_exposed_mapped_nir_strobe(cameras_params[i])) {
+            light_control_camera_indices.push_back(i);
+        }
+    }
+    auto light_control_candidate_index = [&](const int camera_index) -> int {
+        const auto it = std::find(
+            light_control_camera_indices.begin(),
+            light_control_camera_indices.end(),
+            camera_index);
+        if (it == light_control_camera_indices.end()) {
+            return -1;
+        }
+        return static_cast<int>(std::distance(light_control_camera_indices.begin(), it));
+    };
+    if (light_control_camera_indices.empty()) {
+        ui_state->calibration_light_control_camera = -1;
+    } else if (light_control_candidate_index(ui_state->calibration_light_control_camera) < 0) {
+        const int selected_light_control_index =
+            light_control_candidate_index(ui_state->selected_camera);
+        ui_state->calibration_light_control_camera =
+            selected_light_control_index >= 0
+                ? ui_state->selected_camera
+                : light_control_camera_indices.front();
+    }
+    if (!light_control_camera_indices.empty()) {
+        std::vector<std::string> light_control_labels_storage;
+        std::vector<const char*> light_control_labels;
+        light_control_labels_storage.reserve(light_control_camera_indices.size());
+        light_control_labels.reserve(light_control_camera_indices.size());
+        for (const int camera_index : light_control_camera_indices) {
+            const CameraParams& light_camera = cameras_params[camera_index];
+            const CameraRigIoConnection* connection =
+                find_mapped_nir_strobe_output_connection(light_camera);
+            std::ostringstream label;
+            label << light_camera.camera_serial << " / "
+                  << (connection != nullptr && !connection->camera_line.empty()
+                          ? connection->camera_line
+                          : "mapped output");
+            light_control_labels_storage.push_back(label.str());
+            light_control_labels.push_back(light_control_labels_storage.back().c_str());
+        }
+        int light_control_combo_index =
+            light_control_candidate_index(ui_state->calibration_light_control_camera);
+        if (light_control_combo_index < 0) {
+            light_control_combo_index = 0;
+        }
+        if (ImGui::Combo(
+                "Light control camera",
+                &light_control_combo_index,
+                light_control_labels.data(),
+                static_cast<int>(light_control_labels.size()))) {
+            ui_state->calibration_light_control_camera =
+                light_control_camera_indices[light_control_combo_index];
+        }
+    }
+    const int light_control_camera = ui_state->calibration_light_control_camera;
+    const bool light_control_camera_valid =
+        light_control_camera >= 0 && light_control_camera < num_cameras;
+    CameraParams* light_control_params =
+        light_control_camera_valid ? &cameras_params[light_control_camera] : nullptr;
+    CameraEmergent* light_control_ecam =
+        light_control_camera_valid ? &ecams[light_control_camera] : nullptr;
+    const CameraRigIoConnection* mapped_strobe_connection =
+        light_control_params != nullptr
+            ? find_mapped_nir_strobe_output_connection(*light_control_params)
+            : nullptr;
+    const bool mapped_strobe_available =
+        light_control_params != nullptr &&
+        light_control_params->gpio_pinout_access == "exposed" &&
+        mapped_strobe_connection != nullptr;
+    const bool light_output_mutation_locked =
+        camera_control->record_video || camera_control->recording_draining;
+    const bool can_prepare_calibration_capture =
+        !light_output_mutation_locked &&
+        (!light_handling_needs_mapped_strobe || mapped_strobe_available);
+    ImGui::BeginDisabled(!can_prepare_calibration_capture);
+    if (ImGui::Button("Prepare Calibration Capture")) {
+        std::string status;
+        const bool ok = prepare_calibration_capture_preflight(
+            ui_state,
+            &ecams[ui_state->selected_camera],
+            &selected_camera,
+            light_control_ecam,
+            light_control_params,
+            mapped_strobe_available,
+            light_output_mutation_locked,
+            selected_light_handling,
+            &status);
+        set_calibration_preflight_result(ui_state, ok, status);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_prepare_calibration_capture);
+    if (ImGui::Button("Prepare All Cameras")) {
+        std::string status;
+        const bool ok = prepare_calibration_capture_preflight_all_cameras(
+            ui_state,
+            ecams,
+            cameras_params,
+            num_cameras,
+            light_control_ecam,
+            light_control_params,
+            mapped_strobe_available,
+            light_output_mutation_locked,
+            selected_light_handling,
+            &status);
+        set_calibration_preflight_result(ui_state, ok, status);
+    }
+    ImGui::EndDisabled();
+    const bool has_any_capture_restore =
+        !ui_state->calibration_capture_restore_states.empty();
+    const bool has_selected_capture_restore =
+        has_calibration_capture_restore_state(ui_state, selected_camera.camera_serial);
+    const bool can_restore_calibration_capture =
+        !light_output_mutation_locked &&
+        (has_selected_capture_restore || mapped_strobe_available);
+    const bool can_restore_all_calibration_capture =
+        !light_output_mutation_locked &&
+        (has_any_capture_restore || mapped_strobe_available);
+    ImGui::BeginDisabled(!can_restore_calibration_capture);
+    if (ImGui::Button("Restore Camera Config State")) {
+        std::string status;
+        const bool ok = restore_calibration_capture_preflight(
+            ui_state,
+            &ecams[ui_state->selected_camera],
+            &selected_camera,
+            light_control_ecam,
+            light_control_params,
+            mapped_strobe_available,
+            light_output_mutation_locked,
+            &status);
+        set_calibration_preflight_result(ui_state, ok, status);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_restore_all_calibration_capture);
+    if (ImGui::Button("Restore All Camera Config States")) {
+        std::string status;
+        const bool ok = restore_calibration_capture_preflight_all_cameras(
+            ui_state,
+            ecams,
+            cameras_params,
+            num_cameras,
+            light_control_ecam,
+            light_control_params,
+            mapped_strobe_available,
+            light_output_mutation_locked,
+            &status);
+        set_calibration_preflight_result(ui_state, ok, status);
+    }
+    ImGui::EndDisabled();
+    if (ui_state->calibration_capture_profile_active) {
+        ImGui::TextDisabled(
+            "Active capture profile: %s capture_cam=%s light_cam=%s",
+            ui_state->calibration_capture_profile_id.c_str(),
+            ui_state->calibration_capture_profile_camera_serial.c_str(),
+            ui_state->calibration_capture_profile_light_camera_serial.empty()
+                ? "(none)"
+                : ui_state->calibration_capture_profile_light_camera_serial.c_str());
+    }
+    if (light_output_mutation_locked) {
+        ImGui::TextDisabled("Calibration prepare/restore actions are disabled while recording/finalizing.");
+    } else if (light_handling_needs_mapped_strobe && light_control_camera_indices.empty()) {
+        ImGui::TextDisabled("No open camera has an exposed nir_strobe_trigger output mapping.");
+    } else if (light_handling_needs_mapped_strobe && !mapped_strobe_available) {
+        ImGui::TextDisabled("Choose a light-control camera with an exposed nir_strobe_trigger output mapping.");
+    } else {
+        ImGui::TextDisabled(
+            "Prepare applies selected light handling first, then temporarily sets camera timing to 10 FPS / 10 ms. All-camera prepare uses the same light-first ordering across open cameras.");
+    }
+    if (!ui_state->calibration_preflight_error.empty()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                           "%s",
+                           ui_state->calibration_preflight_error.c_str());
+    } else if (!ui_state->calibration_preflight_status.empty()) {
+        ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                           "%s",
+                           ui_state->calibration_preflight_status.c_str());
+    }
+
+    render_string_preset_combo(
+        "Light state",
+        &ui_state->calibration_light_state,
+        kLightStatePresets,
+        IM_ARRAYSIZE(kLightStatePresets));
+    if (ui_state->calibration_image_set_purpose == "scale_image") {
+        ImGui::TextDisabled("Scale images usually keep the TTL NIR strobe active so a ruler/target is visible to the camera.");
+    } else if (ui_state->calibration_image_set_purpose == "arena_projection" ||
+               ui_state->calibration_image_set_purpose == "homography_grid" ||
+               ui_state->calibration_image_set_purpose == "crosshair_alignment") {
+        ImGui::TextDisabled("Projector-pattern captures usually suppress mapped NIR strobe pulses and rely on the visible projection.");
+    }
+    render_string_preset_combo(
+        "Illumination spectrum",
+        &ui_state->calibration_illumination_spectrum,
+        kIlluminationSpectrumPresets,
+        IM_ARRAYSIZE(kIlluminationSpectrumPresets));
+    ImGui::Checkbox(
+        "Center wavelength nm",
+        &ui_state->calibration_has_illumination_center_wavelength_nm);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_illumination_center_wavelength_nm);
+    ImGui::InputDouble(
+        "##IlluminationCenterWavelengthNm",
+        &ui_state->calibration_illumination_center_wavelength_nm,
+        1.0,
+        10.0,
+        "%.1f");
+    ImGui::EndDisabled();
+    ImGui::Checkbox(
+        "Min wavelength nm",
+        &ui_state->calibration_has_illumination_min_wavelength_nm);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_illumination_min_wavelength_nm);
+    ImGui::InputDouble(
+        "##IlluminationMinWavelengthNm",
+        &ui_state->calibration_illumination_min_wavelength_nm,
+        1.0,
+        10.0,
+        "%.1f");
+    ImGui::EndDisabled();
+    ImGui::Checkbox(
+        "Max wavelength nm",
+        &ui_state->calibration_has_illumination_max_wavelength_nm);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_illumination_max_wavelength_nm);
+    ImGui::InputDouble(
+        "##IlluminationMaxWavelengthNm",
+        &ui_state->calibration_illumination_max_wavelength_nm,
+        1.0,
+        10.0,
+        "%.1f");
+    ImGui::EndDisabled();
+    ImGui::Checkbox(
+        "Bandwidth FWHM nm",
+        &ui_state->calibration_has_illumination_bandwidth_fwhm_nm);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_illumination_bandwidth_fwhm_nm);
+    ImGui::InputDouble(
+        "##IlluminationBandwidthFwhmNm",
+        &ui_state->calibration_illumination_bandwidth_fwhm_nm,
+        1.0,
+        10.0,
+        "%.1f");
+    ImGui::EndDisabled();
+    render_string_preset_combo(
+        "Wavelength confidence",
+        &ui_state->calibration_illumination_wavelength_confidence,
+        kIlluminationConfidencePresets,
+        IM_ARRAYSIZE(kIlluminationConfidencePresets));
+    ui_state->calibration_illumination_center_wavelength_nm =
+        std::max(0.0, ui_state->calibration_illumination_center_wavelength_nm);
+    ui_state->calibration_illumination_min_wavelength_nm =
+        std::max(0.0, ui_state->calibration_illumination_min_wavelength_nm);
+    ui_state->calibration_illumination_max_wavelength_nm =
+        std::max(0.0, ui_state->calibration_illumination_max_wavelength_nm);
+    ui_state->calibration_illumination_bandwidth_fwhm_nm =
+        std::max(0.0, ui_state->calibration_illumination_bandwidth_fwhm_nm);
+    render_string_preset_combo(
+        "Projector state",
+        &ui_state->calibration_projector_state,
+        kProjectorStatePresets,
+        IM_ARRAYSIZE(kProjectorStatePresets));
     ImGui::Checkbox(
         "Projector visible to camera",
         &ui_state->calibration_projector_visible_to_camera);
@@ -3564,43 +6763,204 @@ void render_spatial_layout_window(
         &ui_state->calibration_operator_notes,
         ImVec2(-1.0f, ImGui::GetTextLineHeight() * 3.0f));
 
+    ImGui::SeparatorText("Generic Calibration Image Set");
+    static constexpr const char* kImageSetPurposePresets[] = {
+        "arena_projection",
+        "homography_grid",
+        "scale_image",
+        "crosshair_alignment"
+    };
+    static constexpr const char* kTargetPlanePresets[] = {
+        "projected_surface",
+        "tank_bottom_outer_surface",
+        "tank_bottom_inner_surface",
+        "estimated_fish_plane",
+        "dish_top_rim",
+        "unknown"
+    };
+    static constexpr const char* kImageRolePresets[] = {
+        "projected_arena",
+        "grid_on",
+        "scale_target",
+        "crosshair_on",
+        "source"
+    };
+    if (ImGui::BeginCombo(
+            "Image-set purpose",
+            ui_state->calibration_image_set_purpose.empty()
+                ? "homography_grid"
+                : ui_state->calibration_image_set_purpose.c_str())) {
+        for (const char* purpose : kImageSetPurposePresets) {
+            const bool selected = ui_state->calibration_image_set_purpose == purpose;
+            if (ImGui::Selectable(purpose, selected)) {
+                apply_calibration_image_set_purpose_defaults(ui_state, purpose);
+            }
+            if (selected) {
+                ImGui::SetItemDefaultFocus();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    render_string_preset_combo(
+        "Target plane",
+        &ui_state->calibration_image_set_target_plane,
+        kTargetPlanePresets,
+        IM_ARRAYSIZE(kTargetPlanePresets));
+    render_string_preset_combo(
+        "Image role",
+        &ui_state->calibration_image_set_image_role,
+        kImageRolePresets,
+        IM_ARRAYSIZE(kImageRolePresets));
+    ImGui::InputText(
+        "Projected pattern ID",
+        &ui_state->calibration_image_set_projected_pattern_id);
+    ImGui::InputText(
+        "Projected pattern type",
+        &ui_state->calibration_image_set_projected_pattern_type);
+    ImGui::InputText(
+        "Scale target type",
+        &ui_state->calibration_image_set_scale_target_type);
+    ImGui::InputTextMultiline(
+        "Image-set notes",
+        &ui_state->calibration_image_set_notes,
+        ImVec2(-1.0f, ImGui::GetTextLineHeight() * 2.0f));
+    ImGui::TextDisabled(
+        "Use this for piecewise homography/scale/crosshair image artifacts. "
+        "It writes only the source image and image_set.json; Citrus fits and accepts later.");
+
     ImGui::SeparatorText("Persistence");
+    ImGui::Text("Calibration session: %s",
+                ui_state->calibration_session_id.empty()
+                    ? "(not started; first save creates one)"
+                    : ui_state->calibration_session_id.c_str());
+    if (!ui_state->calibration_session_dir.empty()) {
+        ImGui::TextDisabled("%s", ui_state->calibration_session_dir.c_str());
+    }
+    if (ImGui::Button("Start New Calibration Session")) {
+        clear_spatial_calibration_session(ui_state);
+        ui_state->persistence_status = "Next save will start a new calibration session.";
+        ui_state->persistence_error.clear();
+    }
     const bool captured_in_full_resolution =
         !ui_state->has_capture ||
         ui_state->captured_source_array_role.empty() ||
         ui_state->captured_source_array_role == "images_full";
+    const bool top_rim_save_busy = top_rim_observation_save_worker().IsBusy();
+    const bool generic_image_set_save_busy =
+        generic_calibration_image_set_save_worker().IsBusy();
+    const bool spatial_save_busy = top_rim_save_busy || generic_image_set_save_busy;
     const bool can_save_top_rim_observation =
         ui_state->has_capture &&
         ui_state->dish_mask_runtime.has_geometry &&
-        captured_in_full_resolution;
+        captured_in_full_resolution &&
+        citrus_template_matches_selected_camera &&
+        !spatial_save_busy;
     ImGui::BeginDisabled(!can_save_top_rim_observation);
     if (ImGui::Button("Save Top-Rim Observation")) {
-        std::string status;
+        TopRimObservationSaveJob job;
         std::string error;
-        if (!save_dish_top_rim_observation_from_spatial_layout(
+        std::string session_artifact_root;
+        if (!ensure_spatial_calibration_session(
                 ui_state,
                 selected_camera,
                 artifact_root_dir,
-                &status,
+                &session_artifact_root,
+                &error) ||
+            !prepare_dish_top_rim_observation_save_job_from_spatial_layout(
+                ui_state,
+                selected_camera,
+                session_artifact_root,
+                &job,
                 &error)) {
             ui_state->persistence_error = error;
             ui_state->persistence_status.clear();
         } else {
-            ui_state->persistence_status = status;
-            ui_state->persistence_error.clear();
+            job.session_dir = ui_state->calibration_session_dir;
+            if (!top_rim_observation_save_worker().Submit(std::move(job), &error)) {
+                ui_state->persistence_error = error;
+                ui_state->persistence_status.clear();
+            } else {
+                ui_state->persistence_status =
+                    "Saving top-rim observation artifact in session " +
+                    ui_state->calibration_session_id + "...";
+                ui_state->persistence_error.clear();
+            }
         }
     }
     ImGui::EndDisabled();
+    if (top_rim_save_busy) {
+        ImGui::TextDisabled("Top-rim observation save is running in the background.");
+    }
+    const bool can_save_generic_image_set =
+        ui_state->has_capture &&
+        captured_in_full_resolution &&
+        citrus_template_matches_selected_camera &&
+        !spatial_save_busy;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_save_generic_image_set);
+    if (ImGui::Button("Save Calibration Image Set")) {
+        GenericCalibrationImageSetSaveJob job;
+        std::string error;
+        std::string session_artifact_root;
+        if (!ensure_spatial_calibration_session(
+                ui_state,
+                selected_camera,
+                artifact_root_dir,
+                &session_artifact_root,
+                &error) ||
+            !prepare_generic_calibration_image_set_save_job_from_spatial_layout(
+                ui_state,
+                selected_camera,
+                session_artifact_root,
+                &job,
+                &error)) {
+            ui_state->persistence_error = error;
+            ui_state->persistence_status.clear();
+        } else {
+            job.session_dir = ui_state->calibration_session_dir;
+            if (!generic_calibration_image_set_save_worker().Submit(std::move(job), &error)) {
+                ui_state->persistence_error = error;
+                ui_state->persistence_status.clear();
+            } else {
+                ui_state->persistence_status =
+                    "Saving calibration image-set artifact in session " +
+                    ui_state->calibration_session_id + "...";
+                ui_state->persistence_error.clear();
+            }
+        }
+    }
+    ImGui::EndDisabled();
+    if (generic_image_set_save_busy) {
+        ImGui::TextDisabled("Calibration image-set save is running in the background.");
+    }
     if (ui_state->has_capture && !captured_in_full_resolution) {
         ImGui::TextDisabled(
-            "Top-rim observations require full-resolution camera coordinates. "
+            "Top-rim observations and calibration image sets require full-resolution camera coordinates. "
             "This live snapshot is preview/downsample space only.");
     }
+    if (!citrus_template_matches_selected_camera) {
+        ImGui::TextDisabled(
+            "Spatial calibration saves are blocked until the active Citrus template camera matches the selected Orange camera.");
+    }
     ImGui::SameLine();
+    ImGui::BeginDisabled(!citrus_template_matches_selected_camera);
     if (ImGui::Button("Save Arena Layout Artifact")) {
         std::string status;
         std::string error;
-        if (!save_spatial_layout_artifact(ui_state, selected_camera, artifact_root_dir, &status, &error)) {
+        std::string session_artifact_root;
+        if (!ensure_spatial_calibration_session(
+                ui_state,
+                selected_camera,
+                artifact_root_dir,
+                &session_artifact_root,
+                &error) ||
+            !save_spatial_layout_artifact(
+                ui_state,
+                selected_camera,
+                session_artifact_root,
+                ui_state->calibration_session_dir,
+                &status,
+                &error)) {
             ui_state->persistence_error = error;
             ui_state->persistence_status.clear();
         } else {
@@ -3609,10 +6969,13 @@ void render_spatial_layout_window(
             rebuild_schema_preview(ui_state, &selected_camera);
         }
     }
+    ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Load Arena Layout Artifact...")) {
         IGFD::FileDialogConfig config;
-        config.path = artifact_root_dir.empty() ? "." : artifact_root_dir;
+        config.path = !ui_state->calibration_session_dir.empty()
+                          ? ui_state->calibration_session_dir
+                          : (artifact_root_dir.empty() ? "." : artifact_root_dir);
         config.countSelectionMax = 1;
         ImGuiFileDialog::Instance()->OpenDialog(
             kLoadSpatialLayoutDialogId,
@@ -3621,13 +6984,40 @@ void render_spatial_layout_window(
             config);
     }
     ImGui::TextDisabled(
-        "Top-rim save writes an Orange observation plus Palette and spatial dish-mask exports. Arena save writes %s, %s, %s, and %s under calibrations/artifacts/<artifact_id>.",
+        "Spatial calibration saves are grouped under calibrations/sessions/<session_id>/artifacts/<artifact_id>. Arena save writes %s, %s, %s, and %s.",
         kSpatialLayoutMeasurementFilename,
         kSpatialLayoutManifestFilename,
         kSpatialLayoutArenaLayoutRuntimeFilename,
         kSpatialLayoutDishMaskRuntimeFilename);
 
-    ImGui::SeparatorText("Camera Overlay Preview");
+    ImGui::Separator();
+    ImGui::Text("Preview valid: %s", ui_state->preview_valid ? "yes" : "no");
+
+    if (ImGui::TreeNode("Canonical Layout JSON")) {
+        if (ImGui::SmallButton("Copy canonical JSON")) {
+            ImGui::SetClipboardText(ui_state->canonical_layout_json.c_str());
+        }
+        ImGui::BeginChild("SpatialCanonicalJson", ImVec2(0.0f, 180.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::TextUnformatted(ui_state->canonical_layout_json.c_str());
+        ImGui::EndChild();
+        ImGui::TreePop();
+    }
+
+    if (ImGui::TreeNode("Runtime Calibration JSON")) {
+        if (ImGui::SmallButton("Copy runtime JSON")) {
+            ImGui::SetClipboardText(ui_state->runtime_preview_json.c_str());
+        }
+        ImGui::BeginChild("SpatialRuntimeJson", ImVec2(0.0f, 220.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
+        ImGui::TextUnformatted(ui_state->runtime_preview_json.c_str());
+        ImGui::EndChild();
+        ImGui::TreePop();
+    }
+
+    ImGui::EndChild();
+    ImGui::TableNextColumn();
+    ImGui::BeginChild("SpatialLayoutFitPreviewPanel", ImVec2(0.0f, 0.0f), true);
+
+    ImGui::SeparatorText("Fit Preview");
     const char* canvas_edit_items[] = {"registration", "selected_zone"};
     ImGui::Combo("Canvas edit mode", &ui_state->canvas_edit_mode, canvas_edit_items, IM_ARRAYSIZE(canvas_edit_items));
     if (!ui_state->has_capture) {
@@ -3668,27 +7058,8 @@ void render_spatial_layout_window(
     if (!ui_state->persistence_error.empty()) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "%s", ui_state->persistence_error.c_str());
     }
-    ImGui::Text("Preview valid: %s", ui_state->preview_valid ? "yes" : "no");
-
-    if (ImGui::TreeNode("Canonical Layout JSON")) {
-        if (ImGui::SmallButton("Copy canonical JSON")) {
-            ImGui::SetClipboardText(ui_state->canonical_layout_json.c_str());
-        }
-        ImGui::BeginChild("SpatialCanonicalJson", ImVec2(0.0f, 180.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(ui_state->canonical_layout_json.c_str());
-        ImGui::EndChild();
-        ImGui::TreePop();
-    }
-
-    if (ImGui::TreeNode("Runtime Calibration JSON")) {
-        if (ImGui::SmallButton("Copy runtime JSON")) {
-            ImGui::SetClipboardText(ui_state->runtime_preview_json.c_str());
-        }
-        ImGui::BeginChild("SpatialRuntimeJson", ImVec2(0.0f, 220.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(ui_state->runtime_preview_json.c_str());
-        ImGui::EndChild();
-        ImGui::TreePop();
-    }
+    ImGui::EndChild();
+    ImGui::EndTable();
 
     ImGui::End();
 
@@ -3716,7 +7087,7 @@ void render_spatial_layout_window(
         if (ImGuiFileDialog::Instance()->IsOk()) {
             std::string status;
             std::string error;
-            if (!import_citrus_single_circle_template(
+            if (!import_citrus_canvas_templates(
                     ui_state,
                     selected_camera,
                     ImGuiFileDialog::Instance()->GetFilePathName(),

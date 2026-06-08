@@ -48,6 +48,13 @@ struct CitrusSpatialTemplateState {
         0.0, 0.0, 1.0};
 };
 
+struct CalibrationCaptureCameraRestoreState {
+    bool valid = false;
+    std::string camera_serial;
+    unsigned int exposure_us = 0;
+    unsigned int frame_rate_hz = 0;
+};
+
 struct SpatialLayoutUiState {
     bool show_window = false;
     int selected_camera = 0;
@@ -72,8 +79,14 @@ struct SpatialLayoutUiState {
     std::string captured_camera_serial;
     std::string captured_source_array_role = "images_full";
     std::string captured_capture_mode = "single_camera_direct_still";
+    uint32_t captured_source_frame_count = 1;
+    uint64_t captured_first_local_frame_id = 0;
+    uint64_t captured_last_local_frame_id = 0;
+    uint64_t captured_first_camera_frame_id = 0;
+    uint64_t captured_last_camera_frame_id = 0;
     uint64_t pending_full_res_snapshot_request_id = 0;
     std::string pending_full_res_snapshot_camera_serial;
+    uint32_t pending_full_res_snapshot_target_frame_count = 1;
     bool has_capture = false;
     orange::ui::ImageCanvasViewState captured_canvas_view;
 
@@ -100,19 +113,57 @@ struct SpatialLayoutUiState {
     std::string detection_status;
     std::string detection_error;
     CitrusSpatialTemplateState citrus_template;
+    std::vector<CitrusSpatialTemplateState> citrus_canvas_templates;
+    int citrus_canvas_template_index = -1;
+    std::string citrus_canvas_config_path;
     bool has_citrus_projected_circle = false;
     orange::spatial::RuntimeGeometry citrus_projected_circle_geometry;
     std::string citrus_import_status;
     std::string citrus_import_error;
     std::string persistence_status;
     std::string persistence_error;
+    std::string calibration_session_id;
+    std::string calibration_session_dir;
+    std::string calibration_session_created_utc;
+    CameraRigIoOutputState calibration_light_restore_state;
+    std::string calibration_light_restore_key;
+    int calibration_light_control_camera = -1;
+    std::vector<CalibrationCaptureCameraRestoreState> calibration_capture_restore_states;
+    std::string calibration_preflight_status;
+    std::string calibration_preflight_error;
+    bool calibration_capture_profile_active = false;
+    std::string calibration_capture_profile_id;
+    std::string calibration_capture_profile_operation_id;
+    std::string calibration_capture_profile_camera_serial;
+    std::string calibration_capture_profile_light_camera_serial;
+    int calibration_average_frame_count = 60;
+    int calibration_workflow_tab = 0;
     std::string calibration_filter_state = "unknown";
     std::string calibration_runtime_filter_state = "unknown";
+    std::string calibration_light_handling = "leave_current";
     std::string calibration_light_state = "unknown";
+    std::string calibration_illumination_spectrum = "unknown";
+    std::string calibration_illumination_source = "unknown";
+    double calibration_illumination_center_wavelength_nm = 0.0;
+    bool calibration_has_illumination_center_wavelength_nm = false;
+    double calibration_illumination_min_wavelength_nm = 0.0;
+    bool calibration_has_illumination_min_wavelength_nm = false;
+    double calibration_illumination_max_wavelength_nm = 0.0;
+    bool calibration_has_illumination_max_wavelength_nm = false;
+    double calibration_illumination_bandwidth_fwhm_nm = 0.0;
+    bool calibration_has_illumination_bandwidth_fwhm_nm = false;
+    std::string calibration_illumination_wavelength_confidence = "unknown";
     std::string calibration_projector_state = "unknown";
     bool calibration_projector_visible_to_camera = false;
     bool calibration_requires_filter_reinstalled_repeatably = false;
     std::string calibration_operator_notes;
+    std::string calibration_image_set_purpose = "homography_grid";
+    std::string calibration_image_set_target_plane = "projected_surface";
+    std::string calibration_image_set_image_role = "grid_on";
+    std::string calibration_image_set_projected_pattern_id = "citrus_homography_grid_v1";
+    std::string calibration_image_set_projected_pattern_type = "dot_grid";
+    std::string calibration_image_set_scale_target_type = "unknown";
+    std::string calibration_image_set_notes;
     std::string canonical_layout_json;
     std::string runtime_preview_json;
 };

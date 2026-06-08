@@ -28,6 +28,34 @@ struct CameraGpioNodeConfig {
     uint32_t value_uint = 0;
 };
 
+struct CameraRigIoConnection {
+    std::string purpose;
+    std::string direction;
+    std::string camera_line;
+    int physical_pin = -1;
+    std::string reference_line;
+    int reference_pin = -1;
+    std::string electrical;
+    std::string active_level;
+    std::string inactive_level;
+    std::string normal_output_mode;
+    bool normal_polarity = false;
+    std::string controlled_device;
+    double nominal_wavelength_nm = 0.0;
+    bool verified = false;
+    std::string notes;
+};
+
+struct CameraRigIoOutputState {
+    bool valid = false;
+    std::string camera_line;
+    std::string mode_node;
+    std::string mode;
+    std::string polarity_node;
+    bool has_polarity = false;
+    bool polarity = false;
+};
+
 struct CameraCropPipelineConfig {
     static constexpr int kDefaultCropSizePx = 256;
     static constexpr int kMinCropSizePx = 32;
@@ -91,6 +119,7 @@ struct CameraParams{
     std::string device_model;
     std::string camera_scan_type = "unknown";
     std::string gpio_connector_variant = "unknown";
+    std::string gpio_pinout_access = "unknown";
     std::string gpio_recipe;
     std::string sync_mode = "free_run";
     bool trigger_enabled = false;
@@ -102,6 +131,7 @@ struct CameraParams{
     unsigned long long ptp_gate_offset_ns = 0;
     std::string acquisition_buffer_mode = "auto";
     std::vector<CameraGpioNodeConfig> gpio_nodes;
+    std::vector<CameraRigIoConnection> rig_io_connections;
     CameraRecordingConfig recording;
     CameraCropPipelineConfig crop_pipeline;
     unsigned int gain_max; 
@@ -208,6 +238,24 @@ bool camera_sync_mode_uses_ptp(const CameraParams* camera_params);
 bool build_gpio_recipe_preview_nodes(const CameraParams* camera_params,
                                      std::vector<CameraGpioNodeConfig>* nodes_out,
                                      std::string* error_out);
+bool read_rig_io_output_diagnostic_state(Emergent::CEmergentCamera* camera,
+                                         const CameraParams* camera_params,
+                                         const CameraRigIoConnection& connection,
+                                         CameraRigIoOutputState* state_out,
+                                         std::string* status_out);
+bool set_rig_io_output_diagnostic(Emergent::CEmergentCamera* camera,
+                                  const CameraParams* camera_params,
+                                  const CameraRigIoConnection& connection,
+                                  bool active,
+                                  std::string* status_out);
+bool restore_rig_io_output_diagnostic_state(Emergent::CEmergentCamera* camera,
+                                            const CameraParams* camera_params,
+                                            const CameraRigIoOutputState& state,
+                                            std::string* status_out);
+bool restore_rig_io_output_normal_mode(Emergent::CEmergentCamera* camera,
+                                       const CameraParams* camera_params,
+                                       const CameraRigIoConnection& connection,
+                                       std::string* status_out);
 void quick_print_camera(GigEVisionDeviceInfo* device_info, int camera_idx);
 unsigned long long get_current_PTP_time(Emergent::CEmergentCamera* camera);
 void test_gpo_manual_toggle(Emergent::CEmergentCamera* camera);

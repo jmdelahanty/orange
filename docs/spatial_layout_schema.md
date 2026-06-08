@@ -73,8 +73,9 @@ Embedded runtime payload versions:
 - The immediate Orange/Citrus integration slice is a single circular
   experimental area imported from Citrus for the selected camera.
 - Orange may represent that single-circle slice as both a circular `dish_mask`
-  and a trivial one-zone `arena_layout` with `zone_id = "z0"` so downstream
-  consumers can already use the general runtime contract shape.
+  and a trivial one-zone `arena_layout` with
+  `zone_id = "experimental_area"` so downstream consumers can already use the
+  general runtime contract shape.
 - In that single-circle slice, `arena_layout` remains the canonical
   Citrus-owned dish/arena identity, while `dish_mask` remains Orange's
   camera-space evidence about the visible and valid dish region.
@@ -602,6 +603,32 @@ Rules:
 - Canonical `rectangle` zones are axis-aligned in layout space.
 - Zone geometry should lie inside `outer_geometry`.
 - Overlapping zones are discouraged but not forbidden by schema alone.
+
+### V0 Single-Zone Convention
+
+For the current single-arena workflow, Orange writes exactly one zone that is
+the experimental area:
+
+```json
+{
+  "zone_id": "experimental_area",
+  "zone_index": 0,
+  "display_label": "Experimental Area",
+  "geometry": {"type": "circle", "cx": 0.0, "cy": 0.0, "r": 50.0}
+}
+```
+
+In this mode, `zones[0].geometry` mirrors `layout.outer_geometry`. The
+Spatial Layout UI keeps this default single zone synchronized with the
+experimental-area editor and offers a reset action to return to this shape.
+This is intentionally not a separate zone-semantic model yet; it is the
+minimum representation needed so downstream artifacts can always reference a
+zone while the single-arena experimental area remains the source of truth.
+
+Future multi-zone work may add physical partitions or behavior-specific ROIs
+inside the same experimental area. Those zones should still live inside
+`outer_geometry`, but their accepted semantics and Citrus runtime behavior are
+deferred.
 
 ### `provenance`
 

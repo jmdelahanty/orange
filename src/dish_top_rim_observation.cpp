@@ -1,5 +1,7 @@
 #include "dish_top_rim_observation.h"
 
+#include "fsuid_guard.h"
+
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -104,6 +106,8 @@ bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& value,
                      std::string* error_out)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::filesystem::create_directories(path.parent_path());
     std::ofstream out(path, std::ios::out | std::ios::trunc);
     if (!out.is_open()) {
@@ -134,6 +138,8 @@ bool read_json_file(const std::filesystem::path& path,
 
 bool write_image_file(const std::filesystem::path& path, const cv::Mat& image, std::string* error_out)
 {
+    orange::ScopedFsuid fsuid_guard;
+    (void)fsuid_guard;
     std::filesystem::create_directories(path.parent_path());
     if (image.empty()) {
         return set_error(error_out, "cannot write empty image: " + path.string());
@@ -461,6 +467,68 @@ nlohmann::json dish_top_rim_observation_to_json(
     const double center_dy = accepted_circle.center.y - detected_circle.center.y;
     const double radius_delta = accepted_circle.radius_px - detected_circle.radius_px;
 
+    nlohmann::json illumination = nlohmann::json::object();
+    if (!request.capture.illumination_spectrum.empty()) {
+        illumination["spectrum"] = request.capture.illumination_spectrum;
+    }
+    if (!request.capture.illumination_source.empty()) {
+        illumination["source"] = request.capture.illumination_source;
+    }
+    if (request.capture.has_illumination_center_wavelength_nm) {
+        illumination["center_wavelength_nm"] =
+            request.capture.illumination_center_wavelength_nm;
+    }
+    if (request.capture.has_illumination_min_wavelength_nm) {
+        illumination["min_wavelength_nm"] =
+            request.capture.illumination_min_wavelength_nm;
+    }
+    if (request.capture.has_illumination_max_wavelength_nm) {
+        illumination["max_wavelength_nm"] =
+            request.capture.illumination_max_wavelength_nm;
+    }
+    if (request.capture.has_illumination_bandwidth_fwhm_nm) {
+        illumination["bandwidth_fwhm_nm"] =
+            request.capture.illumination_bandwidth_fwhm_nm;
+    }
+    if (!request.capture.illumination_wavelength_confidence.empty()) {
+        illumination["wavelength_confidence"] =
+            request.capture.illumination_wavelength_confidence;
+    }
+
+    nlohmann::json capture = {
+        {"operation_id", request.capture.operation_id},
+        {"capture_mode", request.capture.capture_mode},
+        {"filter_state", request.capture.filter_state},
+        {"runtime_filter_state", request.capture.runtime_filter_state},
+        {"light_handling", request.capture.light_handling},
+        {"light_state", request.capture.light_state},
+        {"projector_state", request.capture.projector_state},
+        {"projector_visible_to_camera", request.capture.projector_visible_to_camera},
+        {"exposure_us", request.capture.exposure_us},
+        {"frame_rate_hz", request.capture.frame_rate_hz},
+        {"requires_camera_mount_unchanged", request.capture.requires_camera_mount_unchanged},
+        {"requires_filter_reinstalled_repeatably",
+         request.capture.requires_filter_reinstalled_repeatably}
+    };
+    if (request.capture.has_source_frame_count) {
+        capture["source_frame_count"] = request.capture.source_frame_count;
+    }
+    if (!request.capture.temporal_compositing_method.empty()) {
+        capture["temporal_compositing_method"] =
+            request.capture.temporal_compositing_method;
+    }
+    if (request.capture.has_local_frame_range) {
+        capture["first_local_frame_id"] = request.capture.first_local_frame_id;
+        capture["last_local_frame_id"] = request.capture.last_local_frame_id;
+    }
+    if (request.capture.has_camera_frame_range) {
+        capture["first_camera_frame_id"] = request.capture.first_camera_frame_id;
+        capture["last_camera_frame_id"] = request.capture.last_camera_frame_id;
+    }
+    if (!illumination.empty()) {
+        capture["illumination"] = illumination;
+    }
+
     nlohmann::json observation = {
         {"schema_id", kDishTopRimObservationSchemaId},
         {"schema_version", kDishTopRimObservationSchemaVersion},
@@ -474,20 +542,7 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"height", request.camera.height},
             {"pixel_format", request.camera.pixel_format}
         }},
-        {"capture", {
-            {"operation_id", request.capture.operation_id},
-            {"capture_mode", request.capture.capture_mode},
-            {"filter_state", request.capture.filter_state},
-            {"runtime_filter_state", request.capture.runtime_filter_state},
-            {"light_state", request.capture.light_state},
-            {"projector_state", request.capture.projector_state},
-            {"projector_visible_to_camera", request.capture.projector_visible_to_camera},
-            {"exposure_us", request.capture.exposure_us},
-            {"frame_rate_hz", request.capture.frame_rate_hz},
-            {"requires_camera_mount_unchanged", request.capture.requires_camera_mount_unchanged},
-            {"requires_filter_reinstalled_repeatably",
-             request.capture.requires_filter_reinstalled_repeatably}
-        }},
+        {"capture", capture},
         {"source_frames", nlohmann::json::array({
             {
                 {"role", "source_frame"},
@@ -670,13 +725,44 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
     image_set.capture.operation_id = request.capture.operation_id;
     image_set.capture.timestamp_utc = request.created_utc;
     image_set.capture.capture_mode = request.capture.capture_mode;
+    image_set.capture.source_frame_count = request.capture.source_frame_count;
+    image_set.capture.has_source_frame_count = request.capture.has_source_frame_count;
+    image_set.capture.temporal_compositing_method =
+        request.capture.temporal_compositing_method;
+    image_set.capture.first_local_frame_id = request.capture.first_local_frame_id;
+    image_set.capture.last_local_frame_id = request.capture.last_local_frame_id;
+    image_set.capture.has_local_frame_range = request.capture.has_local_frame_range;
+    image_set.capture.first_camera_frame_id = request.capture.first_camera_frame_id;
+    image_set.capture.last_camera_frame_id = request.capture.last_camera_frame_id;
+    image_set.capture.has_camera_frame_range = request.capture.has_camera_frame_range;
     image_set.capture.exposure_us = request.capture.exposure_us;
     image_set.capture.has_exposure_us = true;
     image_set.capture.frame_rate_hz = request.capture.frame_rate_hz;
     image_set.capture.has_frame_rate_hz = true;
     image_set.capture.filter_state = request.capture.filter_state;
     image_set.capture.runtime_filter_state = request.capture.runtime_filter_state;
+    image_set.capture.light_handling = request.capture.light_handling;
     image_set.capture.light_state = request.capture.light_state;
+    image_set.capture.illumination_spectrum = request.capture.illumination_spectrum;
+    image_set.capture.illumination_source = request.capture.illumination_source;
+    image_set.capture.illumination_center_wavelength_nm =
+        request.capture.illumination_center_wavelength_nm;
+    image_set.capture.has_illumination_center_wavelength_nm =
+        request.capture.has_illumination_center_wavelength_nm;
+    image_set.capture.illumination_min_wavelength_nm =
+        request.capture.illumination_min_wavelength_nm;
+    image_set.capture.has_illumination_min_wavelength_nm =
+        request.capture.has_illumination_min_wavelength_nm;
+    image_set.capture.illumination_max_wavelength_nm =
+        request.capture.illumination_max_wavelength_nm;
+    image_set.capture.has_illumination_max_wavelength_nm =
+        request.capture.has_illumination_max_wavelength_nm;
+    image_set.capture.illumination_bandwidth_fwhm_nm =
+        request.capture.illumination_bandwidth_fwhm_nm;
+    image_set.capture.has_illumination_bandwidth_fwhm_nm =
+        request.capture.has_illumination_bandwidth_fwhm_nm;
+    image_set.capture.illumination_wavelength_confidence =
+        request.capture.illumination_wavelength_confidence;
     image_set.capture.projector_state = request.capture.projector_state;
     image_set.capture.projector_visible_to_camera = request.capture.projector_visible_to_camera;
     image_set.capture.has_projector_visible_to_camera = true;
@@ -928,7 +1014,11 @@ bool write_dish_top_rim_observation_artifact(
 
     const DishTopRimObservationArtifactPaths paths =
         make_dish_top_rim_observation_artifact_paths(artifact_root_dir, request.artifact_id);
-    std::filesystem::create_directories(paths.artifact_dir);
+    {
+        orange::ScopedFsuid fsuid_guard;
+        (void)fsuid_guard;
+        std::filesystem::create_directories(paths.artifact_dir);
+    }
 
     DishTopRimCircle detected_circle;
     if (!detect_dish_top_rim_hough_circle(source_image, hough_params, &detected_circle, error_out)) {

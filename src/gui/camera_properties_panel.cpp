@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -86,6 +87,58 @@ std::string format_gpio_node_value(const CameraGpioNodeConfig& node)
     return std::to_string(node.value_uint);
 }
 
+CameraRigIoConnection make_default_nir_strobe_connection(const CameraParams& camera_params)
+{
+    CameraRigIoConnection connection;
+    connection.purpose = "nir_strobe_trigger";
+    connection.direction = "output";
+    connection.camera_line = "GPO_0";
+    if (camera_params.gpio_connector_variant == "area_scan_8_pin") {
+        connection.physical_pin = 4;
+        connection.reference_pin = 8;
+    } else if (camera_params.gpio_connector_variant == "area_scan_12_pin") {
+        connection.physical_pin = 7;
+        connection.reference_pin = 8;
+    }
+    connection.reference_line = "GND";
+    connection.electrical = "ttl_0_5v";
+    connection.active_level = "high";
+    connection.inactive_level = "low";
+    connection.normal_output_mode = "Exposure";
+    connection.normal_polarity = false;
+    connection.controlled_device = "near_infrared_strobe";
+    connection.nominal_wavelength_nm = 855.0;
+    connection.verified = false;
+    return connection;
+}
+
+bool has_known_nir_strobe_output_pinout(const CameraParams& camera_params)
+{
+    const bool known_connector =
+        camera_params.gpio_connector_variant == "area_scan_12_pin" ||
+        camera_params.gpio_connector_variant == "area_scan_8_pin";
+    return known_connector && camera_params.gpio_pinout_access == "exposed";
+}
+
+std::string describe_nir_strobe_pinout_requirement(const CameraParams& camera_params)
+{
+    return std::string("Add NIR strobe mapping requires a known area-scan GPIO connector pinout and exposed GPIO wiring; current connector is `") +
+           (camera_params.gpio_connector_variant.empty()
+                ? std::string("unknown")
+                : camera_params.gpio_connector_variant) +
+           "`, access is `" +
+           (camera_params.gpio_pinout_access.empty()
+                ? std::string("unknown")
+                : camera_params.gpio_pinout_access) +
+           "`.";
+}
+
+std::string make_rig_io_connection_key(const CameraParams& camera_params,
+                                       const CameraRigIoConnection& connection)
+{
+    return camera_params.camera_serial + ":" + connection.camera_line + ":" + connection.purpose;
+}
+
 }  // namespace
 
 namespace orange::gui {
@@ -94,7 +147,8 @@ void render_camera_properties_panel(CameraEmergent* ecams,
                                     CameraParams* cameras_params,
                                     const int num_cameras,
                                     std::vector<std::string>& color_temps,
-                                    const std::string& selected_local_config_folder)
+                                    const std::string& selected_local_config_folder,
+                                    const bool recording_mutation_locked)
 {
     static const char* const kSyncModeValues[] = {
         "free_run",
@@ -129,6 +183,16 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         "Area Scan 12-pin",
         "Area Scan 8-pin",
         "Line Scan 12-pin"
+    };
+    static const char* const kPinoutAccessValues[] = {
+        "unknown",
+        "exposed",
+        "not_exposed"
+    };
+    static const char* const kPinoutAccessLabels[] = {
+        "Unknown",
+        "Exposed by cable/breakout",
+        "Not exposed / power-only"
     };
     static const char* const kRecipeValues[] = {
         "",
@@ -188,6 +252,112 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         "bool",
         "uint"
     };
+    static const char* const kRigIoPurposeValues[] = {
+        "nir_strobe_trigger",
+        "visible_light_trigger",
+        "projector_sync",
+        "external_frame_trigger",
+        "operator_note",
+        "other"
+    };
+    static const char* const kRigIoPurposeLabels[] = {
+        "NIR strobe trigger",
+        "Visible light trigger",
+        "Projector sync",
+        "External frame trigger",
+        "Operator note",
+        "Other"
+    };
+    static const char* const kRigIoDirectionValues[] = {
+        "",
+        "input",
+        "output",
+        "bidirectional",
+        "unknown"
+    };
+    static const char* const kRigIoDirectionLabels[] = {
+        "(unset)",
+        "Input to camera",
+        "Output from camera",
+        "Bidirectional",
+        "Unknown"
+    };
+    static const char* const kRigIoCameraLineValues[] = {
+        "",
+        "GPO_0",
+        "GPO_1",
+        "GPO_2",
+        "GPO_3",
+        "GPI_0",
+        "GPI_1",
+        "GPI_2",
+        "GPI_3",
+        "GPI_4",
+        "GPI_5",
+        "other"
+    };
+    static const char* const kRigIoCameraLineLabels[] = {
+        "(unset)",
+        "GPO_0",
+        "GPO_1",
+        "GPO_2",
+        "GPO_3",
+        "GPI_0",
+        "GPI_1",
+        "GPI_2",
+        "GPI_3",
+        "GPI_4",
+        "GPI_5",
+        "Other"
+    };
+    static const char* const kRigIoReferenceLineValues[] = {
+        "",
+        "GND",
+        "ISO_GND",
+        "VEXT",
+        "VEXT_OUT",
+        "other"
+    };
+    static const char* const kRigIoReferenceLineLabels[] = {
+        "(unset)",
+        "GND",
+        "ISO_GND",
+        "VEXT",
+        "VEXT_OUT",
+        "Other"
+    };
+    static const char* const kRigIoElectricalValues[] = {
+        "",
+        "ttl_0_5v",
+        "opto_isolated",
+        "open_collector",
+        "unknown"
+    };
+    static const char* const kRigIoElectricalLabels[] = {
+        "(unset)",
+        "TTL 0-5 V",
+        "Opto-isolated",
+        "Open collector",
+        "Unknown"
+    };
+    static const char* const kRigIoLevelValues[] = {
+        "",
+        "high",
+        "low",
+        "rising_edge",
+        "falling_edge",
+        "pulse",
+        "unknown"
+    };
+    static const char* const kRigIoLevelLabels[] = {
+        "(unset)",
+        "High",
+        "Low",
+        "Rising edge",
+        "Falling edge",
+        "Pulse",
+        "Unknown"
+    };
 
     if (ImGui::TreeNode("Camera Property")) {
         static int selected_camera = 0;
@@ -195,6 +365,11 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         static std::string config_save_status;
         static bool config_save_error = false;
         static int config_save_status_camera = -1;
+        static std::string rig_io_diagnostic_status;
+        static bool rig_io_diagnostic_error = false;
+        static int rig_io_diagnostic_status_camera = -1;
+        static CameraRigIoOutputState rig_io_restore_state;
+        static std::string rig_io_restore_key;
 
         if (num_cameras <= 0) {
             ImGui::TreePop();
@@ -218,6 +393,13 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             OffsetY = cameras_params[selected_camera].offsety;
         }
 
+        if (recording_mutation_locked) {
+            ImGui::TextDisabled("Recording/finalization active: live camera mutations are locked except focus.");
+        }
+
+        if (recording_mutation_locked) {
+            ImGui::BeginDisabled();
+        }
         ImGui::Checkbox("GPU Direct", &cameras_params[selected_camera].gpu_direct);
         ImGui::Checkbox("Color", &cameras_params[selected_camera].color);
 
@@ -256,6 +438,9 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         if (ImGui::SliderInt("Gain", &slider_gain, cameras_params[selected_camera].gain_min, cameras_params[selected_camera].gain_max, "%d")) {
             update_gain_value(&ecams[selected_camera].camera, slider_gain, &cameras_params[selected_camera]);
         }
+        if (recording_mutation_locked) {
+            ImGui::EndDisabled();
+        }
 
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::BeginDisabled();
@@ -263,14 +448,23 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         if (ImGui::SliderInt("Focus", &slider_focus, cameras_params[selected_camera].focus_min, cameras_params[selected_camera].focus_max, "%d")) {
             update_focus_value(&ecams[selected_camera].camera, slider_focus, &cameras_params[selected_camera]);
         }
-
-        if (ImGui::SliderInt("Iris", &slider_iris, cameras_params[selected_camera].iris_min, cameras_params[selected_camera].iris_max, "%d")) {
-            update_iris_value(&ecams[selected_camera].camera, slider_iris, &cameras_params[selected_camera]);
-        }
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::EndDisabled();
         }
 
+        if (recording_mutation_locked || !cameras_params[selected_camera].lens_control_enabled) {
+            ImGui::BeginDisabled();
+        }
+        if (ImGui::SliderInt("Iris", &slider_iris, cameras_params[selected_camera].iris_min, cameras_params[selected_camera].iris_max, "%d")) {
+            update_iris_value(&ecams[selected_camera].camera, slider_iris, &cameras_params[selected_camera]);
+        }
+        if (recording_mutation_locked || !cameras_params[selected_camera].lens_control_enabled) {
+            ImGui::EndDisabled();
+        }
+
+        if (recording_mutation_locked) {
+            ImGui::BeginDisabled();
+        }
         if (ImGui::SliderInt("Exposure", &slider_exposure, cameras_params[selected_camera].exposure_min, cameras_params[selected_camera].exposure_max, "%d")) {
             update_exposure_framerate_value(&ecams[selected_camera].camera, slider_exposure, &slider_frame_rate, &cameras_params[selected_camera]);
         }
@@ -279,6 +473,9 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         sprintf(label, "FrameRate (%d -> %d)", cameras_params[selected_camera].frame_rate_min, cameras_params[selected_camera].frame_rate_max);
         if (ImGui::SliderInt(label, &slider_frame_rate, cameras_params[selected_camera].frame_rate_min, cameras_params[selected_camera].frame_rate_max, "%d")) {
             update_frame_rate_value(&ecams[selected_camera].camera, slider_frame_rate, &cameras_params[selected_camera]);
+        }
+        if (recording_mutation_locked) {
+            ImGui::EndDisabled();
         }
 
         ImGui::Separator();
@@ -293,7 +490,13 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         ImGui::TextDisabled("Edit crop settings in the main Orange panel; Save to config persists them for this camera.");
 
         ImGui::Separator();
+        if (recording_mutation_locked) {
+            ImGui::BeginDisabled();
+        }
         ImGui::Checkbox("Lens Control", &cameras_params[selected_camera].lens_control_enabled);
+        if (recording_mutation_locked) {
+            ImGui::EndDisabled();
+        }
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::BeginDisabled();
         }
@@ -322,11 +525,41 @@ void render_camera_properties_panel(CameraEmergent* ecams,
                             kConnectorValues,
                             kConnectorLabels,
                             IM_ARRAYSIZE(kConnectorValues));
+        if (combo_select_string("GPIO Pinout Access",
+                                &cameras_params[selected_camera].gpio_pinout_access,
+                                kPinoutAccessValues,
+                                kPinoutAccessLabels,
+                                IM_ARRAYSIZE(kPinoutAccessValues)) &&
+            cameras_params[selected_camera].gpio_pinout_access == "not_exposed") {
+            cameras_params[selected_camera].gpio_recipe.clear();
+            cameras_params[selected_camera].gpio_nodes.clear();
+        }
+        const bool gpio_pinout_not_exposed =
+            cameras_params[selected_camera].gpio_pinout_access == "not_exposed";
+        if (gpio_pinout_not_exposed) {
+            ImGui::TextDisabled("Installed wiring is power-only/not exposed; physical GPIO recipe, node, and rig-I/O controls are locked.");
+        }
+        if (gpio_pinout_not_exposed) {
+            ImGui::BeginDisabled();
+        }
         combo_select_string("GPIO Recipe",
                             &cameras_params[selected_camera].gpio_recipe,
                             kRecipeValues,
                             kRecipeLabels,
                             IM_ARRAYSIZE(kRecipeValues));
+        if (gpio_pinout_not_exposed) {
+            ImGui::EndDisabled();
+        }
+        if (gpio_pinout_not_exposed &&
+            (!cameras_params[selected_camera].gpio_recipe.empty() ||
+             !cameras_params[selected_camera].gpio_nodes.empty())) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.25f, 1.0f),
+                               "Saved GPIO recipe/nodes are incompatible with gpio_pinout_access=not_exposed.");
+            if (ImGui::Button("Clear GPIO recipe/nodes")) {
+                cameras_params[selected_camera].gpio_recipe.clear();
+                cameras_params[selected_camera].gpio_nodes.clear();
+            }
+        }
         std::vector<CameraGpioNodeConfig> recipe_preview_nodes;
         std::string recipe_preview_error;
         const bool has_recipe_preview = build_gpio_recipe_preview_nodes(
@@ -369,7 +602,9 @@ void render_camera_properties_panel(CameraEmergent* ecams,
             ImGui::TextDisabled("PTP mode is unused unless Sync Mode is PTP Gate and will be omitted on save.");
         }
 
-        if (ImGui::TreeNode("GPIO Nodes")) {
+        if (gpio_pinout_not_exposed) {
+            ImGui::TextDisabled("GPIO Nodes are disabled because the installed connector does not expose GPIO wiring.");
+        } else if (ImGui::TreeNode("GPIO Nodes")) {
             int remove_gpio_node_index = -1;
             for (int node_idx = 0; node_idx < static_cast<int>(cameras_params[selected_camera].gpio_nodes.size()); ++node_idx) {
                 CameraGpioNodeConfig& node = cameras_params[selected_camera].gpio_nodes[node_idx];
@@ -407,6 +642,253 @@ void render_camera_properties_panel(CameraEmergent* ecams,
 
             if (ImGui::Button("Add GPIO node")) {
                 cameras_params[selected_camera].gpio_nodes.push_back(CameraGpioNodeConfig{});
+            }
+            ImGui::TreePop();
+        }
+
+        if (gpio_pinout_not_exposed) {
+            ImGui::TextDisabled("Rig I/O Mapping is disabled because the installed connector does not expose GPIO wiring.");
+            if (!cameras_params[selected_camera].rig_io_connections.empty()) {
+                ImGui::TextDisabled("%zu saved mapping(s) remain in metadata; set GPIO Pinout Access to exposed to edit or diagnose them.",
+                                    cameras_params[selected_camera].rig_io_connections.size());
+            }
+        } else if (ImGui::TreeNode("Rig I/O Mapping")) {
+            ImGui::TextDisabled("Per-camera rig wiring metadata only; Orange does not actuate these mappings.");
+            ImGui::TextDisabled("Diagnostic buttons set manual GPO mode; safest first use is with streaming stopped.");
+            ImGui::TextDisabled("Do not use suppression/restore during active recording yet.");
+            int remove_connection_index = -1;
+            for (int connection_idx = 0;
+                 connection_idx < static_cast<int>(cameras_params[selected_camera].rig_io_connections.size());
+                 ++connection_idx) {
+                CameraRigIoConnection& connection =
+                    cameras_params[selected_camera].rig_io_connections[connection_idx];
+                ImGui::PushID(connection_idx);
+                ImGui::Separator();
+                ImGui::Text("Connection %d", connection_idx + 1);
+                combo_select_string("Purpose",
+                                    &connection.purpose,
+                                    kRigIoPurposeValues,
+                                    kRigIoPurposeLabels,
+                                    IM_ARRAYSIZE(kRigIoPurposeValues));
+                ImGui::InputText("Purpose Value", &connection.purpose);
+                combo_select_string("Direction",
+                                    &connection.direction,
+                                    kRigIoDirectionValues,
+                                    kRigIoDirectionLabels,
+                                    IM_ARRAYSIZE(kRigIoDirectionValues));
+                combo_select_string("Camera Line",
+                                    &connection.camera_line,
+                                    kRigIoCameraLineValues,
+                                    kRigIoCameraLineLabels,
+                                    IM_ARRAYSIZE(kRigIoCameraLineValues));
+                ImGui::InputText("Camera Line Value", &connection.camera_line);
+                int physical_pin = connection.physical_pin;
+                if (ImGui::InputInt("Physical Pin", &physical_pin)) {
+                    connection.physical_pin = std::max(-1, physical_pin);
+                }
+                combo_select_string("Reference Line",
+                                    &connection.reference_line,
+                                    kRigIoReferenceLineValues,
+                                    kRigIoReferenceLineLabels,
+                                    IM_ARRAYSIZE(kRigIoReferenceLineValues));
+                ImGui::InputText("Reference Line Value", &connection.reference_line);
+                int reference_pin = connection.reference_pin;
+                if (ImGui::InputInt("Reference Pin", &reference_pin)) {
+                    connection.reference_pin = std::max(-1, reference_pin);
+                }
+                combo_select_string("Electrical",
+                                    &connection.electrical,
+                                    kRigIoElectricalValues,
+                                    kRigIoElectricalLabels,
+                                    IM_ARRAYSIZE(kRigIoElectricalValues));
+                combo_select_string("Active Level",
+                                    &connection.active_level,
+                                    kRigIoLevelValues,
+                                    kRigIoLevelLabels,
+                                    IM_ARRAYSIZE(kRigIoLevelValues));
+                combo_select_string("Inactive Level",
+                                    &connection.inactive_level,
+                                    kRigIoLevelValues,
+                                    kRigIoLevelLabels,
+                                    IM_ARRAYSIZE(kRigIoLevelValues));
+                ImGui::InputText("Normal Output Mode", &connection.normal_output_mode);
+                ImGui::Checkbox("Normal Polarity", &connection.normal_polarity);
+                ImGui::InputText("Controlled Device", &connection.controlled_device);
+                ImGui::InputDouble("Nominal Wavelength (nm)", &connection.nominal_wavelength_nm);
+                if (connection.nominal_wavelength_nm < 0.0) {
+                    connection.nominal_wavelength_nm = 0.0;
+                }
+                ImGui::Checkbox("Verified", &connection.verified);
+                ImGui::InputText("Notes", &connection.notes);
+                if (connection.direction == "output") {
+                    const std::string connection_key =
+                        make_rig_io_connection_key(cameras_params[selected_camera], connection);
+                    const bool has_restore_state =
+                        rig_io_restore_state.valid && rig_io_restore_key == connection_key;
+                    if (recording_mutation_locked) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (connection.purpose == "nir_strobe_trigger") {
+                        if (ImGui::Button("Suppress mapped NIR strobe")) {
+                            if (!has_restore_state) {
+                                CameraRigIoOutputState captured_state;
+                                if (read_rig_io_output_diagnostic_state(
+                                        &ecams[selected_camera].camera,
+                                        &cameras_params[selected_camera],
+                                        connection,
+                                        &captured_state,
+                                        &rig_io_diagnostic_status)) {
+                                    rig_io_restore_state = std::move(captured_state);
+                                    rig_io_restore_key = connection_key;
+                                }
+                            }
+                            rig_io_diagnostic_error = !set_rig_io_output_diagnostic(
+                                &ecams[selected_camera].camera,
+                                &cameras_params[selected_camera],
+                                connection,
+                                false,
+                                &rig_io_diagnostic_status);
+                            rig_io_diagnostic_status_camera = selected_camera;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Restore mapped pulse mode")) {
+                            if (has_restore_state) {
+                                rig_io_diagnostic_error = !restore_rig_io_output_diagnostic_state(
+                                    &ecams[selected_camera].camera,
+                                    &cameras_params[selected_camera],
+                                    rig_io_restore_state,
+                                    &rig_io_diagnostic_status);
+                            } else {
+                                rig_io_diagnostic_error = !restore_rig_io_output_normal_mode(
+                                    &ecams[selected_camera].camera,
+                                    &cameras_params[selected_camera],
+                                    connection,
+                                    &rig_io_diagnostic_status);
+                            }
+                            rig_io_diagnostic_status_camera = selected_camera;
+                        }
+                    }
+                    if (ImGui::Button("Capture current GPO state")) {
+                        CameraRigIoOutputState captured_state;
+                        rig_io_diagnostic_error = !read_rig_io_output_diagnostic_state(
+                            &ecams[selected_camera].camera,
+                            &cameras_params[selected_camera],
+                            connection,
+                            &captured_state,
+                            &rig_io_diagnostic_status);
+                        if (!rig_io_diagnostic_error) {
+                            rig_io_restore_state = std::move(captured_state);
+                            rig_io_restore_key = connection_key;
+                        }
+                        rig_io_diagnostic_status_camera = selected_camera;
+                    }
+                    ImGui::SameLine();
+                    if (!has_restore_state) {
+                        ImGui::BeginDisabled();
+                    }
+                    if (ImGui::Button("Restore captured GPO state")) {
+                        rig_io_diagnostic_error = !restore_rig_io_output_diagnostic_state(
+                            &ecams[selected_camera].camera,
+                            &cameras_params[selected_camera],
+                            rig_io_restore_state,
+                            &rig_io_diagnostic_status);
+                        rig_io_diagnostic_status_camera = selected_camera;
+                    }
+                    if (!has_restore_state) {
+                        ImGui::EndDisabled();
+                    }
+                    if (ImGui::Button("Diagnostic set inactive")) {
+                        if (!has_restore_state) {
+                            CameraRigIoOutputState captured_state;
+                            if (read_rig_io_output_diagnostic_state(
+                                    &ecams[selected_camera].camera,
+                                    &cameras_params[selected_camera],
+                                    connection,
+                                    &captured_state,
+                                    &rig_io_diagnostic_status)) {
+                                rig_io_restore_state = std::move(captured_state);
+                                rig_io_restore_key = connection_key;
+                            }
+                        }
+                        rig_io_diagnostic_error = !set_rig_io_output_diagnostic(
+                            &ecams[selected_camera].camera,
+                            &cameras_params[selected_camera],
+                            connection,
+                            false,
+                            &rig_io_diagnostic_status);
+                        rig_io_diagnostic_status_camera = selected_camera;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Diagnostic set active")) {
+                        if (!has_restore_state) {
+                            CameraRigIoOutputState captured_state;
+                            if (read_rig_io_output_diagnostic_state(
+                                    &ecams[selected_camera].camera,
+                                    &cameras_params[selected_camera],
+                                    connection,
+                                    &captured_state,
+                                    &rig_io_diagnostic_status)) {
+                                rig_io_restore_state = std::move(captured_state);
+                                rig_io_restore_key = connection_key;
+                            }
+                        }
+                        rig_io_diagnostic_error = !set_rig_io_output_diagnostic(
+                            &ecams[selected_camera].camera,
+                            &cameras_params[selected_camera],
+                            connection,
+                            true,
+                            &rig_io_diagnostic_status);
+                        rig_io_diagnostic_status_camera = selected_camera;
+                    }
+                    if (recording_mutation_locked) {
+                        ImGui::EndDisabled();
+                        ImGui::TextDisabled("Rig I/O actions are disabled while recording/finalizing.");
+                    }
+                }
+                if (ImGui::Button("Remove mapping")) {
+                    remove_connection_index = connection_idx;
+                }
+                ImGui::PopID();
+            }
+
+            if (remove_connection_index >= 0) {
+                cameras_params[selected_camera].rig_io_connections.erase(
+                    cameras_params[selected_camera].rig_io_connections.begin() + remove_connection_index);
+            }
+
+            const bool can_add_nir_strobe_mapping =
+                has_known_nir_strobe_output_pinout(cameras_params[selected_camera]);
+            if (!can_add_nir_strobe_mapping) {
+                ImGui::BeginDisabled();
+            }
+            if (ImGui::Button("Add NIR strobe mapping")) {
+                cameras_params[selected_camera].rig_io_connections.push_back(
+                    make_default_nir_strobe_connection(cameras_params[selected_camera]));
+            }
+            if (!can_add_nir_strobe_mapping) {
+                ImGui::EndDisabled();
+                ImGui::TextDisabled("%s",
+                                    describe_nir_strobe_pinout_requirement(
+                                        cameras_params[selected_camera]).c_str());
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Add blank mapping")) {
+                cameras_params[selected_camera].rig_io_connections.push_back(CameraRigIoConnection{});
+            }
+            if (!can_add_nir_strobe_mapping) {
+                ImGui::TextDisabled("Blank mappings are advanced metadata only; leave physical pins unset unless externally verified.");
+            }
+            if (rig_io_diagnostic_status_camera == selected_camera &&
+                !rig_io_diagnostic_status.empty()) {
+                if (rig_io_diagnostic_error) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f),
+                                       "%s",
+                                       rig_io_diagnostic_status.c_str());
+                } else {
+                    ImGui::TextColored(ImVec4(0.35f, 0.85f, 0.45f, 1.0f),
+                                       "%s",
+                                       rig_io_diagnostic_status.c_str());
+                }
             }
             ImGui::TreePop();
         }

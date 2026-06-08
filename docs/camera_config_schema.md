@@ -13,6 +13,8 @@
   `gpu_id`; Orange accepts it as an alias while loading, but saved configs use
   `source_gpu_id`.
 - Explicit config metadata wins. If `camera_scan_type` or `gpio_connector_variant` is missing, Orange tries to infer it from `device_model_name`.
+  `gpio_pinout_access` is not inferred because it depends on the installed
+  cable, power supply, or breakout module rather than the camera model.
 - The current operator-facing behavior and recipe expansions are documented in [camera_gpio_configuration_guide.md](/home/jeremy/orange-jeremy/docs/camera_gpio_configuration_guide.md).
 
 ## Top-Level Fields
@@ -45,11 +47,13 @@ Schema and GPIO-related fields:
 - `device_serial_number`
 - `camera_scan_type`
 - `gpio_connector_variant`
+- `gpio_pinout_access`
 - `gpio_recipe`
 - `sync_mode`
 - `trigger`
 - `ptp`
 - `gpio`
+- `rig_io`
 - `recording`
 - `crop_pipeline`
 
@@ -93,8 +97,39 @@ Supported values:
 
 Notes:
 
-- This is the physical GPIO connector family used for recipe validation.
+- This is the camera-side GPIO connector family used for recipe validation.
 - If omitted, Orange infers it from `camera_scan_type` and `device_model_name` when possible.
+- This does not mean the installed power supply, cable, or breakout exposes the
+  GPIO pins to the operator.
+
+### `gpio_pinout_access`
+
+Supported values:
+
+- `exposed`
+- `not_exposed`
+- `unknown`
+
+Notes:
+
+- This records whether the installed rig wiring exposes the camera GPIO pins.
+- `gpio_connector_variant` describes what the camera supports.
+  `gpio_pinout_access` describes what this physical installation can actually
+  access.
+- Use `exposed` only when the cable, power supply, or breakout module exposes
+  the relevant GPIO pin and reference/ground pin.
+- Use `not_exposed` when the camera has the connector family but the installed
+  power module/cable is power-only or otherwise hides the GPIO wires.
+- Use `unknown` until the installed wiring has been checked.
+- Curated rig-I/O shortcuts, such as the default NIR strobe mapping, require
+  both a known compatible connector and `gpio_pinout_access = "exposed"`.
+- When `gpio_pinout_access = "not_exposed"`, Orange treats physical GPIO
+  recipe/node configuration as invalid. The UI locks GPIO recipe selection,
+  explicit `gpio.nodes`, and Rig I/O editing/diagnostics in that state.
+- Saving a `not_exposed` camera config canonicalizes operational GPIO writes by
+  writing an empty `gpio_recipe` and empty `gpio.nodes`. Orange does not
+  silently delete `rig_io.connections`, because those entries are descriptive
+  metadata that may document a previous or alternate cable/breakout setup.
 
 ### Current Inference Rules
 
@@ -214,6 +249,65 @@ Runtime behavior:
 - Missing nodes or failed writes are treated as configuration errors.
 - `gpio.nodes` is generic and camera-specific; recipe validation does not guarantee that ad hoc node writes are valid on every model.
 
+## `rig_io`
+
+```json
+"rig_io": {
+  "schema_id": "orange.camera.rig_io",
+  "schema_version": 1,
+  "connections": [
+    {
+      "purpose": "nir_strobe_trigger",
+      "direction": "output",
+      "camera_line": "GPO_0",
+      "physical_pin": 7,
+      "reference_line": "GND",
+      "reference_pin": 8,
+      "electrical": "ttl_0_5v",
+      "active_level": "high",
+      "inactive_level": "low",
+      "normal_output_mode": "Exposure",
+      "normal_polarity": false,
+      "controlled_device": "near_infrared_strobe",
+      "nominal_wavelength_nm": 855.0,
+      "verified": false,
+      "notes": "Per-camera metadata only; does not actuate the strobe."
+    }
+  ]
+}
+```
+
+Notes:
+
+- `rig_io` is optional per-camera rig wiring metadata.
+- This is intentionally separate from `gpio.nodes`.
+- `gpio.nodes` describes GenICam node writes that Orange applies during camera
+  open. `rig_io.connections` describes how a camera line is physically wired in
+  the rig.
+- Orange currently loads, edits, saves, and snapshots this metadata, but does
+  not actuate GPIO or strobe state from it.
+- Store one entry per meaningful per-camera connection, such as a camera
+  `GPO_0` output wired to an NIR strobe trigger.
+- `physical_pin` is the connector pin number for the configured
+  `gpio_connector_variant` when known and exposed by the installed wiring.
+- `reference_line` and `reference_pin` describe the return/reference side of
+  the same physical connection. For the common 12-pin area-scan `GPO_0` TTL
+  output, `GPO_0` is pin `7` and normal `GND` is available on pins `8` and
+  `9`; record the one actually used by the cable.
+- Do not invent `physical_pin` or `reference_pin` for cameras whose connector
+  pinout is unavailable or whose installed power/cable module does not expose
+  those wires. Leave those fields absent or set the mapping aside until the
+  wiring is externally verified.
+- `normal_output_mode` and `normal_polarity` describe the state Orange should
+  restore after temporary manual suppression. For the current `Cam2010096`
+  NIR-strobe wiring, oscilloscope testing showed normal exposure-synchronized
+  pulses use `GPO_0_Mode = Exposure` and `GPO_0_Polarity = false`.
+- `nominal_wavelength_nm` is optional and is intended for light sources such as
+  NIR strobes. Visible broadband sources may omit it and describe the source in
+  `controlled_device` or `notes`.
+- `verified = true` should mean an operator or rig maintainer has checked the
+  mapping against the actual cable/pinout.
+
 ## `recording`
 
 ```json
@@ -304,6 +398,7 @@ Notes:
   "device_serial_number": "2002496",
   "camera_scan_type": "area_scan",
   "gpio_connector_variant": "area_scan_12_pin",
+  "gpio_pinout_access": "exposed",
   "gpio_recipe": "",
   "name": "Cam0",
   "width": 3208,
@@ -334,6 +429,28 @@ Notes:
   },
   "gpio": {
     "nodes": []
+  },
+  "rig_io": {
+    "schema_id": "orange.camera.rig_io",
+    "schema_version": 1,
+    "connections": [
+      {
+        "purpose": "nir_strobe_trigger",
+        "direction": "output",
+        "camera_line": "GPO_0",
+        "physical_pin": 7,
+        "reference_line": "GND",
+        "reference_pin": 8,
+        "electrical": "ttl_0_5v",
+        "active_level": "high",
+        "inactive_level": "low",
+        "normal_output_mode": "Exposure",
+        "normal_polarity": false,
+        "controlled_device": "near_infrared_strobe",
+        "nominal_wavelength_nm": 855.0,
+        "verified": false
+      }
+    ]
   },
   "crop_pipeline": {
     "crop_size_px": 256

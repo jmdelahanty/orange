@@ -2181,6 +2181,14 @@ std::string normalize_gpio_connector_variant_string(std::string value) {
     return "unknown";
 }
 
+std::string normalize_gpio_pinout_access_string(std::string value) {
+    value = lower_ascii_copy(std::move(value));
+    if (value == "exposed" || value == "not_exposed" || value == "unknown") {
+        return value;
+    }
+    return "unknown";
+}
+
 std::string normalize_recording_mode_string(std::string value) {
     value = lower_ascii_copy(std::move(value));
     if (value == "single_session" || value == "split_gop") {
@@ -2823,6 +2831,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->device_model.clear();
     camera_params->camera_scan_type = "unknown";
     camera_params->gpio_connector_variant = "unknown";
+    camera_params->gpio_pinout_access = "unknown";
     camera_params->gpio_recipe.clear();
     camera_params->sync_mode = "free_run";
     camera_params->trigger_enabled = false;
@@ -2831,6 +2840,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->trigger_activation = "RisingEdge";
     camera_params->ptp_mode.clear();
     camera_params->gpio_nodes.clear();
+    camera_params->rig_io_connections.clear();
     camera_params->recording = CameraRecordingConfig();
     camera_params->crop_pipeline = CameraCropPipelineConfig();
     camera_params->lens_control_enabled = true;
@@ -3046,7 +3056,12 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
     camera_config["camera_scan_type"] = normalize_camera_scan_type_string(camera_params.camera_scan_type);
     camera_config["gpio_connector_variant"] =
         normalize_gpio_connector_variant_string(camera_params.gpio_connector_variant);
-    camera_config["gpio_recipe"] = canonicalize_gpio_recipe_string(camera_params.gpio_recipe);
+    const std::string gpio_pinout_access =
+        normalize_gpio_pinout_access_string(camera_params.gpio_pinout_access);
+    const bool gpio_pinout_not_exposed = gpio_pinout_access == "not_exposed";
+    camera_config["gpio_pinout_access"] = gpio_pinout_access;
+    camera_config["gpio_recipe"] =
+        gpio_pinout_not_exposed ? std::string() : canonicalize_gpio_recipe_string(camera_params.gpio_recipe);
     camera_config["sync_mode"] = normalize_camera_sync_mode_string(camera_params.sync_mode);
     camera_config["trigger"] = {
         {"enabled", camera_params.trigger_enabled},
@@ -3062,24 +3077,31 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
     }
 
     nlohmann::json gpio_nodes = nlohmann::json::array();
-    for (const auto& node : camera_params.gpio_nodes) {
-        nlohmann::json node_json;
-        node_json["name"] = node.name;
-        node_json["type"] = lower_ascii_copy(node.type);
-        if (lower_ascii_copy(node.type) == "enum") {
-            node_json["value"] = node.value_string;
-        } else if (lower_ascii_copy(node.type) == "bool") {
-            node_json["value"] = node.value_bool;
-        } else if (lower_ascii_copy(node.type) == "uint") {
-            node_json["value"] = node.value_uint;
-        } else {
-            continue;
+    if (!gpio_pinout_not_exposed) {
+        for (const auto& node : camera_params.gpio_nodes) {
+            nlohmann::json node_json;
+            node_json["name"] = node.name;
+            node_json["type"] = lower_ascii_copy(node.type);
+            if (lower_ascii_copy(node.type) == "enum") {
+                node_json["value"] = node.value_string;
+            } else if (lower_ascii_copy(node.type) == "bool") {
+                node_json["value"] = node.value_bool;
+            } else if (lower_ascii_copy(node.type) == "uint") {
+                node_json["value"] = node.value_uint;
+            } else {
+                continue;
+            }
+            gpio_nodes.push_back(std::move(node_json));
         }
-        gpio_nodes.push_back(std::move(node_json));
     }
     camera_config["gpio"] = {
         {"nodes", std::move(gpio_nodes)}
     };
+    nlohmann::json rig_io = orange::camera_config::build_rig_io_config(camera_params);
+    if (rig_io.contains("connections") && rig_io["connections"].is_array() &&
+        !rig_io["connections"].empty()) {
+        camera_config["rig_io"] = std::move(rig_io);
+    }
     camera_config["recording"] = build_recording_config_json_from_params(camera_params);
     camera_config["crop_pipeline"] = build_crop_pipeline_config_json_from_params(camera_params);
     return camera_config;
@@ -3148,6 +3170,8 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
         normalize_camera_scan_type_string(camera_config.value("camera_scan_type", camera_params->camera_scan_type));
     camera_params->gpio_connector_variant = normalize_gpio_connector_variant_string(
         camera_config.value("gpio_connector_variant", camera_params->gpio_connector_variant));
+    camera_params->gpio_pinout_access = normalize_gpio_pinout_access_string(
+        camera_config.value("gpio_pinout_access", camera_params->gpio_pinout_access));
     camera_params->gpio_recipe = canonicalize_gpio_recipe_string(camera_config.value("gpio_recipe", std::string()));
     if (!camera_params->config_schema_id.empty() &&
         camera_params->config_schema_id != kCameraConfigSchemaId) {
@@ -3188,6 +3212,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
     }
 
     parse_gpio_nodes_from_json(camera_config, camera_params);
+    orange::camera_config::parse_rig_io_config(camera_config, camera_params);
     parse_recording_config_from_json(camera_config, camera_params);
     parse_crop_pipeline_config_from_json(camera_config, camera_params);
     infer_camera_gpio_metadata(camera_params);

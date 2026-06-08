@@ -179,6 +179,95 @@ void test_parse_preview_max_fps_clamps_too_large()
             "too-large preview_max_fps should clamp to the maximum");
 }
 
+void test_rig_io_mapping_round_trip()
+{
+    const nlohmann::json camera_config = {
+        {"rig_io", {
+            {"schema_id", "orange.camera.rig_io"},
+            {"schema_version", 1},
+            {"connections", {{
+                {"purpose", "nir_strobe_trigger"},
+                {"direction", "output"},
+                {"camera_line", "GPO_0"},
+                {"physical_pin", 7},
+                {"reference_line", "GND"},
+                {"reference_pin", 8},
+                {"electrical", "ttl_0_5v"},
+                {"active_level", "high"},
+                {"inactive_level", "low"},
+                {"normal_output_mode", "Exposure"},
+                {"normal_polarity", false},
+                {"controlled_device", "near_infrared_strobe"},
+                {"nominal_wavelength_nm", 855.0},
+                {"verified", true},
+                {"notes", "Campus custom strobe"}
+            }}}
+        }}
+    };
+
+    CameraParams params{};
+    orange::camera_config::parse_rig_io_config(camera_config, &params);
+
+    require(params.rig_io_connections.size() == 1,
+            "rig_io should parse one connection");
+    const CameraRigIoConnection& connection = params.rig_io_connections.front();
+    require(connection.purpose == "nir_strobe_trigger",
+            "rig_io purpose should load");
+    require(connection.direction == "output",
+            "rig_io direction should load");
+    require(connection.camera_line == "GPO_0",
+            "rig_io camera line should load");
+    require(connection.physical_pin == 7,
+            "rig_io physical pin should load");
+    require(connection.reference_line == "GND",
+            "rig_io reference line should load");
+    require(connection.reference_pin == 8,
+            "rig_io reference pin should load");
+    require(connection.electrical == "ttl_0_5v",
+            "rig_io electrical mode should load");
+    require(connection.active_level == "high",
+            "rig_io active level should load");
+    require(connection.inactive_level == "low",
+            "rig_io inactive level should load");
+    require(connection.normal_output_mode == "Exposure",
+            "rig_io normal output mode should load");
+    require(!connection.normal_polarity,
+            "rig_io normal polarity should load");
+    require(connection.controlled_device == "near_infrared_strobe",
+            "rig_io controlled device should load");
+    require(connection.nominal_wavelength_nm == 855.0,
+            "rig_io wavelength should load");
+    require(connection.verified,
+            "rig_io verified should load");
+    require(connection.notes == "Campus custom strobe",
+            "rig_io notes should load");
+
+    const nlohmann::json saved = orange::camera_config::build_rig_io_config(params);
+    require(saved["schema_id"].get<std::string>() == "orange.camera.rig_io",
+            "rig_io builder should emit schema id");
+    require(saved["schema_version"].get<int>() == 1,
+            "rig_io builder should emit schema version");
+    require(saved["connections"].is_array() && saved["connections"].size() == 1,
+            "rig_io builder should emit one connection");
+    const nlohmann::json& saved_connection = saved["connections"][0];
+    require(saved_connection["purpose"].get<std::string>() == "nir_strobe_trigger",
+            "rig_io purpose should round-trip");
+    require(saved_connection["camera_line"].get<std::string>() == "GPO_0",
+            "rig_io camera line should round-trip");
+    require(saved_connection["physical_pin"].get<int>() == 7,
+            "rig_io physical pin should round-trip");
+    require(saved_connection["reference_line"].get<std::string>() == "GND",
+            "rig_io reference line should round-trip");
+    require(saved_connection["reference_pin"].get<int>() == 8,
+            "rig_io reference pin should round-trip");
+    require(saved_connection["normal_output_mode"].get<std::string>() == "Exposure",
+            "rig_io normal output mode should round-trip");
+    require(!saved_connection["normal_polarity"].get<bool>(),
+            "rig_io normal polarity should round-trip");
+    require(saved_connection["nominal_wavelength_nm"].get<double>() == 855.0,
+            "rig_io wavelength should round-trip");
+}
+
 }  // namespace
 
 int main()
@@ -201,6 +290,7 @@ int main()
         {"parse_preview_max_fps_zero_unlimited", &test_parse_preview_max_fps_zero_unlimited},
         {"parse_preview_max_fps_negative_unlimited", &test_parse_preview_max_fps_negative_unlimited},
         {"parse_preview_max_fps_clamps_too_large", &test_parse_preview_max_fps_clamps_too_large},
+        {"rig_io_mapping_round_trip", &test_rig_io_mapping_round_trip},
     };
 
     for (const auto& test : tests) {

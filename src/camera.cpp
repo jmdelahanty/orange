@@ -1,8 +1,11 @@
 #include "camera.h"
 #include <iostream>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <sstream>
+#include <utility>
 #include <cuda_runtime_api.h>
 
 namespace {
@@ -46,6 +49,18 @@ std::string normalize_gpio_connector_variant(const CameraParams* camera_params)
     const std::string value = lower_ascii(camera_params->gpio_connector_variant);
     if (value == "area_scan_12_pin" || value == "area_scan_8_pin" ||
         value == "line_scan_12_pin" || value == "unknown") {
+        return value;
+    }
+    return "unknown";
+}
+
+std::string normalize_gpio_pinout_access(const CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return "unknown";
+    }
+    const std::string value = lower_ascii(camera_params->gpio_pinout_access);
+    if (value == "exposed" || value == "not_exposed" || value == "unknown") {
         return value;
     }
     return "unknown";
@@ -113,6 +128,45 @@ bool get_camera_uint32_param_value(Emergent::CEmergentCamera* camera,
         return false;
     }
     return EVT_CameraGetUInt32Param(camera, name, out_value) == EVT_SUCCESS;
+}
+
+bool parse_gpo_line_index(const std::string& camera_line, int* index_out)
+{
+    if (index_out) {
+        *index_out = -1;
+    }
+    const std::string line = lower_ascii(camera_line);
+    constexpr const char* kPrefix = "gpo_";
+    if (line.rfind(kPrefix, 0) != 0 || line.size() <= std::strlen(kPrefix)) {
+        return false;
+    }
+    int parsed = 0;
+    for (std::size_t i = std::strlen(kPrefix); i < line.size(); ++i) {
+        const unsigned char ch = static_cast<unsigned char>(line[i]);
+        if (!std::isdigit(ch)) {
+            return false;
+        }
+        parsed = parsed * 10 + (line[i] - '0');
+    }
+    if (parsed < 0 || parsed > 9) {
+        return false;
+    }
+    if (index_out) {
+        *index_out = parsed;
+    }
+    return true;
+}
+
+bool rig_io_level_is_high(const std::string& value, bool default_value)
+{
+    const std::string normalized = lower_ascii(value);
+    if (normalized == "high" || normalized == "rising_edge" || normalized == "pulse") {
+        return true;
+    }
+    if (normalized == "low" || normalized == "falling_edge") {
+        return false;
+    }
+    return default_value;
 }
 
 void log_ptp_camera_sync_readback(Emergent::CEmergentCamera* camera, const CameraParams* camera_params)
@@ -360,6 +414,16 @@ void apply_gpio_node_config(
 
 void apply_gpio_node_configs(Emergent::CEmergentCamera* camera, const CameraParams* camera_params, const char* context)
 {
+    if (normalize_gpio_pinout_access(camera_params) == "not_exposed") {
+        if (!camera_params->gpio_nodes.empty()) {
+            throw_camera_config_error(
+                camera_params->camera_serial,
+                std::string("[") + context +
+                    "] gpio.nodes are configured but gpio_pinout_access=not_exposed");
+        }
+        return;
+    }
+
     for (const auto& node : camera_params->gpio_nodes) {
         apply_gpio_node_config(camera, camera_params, node, context);
     }
@@ -399,6 +463,14 @@ bool build_gpio_recipe_preview_nodes_impl(const CameraParams* camera_params,
             if (error_out) {
                 *error_out = std::string("unsupported gpio_recipe `") + camera_params->gpio_recipe + "`";
             }
+        }
+        return false;
+    }
+
+    if (normalize_gpio_pinout_access(camera_params) == "not_exposed") {
+        if (error_out) {
+            *error_out = std::string("gpio_recipe `") + recipe +
+                         "` requires exposed GPIO pinout access";
         }
         return false;
     }
@@ -948,6 +1020,304 @@ bool build_gpio_recipe_preview_nodes(const CameraParams* camera_params,
                                      std::string* error_out)
 {
     return build_gpio_recipe_preview_nodes_impl(camera_params, nodes_out, error_out);
+}
+
+bool resolve_rig_io_gpo_nodes(const CameraRigIoConnection& connection,
+                              int* gpo_index_out,
+                              std::string* mode_node_out,
+                              std::string* polarity_node_out,
+                              std::string* status_out)
+{
+    int gpo_index = -1;
+    if (!parse_gpo_line_index(connection.camera_line, &gpo_index)) {
+        if (status_out) {
+            *status_out = "Rig I/O diagnostic failed: camera_line must be GPO_N.";
+        }
+        return false;
+    }
+    if (gpo_index_out) {
+        *gpo_index_out = gpo_index;
+    }
+    if (mode_node_out) {
+        *mode_node_out = "GPO_" + std::to_string(gpo_index) + "_Mode";
+    }
+    if (polarity_node_out) {
+        *polarity_node_out = "GPO_" + std::to_string(gpo_index) + "_Polarity";
+    }
+    return true;
+}
+
+bool read_rig_io_output_diagnostic_state(Emergent::CEmergentCamera* camera,
+                                         const CameraParams* camera_params,
+                                         const CameraRigIoConnection& connection,
+                                         CameraRigIoOutputState* state_out,
+                                         std::string* status_out)
+{
+    auto set_status = [&](const std::string& message) {
+        if (status_out) {
+            *status_out = message;
+        }
+    };
+
+    if (state_out) {
+        *state_out = CameraRigIoOutputState{};
+    }
+    if (!camera || !camera_params) {
+        set_status("Rig I/O diagnostic readback failed: camera is not open.");
+        return false;
+    }
+    if (lower_ascii(connection.direction) != "output") {
+        set_status("Rig I/O diagnostic readback failed: mapping direction is not output.");
+        return false;
+    }
+
+    int gpo_index = -1;
+    std::string mode_node;
+    std::string polarity_node;
+    if (!resolve_rig_io_gpo_nodes(
+            connection, &gpo_index, &mode_node, &polarity_node, status_out)) {
+        return false;
+    }
+    if (!has_param(camera, mode_node.c_str())) {
+        set_status("Rig I/O diagnostic readback failed: missing GenICam node " + mode_node + ".");
+        return false;
+    }
+
+    CameraRigIoOutputState state;
+    state.camera_line = "GPO_" + std::to_string(gpo_index);
+    state.mode_node = mode_node;
+    state.polarity_node = polarity_node;
+    if (!get_camera_enum_param_string(camera, mode_node.c_str(), &state.mode)) {
+        set_status("Rig I/O diagnostic readback failed: unable to read " + mode_node + ".");
+        return false;
+    }
+
+    if (has_param(camera, polarity_node.c_str())) {
+        bool polarity = false;
+        const EVT_ERROR err = EVT_CameraGetBoolParam(camera, polarity_node.c_str(), &polarity);
+        if (err != EVT_SUCCESS) {
+            set_status("Rig I/O diagnostic readback failed: " + polarity_node +
+                       " read failed: " + get_evt_error_string(err));
+            return false;
+        }
+        state.has_polarity = true;
+        state.polarity = polarity;
+    }
+    state.valid = true;
+
+    std::ostringstream oss;
+    oss << "Captured " << state.camera_line << " state: "
+        << state.mode_node << "=" << state.mode;
+    if (state.has_polarity) {
+        oss << ", " << state.polarity_node << "="
+            << (state.polarity ? "true/high" : "false/low");
+    }
+    set_status(oss.str());
+    std::cout << camera_params->camera_serial << " [rig_io_output_diagnostic] "
+              << oss.str() << std::endl;
+    if (state_out) {
+        *state_out = std::move(state);
+    }
+    return true;
+}
+
+bool set_rig_io_output_diagnostic(Emergent::CEmergentCamera* camera,
+                                  const CameraParams* camera_params,
+                                  const CameraRigIoConnection& connection,
+                                  const bool active,
+                                  std::string* status_out)
+{
+    auto set_status = [&](const std::string& message) {
+        if (status_out) {
+            *status_out = message;
+        }
+    };
+
+    if (!camera || !camera_params) {
+        set_status("Rig I/O diagnostic failed: camera is not open.");
+        return false;
+    }
+    if (lower_ascii(connection.direction) != "output") {
+        set_status("Rig I/O diagnostic failed: mapping direction is not output.");
+        return false;
+    }
+
+    int gpo_index = -1;
+    std::string mode_node;
+    std::string polarity_node;
+    if (!resolve_rig_io_gpo_nodes(
+            connection, &gpo_index, &mode_node, &polarity_node, status_out)) {
+        return false;
+    }
+    if (!has_param(camera, mode_node.c_str())) {
+        set_status("Rig I/O diagnostic failed: missing GenICam node " + mode_node + ".");
+        return false;
+    }
+    if (!has_param(camera, polarity_node.c_str())) {
+        set_status("Rig I/O diagnostic failed: missing GenICam node " + polarity_node + ".");
+        return false;
+    }
+
+    EVT_ERROR err = EVT_CameraSetEnumParam(camera, mode_node.c_str(), "GPO");
+    if (err != EVT_SUCCESS) {
+        set_status("Rig I/O diagnostic failed: " + mode_node + "=GPO write failed: " +
+                   get_evt_error_string(err));
+        return false;
+    }
+
+    const bool active_high = rig_io_level_is_high(connection.active_level, true);
+    const bool inactive_high = rig_io_level_is_high(connection.inactive_level, !active_high);
+    const bool requested_high = active ? active_high : inactive_high;
+    err = EVT_CameraSetBoolParam(camera, polarity_node.c_str(), requested_high);
+    if (err != EVT_SUCCESS) {
+        set_status("Rig I/O diagnostic failed: " + polarity_node + " write failed: " +
+                   get_evt_error_string(err));
+        return false;
+    }
+
+    std::ostringstream oss;
+    oss << "Rig I/O diagnostic set " << connection.camera_line
+        << " manual " << (active ? "active" : "inactive")
+        << " via " << mode_node << "=GPO, " << polarity_node << "="
+        << (requested_high ? "true/high" : "false/low")
+        << ". Restore captured state or reopen/reapply camera config before normal experiments if this line normally pulses.";
+    set_status(oss.str());
+    std::cout << camera_params->camera_serial << " [rig_io_output_diagnostic] "
+              << oss.str() << std::endl;
+    return true;
+}
+
+bool restore_rig_io_output_diagnostic_state(Emergent::CEmergentCamera* camera,
+                                            const CameraParams* camera_params,
+                                            const CameraRigIoOutputState& state,
+                                            std::string* status_out)
+{
+    auto set_status = [&](const std::string& message) {
+        if (status_out) {
+            *status_out = message;
+        }
+    };
+
+    if (!camera || !camera_params) {
+        set_status("Rig I/O diagnostic restore failed: camera is not open.");
+        return false;
+    }
+    if (!state.valid || state.mode_node.empty() || state.mode.empty()) {
+        set_status("Rig I/O diagnostic restore failed: no captured GPO state.");
+        return false;
+    }
+    if (!has_param(camera, state.mode_node.c_str())) {
+        set_status("Rig I/O diagnostic restore failed: missing GenICam node " +
+                   state.mode_node + ".");
+        return false;
+    }
+
+    EVT_ERROR err = EVT_CameraSetEnumParam(camera, state.mode_node.c_str(), state.mode.c_str());
+    if (err != EVT_SUCCESS) {
+        set_status("Rig I/O diagnostic restore failed: " + state.mode_node +
+                   "=" + state.mode + " write failed: " + get_evt_error_string(err));
+        return false;
+    }
+
+    if (state.has_polarity && !state.polarity_node.empty()) {
+        if (!has_param(camera, state.polarity_node.c_str())) {
+            set_status("Rig I/O diagnostic restore failed: missing GenICam node " +
+                       state.polarity_node + ".");
+            return false;
+        }
+        err = EVT_CameraSetBoolParam(camera, state.polarity_node.c_str(), state.polarity);
+        if (err != EVT_SUCCESS) {
+            set_status("Rig I/O diagnostic restore failed: " + state.polarity_node +
+                       " write failed: " + get_evt_error_string(err));
+            return false;
+        }
+    }
+
+    std::ostringstream oss;
+    oss << "Restored " << (state.camera_line.empty() ? "GPO state" : state.camera_line)
+        << ": " << state.mode_node << "=" << state.mode;
+    if (state.has_polarity) {
+        oss << ", " << state.polarity_node << "="
+            << (state.polarity ? "true/high" : "false/low");
+    }
+    set_status(oss.str());
+    std::cout << camera_params->camera_serial << " [rig_io_output_diagnostic] "
+              << oss.str() << std::endl;
+    return true;
+}
+
+bool restore_rig_io_output_normal_mode(Emergent::CEmergentCamera* camera,
+                                       const CameraParams* camera_params,
+                                       const CameraRigIoConnection& connection,
+                                       std::string* status_out)
+{
+    auto set_status = [&](const std::string& message) {
+        if (status_out) {
+            *status_out = message;
+        }
+    };
+
+    if (!camera || !camera_params) {
+        set_status("Rig I/O normal-mode restore failed: camera is not open.");
+        return false;
+    }
+    if (lower_ascii(connection.direction) != "output") {
+        set_status("Rig I/O normal-mode restore failed: mapping direction is not output.");
+        return false;
+    }
+
+    int gpo_index = -1;
+    std::string mode_node;
+    std::string polarity_node;
+    if (!resolve_rig_io_gpo_nodes(
+            connection, &gpo_index, &mode_node, &polarity_node, status_out)) {
+        return false;
+    }
+    if (!has_param(camera, mode_node.c_str())) {
+        set_status("Rig I/O normal-mode restore failed: missing GenICam node " + mode_node + ".");
+        return false;
+    }
+
+    std::string output_mode = connection.normal_output_mode;
+    bool normal_polarity = connection.normal_polarity;
+    if (output_mode.empty() && lower_ascii(connection.purpose) == "nir_strobe_trigger") {
+        output_mode = "Exposure";
+        normal_polarity = false;
+    }
+    if (output_mode.empty()) {
+        set_status("Rig I/O normal-mode restore failed: mapping has no normal_output_mode.");
+        return false;
+    }
+
+    EVT_ERROR err = EVT_CameraSetEnumParam(camera, mode_node.c_str(), output_mode.c_str());
+    if (err != EVT_SUCCESS) {
+        set_status("Rig I/O normal-mode restore failed: " + mode_node +
+                   "=" + output_mode + " write failed: " + get_evt_error_string(err));
+        return false;
+    }
+
+    bool wrote_polarity = false;
+    if (has_param(camera, polarity_node.c_str())) {
+        err = EVT_CameraSetBoolParam(camera, polarity_node.c_str(), normal_polarity);
+        if (err != EVT_SUCCESS) {
+            set_status("Rig I/O normal-mode restore failed: " + polarity_node +
+                       " write failed: " + get_evt_error_string(err));
+            return false;
+        }
+        wrote_polarity = true;
+    }
+
+    std::ostringstream oss;
+    oss << "Restored mapped normal output mode for " << connection.camera_line
+        << ": " << mode_node << "=" << output_mode;
+    if (wrote_polarity) {
+        oss << ", " << polarity_node << "="
+            << (normal_polarity ? "true/high" : "false/low");
+    }
+    set_status(oss.str());
+    std::cout << camera_params->camera_serial << " [rig_io_output_diagnostic] "
+              << oss.str() << std::endl;
+    return true;
 }
 
 std::string get_evt_error_string(EVT_ERROR error)
