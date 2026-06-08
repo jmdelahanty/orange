@@ -72,6 +72,7 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
     request.capture.requires_filter_reinstalled_repeatably = true;
     request.valid_region_erosion_px = 10.0;
     request.operator_confirmed = true;
+    request.operator_notes = "fixture operator note";
     request.runtime_verification.status = "unknown";
     request.runtime_verification.reason = "runtime_850nm_rim_not_verified";
     request.software.orange_git_commit = "testcommit";
@@ -177,6 +178,9 @@ void test_artifact_write_and_snapshot()
         observation["operator_review"].value("accepted", false),
         "operator review accepted");
     require(
+        observation["operator_review"].value("notes", "") == "fixture operator note",
+        "operator notes preserved");
+    require(
         observation["runtime_verification"].value("status", "") == "unknown",
         "runtime verification preserved");
     require(
@@ -230,6 +234,9 @@ void test_artifact_write_and_snapshot()
     require(
         image_set["citrus_preview"].value("diagnostic_only", false),
         "image-set preview is diagnostic");
+    require(
+        image_set.value("operator_notes", "") == "fixture operator note",
+        "image-set operator notes preserved");
 
     const nlohmann::json manifest = read_json(artifact_dir / "manifest.json");
     require(

@@ -2164,19 +2164,26 @@ bool save_dish_top_rim_observation_from_spatial_layout(
     request.capture.capture_mode = ui_state->captured_capture_mode.empty()
                                        ? "session_local_operator_still"
                                        : ui_state->captured_capture_mode;
-    request.capture.filter_state = "unknown";
-    request.capture.runtime_filter_state = "unknown";
-    request.capture.light_state = "unknown";
-    request.capture.projector_state = "unknown";
-    request.capture.projector_visible_to_camera = false;
+    const auto metadata_or_unknown = [](const std::string& value) {
+        return value.empty() ? std::string("unknown") : value;
+    };
+    request.capture.filter_state = metadata_or_unknown(ui_state->calibration_filter_state);
+    request.capture.runtime_filter_state =
+        metadata_or_unknown(ui_state->calibration_runtime_filter_state);
+    request.capture.light_state = metadata_or_unknown(ui_state->calibration_light_state);
+    request.capture.projector_state = metadata_or_unknown(ui_state->calibration_projector_state);
+    request.capture.projector_visible_to_camera =
+        ui_state->calibration_projector_visible_to_camera;
     request.capture.exposure_us = static_cast<double>(selected_camera.exposure);
     request.capture.frame_rate_hz = static_cast<double>(selected_camera.frame_rate);
-    request.capture.requires_filter_reinstalled_repeatably = false;
+    request.capture.requires_filter_reinstalled_repeatably =
+        ui_state->calibration_requires_filter_reinstalled_repeatably;
     request.source_array_role = source_array_role;
     request.source_frame_index = 0;
     request.valid_region_erosion_px = std::max(0.0, ui_state->edge_margin_px);
     request.operator_confirmed = true;
     request.operator_status = "orange_spatial_layout_ui_confirmed";
+    request.operator_notes = ui_state->calibration_operator_notes;
     request.runtime_verification.status = "unknown";
     request.runtime_verification.reason = "runtime_850nm_rim_not_verified";
     request.write_palette_export = true;
@@ -3540,6 +3547,22 @@ void render_spatial_layout_window(
     render_zone_editor(ui_state);
 
     rebuild_schema_preview(ui_state, &selected_camera);
+
+    ImGui::SeparatorText("Calibration Capture Metadata");
+    ImGui::InputText("Filter state", &ui_state->calibration_filter_state);
+    ImGui::InputText("Runtime filter state", &ui_state->calibration_runtime_filter_state);
+    ImGui::InputText("Light state", &ui_state->calibration_light_state);
+    ImGui::InputText("Projector state", &ui_state->calibration_projector_state);
+    ImGui::Checkbox(
+        "Projector visible to camera",
+        &ui_state->calibration_projector_visible_to_camera);
+    ImGui::Checkbox(
+        "Requires repeatable filter reinstall",
+        &ui_state->calibration_requires_filter_reinstalled_repeatably);
+    ImGui::InputTextMultiline(
+        "Operator notes",
+        &ui_state->calibration_operator_notes,
+        ImVec2(-1.0f, ImGui::GetTextLineHeight() * 3.0f));
 
     ImGui::SeparatorText("Persistence");
     const bool captured_in_full_resolution =

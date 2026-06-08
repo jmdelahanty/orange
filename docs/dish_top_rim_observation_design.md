@@ -990,6 +990,13 @@ median blur kernel, maximum detection dimension, and the fallback pass toggle.
 After Hough detection, the detected circle center/radius can also be edited
 directly before using it to seed the registration.
 
+The Spatial Layout UI also exposes optional capture metadata fields for
+`filter_state`, `runtime_filter_state`, `light_state`, `projector_state`,
+`projector_visible_to_camera`, repeatable filter reinstall requirements, and
+operator notes. These fields document the calibration preflight state when an
+operator saves a top-rim observation or image-set companion. They do not make
+daily image-set capture mandatory for every recording.
+
 The Hough proposal is a separate overlay from the applied registered top-rim
 mask. The proposal should remain visible on top of the registration overlay
 with a labeled center marker so operators can distinguish "detected proposal"

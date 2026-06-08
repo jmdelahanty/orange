@@ -584,6 +584,9 @@ nlohmann::json dish_top_rim_observation_to_json(
             }}
         }}
     };
+    if (!request.operator_notes.empty()) {
+        observation["operator_review"]["notes"] = request.operator_notes;
+    }
     return observation;
 }
 
@@ -735,6 +738,7 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
         {"diagnostic_only", true},
         {"authority", "citrus_recomputes_before_acceptance"}
     };
+    image_set.operator_notes = request.operator_notes;
 
     return image_set;
 }

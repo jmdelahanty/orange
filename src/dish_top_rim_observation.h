@@ -84,6 +84,7 @@ struct DishTopRimObservationRequest {
     double valid_region_erosion_px = 0.0;
     bool operator_confirmed = true;
     std::string operator_status = "orange_operator_confirmed";
+    std::string operator_notes;
     DishTopRimRuntimeVerification runtime_verification;
     DishTopRimSoftwareInfo software;
     nlohmann::json image_set_rig_context = nlohmann::json::object();

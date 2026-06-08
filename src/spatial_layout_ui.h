@@ -106,6 +106,13 @@ struct SpatialLayoutUiState {
     std::string citrus_import_error;
     std::string persistence_status;
     std::string persistence_error;
+    std::string calibration_filter_state = "unknown";
+    std::string calibration_runtime_filter_state = "unknown";
+    std::string calibration_light_state = "unknown";
+    std::string calibration_projector_state = "unknown";
+    bool calibration_projector_visible_to_camera = false;
+    bool calibration_requires_filter_reinstalled_repeatably = false;
+    std::string calibration_operator_notes;
     std::string canonical_layout_json;
     std::string runtime_preview_json;
 };
