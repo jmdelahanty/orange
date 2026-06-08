@@ -2,10 +2,15 @@
 
 Date: 2026-06-01
 
-Status: design proposal. No runtime implementation yet.
+Status: design plus first implementation slice. The Orange-native artifact
+writer, Hough-circle proposal, visible overlays, Palette export, spatial
+`dish_mask_runtime` export, Spatial Layout UI save action, and first live
+stream preview plus full-resolution stream snapshot capture now exist.
+Runtime detection gating and Citrus preview/accept remain future slices.
 
 Related documents:
 
+- `docs/calibration_image_set_schema.md`
 - `docs/spatial_layout_contract.md`
 - `docs/spatial_layout_schema.md`
 - `docs/projected_center_alignment_todo.md`
@@ -36,6 +41,17 @@ accepted alignment updates.
 The durable source of truth is Orange-native. Palette-compatible metadata is an
 export view derived from the Orange artifact, not the native storage model.
 
+For generic calibration-image acquisition, Orange should use
+`orange.calibration.image_set` with `purpose = "dish_top_rim"` and
+`target_plane = "dish_top_rim"`. This top-rim observation artifact remains the
+specialized load-bearing fit/review artifact for the accepted circle or
+boundary. A daily capture may therefore write both:
+
+- `orange.calibration.image_set`: source images and acquisition metadata.
+- `orange.calibration.dish_top_rim_observation`: accepted camera-space
+  circle/boundary, valid-detection mask, Palette export, and Citrus preview
+  diagnostics.
+
 Ownership split:
 
 - Orange owns raw captured images, detected top-rim geometry, valid-detection
@@ -52,6 +68,10 @@ The top-rim observation is not a replacement homography. It is evidence about
 where the dish is in the current camera view. Citrus may use its existing
 homography to map that evidence into canvas or arena space for preview, but any
 accepted Citrus change should preserve the Orange observation provenance.
+Orange may show Citrus-space preview values to help the operator, but those
+values are diagnostic and non-authoritative. Citrus should recompute and own
+any accepted Citrus-space center/radius/config change from the durable
+camera-space Orange observation and Citrus-owned rig/homography/optical model.
 
 ## Physical Target
 
@@ -102,11 +122,14 @@ Coordinate rules:
 
 - circle center is `[x, y]` or `{ "x": ..., "y": ... }`, never `[row, col]`
 - image shape is `[height, width]` or `{ "height": ..., "width": ... }`
-- full-frame detections must declare `source_array_role = "images_full"`
-- downsampled detections must declare `source_array_role = "images_ds"` and
-  use downsampled dimensions
-- do not store full-frame pixel values while claiming the mask was tuned on a
-  downsampled array
+- saved top-rim observation artifacts must declare
+  `source_array_role = "images_full"`
+- do not save a top-rim observation artifact from a downsampled preview-space
+  capture; Citrus homography captures are full-resolution camera images, so
+  the accepted circle must be in the same coordinate space
+- downsampled live-preview captures may be used only as operator/workflow
+  previews until a full-resolution capture or validated coordinate-upscale path
+  exists
 
 Ellipse fits and sampled boundary points remain useful future extensions for
 oblique views, non-circular masks, or richer provenance. They are not required
@@ -226,13 +249,51 @@ Reason:
 - the top rim is at a different height from the projection plane and may have
   parallax relative to the calibrated surface
 
+Current Citrus coordinate convention:
+
+- Citrus `homography_matrix` maps `camera_view_px` to
+  `final_display_canvas_px`.
+- camera points are OpenCV image pixels: origin top-left, x right, y down.
+- Citrus `experimental_area_center_x_px`,
+  `experimental_area_center_y_px`, and `experimental_area_radius_px` are
+  arena-relative canvas coordinates, not full camera pixels and not global
+  display-canvas coordinates.
+- The matching camera calibration provides the global canvas placement:
+  `arena_center_x_px`, `arena_center_y_px`, `arena_width_px`, and
+  `arena_height_px`.
+
+Therefore, when Orange previews the current Citrus experimental area in camera
+space, it must first convert the arena-relative circle to global canvas
+coordinates:
+
+```text
+arena_origin_canvas = (
+  arena_center_canvas_x - arena_width_px / 2,
+  arena_center_canvas_y - arena_height_px / 2
+)
+
+experimental_center_global_canvas =
+  arena_origin_canvas + experimental_center_arena_relative
+```
+
+Only then should Orange apply `canvas_to_camera = inverse(camera_to_canvas)` for
+the blue diagnostic overlay. Inverting the homography on the arena-relative
+point directly is a coordinate-space bug and can make the Citrus overlay appear
+drastically off center.
+
 Safe V0 uses:
 
 - map the accepted circle center and sampled circle perimeter points through
   the current Citrus homography as a preview
 - report residuals and offsets
-- let the operator accept a Citrus-side center or radius correction only after
-  review
+- let the operator accept a Citrus-side center correction only after review
+- treat any radius correction as a separate future/explicit
+  operator-reviewed behavior
+- for rigs where the intended Citrus experimental area should cover every
+  camera-observed location the fish can occupy, allow an explicit center+radius
+  `experimental_area` adjustment mode that maps sampled accepted-boundary
+  points into Citrus arena-relative coordinates and fits the Citrus
+  experimental area there
 
 Unsafe V0 uses:
 
@@ -243,6 +304,114 @@ Unsafe V0 uses:
 If future work needs a new homography, use the dish-plane homography workflow
 with known projected points on the intended physical plane. Keep that separate
 from the top-rim mask observation.
+
+### Experimental Area Adjustment Policy
+
+For the current chasing/stimulus use case, the desired Citrus policy is:
+
+```text
+experimental_area = camera-observed area the fish can occupy
+```
+
+This avoids a failure mode where tracking shows the fish inside the physical
+dish area while Citrus logic considers it outside the configured experimental
+area. In that case the chaser or other closed-loop stimulus may fail to pursue
+or constrain the fish near the true boundary.
+
+The center-only correction remains useful as a diagnostic because it separates
+translation error from scale/radius error. The intended accepted correction for
+this policy can be an explicit center+radius experimental-area adjustment:
+
+1. Sample points along the accepted Orange top-rim circle in camera pixels.
+2. Map each point through the existing Citrus `camera_view_px ->
+   final_display_canvas_px` homography.
+3. Convert each mapped point from global canvas coordinates to Citrus
+   arena-relative coordinates.
+4. Fit the Citrus experimental-area circle in arena-relative coordinates.
+5. Present the proposed center/radius as an operator-reviewed Citrus
+   experimental-area adjustment.
+
+This still does not create a new homography. It updates or proposes Citrus
+experimental-area parameters in Citrus-owned coordinates using the current
+homography as the point-mapping bridge.
+
+Important optics caveat: the projector is calibrated on a projection surface,
+while the fish, dish bottom, water column, and top rim can live at different
+effective optical heights. What is physically projected at the calibration
+surface is therefore not guaranteed to match what the fish perceives or where
+the fish can move in the camera image. If future accuracy requires modeling
+that difference directly, use a separate projection-surface / dish-bottom /
+fish-plane calibration workflow rather than overloading this top-rim
+observation as a replacement homography.
+
+### Projection Surface, Fish Plane, And Stimulus Size
+
+Current rig interpretation:
+
+- the projector image plane / projection surface is the diffusive gel
+- Citrus homography is calibrated at that projection surface
+- the tank bottom and fish plane are above the projection surface
+- the tank bottom and fish plane are close enough that, for the current
+  behavioral geometry, they can be treated as approximately the same plane
+- the top rim is another visible camera boundary and is useful for fitting the
+  experimental area, but it should not be confused with the projection surface
+
+This means the current Citrus homography is exact for the projection surface,
+not automatically exact for the tank-bottom/fish plane or top-rim plane. The
+homography remains useful as the current point-mapping bridge, but
+plane-height differences can change apparent center, radius, and local scale.
+
+Orthographic versus perspective intuition:
+
+- an orthographic system behaves as if imaging/projection rays are parallel
+- in an orthographic system, apparent scale is nearly unchanged by small height
+  differences
+- the real camera/projector setup is not perfectly orthographic; it is a
+  perspective optical system
+- however, if the height difference between projection surface and fish plane
+  is small compared with the camera/projector optical distance, the pure
+  geometric scale change may be small enough for the current use case
+
+Rule of thumb:
+
+```text
+approximate perspective scale change ~= plane_height_difference / optical_distance
+```
+
+For example, a `9 mm` plane separation over a `300-600 mm` optical distance is
+on the order of `1.5-3%` before considering refraction/scattering. Whether that
+is experimentally meaningful must be measured.
+
+A dish/fish-plane scale image is useful, but it answers only part of the
+problem:
+
+```text
+camera_px at dish/fish plane -> physical mm at dish/fish plane
+```
+
+That helps measure fish position, dish size, and camera-space calibration at
+the behavioral plane. It does not by itself fully answer:
+
+```text
+Citrus/projector canvas px -> physical/perceived stimulus size at fish plane
+```
+
+To calibrate stimulus size as perceived at the fish/tank-bottom plane, use an
+additional projected-size calibration:
+
+1. keep the current Citrus projection-surface homography
+2. capture a dish/tank-bottom scale image to measure camera px/mm at the
+   behavioral plane
+3. project known dots, bars, or circles with known Citrus pixel sizes
+4. image those projected features through the tank/dish
+5. measure their physical size at the behavioral plane using the scale image
+6. decide whether one per-arena scale factor is sufficient or whether a spatial
+   scale field is needed
+
+If measured projected sizes are uniform enough across the arena, the practical
+calibration can be a single `projector_canvas_px_per_mm_at_fish_plane` value
+per arena. If size varies meaningfully by position, use a local scale map or a
+separate fish-plane projection calibration.
 
 ## Capture Modes
 
@@ -469,11 +638,56 @@ Candidate `observation.json`:
   },
   "citrus_preview": {
     "available": true,
+    "diagnostic_only": true,
+    "authority": "citrus_recomputes_before_acceptance",
     "semantics": "reviewable_center_alignment_suggestion",
+    "citrus_config_ref": {
+      "rig_id": "omnifin0",
+      "canvas_id": "shadow",
+      "arena_id": "arena_1",
+      "homography_ref": "homography_arena_1_2010093.yml"
+    },
     "homography_surface_assumption": "projection_plane",
     "observed_boundary_surface": "dish_top_rim",
-    "suggested_center_delta_canvas_px": {"dx": -2.9, "dy": 4.1},
-    "suggested_radius_delta_canvas_px": 0.0
+    "arena_canvas_region": {
+      "center_canvas_px": {"x": 257.0, "y": 329.0},
+      "size_canvas_px": {"width": 344.0, "height": 344.0},
+      "origin_canvas_px": {"x": 85.0, "y": 157.0}
+    },
+    "current_experimental_area": {
+      "center_arena_relative_px": {"x": 172.0, "y": 172.0},
+      "center_global_canvas_px": {"x": 257.0, "y": 329.0},
+      "radius_canvas_px": 166.0
+    },
+    "observed_top_rim_center": {
+      "camera_px": {"x": 2319.9, "y": 2286.7},
+      "global_canvas_px": {"x": 266.3, "y": 326.4},
+      "arena_relative_px": {"x": 181.3, "y": 169.4}
+    },
+    "proposed_center_only_correction": {
+      "semantics": "center_only_runtime_registration_offset",
+      "proposed_center_arena_relative_px": {"x": 181.3, "y": 169.4},
+      "proposed_center_global_canvas_px": {"x": 266.3, "y": 326.4},
+      "delta_arena_relative_px": {"dx": 9.3, "dy": -2.6},
+      "delta_global_canvas_px": {"dx": 9.3, "dy": -2.6},
+      "radius_policy": "preserve_current_citrus_radius"
+    },
+    "proposed_experimental_area_adjustment": {
+      "available": true,
+      "semantics": "center_and_radius_match_observed_experimental_area",
+      "input_boundary": "accepted_top_rim_circle_sampled_in_camera_px",
+      "mapping": "camera_px_to_global_canvas_px_to_arena_relative_px",
+      "fit_space": "citrus_arena_relative_canvas_px",
+      "proposed_center_arena_relative_px": {"x": 181.4, "y": 169.2},
+      "proposed_radius_arena_relative_px": 184.6,
+      "delta_arena_relative_px": {"dx": 9.4, "dy": -2.8},
+      "delta_radius_px": 18.6,
+      "radius_policy": "match_observed_experimental_area",
+      "fit_quality": {
+        "sample_count": 96,
+        "residual_rms_arena_relative_px": 1.1
+      }
+    }
   },
   "runtime_verification": {
     "status": "unknown",
@@ -629,7 +843,17 @@ Minimum Citrus-side fields to persist:
 - Citrus homography artifact id/fingerprint used for preview, if any
 - transform semantics, such as `existing_homography_preview` or
   `accepted_center_delta`
-- derived center/radius in Citrus canvas or arena coordinates, if accepted
+- current Citrus experimental center/radius in arena-relative and global
+  canvas coordinates
+- Orange-observed top-rim center or sampled boundary mapped through the Citrus
+  homography into global canvas and arena-relative coordinates, if Citrus used
+  those values during acceptance
+- accepted center-only correction delta, if any, recomputed by Citrus
+- accepted center+radius `experimental_area` adjustment, if explicitly
+  configured for rigs where the projected/stimulus area should cover the
+  camera-observed fish-occupiable area, recomputed by Citrus
+- radius policy, such as `preserve_current_citrus_radius` or
+  `match_observed_experimental_area`
 - operator decision and timestamp
 
 The important rule is that H5 should snapshot what was actually used during the
@@ -683,6 +907,26 @@ Citrus should not treat the Orange artifact as a direct replacement for its
 homography. It may use the artifact to adjust center/radius or to create a
 session-local registration only after operator review.
 
+The conservative V0 acceptance mode is center-only:
+
+```text
+proposed_experimental_area_center_arena_relative =
+  camera_to_canvas(observed_top_rim_center_camera_px) - arena_origin_canvas
+```
+
+For the corrected-outline preview, Citrus should preserve the current
+experimental-area shape and radius and move only the center. Radius adjustment
+is a future or explicit operator-reviewed behavior because top-rim camera
+radius, projection-plane canvas radius, and dish-height/parallax assumptions
+are not interchangeable without additional modeling.
+
+For rigs where the intended Citrus experimental area should match the
+camera-observed area the fish can occupy, use the explicit
+`center_and_radius_match_observed_experimental_area` mode. That mode samples
+the accepted Orange boundary, maps sampled points through the Citrus homography,
+fits a circle in arena-relative coordinates, and proposes updated Citrus
+experimental-area center/radius values for operator review.
+
 ## Orange UI Workflow
 
 Proposed operator flow:
@@ -698,13 +942,66 @@ Proposed operator flow:
    trigger it manually.
 6. Capture `crosshair_on`.
 7. Run Hough-circle detection on the declared source frame.
-8. Let the operator confirm or adjust the circle.
+8. Let the operator tune Hough parameters, rerun detection, and optionally
+   numerically adjust the detected circle.
 9. Detect the crosshair center from frame difference when crosshair capture is
    available.
 10. Preview top-rim circle, valid detection region, and center offset.
 11. Save the observation artifact and visible review overlay.
 12. Optionally export or notify Citrus for preview.
 13. For runtime use, mark the artifact active only after operator review.
+
+Current Orange UI capture modes:
+
+- `single_camera_direct_still`: opens/captures the selected camera directly.
+  This is only useful when that camera can produce a lit frame without the
+  normal multi-camera TTL-lighting path.
+- `live_stream_preview_snapshot`: reads back the selected camera's latest
+  uploaded GUI preview texture while normal streaming is active. This is the
+  preview/workflow mode for TTL-lit rigs where another camera, such as
+  `2010096`, drives the light source.
+- `full_resolution_stream_snapshot`: requests the selected camera's acquisition
+  thread to fan out one full-resolution `WORKER_ENTRY` to a snapshot worker.
+  The snapshot worker copies the full camera frame into snapshot-owned memory,
+  releases the acquisition frame promptly, then returns RGBA bytes to the
+  Spatial Layout UI. This is the preferred artifact capture mode for TTL-lit
+  rigs because the GUI preview can remain downsampled while the saved
+  top-rim observation stays in full-resolution camera coordinates.
+
+Important limitation: `live_stream_preview_snapshot` captures the displayed GUI
+preview. If display downsampling is active, Orange marks the capture as
+`source_array_role = "images_ds"` and the circle coordinates are in preview
+space, not full camera-native pixels. The Spatial Layout UI must not save a
+top-rim observation artifact from that downsampled capture. Use it for operator
+review and workflow validation only. To save the artifact while streaming with
+downsampled preview, use `full_resolution_stream_snapshot`.
+
+The full-resolution stream snapshot path is an optional acquisition fanout
+consumer, not a separate camera open/start/stop path. It follows the
+`WORKER_ENTRY` retain/enqueue/release lease model documented in
+`docs/threading_model_overview.md`: retain only when a snapshot request is
+pending, copy the full-resolution frame into snapshot-owned memory, release the
+acquisition frame promptly, then run Hough fitting and UI review from the
+snapshot-owned copy.
+
+Current Spatial Layout detection controls expose Hough `dp`, `param1`,
+`param2`, minimum distance fraction, radius range fractions, radius adjustment,
+median blur kernel, maximum detection dimension, and the fallback pass toggle.
+After Hough detection, the detected circle center/radius can also be edited
+directly before using it to seed the registration.
+
+The Hough proposal is a separate overlay from the applied registered top-rim
+mask. The proposal should remain visible on top of the registration overlay
+with a labeled center marker so operators can distinguish "detected proposal"
+from "applied registration".
+
+When a Citrus template and homography are imported, the Spatial Layout UI also
+shows a corrected Citrus outline preview. That preview preserves the current
+Citrus experimental-area shape/radius, moves only the center to the
+Hough-derived daily top-rim center mapped through the Citrus homography, and
+draws the resulting outline back in camera space. It is a review overlay for
+the V0 center-only correction contract, not an automatic Citrus config
+mutation.
 
 ## Validation Plan
 
@@ -751,20 +1048,28 @@ each session needs a new capture.
 
 ### Slice 1: Artifact-Only Capture
 
-- add schema constants and JSON writer for
+- [x] add schema constants and JSON writer for
   `orange.calibration.dish_top_rim_observation`
-- save source frames, Hough parameters, detected circle, accepted circle,
-  visible overlay, crosshair center, and alignment offsets
-- no runtime detection gating yet
-- no automatic Citrus mutation
+- [x] save source frames, Hough parameters, detected circle, accepted circle,
+  visible overlay, and valid-region overlay
+- [ ] save crosshair center and alignment offsets
+- [x] no runtime detection gating yet
+- [x] no automatic Citrus mutation
+
+Current caveat: the implemented UI save action records the accepted top-rim
+circle and valid detection region from the current Spatial Layout UI fit. It
+does not yet capture or decode a projected crosshair center, so crosshair
+alignment offsets remain future work.
 
 ### Slice 2: Operator Preview
 
-- add Orange overlay preview for Hough circle, accepted circle, and valid
+- [x] add Orange overlay preview for Hough circle, accepted circle, and valid
   detection region
 - add confidence and quality flags
 - add explicit optical-state metadata in the UI
-- add optional Palette adapter export JSON for import testing
+- [x] add optional Palette adapter export JSON for import testing
+- [x] add spatial `dish_mask_runtime` adapter JSON for import/testing against
+  the existing `recording_snapshot.json` calibration shape
 
 ### Slice 3: Runtime Gating
 
@@ -794,8 +1099,6 @@ each session needs a new capture.
 - Can the rim be seen reliably in normal 850 nm runtime images, or is runtime
   verification usually `unknown`?
 - Does removing and reinstalling the filter introduce measurable pixel shift?
-- Should an accepted Citrus correction adjust center only in V0, or center plus
-  radius?
 - Should Orange request the Citrus crosshair through local control, or should
   V0 remain operator-driven?
 - What minimum Hough quality metrics should be required before the UI allows
@@ -806,7 +1109,12 @@ each session needs a new capture.
 ## Resolved V0 Decisions
 
 - V0 geometry for the current circular single-arena dish is an
-  operator-confirmed circle.
+  operator-confirmed circle in full-resolution camera-native pixels.
+- V0 Citrus correction semantics are center-only:
+  map the observed top-rim center through the existing Citrus
+  camera-to-canvas homography, convert to arena-relative coordinates, and
+  preserve the current Citrus experimental-area shape/radius. Any radius
+  adjustment must be an explicit future/operator-reviewed behavior.
 - OpenCV Hough circle detection is the initial automatic proposal mechanism.
 - The accepted circle is the load-bearing mask geometry.
 - The native durable artifact is Orange-specific; Palette metadata is an

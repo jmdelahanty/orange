@@ -19,6 +19,7 @@ class ImageWriterWorker;
 class CropAndEncodeWorker;
 class RecordingIngress;
 class FrameIPCManager;
+class SpatialSnapshotWorker;
 namespace yolo_event_log {
 class SyntheticYoloEventEmitter;
 }
@@ -36,6 +37,7 @@ void acquire_frames(
     ImageWriterWorker* image_writer,
     CameraResources* resources,
     FrameIPCManager* frame_ipc_manager,
-    yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter = nullptr
+    yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter = nullptr,
+    SpatialSnapshotWorker* spatial_snapshot_worker = nullptr
 );
 #endif

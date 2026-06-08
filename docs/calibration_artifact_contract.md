@@ -18,6 +18,9 @@ Interpretation guide:
   how reference f-number anchoring works, and what transfers across exposures.
 - See `docs/target_derived_calibration_plan.md` for the USAF resolution artifact
   design, the current manual-annotation v1 workflow, and the planned DOF follow-up.
+- See `docs/calibration_image_set_schema.md` for the generic acquisition
+  artifact Orange should use for Citrus-imported homography, scale, top-rim,
+  and crosshair calibration image sets.
 
 ## Ownership
 
@@ -97,6 +100,25 @@ Notes:
 - `analysis_overlays/` contains ROI-overlay audit images written from the same captures.
 - USAF v1 uses manual resolved-element annotation per captured field position; it does
   not yet auto-read the target.
+
+Planned generic calibration image-set package layout:
+
+```text
+<artifact_id>/
+├── manifest.json
+├── image_set.json
+├── images/
+├── overlays/
+└── exports/
+```
+
+Notes:
+- `image_set.json` uses `schema_id = "orange.calibration.image_set"`.
+- The image-set artifact is the Orange-owned acquisition package for
+  Citrus-imported homography grids, scale images, dish top-rim captures, and
+  crosshair-alignment captures.
+- `exports/` may contain Citrus-compatible staging copies or manifests, but
+  those exports are not the durable Orange artifact identity.
 
 ## Manifest Contract
 
@@ -272,6 +294,7 @@ Current emitted schema IDs:
 - `orange.calibration.usaf1951_resolution`
 
 Planned future schema IDs:
+- `orange.calibration.image_set`
 - `orange.calibration.dof_resolution`
 - `orange.calibration.imaging_capability_summary`
 

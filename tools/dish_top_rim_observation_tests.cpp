@@ -1,4 +1,5 @@
 #include "dish_top_rim_observation.h"
+#include "spatial_layout_schema.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -63,6 +64,8 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
     request.capture.capture_mode = "session_local_operator_still";
     request.capture.filter_state = "removed";
     request.capture.runtime_filter_state = "850nm_bandpass_installed";
+    request.capture.light_state = "visible_projector_only";
+    request.capture.projector_state = "projector_off";
     request.capture.projector_visible_to_camera = true;
     request.capture.exposure_us = 500000.0;
     request.capture.frame_rate_hz = 1.0;
@@ -74,6 +77,12 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
     request.software.orange_git_commit = "testcommit";
     request.software.orange_git_dirty_tracked = false;
     request.software.orange_version = "test";
+    request.image_set_rig_context = {
+        {"rig_id", "omnifin0"},
+        {"canvas_id", "shadow"},
+        {"arena_id", "arena_1"},
+        {"camera_id", "2012632"}
+    };
     return request;
 }
 
@@ -134,11 +143,15 @@ void test_artifact_write_and_snapshot()
     const std::filesystem::path artifact_dir = root / artifact_id;
     require(std::filesystem::exists(artifact_dir / "manifest.json"), "manifest written");
     require(std::filesystem::exists(artifact_dir / "observation.json"), "observation written");
+    require(std::filesystem::exists(artifact_dir / "image_set.json"), "image-set companion written");
     require(std::filesystem::exists(artifact_dir / "captures" / "source_frame.png"), "source frame written");
     require(std::filesystem::exists(artifact_dir / "overlays" / "top_rim_fit.png"), "review overlay written");
     require(
         std::filesystem::exists(artifact_dir / "exports" / "palette_dish_mask_v2.json"),
         "Palette adapter JSON written");
+    require(
+        std::filesystem::exists(artifact_dir / "exports" / "spatial_dish_mask_runtime_v1.json"),
+        "spatial dish-mask runtime adapter JSON written");
 
     const nlohmann::json observation = read_json(artifact_dir / "observation.json");
     require(
@@ -166,6 +179,57 @@ void test_artifact_write_and_snapshot()
     require(
         observation["runtime_verification"].value("status", "") == "unknown",
         "runtime verification preserved");
+    require(
+        observation["capture"].value("light_state", "") == "visible_projector_only",
+        "capture light state preserved");
+    require(
+        observation["capture"].value("projector_state", "") == "projector_off",
+        "capture projector state preserved");
+
+    const nlohmann::json image_set = read_json(artifact_dir / "image_set.json");
+    require(
+        image_set.value("schema_id", "") == orange::calibration::kCalibrationImageSetSchemaId,
+        "image-set schema id");
+    require(image_set.value("artifact_id", "") == artifact_id, "image-set artifact id");
+    require(image_set.value("purpose", "") == "dish_top_rim", "image-set purpose");
+    require(image_set.value("target_plane", "") == "dish_top_rim", "image-set target plane");
+    require(
+        image_set.value("coordinate_space", "") == "camera_native_pixels",
+        "image-set coordinate space");
+    require(image_set["camera"].value("serial", "") == "2012632", "image-set camera serial");
+    require(image_set["camera"]["image_shape"].value("height", 0) == 512, "image-set height");
+    require(image_set["camera"]["image_shape"].value("width", 0) == 640, "image-set width");
+    require(image_set["capture"].value("timestamp_utc", "") == request.created_utc, "image-set timestamp");
+    require(
+        image_set["capture"].value("capture_mode", "") == request.capture.capture_mode,
+        "image-set capture mode");
+    require(image_set["capture"].value("light_state", "") == "visible_projector_only", "image-set light state");
+    require(image_set["images"].size() == 1, "image-set source image count");
+    require(image_set["images"][0].value("role", "") == "source", "image-set source role");
+    require(
+        image_set["images"][0].value("path", "") == "captures/source_frame.png",
+        "image-set source path");
+    require(
+        image_set["images"][0].value("checksum", "") ==
+            observation["artifacts"].value("source_frame_checksum", ""),
+        "image-set source checksum matches observation");
+    require(
+        image_set["derived_artifacts"].size() == 1,
+        "image-set references derived top-rim observation");
+    require(
+        image_set["derived_artifacts"][0].value("artifact_schema_id", "") ==
+            kDishTopRimObservationSchemaId,
+        "image-set derived artifact schema");
+    require(
+        image_set["derived_artifacts"][0].value("fingerprint", "") ==
+            observation["calibration_ref"].value("fingerprint", ""),
+        "image-set derived artifact fingerprint");
+    require(
+        image_set["rig_context"].value("canvas_id", "") == "shadow",
+        "image-set rig context preserved");
+    require(
+        image_set["citrus_preview"].value("diagnostic_only", false),
+        "image-set preview is diagnostic");
 
     const nlohmann::json manifest = read_json(artifact_dir / "manifest.json");
     require(
@@ -175,6 +239,9 @@ void test_artifact_write_and_snapshot()
         manifest["calibration_ref"].value("fingerprint", "") ==
             observation["calibration_ref"].value("fingerprint", ""),
         "manifest and observation fingerprints match");
+    require(
+        manifest["files"].value("image_set_json", "") == "image_set.json",
+        "manifest records image-set companion");
 
     const nlohmann::json palette = read_json(artifact_dir / "exports" / "palette_dish_mask_v2.json");
     require(palette.value("shape", "") == "circle", "Palette shape");
@@ -183,6 +250,29 @@ void test_artifact_write_and_snapshot()
     require(palette["detected_circle"].value("radius", 0) == 140, "Palette radius from accepted mask");
     require(palette["metrics"]["image_shape"][0].get<int>() == 512, "Palette image height");
     require(palette["metrics"]["image_shape"][1].get<int>() == 640, "Palette image width");
+
+    const nlohmann::json spatial_runtime =
+        read_json(artifact_dir / "exports" / "spatial_dish_mask_runtime_v1.json");
+    require(spatial_runtime.value("schema_version", 0) == 1, "spatial runtime schema version");
+    require(spatial_runtime.value("enabled", false), "spatial runtime enabled");
+    require(spatial_runtime.value("source", "") == "detected_fit", "spatial runtime source");
+    require(
+        spatial_runtime["geometry"].value("coordinate_space", "") == "camera_native_pixels",
+        "spatial runtime coordinate space");
+    require(
+        std::abs(spatial_runtime["geometry"]["outer_geometry"].value("r", 0.0) - 150.0) < 0.001,
+        "spatial runtime outer radius from accepted circle");
+    require(
+        std::abs(spatial_runtime["geometry"]["valid_geometry"].value("r", 0.0) - 140.0) < 0.001,
+        "spatial runtime valid radius from eroded mask");
+    require(
+        spatial_runtime["source_observation"].value("artifact_id", "") == artifact_id,
+        "spatial runtime references source observation");
+    orange::spatial::DishMaskRuntime parsed_runtime;
+    require(
+        orange::spatial::parse_dish_mask_runtime_json(spatial_runtime, &parsed_runtime, &error),
+        "spatial runtime export parses with spatial schema: " + error);
+    require(parsed_runtime.has_geometry, "parsed spatial runtime has geometry");
 
     const nlohmann::json registry = read_json(root / "index.json");
     require(
@@ -241,12 +331,12 @@ void test_rejects_mismatched_image_shape()
     std::filesystem::remove_all(root);
 }
 
-void test_rejects_unknown_source_array_role()
+void expect_rejects_source_array_role(const std::string& source_array_role)
 {
     using namespace orange::calibration;
     const std::filesystem::path root = make_temp_root();
     DishTopRimObservationRequest request = make_request("dishrim_bad_source_array");
-    request.source_array_role = "full_frame_but_not_declared";
+    request.source_array_role = source_array_role;
 
     DishTopRimCircle accepted;
     accepted.center.x = 322.0;
@@ -263,11 +353,17 @@ void test_rejects_unknown_source_array_role()
         accepted,
         &result,
         &error);
-    require(!ok, "writer should reject unknown source_array_role");
+    require(!ok, "writer should reject non-full-resolution source_array_role");
     require(
         error.find("source_array_role") != std::string::npos,
         "source_array_role error should be explicit");
     std::filesystem::remove_all(root);
+}
+
+void test_rejects_non_full_source_array_role()
+{
+    expect_rejects_source_array_role("images_ds");
+    expect_rejects_source_array_role("full_frame_but_not_declared");
 }
 
 } // namespace
@@ -278,7 +374,7 @@ int main()
         test_hough_detects_circle();
         test_artifact_write_and_snapshot();
         test_rejects_mismatched_image_shape();
-        test_rejects_unknown_source_array_role();
+        test_rejects_non_full_source_array_role();
     } catch (const std::exception& ex) {
         std::cerr << "dish_top_rim_observation_tests failed: " << ex.what() << std::endl;
         return 1;

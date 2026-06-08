@@ -1,6 +1,7 @@
 #ifndef ORANGE_DISH_TOP_RIM_OBSERVATION_H
 #define ORANGE_DISH_TOP_RIM_OBSERVATION_H
 
+#include "calibration_image_set.h"
 #include "json.hpp"
 
 #include <opencv2/core.hpp>
@@ -53,6 +54,8 @@ struct DishTopRimCaptureContext {
     std::string capture_mode = "session_local_operator_still";
     std::string filter_state = "unknown";
     std::string runtime_filter_state = "unknown";
+    std::string light_state;
+    std::string projector_state;
     bool projector_visible_to_camera = false;
     double exposure_us = 0.0;
     double frame_rate_hz = 0.0;
@@ -83,7 +86,9 @@ struct DishTopRimObservationRequest {
     std::string operator_status = "orange_operator_confirmed";
     DishTopRimRuntimeVerification runtime_verification;
     DishTopRimSoftwareInfo software;
+    nlohmann::json image_set_rig_context = nlohmann::json::object();
     bool write_palette_export = true;
+    bool write_image_set_companion = true;
 };
 
 struct DishTopRimObservationArtifactPaths {
@@ -91,10 +96,12 @@ struct DishTopRimObservationArtifactPaths {
     std::string artifact_dir;
     std::string manifest_path;
     std::string observation_json_path;
+    std::string image_set_json_path;
     std::string source_frame_path;
     std::string review_overlay_path;
     std::string valid_detection_overlay_path;
     std::string palette_export_path;
+    std::string spatial_dish_mask_runtime_export_path;
 };
 
 struct DishTopRimObservationWriteResult {
@@ -103,6 +110,7 @@ struct DishTopRimObservationWriteResult {
     std::string fingerprint;
     nlohmann::json manifest;
     nlohmann::json observation;
+    nlohmann::json image_set;
     nlohmann::json palette_export;
 };
 
@@ -138,6 +146,9 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
     const std::string& fingerprint);
 
 nlohmann::json dish_top_rim_palette_export_to_json(
+    const nlohmann::json& observation_json);
+
+nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
     const nlohmann::json& observation_json);
 
 std::string compute_dish_top_rim_observation_fingerprint(

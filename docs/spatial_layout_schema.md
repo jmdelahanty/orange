@@ -11,6 +11,7 @@ and Citrus-side consumption are still pending.
 Related documents:
 
 - `docs/calibration_artifact_contract.md`
+- `docs/calibration_image_set_schema.md`
 - `docs/dish_top_rim_observation_design.md`
 - `docs/spatial_layout_contract.md`
 - `docs/recording_metadata.md`
@@ -35,6 +36,10 @@ Embedded runtime payload versions:
 
 - `dish_mask` and `arena_layout` are independent. A camera may emit either one
   or both.
+- `orange.calibration.image_set` is an acquisition/import artifact, not a
+  runtime spatial-layout payload. Citrus may import image sets to fit or accept
+  homography, scale, top-rim, or crosshair calibration, while `dish_mask` and
+  `arena_layout` carry resolved geometry for Orange/Citrus runtime use.
 - `dish_mask` names the observed usable boundary in camera space. In v1 that
   may be the inner experimental area if the outer dish rim is not visible.
 - For the current circular single-arena V0, `dish_mask` may be sourced from
@@ -79,6 +84,19 @@ Embedded runtime payload versions:
 - The current schema does not yet define an explicit `citrus_template_ref`. If
   exact Citrus provenance must survive into H5, the schema should be extended
   or that provenance should live elsewhere in recording metadata.
+- Orange may include Citrus-space preview values, but they are diagnostic and
+  non-authoritative. Citrus should recompute any accepted Citrus-space
+  correction from the Orange camera-space observation and Citrus-owned
+  homography/arena/optical-stack state.
+- For Citrus single-circle daily top-rim correction, the conservative preview
+  mode is center-only: map the observed top-rim center from camera pixels
+  through the existing Citrus camera-to-canvas homography, convert to
+  arena-relative coordinates with the Citrus arena canvas region, and preserve
+  the current Citrus experimental-area shape and radius.
+- A center+radius `experimental_area` adjustment is explicit
+  operator-reviewed behavior. It should be recomputed by Citrus from sampled
+  accepted-boundary points rather than silently inferred from only a
+  camera-space Hough radius.
 
 ## Common Types
 
@@ -374,6 +392,62 @@ Geometry consequence:
 - circles remain circles after v1 registration
 - canonical axis-aligned rectangles become runtime `oriented_rectangle`
   overlays when the resolved registration contains non-zero rotation
+
+### Citrus Center-Correction Preview
+
+For the current Citrus single-circle integration, Orange may preview a
+center-only Citrus correction alongside the camera-space dish mask. This is a
+review/registration suggestion, not a new homography.
+
+Required Citrus coordinate inputs for this preview:
+
+- `experimental_area_center_x_px`
+- `experimental_area_center_y_px`
+- `experimental_area_radius_px`
+- matching `camera_calibrations[*].camera_id`
+- matching `camera_calibrations[*].arena_center_x_px`
+- matching `camera_calibrations[*].arena_center_y_px`
+- matching `camera_calibrations[*].arena_width_px`
+- matching `camera_calibrations[*].arena_height_px`
+- matching camera-to-canvas homography sidecar
+
+Coordinate rules:
+
+- Citrus experimental-area center/radius are arena-relative canvas
+  coordinates.
+- Citrus arena center/width/height define the arena's region in global
+  final-display canvas coordinates.
+- The arena origin is:
+
+```text
+arena_origin_canvas = (
+  arena_center_x_px - arena_width_px / 2,
+  arena_center_y_px - arena_height_px / 2
+)
+```
+
+- The proposed center-only correction is:
+
+```text
+proposed_center_arena_relative =
+  camera_to_canvas(observed_top_rim_center_camera_px) - arena_origin_canvas
+```
+
+- A corrected Citrus outline preview should preserve the current Citrus shape
+  and radius and move only the center to
+  `proposed_center_arena_relative`.
+- Radius changes require explicit operator-reviewed semantics and should use a
+  separate field/policy from the V0 center-only correction.
+- For rigs where the Citrus experimental area is intended to match the
+  camera-observed area the fish can occupy, that explicit policy is a
+  center+radius `experimental_area` adjustment. It should be computed by
+  sampling the accepted Orange boundary in camera pixels, mapping the sampled
+  points through the Citrus camera-to-canvas homography, converting them to
+  arena-relative coordinates, and fitting the experimental-area circle in that
+  Citrus coordinate space.
+- Orange-side preview values for this adjustment should be marked
+  `diagnostic_only`. Citrus owns the authoritative recomputation and accepted
+  artifact/config/H5 state.
 
 ## Artifact Schema: `orange.calibration.dish_mask`
 

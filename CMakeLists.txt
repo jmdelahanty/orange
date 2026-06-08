@@ -251,9 +251,11 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/host_ptp_panel.cpp"
     "${SRC_DIR}/gui/recording_panel.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
+    "${SRC_DIR}/calibration_image_set.cpp"
     "${SRC_DIR}/dish_top_rim_observation.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
+    "${SRC_DIR}/spatial_snapshot_worker.cpp"
     "${SRC_DIR}/spatial_layout_ui.cpp"
     "${SRC_DIR}/usaf_resolution_calibration.cpp"
     "${SRC_DIR}/usaf_resolution_ui.cpp"
@@ -309,6 +311,7 @@ set(ORANGE_CLIENT_SOURCES
     "${SRC_DIR}/project.cpp"
     "${SRC_DIR}/spatial_calibration_snapshot.cpp"
     "${SRC_DIR}/spatial_layout_schema.cpp"
+    "${SRC_DIR}/spatial_snapshot_worker.cpp"
     "${SRC_DIR}/yolov8_det.cpp"
     "${SRC_DIR}/yolo_worker.cpp"
     "${SRC_DIR}/yolo_event_log.cpp"
@@ -584,12 +587,22 @@ if(BUILD_TESTING)
 
     add_executable(dish_top_rim_observation_tests
         "tools/dish_top_rim_observation_tests.cpp"
+        "${SRC_DIR}/calibration_image_set.cpp"
         "${SRC_DIR}/dish_top_rim_observation.cpp"
+        "${SRC_DIR}/spatial_layout_schema.cpp"
     )
     target_include_directories(dish_top_rim_observation_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(dish_top_rim_observation_tests PRIVATE cxx_std_17)
     target_link_libraries(dish_top_rim_observation_tests PRIVATE ${OpenCV_LIBS})
     add_test(NAME dish_top_rim_observation_tests COMMAND dish_top_rim_observation_tests)
+
+    add_executable(calibration_image_set_tests
+        "tools/calibration_image_set_tests.cpp"
+        "${SRC_DIR}/calibration_image_set.cpp"
+    )
+    target_include_directories(calibration_image_set_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(calibration_image_set_tests PRIVATE cxx_std_17)
+    add_test(NAME calibration_image_set_tests COMMAND calibration_image_set_tests)
 
     add_executable(pose_event_log_tests
         "tools/pose_event_log_tests.cpp"

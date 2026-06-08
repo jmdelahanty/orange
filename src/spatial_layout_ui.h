@@ -9,8 +9,11 @@
 #include <GL/glew.h>
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
+
+class SpatialSnapshotWorker;
 
 struct CitrusSpatialTemplateState {
     bool available = false;
@@ -21,6 +24,11 @@ struct CitrusSpatialTemplateState {
     std::string source_config_name;
     std::string source_camera_id;
     std::string source_dish_type_name;
+    bool has_arena_canvas_region = false;
+    double arena_center_x_px = 0.0;
+    double arena_center_y_px = 0.0;
+    double arena_width_px = 0.0;
+    double arena_height_px = 0.0;
     double experimental_area_center_x_px = 0.0;
     double experimental_area_center_y_px = 0.0;
     double experimental_area_radius_px = 0.0;
@@ -62,6 +70,10 @@ struct SpatialLayoutUiState {
     int captured_texture_height = 0;
     std::vector<unsigned char> captured_rgba;
     std::string captured_camera_serial;
+    std::string captured_source_array_role = "images_full";
+    std::string captured_capture_mode = "single_camera_direct_still";
+    uint64_t pending_full_res_snapshot_request_id = 0;
+    std::string pending_full_res_snapshot_camera_serial;
     bool has_capture = false;
     orange::ui::ImageCanvasViewState captured_canvas_view;
 
@@ -73,6 +85,18 @@ struct SpatialLayoutUiState {
     std::string preview_error;
     bool has_detected_experimental_area_circle = false;
     orange::spatial::RuntimeGeometry detected_experimental_area_geometry;
+    double hough_dp = 1.25;
+    double hough_min_dist_fraction = 0.20;
+    double hough_param1 = 120.0;
+    double hough_param2 = 30.0;
+    double hough_min_radius_fraction = 0.18;
+    double hough_max_radius_fraction = 0.49;
+    double hough_radius_adjustment_px = 0.0;
+    int hough_median_blur_ksize = 5;
+    int hough_max_detection_dimension_px = 2048;
+    bool hough_fallback_enabled = true;
+    bool show_hough_proposal_overlay = true;
+    bool show_citrus_corrected_center_overlay = true;
     std::string detection_status;
     std::string detection_error;
     CitrusSpatialTemplateState citrus_template;
@@ -92,8 +116,12 @@ void render_spatial_layout_window(
     CameraControl* camera_control,
     CameraEmergent* ecams,
     CameraParams* cameras_params,
+    CameraEachSelect* cameras_select,
     int num_cameras,
     bool other_calibration_tool_busy,
-    const std::string& artifact_root_dir);
+    const std::string& artifact_root_dir,
+    const GLuint* live_preview_texture_ids = nullptr,
+    const uint64_t* live_preview_uploaded_serials = nullptr,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers = nullptr);
 
 #endif

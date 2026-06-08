@@ -380,11 +380,14 @@ DishTopRimObservationArtifactPaths make_dish_top_rim_observation_artifact_paths(
     paths.artifact_dir = root.generic_string();
     paths.manifest_path = (root / "manifest.json").generic_string();
     paths.observation_json_path = (root / "observation.json").generic_string();
+    paths.image_set_json_path = (root / "image_set.json").generic_string();
     paths.source_frame_path = (root / "captures" / "source_frame.png").generic_string();
     paths.review_overlay_path = (root / "overlays" / "top_rim_fit.png").generic_string();
     paths.valid_detection_overlay_path =
         (root / "overlays" / "valid_detection_region.png").generic_string();
     paths.palette_export_path = (root / "exports" / "palette_dish_mask_v2.json").generic_string();
+    paths.spatial_dish_mask_runtime_export_path =
+        (root / "exports" / "spatial_dish_mask_runtime_v1.json").generic_string();
     return paths;
 }
 
@@ -476,6 +479,8 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"capture_mode", request.capture.capture_mode},
             {"filter_state", request.capture.filter_state},
             {"runtime_filter_state", request.capture.runtime_filter_state},
+            {"light_state", request.capture.light_state},
+            {"projector_state", request.capture.projector_state},
             {"projector_visible_to_camera", request.capture.projector_visible_to_camera},
             {"exposure_us", request.capture.exposure_us},
             {"frame_rate_hz", request.capture.frame_rate_hz},
@@ -550,6 +555,7 @@ nlohmann::json dish_top_rim_observation_to_json(
         }},
         {"artifacts", {
             {"observation_path", relative_to_artifact_dir(paths.observation_json_path, paths)},
+            {"image_set_path", relative_to_artifact_dir(paths.image_set_json_path, paths)},
             {"source_frame_path", relative_to_artifact_dir(paths.source_frame_path, paths)},
             {"review_overlay_path", relative_to_artifact_dir(paths.review_overlay_path, paths)},
             {"valid_detection_overlay_path", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
@@ -569,6 +575,12 @@ nlohmann::json dish_top_rim_observation_to_json(
                 {"path", relative_to_artifact_dir(paths.palette_export_path, paths)},
                 {"mapping", "orange_circle_mask_to_palette_dish_mask_v2"},
                 {"target", "analysis_metadata.attrs.dish_mask"}
+            }},
+            {"spatial_dish_mask_runtime_v1", {
+                {"available", true},
+                {"path", relative_to_artifact_dir(paths.spatial_dish_mask_runtime_export_path, paths)},
+                {"mapping", "orange_top_rim_observation_to_spatial_dish_mask_runtime_v1"},
+                {"target", "dish_mask_runtime.json"}
             }}
         }}
     };
@@ -612,10 +624,13 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
         {"files", {
             {"manifest", relative_to_artifact_dir(paths.manifest_path, paths)},
             {"observation_json", relative_to_artifact_dir(paths.observation_json_path, paths)},
+            {"image_set_json", relative_to_artifact_dir(paths.image_set_json_path, paths)},
             {"source_frame", relative_to_artifact_dir(paths.source_frame_path, paths)},
             {"review_overlay", relative_to_artifact_dir(paths.review_overlay_path, paths)},
             {"valid_detection_overlay", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
-            {"palette_dish_mask_v2", relative_to_artifact_dir(paths.palette_export_path, paths)}
+            {"palette_dish_mask_v2", relative_to_artifact_dir(paths.palette_export_path, paths)},
+            {"spatial_dish_mask_runtime_v1",
+             relative_to_artifact_dir(paths.spatial_dish_mask_runtime_export_path, paths)}
         }},
         {"checksums", {
             {"algorithm", kCalibrationFingerprintAlgorithm},
@@ -624,6 +639,104 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
             {"valid_detection_overlay", valid_detection_overlay_checksum}
         }}
     };
+}
+
+CalibrationImageSetRequest build_dish_top_rim_image_set_request(
+    const DishTopRimObservationRequest& request,
+    const DishTopRimObservationArtifactPaths& paths,
+    const std::string& source_frame_checksum,
+    const std::string& review_overlay_checksum,
+    const std::string& valid_detection_overlay_checksum,
+    const std::string& observation_fingerprint,
+    const nlohmann::json& observation_json)
+{
+    CalibrationImageSetRequest image_set;
+    image_set.artifact_id = request.artifact_id;
+    image_set.created_utc = request.created_utc;
+    image_set.purpose = "dish_top_rim";
+    image_set.target_plane = "dish_top_rim";
+    image_set.coordinate_space = "camera_native_pixels";
+    image_set.camera.serial = request.camera.serial;
+    image_set.camera.name = request.camera.name;
+    image_set.camera.image_shape.height = request.camera.height;
+    image_set.camera.image_shape.width = request.camera.width;
+    image_set.camera.pixel_format = request.camera.pixel_format;
+    image_set.camera.configured_height = request.camera.height;
+    image_set.camera.configured_width = request.camera.width;
+
+    image_set.capture.operation_id = request.capture.operation_id;
+    image_set.capture.timestamp_utc = request.created_utc;
+    image_set.capture.capture_mode = request.capture.capture_mode;
+    image_set.capture.exposure_us = request.capture.exposure_us;
+    image_set.capture.has_exposure_us = true;
+    image_set.capture.frame_rate_hz = request.capture.frame_rate_hz;
+    image_set.capture.has_frame_rate_hz = true;
+    image_set.capture.filter_state = request.capture.filter_state;
+    image_set.capture.runtime_filter_state = request.capture.runtime_filter_state;
+    image_set.capture.light_state = request.capture.light_state;
+    image_set.capture.projector_state = request.capture.projector_state;
+    image_set.capture.projector_visible_to_camera = request.capture.projector_visible_to_camera;
+    image_set.capture.has_projector_visible_to_camera = true;
+    image_set.capture.requires_camera_mount_unchanged =
+        request.capture.requires_camera_mount_unchanged;
+    image_set.capture.has_requires_camera_mount_unchanged = true;
+    image_set.capture.requires_filter_reinstalled_repeatably =
+        request.capture.requires_filter_reinstalled_repeatably;
+    image_set.capture.has_requires_filter_reinstalled_repeatably = true;
+
+    if (!request.image_set_rig_context.empty()) {
+        image_set.rig_context = request.image_set_rig_context;
+    }
+
+    const CalibrationImageSetShape image_shape{request.camera.height, request.camera.width};
+    image_set.images.push_back(CalibrationImageSetImageRef{
+        "source",
+        relative_to_artifact_dir(paths.source_frame_path, paths),
+        kCalibrationFingerprintAlgorithm,
+        source_frame_checksum,
+        "camera_native_pixels",
+        image_shape,
+        "full-resolution source frame used for top-rim fitting"});
+
+    image_set.review_artifacts = {
+        {"top_rim_overlay", {
+            {"path", relative_to_artifact_dir(paths.review_overlay_path, paths)},
+            {"checksum_algorithm", kCalibrationFingerprintAlgorithm},
+            {"checksum", review_overlay_checksum}
+        }},
+        {"valid_detection_overlay", {
+            {"path", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
+            {"checksum_algorithm", kCalibrationFingerprintAlgorithm},
+            {"checksum", valid_detection_overlay_checksum}
+        }}
+    };
+
+    image_set.observations = {
+        {"dish_top_rim", {
+            {"accepted_boundary",
+             observation_json.value("observed_boundary", nlohmann::json::object())},
+            {"valid_detection_region",
+             observation_json.value("valid_detection_region", nlohmann::json::object())},
+            {"accepted_mask",
+             observation_json.value("accepted_mask", nlohmann::json::object())},
+            {"fit_quality",
+             observation_json.value("quality", nlohmann::json::object())}
+        }}
+    };
+
+    image_set.derived_artifacts.push_back(CalibrationImageSetArtifactRef{
+        request.artifact_id,
+        kDishTopRimObservationSchemaId,
+        kDishTopRimObservationSchemaVersion,
+        observation_fingerprint});
+
+    image_set.citrus_preview = {
+        {"available", false},
+        {"diagnostic_only", true},
+        {"authority", "citrus_recomputes_before_acceptance"}
+    };
+
+    return image_set;
 }
 
 nlohmann::json dish_top_rim_palette_export_to_json(
@@ -687,6 +800,53 @@ nlohmann::json dish_top_rim_palette_export_to_json(
     return out;
 }
 
+nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
+    const nlohmann::json& observation_json)
+{
+    const nlohmann::json observed_boundary =
+        observation_json.value("observed_boundary", nlohmann::json::object());
+    const nlohmann::json observed_geometry =
+        observed_boundary.value("geometry", nlohmann::json::object());
+    const nlohmann::json valid_region =
+        observation_json.value("valid_detection_region", nlohmann::json::object());
+    const nlohmann::json valid_geometry =
+        valid_region.value("geometry", nlohmann::json::object());
+
+    const auto runtime_circle = [](const nlohmann::json& geometry) {
+        const nlohmann::json center = geometry.value("center_px", nlohmann::json::object());
+        return nlohmann::json{
+            {"type", "circle"},
+            {"cx", center.value("x", 0.0)},
+            {"cy", center.value("y", 0.0)},
+            {"r", geometry.value("radius_px", 0.0)}
+        };
+    };
+
+    const std::string coordinate_space =
+        valid_region.value(
+            "coordinate_space",
+            observed_boundary.value("coordinate_space", "camera_native_pixels"));
+
+    return {
+        {"schema_version", 1},
+        {"enabled", true},
+        {"source", "detected_fit"},
+        {"geometry", {
+            {"coordinate_space", coordinate_space},
+            {"outer_geometry", runtime_circle(observed_geometry)},
+            {"valid_geometry", runtime_circle(valid_geometry)},
+            {"edge_margin_px", valid_region.value("erosion_px", 0.0)}
+        }},
+        {"source_observation", {
+            {"artifact_id", observation_json.value("artifact_id", "")},
+            {"artifact_schema_id", observation_json.value("schema_id", "")},
+            {"artifact_schema_version", observation_json.value("schema_version", 0)},
+            {"fingerprint",
+             observation_json.value("calibration_ref", nlohmann::json::object()).value("fingerprint", "")}
+        }}
+    };
+}
+
 std::string compute_dish_top_rim_observation_fingerprint(
     const nlohmann::json& observation_json,
     const DishTopRimObservationArtifactPaths& paths,
@@ -744,8 +904,10 @@ bool write_dish_top_rim_observation_artifact(
     if (request.camera.serial.empty()) {
         return set_error(error_out, "camera serial is empty");
     }
-    if (request.source_array_role != "images_full" && request.source_array_role != "images_ds") {
-        return set_error(error_out, "source_array_role must be images_full or images_ds");
+    if (request.source_array_role != "images_full") {
+        return set_error(
+            error_out,
+            "source_array_role must be images_full for top-rim observations; Citrus homography images are full resolution");
     }
     if (source_image.empty()) {
         return set_error(error_out, "source image is empty");
@@ -829,6 +991,36 @@ bool write_dish_top_rim_observation_artifact(
             return false;
         }
     }
+    const nlohmann::json spatial_dish_mask_runtime_export =
+        dish_top_rim_spatial_dish_mask_runtime_export_to_json(observation);
+    if (!write_json_file(
+            paths.spatial_dish_mask_runtime_export_path,
+            spatial_dish_mask_runtime_export,
+            error_out)) {
+        return false;
+    }
+
+    nlohmann::json image_set = nlohmann::json::object();
+    if (request.write_image_set_companion) {
+        CalibrationImageSetWriteResult image_set_result;
+        const CalibrationImageSetRequest image_set_request =
+            build_dish_top_rim_image_set_request(
+                request,
+                paths,
+                source_checksum,
+                review_checksum,
+                valid_overlay_checksum,
+                fingerprint,
+                observation);
+        if (!write_calibration_image_set_json_file(
+                paths.image_set_json_path,
+                image_set_request,
+                &image_set_result,
+                error_out)) {
+            return false;
+        }
+        image_set = image_set_result.image_set;
+    }
 
     if (!write_json_file(paths.observation_json_path, observation, error_out)) {
         return false;
@@ -853,6 +1045,7 @@ bool write_dish_top_rim_observation_artifact(
         result_out->fingerprint = fingerprint;
         result_out->manifest = manifest;
         result_out->observation = observation;
+        result_out->image_set = image_set;
         result_out->palette_export = palette_export;
     }
     return true;

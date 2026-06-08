@@ -47,6 +47,7 @@
 #include "session/crop_rolling_sidecars.h"
 #include "session/recording_session.h"
 #include "spatial_layout_ui.h"
+#include "spatial_snapshot_worker.h"
 #include "usaf_resolution_ui.h"
 #include <opencv2/opencv.hpp>
 
@@ -7320,8 +7321,10 @@ int main(int argc, char **args) {
     CropProducerWorker** cropProducerWorkers = nullptr;
     CropAndEncodeWorker** cropAndEncodeWorkers = nullptr;
     CropPreviewWorker** cropPreviewWorkers = nullptr;
+    SpatialSnapshotWorker** spatialSnapshotWorkers = nullptr;
     std::vector<uint64_t> display_uploaded_serials;
     std::vector<uint64_t> crop_preview_uploaded_serials;
+    std::vector<GLuint> live_preview_texture_ids;
     PoseWorker** poseWorkers = nullptr;
     ImageWriterWorker* image_writer = new ImageWriterWorker("ImageSaverThread");
     image_writer->StartThread();
@@ -8180,14 +8183,27 @@ int main(int argc, char **args) {
             num_cameras,
             usaf_output_folder);
 
+        if (tex && num_cameras > 0) {
+            if (static_cast<int>(live_preview_texture_ids.size()) < num_cameras) {
+                live_preview_texture_ids.resize(num_cameras, 0);
+            }
+            for (int i = 0; i < num_cameras; ++i) {
+                live_preview_texture_ids[i] = tex[i].texture;
+            }
+        }
+
         render_spatial_layout_window(
             &spatial_layout_ui_state,
             camera_control,
             ecams,
             cameras_params,
+            cameras_select,
             num_cameras,
             calibration_tool_busy,
-            aperture_char_output_folder);
+            aperture_char_output_folder,
+            live_preview_texture_ids.empty() ? nullptr : live_preview_texture_ids.data(),
+            display_uploaded_serials.empty() ? nullptr : display_uploaded_serials.data(),
+            spatialSnapshotWorkers);
 
         // file explorer display
         if (ImGuiFileDialog::Instance()->Display("ChooseYOLOFile")) {
@@ -8557,6 +8573,7 @@ int main(int argc, char **args) {
                             cropProducerWorkers = new CropProducerWorker*[num_cameras]();
                             cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
                             cropPreviewWorkers = new CropPreviewWorker*[num_cameras]();
+                            spatialSnapshotWorkers = new SpatialSnapshotWorker*[num_cameras]();
                             poseWorkers = new PoseWorker*[num_cameras]();
                             tex = new GL_Texture[num_cameras];
                             crop_tex = new GL_Texture[num_cameras];
@@ -8566,6 +8583,9 @@ int main(int argc, char **args) {
                             crop_preview_uploaded_serials.assign(
                                 num_cameras,
                                 std::numeric_limits<uint64_t>::max());
+                            live_preview_texture_ids.assign(
+                                num_cameras,
+                                0);
                             yolo_workers.assign(num_cameras, nullptr);
                             // Initialize all worker pointers to nullptr
                             for(int i = 0; i < num_cameras; ++i) {
@@ -8573,6 +8593,7 @@ int main(int argc, char **args) {
                                 cropProducerWorkers[i] = nullptr;
                                 cropAndEncodeWorkers[i] = nullptr;
                                 cropPreviewWorkers[i] = nullptr;
+                                spatialSnapshotWorkers[i] = nullptr;
                                 poseWorkers[i] = nullptr;
                             }
                             cudaSetDevice(display_gpu_id);
@@ -8583,6 +8604,10 @@ int main(int argc, char **args) {
                                     int w = (int)(cameras_params[i].width / cameras_select[i].downsample);
                                     int h = (int)(cameras_params[i].height / cameras_select[i].downsample);
                                     setup_texture(tex[i], w, h);
+                                    if (static_cast<int>(live_preview_texture_ids.size()) < num_cameras) {
+                                        live_preview_texture_ids.resize(num_cameras, 0);
+                                    }
+                                    live_preview_texture_ids[i] = tex[i].texture;
                                 }
                             }
 
@@ -8670,6 +8695,14 @@ int main(int argc, char **args) {
                                         frame_ipc_managers[i].get());
                                     cropProducerWorkers[i]->SetPoseWorker(poseWorkers[i]);
                                 }
+                                if (gui_camera_has_acquisition_work(cameras_select[i])) {
+                                    std::string name =
+                                        "SpatialSnapshot_Cam_" + cameras_params[i].camera_serial;
+                                    spatialSnapshotWorkers[i] = new SpatialSnapshotWorker(
+                                        name.c_str(),
+                                        &cameras_params[i],
+                                        *camera_resources[i].recycle_queue);
+                                }
                             }
 
                             orange::session::create_recording_pipelines_for_stream(
@@ -8700,6 +8733,10 @@ int main(int argc, char **args) {
                                 if (poseWorkers[i]) {
                                     poseWorkers[i]->SetMaxQueueSize(32);
                                     poseWorkers[i]->StartThread();
+                                }
+                                if (spatialSnapshotWorkers[i]) {
+                                    spatialSnapshotWorkers[i]->SetMaxQueueSize(2);
+                                    spatialSnapshotWorkers[i]->StartThread();
                                 }
                                 if (cropProducerWorkers[i]) {
                                     cropProducerWorkers[i]->SetMaxQueueSize(240);
@@ -8751,7 +8788,8 @@ int main(int argc, char **args) {
                                     image_writer,
                                     &camera_resources[i],
                                     frame_ipc_managers[i].get(),
-                                    nullptr
+                                    nullptr,
+                                    spatialSnapshotWorkers ? spatialSnapshotWorkers[i] : nullptr
                                 );
                             }
                         }
@@ -8804,6 +8842,9 @@ int main(int argc, char **args) {
                             if (cropPreviewWorkers[i]) cropPreviewWorkers[i]->StopThread();
                             if (cropAndEncodeWorkers[i]) cropAndEncodeWorkers[i]->StopThread();
                             if (poseWorkers[i]) poseWorkers[i]->StopThread();
+                            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
+                                spatialSnapshotWorkers[i]->StopThread();
+                            }
                             orange::session::request_stop_recording_pipeline_for_camera(&recording_session, i);
                         }
                         std::cout << "All worker threads signaled to stop. Waiting for queues to drain..." << std::endl;
@@ -8834,6 +8875,11 @@ int main(int argc, char **args) {
                                 poseWorkers[i] = nullptr;
                             }
 
+                            if (spatialSnapshotWorkers && spatialSnapshotWorkers[i]) {
+                                delete spatialSnapshotWorkers[i];
+                                spatialSnapshotWorkers[i] = nullptr;
+                            }
+
                             if (cropProducerWorkers[i]) {
                                 cropProducerWorkers[i]->CloseRecording();
                                 delete cropProducerWorkers[i];
@@ -8857,6 +8903,7 @@ int main(int argc, char **args) {
                         if(cropProducerWorkers) { delete[] cropProducerWorkers; cropProducerWorkers = nullptr; }
                         if(cropAndEncodeWorkers) { delete[] cropAndEncodeWorkers; cropAndEncodeWorkers = nullptr; }
                         if(cropPreviewWorkers) { delete[] cropPreviewWorkers; cropPreviewWorkers = nullptr; }
+                        if(spatialSnapshotWorkers) { delete[] spatialSnapshotWorkers; spatialSnapshotWorkers = nullptr; }
                         if(poseWorkers) { delete[] poseWorkers; poseWorkers = nullptr; }
                         std::cout << "Worker threads all cleaned up." << std::endl;
                         frame_ipc_managers.clear();
@@ -8895,6 +8942,7 @@ int main(int argc, char **args) {
                         crop_tex = nullptr;
                         display_uploaded_serials.clear();
                         crop_preview_uploaded_serials.clear();
+                        live_preview_texture_ids.clear();
 
                         for(int i = 0; i < num_cameras; ++i) {
                             camera_resources[i].cleanup();

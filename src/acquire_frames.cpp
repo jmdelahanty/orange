@@ -16,6 +16,7 @@
 #include "crop_and_encode_worker.h"
 #include "display_preview_policy.h"
 #include "recording_ingress.h"
+#include "spatial_snapshot_worker.h"
 #include "cuda_context_debug.h"
 #include "frame_ipc_manager.h"
 #include "fsuid_guard.h"
@@ -1074,7 +1075,8 @@ void acquire_frames(
     ImageWriterWorker* image_writer,
     CameraResources* resources,
     FrameIPCManager* frame_ipc_manager,
-    yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter
+    yolo_event_log::SyntheticYoloEventEmitter* synthetic_yolo_event_emitter,
+    SpatialSnapshotWorker* spatial_snapshot_worker
 ){
     ck(cudaSetDevice(camera_params->gpu_id));
     NVTX_CAMERA("AcquireFrames_Main");
@@ -1731,6 +1733,10 @@ void acquire_frames(
             if (will_display) dispatch_count++;
             if (will_record) dispatch_count++;
             if (will_yolo) dispatch_count++;
+            const bool will_snapshot =
+                spatial_snapshot_worker &&
+                spatial_snapshot_worker->HasPendingRequest();
+            if (will_snapshot) dispatch_count++;
 
             cudaPointerAttributes attrs{};
             cudaError_t attr_status = cudaPointerGetAttributes(&attrs, received_frame->imagePtr);
@@ -2101,6 +2107,25 @@ void acquire_frames(
                 }
                 if (dispatch_yolo_before_recording) {
                     enqueue_yolo();
+                }
+                if (will_snapshot && spatial_snapshot_worker->TryClaimNextFrame()) {
+                    bool enqueue_rejected = false;
+                    if (!retain_and_enqueue_worker_entry(
+                            spatial_snapshot_worker,
+                            resources->recycle_queue,
+                            current_entry,
+                            WorkerEntryReleaseContext{
+                                camera_params->camera_serial.c_str(),
+                                "spatial_snapshot"},
+                            &enqueue_rejected)) {
+                        spatial_snapshot_worker->CompleteClaimedRequestWithError(
+                            enqueue_rejected
+                                ? "Full-resolution stream snapshot enqueue was rejected during shutdown."
+                                : "Full-resolution stream snapshot could not retain the acquisition frame.");
+                        if (enqueue_rejected) {
+                            log_fanout_enqueue_rejected("spatial_snapshot");
+                        }
+                    }
                 }
                 if (will_record) {
                     if (will_yolo) {

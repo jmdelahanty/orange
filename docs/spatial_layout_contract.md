@@ -10,6 +10,10 @@ recording-snapshot writer and Citrus/H5 consumer path are still pending.
 
 Field-level schema details now live in `docs/spatial_layout_schema.md`.
 
+For generic Orange-acquired calibration image sets used by Citrus homography,
+scale, top-rim, and crosshair workflows, see
+`docs/calibration_image_set_schema.md`.
+
 For the current circular single-arena dish-mask workflow, including
 Hough-circle/operator confirmation, Orange-native mask artifacts, Palette
 export mapping, and Citrus H5 snapshot expectations, see
@@ -358,6 +362,10 @@ Required Citrus fields:
 - `experimental_area_center_y_px`
 - `experimental_area_radius_px`
 - matching `camera_calibrations[*].camera_id`
+- matching `camera_calibrations[*].arena_center_x_px`
+- matching `camera_calibrations[*].arena_center_y_px`
+- matching `camera_calibrations[*].arena_width_px`
+- matching `camera_calibrations[*].arena_height_px`
 
 Optional Citrus fields:
 
@@ -375,6 +383,67 @@ V1 rejection rules:
 - reject the import if `experimental_area_shape != CIRCLE`
 - allow the import without a homography sidecar, but in that case skip the
   homography-seed assist
+
+Coordinate rules for Citrus imports:
+
+- Citrus `experimental_area_center_x_px`,
+  `experimental_area_center_y_px`, and `experimental_area_radius_px` are
+  arena-relative canvas coordinates.
+- Citrus `arena_center_x_px`, `arena_center_y_px`, `arena_width_px`, and
+  `arena_height_px` define that arena's placement in final display-canvas
+  coordinates.
+- To preview Citrus's current experimental area in camera pixels, Orange must
+  first convert the arena-relative circle into global final-display canvas
+  coordinates:
+
+```text
+arena_origin_canvas = (
+  arena_center_x_px - arena_width_px / 2,
+  arena_center_y_px - arena_height_px / 2
+)
+
+current_center_canvas =
+  arena_origin_canvas + experimental_area_center_arena_relative
+```
+
+- Only then should Orange apply the inverse Citrus homography to draw the
+  current Citrus area in camera pixels.
+- Mapping `experimental_area_center_x_px/y_px` directly through the inverse
+  homography is invalid because those values are not global canvas
+  coordinates.
+
+Daily top-rim correction semantics:
+
+- Orange's fitted top-rim center is camera-native evidence about today's dish
+  placement.
+- Orange may map that center through the imported Citrus camera-to-canvas
+  homography and subtract `arena_origin_canvas` to show a diagnostic
+  arena-relative preview.
+- Citrus must recompute this mapping from the Orange camera-space observation
+  and Citrus-owned config/homography before accepting any Citrus-space
+  correction.
+- The conservative preview mode is **center-only**:
+
+```text
+proposed_experimental_area_center_arena_relative =
+  camera_to_canvas(observed_top_rim_center_camera_px) - arena_origin_canvas
+```
+
+- In that preview, the current Citrus experimental-area radius and shape are
+  preserved.
+- Radius adjustment is future or explicit operator-reviewed behavior, not an
+  implicit consequence of a daily top-rim center fit.
+- For rigs where the intended Citrus experimental area should match the
+  camera-observed area the fish can occupy, the explicit operator-reviewed
+  behavior is a center+radius `experimental_area` adjustment. Compute it by
+  sampling the accepted Orange boundary in camera pixels, mapping those points
+  through the Citrus camera-to-canvas homography, converting them to
+  arena-relative coordinates, and fitting the Citrus experimental-area circle
+  there.
+- This center+radius adjustment proposes Citrus experimental-area parameters in
+  Citrus-owned coordinates. Citrus owns the authoritative recomputation,
+  acceptance, config/runtime artifact, and H5 snapshot. It does not replace or
+  rewrite the Citrus homography.
 
 Next implementation step:
 
