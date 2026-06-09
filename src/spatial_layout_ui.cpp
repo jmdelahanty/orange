@@ -7192,6 +7192,45 @@ void render_zone_editor(SpatialLayoutUiState* ui_state)
     ImGui::EndDisabled();
 }
 
+void render_hough_registration_actions(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+
+    ImGui::BeginDisabled(!ui_state->has_capture);
+    if (ImGui::Button("Fit Hough circle from capture")) {
+        std::string detect_error;
+        if (!detect_experimental_area_circle_from_capture(ui_state, &detect_error)) {
+            ui_state->detection_error = detect_error;
+            ui_state->detection_status = "Experimental-area detection failed.";
+        }
+    }
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(!ui_state->has_detected_experimental_area_circle);
+    if (ImGui::Button("Use Hough fit for registration")) {
+        std::string seed_error;
+        if (!seed_registration_from_detected_experimental_area_circle(ui_state, &seed_error)) {
+            ui_state->detection_error = seed_error;
+        } else {
+            ui_state->detection_error.clear();
+            if (ui_state->detection_status.empty()) {
+                ui_state->detection_status = "Seeded registration from detected experimental area.";
+            } else {
+                ui_state->detection_status += " Applied to registration.";
+            }
+        }
+    }
+    ImGui::EndDisabled();
+
+    ImGui::BeginDisabled(!ui_state->has_capture);
+    if (ImGui::Button("Reset registration from frame")) {
+        reset_registration_from_frame(ui_state);
+    }
+    ImGui::EndDisabled();
+}
+
 void render_hough_circle_tuning(SpatialLayoutUiState* ui_state)
 {
     if (ui_state == nullptr) {
@@ -7200,6 +7239,8 @@ void render_hough_circle_tuning(SpatialLayoutUiState* ui_state)
     if (!ImGui::CollapsingHeader("Hough Circle Tuning", ImGuiTreeNodeFlags_DefaultOpen)) {
         return;
     }
+    render_hough_registration_actions(ui_state);
+    ImGui::Separator();
     if (ImGui::Button("Reset Hough Defaults")) {
         ui_state->hough_dp = 1.25;
         ui_state->hough_min_dist_fraction = 0.20;
@@ -7817,31 +7858,6 @@ void render_spatial_layout_window(
         }
     }
 
-    if (ImGui::Button("Reset registration from frame") && ui_state->has_capture) {
-        reset_registration_from_frame(ui_state);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Detect Experimental Area Circle") && ui_state->has_capture) {
-        std::string detect_error;
-        if (!detect_experimental_area_circle_from_capture(ui_state, &detect_error)) {
-            ui_state->detection_error = detect_error;
-            ui_state->detection_status = "Experimental-area detection failed.";
-        }
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Use Detection For Registration") && ui_state->has_detected_experimental_area_circle) {
-        std::string seed_error;
-        if (!seed_registration_from_detected_experimental_area_circle(ui_state, &seed_error)) {
-            ui_state->detection_error = seed_error;
-        } else {
-            ui_state->detection_error.clear();
-            if (ui_state->detection_status.empty()) {
-                ui_state->detection_status = "Seeded registration from detected experimental area.";
-            } else {
-                ui_state->detection_status += " Applied to registration.";
-            }
-        }
-    }
     ImGui::SeparatorText("Detection And Canonical Layout");
     ImGui::InputText("Layout ID", &ui_state->layout_artifact.layout_id);
     ImGui::InputText("Artifact ID", &ui_state->layout_artifact.artifact_id);
