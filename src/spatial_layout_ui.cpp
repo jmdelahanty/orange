@@ -8,7 +8,6 @@
 #include "gui/spatial_layout/hough_panel.h"
 #include "gui/spatial_layout/metadata_panel.h"
 #include "gui/spatial_layout/persistence_panel.h"
-#include "gui/spatial_layout/preflight.h"
 #include "gui/spatial_layout/session_io.h"
 #include "imgui.h"
 #include "implot.h"
@@ -70,8 +69,6 @@ using orange::gui::spatial_layout::apply_illumination_preset;
 using orange::gui::spatial_layout::build_arena_layout_artifact_id;
 using orange::gui::spatial_layout::build_calibration_capture_filename;
 using orange::gui::spatial_layout::build_camera_arena_calibration_image_set_artifact_id;
-using orange::gui::spatial_layout::calibration_light_handling_needs_mapped_strobe;
-using orange::gui::spatial_layout::camera_has_exposed_mapped_nir_strobe;
 using orange::gui::spatial_layout::clear_spatial_calibration_session;
 using orange::gui::spatial_layout::citrus_arena_origin_canvas_px;
 using orange::gui::spatial_layout::citrus_arena_relative_to_canvas_px;
@@ -83,9 +80,7 @@ using orange::gui::spatial_layout::compute_json_fingerprint;
 using orange::gui::spatial_layout::default_citrus_rigs_root;
 using orange::gui::spatial_layout::ensure_spatial_calibration_session;
 using orange::gui::spatial_layout::fit_circle_to_points;
-using orange::gui::spatial_layout::find_mapped_nir_strobe_output_connection;
 using orange::gui::spatial_layout::find_citrus_template_index_for_camera;
-using orange::gui::spatial_layout::has_calibration_capture_restore_state;
 using orange::gui::spatial_layout::kCalibrationFingerprintAlgorithm;
 using orange::gui::spatial_layout::kCalibrationManifestSchemaId;
 using orange::gui::spatial_layout::kCalibrationManifestSchemaVersion;
@@ -96,17 +91,12 @@ using orange::gui::spatial_layout::kSpatialLayoutMeasurementFilename;
 using orange::gui::spatial_layout::make_point;
 using orange::gui::spatial_layout::make_generic_calibration_image_set_files;
 using orange::gui::spatial_layout::make_spatial_layout_persisted_files;
-using orange::gui::spatial_layout::prepare_calibration_capture_preflight;
-using orange::gui::spatial_layout::prepare_calibration_capture_preflight_all_cameras;
 using orange::gui::spatial_layout::read_json_file;
 using orange::gui::spatial_layout::render_group_capture_panels;
 using orange::gui::spatial_layout::render_calibration_capture_metadata_panel;
 using orange::gui::spatial_layout::render_hough_circle_tuning;
 using orange::gui::spatial_layout::render_spatial_layout_persistence_panel;
-using orange::gui::spatial_layout::restore_calibration_capture_preflight;
-using orange::gui::spatial_layout::restore_calibration_capture_preflight_all_cameras;
 using orange::gui::spatial_layout::sanitize_artifact_component;
-using orange::gui::spatial_layout::set_calibration_preflight_result;
 using orange::gui::spatial_layout::sample_circle_boundary_points;
 using orange::gui::spatial_layout::transform_point;
 using orange::gui::spatial_layout::transform_point_projective;
