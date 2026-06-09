@@ -7,6 +7,7 @@
 #include "gui/spatial_layout/geometry.h"
 #include "gui/spatial_layout/hough_panel.h"
 #include "gui/spatial_layout/metadata_panel.h"
+#include "gui/spatial_layout/persistence_panel.h"
 #include "gui/spatial_layout/preflight.h"
 #include "gui/spatial_layout/session_io.h"
 #include "imgui.h"
@@ -62,6 +63,8 @@ using orange::gui::spatial_layout::GenericCalibrationImageSetFiles;
 using orange::gui::spatial_layout::GroupCapturePanelActions;
 using orange::gui::spatial_layout::HoughCirclePanelActions;
 using orange::gui::spatial_layout::CalibrationCaptureMetadataPanelActions;
+using orange::gui::spatial_layout::SpatialLayoutPersistencePanelEvent;
+using orange::gui::spatial_layout::SpatialLayoutPersistencePanelState;
 using orange::gui::spatial_layout::SpatialLayoutPersistedFiles;
 using orange::gui::spatial_layout::apply_illumination_preset;
 using orange::gui::spatial_layout::build_arena_layout_artifact_id;
@@ -99,6 +102,7 @@ using orange::gui::spatial_layout::read_json_file;
 using orange::gui::spatial_layout::render_group_capture_panels;
 using orange::gui::spatial_layout::render_calibration_capture_metadata_panel;
 using orange::gui::spatial_layout::render_hough_circle_tuning;
+using orange::gui::spatial_layout::render_spatial_layout_persistence_panel;
 using orange::gui::spatial_layout::restore_calibration_capture_preflight;
 using orange::gui::spatial_layout::restore_calibration_capture_preflight_all_cameras;
 using orange::gui::spatial_layout::sanitize_artifact_component;
@@ -4889,6 +4893,147 @@ void clear_spatial_layout_texture(SpatialLayoutUiState* ui_state)
     ui_state->captured_canvas_view.last_image_height = 0;
 }
 
+void handle_spatial_layout_persistence_event(
+    SpatialLayoutPersistencePanelEvent event,
+    SpatialLayoutUiState* ui_state,
+    CameraParams& selected_camera,
+    CameraParams* cameras_params,
+    int num_cameras,
+    const std::string& artifact_root_dir)
+{
+    switch (event) {
+    case SpatialLayoutPersistencePanelEvent::None:
+        return;
+    case SpatialLayoutPersistencePanelEvent::StartNewCalibrationSession:
+        clear_spatial_calibration_session(ui_state);
+        ui_state->persistence_status = "Next save will start a new calibration session.";
+        ui_state->persistence_error.clear();
+        return;
+    case SpatialLayoutPersistencePanelEvent::SaveTopRimObservation: {
+        TopRimObservationSaveJob job;
+        std::string error;
+        std::string session_artifact_root;
+        if (!ensure_spatial_calibration_session(
+                ui_state,
+                selected_camera,
+                artifact_root_dir,
+                &session_artifact_root,
+                &error) ||
+            !prepare_dish_top_rim_observation_save_job_from_spatial_layout(
+                ui_state,
+                selected_camera,
+                session_artifact_root,
+                &job,
+                &error)) {
+            ui_state->persistence_error = error;
+            ui_state->persistence_status.clear();
+        } else {
+            job.session_dir = ui_state->calibration_session_dir;
+            if (!top_rim_observation_save_worker().Submit(std::move(job), &error)) {
+                ui_state->persistence_error = error;
+                ui_state->persistence_status.clear();
+            } else {
+                ui_state->persistence_status =
+                    "Saving top-rim observation artifact in session " +
+                    ui_state->calibration_session_id + "...";
+                ui_state->persistence_error.clear();
+            }
+        }
+        return;
+    }
+    case SpatialLayoutPersistencePanelEvent::SaveCalibrationImageSet: {
+        GenericCalibrationImageSetSaveJob job;
+        std::string error;
+        std::string session_artifact_root;
+        if (!ensure_spatial_calibration_session(
+                ui_state,
+                selected_camera,
+                artifact_root_dir,
+                &session_artifact_root,
+                &error) ||
+            !prepare_generic_calibration_image_set_save_job_from_spatial_layout(
+                ui_state,
+                selected_camera,
+                session_artifact_root,
+                &job,
+                &error)) {
+            ui_state->persistence_error = error;
+            ui_state->persistence_status.clear();
+        } else {
+            job.session_dir = ui_state->calibration_session_dir;
+            if (!generic_calibration_image_set_save_worker().Submit(std::move(job), &error)) {
+                ui_state->persistence_error = error;
+                ui_state->persistence_status.clear();
+            } else {
+                ui_state->persistence_status =
+                    "Saving calibration image-set artifact in session " +
+                    ui_state->calibration_session_id + "...";
+                ui_state->persistence_error.clear();
+            }
+        }
+        return;
+    }
+    case SpatialLayoutPersistencePanelEvent::SaveGroupCalibrationImageSets: {
+        std::string status;
+        std::string error;
+        if (!queue_group_calibration_image_set_save_jobs(
+                ui_state,
+                cameras_params,
+                num_cameras,
+                selected_camera,
+                artifact_root_dir,
+                &status,
+                &error)) {
+            ui_state->persistence_error = error;
+            ui_state->persistence_status.clear();
+        } else {
+            ui_state->persistence_status = status;
+            ui_state->persistence_error.clear();
+        }
+        return;
+    }
+    case SpatialLayoutPersistencePanelEvent::SaveArenaLayoutArtifact: {
+        std::string status;
+        std::string error;
+        std::string session_artifact_root;
+        if (!ensure_spatial_calibration_session(
+                ui_state,
+                selected_camera,
+                artifact_root_dir,
+                &session_artifact_root,
+                &error) ||
+            !save_spatial_layout_artifact(
+                ui_state,
+                selected_camera,
+                session_artifact_root,
+                ui_state->calibration_session_dir,
+                &status,
+                &error)) {
+            ui_state->persistence_error = error;
+            ui_state->persistence_status.clear();
+        } else {
+            ui_state->persistence_status = status;
+            ui_state->persistence_error.clear();
+            rebuild_schema_preview(ui_state, &selected_camera);
+        }
+        return;
+    }
+    case SpatialLayoutPersistencePanelEvent::LoadArenaLayoutArtifact: {
+        IGFD::FileDialogConfig config;
+        config.path = !ui_state->calibration_session_dir.empty()
+                          ? ui_state->calibration_session_dir
+                          : (artifact_root_dir.empty() ? "." : artifact_root_dir);
+        config.countSelectionMax = 1;
+        ImGuiFileDialog::Instance()->OpenDialog(
+            kLoadSpatialLayoutDialogId,
+            "Choose Arena Layout JSON",
+            ".json",
+            config);
+        return;
+    }
+    }
+}
+
 void render_spatial_layout_window(
     SpatialLayoutUiState* ui_state,
     CameraControl* camera_control,
@@ -5515,19 +5660,6 @@ void render_spatial_layout_window(
         selected_camera,
         CalibrationCaptureMetadataPanelActions{apply_calibration_image_set_purpose_defaults});
 
-    ImGui::SeparatorText("Persistence");
-    ImGui::Text("Calibration session: %s",
-                ui_state->calibration_session_id.empty()
-                    ? "(not started; first save creates one)"
-                    : ui_state->calibration_session_id.c_str());
-    if (!ui_state->calibration_session_dir.empty()) {
-        ImGui::TextDisabled("%s", ui_state->calibration_session_dir.c_str());
-    }
-    if (ImGui::Button("Start New Calibration Session")) {
-        clear_spatial_calibration_session(ui_state);
-        ui_state->persistence_status = "Next save will start a new calibration session.";
-        ui_state->persistence_error.clear();
-    }
     const bool captured_in_full_resolution =
         !ui_state->has_capture ||
         ui_state->captured_source_array_role.empty() ||
@@ -5537,199 +5669,32 @@ void render_spatial_layout_window(
         generic_calibration_image_set_save_worker().IsBusy() ||
         queued_generic_calibration_image_set_save_job_count() > 0;
     const bool spatial_save_busy = top_rim_save_busy || generic_image_set_save_busy;
-    const bool can_save_top_rim_observation =
+    const SpatialLayoutPersistencePanelState persistence_panel_state{
+        citrus_template_matches_selected_camera,
+        captured_in_full_resolution,
+        top_rim_save_busy,
+        generic_image_set_save_busy,
         ui_state->has_capture &&
-        ui_state->dish_mask_runtime.has_geometry &&
-        captured_in_full_resolution &&
-        citrus_template_matches_selected_camera &&
-        !spatial_save_busy;
-    ImGui::BeginDisabled(!can_save_top_rim_observation);
-    if (ImGui::Button("Save Top-Rim Observation")) {
-        TopRimObservationSaveJob job;
-        std::string error;
-        std::string session_artifact_root;
-        if (!ensure_spatial_calibration_session(
-                ui_state,
-                selected_camera,
-                artifact_root_dir,
-                &session_artifact_root,
-                &error) ||
-            !prepare_dish_top_rim_observation_save_job_from_spatial_layout(
-                ui_state,
-                selected_camera,
-                session_artifact_root,
-                &job,
-                &error)) {
-            ui_state->persistence_error = error;
-            ui_state->persistence_status.clear();
-        } else {
-            job.session_dir = ui_state->calibration_session_dir;
-            if (!top_rim_observation_save_worker().Submit(std::move(job), &error)) {
-                ui_state->persistence_error = error;
-                ui_state->persistence_status.clear();
-            } else {
-                ui_state->persistence_status =
-                    "Saving top-rim observation artifact in session " +
-                    ui_state->calibration_session_id + "...";
-                ui_state->persistence_error.clear();
-            }
-        }
-    }
-    ImGui::EndDisabled();
-    if (top_rim_save_busy) {
-        ImGui::TextDisabled("Top-rim observation save is running in the background.");
-    }
-    const bool can_save_generic_image_set =
+            ui_state->dish_mask_runtime.has_geometry &&
+            captured_in_full_resolution &&
+            citrus_template_matches_selected_camera &&
+            !spatial_save_busy,
         ui_state->has_capture &&
-        captured_in_full_resolution &&
-        citrus_template_matches_selected_camera &&
-        !spatial_save_busy;
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!can_save_generic_image_set);
-    if (ImGui::Button("Save Calibration Image Set")) {
-        GenericCalibrationImageSetSaveJob job;
-        std::string error;
-        std::string session_artifact_root;
-        if (!ensure_spatial_calibration_session(
-                ui_state,
-                selected_camera,
-                artifact_root_dir,
-                &session_artifact_root,
-                &error) ||
-            !prepare_generic_calibration_image_set_save_job_from_spatial_layout(
-                ui_state,
-                selected_camera,
-                session_artifact_root,
-                &job,
-                &error)) {
-            ui_state->persistence_error = error;
-            ui_state->persistence_status.clear();
-        } else {
-            job.session_dir = ui_state->calibration_session_dir;
-            if (!generic_calibration_image_set_save_worker().Submit(std::move(job), &error)) {
-                ui_state->persistence_error = error;
-                ui_state->persistence_status.clear();
-            } else {
-                ui_state->persistence_status =
-                    "Saving calibration image-set artifact in session " +
-                    ui_state->calibration_session_id + "...";
-                ui_state->persistence_error.clear();
-            }
-        }
-    }
-    ImGui::EndDisabled();
-    if (generic_image_set_save_busy) {
-        ImGui::TextDisabled("Calibration image-set save is running in the background.");
-    }
-    const bool can_save_group_image_sets =
+            captured_in_full_resolution &&
+            citrus_template_matches_selected_camera &&
+            !spatial_save_busy,
         !ui_state->group_captures.empty() &&
-        pending_group_snapshot_count(*ui_state) == 0 &&
-        !spatial_save_busy;
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!can_save_group_image_sets);
-    if (ImGui::Button("Save Group Calibration Image Sets")) {
-        std::string status;
-        std::string error;
-        if (!queue_group_calibration_image_set_save_jobs(
-                ui_state,
-                cameras_params,
-                num_cameras,
-                selected_camera,
-                artifact_root_dir,
-                &status,
-                &error)) {
-            ui_state->persistence_error = error;
-            ui_state->persistence_status.clear();
-        } else {
-            ui_state->persistence_status = status;
-            ui_state->persistence_error.clear();
-        }
-    }
-    ImGui::EndDisabled();
-    if (!ui_state->group_captures.empty()) {
-        ImGui::TextDisabled(
-            "Grouped save writes one image_set.json per captured camera and ties them with capture_group_id=%s.",
-            ui_state->group_capture_id.c_str());
-    }
-    if (ui_state->has_capture && !captured_in_full_resolution) {
-        ImGui::TextDisabled(
-            "Top-rim observations and calibration image sets require full-resolution camera coordinates. "
-            "This live snapshot is preview/downsample space only.");
-    }
-    if (!citrus_template_matches_selected_camera) {
-        ImGui::TextDisabled(
-            "Spatial calibration saves are blocked until the active Citrus template camera matches the selected Orange camera.");
-    }
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!citrus_template_matches_selected_camera);
-    if (ImGui::Button("Save Arena Layout Artifact")) {
-        std::string status;
-        std::string error;
-        std::string session_artifact_root;
-        if (!ensure_spatial_calibration_session(
-                ui_state,
-                selected_camera,
-                artifact_root_dir,
-                &session_artifact_root,
-                &error) ||
-            !save_spatial_layout_artifact(
-                ui_state,
-                selected_camera,
-                session_artifact_root,
-                ui_state->calibration_session_dir,
-                &status,
-                &error)) {
-            ui_state->persistence_error = error;
-            ui_state->persistence_status.clear();
-        } else {
-            ui_state->persistence_status = status;
-            ui_state->persistence_error.clear();
-            rebuild_schema_preview(ui_state, &selected_camera);
-        }
-    }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (ImGui::Button("Load Arena Layout Artifact...")) {
-        IGFD::FileDialogConfig config;
-        config.path = !ui_state->calibration_session_dir.empty()
-                          ? ui_state->calibration_session_dir
-                          : (artifact_root_dir.empty() ? "." : artifact_root_dir);
-        config.countSelectionMax = 1;
-        ImGuiFileDialog::Instance()->OpenDialog(
-            kLoadSpatialLayoutDialogId,
-            "Choose Arena Layout JSON",
-            ".json",
-            config);
-    }
-    ImGui::TextDisabled(
-        "Spatial calibration saves are grouped under calibrations/sessions/<session_id>/artifacts/<artifact_id>. Arena save writes %s, %s, %s, and %s.",
-        kSpatialLayoutMeasurementFilename,
-        kSpatialLayoutManifestFilename,
-        kSpatialLayoutArenaLayoutRuntimeFilename,
-        kSpatialLayoutDishMaskRuntimeFilename);
-
-    ImGui::Separator();
-    ImGui::Text("Preview valid: %s", ui_state->preview_valid ? "yes" : "no");
-
-    if (ImGui::TreeNode("Canonical Layout JSON")) {
-        if (ImGui::SmallButton("Copy canonical JSON")) {
-            ImGui::SetClipboardText(ui_state->canonical_layout_json.c_str());
-        }
-        ImGui::BeginChild("SpatialCanonicalJson", ImVec2(0.0f, 180.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(ui_state->canonical_layout_json.c_str());
-        ImGui::EndChild();
-        ImGui::TreePop();
-    }
-
-    if (ImGui::TreeNode("Runtime Calibration JSON")) {
-        if (ImGui::SmallButton("Copy runtime JSON")) {
-            ImGui::SetClipboardText(ui_state->runtime_preview_json.c_str());
-        }
-        ImGui::BeginChild("SpatialRuntimeJson", ImVec2(0.0f, 220.0f), true, ImGuiWindowFlags_HorizontalScrollbar);
-        ImGui::TextUnformatted(ui_state->runtime_preview_json.c_str());
-        ImGui::EndChild();
-        ImGui::TreePop();
-    }
+            pending_group_snapshot_count(*ui_state) == 0 &&
+            !spatial_save_busy};
+    const SpatialLayoutPersistencePanelEvent persistence_event =
+        render_spatial_layout_persistence_panel(ui_state, persistence_panel_state);
+    handle_spatial_layout_persistence_event(
+        persistence_event,
+        ui_state,
+        selected_camera,
+        cameras_params,
+        num_cameras,
+        artifact_root_dir);
 
     ImGui::EndChild();
     ImGui::TableNextColumn();

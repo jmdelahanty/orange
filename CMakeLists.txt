@@ -255,6 +255,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/hough_panel.cpp"
     "${SRC_DIR}/gui/spatial_layout/metadata_panel.cpp"
+    "${SRC_DIR}/gui/spatial_layout/persistence_panel.cpp"
     "${SRC_DIR}/gui/spatial_layout/preflight.cpp"
     "${SRC_DIR}/gui/spatial_layout/session_io.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
