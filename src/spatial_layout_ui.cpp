@@ -2,6 +2,7 @@
 
 #include "camera_preview_utils.h"
 #include "dish_top_rim_observation.h"
+#include "gui/spatial_layout/capture_panel.h"
 #include "gui/spatial_layout/citrus_import.h"
 #include "gui/spatial_layout/geometry.h"
 #include "gui/spatial_layout/hough_panel.h"
@@ -57,6 +58,7 @@ using orange::spatial::VisibilityStatus;
 
 using orange::gui::spatial_layout::Point2d;
 using orange::gui::spatial_layout::GenericCalibrationImageSetFiles;
+using orange::gui::spatial_layout::GroupCapturePanelActions;
 using orange::gui::spatial_layout::HoughCirclePanelActions;
 using orange::gui::spatial_layout::SpatialLayoutPersistedFiles;
 using orange::gui::spatial_layout::build_arena_layout_artifact_id;
@@ -91,6 +93,7 @@ using orange::gui::spatial_layout::make_spatial_layout_persisted_files;
 using orange::gui::spatial_layout::prepare_calibration_capture_preflight;
 using orange::gui::spatial_layout::prepare_calibration_capture_preflight_all_cameras;
 using orange::gui::spatial_layout::read_json_file;
+using orange::gui::spatial_layout::render_group_capture_panels;
 using orange::gui::spatial_layout::render_hough_circle_tuning;
 using orange::gui::spatial_layout::restore_calibration_capture_preflight;
 using orange::gui::spatial_layout::restore_calibration_capture_preflight_all_cameras;
@@ -4456,6 +4459,38 @@ void rebuild_schema_preview(SpatialLayoutUiState* ui_state, const CameraParams* 
     ui_state->preview_error = ui_state->preview_valid ? std::string() : error;
 }
 
+bool use_group_capture_for_fit(
+    SpatialLayoutUiState* ui_state,
+    SpatialLayoutGroupCaptureFrame* capture,
+    const CameraParams* cameras_params,
+    int num_cameras,
+    std::string* error_out)
+{
+    if (ui_state == nullptr || capture == nullptr) {
+        if (error_out) {
+            *error_out = "Grouped capture use-for-fit received null state.";
+        }
+        return false;
+    }
+    if (!capture->valid ||
+        capture->camera_index < 0 ||
+        capture->camera_index >= num_cameras ||
+        cameras_params == nullptr) {
+        if (error_out) {
+            *error_out = "Grouped capture is not valid for the current camera set.";
+        }
+        return false;
+    }
+
+    ui_state->selected_camera = capture->camera_index;
+    ui_state->configured_camera_index = capture->camera_index;
+    if (!apply_group_capture_to_active_preview(ui_state, *capture, error_out)) {
+        return false;
+    }
+    rebuild_schema_preview(ui_state, &cameras_params[capture->camera_index]);
+    return true;
+}
+
 void draw_circle_geometry(const RuntimeGeometry& geometry, ImU32 color, float thickness)
 {
     const ImPlotPoint center_point(geometry.circle.cx, geometry.circle.cy);
@@ -4736,107 +4771,6 @@ bool draw_runtime_preview(SpatialLayoutUiState* ui_state)
     }
     ImPlot::EndPlot();
     return changed;
-}
-
-ImVec2 fit_group_capture_image_size(
-    int image_width,
-    int image_height,
-    const ImVec2& available,
-    float max_height)
-{
-    if (image_width <= 0 || image_height <= 0) {
-        return ImVec2(1.0f, 1.0f);
-    }
-    const float width = std::max(1.0f, static_cast<float>(image_width));
-    const float height = std::max(1.0f, static_cast<float>(image_height));
-    const float width_scale = available.x > 0.0f ? available.x / width : 1.0f;
-    const float height_scale = max_height > 0.0f ? max_height / height : 1.0f;
-    const float scale = std::min(1.0f, std::min(width_scale, height_scale));
-    return ImVec2(std::max(1.0f, width * scale), std::max(1.0f, height * scale));
-}
-
-void render_group_capture_panels(
-    SpatialLayoutUiState* ui_state,
-    const CameraParams* cameras_params,
-    int num_cameras)
-{
-    if (ui_state == nullptr || ui_state->group_captures.empty()) {
-        return;
-    }
-
-    ImGui::SeparatorText("Grouped Captures");
-    if (!ui_state->group_capture_status.empty()) {
-        ImGui::TextWrapped("%s", ui_state->group_capture_status.c_str());
-    }
-    if (!ui_state->group_capture_error.empty()) {
-        ImGui::TextColored(
-            ImVec4(1.0f, 0.65f, 0.35f, 1.0f),
-            "%s",
-            ui_state->group_capture_error.c_str());
-    }
-
-    const float available_width = ImGui::GetContentRegionAvail().x;
-    const int columns =
-        std::clamp(static_cast<int>(available_width / 230.0f), 1, 4);
-    if (!ImGui::BeginTable("SpatialGroupCapturePanels", columns, ImGuiTableFlags_SizingStretchSame)) {
-        return;
-    }
-
-    for (size_t idx = 0; idx < ui_state->group_captures.size(); ++idx) {
-        SpatialLayoutGroupCaptureFrame& capture = ui_state->group_captures[idx];
-        ImGui::TableNextColumn();
-        const std::string child_id =
-            "SpatialGroupCapturePanel_" + capture.camera_serial;
-        ImGui::BeginChild(child_id.c_str(), ImVec2(0.0f, 235.0f), true);
-        ImGui::Text("Cam%s", capture.camera_serial.c_str());
-        ImGui::TextDisabled(
-            "%s / %s",
-            capture.metadata.image_set_purpose.c_str(),
-            capture.metadata.image_set_target_plane.c_str());
-        ImGui::TextDisabled(
-            "%dx%d %s",
-            capture.width,
-            capture.height,
-            capture.source_frame_count > 1 ? "mean" : "frame");
-        if (capture.texture != 0 && capture.width > 0 && capture.height > 0) {
-            const ImVec2 image_size =
-                fit_group_capture_image_size(
-                    capture.width,
-                    capture.height,
-                    ImGui::GetContentRegionAvail(),
-                    145.0f);
-            const float x_offset =
-                std::max(0.0f, (ImGui::GetContentRegionAvail().x - image_size.x) * 0.5f);
-            if (x_offset > 0.0f) {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + x_offset);
-            }
-            ImGui::Image(
-                (ImTextureID)(intptr_t)capture.texture,
-                image_size,
-                ImVec2(0, 1),
-                ImVec2(1, 0));
-        }
-        const bool can_use =
-            capture.valid &&
-            capture.camera_index >= 0 &&
-            capture.camera_index < num_cameras &&
-            cameras_params != nullptr;
-        ImGui::BeginDisabled(!can_use);
-        const std::string use_button = "Use for fit##" + capture.camera_serial;
-        if (ImGui::SmallButton(use_button.c_str())) {
-            ui_state->selected_camera = capture.camera_index;
-            ui_state->configured_camera_index = capture.camera_index;
-            std::string preview_error;
-            if (!apply_group_capture_to_active_preview(ui_state, capture, &preview_error)) {
-                ui_state->preview_error = preview_error;
-            } else if (cameras_params != nullptr) {
-                rebuild_schema_preview(ui_state, &cameras_params[capture.camera_index]);
-            }
-        }
-        ImGui::EndDisabled();
-        ImGui::EndChild();
-    }
-    ImGui::EndTable();
 }
 
 const char* layout_coordinate_space_label(CoordinateSpace value)
@@ -6355,7 +6289,11 @@ void render_spatial_layout_window(
     ImGui::TableNextColumn();
     ImGui::BeginChild("SpatialLayoutFitPreviewPanel", ImVec2(0.0f, 0.0f), true);
 
-    render_group_capture_panels(ui_state, cameras_params, num_cameras);
+    render_group_capture_panels(
+        ui_state,
+        cameras_params,
+        num_cameras,
+        GroupCapturePanelActions{use_group_capture_for_fit});
 
     ImGui::SeparatorText("Fit Preview");
     const char* canvas_edit_items[] = {"registration", "selected_zone"};
