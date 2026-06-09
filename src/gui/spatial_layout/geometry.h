@@ -8,11 +8,6 @@
 
 namespace orange::gui::spatial_layout {
 
-struct Point2d {
-    double x = 0.0;
-    double y = 0.0;
-};
-
 Point2d make_point(double x, double y);
 
 Point2d citrus_arena_origin_canvas_px(const CitrusSpatialTemplateState& template_state);

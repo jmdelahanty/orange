@@ -47,6 +47,8 @@ struct DishTopRimHoughParams {
     double param2 = 35.0;
     int min_radius_px = 0;
     int max_radius_px = 0;
+    int max_detection_dimension_px = 0;
+    double detection_scale = 1.0;
     double radius_adjustment_px = 0.0;
 };
 
@@ -103,6 +105,9 @@ struct DishTopRimObservationRequest {
     DishTopRimCaptureContext capture;
     std::string source_array_role = "images_full";
     int source_frame_index = 0;
+    bool has_detected_circle = false;
+    DishTopRimCircle detected_circle;
+    std::string detected_circle_source;
     double valid_region_erosion_px = 0.0;
     bool operator_confirmed = true;
     std::string operator_status = "orange_operator_confirmed";

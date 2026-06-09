@@ -412,6 +412,13 @@ full-resolution camera-native coordinates. If the current capture came from the
 downsampled live preview, the UI must reject the save; use `Capture
 Full-Resolution Stream Snapshot` first.
 
+For top-rim saves from the Spatial Layout UI, `circle_detection.detected_circle`
+is the already displayed Hough proposal scaled back to full-resolution
+camera-native coordinates. The save path must not rerun Hough on the full image
+and risk persisting a different fit from the one the operator reviewed. The
+operator-confirmed/edited circle remains the load-bearing geometry in
+`observed_boundary`, `accepted_mask`, and `valid_detection_region`.
+
 This supports daily piecewise acquisition:
 
 1. Save an `arena_projection` image showing the projected Citrus arena extent
@@ -832,11 +839,34 @@ Recommended:
 - `projected_pattern.pattern_id`
 - `projected_pattern.type = "crosshair"`
 - `projected_pattern.expected_center_canvas_px`
+- `projected_pattern.coordinate_frames[]` naming
+  `camera_view_px`, `final_display_canvas_px`, and
+  `arena_relative_canvas_px`
+- `projected_pattern.homography.direction =
+  "camera_view_px_to_final_display_canvas_px"` when a Citrus sidecar matrix is
+  referenced
+- `projected_pattern.arena_region` with Citrus arena center, size, and derived
+  origin in final-display canvas pixels
+- `projected_pattern.experimental_area` with center/radius/shape in
+  arena-relative canvas pixels
+- `projected_pattern.sampled_outline_points[]` when available, with stable
+  point ids and coordinates in arena-relative canvas, final-display canvas, and
+  camera pixels. Camera pixels should be computed by applying
+  `inverse(H_camera_to_display)` to final-display canvas points.
+- `projected_pattern.crosshair_segments[]` with line endpoints in the same
+  coordinate frames when available.
 - `observations.crosshair.detected_center_camera_px`
 - `observations.crosshair.fit_quality`
+- `observations.top_rim_or_experimental_area` reference or copy of the Orange
+  Hough/top-rim center/radius/boundary evidence used for mismatch comparison
+- `observations.mismatch_metrics` such as center delta, radial residuals, and
+  outline-to-Hough distances when Orange computes them
 
 Crosshair alignment is useful for daily center checks, but Citrus still owns
-accepted center correction semantics.
+accepted center/radius correction semantics. Orange may include the
+camera-space sampled Citrus outline as diagnostic preview evidence, but Citrus
+should recompute the outline and any accepted correction from its own arena,
+homography, and tank/plane state.
 
 ## Citrus Import
 

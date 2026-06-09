@@ -563,6 +563,12 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"method", kDishTopRimObservationMethod},
             {"source_array_role", request.source_array_role},
             {"source_frame_index", request.source_frame_index},
+            {"detected_circle_source",
+             request.has_detected_circle
+                 ? (request.detected_circle_source.empty()
+                        ? "provided_by_request"
+                        : request.detected_circle_source)
+                 : "computed_at_write_time"},
             {"image_shape_px", image_shape_json(request.camera.height, request.camera.width)},
             {"detected_circle", circle_to_json(detected_circle)}
         }},
@@ -1056,8 +1062,24 @@ bool write_dish_top_rim_observation_artifact(
     }
 
     DishTopRimCircle detected_circle;
-    if (!detect_dish_top_rim_hough_circle(source_image, hough_params, &detected_circle, error_out)) {
-        return false;
+    if (request.has_detected_circle) {
+        detected_circle = request.detected_circle;
+        if (!validate_circle(
+                detected_circle,
+                source_image.cols,
+                source_image.rows,
+                "detected_circle",
+                error_out)) {
+            return false;
+        }
+    } else {
+        if (!detect_dish_top_rim_hough_circle(
+                source_image,
+                hough_params,
+                &detected_circle,
+                error_out)) {
+            return false;
+        }
     }
 
     const cv::Mat source_png = normalize_source_for_png(source_image);
@@ -1103,6 +1125,8 @@ bool write_dish_top_rim_observation_artifact(
         {"param2", hough_params.param2},
         {"min_radius_px", hough_params.min_radius_px},
         {"max_radius_px", hough_params.max_radius_px},
+        {"max_detection_dimension_px", hough_params.max_detection_dimension_px},
+        {"detection_scale", hough_params.detection_scale},
         {"radius_adjustment_px", hough_params.radius_adjustment_px}
     };
 

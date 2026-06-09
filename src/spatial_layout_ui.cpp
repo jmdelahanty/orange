@@ -334,6 +334,7 @@ void clear_citrus_template_import(SpatialLayoutUiState* ui_state)
     ui_state->citrus_canvas_config_path.clear();
     ui_state->has_citrus_projected_circle = false;
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
+    ui_state->citrus_projected_outline_camera_points.clear();
     ui_state->citrus_import_status.clear();
     ui_state->citrus_import_error.clear();
 }
@@ -408,6 +409,9 @@ bool update_citrus_projected_circle_preview(SpatialLayoutUiState* ui_state,
         }
         return false;
     }
+    ui_state->has_citrus_projected_circle = false;
+    ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
+    ui_state->citrus_projected_outline_camera_points.clear();
     if (!ui_state->citrus_template.available ||
         !ui_state->citrus_template.has_canvas_to_camera_homography) {
         if (error_out) {
@@ -435,6 +439,7 @@ bool update_citrus_projected_circle_preview(SpatialLayoutUiState* ui_state,
     ui_state->has_citrus_projected_circle = true;
     ui_state->citrus_projected_circle_geometry =
         runtime_circle(fitted_circle.cx, fitted_circle.cy, fitted_circle.r);
+    ui_state->citrus_projected_outline_camera_points = std::move(camera_points);
     if (rms_error_out != nullptr) {
         *rms_error_out = rms_error;
     }
@@ -499,6 +504,7 @@ bool apply_citrus_template_to_spatial_layout(
     ui_state->citrus_template = template_state;
     ui_state->has_citrus_projected_circle = false;
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
+    ui_state->citrus_projected_outline_camera_points.clear();
 
     LayoutGeometry imported_outer;
     imported_outer.type = LayoutGeometryType::kCircle;
@@ -540,7 +546,7 @@ bool apply_citrus_template_to_spatial_layout(
         double preview_rms = 0.0;
         std::string preview_error;
         if (update_citrus_projected_circle_preview(ui_state, &preview_rms, &preview_error)) {
-            status << ". Homography loaded; projected-circle seed RMS " << std::fixed << std::setprecision(2)
+            status << ". Homography loaded; projected-outline circle-fit RMS " << std::fixed << std::setprecision(2)
                    << preview_rms << " px.";
         } else {
             status << ". Homography loaded but preview seed failed (" << preview_error << ").";
@@ -2346,6 +2352,12 @@ orange::calibration::DishTopRimHoughParams make_top_rim_hough_params(
                 params.min_radius_px + 1,
                 static_cast<int>(std::ceil(std::min(max_dim, radius * 1.25))));
     }
+    params.max_detection_dimension_px =
+        std::clamp(ui_state.hough_max_detection_dimension_px, 256, 8192);
+    params.detection_scale =
+        max_dim > static_cast<double>(params.max_detection_dimension_px)
+            ? static_cast<double>(params.max_detection_dimension_px) / max_dim
+            : 1.0;
     params.radius_adjustment_px = ui_state.hough_radius_adjustment_px;
     return params;
 }
@@ -3388,6 +3400,23 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
             error_out)) {
         return false;
     }
+    if (!ui_state->has_detected_experimental_area_circle ||
+        ui_state->detected_experimental_area_geometry.type != RuntimeGeometryType::kCircle) {
+        if (error_out) {
+            *error_out =
+                "Run Hough circle detection before saving a top-rim observation. "
+                "The save path persists the displayed full-resolution detection proposal "
+                "instead of recomputing Hough on save.";
+        }
+        return false;
+    }
+    orange::calibration::DishTopRimCircle detected_circle;
+    if (!runtime_geometry_to_top_rim_circle(
+            ui_state->detected_experimental_area_geometry,
+            &detected_circle,
+            error_out)) {
+        return false;
+    }
 
     cv::Mat source_gray;
     if (!captured_frame_to_gray8(*ui_state, &source_gray, error_out)) {
@@ -3457,6 +3486,10 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
         ui_state->calibration_requires_filter_reinstalled_repeatably;
     request.source_array_role = source_array_role;
     request.source_frame_index = 0;
+    request.has_detected_circle = true;
+    request.detected_circle = detected_circle;
+    request.detected_circle_source =
+        "orange_spatial_layout_ui_cached_hough_scaled_to_full_resolution";
     request.valid_region_erosion_px = std::max(0.0, ui_state->edge_margin_px);
     request.operator_confirmed = true;
     request.operator_status = "orange_spatial_layout_ui_confirmed";
@@ -4445,17 +4478,39 @@ void draw_hough_proposal_overlay(const RuntimeGeometry& geometry)
         "Hough");
 }
 
-void draw_citrus_projected_circle_overlay(const RuntimeGeometry& geometry)
+void draw_projected_outline_polyline(const std::vector<Point2d>& camera_points,
+                                     ImU32 color,
+                                     float thickness)
 {
-    if (geometry.type != RuntimeGeometryType::kCircle || geometry.circle.r <= 0.0) {
+    if (camera_points.size() < 3) {
+        return;
+    }
+    ImDrawList* draw_list = ImPlot::GetPlotDrawList();
+    for (size_t idx = 0; idx < camera_points.size(); ++idx) {
+        const Point2d& a = camera_points[idx];
+        const Point2d& b = camera_points[(idx + 1) % camera_points.size()];
+        draw_list->AddLine(
+            ImPlot::PlotToPixels(ImPlotPoint(a.x, a.y)),
+            ImPlot::PlotToPixels(ImPlotPoint(b.x, b.y)),
+            color,
+            thickness);
+    }
+}
+
+void draw_citrus_projected_outline_overlay(const std::vector<Point2d>& camera_points,
+                                           const RuntimeGeometry& fitted_geometry)
+{
+    if (camera_points.size() < 3 ||
+        fitted_geometry.type != RuntimeGeometryType::kCircle ||
+        fitted_geometry.circle.r <= 0.0) {
         return;
     }
 
     const ImU32 color = IM_COL32(100, 190, 255, 230);
-    draw_circle_geometry(geometry, color, 2.0f);
+    draw_projected_outline_polyline(camera_points, color, 2.0f);
 
     const ImVec2 center = ImPlot::PlotToPixels(
-        ImPlotPoint(geometry.circle.cx, geometry.circle.cy));
+        ImPlotPoint(fitted_geometry.circle.cx, fitted_geometry.circle.cy));
     ImDrawList* draw_list = ImPlot::GetPlotDrawList();
     constexpr float marker = 9.0f;
     const ImVec2 p0(center.x, center.y - marker);
@@ -4613,7 +4668,9 @@ bool draw_runtime_preview(SpatialLayoutUiState* ui_state)
         (ui_state->citrus_template.source_camera_id.empty() ||
          ui_state->captured_camera_serial.empty() ||
          ui_state->citrus_template.source_camera_id == ui_state->captured_camera_serial)) {
-        draw_citrus_projected_circle_overlay(ui_state->citrus_projected_circle_geometry);
+        draw_citrus_projected_outline_overlay(
+            ui_state->citrus_projected_outline_camera_points,
+            ui_state->citrus_projected_circle_geometry);
     }
     draw_runtime_geometry(
         ui_state->dish_mask_runtime.geometry.outer_geometry,
@@ -5489,10 +5546,13 @@ void render_spatial_layout_window(
             if (ui_state->has_citrus_projected_circle &&
                 ui_state->citrus_projected_circle_geometry.type == RuntimeGeometryType::kCircle) {
                 ImGui::TextWrapped(
-                    "Citrus current experimental center in camera px: (%.2f, %.2f), r=%.2f",
+                    "Citrus current experimental outline circle-fit diagnostic in camera px: center=(%.2f, %.2f), r=%.2f",
                     ui_state->citrus_projected_circle_geometry.circle.cx,
                     ui_state->citrus_projected_circle_geometry.circle.cy,
                     ui_state->citrus_projected_circle_geometry.circle.r);
+                ImGui::TextWrapped(
+                    "Citrus projected outline samples: %zu",
+                    ui_state->citrus_projected_outline_camera_points.size());
             }
         } else {
             ImGui::TextColored(
@@ -5666,6 +5726,8 @@ void render_spatial_layout_window(
         generic_image_set_save_busy,
         ui_state->has_capture &&
             ui_state->dish_mask_runtime.has_geometry &&
+            ui_state->has_detected_experimental_area_circle &&
+            ui_state->detected_experimental_area_geometry.type == RuntimeGeometryType::kCircle &&
             captured_in_full_resolution &&
             citrus_template_matches_selected_camera &&
             !spatial_save_busy,
@@ -5711,7 +5773,7 @@ void render_spatial_layout_window(
         } else {
             ImGui::TextDisabled("Drag green to move the selected zone. Drag gold/orange handles to resize it.");
         }
-        ImGui::TextDisabled("Blue outline/triangle: current Citrus global-canvas homography projection. Pink outline/cross: detected experimental-area proposal. Green outline/diamond/line: corrected Citrus outline preserving current Citrus radius with the proposed center. Orange outline: resolved experimental boundary. Yellow outline: valid region after edge margin. Green/cyan outlines: resolved zone overlays.");
+        ImGui::TextDisabled("Blue outline/triangle: current Citrus experimental-area outline inverse-projected into camera pixels; triangle is fitted-center diagnostic. Pink outline/cross: detected experimental-area proposal. Green outline/diamond/line: corrected Citrus outline preserving current Citrus radius with the proposed center. Orange outline: resolved experimental boundary. Yellow outline: valid region after edge margin. Green/cyan outlines: resolved zone overlays.");
     }
 
     ImGui::Separator();

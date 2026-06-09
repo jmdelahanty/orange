@@ -12,6 +12,15 @@
 #include <string>
 #include <vector>
 
+namespace orange::gui::spatial_layout {
+
+struct Point2d {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+}  // namespace orange::gui::spatial_layout
+
 struct CitrusSpatialTemplateState {
     bool available = false;
     std::string source_config_path;
@@ -209,6 +218,7 @@ struct SpatialLayoutUiState {
     std::string citrus_canvas_config_path;
     bool has_citrus_projected_circle = false;
     orange::spatial::RuntimeGeometry citrus_projected_circle_geometry;
+    std::vector<orange::gui::spatial_layout::Point2d> citrus_projected_outline_camera_points;
     std::string citrus_import_status;
     std::string citrus_import_error;
     std::string persistence_status;

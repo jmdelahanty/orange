@@ -135,13 +135,24 @@ void test_artifact_write_and_snapshot()
     const std::filesystem::path root = make_temp_root();
     const std::string artifact_id =
         build_dish_top_rim_observation_artifact_id("2012632", "20260604T120000Z");
-    const DishTopRimObservationRequest request = make_request(artifact_id);
+    DishTopRimObservationRequest request = make_request(artifact_id);
     const cv::Mat image = make_synthetic_dish_frame();
+
+    request.has_detected_circle = true;
+    request.detected_circle.center.x = 319.0;
+    request.detected_circle.center.y = 253.0;
+    request.detected_circle.radius_px = 148.0;
+    request.detected_circle_source = "fixture_cached_hough_scaled_to_full_resolution";
 
     DishTopRimCircle accepted;
     accepted.center.x = 322.0;
     accepted.center.y = 254.0;
     accepted.radius_px = 150.0;
+
+    DishTopRimHoughParams unusable_hough_params = make_hough_params();
+    unusable_hough_params.min_radius_px = 1;
+    unusable_hough_params.max_radius_px = 2;
+    unusable_hough_params.param2 = 500.0;
 
     DishTopRimObservationWriteResult result;
     std::string error;
@@ -150,7 +161,7 @@ void test_artifact_write_and_snapshot()
             root.string(),
             request,
             image,
-            make_hough_params(),
+            unusable_hough_params,
             accepted,
             &result,
             &error),
@@ -226,6 +237,25 @@ void test_artifact_write_and_snapshot()
     require(
         observation["capture"].value("projector_state", "") == "projector_off",
         "capture projector state preserved");
+    require(
+        observation["circle_detection"].value("detected_circle_source", "") ==
+            "fixture_cached_hough_scaled_to_full_resolution",
+        "cached detected circle source preserved");
+    require(
+        std::abs(
+            observation["circle_detection"]["detected_circle"]["center_px"].value("x", 0.0) -
+            319.0) < 0.001,
+        "cached detected circle x preserved");
+    require(
+        std::abs(
+            observation["circle_detection"]["detected_circle"]["center_px"].value("y", 0.0) -
+            253.0) < 0.001,
+        "cached detected circle y preserved");
+    require(
+        std::abs(
+            observation["circle_detection"]["detected_circle"].value("radius_px", 0.0) -
+            148.0) < 0.001,
+        "cached detected circle radius preserved");
 
     const nlohmann::json image_set = read_json(artifact_dir / "image_set.json");
     require(

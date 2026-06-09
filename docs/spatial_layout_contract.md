@@ -101,6 +101,10 @@ Layer mapping:
 
 - `dish_top_rim_observation.observed_boundary` is the physical top-rim
   evidence in `camera_native_pixels`.
+- `dish_top_rim_observation.circle_detection.detected_circle` is the Hough
+  proposal shown to the operator, already scaled to full-resolution
+  `camera_native_pixels`; top-rim save should persist this proposal instead of
+  rerunning Hough at save time.
 - `dish_top_rim_observation.accepted_mask` is the operator-confirmed circular
   mask used as the V0 load-bearing geometry.
 - `dish_mask.outer_geometry` should represent the accepted or observed top-rim
@@ -343,10 +347,12 @@ cross-space model is boundary-point mapping on the calibrated plane.
 Current Orange UI note:
 
 - the current importer samples the Citrus projector-space circle, inverse-projects
-  those points through the homography, and fits an approximate camera-space
-  circle for preview and similarity-seed purposes
-- that approximation is a registration aid only; it is not a claim that
-  projector-space circles remain circles in raw camera pixels
+  those points through the homography, and draws the resulting camera-space
+  sampled outline as the current Citrus overlay
+- Orange also fits an approximate camera-space circle to those sampled points
+  for center/radius/RMS diagnostics and similarity-seed purposes
+- that fitted-circle approximation is a registration aid only; it is not a
+  claim that projector-space circles remain circles in raw camera pixels
 
 ## Citrus Import Surface For Single-Circle V1
 
@@ -375,6 +381,10 @@ Optional Citrus fields:
 Optional Citrus sidecar:
 
 - `<canvas>/calibration_artifacts/homography_<config_name>_<camera_id>.yml`
+- the saved `homography_matrix` is `camera_view_px ->
+  final_display_canvas_px`
+- Orange must explicitly invert that matrix before projecting Citrus
+  final-display canvas geometry into camera pixels for the preview overlay
 
 V1 rejection rules:
 
