@@ -253,6 +253,7 @@ set(ORANGE_SOURCES
     "${SRC_DIR}/gui/spatial_layout/citrus_import.cpp"
     "${SRC_DIR}/gui/spatial_layout/geometry.cpp"
     "${SRC_DIR}/gui/spatial_layout/preflight.cpp"
+    "${SRC_DIR}/gui/spatial_layout/session_io.cpp"
     "${SRC_DIR}/aperture_characterization.cpp"
     "${SRC_DIR}/calibration_image_set.cpp"
     "${SRC_DIR}/dish_top_rim_observation.cpp"
