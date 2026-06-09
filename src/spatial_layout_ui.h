@@ -55,6 +55,92 @@ struct CalibrationCaptureCameraRestoreState {
     unsigned int frame_rate_hz = 0;
 };
 
+struct SpatialLayoutPendingGroupSnapshotRequest {
+    std::string camera_serial;
+    uint64_t request_id = 0;
+    bool completed = false;
+    bool failed = false;
+    std::string error;
+};
+
+struct SpatialLayoutCalibrationImageSetMetadata {
+    std::string filter_state = "unknown";
+    std::string runtime_filter_state = "unknown";
+    std::string light_handling = "leave_current";
+    std::string light_state = "unknown";
+    std::string illumination_spectrum = "unknown";
+    std::string illumination_source = "unknown";
+    double illumination_center_wavelength_nm = 0.0;
+    bool has_illumination_center_wavelength_nm = false;
+    double illumination_min_wavelength_nm = 0.0;
+    bool has_illumination_min_wavelength_nm = false;
+    double illumination_max_wavelength_nm = 0.0;
+    bool has_illumination_max_wavelength_nm = false;
+    double illumination_bandwidth_fwhm_nm = 0.0;
+    bool has_illumination_bandwidth_fwhm_nm = false;
+    std::string illumination_wavelength_confidence = "unknown";
+    std::string projector_state = "unknown";
+    bool projector_visible_to_camera = false;
+    bool requires_filter_reinstalled_repeatably = false;
+    std::string operator_notes;
+    std::string image_set_purpose = "homography_grid";
+    std::string image_set_target_plane = "projected_surface";
+    std::string image_set_image_role = "grid_on";
+    std::string image_set_projected_pattern_id = "citrus_homography_grid_v1";
+    std::string image_set_projected_pattern_type = "dot_grid";
+    std::string image_set_scale_target_type = "unknown";
+    std::string image_set_notes;
+    bool has_calibration_domain = false;
+    std::string calibration_domain_shape = "unknown";
+    std::string calibration_domain_source = "spatial_layout_runtime";
+    std::string calibration_domain_coordinate_space = "camera_native_pixels";
+    double calibration_domain_center_x_px = 0.0;
+    double calibration_domain_center_y_px = 0.0;
+    double calibration_domain_radius_px = 0.0;
+    double calibration_domain_width_px = 0.0;
+    double calibration_domain_height_px = 0.0;
+    double calibration_domain_rotation_deg_clockwise = 0.0;
+    double calibration_domain_edge_margin_px = 0.0;
+    bool has_calibration_domain_valid_circle = false;
+    double calibration_domain_valid_center_x_px = 0.0;
+    double calibration_domain_valid_center_y_px = 0.0;
+    double calibration_domain_valid_radius_px = 0.0;
+    bool has_calibration_domain_valid_rectangle = false;
+    double calibration_domain_valid_width_px = 0.0;
+    double calibration_domain_valid_height_px = 0.0;
+};
+
+struct SpatialLayoutGroupCaptureFrame {
+    bool valid = false;
+    std::string capture_group_id;
+    SpatialLayoutCalibrationImageSetMetadata metadata;
+    std::string camera_serial;
+    std::string camera_name;
+    int camera_index = -1;
+    int camera_configured_width = 0;
+    int camera_configured_height = 0;
+    std::string camera_pixel_format;
+    double camera_exposure_us = 0.0;
+    bool has_camera_exposure_us = false;
+    double camera_frame_rate_hz = 0.0;
+    bool has_camera_frame_rate_hz = false;
+    double camera_gain = 0.0;
+    bool has_camera_gain = false;
+    int width = 0;
+    int height = 0;
+    GLuint texture = 0;
+    int texture_width = 0;
+    int texture_height = 0;
+    std::vector<unsigned char> rgba;
+    std::string source_array_role = "images_full";
+    std::string capture_mode = "operator_group_next_frame";
+    uint32_t source_frame_count = 1;
+    uint64_t first_local_frame_id = 0;
+    uint64_t last_local_frame_id = 0;
+    uint64_t first_camera_frame_id = 0;
+    uint64_t last_camera_frame_id = 0;
+};
+
 struct SpatialLayoutUiState {
     bool show_window = false;
     int selected_camera = 0;
@@ -79,6 +165,7 @@ struct SpatialLayoutUiState {
     std::string captured_camera_serial;
     std::string captured_source_array_role = "images_full";
     std::string captured_capture_mode = "single_camera_direct_still";
+    std::string captured_capture_group_id;
     uint32_t captured_source_frame_count = 1;
     uint64_t captured_first_local_frame_id = 0;
     uint64_t captured_last_local_frame_id = 0;
@@ -87,6 +174,13 @@ struct SpatialLayoutUiState {
     uint64_t pending_full_res_snapshot_request_id = 0;
     std::string pending_full_res_snapshot_camera_serial;
     uint32_t pending_full_res_snapshot_target_frame_count = 1;
+    std::string group_capture_id;
+    std::string group_capture_mode = "operator_group_next_frame";
+    SpatialLayoutCalibrationImageSetMetadata group_capture_metadata;
+    std::vector<SpatialLayoutPendingGroupSnapshotRequest> pending_group_snapshot_requests;
+    std::vector<SpatialLayoutGroupCaptureFrame> group_captures;
+    std::string group_capture_status;
+    std::string group_capture_error;
     bool has_capture = false;
     orange::ui::ImageCanvasViewState captured_canvas_view;
 

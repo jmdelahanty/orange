@@ -136,10 +136,33 @@ identity. For example, use `target_plane = "projected_surface"` plus:
 or point to a Citrus/Orange tank-design reference that carries the optical stack
 and material details.
 
-For V0, `scale_image` at `estimated_fish_plane` is diagnostic only. Citrus can
-persist and report the measured scale and compare it to projection-surface
-scale, but it should not change chaser/stimulus runtime behavior until
-plane-specific runtime transforms are designed and accepted.
+`scale_image` must name the physical plane where the ruler/scale target really
+was during capture. A projection-surface scale image is the normal scale
+companion for homography/projector calibration, but it can still be captured
+with the normal NIR strobe and a clear ruler sitting at the projection surface.
+
+For the current circular dish workflow, a ruler sitting on the tank/dish bottom
+should use:
+
+```json
+{
+  "purpose": "scale_image",
+  "target_plane": "tank_bottom_inner_surface",
+  "runtime_role": {
+    "role": "behavior_plane_proxy",
+    "behavior_plane_id": "estimated_fish_plane",
+    "source": "fallback_to_tank_bottom_inner_surface",
+    "authority": "citrus_decides_runtime_application"
+  }
+}
+```
+
+Use `target_plane = "estimated_fish_plane"` only when the scale target is
+actually placed or shimmed at the estimated fish body plane. For V0, any
+fish-plane proxy scale is diagnostic only. Citrus can persist and report the
+measured scale and compare it to projection-surface scale, but it should not
+change chaser/stimulus runtime behavior until plane-specific runtime transforms
+are designed and accepted.
 
 ## Required Core Fields
 
@@ -160,6 +183,111 @@ All `orange.calibration.image_set` payloads require:
 is allowed for compatibility, but artifacts meant to seed Citrus homography or
 scale work should use full-resolution camera-native images whenever possible.
 
+## Calibration Domains
+
+`target_plane` names the physical plane where the calibration image was
+captured. `observations.observed_domain` describes the camera-space domain that
+Orange observed for that image set. Domain shape is per image set and per target
+plane; the projection surface and tank-bottom/fish proxy plane do not need to
+share the same shape.
+
+For example, one rig may use:
+
+- `target_plane = "projected_surface"` with a rectangular/square projector or
+  shelf calibration domain.
+- `target_plane = "tank_bottom_inner_surface"` with a circular dish domain.
+- `runtime_role.role = "behavior_plane_proxy"` when Citrus may use the
+  `tank_bottom_inner_surface` calibration as a fallback proxy for
+  `estimated_fish_plane`.
+
+For projection-surface captures, Orange writes a shape-only authored-domain
+hint rather than inverse-projecting Citrus bounds:
+
+```json
+"observations": {
+  "authored_domain": {
+    "shape": "oriented_rectangle",
+    "source": "operator_selected_projection_surface_default",
+    "target_plane": "projected_surface",
+    "coordinate_space": "final_display_canvas_px",
+    "geometry_available": false,
+    "authority": "citrus_provides_geometry"
+  }
+}
+```
+
+This says the projection-surface workflow is rectangular/square by default, but
+Citrus remains responsible for exact canvas-space geometry and authored point
+coordinates.
+
+Orange writes observed camera-space evidence only:
+
+```json
+"observations": {
+  "observed_domain": {
+    "shape": "circle",
+    "source": "orange_spatial_layout_runtime:manual_fit",
+    "target_plane": "tank_bottom_inner_surface",
+    "coordinate_space": "camera_native_pixels",
+    "center_px": [2319.9, 2286.7],
+    "radius_px": 2169.8,
+    "outer_geometry": {"type": "circle", "cx": 2319.9, "cy": 2286.7, "r": 2169.8}
+  },
+  "calibration_domain": {
+    "shape": "circle",
+    "source": "orange_spatial_layout_runtime:manual_fit",
+    "target_plane": "tank_bottom_inner_surface",
+    "coordinate_space": "camera_native_pixels",
+    "center_px": [2319.9, 2286.7],
+    "radius_px": 2169.8,
+    "outer_geometry": {"type": "circle", "cx": 2319.9, "cy": 2286.7, "r": 2169.8}
+  }
+}
+```
+
+`observations.authored_domain` is reserved for Citrus-authored/rendered domain
+metadata such as a canvas-space circle or rectangle. Orange may write a
+shape-only projection-surface hint with `geometry_available = false`, but should
+not invent exact authored geometry from camera observations. If Citrus exports
+expected projected points, Orange may preserve them under
+`projected_pattern.expected_points`, but expected points should remain in
+Citrus/canvas coordinates, not only camera coordinates.
+
+## Homography Coordinate-Frame Invariant
+
+Within one calibration session, homography captures that will be compared across
+planes should use the same Citrus-authored coordinate frame unless the
+difference is explicitly recorded in pattern metadata.
+
+A homography is a mapping between:
+
+```text
+camera_native_pixels on one physical plane -> Citrus final_display_canvas_px
+```
+
+It is valid for the exact projected pattern/canvas coordinates used during that
+capture. Operator edits to the Orange rim/dish overlay do not affect the
+homography. But if the operator recenters the projected Citrus arena, changes
+the pattern origin, changes the arena canvas placement, or otherwise shifts the
+projected grid between projection-surface and tank-bottom captures, Citrus must
+know the exact expected destination points for each capture. Otherwise a later
+comparison between `H_projected_surface` and `H_tank_bottom_inner_surface` will
+mix true plane/parallax effects with operator-induced coordinate-frame changes.
+
+Recommended V0 rule:
+
+- Keep the Citrus canvas, arena placement, and projected-pattern coordinate
+  frame fixed while collecting projection-surface and tank-bottom homography
+  images for one comparison.
+- If the projected pattern is intentionally recentered or changed, record a
+  stable `projected_pattern.pattern_id` plus enough Citrus-authored pattern
+  metadata to recover exact expected points.
+- Citrus should treat homographies from different authored coordinate frames as
+  separate calibrations unless it can prove the expected points for each frame.
+- `projected_pattern.expected_points[]`, when present, should contain stable
+  point IDs and Citrus/canvas coordinates such as `canvas_px` and/or
+  `arena_relative_canvas_px`.
+
 ## Spatial Layout V0 Save Workflow
 
 The Spatial Layout UI can save generic `orange.calibration.image_set` artifacts
@@ -168,15 +296,21 @@ acquisition/provenance workflow, not a fitting workflow.
 
 The UI groups the daily workflow into tabs:
 
-- `Projection Surface`: arena projection and homography-grid captures at the
-  projector/diffuser plane. These default to visible-projector metadata and
-  `suppress_mapped_strobe`. For rigs using the HOYA R72 IR filter, these
-  defaults mark the capture filter state as removed while preserving the normal
-  runtime filter state as installed.
-- `Estimated Fish Plane`: scale and crosshair captures near the fish/tank-bottom
-  plane. Scale captures default to the mapped TTL NIR pulse path so ruler/target
-  images remain visible to the camera; scale captures default to the HOYA R72
-  filter installed.
+- `Projection Surface`: arena projection, homography-grid, and scale-image
+  captures at the projector/diffuser plane. Arena projection and homography
+  grid captures default to visible-projector metadata and
+  `suppress_mapped_strobe`. Projection-surface scale captures default to the
+  HOYA R72 filter installed and `keep_or_restore_mapped_pulse` because they are
+  captured with the normal NIR strobe and a clear ruler/scale target at the
+  projection surface.
+- `Estimated Fish Plane`: tank-bottom/fish-plane proxy captures, including
+  tank-bottom homography, scale, and crosshair images. For the current circular
+  dish workflow, the physical calibration target plane is
+  `tank_bottom_inner_surface`, not `estimated_fish_plane`. Orange annotates
+  these captures with `runtime_role.role = "behavior_plane_proxy"` when they
+  may serve as Citrus' `estimated_fish_plane` fallback. Scale captures default
+  to the mapped TTL NIR pulse path so ruler/target images remain visible to the
+  camera; scale captures default to the HOYA R72 filter installed.
 - `Dish / Valid Area`: daily dish top-rim and valid-area/mask review. This tab
   prepares top-rim capture metadata and does not imply a Citrus runtime geometry
   update by itself.
@@ -185,7 +319,8 @@ The operator selects:
 
 - `purpose`: `arena_projection`, `homography_grid`, `scale_image`, or
   `crosshair_alignment`
-- `target_plane`: for example `projected_surface` or `estimated_fish_plane`
+- `target_plane`: for example `projected_surface`,
+  `tank_bottom_inner_surface`, or `estimated_fish_plane`
 - image role: for example `grid_on`, `scale_target`, or `crosshair_on`
 - optional projected-pattern or scale-target descriptors
 - the same capture metadata used by the top-rim save path, including filter
@@ -229,6 +364,48 @@ target_plane = "multiple"
 and each `images[]` entry carries the specific capture `purpose`,
 `target_plane`, `capture`, checksum, coordinate space, and relative image path.
 
+If a session contains multiple captures with the same `purpose` and
+`target_plane`, Orange preserves all of them. V0 does not silently choose a
+generic winner for Citrus import. Citrus should either ask the operator to pick
+the capture, or use an explicit policy such as latest-by-capture-timestamp and
+record that policy in its accepted Citrus artifact. Specialized links, such as
+the accepted top-rim observation below, are the exception because their
+`selection_policy` is written explicitly.
+
+Specialized observations are not folded into `images[]` unless they are plain
+source-image captures. For example, a manually accepted
+`orange.calibration.dish_top_rim_observation` remains a first-class artifact
+with its own source frame, overlays, exports, manifest, and fingerprint. The
+camera/arena aggregate records the accepted rim through
+`linked_observations.accepted_top_rim_observation`:
+
+```json
+{
+  "linked_observations": {
+    "accepted_top_rim_observation": {
+      "artifact_id": "dishrim_2026-06-09T02_15_45Z_2010093",
+      "artifact_schema_id": "orange.calibration.dish_top_rim_observation",
+      "artifact_schema_version": 1,
+      "fingerprint": "fnv1a64:...",
+      "relative_manifest_path": "../dishrim_2026-06-09T02_15_45Z_2010093/manifest.json",
+      "relative_observation_path": "../dishrim_2026-06-09T02_15_45Z_2010093/observation.json",
+      "selection_policy": "latest_saved_for_camera_arena",
+      "target_plane": "dish_top_rim",
+      "coordinate_space": "camera_native_pixels",
+      "camera_serial": "2010093",
+      "arena_id": "arena_1",
+      "canvas_id": "shadow"
+    }
+  }
+}
+```
+
+The linked rim observation is the authoritative accepted top-rim/valid-area
+fit for that camera/arena. Any older `images[].observations.observed_domain`
+values inside the aggregate are capture-time hints copied from the runtime
+state when those images were saved. They are useful provenance for that image,
+but they should not override the latest linked top-rim observation.
+
 The save also updates the session artifact registry in `artifacts/index.json`
 and the session-level `session_index.json`. The source image is written in
 full-resolution camera-native coordinates. If the current capture came from the
@@ -248,6 +425,76 @@ This supports daily piecewise acquisition:
 Citrus should import these image sets, preview/focus the relevant fit, and own
 any accepted homography, scale, or runtime experimental-area correction.
 Orange's generic image-set artifact does not silently mutate Citrus config.
+
+`session_index.json` also carries latest-top-rim convenience maps when rim
+observations are saved with arena context:
+
+```json
+{
+  "latest_top_rim_observation_by_camera_serial": {
+    "2010093": "dishrim_2026-06-09T02_15_45Z_2010093"
+  },
+  "latest_top_rim_observation_by_arena_artifact_id": {
+    "Cam2010093_arena_1": "dishrim_2026-06-09T02_15_45Z_2010093"
+  }
+}
+```
+
+Consumers should prefer the per-arena aggregate link when they are importing a
+camera/arena calibration set, and use the session-level maps for discovery or
+repair workflows.
+
+## Group Capture Plan
+
+Some calibration steps should be ergonomic across the whole rig even when they
+do not require strict synchronized exposure. For the current projection-surface,
+estimated-fish-plane, and dish/valid-area workflow, "simultaneous" means one
+operator action requests captures from multiple selected/open cameras. It does
+not yet mean ChArUco/3D-calibration-grade frame alignment.
+
+Implemented V0 group capture behavior:
+
+- The operator prepares the calibration capture state, normally with
+  `Prepare All Cameras`, so the selected light handling is applied first and
+  each camera uses the intended capture timing.
+- The operator clicks a group snapshot action.
+- Orange sends one full-resolution snapshot request to each selected/open
+  camera's `SpatialSnapshotWorker`.
+- Each worker captures its next usable full-resolution frame or temporal-mean
+  frame, using the same requested purpose/target-plane metadata.
+- Orange records a shared `capture_group_id` and a V0 capture mode such as
+  `operator_group_next_frame` or `operator_group_temporal_mean`.
+- Orange freezes the image-set metadata at group-capture request time:
+  purpose, target plane, image role, projected-pattern/scale-target fields,
+  operator notes, illumination/filter/projector/light state, and capture timing
+  metadata for each camera.
+- The UI reports per-camera pending/completed/failed state.
+- Completed grouped captures are shown as dynamic per-camera preview panels.
+  Selecting a panel promotes that camera image into the detailed fit/editor
+  preview.
+- Saving writes per-camera image-set artifacts under the same calibration
+  session, preserving each camera's native image geometry and Citrus
+  camera/arena mapping. Grouped save uses the frozen capture-time metadata
+  even if the operator changes the active tab/defaults before saving. Grouped
+  saves are queued through the existing background image-set writer so the UI
+  remains responsive.
+
+This V0 mode is intended for operator convenience and consistent metadata. It
+is appropriate for arena projection, homography image collection, projection
+surface scale, tank-bottom/fish-plane proxy scale, crosshair alignment, and
+daily top-rim review when exact same-frame timing is not required.
+
+Deferred strict synchronized capture:
+
+- Add an explicit capture mode such as `ptp_frame_aligned`.
+- Arm all participating workers before accepting frames.
+- Require PTP-enabled cameras and persist embedded camera timestamps.
+- Validate timestamp/frame skew against a configured tolerance.
+- Reject, retry, or warn on cameras whose captures fall outside tolerance.
+- Persist per-camera skew metrics and the synchronization policy in the
+  image-set metadata.
+- Use this mode for future ChArUco-board or 3D calibration workflows where
+  multi-camera frame alignment is part of the calibration contract.
 
 ## Plane-Specific Runtime Transform Roadmap
 
@@ -345,6 +592,7 @@ Coordinate convention:
 Recommended fields:
 
 - `operation_id`
+- `capture_group_id`
 - `timestamp_utc`
 - `frame_id`
 - `recording_frame_id`
@@ -378,9 +626,10 @@ target is visible to the camera.
 - `force_manual_active`: intentionally force a mapped output active.
 - `operator_manual`: operator handled lighting outside Orange.
 
-The Spatial Layout UI sets purpose-specific defaults but lets the operator
-override them. `arena_projection`, `homography_grid`, and `crosshair_alignment`
-default to `suppress_mapped_strobe`; `scale_image` defaults to
+The Spatial Layout UI sets purpose/plane-specific defaults but lets the
+operator override them. `arena_projection`, `homography_grid`, and
+`crosshair_alignment` default to `suppress_mapped_strobe`; projection-surface
+scale images and tank-bottom/fish-plane proxy scale images default to
 `keep_or_restore_mapped_pulse`.
 
 When a camera has an exposed `nir_strobe_trigger` Rig I/O output mapping, the
@@ -498,10 +747,50 @@ Recommended:
 - `projected_pattern.dot_radius_canvas_px`
 - `projected_pattern.canvas_coordinate_space`
 - `projected_pattern.projected_surface_ref`
+- optional `projected_pattern.expected_points[]`, copied from Citrus-rendered
+  metadata when available. Expected points should be in Citrus/canvas
+  coordinates, such as `canvas_px` and/or `arena_relative_canvas_px`, with
+  stable point IDs.
+- optional `projected_pattern.pattern_snapshot`, copied from Citrus-rendered
+  metadata when available. This should preserve exact pattern parameters needed
+  to recover expected points, such as grid rows/columns, ring counts, dot
+  counts, radii, arena-relative center, canvas size/placement, mask/domain
+  policy, and a Citrus pattern version/hash.
+- `observations.observed_domain` for the camera-space domain where the
+  calibration is valid. This can be circular, square, or rectangular depending
+  on the physical target plane and rig.
 
 Citrus uses these fields to preview and fit homography. Orange may provide
 detected camera points as diagnostic observations, but Citrus owns accepted
-point correspondences and homography sidecars.
+point correspondences and homography sidecars. When Orange only records
+`projected_pattern.pattern_id` and `projected_pattern.type`, Citrus should
+resolve the exact expected-point set from its own pattern registry/config at
+capture time rather than asking Orange to infer it later.
+
+For the current circular dish/tank-bottom workflow, use:
+
+```json
+{
+  "purpose": "homography_grid",
+  "target_plane": "tank_bottom_inner_surface",
+  "runtime_role": {
+    "role": "behavior_plane_proxy",
+    "behavior_plane_id": "estimated_fish_plane",
+    "source": "fallback_to_tank_bottom_inner_surface"
+  },
+  "projected_pattern": {
+    "pattern_id": "citrus_tank_bottom_circular_grid_v1",
+    "type": "circular_dot_grid",
+    "target_plane": "tank_bottom_inner_surface"
+  }
+}
+```
+
+For a rectangular or square tank-bottom domain, keep the same
+`target_plane = "tank_bottom_inner_surface"` and write
+`observations.observed_domain.shape = "oriented_rectangle"` with the observed
+camera-space geometry. The physical domain shape and the projected pattern shape
+do not need to match the projection-surface calibration.
 
 ### `scale_image`
 
@@ -514,8 +803,13 @@ Recommended:
 - `scale_target.target_plane`
 - `scale_target.target_plane_material`
 
-For `target_plane = "estimated_fish_plane"`, Citrus should treat the
-measurement as diagnostic until plane-specific runtime transforms exist.
+The `target_plane` must name where the scale target physically was. For the
+current circular dish workflow, a ruler on the tank bottom should use
+`target_plane = "tank_bottom_inner_surface"` and a `runtime_role` marking it as
+a behavior-plane proxy for `estimated_fish_plane`. Use
+`target_plane = "estimated_fish_plane"` only when the scale target is actually
+raised to the estimated fish body plane. Citrus should treat fish-plane proxy
+measurements as diagnostic until plane-specific runtime transforms exist.
 
 ### `dish_top_rim`
 
@@ -574,6 +868,13 @@ homography_<arena_config_name>_<camera_id>.yml
 ```
 
 Those names are compatibility details, not the canonical Orange contract.
+
+If `observations.authored_domain.geometry_available = false`, Orange is saying
+that the Citrus-authored shape exists conceptually but was not serialized as
+authoritative geometry in the Orange artifact. Citrus should resolve that
+geometry from `rig_context`, `projected_pattern.pattern_id`, its own canvas and
+arena config, or a future Citrus-exported `projected_pattern.pattern_snapshot`.
+Orange should not invent exact Citrus authored bounds from camera-space images.
 
 ## Example
 

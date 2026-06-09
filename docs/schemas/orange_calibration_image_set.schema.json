@@ -136,6 +136,31 @@
         "plane_stack_ref": {
           "type": "object",
           "additionalProperties": true
+        },
+        "arena_context": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Optional Orange/Citrus association context for the camera/arena aggregate or linked specialized observation.",
+          "properties": {
+            "rig_id": {
+              "type": "string"
+            },
+            "canvas_id": {
+              "type": "string"
+            },
+            "arena_id": {
+              "type": "string"
+            },
+            "camera_serial": {
+              "type": "string"
+            },
+            "citrus_camera_id": {
+              "type": "string"
+            },
+            "associated_image_set_artifact_id": {
+              "type": "string"
+            }
+          }
         }
       }
     },
@@ -148,6 +173,10 @@
       "properties": {
         "operation_id": {
           "type": "string"
+        },
+        "capture_group_id": {
+          "type": "string",
+          "description": "Shared identifier for one operator-requested grouped capture across multiple cameras."
         },
         "timestamp_utc": {
           "type": "string",
@@ -320,6 +349,37 @@
         },
         "expected_center_canvas_px": {
           "$ref": "#/$defs/point"
+        },
+        "expected_points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": [
+              "id"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "canvas_px": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              },
+              "arena_relative_canvas_px": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": "number"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -349,13 +409,69 @@
         }
       }
     },
+    "runtime_role": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Optional hint describing how Citrus may use this physical target plane at runtime.",
+      "properties": {
+        "role": {
+          "type": "string",
+          "examples": [
+            "behavior_plane_proxy"
+          ]
+        },
+        "behavior_plane_id": {
+          "type": "string",
+          "examples": [
+            "estimated_fish_plane"
+          ]
+        },
+        "source": {
+          "type": "string",
+          "examples": [
+            "fallback_to_tank_bottom_inner_surface"
+          ]
+        },
+        "authority": {
+          "type": "string",
+          "examples": [
+            "citrus_decides_runtime_application"
+          ]
+        }
+      }
+    },
     "observations": {
       "type": "object",
-      "additionalProperties": true
+      "additionalProperties": true,
+      "properties": {
+        "observed_domain": {
+          "$ref": "#/$defs/calibration_domain"
+        },
+        "calibration_domain": {
+          "$ref": "#/$defs/calibration_domain"
+        },
+        "authored_domain": {
+          "$ref": "#/$defs/calibration_domain"
+        },
+        "homography_fit_intent": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
     },
     "review_artifacts": {
       "type": "object",
       "additionalProperties": true
+    },
+    "linked_observations": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Links from an aggregate camera/arena image set to specialized accepted observation artifacts.",
+      "properties": {
+        "accepted_top_rim_observation": {
+          "$ref": "#/$defs/artifact_link"
+        }
+      }
     },
     "derived_artifacts": {
       "type": "array",
@@ -414,6 +530,77 @@
         },
         "y": {
           "type": "number"
+        }
+      }
+    },
+    "calibration_domain": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "shape",
+        "coordinate_space"
+      ],
+      "properties": {
+        "shape": {
+          "type": "string",
+          "examples": [
+            "circle",
+            "oriented_rectangle"
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "coordinate_space": {
+          "type": "string",
+          "examples": [
+            "camera_native_pixels",
+            "final_display_canvas_px"
+          ]
+        },
+        "center_px": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "type": "number"
+          }
+        },
+        "radius_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "width_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "height_px": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "rotation_deg_clockwise": {
+          "type": "number"
+        },
+        "outer_geometry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "valid_geometry": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "geometry_available": {
+          "type": "boolean"
+        },
+        "authority": {
+          "type": "string"
+        },
+        "edge_margin_px": {
+          "type": "number",
+          "minimum": 0
         }
       }
     },
@@ -501,6 +688,60 @@
         },
         "fingerprint": {
           "type": "string"
+        }
+      }
+    },
+    "artifact_link": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "artifact_id",
+        "artifact_schema_id",
+        "artifact_schema_version"
+      ],
+      "properties": {
+        "artifact_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_schema_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "fingerprint": {
+          "type": "string"
+        },
+        "relative_manifest_path": {
+          "type": "string"
+        },
+        "relative_observation_path": {
+          "type": "string"
+        },
+        "selection_policy": {
+          "type": "string"
+        },
+        "target_plane": {
+          "type": "string"
+        },
+        "coordinate_space": {
+          "type": "string"
+        },
+        "camera_serial": {
+          "type": "string"
+        },
+        "arena_id": {
+          "type": "string"
+        },
+        "canvas_id": {
+          "type": "string"
+        },
+        "arena_context": {
+          "type": "object",
+          "additionalProperties": true
         }
       }
     }

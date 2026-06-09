@@ -164,6 +164,9 @@ nlohmann::json capture_to_json(const CalibrationImageSetCaptureContext& capture)
     if (!capture.operation_id.empty()) {
         out["operation_id"] = capture.operation_id;
     }
+    if (!capture.capture_group_id.empty()) {
+        out["capture_group_id"] = capture.capture_group_id;
+    }
     if (capture.has_frame_id) {
         out["frame_id"] = capture.frame_id;
     }
@@ -313,6 +316,9 @@ nlohmann::json calibration_image_set_to_json(const CalibrationImageSetRequest& r
     }
     if (!request.scale_target.empty()) {
         out["scale_target"] = request.scale_target;
+    }
+    if (!request.runtime_role.empty()) {
+        out["runtime_role"] = request.runtime_role;
     }
     if (!request.observations.empty()) {
         out["observations"] = request.observations;

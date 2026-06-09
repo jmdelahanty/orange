@@ -639,6 +639,9 @@ nlohmann::json dish_top_rim_observation_to_json(
             }}
         }}
     };
+    if (!request.arena_context.empty()) {
+        observation["arena_context"] = request.arena_context;
+    }
     if (!request.operator_notes.empty()) {
         observation["operator_review"]["notes"] = request.operator_notes;
     }
@@ -653,6 +656,41 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
     const std::string& valid_detection_overlay_checksum,
     const std::string& fingerprint)
 {
+    nlohmann::json compatibility = {
+        {"camera_serial", request.camera.serial},
+        {"pixel_format", request.camera.pixel_format},
+        {"width", request.camera.width},
+        {"height", request.camera.height},
+        {"physical_target", "dish_top_rim"},
+        {"coordinate_space", "camera_native_pixels"},
+        {"source_array_role", request.source_array_role}
+    };
+    nlohmann::json summary = {
+        {"method", kDishTopRimObservationMethod},
+        {"operator_confirmed", request.operator_confirmed},
+        {"runtime_verification_status", request.runtime_verification.status},
+        {"camera_serial", request.camera.serial},
+        {"physical_target", "dish_top_rim"},
+        {"coordinate_space", "camera_native_pixels"}
+    };
+    if (!request.arena_context.empty()) {
+        compatibility["arena_context"] = request.arena_context;
+        summary["arena_context"] = request.arena_context;
+        const std::string arena_id = request.arena_context.value("arena_id", "");
+        const std::string canvas_id = request.arena_context.value("canvas_id", "");
+        const std::string associated_image_set_artifact_id =
+            request.arena_context.value("associated_image_set_artifact_id", "");
+        if (!arena_id.empty()) {
+            summary["arena_id"] = arena_id;
+        }
+        if (!canvas_id.empty()) {
+            summary["canvas_id"] = canvas_id;
+        }
+        if (!associated_image_set_artifact_id.empty()) {
+            summary["associated_image_set_artifact_id"] =
+                associated_image_set_artifact_id;
+        }
+    }
     return {
         {"schema_id", kCalibrationManifestSchemaId},
         {"schema_version", kCalibrationManifestSchemaVersion},
@@ -665,20 +703,8 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
             {"artifact_type", "dish_top_rim_observation"}
         }},
         {"calibration_ref", calibration_ref_json(request.artifact_id, fingerprint)},
-        {"compatibility", {
-            {"camera_serial", request.camera.serial},
-            {"pixel_format", request.camera.pixel_format},
-            {"width", request.camera.width},
-            {"height", request.camera.height},
-            {"physical_target", "dish_top_rim"},
-            {"coordinate_space", "camera_native_pixels"},
-            {"source_array_role", request.source_array_role}
-        }},
-        {"summary", {
-            {"method", kDishTopRimObservationMethod},
-            {"operator_confirmed", request.operator_confirmed},
-            {"runtime_verification_status", request.runtime_verification.status}
-        }},
+        {"compatibility", compatibility},
+        {"summary", summary},
         {"files", {
             {"manifest", relative_to_artifact_dir(paths.manifest_path, paths)},
             {"observation_json", relative_to_artifact_dir(paths.observation_json_path, paths)},
@@ -776,6 +802,12 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
     if (!request.image_set_rig_context.empty()) {
         image_set.rig_context = request.image_set_rig_context;
     }
+    if (!request.arena_context.empty()) {
+        if (!image_set.rig_context.is_object()) {
+            image_set.rig_context = nlohmann::json::object();
+        }
+        image_set.rig_context["arena_context"] = request.arena_context;
+    }
 
     const CalibrationImageSetShape image_shape{request.camera.height, request.camera.width};
     image_set.images.push_back(CalibrationImageSetImageRef{
@@ -812,6 +844,9 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
              observation_json.value("quality", nlohmann::json::object())}
         }}
     };
+    if (!request.arena_context.empty()) {
+        image_set.observations["arena_context"] = request.arena_context;
+    }
 
     image_set.derived_artifacts.push_back(CalibrationImageSetArtifactRef{
         request.artifact_id,

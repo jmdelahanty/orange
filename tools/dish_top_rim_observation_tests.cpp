@@ -88,7 +88,16 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
         {"rig_id", "omnifin0"},
         {"canvas_id", "shadow"},
         {"arena_id", "arena_1"},
-        {"camera_id", "2012632"}
+        {"camera_id", "2012632"},
+        {"associated_image_set_artifact_id", "Cam2012632_arena_1"}
+    };
+    request.arena_context = {
+        {"rig_id", "omnifin0"},
+        {"canvas_id", "shadow"},
+        {"arena_id", "arena_1"},
+        {"camera_serial", "2012632"},
+        {"citrus_camera_id", "2012632"},
+        {"associated_image_set_artifact_id", "Cam2012632_arena_1"}
     };
     return request;
 }
@@ -187,6 +196,13 @@ void test_artifact_write_and_snapshot()
         observation["operator_review"].value("notes", "") == "fixture operator note",
         "operator notes preserved");
     require(
+        observation["arena_context"].value("associated_image_set_artifact_id", "") ==
+            "Cam2012632_arena_1",
+        "observation stores associated image-set artifact id");
+    require(
+        observation["arena_context"].value("arena_id", "") == "arena_1",
+        "observation stores arena id");
+    require(
         observation["runtime_verification"].value("status", "") == "unknown",
         "runtime verification preserved");
     require(
@@ -262,6 +278,13 @@ void test_artifact_write_and_snapshot()
         image_set["rig_context"].value("canvas_id", "") == "shadow",
         "image-set rig context preserved");
     require(
+        image_set["rig_context"]["arena_context"].value("associated_image_set_artifact_id", "") ==
+            "Cam2012632_arena_1",
+        "image-set companion stores arena context");
+    require(
+        image_set["observations"]["arena_context"].value("arena_id", "") == "arena_1",
+        "image-set observations stores arena context");
+    require(
         image_set["citrus_preview"].value("diagnostic_only", false),
         "image-set preview is diagnostic");
     require(
@@ -279,6 +302,13 @@ void test_artifact_write_and_snapshot()
     require(
         manifest["files"].value("image_set_json", "") == "image_set.json",
         "manifest records image-set companion");
+    require(
+        manifest["summary"].value("associated_image_set_artifact_id", "") ==
+            "Cam2012632_arena_1",
+        "manifest summary stores associated image-set artifact id");
+    require(
+        manifest["summary"].value("arena_id", "") == "arena_1",
+        "manifest summary stores arena id");
 
     const nlohmann::json palette = read_json(artifact_dir / "exports" / "palette_dish_mask_v2.json");
     require(palette.value("shape", "") == "circle", "Palette shape");

@@ -1611,6 +1611,37 @@ bool update_spatial_calibration_session_index(
         entry["producer"] = manifest["producer"];
     }
     index["artifacts_by_id"][artifact_id] = entry;
+    const std::string artifact_schema_id = manifest.value("artifact_schema_id", "");
+    if (artifact_schema_id == orange::calibration::kDishTopRimObservationSchemaId) {
+        const nlohmann::json summary =
+            manifest.value("summary", nlohmann::json::object());
+        const nlohmann::json compatibility =
+            manifest.value("compatibility", nlohmann::json::object());
+        const std::string camera_serial =
+            summary.value(
+                "camera_serial",
+                compatibility.value("camera_serial", std::string()));
+        const std::string associated_image_set_artifact_id =
+            summary.value("associated_image_set_artifact_id", std::string());
+        if (!camera_serial.empty()) {
+            if (!index.contains("latest_top_rim_observation_by_camera_serial") ||
+                !index["latest_top_rim_observation_by_camera_serial"].is_object()) {
+                index["latest_top_rim_observation_by_camera_serial"] =
+                    nlohmann::json::object();
+            }
+            index["latest_top_rim_observation_by_camera_serial"][camera_serial] =
+                artifact_id;
+        }
+        if (!associated_image_set_artifact_id.empty()) {
+            if (!index.contains("latest_top_rim_observation_by_arena_artifact_id") ||
+                !index["latest_top_rim_observation_by_arena_artifact_id"].is_object()) {
+                index["latest_top_rim_observation_by_arena_artifact_id"] =
+                    nlohmann::json::object();
+            }
+            index["latest_top_rim_observation_by_arena_artifact_id"]
+                 [associated_image_set_artifact_id] = artifact_id;
+        }
+    }
     index["artifact_count"] = index["artifacts_by_id"].size();
     return write_json_file(index_path, index, error_out);
 }
@@ -3288,6 +3319,7 @@ bool capture_single_camera_frame(
     ui_state->captured_camera_serial = camera_params->camera_serial;
     ui_state->captured_source_array_role = "images_full";
     ui_state->captured_capture_mode = "single_camera_direct_still";
+    ui_state->captured_capture_group_id.clear();
     ui_state->captured_source_frame_count = 1;
     ui_state->captured_first_local_frame_id = 0;
     ui_state->captured_last_local_frame_id = 0;
@@ -3355,6 +3387,7 @@ bool capture_live_stream_preview_texture(
     ui_state->captured_source_array_role =
         camera_select.downsample > 1 ? "images_ds" : "images_full";
     ui_state->captured_capture_mode = "live_stream_preview_snapshot";
+    ui_state->captured_capture_group_id.clear();
     ui_state->captured_source_frame_count = 1;
     ui_state->captured_first_local_frame_id = 0;
     ui_state->captured_last_local_frame_id = 0;
@@ -3423,6 +3456,7 @@ bool apply_full_resolution_stream_snapshot(
     ui_state->captured_source_array_role = "images_full";
     ui_state->captured_capture_mode =
         result.capture_mode.empty() ? "full_resolution_stream_snapshot" : result.capture_mode;
+    ui_state->captured_capture_group_id.clear();
     ui_state->captured_source_frame_count =
         std::max<uint32_t>(1u, result.completed_frame_count);
     ui_state->captured_first_local_frame_id = result.first_local_frame_id;
@@ -3467,6 +3501,722 @@ bool apply_full_resolution_stream_snapshot(
                << "-" << ui_state->captured_last_camera_frame_id;
     }
     ui_state->preview_status = status.str();
+    return true;
+}
+
+std::string metadata_or_unknown(const std::string& value)
+{
+    return value.empty() ? std::string("unknown") : value;
+}
+
+void populate_calibration_domain_metadata_from_runtime(
+    SpatialLayoutCalibrationImageSetMetadata* metadata,
+    const SpatialLayoutUiState& ui_state)
+{
+    if (metadata == nullptr || !ui_state.dish_mask_runtime.has_geometry) {
+        return;
+    }
+
+    const DishMaskGeometry& geometry = ui_state.dish_mask_runtime.geometry;
+    metadata->has_calibration_domain = true;
+    metadata->calibration_domain_source =
+        std::string("orange_spatial_layout_runtime:") +
+        orange::spatial::observation_source_to_string(ui_state.dish_mask_runtime.source);
+    metadata->calibration_domain_coordinate_space =
+        orange::spatial::coordinate_space_to_string(geometry.coordinate_space);
+    metadata->calibration_domain_edge_margin_px = geometry.edge_margin_px;
+
+    const RuntimeGeometry& outer = geometry.outer_geometry;
+    const RuntimeGeometry& valid = geometry.valid_geometry;
+    if (outer.type == RuntimeGeometryType::kCircle && outer.circle.r > 0.0) {
+        metadata->calibration_domain_shape = "circle";
+        metadata->calibration_domain_center_x_px = outer.circle.cx;
+        metadata->calibration_domain_center_y_px = outer.circle.cy;
+        metadata->calibration_domain_radius_px = outer.circle.r;
+        if (valid.type == RuntimeGeometryType::kCircle && valid.circle.r > 0.0) {
+            metadata->has_calibration_domain_valid_circle = true;
+            metadata->calibration_domain_valid_center_x_px = valid.circle.cx;
+            metadata->calibration_domain_valid_center_y_px = valid.circle.cy;
+            metadata->calibration_domain_valid_radius_px = valid.circle.r;
+        }
+        return;
+    }
+
+    if (outer.type == RuntimeGeometryType::kOrientedRectangle &&
+        outer.oriented_rectangle.width > 0.0 &&
+        outer.oriented_rectangle.height > 0.0) {
+        metadata->calibration_domain_shape = "oriented_rectangle";
+        metadata->calibration_domain_center_x_px = outer.oriented_rectangle.cx;
+        metadata->calibration_domain_center_y_px = outer.oriented_rectangle.cy;
+        metadata->calibration_domain_width_px = outer.oriented_rectangle.width;
+        metadata->calibration_domain_height_px = outer.oriented_rectangle.height;
+        metadata->calibration_domain_rotation_deg_clockwise =
+            outer.oriented_rectangle.rotation_deg_clockwise;
+        if (valid.type == RuntimeGeometryType::kOrientedRectangle &&
+            valid.oriented_rectangle.width > 0.0 &&
+            valid.oriented_rectangle.height > 0.0) {
+            metadata->has_calibration_domain_valid_rectangle = true;
+            metadata->calibration_domain_valid_width_px =
+                valid.oriented_rectangle.width;
+            metadata->calibration_domain_valid_height_px =
+                valid.oriented_rectangle.height;
+        }
+    }
+}
+
+nlohmann::json calibration_domain_geometry_json(
+    const SpatialLayoutCalibrationImageSetMetadata& metadata,
+    bool valid_geometry)
+{
+    if (metadata.calibration_domain_shape == "circle") {
+        const double cx = valid_geometry && metadata.has_calibration_domain_valid_circle
+                              ? metadata.calibration_domain_valid_center_x_px
+                              : metadata.calibration_domain_center_x_px;
+        const double cy = valid_geometry && metadata.has_calibration_domain_valid_circle
+                              ? metadata.calibration_domain_valid_center_y_px
+                              : metadata.calibration_domain_center_y_px;
+        const double r = valid_geometry && metadata.has_calibration_domain_valid_circle
+                             ? metadata.calibration_domain_valid_radius_px
+                             : metadata.calibration_domain_radius_px;
+        return {
+            {"type", "circle"},
+            {"cx", cx},
+            {"cy", cy},
+            {"r", r}
+        };
+    }
+
+    if (metadata.calibration_domain_shape == "oriented_rectangle") {
+        const double width =
+            valid_geometry && metadata.has_calibration_domain_valid_rectangle
+                ? metadata.calibration_domain_valid_width_px
+                : metadata.calibration_domain_width_px;
+        const double height =
+            valid_geometry && metadata.has_calibration_domain_valid_rectangle
+                ? metadata.calibration_domain_valid_height_px
+                : metadata.calibration_domain_height_px;
+        return {
+            {"type", "oriented_rectangle"},
+            {"cx", metadata.calibration_domain_center_x_px},
+            {"cy", metadata.calibration_domain_center_y_px},
+            {"width", width},
+            {"height", height},
+            {"rotation_deg_clockwise",
+             metadata.calibration_domain_rotation_deg_clockwise}
+        };
+    }
+
+    return nlohmann::json::object();
+}
+
+nlohmann::json calibration_domain_observation_json(
+    const SpatialLayoutCalibrationImageSetMetadata& metadata,
+    const std::string& target_plane)
+{
+    if (!metadata.has_calibration_domain ||
+        (metadata.calibration_domain_shape != "circle" &&
+         metadata.calibration_domain_shape != "oriented_rectangle")) {
+        return nlohmann::json::object();
+    }
+
+    nlohmann::json domain = {
+        {"shape", metadata.calibration_domain_shape},
+        {"source", metadata.calibration_domain_source},
+        {"target_plane", metadata_or_unknown(target_plane)},
+        {"coordinate_space", metadata.calibration_domain_coordinate_space},
+        {"outer_geometry", calibration_domain_geometry_json(metadata, false)},
+        {"edge_margin_px", metadata.calibration_domain_edge_margin_px}
+    };
+
+    if (metadata.calibration_domain_shape == "circle") {
+        domain["center_px"] = {
+            metadata.calibration_domain_center_x_px,
+            metadata.calibration_domain_center_y_px
+        };
+        domain["radius_px"] = metadata.calibration_domain_radius_px;
+        if (metadata.has_calibration_domain_valid_circle) {
+            domain["valid_geometry"] =
+                calibration_domain_geometry_json(metadata, true);
+        }
+    } else if (metadata.calibration_domain_shape == "oriented_rectangle") {
+        domain["center_px"] = {
+            metadata.calibration_domain_center_x_px,
+            metadata.calibration_domain_center_y_px
+        };
+        domain["width_px"] = metadata.calibration_domain_width_px;
+        domain["height_px"] = metadata.calibration_domain_height_px;
+        domain["rotation_deg_clockwise"] =
+            metadata.calibration_domain_rotation_deg_clockwise;
+        if (metadata.has_calibration_domain_valid_rectangle) {
+            domain["valid_geometry"] =
+                calibration_domain_geometry_json(metadata, true);
+        }
+    }
+
+    return domain;
+}
+
+bool should_attach_observed_domain_for_target_plane(const std::string& target_plane)
+{
+    return target_plane == "tank_bottom_inner_surface" ||
+           target_plane == "tank_bottom_outer_surface" ||
+           target_plane == "estimated_fish_plane" ||
+           target_plane == "dish_top_rim";
+}
+
+void attach_calibration_domain_observation(
+    orange::calibration::CalibrationImageSetRequest* request,
+    const SpatialLayoutCalibrationImageSetMetadata& metadata)
+{
+    if (request == nullptr) {
+        return;
+    }
+    if (!should_attach_observed_domain_for_target_plane(request->target_plane)) {
+        return;
+    }
+
+    const nlohmann::json domain =
+        calibration_domain_observation_json(metadata, request->target_plane);
+    if (domain.empty()) {
+        return;
+    }
+    if (!request->observations.is_object()) {
+        request->observations = nlohmann::json::object();
+    }
+    request->observations["calibration_domain"] = domain;
+    request->observations["observed_domain"] = domain;
+
+    if (request->purpose == "homography_grid") {
+        request->observations["homography_fit_intent"] = {
+            {"authority", "citrus_fits_and_accepts"},
+            {"target_plane", request->target_plane},
+            {"domain_shape", domain.value("shape", "unknown")},
+            {"expected_destination_coordinate_space", "final_display_canvas_px"},
+            {"orange_role", "image_acquisition_and_camera_space_observation"}
+        };
+    }
+}
+
+void attach_projection_surface_authored_domain_hint(
+    orange::calibration::CalibrationImageSetRequest* request)
+{
+    if (request == nullptr || request->target_plane != "projected_surface") {
+        return;
+    }
+    if (!request->observations.is_object()) {
+        request->observations = nlohmann::json::object();
+    }
+    request->observations["authored_domain"] = {
+        {"shape", "oriented_rectangle"},
+        {"source", "operator_selected_projection_surface_default"},
+        {"target_plane", "projected_surface"},
+        {"coordinate_space", "final_display_canvas_px"},
+        {"geometry_available", false},
+        {"authority", "citrus_provides_geometry"}
+    };
+}
+
+void attach_runtime_role_metadata(
+    orange::calibration::CalibrationImageSetRequest* request)
+{
+    if (request == nullptr || request->target_plane != "tank_bottom_inner_surface") {
+        return;
+    }
+    request->runtime_role = {
+        {"role", "behavior_plane_proxy"},
+        {"behavior_plane_id", "estimated_fish_plane"},
+        {"source", "fallback_to_tank_bottom_inner_surface"},
+        {"authority", "citrus_decides_runtime_application"}
+    };
+}
+
+int pending_group_snapshot_count(const SpatialLayoutUiState& ui_state)
+{
+    int count = 0;
+    for (const SpatialLayoutPendingGroupSnapshotRequest& request :
+         ui_state.pending_group_snapshot_requests) {
+        if (!request.completed && !request.failed) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int failed_group_snapshot_count(const SpatialLayoutUiState& ui_state)
+{
+    int count = 0;
+    for (const SpatialLayoutPendingGroupSnapshotRequest& request :
+         ui_state.pending_group_snapshot_requests) {
+        if (request.failed) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int find_camera_index_by_serial(
+    const CameraParams* cameras_params,
+    int num_cameras,
+    const std::string& camera_serial)
+{
+    if (cameras_params == nullptr || camera_serial.empty()) {
+        return -1;
+    }
+    for (int i = 0; i < num_cameras; ++i) {
+        if (cameras_params[i].camera_serial == camera_serial) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+SpatialLayoutCalibrationImageSetMetadata make_calibration_image_set_metadata_from_ui(
+    const SpatialLayoutUiState& ui_state)
+{
+    SpatialLayoutCalibrationImageSetMetadata metadata;
+    metadata.filter_state = ui_state.calibration_filter_state;
+    metadata.runtime_filter_state = ui_state.calibration_runtime_filter_state;
+    metadata.light_handling = ui_state.calibration_light_handling;
+    metadata.light_state = ui_state.calibration_light_state;
+    metadata.illumination_spectrum = ui_state.calibration_illumination_spectrum;
+    metadata.illumination_source = ui_state.calibration_illumination_source;
+    metadata.illumination_center_wavelength_nm =
+        ui_state.calibration_illumination_center_wavelength_nm;
+    metadata.has_illumination_center_wavelength_nm =
+        ui_state.calibration_has_illumination_center_wavelength_nm;
+    metadata.illumination_min_wavelength_nm =
+        ui_state.calibration_illumination_min_wavelength_nm;
+    metadata.has_illumination_min_wavelength_nm =
+        ui_state.calibration_has_illumination_min_wavelength_nm;
+    metadata.illumination_max_wavelength_nm =
+        ui_state.calibration_illumination_max_wavelength_nm;
+    metadata.has_illumination_max_wavelength_nm =
+        ui_state.calibration_has_illumination_max_wavelength_nm;
+    metadata.illumination_bandwidth_fwhm_nm =
+        ui_state.calibration_illumination_bandwidth_fwhm_nm;
+    metadata.has_illumination_bandwidth_fwhm_nm =
+        ui_state.calibration_has_illumination_bandwidth_fwhm_nm;
+    metadata.illumination_wavelength_confidence =
+        ui_state.calibration_illumination_wavelength_confidence;
+    metadata.projector_state = ui_state.calibration_projector_state;
+    metadata.projector_visible_to_camera = ui_state.calibration_projector_visible_to_camera;
+    metadata.requires_filter_reinstalled_repeatably =
+        ui_state.calibration_requires_filter_reinstalled_repeatably;
+    metadata.operator_notes = ui_state.calibration_operator_notes;
+    metadata.image_set_purpose = ui_state.calibration_image_set_purpose;
+    metadata.image_set_target_plane = ui_state.calibration_image_set_target_plane;
+    metadata.image_set_image_role = ui_state.calibration_image_set_image_role;
+    metadata.image_set_projected_pattern_id =
+        ui_state.calibration_image_set_projected_pattern_id;
+    metadata.image_set_projected_pattern_type =
+        ui_state.calibration_image_set_projected_pattern_type;
+    metadata.image_set_scale_target_type = ui_state.calibration_image_set_scale_target_type;
+    metadata.image_set_notes = ui_state.calibration_image_set_notes;
+    populate_calibration_domain_metadata_from_runtime(&metadata, ui_state);
+    return metadata;
+}
+
+void apply_calibration_image_set_metadata_to_ui(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutCalibrationImageSetMetadata& metadata)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_filter_state = metadata.filter_state;
+    ui_state->calibration_runtime_filter_state = metadata.runtime_filter_state;
+    ui_state->calibration_light_handling = metadata.light_handling;
+    ui_state->calibration_light_state = metadata.light_state;
+    ui_state->calibration_illumination_spectrum = metadata.illumination_spectrum;
+    ui_state->calibration_illumination_source = metadata.illumination_source;
+    ui_state->calibration_illumination_center_wavelength_nm =
+        metadata.illumination_center_wavelength_nm;
+    ui_state->calibration_has_illumination_center_wavelength_nm =
+        metadata.has_illumination_center_wavelength_nm;
+    ui_state->calibration_illumination_min_wavelength_nm =
+        metadata.illumination_min_wavelength_nm;
+    ui_state->calibration_has_illumination_min_wavelength_nm =
+        metadata.has_illumination_min_wavelength_nm;
+    ui_state->calibration_illumination_max_wavelength_nm =
+        metadata.illumination_max_wavelength_nm;
+    ui_state->calibration_has_illumination_max_wavelength_nm =
+        metadata.has_illumination_max_wavelength_nm;
+    ui_state->calibration_illumination_bandwidth_fwhm_nm =
+        metadata.illumination_bandwidth_fwhm_nm;
+    ui_state->calibration_has_illumination_bandwidth_fwhm_nm =
+        metadata.has_illumination_bandwidth_fwhm_nm;
+    ui_state->calibration_illumination_wavelength_confidence =
+        metadata.illumination_wavelength_confidence;
+    ui_state->calibration_projector_state = metadata.projector_state;
+    ui_state->calibration_projector_visible_to_camera = metadata.projector_visible_to_camera;
+    ui_state->calibration_requires_filter_reinstalled_repeatably =
+        metadata.requires_filter_reinstalled_repeatably;
+    ui_state->calibration_operator_notes = metadata.operator_notes;
+    ui_state->calibration_image_set_purpose = metadata.image_set_purpose;
+    ui_state->calibration_image_set_target_plane = metadata.image_set_target_plane;
+    ui_state->calibration_image_set_image_role = metadata.image_set_image_role;
+    ui_state->calibration_image_set_projected_pattern_id =
+        metadata.image_set_projected_pattern_id;
+    ui_state->calibration_image_set_projected_pattern_type =
+        metadata.image_set_projected_pattern_type;
+    ui_state->calibration_image_set_scale_target_type = metadata.image_set_scale_target_type;
+    ui_state->calibration_image_set_notes = metadata.image_set_notes;
+}
+
+SpatialLayoutGroupCaptureFrame make_group_capture_from_snapshot(
+    const SpatialSnapshotResult& result,
+    const CameraParams* cameras_params,
+    int num_cameras,
+    const std::string& capture_group_id,
+    const std::string& capture_mode,
+    const SpatialLayoutCalibrationImageSetMetadata& metadata)
+{
+    SpatialLayoutGroupCaptureFrame capture;
+    capture.valid = result.ok && result.width > 0 && result.height > 0 && !result.rgba.empty();
+    capture.capture_group_id = capture_group_id;
+    capture.metadata = metadata;
+    capture.camera_serial = result.camera_serial;
+    capture.camera_index =
+        find_camera_index_by_serial(cameras_params, num_cameras, result.camera_serial);
+    if (capture.camera_index >= 0) {
+        const CameraParams& camera_params = cameras_params[capture.camera_index];
+        capture.camera_name = camera_params.camera_name;
+        capture.camera_configured_width = camera_params.width;
+        capture.camera_configured_height = camera_params.height;
+        capture.camera_pixel_format = camera_params.pixel_format;
+        capture.camera_exposure_us = static_cast<double>(camera_params.exposure);
+        capture.has_camera_exposure_us = true;
+        capture.camera_frame_rate_hz = static_cast<double>(camera_params.frame_rate);
+        capture.has_camera_frame_rate_hz = true;
+        capture.camera_gain = static_cast<double>(camera_params.gain);
+        capture.has_camera_gain = true;
+    }
+    capture.width = result.width;
+    capture.height = result.height;
+    capture.rgba = result.rgba;
+    capture.source_array_role =
+        result.source_array_role.empty() ? "images_full" : result.source_array_role;
+    capture.capture_mode = capture_mode.empty() ? "operator_group_next_frame" : capture_mode;
+    capture.source_frame_count = std::max<uint32_t>(1u, result.completed_frame_count);
+    capture.first_local_frame_id = result.first_local_frame_id;
+    capture.last_local_frame_id = result.last_local_frame_id;
+    capture.first_camera_frame_id = result.first_camera_frame_id;
+    capture.last_camera_frame_id = result.last_camera_frame_id;
+    return capture;
+}
+
+void upsert_group_capture(
+    SpatialLayoutUiState* ui_state,
+    SpatialLayoutGroupCaptureFrame capture)
+{
+    if (ui_state == nullptr || capture.camera_serial.empty()) {
+        return;
+    }
+    for (SpatialLayoutGroupCaptureFrame& existing : ui_state->group_captures) {
+        if (existing.camera_serial == capture.camera_serial) {
+            orange::preview::clear_texture(
+                &existing.texture,
+                &existing.texture_width,
+                &existing.texture_height);
+            existing = std::move(capture);
+            return;
+        }
+    }
+    ui_state->group_captures.push_back(std::move(capture));
+}
+
+void clear_group_captures(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    for (SpatialLayoutGroupCaptureFrame& capture : ui_state->group_captures) {
+        orange::preview::clear_texture(
+            &capture.texture,
+            &capture.texture_width,
+            &capture.texture_height);
+    }
+    ui_state->group_captures.clear();
+    ui_state->pending_group_snapshot_requests.clear();
+}
+
+bool apply_group_capture_to_active_preview(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutGroupCaptureFrame& capture,
+    std::string* error_out)
+{
+    SpatialSnapshotResult result;
+    result.ok = capture.valid;
+    result.camera_serial = capture.camera_serial;
+    result.capture_mode = capture.capture_mode;
+    result.source_array_role = capture.source_array_role;
+    result.width = capture.width;
+    result.height = capture.height;
+    result.completed_frame_count = std::max<uint32_t>(1u, capture.source_frame_count);
+    result.first_local_frame_id = capture.first_local_frame_id;
+    result.last_local_frame_id = capture.last_local_frame_id;
+    result.first_camera_frame_id = capture.first_camera_frame_id;
+    result.last_camera_frame_id = capture.last_camera_frame_id;
+    result.local_frame_id = capture.last_local_frame_id;
+    result.camera_frame_id = capture.last_camera_frame_id;
+    result.rgba = capture.rgba;
+    const bool ok = apply_full_resolution_stream_snapshot(ui_state, result, error_out);
+    if (ok) {
+        ui_state->captured_capture_group_id = capture.capture_group_id;
+        ui_state->preview_status =
+            "Showing grouped full-resolution capture from " + capture.camera_serial +
+            " (" + capture.capture_group_id + ").";
+    }
+    return ok;
+}
+
+bool consume_group_snapshot_result(
+    SpatialLayoutUiState* ui_state,
+    const SpatialSnapshotResult& result,
+    const CameraParams* cameras_params,
+    int num_cameras,
+    int selected_camera_index)
+{
+    if (ui_state == nullptr || ui_state->pending_group_snapshot_requests.empty()) {
+        return false;
+    }
+
+    for (SpatialLayoutPendingGroupSnapshotRequest& request :
+         ui_state->pending_group_snapshot_requests) {
+        if (request.camera_serial != result.camera_serial ||
+            request.request_id != result.request_id ||
+            request.completed ||
+            request.failed) {
+            continue;
+        }
+
+        if (result.ok && result.width > 0 && result.height > 0 && !result.rgba.empty()) {
+            SpatialLayoutGroupCaptureFrame capture =
+                make_group_capture_from_snapshot(
+                    result,
+                    cameras_params,
+                    num_cameras,
+                    ui_state->group_capture_id,
+                    ui_state->group_capture_mode,
+                    ui_state->group_capture_metadata);
+            std::string texture_error;
+            if (!orange::preview::update_rgba_texture(
+                    &capture.texture,
+                    &capture.texture_width,
+                    &capture.texture_height,
+                    capture.rgba,
+                    capture.width,
+                    capture.height,
+                    &texture_error)) {
+                request.failed = true;
+                request.completed = false;
+                request.error = texture_error.empty()
+                                    ? "Grouped capture texture upload failed."
+                                    : texture_error;
+            } else {
+                request.completed = true;
+                upsert_group_capture(ui_state, capture);
+                if (selected_camera_index >= 0 &&
+                    selected_camera_index < num_cameras &&
+                    cameras_params[selected_camera_index].camera_serial == result.camera_serial) {
+                    std::string preview_error;
+                    if (!apply_group_capture_to_active_preview(ui_state, capture, &preview_error)) {
+                        ui_state->preview_error = preview_error;
+                    }
+                }
+            }
+        } else {
+            request.failed = true;
+            request.error = result.error.empty()
+                                ? "Grouped full-resolution snapshot failed."
+                                : result.error;
+        }
+
+        const int pending = pending_group_snapshot_count(*ui_state);
+        const int failed = failed_group_snapshot_count(*ui_state);
+        std::ostringstream status;
+        status << "Grouped capture " << ui_state->group_capture_id
+               << ": completed=" << ui_state->group_captures.size()
+               << " pending=" << pending
+               << " failed=" << failed << ".";
+        ui_state->group_capture_status = status.str();
+        if (failed > 0) {
+            std::ostringstream error;
+            for (const SpatialLayoutPendingGroupSnapshotRequest& pending_request :
+                 ui_state->pending_group_snapshot_requests) {
+                if (!pending_request.failed) {
+                    continue;
+                }
+                if (error.tellp() > 0) {
+                    error << " ";
+                }
+                error << pending_request.camera_serial << ": "
+                      << (pending_request.error.empty()
+                              ? "capture failed"
+                              : pending_request.error);
+            }
+            ui_state->group_capture_error = error.str();
+        } else {
+            ui_state->group_capture_error.clear();
+        }
+        if (pending == 0 && failed == 0) {
+            ui_state->group_capture_status =
+                "Grouped capture " + ui_state->group_capture_id +
+                " complete for " + std::to_string(ui_state->group_captures.size()) +
+                " camera(s) as " + ui_state->group_capture_metadata.image_set_purpose +
+                " on " + ui_state->group_capture_metadata.image_set_target_plane + ".";
+        }
+        return true;
+    }
+    return false;
+}
+
+std::string build_group_capture_id(
+    const SpatialLayoutUiState& ui_state,
+    const SpatialLayoutCalibrationImageSetMetadata& metadata,
+    const std::string& timestamp)
+{
+    std::ostringstream oss;
+    oss << "calgrp_" << sanitize_artifact_component(timestamp);
+    if (ui_state.citrus_template.available &&
+        !ui_state.citrus_template.source_canvas_name.empty()) {
+        oss << "_" << sanitize_artifact_component(ui_state.citrus_template.source_canvas_name);
+    }
+    if (!metadata.image_set_purpose.empty()) {
+        oss << "_" << sanitize_artifact_component(metadata.image_set_purpose);
+    }
+    if (!metadata.image_set_target_plane.empty()) {
+        oss << "_" << sanitize_artifact_component(metadata.image_set_target_plane);
+    }
+    return oss.str();
+}
+
+bool camera_is_group_capture_eligible(
+    const CameraEachSelect* cameras_select,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers,
+    int camera_index)
+{
+    return cameras_select != nullptr &&
+           spatial_snapshot_workers != nullptr &&
+           camera_index >= 0 &&
+           cameras_select[camera_index].stream_on &&
+           spatial_snapshot_workers[camera_index] != nullptr;
+}
+
+int eligible_group_capture_camera_count(
+    const CameraEachSelect* cameras_select,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers,
+    int num_cameras)
+{
+    int count = 0;
+    for (int i = 0; i < num_cameras; ++i) {
+        if (camera_is_group_capture_eligible(cameras_select, spatial_snapshot_workers, i)) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+bool request_group_full_resolution_snapshots(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams* cameras_params,
+    const CameraEachSelect* cameras_select,
+    int num_cameras,
+    SpatialSnapshotWorker* const* spatial_snapshot_workers,
+    uint32_t target_frame_count,
+    std::string* error_out)
+{
+    if (ui_state == nullptr || cameras_params == nullptr || cameras_select == nullptr ||
+        spatial_snapshot_workers == nullptr || num_cameras <= 0) {
+        if (error_out) {
+            *error_out = "Grouped capture requires open cameras and snapshot workers.";
+        }
+        return false;
+    }
+    if (pending_group_snapshot_count(*ui_state) > 0) {
+        if (error_out) {
+            *error_out = "A grouped capture is already pending.";
+        }
+        return false;
+    }
+
+    clear_group_captures(ui_state);
+    ui_state->group_capture_error.clear();
+
+    const std::string timestamp = get_current_utc_timestamp();
+    ui_state->group_capture_metadata =
+        make_calibration_image_set_metadata_from_ui(*ui_state);
+    ui_state->group_capture_id =
+        build_group_capture_id(*ui_state, ui_state->group_capture_metadata, timestamp);
+    ui_state->group_capture_mode =
+        target_frame_count > 1 ? "operator_group_temporal_mean" : "operator_group_next_frame";
+
+    int requested = 0;
+    std::ostringstream request_errors;
+    for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
+        if (!camera_is_group_capture_eligible(cameras_select, spatial_snapshot_workers, camera_index)) {
+            continue;
+        }
+
+        SpatialSnapshotWorker* worker = spatial_snapshot_workers[camera_index];
+        uint64_t request_id = 0;
+        std::string request_error;
+        std::ostringstream operation_id;
+        operation_id << ui_state->group_capture_id
+                     << "_Cam" << cameras_params[camera_index].camera_serial;
+        if (!worker->RequestSnapshot(
+                operation_id.str(),
+                &request_id,
+                &request_error,
+                std::max<uint32_t>(1u, target_frame_count))) {
+            if (request_errors.tellp() > 0) {
+                request_errors << " ";
+            }
+            request_errors << cameras_params[camera_index].camera_serial
+                           << ": "
+                           << (request_error.empty()
+                                   ? "request rejected"
+                                   : request_error);
+            SpatialLayoutPendingGroupSnapshotRequest failed_request;
+            failed_request.camera_serial = cameras_params[camera_index].camera_serial;
+            failed_request.failed = true;
+            failed_request.error = request_error.empty() ? "request rejected" : request_error;
+            ui_state->pending_group_snapshot_requests.push_back(std::move(failed_request));
+            continue;
+        }
+
+        SpatialLayoutPendingGroupSnapshotRequest pending_request;
+        pending_request.camera_serial = cameras_params[camera_index].camera_serial;
+        pending_request.request_id = request_id;
+        ui_state->pending_group_snapshot_requests.push_back(std::move(pending_request));
+        ++requested;
+    }
+
+    if (requested == 0) {
+        ui_state->group_capture_status.clear();
+        ui_state->group_capture_error =
+            request_errors.tellp() > 0
+                ? request_errors.str()
+                : "No streaming cameras with spatial snapshot workers are available.";
+        if (error_out) {
+            *error_out = ui_state->group_capture_error;
+        }
+        return false;
+    }
+
+    std::ostringstream status;
+    status << "Requested grouped full-resolution capture "
+           << ui_state->group_capture_id
+           << " from " << requested << " camera(s)"
+           << " as " << ui_state->group_capture_metadata.image_set_purpose
+           << " on " << ui_state->group_capture_metadata.image_set_target_plane;
+    if (target_frame_count > 1) {
+        status << " averaging " << target_frame_count << " frames";
+    }
+    status << ".";
+    ui_state->group_capture_status = status.str();
+    ui_state->group_capture_error =
+        request_errors.tellp() > 0 ? request_errors.str() : std::string();
     return true;
 }
 
@@ -3778,6 +4528,7 @@ void apply_captured_frame_provenance_to_capture(
     }
     capture->source_frame_count = std::max<uint32_t>(1u, ui_state.captured_source_frame_count);
     capture->has_source_frame_count = true;
+    capture->capture_group_id = ui_state.captured_capture_group_id;
     if (capture->source_frame_count > 1 ||
         ui_state.captured_capture_mode == "temporal_mean_stream_frames_v1") {
         capture->temporal_compositing_method = "temporal_mean_stream_frames_v1";
@@ -3878,6 +4629,182 @@ struct TopRimObservationSaveResult {
     std::string error;
 };
 
+nlohmann::json make_top_rim_observation_link_json(
+    const std::string& artifact_root_dir,
+    const orange::calibration::DishTopRimObservationRequest& request,
+    const orange::calibration::DishTopRimObservationWriteResult& write_result)
+{
+    const orange::calibration::DishTopRimObservationArtifactPaths paths =
+        orange::calibration::make_dish_top_rim_observation_artifact_paths(
+            artifact_root_dir,
+            write_result.artifact_id);
+    const std::filesystem::path aggregate_dir =
+        std::filesystem::path(artifact_root_dir) /
+        request.arena_context.value("associated_image_set_artifact_id", std::string());
+
+    std::error_code rel_error;
+    std::filesystem::path relative_manifest =
+        std::filesystem::relative(paths.manifest_path, aggregate_dir, rel_error);
+    if (rel_error || relative_manifest.empty()) {
+        relative_manifest =
+            std::filesystem::path("..") / write_result.artifact_id /
+            kSpatialLayoutManifestFilename;
+    }
+    rel_error.clear();
+    std::filesystem::path relative_observation =
+        std::filesystem::relative(paths.observation_json_path, aggregate_dir, rel_error);
+    if (rel_error || relative_observation.empty()) {
+        relative_observation =
+            std::filesystem::path("..") / write_result.artifact_id / "observation.json";
+    }
+
+    nlohmann::json link = {
+        {"artifact_id", write_result.artifact_id},
+        {"artifact_schema_id", orange::calibration::kDishTopRimObservationSchemaId},
+        {"artifact_schema_version", orange::calibration::kDishTopRimObservationSchemaVersion},
+        {"fingerprint", write_result.fingerprint},
+        {"relative_manifest_path", relative_manifest.generic_string()},
+        {"relative_observation_path", relative_observation.generic_string()},
+        {"selection_policy", "latest_saved_for_camera_arena"},
+        {"target_plane", "dish_top_rim"},
+        {"coordinate_space", "camera_native_pixels"},
+        {"camera_serial", request.camera.serial},
+        {"accepted_at_utc", request.created_utc}
+    };
+    if (!request.arena_context.empty()) {
+        link["arena_context"] = request.arena_context;
+        const std::string arena_id =
+            request.arena_context.value("arena_id", std::string());
+        const std::string canvas_id =
+            request.arena_context.value("canvas_id", std::string());
+        if (!arena_id.empty()) {
+            link["arena_id"] = arena_id;
+        }
+        if (!canvas_id.empty()) {
+            link["canvas_id"] = canvas_id;
+        }
+    }
+    if (write_result.observation.is_object()) {
+        link["accepted_mask"] =
+            write_result.observation.value("accepted_mask", nlohmann::json::object());
+        link["observed_boundary"] =
+            write_result.observation.value("observed_boundary", nlohmann::json::object());
+        link["valid_detection_region"] =
+            write_result.observation.value(
+                "valid_detection_region",
+                nlohmann::json::object());
+    }
+    return link;
+}
+
+bool link_top_rim_observation_to_camera_arena_aggregate(
+    const TopRimObservationSaveJob& job,
+    const orange::calibration::DishTopRimObservationWriteResult& write_result,
+    std::string* error_out)
+{
+    if (!job.request.arena_context.is_object()) {
+        return true;
+    }
+    const std::string associated_image_set_artifact_id =
+        job.request.arena_context.value(
+            "associated_image_set_artifact_id",
+            std::string());
+    if (associated_image_set_artifact_id.empty()) {
+        return true;
+    }
+
+    const std::filesystem::path aggregate_dir =
+        std::filesystem::path(job.artifact_root_dir) /
+        associated_image_set_artifact_id;
+    const std::filesystem::path image_set_path =
+        aggregate_dir / "image_set.json";
+    const std::filesystem::path manifest_path =
+        aggregate_dir / kSpatialLayoutManifestFilename;
+    if (!std::filesystem::exists(image_set_path) ||
+        !std::filesystem::exists(manifest_path)) {
+        return true;
+    }
+
+    nlohmann::json image_set;
+    if (!read_json_file(image_set_path, &image_set, error_out)) {
+        return false;
+    }
+    if (!image_set.is_object()) {
+        if (error_out) {
+            *error_out = "Cannot link top-rim observation: aggregate image_set.json is not an object: " +
+                         image_set_path.generic_string();
+        }
+        return false;
+    }
+
+    const nlohmann::json link =
+        make_top_rim_observation_link_json(
+            job.artifact_root_dir,
+            job.request,
+            write_result);
+    if (!image_set.contains("linked_observations") ||
+        !image_set["linked_observations"].is_object()) {
+        image_set["linked_observations"] = nlohmann::json::object();
+    }
+    image_set["linked_observations"]["accepted_top_rim_observation"] = link;
+    image_set["updated_utc"] = job.request.created_utc;
+    const std::string image_set_fingerprint = compute_json_fingerprint(image_set);
+    if (!write_json_file(image_set_path, image_set, error_out)) {
+        return false;
+    }
+
+    nlohmann::json manifest;
+    if (!read_json_file(manifest_path, &manifest, error_out)) {
+        return false;
+    }
+    if (!manifest.is_object()) {
+        if (error_out) {
+            *error_out = "Cannot link top-rim observation: aggregate manifest is not an object: " +
+                         manifest_path.generic_string();
+        }
+        return false;
+    }
+    if (!manifest.contains("linked_observations") ||
+        !manifest["linked_observations"].is_object()) {
+        manifest["linked_observations"] = nlohmann::json::object();
+    }
+    manifest["linked_observations"]["accepted_top_rim_observation"] = link;
+    if (!manifest.contains("summary") || !manifest["summary"].is_object()) {
+        manifest["summary"] = nlohmann::json::object();
+    }
+    manifest["summary"]["accepted_top_rim_observation_artifact_id"] =
+        write_result.artifact_id;
+    manifest["summary"]["accepted_top_rim_observation_fingerprint"] =
+        write_result.fingerprint;
+    manifest["summary"]["accepted_top_rim_observation_created_utc"] =
+        job.request.created_utc;
+    manifest["updated_utc"] = job.request.created_utc;
+    if (!manifest.contains("calibration_ref") ||
+        !manifest["calibration_ref"].is_object()) {
+        manifest["calibration_ref"] = {
+            {"artifact_id", associated_image_set_artifact_id},
+            {"artifact_schema_id", orange::calibration::kCalibrationImageSetSchemaId},
+            {"artifact_schema_version",
+             orange::calibration::kCalibrationImageSetSchemaVersion}
+        };
+    }
+    manifest["calibration_ref"]["fingerprint"] = image_set_fingerprint;
+    if (!write_json_file(manifest_path, manifest, error_out)) {
+        return false;
+    }
+    if (!update_spatial_calibration_session_index(
+            job.session_dir,
+            job.artifact_root_dir,
+            manifest,
+            error_out)) {
+        return false;
+    }
+    return update_calibration_artifact_registry(
+        job.artifact_root_dir,
+        manifest,
+        error_out);
+}
+
 TopRimObservationSaveResult run_top_rim_observation_save_job(TopRimObservationSaveJob job)
 {
     TopRimObservationSaveResult save_result;
@@ -3906,6 +4833,13 @@ TopRimObservationSaveResult run_top_rim_observation_save_job(TopRimObservationSa
                 job.session_dir,
                 job.artifact_root_dir,
                 write_result.manifest,
+                &save_result.error)) {
+            save_result.ok = false;
+            return save_result;
+        }
+        if (!link_top_rim_observation_to_camera_arena_aggregate(
+                job,
+                write_result,
                 &save_result.error)) {
             save_result.ok = false;
             return save_result;
@@ -4112,7 +5046,8 @@ nlohmann::json make_generic_calibration_image_set_manifest(
             {"image_count", image_count},
             {"coordinate_space", request.coordinate_space},
             {"camera_serial", request.camera.serial},
-            {"capture_mode", request.capture.capture_mode}
+            {"capture_mode", request.capture.capture_mode},
+            {"capture_group_id", request.capture.capture_group_id}
         }}
     };
 }
@@ -4137,6 +5072,12 @@ nlohmann::json make_generic_calibration_image_set_image_entry(
     if (!request.scale_target.empty()) {
         entry["scale_target"] = request.scale_target;
     }
+    if (!request.runtime_role.empty()) {
+        entry["runtime_role"] = request.runtime_role;
+    }
+    if (!request.observations.empty()) {
+        entry["observations"] = request.observations;
+    }
     if (!request.operator_notes.empty()) {
         entry["operator_notes"] = request.operator_notes;
     }
@@ -4152,6 +5093,7 @@ nlohmann::json make_empty_aggregate_calibration_image_set(
     aggregate_request.images.clear();
     aggregate_request.projected_pattern = nlohmann::json::object();
     aggregate_request.scale_target = nlohmann::json::object();
+    aggregate_request.runtime_role = nlohmann::json::object();
     aggregate_request.observations = nlohmann::json::object();
     aggregate_request.review_artifacts = nlohmann::json::object();
     aggregate_request.operator_notes.clear();
@@ -4257,6 +5199,7 @@ GenericCalibrationImageSetSaveResult run_generic_calibration_image_set_save_job(
         image_set["coordinate_space"] = job.request.coordinate_space;
         image_set.erase("projected_pattern");
         image_set.erase("scale_target");
+        image_set.erase("runtime_role");
         image_set.erase("observations");
         image_set.erase("operator_notes");
         image_set["updated_utc"] = job.request.created_utc;
@@ -4273,6 +5216,10 @@ GenericCalibrationImageSetSaveResult run_generic_calibration_image_set_save_job(
             {"path", files.source_frame_relative_path.generic_string()},
             {"timestamp_utc", job.request.capture.timestamp_utc}
         };
+        if (!job.request.capture.capture_group_id.empty()) {
+            image_set["latest_capture"]["capture_group_id"] =
+                job.request.capture.capture_group_id;
+        }
         if (!image_set.contains("images") || !image_set["images"].is_array()) {
             image_set["images"] = nlohmann::json::array();
         }
@@ -4432,10 +5379,41 @@ GenericCalibrationImageSetSaveWorker& generic_calibration_image_set_save_worker(
     return worker;
 }
 
+std::deque<GenericCalibrationImageSetSaveJob>& queued_generic_calibration_image_set_save_jobs()
+{
+    static std::deque<GenericCalibrationImageSetSaveJob> jobs;
+    return jobs;
+}
+
+size_t queued_generic_calibration_image_set_save_job_count()
+{
+    return queued_generic_calibration_image_set_save_jobs().size();
+}
+
+bool submit_next_queued_generic_calibration_image_set_save_job(std::string* error_out)
+{
+    auto& queue = queued_generic_calibration_image_set_save_jobs();
+    if (queue.empty() || generic_calibration_image_set_save_worker().IsBusy()) {
+        return true;
+    }
+
+    GenericCalibrationImageSetSaveJob job = std::move(queue.front());
+    queue.pop_front();
+    if (!generic_calibration_image_set_save_worker().Submit(std::move(job), error_out)) {
+        return false;
+    }
+    return true;
+}
+
 void poll_generic_calibration_image_set_save_worker(SpatialLayoutUiState* ui_state)
 {
     if (ui_state == nullptr) {
         return;
+    }
+    std::string submit_error;
+    if (!submit_next_queued_generic_calibration_image_set_save_job(&submit_error)) {
+        ui_state->persistence_error = submit_error;
+        ui_state->persistence_status.clear();
     }
     GenericCalibrationImageSetSaveResult result;
     while (generic_calibration_image_set_save_worker().PopCompleted(&result)) {
@@ -4446,6 +5424,16 @@ void poll_generic_calibration_image_set_save_worker(SpatialLayoutUiState* ui_sta
             ui_state->persistence_error =
                 result.error.empty() ? "Calibration image-set save failed." : result.error;
             ui_state->persistence_status.clear();
+        }
+        if (!submit_next_queued_generic_calibration_image_set_save_job(&submit_error)) {
+            ui_state->persistence_error = submit_error;
+            ui_state->persistence_status.clear();
+            break;
+        }
+        const size_t queued = queued_generic_calibration_image_set_save_job_count();
+        if (queued > 0 && ui_state->persistence_error.empty()) {
+            ui_state->persistence_status +=
+                " " + std::to_string(queued) + " grouped save job(s) remain queued.";
         }
     }
 }
@@ -4485,6 +5473,9 @@ void apply_calibration_image_set_purpose_defaults(
         ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
         ui_state->calibration_image_set_target_plane = "estimated_fish_plane";
         ui_state->calibration_image_set_image_role = "scale_target";
+        ui_state->calibration_image_set_projected_pattern_id = "none";
+        ui_state->calibration_image_set_projected_pattern_type = "none";
+        ui_state->calibration_image_set_scale_target_type = "clear_plastic_ruler";
         ui_state->calibration_light_handling = "keep_or_restore_mapped_pulse";
         apply_illumination_preset(ui_state, "custom_ttl_nir_strobe_855nm");
         ui_state->calibration_projector_state = "off";
@@ -4503,20 +5494,103 @@ void apply_calibration_image_set_purpose_defaults(
     }
 }
 
+void apply_projection_surface_scale_image_defaults(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_image_set_purpose = "scale_image";
+    ui_state->calibration_filter_state = kHoyaR72FilterInstalled;
+    ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+    ui_state->calibration_image_set_target_plane = "projected_surface";
+    ui_state->calibration_image_set_image_role = "scale_target";
+    ui_state->calibration_image_set_projected_pattern_id = "none";
+    ui_state->calibration_image_set_projected_pattern_type = "none";
+    ui_state->calibration_image_set_scale_target_type = "clear_plastic_ruler";
+    ui_state->calibration_light_handling = "keep_or_restore_mapped_pulse";
+    apply_illumination_preset(ui_state, "custom_ttl_nir_strobe_855nm");
+    ui_state->calibration_projector_state = "off";
+    ui_state->calibration_projector_visible_to_camera = false;
+}
+
+void apply_tank_bottom_inner_surface_scale_image_defaults(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_image_set_purpose = "scale_image";
+    ui_state->calibration_filter_state = kHoyaR72FilterInstalled;
+    ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+    ui_state->calibration_image_set_target_plane = "tank_bottom_inner_surface";
+    ui_state->calibration_image_set_image_role = "scale_target";
+    ui_state->calibration_image_set_projected_pattern_id = "none";
+    ui_state->calibration_image_set_projected_pattern_type = "none";
+    ui_state->calibration_image_set_scale_target_type = "clear_plastic_ruler";
+    ui_state->calibration_light_handling = "keep_or_restore_mapped_pulse";
+    apply_illumination_preset(ui_state, "custom_ttl_nir_strobe_855nm");
+    ui_state->calibration_projector_state = "off";
+    ui_state->calibration_projector_visible_to_camera = false;
+}
+
+void apply_tank_bottom_inner_surface_homography_defaults(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->calibration_image_set_purpose = "homography_grid";
+    ui_state->calibration_filter_state = kHoyaR72FilterRemoved;
+    ui_state->calibration_runtime_filter_state = kHoyaR72FilterInstalled;
+    ui_state->calibration_image_set_target_plane = "tank_bottom_inner_surface";
+    ui_state->calibration_image_set_image_role = "grid_on";
+    ui_state->calibration_image_set_projected_pattern_id =
+        "citrus_tank_bottom_circular_grid_v1";
+    ui_state->calibration_image_set_projected_pattern_type = "circular_dot_grid";
+    ui_state->calibration_image_set_scale_target_type = "unknown";
+    ui_state->calibration_light_handling = "suppress_mapped_strobe";
+    apply_illumination_preset(ui_state, "visible_projector_broadband");
+    ui_state->calibration_projector_state = "tank_bottom_homography_grid_on";
+    ui_state->calibration_projector_visible_to_camera = true;
+}
+
+bool is_projection_surface_workflow_purpose(const SpatialLayoutUiState& ui_state)
+{
+    if (ui_state.calibration_image_set_purpose == "arena_projection" ||
+        (ui_state.calibration_image_set_purpose == "homography_grid" &&
+         ui_state.calibration_image_set_target_plane != "estimated_fish_plane" &&
+         ui_state.calibration_image_set_target_plane != "tank_bottom_inner_surface")) {
+        return true;
+    }
+    return ui_state.calibration_image_set_purpose == "scale_image" &&
+           ui_state.calibration_image_set_target_plane == "projected_surface";
+}
+
+bool is_estimated_fish_plane_workflow_purpose(const SpatialLayoutUiState& ui_state)
+{
+    if (ui_state.calibration_image_set_purpose == "crosshair_alignment") {
+        return true;
+    }
+    if (ui_state.calibration_image_set_purpose == "homography_grid" &&
+        (ui_state.calibration_image_set_target_plane == "estimated_fish_plane" ||
+         ui_state.calibration_image_set_target_plane == "tank_bottom_inner_surface")) {
+        return true;
+    }
+    return ui_state.calibration_image_set_purpose == "scale_image" &&
+           (ui_state.calibration_image_set_target_plane == "estimated_fish_plane" ||
+            ui_state.calibration_image_set_target_plane == "tank_bottom_inner_surface");
+}
+
 void apply_calibration_workflow_tab_defaults(SpatialLayoutUiState* ui_state, const int tab)
 {
     if (ui_state == nullptr) {
         return;
     }
     if (tab == 0) {
-        if (ui_state->calibration_image_set_purpose != "arena_projection" &&
-            ui_state->calibration_image_set_purpose != "homography_grid") {
+        if (!is_projection_surface_workflow_purpose(*ui_state)) {
             apply_calibration_image_set_purpose_defaults(ui_state, "homography_grid");
         }
     } else if (tab == 1) {
-        if (ui_state->calibration_image_set_purpose != "scale_image" &&
-            ui_state->calibration_image_set_purpose != "crosshair_alignment") {
-            apply_calibration_image_set_purpose_defaults(ui_state, "scale_image");
+        if (!is_estimated_fish_plane_workflow_purpose(*ui_state)) {
+            apply_tank_bottom_inner_surface_scale_image_defaults(ui_state);
         }
     } else if (tab == 2) {
         ui_state->calibration_light_handling = "keep_or_restore_mapped_pulse";
@@ -4654,19 +5728,32 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
     request.runtime_verification.status = "unknown";
     request.runtime_verification.reason = "runtime_850nm_rim_not_verified";
     request.write_palette_export = true;
+    request.arena_context = {
+        {"camera_serial", selected_camera.camera_serial},
+        {"associated_image_set_artifact_id",
+         build_camera_arena_calibration_image_set_artifact_id(ui_state, selected_camera)}
+    };
     if (ui_state->citrus_template.available) {
         nlohmann::json rig_context = nlohmann::json::object();
         if (!ui_state->citrus_template.source_rig_name.empty()) {
             rig_context["rig_id"] = ui_state->citrus_template.source_rig_name;
+            request.arena_context["rig_id"] =
+                ui_state->citrus_template.source_rig_name;
         }
         if (!ui_state->citrus_template.source_canvas_name.empty()) {
             rig_context["canvas_id"] = ui_state->citrus_template.source_canvas_name;
+            request.arena_context["canvas_id"] =
+                ui_state->citrus_template.source_canvas_name;
         }
         if (!ui_state->citrus_template.source_arena_name.empty()) {
             rig_context["arena_id"] = ui_state->citrus_template.source_arena_name;
+            request.arena_context["arena_id"] =
+                ui_state->citrus_template.source_arena_name;
         }
         if (!ui_state->citrus_template.source_camera_id.empty()) {
             rig_context["camera_id"] = ui_state->citrus_template.source_camera_id;
+            request.arena_context["citrus_camera_id"] =
+                ui_state->citrus_template.source_camera_id;
         }
         if (!ui_state->citrus_template.source_config_path.empty() ||
             !ui_state->citrus_template.source_config_name.empty()) {
@@ -4675,6 +5762,8 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
                 {"path", ui_state->citrus_template.source_config_path},
                 {"config_name", ui_state->citrus_template.source_config_name}
             };
+            request.arena_context["citrus_config_ref"] =
+                rig_context["citrus_config_ref"];
         }
         if (ui_state->citrus_template.has_camera_to_canvas_homography) {
             rig_context["citrus_homography_ref"] = {
@@ -4682,7 +5771,11 @@ bool prepare_dish_top_rim_observation_save_job_from_spatial_layout(
                 {"source", "citrus_homography_sidecar"},
                 {"direction", "camera_view_px_to_final_display_canvas_px"}
             };
+            request.arena_context["citrus_homography_ref"] =
+                rig_context["citrus_homography_ref"];
         }
+        rig_context["associated_image_set_artifact_id"] =
+            request.arena_context["associated_image_set_artifact_id"];
         request.image_set_rig_context = rig_context;
     }
 
@@ -4870,6 +5963,11 @@ bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
             {"target_plane", request.target_plane}
         };
     }
+    attach_runtime_role_metadata(&request);
+    attach_projection_surface_authored_domain_hint(&request);
+    attach_calibration_domain_observation(
+        &request,
+        make_calibration_image_set_metadata_from_ui(*ui_state));
     request.citrus_preview = {
         {"available", false},
         {"diagnostic_only", true},
@@ -4881,6 +5979,263 @@ bool prepare_generic_calibration_image_set_save_job_from_spatial_layout(
             : ui_state->calibration_image_set_notes;
 
     *job_out = std::move(job);
+    return true;
+}
+
+struct SpatialLayoutCaptureStateBackup {
+    bool has_capture = false;
+    int captured_texture_width = 0;
+    int captured_texture_height = 0;
+    std::vector<unsigned char> captured_rgba;
+    std::string captured_camera_serial;
+    std::string captured_source_array_role;
+    std::string captured_capture_mode;
+    std::string captured_capture_group_id;
+    uint32_t captured_source_frame_count = 1;
+    uint64_t captured_first_local_frame_id = 0;
+    uint64_t captured_last_local_frame_id = 0;
+    uint64_t captured_first_camera_frame_id = 0;
+    uint64_t captured_last_camera_frame_id = 0;
+    CitrusSpatialTemplateState citrus_template;
+    SpatialLayoutCalibrationImageSetMetadata metadata;
+};
+
+SpatialLayoutCaptureStateBackup backup_spatial_layout_capture_state(
+    const SpatialLayoutUiState& ui_state)
+{
+    SpatialLayoutCaptureStateBackup backup;
+    backup.has_capture = ui_state.has_capture;
+    backup.captured_texture_width = ui_state.captured_texture_width;
+    backup.captured_texture_height = ui_state.captured_texture_height;
+    backup.captured_rgba = ui_state.captured_rgba;
+    backup.captured_camera_serial = ui_state.captured_camera_serial;
+    backup.captured_source_array_role = ui_state.captured_source_array_role;
+    backup.captured_capture_mode = ui_state.captured_capture_mode;
+    backup.captured_capture_group_id = ui_state.captured_capture_group_id;
+    backup.captured_source_frame_count = ui_state.captured_source_frame_count;
+    backup.captured_first_local_frame_id = ui_state.captured_first_local_frame_id;
+    backup.captured_last_local_frame_id = ui_state.captured_last_local_frame_id;
+    backup.captured_first_camera_frame_id = ui_state.captured_first_camera_frame_id;
+    backup.captured_last_camera_frame_id = ui_state.captured_last_camera_frame_id;
+    backup.citrus_template = ui_state.citrus_template;
+    backup.metadata = make_calibration_image_set_metadata_from_ui(ui_state);
+    return backup;
+}
+
+void restore_spatial_layout_capture_state(
+    SpatialLayoutUiState* ui_state,
+    SpatialLayoutCaptureStateBackup backup)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    ui_state->has_capture = backup.has_capture;
+    ui_state->captured_texture_width = backup.captured_texture_width;
+    ui_state->captured_texture_height = backup.captured_texture_height;
+    ui_state->captured_rgba = std::move(backup.captured_rgba);
+    ui_state->captured_camera_serial = std::move(backup.captured_camera_serial);
+    ui_state->captured_source_array_role = std::move(backup.captured_source_array_role);
+    ui_state->captured_capture_mode = std::move(backup.captured_capture_mode);
+    ui_state->captured_capture_group_id = std::move(backup.captured_capture_group_id);
+    ui_state->captured_source_frame_count = backup.captured_source_frame_count;
+    ui_state->captured_first_local_frame_id = backup.captured_first_local_frame_id;
+    ui_state->captured_last_local_frame_id = backup.captured_last_local_frame_id;
+    ui_state->captured_first_camera_frame_id = backup.captured_first_camera_frame_id;
+    ui_state->captured_last_camera_frame_id = backup.captured_last_camera_frame_id;
+    ui_state->citrus_template = std::move(backup.citrus_template);
+    apply_calibration_image_set_metadata_to_ui(ui_state, backup.metadata);
+}
+
+bool prepare_generic_calibration_image_set_save_job_from_group_capture(
+    SpatialLayoutUiState* ui_state,
+    const SpatialLayoutGroupCaptureFrame& capture,
+    const CameraParams& camera_params,
+    const std::string& artifact_root_dir,
+    GenericCalibrationImageSetSaveJob* job_out,
+    std::string* error_out)
+{
+    if (ui_state == nullptr) {
+        if (error_out) {
+            *error_out = "Spatial layout UI state is null.";
+        }
+        return false;
+    }
+    if (!capture.valid || capture.width <= 0 || capture.height <= 0 || capture.rgba.empty()) {
+        if (error_out) {
+            *error_out = "Grouped capture for " + capture.camera_serial + " is empty.";
+        }
+        return false;
+    }
+    if (capture.source_array_role != "images_full") {
+        if (error_out) {
+            *error_out = "Grouped capture for " + capture.camera_serial +
+                         " is not in full-resolution camera coordinates.";
+        }
+        return false;
+    }
+
+    SpatialLayoutCaptureStateBackup backup =
+        backup_spatial_layout_capture_state(*ui_state);
+
+    ui_state->has_capture = true;
+    ui_state->captured_texture_width = capture.width;
+    ui_state->captured_texture_height = capture.height;
+    ui_state->captured_rgba = capture.rgba;
+    ui_state->captured_camera_serial = capture.camera_serial;
+    ui_state->captured_source_array_role = capture.source_array_role;
+    ui_state->captured_capture_mode = capture.capture_mode;
+    ui_state->captured_capture_group_id = capture.capture_group_id;
+    ui_state->captured_source_frame_count = std::max<uint32_t>(1u, capture.source_frame_count);
+    ui_state->captured_first_local_frame_id = capture.first_local_frame_id;
+    ui_state->captured_last_local_frame_id = capture.last_local_frame_id;
+    ui_state->captured_first_camera_frame_id = capture.first_camera_frame_id;
+    ui_state->captured_last_camera_frame_id = capture.last_camera_frame_id;
+    apply_calibration_image_set_metadata_to_ui(ui_state, capture.metadata);
+
+    bool template_ok = true;
+    if (!ui_state->citrus_canvas_templates.empty()) {
+        const int citrus_index =
+            find_citrus_template_index_for_camera(*ui_state, capture.camera_serial);
+        if (citrus_index < 0) {
+            template_ok = false;
+            if (error_out) {
+                *error_out = "No loaded Citrus canvas template matches camera " +
+                             capture.camera_serial + ".";
+            }
+        } else {
+            ui_state->citrus_template =
+                ui_state->citrus_canvas_templates[static_cast<size_t>(citrus_index)];
+        }
+    } else if (ui_state->citrus_template.available &&
+               !ui_state->citrus_template.source_camera_id.empty() &&
+               ui_state->citrus_template.source_camera_id != capture.camera_serial) {
+        ui_state->citrus_template = CitrusSpatialTemplateState{};
+    }
+
+    bool ok = false;
+    if (template_ok) {
+        ok = prepare_generic_calibration_image_set_save_job_from_spatial_layout(
+            ui_state,
+            camera_params,
+            artifact_root_dir,
+            job_out,
+            error_out);
+        if (ok && job_out != nullptr) {
+            if (capture.camera_configured_width > 0) {
+                job_out->request.camera.configured_width = capture.camera_configured_width;
+            }
+            if (capture.camera_configured_height > 0) {
+                job_out->request.camera.configured_height = capture.camera_configured_height;
+            }
+            if (!capture.camera_pixel_format.empty()) {
+                job_out->request.camera.pixel_format = capture.camera_pixel_format;
+            }
+            if (capture.has_camera_exposure_us) {
+                job_out->request.capture.exposure_us = capture.camera_exposure_us;
+                job_out->request.capture.has_exposure_us = true;
+            }
+            if (capture.has_camera_frame_rate_hz) {
+                job_out->request.capture.frame_rate_hz = capture.camera_frame_rate_hz;
+                job_out->request.capture.has_frame_rate_hz = true;
+            }
+            if (capture.has_camera_gain) {
+                job_out->request.capture.gain = capture.camera_gain;
+                job_out->request.capture.has_gain = true;
+            }
+            attach_calibration_domain_observation(
+                &job_out->request,
+                capture.metadata);
+        }
+    }
+    restore_spatial_layout_capture_state(
+        ui_state,
+        std::move(backup));
+    return ok;
+}
+
+bool queue_group_calibration_image_set_save_jobs(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams* cameras_params,
+    int num_cameras,
+    const CameraParams& selected_camera,
+    const std::string& artifact_root_dir,
+    std::string* status_out,
+    std::string* error_out)
+{
+    if (ui_state == nullptr || cameras_params == nullptr || num_cameras <= 0) {
+        if (error_out) {
+            *error_out = "Grouped save requires open cameras.";
+        }
+        return false;
+    }
+    if (ui_state->group_captures.empty()) {
+        if (error_out) {
+            *error_out = "Capture grouped full-resolution snapshots before saving grouped image sets.";
+        }
+        return false;
+    }
+    if (pending_group_snapshot_count(*ui_state) > 0) {
+        if (error_out) {
+            *error_out = "Grouped capture is still pending.";
+        }
+        return false;
+    }
+
+    std::string session_artifact_root;
+    if (!ensure_spatial_calibration_session(
+            ui_state,
+            selected_camera,
+            artifact_root_dir,
+            &session_artifact_root,
+            error_out)) {
+        return false;
+    }
+
+    std::deque<GenericCalibrationImageSetSaveJob> jobs;
+    for (const SpatialLayoutGroupCaptureFrame& capture : ui_state->group_captures) {
+        const int camera_index =
+            capture.camera_index >= 0
+                ? capture.camera_index
+                : find_camera_index_by_serial(cameras_params, num_cameras, capture.camera_serial);
+        if (camera_index < 0 || camera_index >= num_cameras) {
+            if (error_out) {
+                *error_out = "Grouped capture camera is no longer open: " +
+                             capture.camera_serial;
+            }
+            return false;
+        }
+        GenericCalibrationImageSetSaveJob job;
+        if (!prepare_generic_calibration_image_set_save_job_from_group_capture(
+                ui_state,
+                capture,
+                cameras_params[camera_index],
+                session_artifact_root,
+                &job,
+                error_out)) {
+            return false;
+        }
+        job.session_dir = ui_state->calibration_session_dir;
+        jobs.push_back(std::move(job));
+    }
+
+    auto& save_queue = queued_generic_calibration_image_set_save_jobs();
+    for (GenericCalibrationImageSetSaveJob& job : jobs) {
+        save_queue.push_back(std::move(job));
+    }
+    std::string submit_error;
+    if (!submit_next_queued_generic_calibration_image_set_save_job(&submit_error)) {
+        if (error_out) {
+            *error_out = submit_error;
+        }
+        return false;
+    }
+
+    if (status_out) {
+        *status_out =
+            "Queued " + std::to_string(ui_state->group_captures.size()) +
+            " grouped calibration image-set save job(s) in session " +
+            ui_state->calibration_session_id + ".";
+    }
     return true;
 }
 
@@ -5548,6 +6903,107 @@ bool draw_runtime_preview(SpatialLayoutUiState* ui_state)
     return changed;
 }
 
+ImVec2 fit_group_capture_image_size(
+    int image_width,
+    int image_height,
+    const ImVec2& available,
+    float max_height)
+{
+    if (image_width <= 0 || image_height <= 0) {
+        return ImVec2(1.0f, 1.0f);
+    }
+    const float width = std::max(1.0f, static_cast<float>(image_width));
+    const float height = std::max(1.0f, static_cast<float>(image_height));
+    const float width_scale = available.x > 0.0f ? available.x / width : 1.0f;
+    const float height_scale = max_height > 0.0f ? max_height / height : 1.0f;
+    const float scale = std::min(1.0f, std::min(width_scale, height_scale));
+    return ImVec2(std::max(1.0f, width * scale), std::max(1.0f, height * scale));
+}
+
+void render_group_capture_panels(
+    SpatialLayoutUiState* ui_state,
+    const CameraParams* cameras_params,
+    int num_cameras)
+{
+    if (ui_state == nullptr || ui_state->group_captures.empty()) {
+        return;
+    }
+
+    ImGui::SeparatorText("Grouped Captures");
+    if (!ui_state->group_capture_status.empty()) {
+        ImGui::TextWrapped("%s", ui_state->group_capture_status.c_str());
+    }
+    if (!ui_state->group_capture_error.empty()) {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.65f, 0.35f, 1.0f),
+            "%s",
+            ui_state->group_capture_error.c_str());
+    }
+
+    const float available_width = ImGui::GetContentRegionAvail().x;
+    const int columns =
+        std::clamp(static_cast<int>(available_width / 230.0f), 1, 4);
+    if (!ImGui::BeginTable("SpatialGroupCapturePanels", columns, ImGuiTableFlags_SizingStretchSame)) {
+        return;
+    }
+
+    for (size_t idx = 0; idx < ui_state->group_captures.size(); ++idx) {
+        SpatialLayoutGroupCaptureFrame& capture = ui_state->group_captures[idx];
+        ImGui::TableNextColumn();
+        const std::string child_id =
+            "SpatialGroupCapturePanel_" + capture.camera_serial;
+        ImGui::BeginChild(child_id.c_str(), ImVec2(0.0f, 235.0f), true);
+        ImGui::Text("Cam%s", capture.camera_serial.c_str());
+        ImGui::TextDisabled(
+            "%s / %s",
+            capture.metadata.image_set_purpose.c_str(),
+            capture.metadata.image_set_target_plane.c_str());
+        ImGui::TextDisabled(
+            "%dx%d %s",
+            capture.width,
+            capture.height,
+            capture.source_frame_count > 1 ? "mean" : "frame");
+        if (capture.texture != 0 && capture.width > 0 && capture.height > 0) {
+            const ImVec2 image_size =
+                fit_group_capture_image_size(
+                    capture.width,
+                    capture.height,
+                    ImGui::GetContentRegionAvail(),
+                    145.0f);
+            const float x_offset =
+                std::max(0.0f, (ImGui::GetContentRegionAvail().x - image_size.x) * 0.5f);
+            if (x_offset > 0.0f) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + x_offset);
+            }
+            ImGui::Image(
+                (ImTextureID)(intptr_t)capture.texture,
+                image_size,
+                ImVec2(0, 1),
+                ImVec2(1, 0));
+        }
+        const bool can_use =
+            capture.valid &&
+            capture.camera_index >= 0 &&
+            capture.camera_index < num_cameras &&
+            cameras_params != nullptr;
+        ImGui::BeginDisabled(!can_use);
+        const std::string use_button = "Use for fit##" + capture.camera_serial;
+        if (ImGui::SmallButton(use_button.c_str())) {
+            ui_state->selected_camera = capture.camera_index;
+            ui_state->configured_camera_index = capture.camera_index;
+            std::string preview_error;
+            if (!apply_group_capture_to_active_preview(ui_state, capture, &preview_error)) {
+                ui_state->preview_error = preview_error;
+            } else if (cameras_params != nullptr) {
+                rebuild_schema_preview(ui_state, &cameras_params[capture.camera_index]);
+            }
+        }
+        ImGui::EndDisabled();
+        ImGui::EndChild();
+    }
+    ImGui::EndTable();
+}
+
 const char* layout_coordinate_space_label(CoordinateSpace value)
 {
     return value == CoordinateSpace::kLayoutMm ? "layout_mm" : "layout_units";
@@ -5736,6 +7192,73 @@ void render_zone_editor(SpatialLayoutUiState* ui_state)
     ImGui::EndDisabled();
 }
 
+void render_hough_circle_tuning(SpatialLayoutUiState* ui_state)
+{
+    if (ui_state == nullptr) {
+        return;
+    }
+    if (!ImGui::CollapsingHeader("Hough Circle Tuning", ImGuiTreeNodeFlags_DefaultOpen)) {
+        return;
+    }
+    if (ImGui::Button("Reset Hough Defaults")) {
+        ui_state->hough_dp = 1.25;
+        ui_state->hough_min_dist_fraction = 0.20;
+        ui_state->hough_param1 = 120.0;
+        ui_state->hough_param2 = 30.0;
+        ui_state->hough_min_radius_fraction = 0.18;
+        ui_state->hough_max_radius_fraction = 0.49;
+        ui_state->hough_radius_adjustment_px = 0.0;
+        ui_state->hough_median_blur_ksize = 5;
+        ui_state->hough_max_detection_dimension_px = 2048;
+        ui_state->hough_fallback_enabled = true;
+        ui_state->show_hough_proposal_overlay = true;
+        ui_state->show_citrus_corrected_center_overlay = true;
+    }
+    ImGui::Checkbox("Show Hough proposal overlay", &ui_state->show_hough_proposal_overlay);
+    ImGui::Checkbox(
+        "Show corrected Citrus outline overlay",
+        &ui_state->show_citrus_corrected_center_overlay);
+    ImGui::InputDouble("Hough dp", &ui_state->hough_dp, 0.05, 0.25, "%.3f");
+    ImGui::InputDouble("Hough min distance fraction", &ui_state->hough_min_dist_fraction, 0.01, 0.05, "%.3f");
+    ImGui::InputDouble("Hough param1", &ui_state->hough_param1, 5.0, 25.0, "%.1f");
+    ImGui::InputDouble("Hough param2", &ui_state->hough_param2, 1.0, 5.0, "%.1f");
+    ImGui::InputDouble("Hough min radius fraction", &ui_state->hough_min_radius_fraction, 0.01, 0.05, "%.3f");
+    ImGui::InputDouble("Hough max radius fraction", &ui_state->hough_max_radius_fraction, 0.01, 0.05, "%.3f");
+    ImGui::InputDouble("Hough radius adjustment px", &ui_state->hough_radius_adjustment_px, 1.0, 10.0, "%.2f");
+    ImGui::InputInt("Hough median blur kernel", &ui_state->hough_median_blur_ksize, 2, 4);
+    ImGui::InputInt("Hough max detection dimension px", &ui_state->hough_max_detection_dimension_px, 128, 512);
+    ImGui::Checkbox("Hough fallback pass", &ui_state->hough_fallback_enabled);
+
+    if (ui_state->has_detected_experimental_area_circle &&
+        ui_state->detected_experimental_area_geometry.type == RuntimeGeometryType::kCircle) {
+        bool edited_detection = false;
+        edited_detection |= ImGui::InputDouble(
+            "Detected circle cx",
+            &ui_state->detected_experimental_area_geometry.circle.cx,
+            0.5,
+            5.0,
+            "%.2f");
+        edited_detection |= ImGui::InputDouble(
+            "Detected circle cy",
+            &ui_state->detected_experimental_area_geometry.circle.cy,
+            0.5,
+            5.0,
+            "%.2f");
+        edited_detection |= ImGui::InputDouble(
+            "Detected circle r",
+            &ui_state->detected_experimental_area_geometry.circle.r,
+            0.5,
+            5.0,
+            "%.2f");
+        ui_state->detected_experimental_area_geometry.circle.r =
+            std::max(1.0, ui_state->detected_experimental_area_geometry.circle.r);
+        if (edited_detection) {
+            ui_state->detection_error.clear();
+            ui_state->detection_status = "Edited detected experimental-area circle.";
+        }
+    }
+}
+
 } // namespace
 
 void clear_spatial_layout_texture(SpatialLayoutUiState* ui_state)
@@ -5753,6 +7276,7 @@ void clear_spatial_layout_texture(SpatialLayoutUiState* ui_state)
     ui_state->captured_camera_serial.clear();
     ui_state->captured_source_array_role = "images_full";
     ui_state->captured_capture_mode = "single_camera_direct_still";
+    ui_state->captured_capture_group_id.clear();
     ui_state->captured_source_frame_count = 1;
     ui_state->captured_first_local_frame_id = 0;
     ui_state->captured_last_local_frame_id = 0;
@@ -5855,19 +7379,40 @@ void render_spatial_layout_window(
     }
     SpatialSnapshotWorker* selected_snapshot_worker =
         spatial_snapshot_workers ? spatial_snapshot_workers[ui_state->selected_camera] : nullptr;
-    if (selected_snapshot_worker) {
-        SpatialSnapshotResult snapshot_result;
-        if (selected_snapshot_worker->PopCompletedSnapshot(&snapshot_result)) {
-            std::string snapshot_error;
-            if (!apply_full_resolution_stream_snapshot(
-                    ui_state,
-                    snapshot_result,
-                    &snapshot_error)) {
-                ui_state->pending_full_res_snapshot_request_id = 0;
-                ui_state->pending_full_res_snapshot_camera_serial.clear();
-                ui_state->pending_full_res_snapshot_target_frame_count = 1;
-                ui_state->preview_error = snapshot_error;
-                ui_state->preview_status = "Full-resolution stream snapshot failed.";
+    if (spatial_snapshot_workers != nullptr) {
+        for (int camera_index = 0; camera_index < num_cameras; ++camera_index) {
+            SpatialSnapshotWorker* worker = spatial_snapshot_workers[camera_index];
+            if (worker == nullptr) {
+                continue;
+            }
+            SpatialSnapshotResult snapshot_result;
+            while (worker->PopCompletedSnapshot(&snapshot_result)) {
+                if (consume_group_snapshot_result(
+                        ui_state,
+                        snapshot_result,
+                        cameras_params,
+                        num_cameras,
+                        ui_state->selected_camera)) {
+                    continue;
+                }
+                const bool is_single_request =
+                    ui_state->pending_full_res_snapshot_request_id != 0 &&
+                    ui_state->pending_full_res_snapshot_request_id == snapshot_result.request_id &&
+                    ui_state->pending_full_res_snapshot_camera_serial == snapshot_result.camera_serial;
+                if (!is_single_request) {
+                    continue;
+                }
+                std::string snapshot_error;
+                if (!apply_full_resolution_stream_snapshot(
+                        ui_state,
+                        snapshot_result,
+                        &snapshot_error)) {
+                    ui_state->pending_full_res_snapshot_request_id = 0;
+                    ui_state->pending_full_res_snapshot_camera_serial.clear();
+                    ui_state->pending_full_res_snapshot_target_frame_count = 1;
+                    ui_state->preview_error = snapshot_error;
+                    ui_state->preview_status = "Full-resolution stream snapshot failed.";
+                }
             }
         }
     }
@@ -5911,6 +7456,13 @@ void render_spatial_layout_window(
     const bool full_res_request_pending_for_selected =
         ui_state->pending_full_res_snapshot_request_id != 0 &&
         ui_state->pending_full_res_snapshot_camera_serial == selected_camera.camera_serial;
+    const int eligible_group_camera_count =
+        eligible_group_capture_camera_count(
+            cameras_select,
+            spatial_snapshot_workers,
+            num_cameras);
+    const bool group_capture_pending =
+        pending_group_snapshot_count(*ui_state) > 0;
     const bool can_capture_full_resolution_stream_snapshot =
         camera_control->subscribe &&
         !camera_control->record_video &&
@@ -5918,6 +7470,13 @@ void render_spatial_layout_window(
         cameras_select[ui_state->selected_camera].stream_on &&
         selected_snapshot_worker != nullptr &&
         !full_res_request_pending_for_selected;
+    const bool can_capture_group_full_resolution_stream_snapshot =
+        camera_control->subscribe &&
+        !camera_control->record_video &&
+        !other_calibration_tool_busy &&
+        eligible_group_camera_count > 0 &&
+        ui_state->pending_full_res_snapshot_request_id == 0 &&
+        !group_capture_pending;
 
     if (!can_capture) {
         ImGui::TextDisabled("Direct still capture requires streaming, recording, and other calibration tools to be stopped.");
@@ -6012,6 +7571,39 @@ void render_spatial_layout_window(
         }
     }
     ImGui::EndDisabled();
+    ImGui::BeginDisabled(!can_capture_group_full_resolution_stream_snapshot);
+    if (ImGui::Button("Capture Group Full-Resolution Snapshots")) {
+        std::string request_error;
+        if (!request_group_full_resolution_snapshots(
+                ui_state,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                spatial_snapshot_workers,
+                1,
+                &request_error)) {
+            ui_state->group_capture_error = request_error;
+            ui_state->group_capture_status = "Grouped full-resolution capture request failed.";
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_capture_group_full_resolution_stream_snapshot);
+    if (ImGui::Button("Capture Averaged Group Snapshots")) {
+        std::string request_error;
+        if (!request_group_full_resolution_snapshots(
+                ui_state,
+                cameras_params,
+                cameras_select,
+                num_cameras,
+                spatial_snapshot_workers,
+                static_cast<uint32_t>(ui_state->calibration_average_frame_count),
+                &request_error)) {
+            ui_state->group_capture_error = request_error;
+            ui_state->group_capture_status = "Grouped averaged capture request failed.";
+        }
+    }
+    ImGui::EndDisabled();
     if (!camera_control->subscribe) {
         ImGui::TextDisabled("Stream snapshots use the active GUI stream, useful for TTL-lit rigs.");
     } else if (!can_capture_live_preview) {
@@ -6025,6 +7617,23 @@ void render_spatial_layout_window(
                 std::max<uint32_t>(1u, ui_state->pending_full_res_snapshot_target_frame_count)));
     } else if (camera_control->subscribe && !can_capture_full_resolution_stream_snapshot) {
         ImGui::TextDisabled("Full-resolution stream snapshot worker is not available for the selected camera.");
+    }
+    if (group_capture_pending) {
+        ImGui::TextDisabled(
+            "Grouped capture %s is waiting on %d camera(s).",
+            ui_state->group_capture_id.c_str(),
+            pending_group_snapshot_count(*ui_state));
+    } else if (camera_control->subscribe && eligible_group_camera_count <= 0) {
+        ImGui::TextDisabled("No streaming cameras with spatial snapshot workers are available for grouped capture.");
+    }
+    if (!ui_state->group_capture_status.empty()) {
+        ImGui::TextWrapped("%s", ui_state->group_capture_status.c_str());
+    }
+    if (!ui_state->group_capture_error.empty()) {
+        ImGui::TextColored(
+            ImVec4(1.0f, 0.65f, 0.35f, 1.0f),
+            "%s",
+            ui_state->group_capture_error.c_str());
     }
 
     const bool citrus_template_matches_selected_camera =
@@ -6233,66 +7842,6 @@ void render_spatial_layout_window(
             }
         }
     }
-    if (ImGui::CollapsingHeader("Hough Circle Tuning", ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (ImGui::Button("Reset Hough Defaults")) {
-            ui_state->hough_dp = 1.25;
-            ui_state->hough_min_dist_fraction = 0.20;
-            ui_state->hough_param1 = 120.0;
-            ui_state->hough_param2 = 30.0;
-            ui_state->hough_min_radius_fraction = 0.18;
-            ui_state->hough_max_radius_fraction = 0.49;
-            ui_state->hough_radius_adjustment_px = 0.0;
-            ui_state->hough_median_blur_ksize = 5;
-            ui_state->hough_max_detection_dimension_px = 2048;
-            ui_state->hough_fallback_enabled = true;
-            ui_state->show_hough_proposal_overlay = true;
-            ui_state->show_citrus_corrected_center_overlay = true;
-        }
-        ImGui::Checkbox("Show Hough proposal overlay", &ui_state->show_hough_proposal_overlay);
-        ImGui::Checkbox(
-            "Show corrected Citrus outline overlay",
-            &ui_state->show_citrus_corrected_center_overlay);
-        ImGui::InputDouble("Hough dp", &ui_state->hough_dp, 0.05, 0.25, "%.3f");
-        ImGui::InputDouble("Hough min distance fraction", &ui_state->hough_min_dist_fraction, 0.01, 0.05, "%.3f");
-        ImGui::InputDouble("Hough param1", &ui_state->hough_param1, 5.0, 25.0, "%.1f");
-        ImGui::InputDouble("Hough param2", &ui_state->hough_param2, 1.0, 5.0, "%.1f");
-        ImGui::InputDouble("Hough min radius fraction", &ui_state->hough_min_radius_fraction, 0.01, 0.05, "%.3f");
-        ImGui::InputDouble("Hough max radius fraction", &ui_state->hough_max_radius_fraction, 0.01, 0.05, "%.3f");
-        ImGui::InputDouble("Hough radius adjustment px", &ui_state->hough_radius_adjustment_px, 1.0, 10.0, "%.2f");
-        ImGui::InputInt("Hough median blur kernel", &ui_state->hough_median_blur_ksize, 2, 4);
-        ImGui::InputInt("Hough max detection dimension px", &ui_state->hough_max_detection_dimension_px, 128, 512);
-        ImGui::Checkbox("Hough fallback pass", &ui_state->hough_fallback_enabled);
-
-        if (ui_state->has_detected_experimental_area_circle &&
-            ui_state->detected_experimental_area_geometry.type == RuntimeGeometryType::kCircle) {
-            bool edited_detection = false;
-            edited_detection |= ImGui::InputDouble(
-                "Detected circle cx",
-                &ui_state->detected_experimental_area_geometry.circle.cx,
-                0.5,
-                5.0,
-                "%.2f");
-            edited_detection |= ImGui::InputDouble(
-                "Detected circle cy",
-                &ui_state->detected_experimental_area_geometry.circle.cy,
-                0.5,
-                5.0,
-                "%.2f");
-            edited_detection |= ImGui::InputDouble(
-                "Detected circle r",
-                &ui_state->detected_experimental_area_geometry.circle.r,
-                0.5,
-                5.0,
-                "%.2f");
-            ui_state->detected_experimental_area_geometry.circle.r =
-                std::max(1.0, ui_state->detected_experimental_area_geometry.circle.r);
-            if (edited_detection) {
-                ui_state->detection_error.clear();
-                ui_state->detection_status = "Edited detected experimental-area circle.";
-            }
-        }
-    }
-
     ImGui::SeparatorText("Detection And Canonical Layout");
     ImGui::InputText("Layout ID", &ui_state->layout_artifact.layout_id);
     ImGui::InputText("Artifact ID", &ui_state->layout_artifact.artifact_id);
@@ -6336,6 +7885,10 @@ void render_spatial_layout_window(
             if (ImGui::Button("Homography grid defaults")) {
                 apply_calibration_image_set_purpose_defaults(ui_state, "homography_grid");
             }
+            ImGui::SameLine();
+            if (ImGui::Button("Projection scale defaults")) {
+                apply_projection_surface_scale_image_defaults(ui_state);
+            }
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Estimated Fish Plane")) {
@@ -6344,10 +7897,15 @@ void render_spatial_layout_window(
                 apply_calibration_workflow_tab_defaults(ui_state, 1);
             }
             ImGui::TextWrapped(
-                "Use for ruler/scale and crosshair images near the fish/tank-bottom plane. "
+                "Use for homography, ruler/scale, and crosshair images near the tank-bottom/fish plane. "
+                "Tank-bottom homography can use a different pattern/domain shape than the projection surface; "
                 "Scale images usually keep or restore the mapped TTL NIR pulse path so the target is visible to the camera.");
-            if (ImGui::Button("Scale image defaults")) {
-                apply_calibration_image_set_purpose_defaults(ui_state, "scale_image");
+            if (ImGui::Button("Tank-bottom homography defaults")) {
+                apply_tank_bottom_inner_surface_homography_defaults(ui_state);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Tank-bottom scale defaults")) {
+                apply_tank_bottom_inner_surface_scale_image_defaults(ui_state);
             }
             ImGui::SameLine();
             if (ImGui::Button("Crosshair alignment defaults")) {
@@ -6366,6 +7924,7 @@ void render_spatial_layout_window(
             if (ImGui::Button("Top-rim capture defaults")) {
                 apply_calibration_workflow_tab_defaults(ui_state, 2);
             }
+            render_hough_circle_tuning(ui_state);
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();
@@ -6674,8 +8233,11 @@ void render_spatial_layout_window(
         &ui_state->calibration_light_state,
         kLightStatePresets,
         IM_ARRAYSIZE(kLightStatePresets));
-    if (ui_state->calibration_image_set_purpose == "scale_image") {
-        ImGui::TextDisabled("Scale images usually keep the TTL NIR strobe active so a ruler/target is visible to the camera.");
+    if (ui_state->calibration_image_set_purpose == "scale_image" &&
+        ui_state->calibration_image_set_target_plane == "projected_surface") {
+        ImGui::TextDisabled("Projection-surface scale images usually keep the TTL NIR strobe active so a clear ruler/target is visible to the camera.");
+    } else if (ui_state->calibration_image_set_purpose == "scale_image") {
+        ImGui::TextDisabled("Fish-plane scale images usually keep the TTL NIR strobe active so a ruler/target is visible to the camera.");
     } else if (ui_state->calibration_image_set_purpose == "arena_projection" ||
                ui_state->calibration_image_set_purpose == "homography_grid" ||
                ui_state->calibration_image_set_purpose == "crosshair_alignment") {
@@ -6847,7 +8409,8 @@ void render_spatial_layout_window(
         ui_state->captured_source_array_role == "images_full";
     const bool top_rim_save_busy = top_rim_observation_save_worker().IsBusy();
     const bool generic_image_set_save_busy =
-        generic_calibration_image_set_save_worker().IsBusy();
+        generic_calibration_image_set_save_worker().IsBusy() ||
+        queued_generic_calibration_image_set_save_job_count() > 0;
     const bool spatial_save_busy = top_rim_save_busy || generic_image_set_save_busy;
     const bool can_save_top_rim_observation =
         ui_state->has_capture &&
@@ -6933,6 +8496,36 @@ void render_spatial_layout_window(
     if (generic_image_set_save_busy) {
         ImGui::TextDisabled("Calibration image-set save is running in the background.");
     }
+    const bool can_save_group_image_sets =
+        !ui_state->group_captures.empty() &&
+        pending_group_snapshot_count(*ui_state) == 0 &&
+        !spatial_save_busy;
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_save_group_image_sets);
+    if (ImGui::Button("Save Group Calibration Image Sets")) {
+        std::string status;
+        std::string error;
+        if (!queue_group_calibration_image_set_save_jobs(
+                ui_state,
+                cameras_params,
+                num_cameras,
+                selected_camera,
+                artifact_root_dir,
+                &status,
+                &error)) {
+            ui_state->persistence_error = error;
+            ui_state->persistence_status.clear();
+        } else {
+            ui_state->persistence_status = status;
+            ui_state->persistence_error.clear();
+        }
+    }
+    ImGui::EndDisabled();
+    if (!ui_state->group_captures.empty()) {
+        ImGui::TextDisabled(
+            "Grouped save writes one image_set.json per captured camera and ties them with capture_group_id=%s.",
+            ui_state->group_capture_id.c_str());
+    }
     if (ui_state->has_capture && !captured_in_full_resolution) {
         ImGui::TextDisabled(
             "Top-rim observations and calibration image sets require full-resolution camera coordinates. "
@@ -7016,6 +8609,8 @@ void render_spatial_layout_window(
     ImGui::EndChild();
     ImGui::TableNextColumn();
     ImGui::BeginChild("SpatialLayoutFitPreviewPanel", ImVec2(0.0f, 0.0f), true);
+
+    render_group_capture_panels(ui_state, cameras_params, num_cameras);
 
     ImGui::SeparatorText("Fit Preview");
     const char* canvas_edit_items[] = {"registration", "selected_zone"};

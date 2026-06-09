@@ -31,6 +31,7 @@ struct CalibrationImageSetCameraInfo {
 
 struct CalibrationImageSetCaptureContext {
     std::string operation_id;
+    std::string capture_group_id;
     std::string timestamp_utc;
     uint64_t frame_id = 0;
     bool has_frame_id = false;
@@ -106,6 +107,7 @@ struct CalibrationImageSetRequest {
     std::vector<CalibrationImageSetArtifactRef> derived_artifacts;
     nlohmann::json projected_pattern = nlohmann::json::object();
     nlohmann::json scale_target = nlohmann::json::object();
+    nlohmann::json runtime_role = nlohmann::json::object();
     nlohmann::json observations = nlohmann::json::object();
     nlohmann::json review_artifacts = nlohmann::json::object();
     nlohmann::json citrus_preview = nlohmann::json::object();

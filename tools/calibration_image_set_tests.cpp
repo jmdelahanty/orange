@@ -54,6 +54,7 @@ orange::calibration::CalibrationImageSetRequest make_request()
     request.camera.image_shape.width = 4512;
     request.camera.pixel_format = "Mono8";
     request.capture.operation_id = "daily_homography_20260608";
+    request.capture.capture_group_id = "calgrp_20260608T194500Z_shadow_homography_grid";
     request.capture.timestamp_utc = "2026-06-08T19:45:00Z";
     request.capture.capture_mode = "visible_projected_grid";
     request.capture.filter_state = "removed";
@@ -137,6 +138,10 @@ void test_writer_emits_core_shape()
     require(image_set["camera"]["image_shape"].value("height", 0) == 4512, "camera height");
     require(image_set["camera"]["image_shape"].value("width", 0) == 4512, "camera width");
     require(image_set["capture"].value("timestamp_utc", "") == "2026-06-08T19:45:00Z", "timestamp");
+    require(
+        image_set["capture"].value("capture_group_id", "") ==
+            "calgrp_20260608T194500Z_shadow_homography_grid",
+        "capture group id");
     require(image_set["capture"].value("projector_visible_to_camera", false), "projector visible");
     require(
         image_set["capture"].value("light_handling", "") == "suppress_mapped_strobe",
@@ -247,6 +252,70 @@ void test_accepts_aggregate_camera_arena_set()
     std::filesystem::remove_all(root);
 }
 
+void test_emits_tank_bottom_runtime_role_and_observed_domain()
+{
+    using namespace orange::calibration;
+
+    const std::filesystem::path root = make_temp_root();
+    const std::filesystem::path output_path = root / "tank_bottom_image_set.json";
+
+    CalibrationImageSetRequest request = make_request();
+    request.artifact_id = "calimg_20260608_2010093_tank_bottom_homography_grid";
+    request.target_plane = "tank_bottom_inner_surface";
+    request.projected_pattern = {
+        {"pattern_id", "citrus_tank_bottom_circular_grid_v1"},
+        {"type", "circular_dot_grid"},
+        {"target_plane", "tank_bottom_inner_surface"}
+    };
+    request.runtime_role = {
+        {"role", "behavior_plane_proxy"},
+        {"behavior_plane_id", "estimated_fish_plane"},
+        {"source", "fallback_to_tank_bottom_inner_surface"},
+        {"authority", "citrus_decides_runtime_application"}
+    };
+    request.observations = {
+        {"observed_domain", {
+            {"shape", "circle"},
+            {"source", "orange_spatial_layout_runtime:manual_fit"},
+            {"target_plane", "tank_bottom_inner_surface"},
+            {"coordinate_space", "camera_native_pixels"},
+            {"center_px", nlohmann::json::array({2319.9, 2286.7})},
+            {"radius_px", 2169.8},
+            {"outer_geometry", {
+                {"type", "circle"},
+                {"cx", 2319.9},
+                {"cy", 2286.7},
+                {"r", 2169.8}
+            }}
+        }}
+    };
+
+    CalibrationImageSetWriteResult result;
+    std::string error;
+    require(
+        write_calibration_image_set_json_file(output_path.string(), request, &result, &error),
+        "tank-bottom proxy image set should be accepted: " + error);
+
+    const nlohmann::json image_set = read_json(output_path);
+    require(
+        image_set.value("target_plane", "") == "tank_bottom_inner_surface",
+        "tank-bottom target plane emitted");
+    require(
+        image_set["runtime_role"].value("role", "") == "behavior_plane_proxy",
+        "runtime role emitted");
+    require(
+        image_set["runtime_role"].value("behavior_plane_id", "") == "estimated_fish_plane",
+        "behavior plane id emitted");
+    require(
+        image_set["observations"]["observed_domain"].value("shape", "") == "circle",
+        "observed circular domain emitted");
+    require(
+        std::abs(image_set["observations"]["observed_domain"].value("radius_px", 0.0) - 2169.8) < 0.001,
+        "observed domain radius emitted");
+
+    std::filesystem::remove_all(root);
+}
+
 void test_rejects_missing_image_checksum()
 {
     using namespace orange::calibration;
@@ -272,6 +341,7 @@ int main()
         test_rejects_invalid_purpose();
         test_accepts_arena_projection_purpose();
         test_accepts_aggregate_camera_arena_set();
+        test_emits_tank_bottom_runtime_role_and_observed_domain();
         test_rejects_missing_image_checksum();
     } catch (const std::exception& ex) {
         std::cerr << "calibration_image_set_tests failed: " << ex.what() << std::endl;

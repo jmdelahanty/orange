@@ -109,6 +109,7 @@ struct DishTopRimObservationRequest {
     std::string operator_notes;
     DishTopRimRuntimeVerification runtime_verification;
     DishTopRimSoftwareInfo software;
+    nlohmann::json arena_context = nlohmann::json::object();
     nlohmann::json image_set_rig_context = nlohmann::json::object();
     bool write_palette_export = true;
     bool write_image_set_companion = true;
