@@ -3,6 +3,7 @@
 #include "camera_preview_utils.h"
 #include "dish_top_rim_observation.h"
 #include "fsuid_guard.h"
+#include "gui/spatial_layout/geometry.h"
 #include "gui/spatial_layout/preflight.h"
 #include "imgui.h"
 #include "implot.h"
@@ -52,15 +53,24 @@ using orange::spatial::RuntimeGeometryType;
 using orange::spatial::ViewRegistration;
 using orange::spatial::VisibilityStatus;
 
+using orange::gui::spatial_layout::Point2d;
 using orange::gui::spatial_layout::calibration_light_handling_needs_mapped_strobe;
 using orange::gui::spatial_layout::camera_has_exposed_mapped_nir_strobe;
+using orange::gui::spatial_layout::citrus_arena_origin_canvas_px;
+using orange::gui::spatial_layout::citrus_arena_relative_to_canvas_px;
+using orange::gui::spatial_layout::citrus_canvas_to_arena_relative_px;
+using orange::gui::spatial_layout::fit_circle_to_points;
 using orange::gui::spatial_layout::find_mapped_nir_strobe_output_connection;
 using orange::gui::spatial_layout::has_calibration_capture_restore_state;
+using orange::gui::spatial_layout::make_point;
 using orange::gui::spatial_layout::prepare_calibration_capture_preflight;
 using orange::gui::spatial_layout::prepare_calibration_capture_preflight_all_cameras;
 using orange::gui::spatial_layout::restore_calibration_capture_preflight;
 using orange::gui::spatial_layout::restore_calibration_capture_preflight_all_cameras;
 using orange::gui::spatial_layout::set_calibration_preflight_result;
+using orange::gui::spatial_layout::sample_circle_boundary_points;
+using orange::gui::spatial_layout::transform_point;
+using orange::gui::spatial_layout::transform_point_projective;
 
 constexpr int kSpatialCaptureBufferCount = 2;
 constexpr double kPi = 3.14159265358979323846;
@@ -89,11 +99,6 @@ constexpr const char* kHoyaR72FilterInstalled =
 constexpr const char* kHoyaR72FilterRemoved =
     "removed: HOYA Creative Filter Infrared R72 67 mm (Kenko Tokina)";
 
-struct Point2d {
-    double x = 0.0;
-    double y = 0.0;
-};
-
 struct SpatialLayoutPersistedFiles {
     std::filesystem::path artifact_dir;
     std::filesystem::path measurement_path;
@@ -110,7 +115,6 @@ struct GenericCalibrationImageSetFiles {
     std::filesystem::path source_frame_relative_path;
 };
 
-Point2d transform_point(const std::array<double, 9>& matrix, double x, double y);
 void set_registration_transform(SpatialLayoutUiState* ui_state,
                                 RegistrationType type,
                                 const Point2d& desired_outer_center,
@@ -814,39 +818,6 @@ T clamp_index(T value, T count)
     return std::clamp(value, static_cast<T>(0), static_cast<T>(count - 1));
 }
 
-Point2d make_point(double x, double y)
-{
-    return Point2d{x, y};
-}
-
-Point2d citrus_arena_origin_canvas_px(const CitrusSpatialTemplateState& template_state)
-{
-    if (!template_state.has_arena_canvas_region) {
-        return make_point(0.0, 0.0);
-    }
-    return make_point(
-        template_state.arena_center_x_px - template_state.arena_width_px * 0.5,
-        template_state.arena_center_y_px - template_state.arena_height_px * 0.5);
-}
-
-Point2d citrus_arena_relative_to_canvas_px(
-    const CitrusSpatialTemplateState& template_state,
-    const Point2d& arena_relative_point)
-{
-    const Point2d origin = citrus_arena_origin_canvas_px(template_state);
-    return make_point(origin.x + arena_relative_point.x,
-                      origin.y + arena_relative_point.y);
-}
-
-Point2d citrus_canvas_to_arena_relative_px(
-    const CitrusSpatialTemplateState& template_state,
-    const Point2d& canvas_point)
-{
-    const Point2d origin = citrus_arena_origin_canvas_px(template_state);
-    return make_point(canvas_point.x - origin.x,
-                      canvas_point.y - origin.y);
-}
-
 Point2d layout_geometry_center(const LayoutGeometry& geometry)
 {
     if (geometry.type == LayoutGeometryType::kCircle) {
@@ -1051,103 +1022,6 @@ void clear_citrus_template_import(SpatialLayoutUiState* ui_state)
     ui_state->citrus_projected_circle_geometry = RuntimeGeometry{};
     ui_state->citrus_import_status.clear();
     ui_state->citrus_import_error.clear();
-}
-
-bool transform_point_projective(const std::array<double, 9>& matrix,
-                                const Point2d& input,
-                                Point2d* output)
-{
-    if (output == nullptr) {
-        return false;
-    }
-    const double w = matrix[6] * input.x + matrix[7] * input.y + matrix[8];
-    if (!std::isfinite(w) || std::abs(w) < 1e-12) {
-        return false;
-    }
-    output->x = (matrix[0] * input.x + matrix[1] * input.y + matrix[2]) / w;
-    output->y = (matrix[3] * input.x + matrix[4] * input.y + matrix[5]) / w;
-    return std::isfinite(output->x) && std::isfinite(output->y);
-}
-
-std::vector<Point2d> sample_circle_boundary_points(double cx, double cy, double radius, int point_count)
-{
-    std::vector<Point2d> points;
-    point_count = std::max(3, point_count);
-    points.reserve(static_cast<size_t>(point_count));
-    for (int idx = 0; idx < point_count; ++idx) {
-        const double theta = (2.0 * kPi * static_cast<double>(idx)) / static_cast<double>(point_count);
-        points.push_back(make_point(cx + radius * std::cos(theta),
-                                    cy + radius * std::sin(theta)));
-    }
-    return points;
-}
-
-bool fit_circle_to_points(const std::vector<Point2d>& points,
-                          CircleGeometry* circle_out,
-                          double* rms_error_out,
-                          std::string* error_out)
-{
-    if (circle_out == nullptr) {
-        if (error_out) {
-            *error_out = "Null circle destination.";
-        }
-        return false;
-    }
-    if (points.size() < 3) {
-        if (error_out) {
-            *error_out = "Need at least three points to fit a circle.";
-        }
-        return false;
-    }
-
-    cv::Mat design(static_cast<int>(points.size()), 3, CV_64F);
-    cv::Mat rhs(static_cast<int>(points.size()), 1, CV_64F);
-    for (int row = 0; row < static_cast<int>(points.size()); ++row) {
-        const double x = points[static_cast<size_t>(row)].x;
-        const double y = points[static_cast<size_t>(row)].y;
-        design.at<double>(row, 0) = x;
-        design.at<double>(row, 1) = y;
-        design.at<double>(row, 2) = 1.0;
-        rhs.at<double>(row, 0) = -(x * x + y * y);
-    }
-
-    cv::Mat solution;
-    if (!cv::solve(design, rhs, solution, cv::DECOMP_SVD) || solution.rows != 3) {
-        if (error_out) {
-            *error_out = "Failed to solve circle fit.";
-        }
-        return false;
-    }
-
-    const double d = solution.at<double>(0, 0);
-    const double e = solution.at<double>(1, 0);
-    const double f = solution.at<double>(2, 0);
-    const double cx = -0.5 * d;
-    const double cy = -0.5 * e;
-    const double radius_sq = cx * cx + cy * cy - f;
-    if (!std::isfinite(radius_sq) || radius_sq <= 0.0) {
-        if (error_out) {
-            *error_out = "Circle fit produced an invalid radius.";
-        }
-        return false;
-    }
-
-    circle_out->cx = cx;
-    circle_out->cy = cy;
-    circle_out->r = std::sqrt(radius_sq);
-
-    if (rms_error_out != nullptr) {
-        double sum_sq = 0.0;
-        for (const Point2d& point : points) {
-            const double dx = point.x - circle_out->cx;
-            const double dy = point.y - circle_out->cy;
-            const double radial_error = std::sqrt(dx * dx + dy * dy) - circle_out->r;
-            sum_sq += radial_error * radial_error;
-        }
-        *rms_error_out = std::sqrt(sum_sq / static_cast<double>(points.size()));
-    }
-
-    return true;
 }
 
 std::string join_strings(const std::vector<std::string>& values, const std::string& separator)
@@ -5421,13 +5295,6 @@ bool load_spatial_layout_artifact(
         *status_out = status.str();
     }
     return true;
-}
-
-Point2d transform_point(const std::array<double, 9>& matrix, double x, double y)
-{
-    return make_point(
-        matrix[0] * x + matrix[1] * y + matrix[2],
-        matrix[3] * x + matrix[4] * y + matrix[5]);
 }
 
 RuntimeGeometry transform_layout_geometry(
