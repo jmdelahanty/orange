@@ -742,8 +742,7 @@ bool PoseWorker::TryEnqueueCrop(CropFrameLease crop_frame_lease)
 bool PoseWorker::WorkerFunction(CropFrame* crop_frame)
 {
     if (!crop_frame) {
-        CloseRecording();
-        return false;
+        return false;  // defensive; flush ticks arrive via OnFlushTick()
     }
 
     CropFrameLease crop_frame_lease(

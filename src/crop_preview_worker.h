@@ -50,6 +50,7 @@ public:
 protected:
     void OnQueueInDequeued(CropPreviewJob* job, int queue_depth) override;
     bool WorkerFunction(CropPreviewJob* job) override;
+    void OnFlushTick() override {}  // no flush-time housekeeping
 
 private:
     bool display_cuda_ok(cudaError_t status, const char* operation);

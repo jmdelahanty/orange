@@ -30,6 +30,9 @@ public:
 
 private:
     bool WorkerFunction(CropFrame* crop_frame) override;
+    // Flush tick (drain cascade marker from CropProducerWorker, or shutdown):
+    // all queued crops have been processed; close the event log + summary.
+    void OnFlushTick() override { CloseRecording(); }
     void reset_run_counters();
     void write_recording_summary_locked();
     pose_event_log::PoseResultRecord build_pose_event_record(

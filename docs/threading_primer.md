@@ -77,6 +77,21 @@ has no CV at all — it polls with `usleep(interval)`. That costs latency
 (up to one sleep interval per item) and CPU, which is why the fork's rewrite
 replaced it.
 
+**Ordered flush markers (in-band end-of-stream).** The recording drain
+cascade sends a marker *through the worker queues* (`EnqueueFlushTick()`,
+`threadworker.h`): because the marker rides the FIFO queue, a worker
+processes every frame ahead of it first, then runs its flush housekeeping
+(`OnFlushTick()` — e.g. PoseWorker closes its event log). This is the
+standard stream-processing way to say "finish what you have, then finalize"
+— an out-of-band flag could fire before queued frames were processed.
+Historically the marker was a raw `nullptr` delivered to
+`WorkerFunction`, which every subclass had to remember to null-check (a
+footgun a hammer test tripped over); the explicit `OnFlushTick()` hook now
+carries that contract, though several drain-coupled legacy workers
+(crop_producer, recording_ingress, the encoder pair, crop_and_encode,
+gpu_video_encoder) still use the nullptr convention via the
+backward-compatible default.
+
 ## 4. Memory ordering: what the `std::memory_order_*` arguments mean
 
 Every atomic operation defaults to `memory_order_seq_cst` — globally
@@ -220,9 +235,10 @@ Before merging code that adds a thread, a shared variable, or a queue:
       neither (there is almost never a valid justification).
 - [ ] Every CV wait has a predicate; the predicate includes the stop flag;
       the worker's `DoStopThread()` wakes every blocking point it adds.
-- [ ] New `CThreadWorker` subclasses handle the `WorkerFunction(nullptr)`
-      shutdown call (`threadworker.h:340`) — it is a deliberate final
-      housekeeping tick, and forgetting the null check is a shutdown crash.
+- [ ] New `CThreadWorker` subclasses override `OnFlushTick()` (even if empty)
+      for drain/shutdown housekeeping — with the override in place,
+      `WorkerFunction` never receives nullptr. Do not null-check your way
+      around it; that is the legacy convention being retired (§3).
 - [ ] Cross-thread handoffs use the guard/lease API, not raw retain/release.
 - [ ] Bounded queues only; define and count the overflow policy (see
       `CODE_REVIEW_2026-06-09.md` §3.2-3.3 — unbounded growth and silent

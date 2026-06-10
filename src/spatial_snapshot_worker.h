@@ -63,6 +63,7 @@ public:
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
+    void OnFlushTick() override {}  // no flush-time housekeeping
 
 private:
     struct ClaimedRequest {

@@ -11,12 +11,11 @@
 // queue (heavy blocking/wakeup traffic on both condition variables), worker
 // releases the inherited ref per item. Two phases:
 //   Phase 1 — normal flow. PutObjectToQueueIn BLOCKS when full (backpressure,
-//     not rejection), so every handoff should be accepted; producers then
-//     drain the queue completely before stopping the worker. Draining before
-//     StopThread matters: items still queued at stop are dropped along with
-//     their retained refs (a leak) — the same reason the real pipeline's
-//     drain checks (recording_ingress IsDrained) must read accurate queue
-//     counts.
+//     not rejection), so every handoff should be accepted. The worker drains
+//     any queued items even after stop is requested (WaitForObjectFromQueueIn
+//     keeps popping until empty — unlike upstream's version, which drops);
+//     the test still drains explicitly before StopThread so the
+//     accepted == processed comparison is deterministic at check time.
 //   Phase 2 — post-stop. Every handoff must be rejected with
 //     enqueue_rejected=true, and the guard must auto-release the retained
 //     ref so nothing leaks.
@@ -77,15 +76,15 @@ public:
     std::atomic<uint64_t> processed{0};
 
 protected:
+    // Flush ticks (including the shutdown wakeup) arrive here, not as a
+    // nullptr WorkerFunction argument. This hammer's first run predates the
+    // OnFlushTick API and counted the legacy nullptr call as a processed
+    // item, failing accepted == processed by exactly one — the discovery
+    // that led to the explicit hook.
+    void OnFlushTick() override {}
+
     bool WorkerFunction(HandoffEntry* entry) override
     {
-        // ThreadRunning calls WorkerFunction(nullptr) at shutdown as a final
-        // housekeeping tick (threadworker.h:340). Every worker subclass must
-        // handle it — this hammer's first run counted the phantom call and
-        // failed accepted == processed by exactly one.
-        if (!entry) {
-            return false;
-        }
         // Consumer side of the handoff: we inherited the producer's ref via
         // the guard Dismiss; releasing it here completes the contract.
         release_worker_entry_ref(entry, kWorkerCtx);

@@ -301,17 +301,17 @@ void ModernRecordingPipeline::request_recording_drain()
 
     for (auto& helper_target : helper_encode_targets_) {
         if (helper_target.preprocess_worker) {
-            (void)helper_target.preprocess_worker->PutObjectToQueueIn(nullptr);
+            (void)helper_target.preprocess_worker->EnqueueFlushTick();
         }
         if (helper_target.hw_worker) {
-            (void)helper_target.hw_worker->PutObjectToQueueIn(nullptr);
+            (void)helper_target.hw_worker->EnqueueFlushTick();
         }
     }
     if (preprocess_worker_) {
-        (void)preprocess_worker_->PutObjectToQueueIn(nullptr);
+        (void)preprocess_worker_->EnqueueFlushTick();
     }
     if (hw_worker_) {
-        (void)hw_worker_->PutObjectToQueueIn(nullptr);
+        (void)hw_worker_->EnqueueFlushTick();
     }
 }
 

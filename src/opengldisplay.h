@@ -32,6 +32,7 @@ public:
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;
+    void OnFlushTick() override {}  // no flush-time housekeeping
 
 private:
     unsigned char* h_p2p_copy_buffer_;

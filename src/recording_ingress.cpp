@@ -191,7 +191,7 @@ public:
             drain_requested_ = true;
             drain_reason_ = reason && *reason ? reason : "recording_draining";
         }
-        (void)PutObjectToQueueIn(nullptr);
+        (void)EnqueueFlushTick();
     }
     void ResetConnection()
     {
@@ -242,7 +242,7 @@ protected:
                     in_flight_.load(std::memory_order_relaxed) > 0 ||
                     GetCountQueueIn() > 0) {
                     usleep(1000);
-                    (void)PutObjectToQueueIn(nullptr);
+                    (void)EnqueueFlushTick();
                     return false;
                 }
 

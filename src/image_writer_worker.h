@@ -25,6 +25,7 @@ public:
 
 protected:
     bool WorkerFunction(ImageWriter_Entry* f) override;
+    void OnFlushTick() override {}  // no flush-time housekeeping
 
 private:
 };

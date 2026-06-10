@@ -2239,7 +2239,7 @@ bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
                 finalize_recording();
             } else {
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                (void)PutObjectToQueueIn(nullptr);
+                (void)EnqueueFlushTick();
             }
         }
         return false;

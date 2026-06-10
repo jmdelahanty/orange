@@ -39,6 +39,8 @@ public:
     std::atomic<long> processed{0};
 
 protected:
+    void OnFlushTick() override {}  // shutdown tick: nothing to flush
+
     bool WorkerFunction(Item*) override {
         processed.fetch_add(1, std::memory_order_relaxed);
         return false;  // items are pool-owned; nothing goes to queueOut

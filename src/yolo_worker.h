@@ -62,6 +62,7 @@ public:
 
 private:
     bool WorkerFunction(WORKER_ENTRY* f) override;
+    void OnFlushTick() override {}  // no flush-time housekeeping
     void WorkerReset() override;
     void OnQueueInEnqueued(WORKER_ENTRY* entry, int queue_depth_after_enqueue) override;
     void OnQueueInDequeued(WORKER_ENTRY* entry, int queue_depth_after_dequeue) override;

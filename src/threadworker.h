@@ -31,6 +31,12 @@ public:
 
     // Type-safe methods using templates
     bool PutObjectToQueueIn(T* f);
+
+    // Enqueue an ordered flush marker. Because it rides the input queue, the
+    // worker processes every item ahead of it FIRST, then OnFlushTick() runs
+    // on the worker thread. Used by the recording drain cascade (end-of-
+    // stream marker) and as a wakeup for drain-condition polling.
+    bool EnqueueFlushTick() { return PutObjectToQueueIn(nullptr); }
     void GetObjectsFromQueueOut(std::vector<T*>& items);
     T* GetObjectFromQueueOut();
     void PutObjectToQueueOut(T* f);
@@ -55,8 +61,20 @@ public:
 
 protected:
     // The main worker function that derived classes must implement.
-    // It now returns a bool to indicate if the item should be passed to the output queue.
+    // Returns true if the item should be passed to the output queue.
+    //
+    // Contract: subclasses that override OnFlushTick() never see a nullptr
+    // here. Legacy subclasses (no OnFlushTick override) still receive
+    // nullptr for flush ticks via the default OnFlushTick() below — new
+    // workers should override OnFlushTick() instead of null-checking.
     virtual bool WorkerFunction(T* f) = 0;
+
+    // Called on the worker thread when a flush tick is dequeued (see
+    // EnqueueFlushTick) or when the stop signal wakes an empty queue at
+    // shutdown. Override for drain/close housekeeping (e.g. PoseWorker
+    // closes its event log here). The default preserves the legacy
+    // convention of delivering the tick as WorkerFunction(nullptr).
+    virtual void OnFlushTick() { (void)WorkerFunction(nullptr); }
 
     // This function is called when the worker is reset.
     virtual void WorkerReset() {}
@@ -337,20 +355,22 @@ void CThreadWorker<T>::ThreadRunning()
     {
         T* f = this->WaitForObjectFromQueueIn();
 
-        // The worker function is now called even with a nullptr.
-        // It is the responsibility of the derived class to handle the nullptr case.
-        if (this->WorkerFunction(f) && f)
-        {
-            this->PutObjectToQueueOut(f);
-        }
-
         if (f)
         {
+            if (this->WorkerFunction(f))
+            {
+                this->PutObjectToQueueOut(f);
+            }
             myWork++;
         }
         else
         {
-            // If the machine is shutting down and the queue is empty, we can exit.
+            // A flush tick: either an EnqueueFlushTick() marker reached the
+            // front of the queue (FIFO, so everything ahead of it has been
+            // processed), or the stop signal woke an empty queue.
+            this->OnFlushTick();
+
+            // If the machine is shutting down and the queue is empty, exit.
             if (!this->IsMachineOn()) {
                 break;
             }
