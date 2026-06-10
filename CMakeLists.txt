@@ -20,6 +20,16 @@ option(ORANGE_ENABLE_NVTX "Enable NVTX profiling markers" OFF)
 option(ORANGE_ENABLE_YOLO_PROFILE "Enable YOLO timing profile logging" OFF)
 option(ORANGE_ENABLE_CUDA_DEBUG "Enable CUDA context debug logging" OFF)
 option(ORANGE_USE_FAST_MATH "Enable aggressive host fast-math options outside Debug" ON)
+option(ORANGE_ENABLE_TSAN "Build host concurrency tests with ThreadSanitizer" OFF)
+
+if(ORANGE_ENABLE_TSAN)
+    # TSan's shadow-memory layout conflicts with high-entropy ASLR on Linux
+    # kernels >= 6.5 ("FATAL: ThreadSanitizer: unexpected memory mapping").
+    # setarch -R disables ASLR for the test process only.
+    set(ORANGE_TSAN_TEST_LAUNCHER setarch ${CMAKE_HOST_SYSTEM_PROCESSOR} -R)
+else()
+    set(ORANGE_TSAN_TEST_LAUNCHER "")
+endif()
 
 set(ORANGE_CUDA_ARCHITECTURES "86" CACHE STRING "CUDA architectures to compile for")
 set(CMAKE_CUDA_ARCHITECTURES "${ORANGE_CUDA_ARCHITECTURES}" CACHE STRING "CUDA architectures" FORCE)
@@ -462,14 +472,39 @@ if(BUILD_TESTING)
     target_include_directories(threadworker_tests PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
     target_compile_features(threadworker_tests PRIVATE cxx_std_17)
     target_link_libraries(threadworker_tests PRIVATE Threads::Threads)
-    add_test(NAME threadworker_tests COMMAND threadworker_tests)
+    add_test(NAME threadworker_tests
+        COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:threadworker_tests>)
+
+    add_executable(threadworker_tsan_stress
+        "tools/threadworker_tsan_stress.cpp"
+        "${SRC_DIR}/offthreadmachine.cpp"
+    )
+    target_include_directories(threadworker_tsan_stress PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(threadworker_tsan_stress PRIVATE cxx_std_17)
+    target_link_libraries(threadworker_tsan_stress PRIVATE Threads::Threads)
+    add_test(NAME threadworker_tsan_stress
+        COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:threadworker_tsan_stress>)
 
     add_executable(worker_entry_ownership_core_host_tests
         "tools/worker_entry_ownership_core_host_tests.cpp"
     )
     target_include_directories(worker_entry_ownership_core_host_tests PRIVATE "${SRC_DIR}")
     target_compile_features(worker_entry_ownership_core_host_tests PRIVATE cxx_std_17)
-    add_test(NAME worker_entry_ownership_core_host_tests COMMAND worker_entry_ownership_core_host_tests)
+    add_test(NAME worker_entry_ownership_core_host_tests
+        COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:worker_entry_ownership_core_host_tests>)
+
+    if(ORANGE_ENABLE_TSAN)
+        # Host-only targets that exercise cross-thread code paths. CUDA and
+        # SDK-linked targets are deliberately excluded: TSan cannot instrument
+        # device code and uninstrumented libraries produce noise.
+        foreach(_tsan_target
+                threadworker_tests
+                threadworker_tsan_stress
+                worker_entry_ownership_core_host_tests)
+            target_compile_options(${_tsan_target} PRIVATE -fsanitize=thread -g -O1)
+            target_link_options(${_tsan_target} PRIVATE -fsanitize=thread)
+        endforeach()
+    endif()
 
     add_executable(worker_entry_release_tests
         "tools/worker_entry_release_tests.cpp"

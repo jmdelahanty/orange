@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <mutex>
 #include <queue>
@@ -82,12 +83,13 @@ private:
     std::queue<T*> queueOut;
     bool stopRequested = false;
 
-    // Tracing counts
-    int countQueueIn = 0;
-    int countQueueOut = 0;
-    int countInTotal = 0;
-    int countOutTotal = 0;
-    int countQueueInMax = 0;
+    // Tracing counts. Atomic because they are mutated under the queue mutexes
+    // but read lock-free from other threads (drain checks, GUI instrumentation).
+    std::atomic<int> countQueueIn{0};
+    std::atomic<int> countQueueOut{0};
+    std::atomic<int> countInTotal{0};
+    std::atomic<int> countOutTotal{0};
+    std::atomic<int> countQueueInMax{0};
     int maxQueueSize = 40; // Default max queue size
 
     int myWork = 0;
@@ -191,7 +193,7 @@ bool CThreadWorker<T>::PutObjectToQueueIn(T* f)
     countQueueIn++;
     countInTotal++;
     if (countQueueInMax < countQueueIn) {
-        countQueueInMax = countQueueIn;
+        countQueueInMax = countQueueIn.load();
     }
     OnQueueInEnqueued(f, countQueueIn);
     lock.unlock();
