@@ -214,7 +214,8 @@
             "targets": [
                 "threadworker_tests",
                 "threadworker_tsan_stress",
-                "worker_entry_ownership_core_host_tests"
+                "worker_entry_ownership_core_host_tests",
+                "worker_entry_ownership_tsan_hammer"
             ]
         }
     ]

@@ -46,7 +46,8 @@ targets** (no CUDA build):
 | --- | --- |
 | `threadworker_tests` | `CThreadWorker` functional behavior, now race-checked |
 | `threadworker_tsan_stress` | producer + worker + lock-free monitor reader, the real pipeline's cross-thread topology (see `tools/threadworker_tsan_stress.cpp`) |
-| `worker_entry_ownership_core_host_tests` | refcounting semantics (single-threaded today — see Roadmap) |
+| `worker_entry_ownership_core_host_tests` | refcounting semantics (single-threaded) |
+| `worker_entry_ownership_tsan_hammer` | concurrent retain/release hammer: 8 threads × 50k iterations over a 4-entry pool, claim-based consume cycles through the zero-transition/recycle path; verifies the four refcounting invariants arithmetically (see `docs/threading_primer.md` §6-7) |
 
 The `ORANGE_ENABLE_TSAN` CMake option applies `-fsanitize=thread -g -O1` to
 exactly these targets. CUDA- and SDK-linked targets are deliberately excluded:
@@ -127,13 +128,8 @@ PR (see `UPSTREAMING_PATH_2026-06-09.md` §3).
 
 ## Roadmap
 
-1. **Concurrent stress for `worker_entry_ownership_core`** — the
-  retain/release/guard CAS paths are the most safety-critical concurrency code
-  in the repo and currently have only single-threaded semantic tests. A
-  multi-thread retain/release hammer under TSan is the evidence that core is
-  actually race-free under contention.
-2. **CI job** — run the `debug_tsan` preset + ctest on push so new code in the
+1. **CI job** — run the `debug_tsan` preset + ctest on push so new code in the
   instrumented components is race-checked automatically (CI itself is still
   pending; see `UPSTREAMING_PATH_2026-06-09.md` §4).
-3. Extend the instrumented target list as more pipeline components grow
+2. Extend the instrumented target list as more pipeline components grow
   host-only tests (recording_ingress drain logic is the next candidate).
