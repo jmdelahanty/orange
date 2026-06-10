@@ -502,6 +502,16 @@ if(BUILD_TESTING)
     add_test(NAME worker_entry_ownership_tsan_hammer
         COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:worker_entry_ownership_tsan_hammer>)
 
+    add_executable(worker_entry_handoff_tsan_hammer
+        "tools/worker_entry_handoff_tsan_hammer.cpp"
+        "${SRC_DIR}/offthreadmachine.cpp"
+    )
+    target_include_directories(worker_entry_handoff_tsan_hammer PRIVATE ${ORANGE_COMMON_INCLUDE_DIRS})
+    target_compile_features(worker_entry_handoff_tsan_hammer PRIVATE cxx_std_17)
+    target_link_libraries(worker_entry_handoff_tsan_hammer PRIVATE Threads::Threads)
+    add_test(NAME worker_entry_handoff_tsan_hammer
+        COMMAND ${ORANGE_TSAN_TEST_LAUNCHER} $<TARGET_FILE:worker_entry_handoff_tsan_hammer>)
+
     if(ORANGE_ENABLE_TSAN)
         # Host-only targets that exercise cross-thread code paths. CUDA and
         # SDK-linked targets are deliberately excluded: TSan cannot instrument
@@ -510,7 +520,8 @@ if(BUILD_TESTING)
                 threadworker_tests
                 threadworker_tsan_stress
                 worker_entry_ownership_core_host_tests
-                worker_entry_ownership_tsan_hammer)
+                worker_entry_ownership_tsan_hammer
+                worker_entry_handoff_tsan_hammer)
             target_compile_options(${_tsan_target} PRIVATE -fsanitize=thread -g -O1)
             target_link_options(${_tsan_target} PRIVATE -fsanitize=thread)
         endforeach()

@@ -48,6 +48,12 @@ targets** (no CUDA build):
 | `threadworker_tsan_stress` | producer + worker + lock-free monitor reader, the real pipeline's cross-thread topology (see `tools/threadworker_tsan_stress.cpp`) |
 | `worker_entry_ownership_core_host_tests` | refcounting semantics (single-threaded) |
 | `worker_entry_ownership_tsan_hammer` | concurrent retain/release hammer: 8 threads × 50k iterations over a 4-entry pool, claim-based consume cycles through the zero-transition/recycle path; verifies the four refcounting invariants arithmetically (see `docs/threading_primer.md` §6-7) |
+| `worker_entry_handoff_tsan_hammer` | retain_and_enqueue handoff across a real bounded `CThreadWorker` queue: 8 producers → 1 worker through a 4-slot queue; verifies accepted == processed, post-stop rejection auto-release, and exact ref balance over ~160k queue crossings. Its first run caught the `WorkerFunction(nullptr)` shutdown-tick contract (`threadworker.h:340`) |
+
+The concrete GPU-direct release path (`worker_entry_release.h`, which calls
+`EVT_CameraQueueFrame` and pulls in the camera SDK) stays outside the TSan
+suite deliberately — the SDK is an uninstrumented binary. Its generic
+ownership logic is the same core the hammers above already cover.
 
 The `ORANGE_ENABLE_TSAN` CMake option applies `-fsanitize=thread -g -O1` to
 exactly these targets. CUDA- and SDK-linked targets are deliberately excluded:

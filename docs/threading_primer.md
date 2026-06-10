@@ -220,6 +220,9 @@ Before merging code that adds a thread, a shared variable, or a queue:
       neither (there is almost never a valid justification).
 - [ ] Every CV wait has a predicate; the predicate includes the stop flag;
       the worker's `DoStopThread()` wakes every blocking point it adds.
+- [ ] New `CThreadWorker` subclasses handle the `WorkerFunction(nullptr)`
+      shutdown call (`threadworker.h:340`) — it is a deliberate final
+      housekeeping tick, and forgetting the null check is a shutdown crash.
 - [ ] Cross-thread handoffs use the guard/lease API, not raw retain/release.
 - [ ] Bounded queues only; define and count the overflow policy (see
       `CODE_REVIEW_2026-06-09.md` §3.2-3.3 — unbounded growth and silent
