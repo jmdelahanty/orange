@@ -107,10 +107,12 @@ public:
     }
 
 protected:
+    void OnFlushTick() override {}  // no flush-time housekeeping
+
     bool WorkerFunction(WORKER_ENTRY* entry) override
     {
         if (!entry) {
-            return false;
+            return false;  // defensive; flush ticks arrive via OnFlushTick()
         }
         in_flight_.fetch_add(1, std::memory_order_relaxed);
         release_recording_entry_to_recycle(
@@ -219,7 +221,7 @@ protected:
                 continue;
             }
             if (drain_requested_) {
-                WorkerFunction(nullptr);
+                OnFlushTick();
                 continue;
             }
             usleep(1000);
@@ -231,33 +233,37 @@ protected:
         close_socket();
     }
 
+    void OnFlushTick() override
+    {
+        if (deferred_release_) {
+            poll_protocol_lines(false);
+        }
+        if (drain_requested_) {
+            if (pending_release_count() > 0 ||
+                in_flight_.load(std::memory_order_relaxed) > 0 ||
+                GetCountQueueIn() > 0) {
+                usleep(1000);
+                (void)EnqueueFlushTick();
+                return;
+            }
+
+            std::string reason;
+            {
+                std::lock_guard<std::mutex> lock(drain_request_mutex_);
+                reason = drain_reason_.empty()
+                    ? "recording_drained"
+                    : drain_reason_;
+                drain_requested_ = false;
+            }
+            send_client_drain_control(reason.c_str());
+            send_client_finalize_control(reason.c_str());
+        }
+    }
+
     bool WorkerFunction(WORKER_ENTRY* entry) override
     {
         if (!entry) {
-            if (deferred_release_) {
-                poll_protocol_lines(false);
-            }
-            if (drain_requested_) {
-                if (pending_release_count() > 0 ||
-                    in_flight_.load(std::memory_order_relaxed) > 0 ||
-                    GetCountQueueIn() > 0) {
-                    usleep(1000);
-                    (void)EnqueueFlushTick();
-                    return false;
-                }
-
-                std::string reason;
-                {
-                    std::lock_guard<std::mutex> lock(drain_request_mutex_);
-                    reason = drain_reason_.empty()
-                        ? "recording_drained"
-                        : drain_reason_;
-                    drain_requested_ = false;
-                }
-                send_client_drain_control(reason.c_str());
-                send_client_finalize_control(reason.c_str());
-            }
-            return false;
+            return false;  // defensive; flush ticks arrive via OnFlushTick()
         }
         in_flight_.fetch_add(1, std::memory_order_relaxed);
         if (deferred_release_) {

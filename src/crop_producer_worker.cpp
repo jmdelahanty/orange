@@ -252,6 +252,22 @@ bool CropProducerWorker::WorkerFunction(WORKER_ENTRY* entry)
     return ProcessEntryImpl(entry, true);
 }
 
+void CropProducerWorker::OnFlushTick()
+{
+    std::lock_guard<std::mutex> lock(process_mutex_);
+    if (crop_producer_) {
+        crop_producer_->DrainPending(false);
+    }
+    if (camera_control_ &&
+        camera_control_->recording_draining &&
+        !current_recording_folder_.empty() &&
+        !ForwardRecordingDrainIfReady() &&
+        GetCountQueueInSize() == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        (void)EnqueueFlushTick();
+    }
+}
+
 bool CropProducerWorker::ForwardRecordingDrainIfReady()
 {
     if (!camera_control_ ||
@@ -294,15 +310,7 @@ bool CropProducerWorker::ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_sou
     }
 
     if (!entry) {
-        if (camera_control_ &&
-            camera_control_->recording_draining &&
-            !current_recording_folder_.empty() &&
-            !ForwardRecordingDrainIfReady() &&
-            GetCountQueueInSize() == 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            (void)EnqueueFlushTick();
-        }
-        return false;
+        return false;  // defensive; flush ticks arrive via OnFlushTick()
     }
 
     CropEncodeJob* job = BorrowCropEncodeJob();

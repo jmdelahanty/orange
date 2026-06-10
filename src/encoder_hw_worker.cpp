@@ -2226,24 +2226,32 @@ void EncoderHwWorker::flush_and_close()
     }
 }
 
-bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
+void EncoderHwWorker::OnFlushTick()
 {
     const bool recording_enabled = camera_control_->record_video;
     const bool draining = camera_control_->recording_draining;
     poll_pre_encoder_reference_captures(false);
 
-    if (!entry) {
-        if (!recording_enabled && is_recording_) {
-            if (!draining || drain_ready()) {
-                std::cout << "[" << this->threadName << "] HW Recording stopped. Finalizing video file..." << std::endl;
-                finalize_recording();
-            } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                (void)EnqueueFlushTick();
-            }
+    if (!recording_enabled && is_recording_) {
+        if (!draining || drain_ready()) {
+            std::cout << "[" << this->threadName << "] HW Recording stopped. Finalizing video file..." << std::endl;
+            finalize_recording();
+        } else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            (void)EnqueueFlushTick();
         }
-        return false;
     }
+}
+
+bool EncoderHwWorker::WorkerFunction(ENCODER_WORKER_ENTRY* entry)
+{
+    if (!entry) {
+        return false;  // defensive; flush ticks arrive via OnFlushTick()
+    }
+
+    const bool recording_enabled = camera_control_->record_video;
+    const bool draining = camera_control_->recording_draining;
+    poll_pre_encoder_reference_captures(false);
 
     // If the global flag is true but we aren't recording yet, start a new recording.
     if (recording_enabled && !is_recording_) {

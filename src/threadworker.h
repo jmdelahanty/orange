@@ -63,18 +63,18 @@ protected:
     // The main worker function that derived classes must implement.
     // Returns true if the item should be passed to the output queue.
     //
-    // Contract: subclasses that override OnFlushTick() never see a nullptr
-    // here. Legacy subclasses (no OnFlushTick override) still receive
-    // nullptr for flush ticks via the default OnFlushTick() below — new
-    // workers should override OnFlushTick() instead of null-checking.
+    // Contract: f is never nullptr. Flush ticks (drain markers, shutdown
+    // wakeups) are delivered to OnFlushTick() instead.
     virtual bool WorkerFunction(T* f) = 0;
 
     // Called on the worker thread when a flush tick is dequeued (see
     // EnqueueFlushTick) or when the stop signal wakes an empty queue at
-    // shutdown. Override for drain/close housekeeping (e.g. PoseWorker
-    // closes its event log here). The default preserves the legacy
-    // convention of delivering the tick as WorkerFunction(nullptr).
-    virtual void OnFlushTick() { (void)WorkerFunction(nullptr); }
+    // shutdown. Because the tick rides the FIFO queue, everything enqueued
+    // before it has already been processed when this runs. Override for
+    // drain/close housekeeping (e.g. PoseWorker closes its event log,
+    // EncoderHwWorker finalizes the video file or re-posts the tick while
+    // drain conditions are pending).
+    virtual void OnFlushTick() {}
 
     // This function is called when the worker is reset.
     virtual void WorkerReset() {}

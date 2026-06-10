@@ -86,11 +86,9 @@ standard stream-processing way to say "finish what you have, then finalize"
 — an out-of-band flag could fire before queued frames were processed.
 Historically the marker was a raw `nullptr` delivered to
 `WorkerFunction`, which every subclass had to remember to null-check (a
-footgun a hammer test tripped over); the explicit `OnFlushTick()` hook now
-carries that contract, though several drain-coupled legacy workers
-(crop_producer, recording_ingress, the encoder pair, crop_and_encode,
-gpu_video_encoder) still use the nullptr convention via the
-backward-compatible default.
+footgun a hammer test tripped over). All workers now use the explicit
+`OnFlushTick()` hook, and `WorkerFunction`'s argument is contractually
+never null.
 
 ## 4. Memory ordering: what the `std::memory_order_*` arguments mean
 

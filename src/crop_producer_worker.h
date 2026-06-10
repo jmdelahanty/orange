@@ -73,6 +73,7 @@ public:
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
+    void OnFlushTick() override;  // drain poll + downstream cascade forwarding
 
 private:
     bool ProcessEntryImpl(WORKER_ENTRY*& entry, bool release_source_entry);

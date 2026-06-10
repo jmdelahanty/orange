@@ -1222,8 +1222,7 @@ void CropAndEncodeWorker::release_job(CropEncodeJob* job)
 }
 
 
-bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
-    // Set the correct CUDA device for this worker's operations.
+void CropAndEncodeWorker::OnFlushTick() {
     ck(cudaSetDevice(camera_params_->gpu_id));
     EnsureNppStream(m_stream);
 
@@ -1231,13 +1230,25 @@ bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
         external_crop_ipc_) {
         external_crop_ipc_->NotifyDrain("crop_recording_draining");
     }
-    if (!raw_job) {
-        if (camera_control_ && !camera_control_->record_video && is_recording_) {
-            if (!camera_control_->recording_draining || drain_ready()) {
-                finalize_recording();
-            }
+    if (camera_control_ && !camera_control_->record_video && is_recording_) {
+        if (!camera_control_->recording_draining || drain_ready()) {
+            finalize_recording();
         }
-        return false;
+    }
+}
+
+bool CropAndEncodeWorker::WorkerFunction(CropEncodeJob* raw_job) {
+    if (!raw_job) {
+        return false;  // defensive; flush ticks arrive via OnFlushTick()
+    }
+
+    // Set the correct CUDA device for this worker's operations.
+    ck(cudaSetDevice(camera_params_->gpu_id));
+    EnsureNppStream(m_stream);
+
+    if (camera_control_ && !camera_control_->record_video && is_recording_ &&
+        external_crop_ipc_) {
+        external_crop_ipc_->NotifyDrain("crop_recording_draining");
     }
     struct JobGuard {
         CropAndEncodeWorker* owner = nullptr;

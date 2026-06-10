@@ -51,6 +51,7 @@ public:
 
 protected:
     bool WorkerFunction(CropEncodeJob* f) override;
+    void OnFlushTick() override;  // drain notify + finalize crop recording
 
 private:
     class ExternalCropIpcClient;

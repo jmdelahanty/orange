@@ -33,6 +33,7 @@ public:
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* f) override;
+    void OnFlushTick() override;  // finalize video file when recording stops
 
 private:
     void finalize_recording();

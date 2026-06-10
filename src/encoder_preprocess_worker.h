@@ -118,6 +118,7 @@ public:
 
 protected:
     bool WorkerFunction(WORKER_ENTRY* entry) override;
+    void OnFlushTick() override;  // drain pending source releases; self-repost
 
 private:
     struct PendingSourceRelease {

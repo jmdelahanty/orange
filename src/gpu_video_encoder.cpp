@@ -423,22 +423,27 @@ bool GPUVideoEncoder::drain_ready()
 
 
 
-bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
+void GPUVideoEncoder::OnFlushTick()
 {
+    // Check for a state change from recording to paused.
     const bool recording_enabled = camera_control_->record_video;
     const bool draining = camera_control_->recording_draining;
-
-    // A nullptr entry means the queue was empty. Use this opportunity to check for a state change from recording to paused.
-    if (!entry)
-    {
-        if (!recording_enabled && is_recording_) {
-            if (!draining || drain_ready()) {
-                std::cout << "[" << this->threadName << "] Recording stopped. Finalizing video file..." << std::endl;
-                finalize_recording();
-            }
+    if (!recording_enabled && is_recording_) {
+        if (!draining || drain_ready()) {
+            std::cout << "[" << this->threadName << "] Recording stopped. Finalizing video file..." << std::endl;
+            finalize_recording();
         }
-        return false; // No work to do
     }
+}
+
+bool GPUVideoEncoder::WorkerFunction(WORKER_ENTRY* entry)
+{
+    if (!entry) {
+        return false;  // defensive; flush ticks arrive via OnFlushTick()
+    }
+
+    const bool recording_enabled = camera_control_->record_video;
+    const bool draining = camera_control_->recording_draining;
 
     // If the global flag is true, but we aren't recording yet, it's time to start.
     if (recording_enabled && !is_recording_)

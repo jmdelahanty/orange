@@ -62,6 +62,7 @@ public:
 
 protected:
     bool WorkerFunction(ENCODER_WORKER_ENTRY* f) override;
+    void OnFlushTick() override;  // drain poll: finalize or self-repost
 
 private:
     void finalize_recording();

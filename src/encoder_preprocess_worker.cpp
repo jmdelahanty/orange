@@ -817,23 +817,32 @@ void EncoderPreprocessWorker::record_detect_priority_wait(uint64_t wait_ns, bool
     }
 }
 
-bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
+void EncoderPreprocessWorker::OnFlushTick()
 {
-    auto start_time = std::chrono::steady_clock::now();
-
     if (!pending_source_releases_.empty()) {
         ck(cudaSetDevice(preprocess_gpu_id_));
         drain_pending_source_releases(false);
     }
 
+    if (camera_control_ &&
+        camera_control_->recording_draining &&
+        pending_source_release_count_.load(std::memory_order_relaxed) > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        (void)EnqueueFlushTick();
+    }
+}
+
+bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
+{
     if (!entry) {
-        if (camera_control_ &&
-            camera_control_->recording_draining &&
-            pending_source_release_count_.load(std::memory_order_relaxed) > 0) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            (void)EnqueueFlushTick();
-        }
-        return false;
+        return false;  // defensive; flush ticks arrive via OnFlushTick()
+    }
+
+    auto start_time = std::chrono::steady_clock::now();
+
+    if (!pending_source_releases_.empty()) {
+        ck(cudaSetDevice(preprocess_gpu_id_));
+        drain_pending_source_releases(false);
     }
 
     const uint64_t worker_start_host_ns = helper_host_now_ns();
