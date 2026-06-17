@@ -379,6 +379,68 @@ def verify_video_sanity(path: Path, allow_missing: bool) -> str:
     return "pass"
 
 
+def verify_shard_mp4_retention(
+    shards: list[Any],
+    *,
+    artifact_root: Path,
+    serial: str,
+    contract: dict[str, Any],
+    merged: dict[str, Any],
+) -> str:
+    merged_mp4 = str(merged.get("mp4", ""))
+    duplicate_shards = [
+        shard
+        for shard in shards
+        if isinstance(shard, dict)
+        and str(shard.get("mp4", ""))
+        and str(shard.get("mp4", "")) != merged_mp4
+    ]
+    if not duplicate_shards:
+        return "not_applicable_no_duplicate_shard_mp4"
+    merged_clean = (
+        merged.get("enabled") is True
+        and merged.get("failed") is False
+        and optional_int(merged.get("pending_gops"), "merged pending_gops") == 0
+        and optional_int(merged.get("packets_written"), "merged packets_written") not in (None, 0)
+    )
+    if not merged_clean:
+        return "preserved_merged_incomplete"
+    if bool(contract.get("preserve_shard_mp4s", True)):
+        return "preserved_by_contract_or_legacy"
+
+    accepted_statuses = {
+        "deleted_after_merged_finalization",
+        "already_absent_after_merged_finalization",
+    }
+    for shard in duplicate_shards:
+        require(isinstance(shard, dict), f"invalid shard summary for {serial}")
+        retention = shard.get("mp4_retention")
+        require(
+            isinstance(retention, dict),
+            f"missing shard MP4 retention status for {serial} shard {shard.get('assigned_shard_id')}",
+        )
+        status = str(retention.get("status", ""))
+        require(
+            status in accepted_statuses,
+            (
+                f"unexpected shard MP4 retention status for {serial} "
+                f"shard {shard.get('assigned_shard_id')}: {status}"
+            ),
+        )
+        require(
+            retention.get("retained") is False,
+            f"shard MP4 retained for {serial} shard {shard.get('assigned_shard_id')}",
+        )
+        shard_mp4 = str(shard.get("mp4", ""))
+        if shard_mp4:
+            shard_mp4_path = path_from(shard_mp4, artifact_root)
+            require(
+                not shard_mp4_path.exists(),
+                f"shard MP4 should have been removed after merged finalization: {shard_mp4_path}",
+            )
+    return "deleted_after_merged_finalization"
+
+
 def count_csv_data_rows(path: Path) -> int:
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
@@ -780,6 +842,12 @@ def verify_status_sidecar(
     require(status.get("schema_version") == 1, f"unexpected status schema_version in {status_path}")
     require(status.get("tool") == "external_recorder_ipc_probe", f"unexpected status tool in {status_path}")
     require(str(status.get("stream_id")) == str(stream.get("stream_id", serial)), f"status stream_id mismatch in {status_path}")
+    for field in ("stream_kind", "output_kind"):
+        if field in stream:
+            require(
+                str(status.get(field)) == str(stream.get(field)),
+                f"status {field} mismatch in {status_path}",
+            )
     require(status.get("status") == "completed", f"recorder status is not completed in {status_path}")
     require(status.get("worker_failed") is False, f"recorder status worker_failed=true in {status_path}")
     require_storage_preflight_ok(
@@ -1110,6 +1178,12 @@ def verify_summary(
     require(summary.get("schema_version") == 1, f"unexpected summary schema_version in {summary_path}")
     require(summary.get("tool") == "external_recorder_ipc_probe", f"unexpected recorder tool in {summary_path}")
     require(str(summary.get("stream_id")) == str(stream.get("stream_id", serial)), f"stream_id mismatch in {summary_path}")
+    for field in ("stream_kind", "output_kind"):
+        if field in stream:
+            require(
+                str(summary.get(field)) == str(stream.get(field)),
+                f"{field} mismatch in {summary_path}",
+            )
     require(summary.get("encode") is True, f"summary encode=false in {summary_path}")
     require(summary.get("worker_failed") is False, f"recorder worker_failed=true in {summary_path}")
     require_storage_preflight_ok(
@@ -1208,7 +1282,14 @@ def verify_summary(
     merged = summary.get("merged_output")
     require(isinstance(merged, dict), f"summary missing merged_output in {summary_path}")
     require_no_mp4_queue_overflow(merged, f"merged_output for {serial}")
-    if bool(contract.get("require_merged_mp4", True)) and len(shards) > 1:
+    merged_mp4 = str(merged.get("mp4", ""))
+    has_duplicate_shard_mp4 = any(
+        isinstance(shard, dict)
+        and str(shard.get("mp4", ""))
+        and str(shard.get("mp4", "")) != merged_mp4
+        for shard in shards
+    )
+    if bool(contract.get("require_merged_mp4", True)) and (len(shards) > 1 or has_duplicate_shard_mp4):
         require(merged.get("enabled") is True, f"merged output disabled for {serial}")
         require(merged.get("failed") is False, f"merged output failed for {serial}")
         require(as_int(merged.get("pending_gops"), "merged pending_gops") == 0, f"merged output has pending GOPs for {serial}")
@@ -1233,6 +1314,13 @@ def verify_summary(
         video_sanity_path,
         allow_missing_video_sanity or not bool(contract.get("require_video_sanity", True)),
     )
+    shard_mp4_retention = verify_shard_mp4_retention(
+        shards,
+        artifact_root=artifact_root,
+        serial=serial,
+        contract=contract,
+        merged=merged,
+    )
     rolling_clips = verify_rolling_output(
         artifact_root,
         serial,
@@ -1255,6 +1343,7 @@ def verify_summary(
         "shard_count": len(shards),
         "routing_policy": summary.get("routing_policy"),
         "video_sanity": sanity_status,
+        "shard_mp4_retention": shard_mp4_retention,
         "rolling_clip_count": len(rolling_clips),
         "rolling_clips": rolling_clips,
         "recorder_status": status_summary,
@@ -1557,6 +1646,7 @@ def verify(args: argparse.Namespace) -> None:
             f"queue_high_water={item['encode_queue_high_water']} "
             f"enqueue_age_p95_ms={item['enqueue_age_p95_ms']} "
             f"routing={item['routing_policy']} video_sanity={item['video_sanity']} "
+            f"shard_mp4_retention={item['shard_mp4_retention']} "
             f"rolling_clips={item['rolling_clip_count']} "
             f"recorder_status={status_text} heartbeat={heartbeat_text}"
         )

@@ -155,8 +155,8 @@ recorder artifacts under the contract `artifact_root`:
   external_encode_shard1_gpu6.csv
   Cam2010096_external.mp4
   Cam2010096_external_keyframes.json
-  Cam2010096_external_shard0_gpu5.mp4
-  Cam2010096_external_shard1_gpu6.mp4
+  Cam2010096_external_shard0_gpu5.mp4      # temporary unless preserved
+  Cam2010096_external_shard1_gpu6.mp4      # temporary unless preserved
 
   clips/
     clip_000000/
@@ -172,8 +172,9 @@ recorder artifacts under the contract `artifact_root`:
 
 The external recorder keeps the merged full-session MP4 for compatibility and
 also writes one MP4 per rolling clip. Full-rate A16 validation uses split-GOP
-shards, so per-shard MP4s remain diagnostic outputs while the merged MP4 and
-clip MP4s are the consumer-facing media.
+shards; by default, per-shard MP4s are deleted after clean merged finalization
+and remain only as opt-in diagnostic outputs. The merged MP4 and clip MP4s are
+the consumer-facing media.
 
 Rolling sessions also write session-level clip indexes:
 

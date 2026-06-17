@@ -1,7 +1,11 @@
 #include "gui/spatial_layout/persistence_panel.h"
 
+#include "gui/spatial_layout/session_capture_matrix.h"
 #include "gui/spatial_layout/session_io.h"
 #include "imgui.h"
+
+#include <algorithm>
+#include <vector>
 
 namespace orange::gui::spatial_layout {
 
@@ -25,6 +29,116 @@ SpatialLayoutPersistencePanelEvent render_spatial_layout_persistence_panel(
     }
     if (ImGui::Button("Start New Calibration Session")) {
         event = SpatialLayoutPersistencePanelEvent::StartNewCalibrationSession;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Load Calibration Session...")) {
+        event = SpatialLayoutPersistencePanelEvent::LoadCalibrationSession;
+    }
+
+    if (!ui_state->loaded_calibration_session_index_path.empty()) {
+        ImGui::TextDisabled("%s", ui_state->loaded_calibration_session_index_path.c_str());
+    }
+    render_session_capture_matrix_panel(ui_state);
+    if (!ui_state->session_review_images.empty()) {
+        ui_state->selected_session_review_image =
+            std::clamp(
+                ui_state->selected_session_review_image,
+                0,
+                static_cast<int>(ui_state->session_review_images.size()) - 1);
+        std::vector<const char*> labels;
+        labels.reserve(ui_state->session_review_images.size());
+        for (const SpatialLayoutSessionReviewImage& image : ui_state->session_review_images) {
+            labels.push_back(image.label.c_str());
+        }
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::Combo(
+            "Session image",
+            &ui_state->selected_session_review_image,
+            labels.data(),
+            static_cast<int>(labels.size()));
+        ImGui::BeginDisabled(ui_state->selected_session_review_image < 0);
+        if (ImGui::Button("Load Selected Session Image")) {
+            event = SpatialLayoutPersistencePanelEvent::LoadSelectedSessionImage;
+        }
+        ImGui::EndDisabled();
+        ImGui::TextDisabled(
+            "Loaded session exposes %zu review image(s).",
+            ui_state->session_review_images.size());
+        if (!ui_state->session_review_camera_groups.empty() &&
+            ImGui::TreeNode("Session Review Groups")) {
+            for (size_t camera_group_index = 0;
+                 camera_group_index < ui_state->session_review_camera_groups.size();
+                 ++camera_group_index) {
+                const SpatialLayoutSessionReviewCameraGroup& camera_group =
+                    ui_state->session_review_camera_groups[camera_group_index];
+                ImGui::PushID(static_cast<int>(camera_group_index));
+                const bool open = ImGui::TreeNode(
+                    "CameraGroup",
+                    "%s",
+                    camera_group.label.c_str());
+                if (open) {
+                    for (size_t plane_group_index = 0;
+                         plane_group_index < camera_group.plane_groups.size();
+                         ++plane_group_index) {
+                        const SpatialLayoutSessionReviewPlaneGroup& plane_group =
+                            camera_group.plane_groups[plane_group_index];
+                        ImGui::PushID(static_cast<int>(plane_group_index));
+                        const bool plane_open = ImGui::TreeNode(
+                            "CalibrationLevel",
+                            "%s%s (%zu image%s)",
+                            plane_group.label.c_str(),
+                            plane_group.has_linked_accepted_top_rim
+                                ? " [linked top-rim]"
+                                : "",
+                            plane_group.image_indices.size(),
+                            plane_group.image_indices.size() == 1 ? "" : "s");
+                        if (plane_open) {
+                            for (int image_index : plane_group.image_indices) {
+                                if (image_index < 0 ||
+                                    image_index >=
+                                        static_cast<int>(ui_state->session_review_images.size())) {
+                                    continue;
+                                }
+                                const SpatialLayoutSessionReviewImage& image =
+                                    ui_state->session_review_images[
+                                        static_cast<size_t>(image_index)];
+                                ImGui::PushID(image_index);
+                                if (ImGui::SmallButton("Select")) {
+                                    ui_state->selected_session_review_image = image_index;
+                                    event =
+                                        SpatialLayoutPersistencePanelEvent::LoadSelectedSessionImage;
+                                }
+                                ImGui::SameLine();
+                                ImGui::TextUnformatted(image.label.c_str());
+                                ImGui::TextDisabled(
+                                    "canvas=%s arena=%s stage=%s purpose=%s role=%s",
+                                    image.canvas_id.empty() ? "unknown" : image.canvas_id.c_str(),
+                                    image.arena_id.empty() ? "unknown" : image.arena_id.c_str(),
+                                    image.capture_stage.empty() ? "unknown" : image.capture_stage.c_str(),
+                                    image.purpose.empty() ? "unknown" : image.purpose.c_str(),
+                                    image.role.empty() ? "unknown" : image.role.c_str());
+                                ImGui::PopID();
+                            }
+                            ImGui::TreePop();
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+            ImGui::TreePop();
+        }
+        if (!ui_state->session_review_warnings.empty() &&
+            ImGui::TreeNode("Session Review Warnings")) {
+            for (const std::string& warning : ui_state->session_review_warnings) {
+                ImGui::TextColored(
+                    ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                    "%s",
+                    warning.c_str());
+            }
+            ImGui::TreePop();
+        }
     }
 
     ImGui::BeginDisabled(!panel_state.can_save_top_rim_observation);
@@ -75,12 +189,19 @@ SpatialLayoutPersistencePanelEvent render_spatial_layout_persistence_panel(
     ImGui::EndDisabled();
 
     ImGui::SameLine();
+    ImGui::BeginDisabled(!panel_state.can_save_linked_arena_layouts);
+    if (ImGui::Button("Save Linked Arena Layout Artifacts")) {
+        event = SpatialLayoutPersistencePanelEvent::SaveLinkedArenaLayoutArtifacts;
+    }
+    ImGui::EndDisabled();
+
+    ImGui::SameLine();
     if (ImGui::Button("Load Arena Layout Artifact...")) {
         event = SpatialLayoutPersistencePanelEvent::LoadArenaLayoutArtifact;
     }
 
     ImGui::TextDisabled(
-        "Spatial calibration saves are grouped under calibrations/sessions/<session_id>/artifacts/<artifact_id>. Arena save writes %s, %s, %s, and %s.",
+        "Spatial calibration saves are grouped under calibrations/sessions/<session_id>/artifacts/. Arena saves write %s, %s, %s, and %s inside per-artifact folders; image sets use camera/arena aggregate folders.",
         kSpatialLayoutMeasurementFilename,
         kSpatialLayoutManifestFilename,
         kSpatialLayoutArenaLayoutRuntimeFilename,

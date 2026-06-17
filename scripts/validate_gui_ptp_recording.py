@@ -847,12 +847,17 @@ def external_crop_contract_stream_config(
     if not streams:
         return {}
 
-    candidates = [
+    stream_candidates = [
         value
         for value in (stream_id, f"{serial}_crop")
         if isinstance(value, str) and value
     ]
-    for candidate in candidates:
+    serial_candidates = [
+        value
+        for value in (serial, f"{serial}_crop")
+        if isinstance(value, str) and value
+    ]
+    for candidate in stream_candidates:
         value = streams.get(candidate)
         if isinstance(value, dict):
             return value
@@ -860,7 +865,11 @@ def external_crop_contract_stream_config(
     for value in streams.values():
         if not isinstance(value, dict):
             continue
-        if value.get("stream_id") in candidates or value.get("camera_serial") in candidates:
+        if (
+            value.get("stream_id") in stream_candidates
+            or value.get("env_key") in stream_candidates
+            or value.get("camera_serial") in serial_candidates
+        ):
             return value
     return {}
 
@@ -870,6 +879,10 @@ def descriptor_stream_config(details: dict[str, Any]) -> dict[str, Any]:
         return {}
     fields = (
         "stream_id",
+        "stream_kind",
+        "output_kind",
+        "camera_serial",
+        "env_key",
         "analytics_gpu_id",
         "recorder_gpu_id",
         "socket_path",
@@ -2691,6 +2704,73 @@ def check_external_summary_mp4_queue_overflow(
         )
 
 
+def check_external_summary_shard_mp4_retention(
+    reporter: Reporter,
+    prefix: str,
+    artifact_root: Path,
+    contract: dict[str, Any],
+    summary: dict[str, Any],
+) -> None:
+    if contract.get("preserve_shard_mp4s") is not False:
+        return
+    shards = summary.get("external_encode_shards")
+    merged = summary.get("merged_output")
+    if not isinstance(shards, list) or not isinstance(merged, dict):
+        return
+    merged_mp4 = str(merged.get("mp4", ""))
+    duplicate_shards = [
+        shard
+        for shard in shards
+        if isinstance(shard, dict)
+        and str(shard.get("mp4", ""))
+        and str(shard.get("mp4", "")) != merged_mp4
+    ]
+    if not duplicate_shards:
+        return
+    merged_clean = (
+        merged.get("enabled") is True
+        and merged.get("failed") is False
+        and integer(merged.get("pending_gops")) == 0
+        and (integer(merged.get("packets_written")) or 0) > 0
+    )
+    if not merged_clean:
+        return
+
+    accepted_statuses = {
+        "deleted_after_merged_finalization",
+        "already_absent_after_merged_finalization",
+    }
+    for shard in duplicate_shards:
+        shard_id = shard.get("assigned_shard_id")
+        retention = shard.get("mp4_retention")
+        reporter.check(
+            isinstance(retention, dict),
+            f"{prefix} shard {shard_id} MP4 retention present",
+            f"{prefix} shard {shard_id} missing mp4_retention",
+        )
+        if not isinstance(retention, dict):
+            continue
+        status = str(retention.get("status", ""))
+        reporter.check(
+            status in accepted_statuses,
+            f"{prefix} shard {shard_id} MP4 retention deleted",
+            f"{prefix} shard {shard_id} MP4 retention status={status!r}",
+        )
+        reporter.check(
+            retention.get("retained") is False,
+            f"{prefix} shard {shard_id} MP4 retained=false",
+            f"{prefix} shard {shard_id} MP4 retained={retention.get('retained')!r}",
+        )
+        shard_mp4 = Path(str(shard.get("mp4", "")))
+        if not shard_mp4.is_absolute():
+            shard_mp4 = artifact_root / shard_mp4
+        reporter.check(
+            not shard_mp4.exists(),
+            f"{prefix} shard {shard_id} MP4 removed",
+            f"{prefix} shard {shard_id} MP4 still exists: {shard_mp4}",
+        )
+
+
 def check_storage_preflight_payload(
     reporter: Reporter,
     prefix: str,
@@ -3092,6 +3172,13 @@ def check_external_recorder_status_contract(
         summary_acks_sent = integer(summary.get("acks_sent"))
         if summary:
             check_external_summary_mp4_queue_overflow(reporter, prefix, summary)
+            check_external_summary_shard_mp4_retention(
+                reporter,
+                prefix,
+                artifact_root,
+                contract,
+                summary,
+            )
             summary_storage_summary = check_storage_preflight_payload(
                 reporter,
                 f"{prefix} summary",
@@ -5753,6 +5840,68 @@ def check_crop_recording_artifacts(
                     backend_stream_config,
                     "stream_id",
                 )
+                stream_kind = require_stream_config_string(
+                    reporter,
+                    serial,
+                    backend_stream_config,
+                    "stream_kind",
+                )
+                output_kind = require_stream_config_string(
+                    reporter,
+                    serial,
+                    backend_stream_config,
+                    "output_kind",
+                )
+                camera_serial = require_stream_config_string(
+                    reporter,
+                    serial,
+                    backend_stream_config,
+                    "camera_serial",
+                )
+                env_key = require_stream_config_string(
+                    reporter,
+                    serial,
+                    backend_stream_config,
+                    "env_key",
+                )
+                reporter.check(
+                    stream_kind == "crop",
+                    f"Cam{serial} recording_backend.crop_recording.stream_config.stream_kind=crop",
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config.stream_kind "
+                        f"is {stream_kind!r}, expected 'crop'"
+                    ),
+                )
+                reporter.check(
+                    output_kind == "crop",
+                    f"Cam{serial} recording_backend.crop_recording.stream_config.output_kind=crop",
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config.output_kind "
+                        f"is {output_kind!r}, expected 'crop'"
+                    ),
+                )
+                reporter.check(
+                    camera_serial == serial,
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config "
+                        "camera_serial uses real camera serial"
+                    ),
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config "
+                        f"camera_serial ({camera_serial}) != {serial}"
+                    ),
+                )
+                reporter.check(
+                    env_key == f"{serial}_crop",
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config "
+                        "env_key uses crop stream key"
+                    ),
+                    (
+                        f"Cam{serial} recording_backend.crop_recording.stream_config "
+                        f"env_key ({env_key}) != {serial}_crop"
+                    ),
+                )
                 analytics_gpu_id = require_stream_config_int(
                     reporter,
                     serial,
@@ -5839,6 +5988,34 @@ def check_crop_recording_artifacts(
                         details,
                         "stream_id",
                         stream_id,
+                    )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "stream_kind",
+                        stream_kind,
+                    )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "output_kind",
+                        output_kind,
+                    )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "camera_serial",
+                        camera_serial,
+                    )
+                    check_descriptor_detail_matches_string(
+                        reporter,
+                        serial,
+                        details,
+                        "env_key",
+                        env_key,
                     )
                     check_descriptor_detail_matches_string(
                         reporter,

@@ -279,6 +279,7 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
     set_json_default(&contract, "require_status_runtime", true);
     set_json_default(&contract, "require_storage_preflight", true);
     set_json_default(&contract, "require_protocol_hello", true);
+    set_json_default(&contract, "preserve_shard_mp4s", false);
 
     contract["artifact_root"] = expand_path_template(
         contract.value("artifact_root", std::string()),
@@ -322,7 +323,10 @@ nlohmann::json MaterializeExternalRecorderContractForCameras(
             (std::filesystem::path(artifact_root) / ("Cam" + serial + "_external")).string();
 
         set_json_default(&stream, "stream_id", serial);
+        set_json_default(&stream, "stream_kind", "full_frame");
+        set_json_default(&stream, "output_kind", "full");
         set_json_default(&stream, "camera_serial", serial);
+        set_json_default(&stream, "env_key", serial);
         set_json_default(&stream, "analytics_gpu_id", camera.gpu_id);
         set_json_default(&stream, "recorder_gpu_id", recorder_gpu_id);
         set_json_default(&stream, "expected_shard_gpu_ids", shard_gpu_ids);

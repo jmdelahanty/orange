@@ -67,6 +67,11 @@ void render_group_capture_panels(
             capture.metadata.image_set_purpose.c_str(),
             capture.metadata.image_set_target_plane.c_str());
         ImGui::TextDisabled(
+            "%s",
+            capture.metadata.capture_stage.empty()
+                ? "unknown stage"
+                : capture.metadata.capture_stage.c_str());
+        ImGui::TextDisabled(
             "%dx%d %s",
             capture.width,
             capture.height,
@@ -86,8 +91,8 @@ void render_group_capture_panels(
             ImGui::Image(
                 (ImTextureID)(intptr_t)capture.texture,
                 image_size,
-                ImVec2(0, 1),
-                ImVec2(1, 0));
+                ImVec2(0, 0),
+                ImVec2(1, 1));
         }
         const bool can_use =
             capture.valid &&

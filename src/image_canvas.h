@@ -65,10 +65,15 @@ inline bool begin_image_canvas(
         ImPlot::SetupAxesLimits(0.0, static_cast<double>(image_width), 0.0, static_cast<double>(image_height), ImGuiCond_Once);
     }
 
+    // Keep plot coordinates in camera-pixel convention (origin top-left,
+    // y increasing downward) while drawing the texture with the same visual
+    // orientation as ImGui::Image/live camera previews.
     ImPlot::PlotImage(image_item_id,
                       (void*)(intptr_t)texture,
                       ImPlotPoint(0, 0),
-                      ImPlotPoint(static_cast<double>(image_width), static_cast<double>(image_height)));
+                      ImPlotPoint(static_cast<double>(image_width), static_cast<double>(image_height)),
+                      ImVec2(0, 1),
+                      ImVec2(1, 0));
     return true;
 }
 

@@ -317,8 +317,11 @@ Live CUDA IPC detach status:
   the analytics process recycles the source lease.
 - Socket path defaults to
   `/tmp/orange_external_recorder_<camera_serial>.sock`, with optional
-  `ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_<serial>` or
-  `ORANGE_EXTERNAL_RECORDER_SOCKET` overrides.
+  `ORANGE_EXTERNAL_RECORDER_SOCKET_STREAM_<stream_id>`,
+  `ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_<env_key>`, or
+  `ORANGE_EXTERNAL_RECORDER_SOCKET` overrides. Crop streams use a crop-suffixed
+  `stream_id`/`env_key` such as `2010096_crop` while keeping
+  `camera_serial = 2010096`.
 - First one-camera smoke on `2010096` / A16 GPU `5` used real headless YOLO and
   `recording_sink_mode = "external_ipc"`.
 - Result:

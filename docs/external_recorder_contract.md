@@ -10,7 +10,8 @@ orange_client analytics process -> external_recorder_ipc_probe recorder process
 
 The analytics process owns camera acquisition, YOLO, crop/pose decisions, and
 the first GPU buffer that contains each camera frame. The recorder process owns
-the full-frame encode path and MP4 output.
+an external recorder stream's encode path and MP4 output, whether that stream is
+full-frame video or crop video.
 
 ### Socket
 
@@ -38,6 +39,7 @@ descriptor says things like:
 
 ```text
 camera_serial = 2010096
+stream_id = 2010096
 recording_frame_id = 123
 source_gpu_id = 5
 width = 4512
@@ -52,6 +54,22 @@ assigned_gpu_id = 5
 The actual image pixels are not sent through the socket. They remain in GPU
 memory. The `cuda_ipc_handle` is a temporary cross-process handle that lets the
 recorder import the source GPU allocation.
+
+Each supervised recorder stream also has stable identity fields in the contract:
+
+- `camera_serial`: the real source camera serial, such as `2010096`.
+- `stream_id`: the logical recorder stream id, such as `2010096` for full-frame
+  video or `2010096_crop` for crop video.
+- `stream_kind`: the source stream type, currently `full_frame` or `crop`.
+- `output_kind`: the recording output kind, currently `full` or `crop`.
+- `env_key`: the environment/socket/log namespace key. Crop streams use a
+  crop-suffixed key such as `2010096_crop` so their supervised recorder
+  environment variables cannot collide with the full-frame recorder for the same
+  camera.
+
+Do not encode logical crop identity by changing `camera_serial` to
+`2010096_crop`; consumers should use `stream_id`, `stream_kind`, `output_kind`,
+and `env_key` for that distinction.
 
 When the Unix socket connects, the recorder now sends a versioned protocol
 hello before accepting frames:
@@ -157,8 +175,10 @@ GOP 2 -> shard 0 -> GPU 5
 GOP 3 -> shard 1 -> GPU 6
 ```
 
-Each shard can write diagnostic per-shard MP4/CSV outputs. In multi-shard mode,
-a coordinator also writes the merged GOP-ordered MP4 for the camera.
+Each shard writes diagnostic CSV/keyframe/log sidecars. In multi-shard mode, a
+coordinator writes the merged GOP-ordered MP4 for the camera. Per-shard MP4s are
+temporary diagnostic outputs by default: after a clean merged finalization they
+are deleted unless the contract sets `preserve_shard_mp4s = true`.
 
 ### Contract Stream
 
@@ -211,6 +231,7 @@ This contract covers the current diagnostic external recorder path:
     "require_status_runtime": false,
     "require_storage_preflight": true,
     "require_protocol_hello": true,
+    "preserve_shard_mp4s": false,
     "recording_control": {
       "record_for_seconds": 0,
       "clip_seconds": 0
@@ -224,7 +245,10 @@ This contract covers the current diagnostic external recorder path:
     "streams": {
       "2010095": {
         "stream_id": "2010095",
+        "stream_kind": "full_frame",
+        "output_kind": "full",
         "camera_serial": "2010095",
+        "env_key": "2010095",
         "analytics_gpu_id": 5,
         "recorder_gpu_id": 5,
         "expected_shard_gpu_ids": [5, 6],
@@ -312,6 +336,11 @@ Current semantics:
   the external-recorder lifecycle artifacts.
 - `require_merged_mp4` only applies to multi-shard runs. Single-shard runs use
   the shard output as the final MP4.
+- `preserve_shard_mp4s` defaults to `false`. When a shard MP4 is distinct from
+  the final merged MP4, the recorder deletes
+  `Cam<serial>_external_shard*_gpu*.mp4` after the merged MP4 finalizes cleanly
+  with no pending GOPs. It keeps shard MP4s when this field is `true`, when
+  merged finalization is incomplete, or when a shard reports a failure.
 - `expected_shard_gpu_ids` is ordered by shard id. For GOP modulo routing,
   shard id is `gop_index % shard_count`.
 - `encode_queue_depth`, `prewarm_*`, codec, GOP, and bitrate fields are
@@ -521,6 +550,8 @@ Recorder summary schema:
   "tool": "external_recorder_ipc_probe",
   "session_id": "experiment_id",
   "stream_id": "2010095",
+  "stream_kind": "full_frame",
+  "output_kind": "full",
   "routing_policy": "gop_modulo",
   "shard_count": 2,
   "direct_input_source": false,
@@ -559,7 +590,8 @@ When `artifact_root` is omitted, the verifier derives it from
   "external_ipc"`
 - external IPC failures and ACK timeouts are zero
 - ACKed frames are at least submitted frames
-- recorder summary schema and stream identity match the contract
+- recorder summary schema, `stream_id`, and declared stream/output kind match
+  the contract
 - `acks_sent == frames_received`
 - `encode_enqueued + encode_skipped + encode_dropped == frames_received`
 - `detach_copied == encode_enqueued` for the current verifier contract; use

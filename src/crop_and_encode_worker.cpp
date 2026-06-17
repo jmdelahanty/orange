@@ -218,6 +218,12 @@ private:
 
     std::string resolve_session_id(const std::string& recording_folder) const
     {
+        const std::string stream_key = camera_serial_ + "_crop";
+        const std::string per_stream =
+            "ORANGE_EXTERNAL_RECORDER_SESSION_ID_STREAM_" + stream_key;
+        if (const char* value = std::getenv(per_stream.c_str()); value && *value) {
+            return value;
+        }
         const std::string per_camera =
             "ORANGE_EXTERNAL_CROP_RECORDER_SESSION_ID_CAM_" + camera_serial_;
         if (const char* value = std::getenv(per_camera.c_str()); value && *value) {
@@ -225,6 +231,11 @@ private:
         }
         if (const char* value = std::getenv("ORANGE_EXTERNAL_CROP_RECORDER_SESSION_ID");
             value && *value) {
+            return value;
+        }
+        const std::string supervised_crop =
+            "ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" + camera_serial_ + "_crop";
+        if (const char* value = std::getenv(supervised_crop.c_str()); value && *value) {
             return value;
         }
         const std::string full_per_camera =
@@ -244,6 +255,12 @@ private:
 
     std::string resolve_socket_path() const
     {
+        const std::string stream_key = camera_serial_ + "_crop";
+        const std::string per_stream =
+            "ORANGE_EXTERNAL_RECORDER_SOCKET_STREAM_" + stream_key;
+        if (const char* value = std::getenv(per_stream.c_str()); value && *value) {
+            return value;
+        }
         const std::string per_camera =
             "ORANGE_EXTERNAL_CROP_RECORDER_SOCKET_CAM_" + camera_serial_;
         if (const char* value = std::getenv(per_camera.c_str()); value && *value) {

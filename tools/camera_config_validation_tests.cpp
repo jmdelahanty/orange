@@ -268,6 +268,79 @@ void test_rig_io_mapping_round_trip()
             "rig_io wavelength should round-trip");
 }
 
+void test_optics_metadata_round_trip()
+{
+    const nlohmann::json camera_config = {
+        {"optics", {
+            {"schema_id", "orange.camera.optics"},
+            {"schema_version", 1},
+            {"lens", {
+                {"present", true},
+                {"manufacturer", "Canon"},
+                {"model", "EF 100mm f/2.8L Macro IS USM"},
+                {"serial", "lens-123"},
+                {"mount", "EF"},
+                {"focal_length_mm", 100.0},
+                {"aperture_f_number", 2.8},
+                {"focus_control", "camera_focus"},
+                {"iris_control", "camera_iris"},
+                {"notes", "Validated macro lens"}
+            }},
+            {"filter_stack", {{
+                {"id", "hoya_r72_67mm"},
+                {"manufacturer", "HOYA / Kenko Tokina Co., Ltd."},
+                {"model", "Creative Filter Infrared R72"},
+                {"label", "67"},
+                {"type", "infrared_longpass_filter"},
+                {"thread_size", "67 mm"},
+                {"state", "installed"},
+                {"runtime_role", "normal_experiment_filter"},
+                {"cutoff_wavelength_nm", 720.0},
+                {"notes", "Normal runtime filter"}
+            }}}
+        }}
+    };
+
+    CameraParams params{};
+    orange::camera_config::parse_optics_config(camera_config, &params);
+
+    require(params.optics.lens.configured, "lens metadata should be marked configured");
+    require(params.optics.lens.present, "lens present should load");
+    require(params.optics.lens.manufacturer == "Canon", "lens manufacturer should load");
+    require(params.optics.lens.model == "EF 100mm f/2.8L Macro IS USM", "lens model should load");
+    require(params.optics.lens.serial == "lens-123", "lens serial should load");
+    require(params.optics.lens.mount == "EF", "lens mount should load");
+    require(params.optics.lens.focal_length_mm == 100.0, "lens focal length should load");
+    require(params.optics.lens.aperture_f_number == 2.8, "lens f-number should load");
+    require(params.optics.lens.focus_control == "camera_focus", "lens focus control should load");
+    require(params.optics.lens.iris_control == "camera_iris", "lens iris control should load");
+    require(params.optics.filter_stack.size() == 1, "filter stack should load one entry");
+    const CameraOpticalFilterConfig& filter = params.optics.filter_stack.front();
+    require(filter.id == "hoya_r72_67mm", "filter id should load");
+    require(filter.manufacturer == "HOYA / Kenko Tokina Co., Ltd.", "filter manufacturer should load");
+    require(filter.model == "Creative Filter Infrared R72", "filter model should load");
+    require(filter.thread_size == "67 mm", "filter thread size should load");
+    require(filter.state == "installed", "filter state should load");
+    require(filter.runtime_role == "normal_experiment_filter", "filter runtime role should load");
+    require(filter.cutoff_wavelength_nm == 720.0, "filter cutoff should load");
+
+    const nlohmann::json saved = orange::camera_config::build_optics_config(params);
+    require(saved["schema_id"].get<std::string>() == "orange.camera.optics",
+            "optics builder should emit schema id");
+    require(saved["schema_version"].get<int>() == 1,
+            "optics builder should emit schema version");
+    require(saved["lens"]["present"].get<bool>(),
+            "optics builder should emit lens present");
+    require(saved["lens"]["model"].get<std::string>() == "EF 100mm f/2.8L Macro IS USM",
+            "optics builder should round-trip lens model");
+    require(saved["filter_stack"].is_array() && saved["filter_stack"].size() == 1,
+            "optics builder should emit one filter");
+    require(saved["filter_stack"][0]["id"].get<std::string>() == "hoya_r72_67mm",
+            "optics builder should round-trip filter id");
+    require(saved["filter_stack"][0]["runtime_role"].get<std::string>() == "normal_experiment_filter",
+            "optics builder should round-trip filter runtime role");
+}
+
 }  // namespace
 
 int main()
@@ -291,6 +364,7 @@ int main()
         {"parse_preview_max_fps_negative_unlimited", &test_parse_preview_max_fps_negative_unlimited},
         {"parse_preview_max_fps_clamps_too_large", &test_parse_preview_max_fps_clamps_too_large},
         {"rig_io_mapping_round_trip", &test_rig_io_mapping_round_trip},
+        {"optics_metadata_round_trip", &test_optics_metadata_round_trip},
     };
 
     for (const auto& test : tests) {

@@ -21,6 +21,7 @@ inline constexpr const char* kSpatialLayoutArenaLayoutRuntimeFilename = "arena_l
 inline constexpr const char* kSpatialLayoutDishMaskRuntimeFilename = "dish_mask_runtime.json";
 inline constexpr const char* kCalibrationSessionFilename = "session.json";
 inline constexpr const char* kCalibrationSessionIndexFilename = "session_index.json";
+inline constexpr const char* kCalibrationSessionArenaLayoutSetFilename = "arena_layout_set.json";
 
 struct SpatialLayoutPersistedFiles {
     std::filesystem::path artifact_dir;

@@ -39,8 +39,10 @@ ctest --test-dir targets/debug_tsan -R 'threadworker|worker_entry_ownership' --o
 A race produces a `WARNING: ThreadSanitizer: data race` report on stderr and a
 failing test. A clean run is the absence of warnings.
 
-The `debug_tsan` build preset builds **only the instrumented host test
-targets** (no CUDA build):
+The `debug_tsan` build preset instruments only the host concurrency test
+targets. The top-level Orange CMake project still enables CUDA at configure
+time, so CUDA must be available, but CUDA/SDK-linked application targets are
+not TSan-instrumented or required for these tests:
 
 | Target | What it exercises |
 | --- | --- |

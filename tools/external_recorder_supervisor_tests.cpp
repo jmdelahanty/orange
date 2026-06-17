@@ -81,7 +81,10 @@ nlohmann::json make_contract(const std::vector<int>& shard_gpu_ids,
         {"streams", {
             {"2010096", {
                 {"stream_id", "2010096"},
+                {"stream_kind", "full_frame"},
+                {"output_kind", "full"},
                 {"camera_serial", "2010096"},
+                {"env_key", "2010096"},
                 {"analytics_gpu_id", 5},
                 {"recorder_gpu_id", shard_gpu_ids.front()},
                 {"expected_shard_gpu_ids", shard_gpu_ids},
@@ -119,6 +122,9 @@ void test_single_shard_plan_builds_command()
     require(plan.require_protocol_hello,
             "plan should require IPC protocol hello telemetry");
     const auto& stream = plan.streams[0];
+    require(stream.stream_kind == "full_frame", "default full stream kind should parse");
+    require(stream.output_kind == "full", "default full output kind should parse");
+    require(stream.env_key == "2010096", "default full env key should parse");
     require(stream.socket_path == "/tmp/orange_external_recorder_2010096.sock",
             "default socket path should use camera serial");
     require(stream.detach_csv.find("Cam2010096_external_detach.csv") != std::string::npos,
@@ -133,6 +139,10 @@ void test_single_shard_plan_builds_command()
     require(has_arg_pair(argv, "--socket", "/tmp/orange_external_recorder_2010096.sock"),
             "command should include socket path");
     require(has_arg_pair(argv, "--gpu-id", "5"), "command should include recorder gpu");
+    require(has_arg_pair(argv, "--stream-kind", "full_frame"),
+            "command should include full stream kind");
+    require(has_arg_pair(argv, "--output-kind", "full"),
+            "command should include full output kind");
     require(has_arg_pair(argv, "--routing-policy", "single_shard"),
             "command should include single_shard policy");
     require(has_arg_pair(argv, "--prewarm-bytes", "20358144"),
@@ -145,6 +155,67 @@ void test_single_shard_plan_builds_command()
             "single shard command should not include --shard-gpu-ids");
 }
 
+void test_crop_stream_plan_uses_real_camera_serial_and_env_key()
+{
+    nlohmann::json contract = make_contract({6}, "single_shard");
+    contract["streams"] = nlohmann::json::object({
+        {"2010096_crop", {
+            {"stream_id", "2010096_crop"},
+            {"stream_kind", "crop"},
+            {"output_kind", "crop"},
+            {"camera_serial", "2010096"},
+            {"env_key", "2010096_crop"},
+            {"analytics_gpu_id", 5},
+            {"recorder_gpu_id", 6},
+            {"expected_shard_gpu_ids", nlohmann::json::array({6})},
+            {"routing_policy", "single_shard"},
+            {"summary_json", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external_summary.json"},
+            {"video_sanity_json", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external_video_sanity.json"},
+            {"mp4", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external.mp4"},
+            {"gop_routing_csv", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external_gop_routing.csv"},
+            {"encode_fps", 100},
+            {"encode_max_fps", 0},
+            {"encode_queue_depth", 64},
+        }},
+    });
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(contract, {}, &plan, &error),
+            "crop stream contract should build: " + error);
+    require(plan.streams.size() == 1, "expected one crop stream");
+    const auto& stream = plan.streams[0];
+    require(stream.stream_id == "2010096_crop", "crop stream id should parse");
+    require(stream.stream_kind == "crop", "crop stream kind should parse");
+    require(stream.output_kind == "crop", "crop output kind should parse");
+    require(stream.camera_serial == "2010096", "crop stream should keep real camera serial");
+    require(stream.env_key == "2010096_crop", "crop stream should use crop env key");
+    require(stream.socket_path == "/tmp/orange_external_recorder_2010096_crop.sock",
+            "crop default socket should derive from env key");
+    require(stream.status_json.find("Cam2010096_crop_external_status.json") != std::string::npos,
+            "crop status path should derive from crop summary path");
+
+    const std::vector<std::string> argv = BuildRecorderCommand(plan, stream);
+    require(has_arg_pair(argv, "--stream-id", "2010096_crop"),
+            "crop command should include crop stream id");
+    require(has_arg_pair(argv, "--stream-kind", "crop"),
+            "crop command should include crop stream kind");
+    require(has_arg_pair(argv, "--output-kind", "crop"),
+            "crop command should include crop output kind");
+    require(has_arg_pair(argv, "--socket", "/tmp/orange_external_recorder_2010096_crop.sock"),
+            "crop command should include env-key-derived socket path");
+
+    const nlohmann::json json_plan = SupervisorPlanToJson(plan);
+    require(json_plan["streams"][0]["stream_kind"] == "crop",
+            "plan json should expose crop stream kind");
+    require(json_plan["streams"][0]["output_kind"] == "crop",
+            "plan json should expose crop output kind");
+    require(json_plan["streams"][0]["camera_serial"] == "2010096",
+            "plan json should expose real camera serial");
+    require(json_plan["streams"][0]["env_key"] == "2010096_crop",
+            "plan json should expose crop env key");
+}
+
 void test_two_shard_plan_builds_gop_modulo_command()
 {
     SupervisorPlanOptions options;
@@ -153,12 +224,16 @@ void test_two_shard_plan_builds_gop_modulo_command()
     require(BuildSupervisorPlanFromContract(
                 make_contract({5, 6}, "gop_modulo"), options, &plan, &error),
             "two-shard contract should build: " + error);
+    require(!plan.preserve_shard_mp4s,
+            "two-shard plan should delete shard MP4s by default after merge");
 
     const std::vector<std::string> argv = BuildRecorderCommand(plan, plan.streams[0]);
     require(has_arg_pair(argv, "--routing-policy", "gop_modulo"),
             "command should include GOP modulo policy");
     require(has_arg_pair(argv, "--shard-gpu-ids", "5,6"),
             "command should include shard GPU csv");
+    require(!has_arg(argv, "--preserve-shard-mp4s"),
+            "default command should not preserve shard MP4s");
 
     const nlohmann::json json_plan = SupervisorPlanToJson(plan);
     require(json_plan["schema_id"] == "orange.external_recorder.supervisor_plan",
@@ -173,9 +248,29 @@ void test_two_shard_plan_builds_gop_modulo_command()
             "plan json should expose storage preflight requirement");
     require(json_plan.value("require_protocol_hello", false),
             "plan json should expose IPC protocol hello requirement");
+    require(json_plan.value("preserve_shard_mp4s", true) == false,
+            "plan json should expose default shard MP4 retention policy");
     require(json_plan["streams"][0].value("status_json", "").find(
                 "Cam2010096_external_status.json") != std::string::npos,
             "plan json should expose status sidecar path");
+}
+
+void test_preserve_shard_mp4s_opt_in()
+{
+    SupervisorPlanOptions options;
+    nlohmann::json contract = make_contract({5, 6}, "gop_modulo");
+    contract["preserve_shard_mp4s"] = true;
+
+    SupervisorPlan plan;
+    std::string error;
+    require(BuildSupervisorPlanFromContract(contract, options, &plan, &error),
+            "preserve-shard contract should build: " + error);
+    require(plan.preserve_shard_mp4s,
+            "plan should carry preserve_shard_mp4s=true");
+
+    const std::vector<std::string> argv = BuildRecorderCommand(plan, plan.streams[0]);
+    require(has_arg(argv, "--preserve-shard-mp4s"),
+            "command should opt into preserving shard MP4s");
 }
 
 void test_spec_requires_external_ipc_sink()
@@ -214,6 +309,43 @@ void test_spec_requires_selected_stream()
             "missing selected stream should fail");
     require(error.find("2010095") != std::string::npos,
             "failure should identify missing camera");
+}
+
+void test_spec_selected_stream_ignores_crop_output()
+{
+    nlohmann::json contract = make_contract({6}, "single_shard");
+    contract["streams"] = nlohmann::json::object({
+        {"2010096_crop", {
+            {"stream_id", "2010096_crop"},
+            {"stream_kind", "crop"},
+            {"output_kind", "crop"},
+            {"camera_serial", "2010096"},
+            {"env_key", "2010096_crop"},
+            {"analytics_gpu_id", 5},
+            {"recorder_gpu_id", 6},
+            {"expected_shard_gpu_ids", nlohmann::json::array({6})},
+            {"routing_policy", "single_shard"},
+            {"summary_json", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external_summary.json"},
+            {"video_sanity_json", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external_video_sanity.json"},
+            {"mp4", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external.mp4"},
+            {"gop_routing_csv", "/tmp/orange_external_recorder_supervisor_tests/Cam2010096_crop_external_gop_routing.csv"},
+        }},
+    });
+    nlohmann::json spec = {
+        {"experiment_id", "crop_only_stream"},
+        {"selection", {{"camera_serials", {"2010096"}}, {"gpu_ids", {5}}}},
+        {"fixed", {
+            {"recording_sink_mode", "external_ipc"},
+            {"external_recorder_contract", contract},
+        }},
+    };
+
+    SupervisorPlan plan;
+    std::string error;
+    require(!BuildSupervisorPlanFromExperimentSpec(spec, {}, &plan, &error),
+            "crop-only stream should not satisfy full-frame selected camera");
+    require(error.find("2010096") != std::string::npos,
+            "failure should identify missing full-frame camera");
 }
 
 void test_spec_recording_control_flows_to_command()
@@ -429,6 +561,8 @@ void test_process_poll_reads_status_sidecar()
             << "  \"schema_id\": \"orange.external_recorder.status\",\n"
             << "  \"schema_version\": 1,\n"
             << "  \"status\": \"running\",\n"
+            << "  \"stream_kind\": \"crop\",\n"
+            << "  \"output_kind\": \"crop\",\n"
             << "  \"steady_clock_ns\": 12345,\n"
             << "  \"heartbeat_sequence\": 7,\n"
             << "  \"frames_received\": 11,\n"
@@ -516,6 +650,10 @@ void test_process_poll_reads_status_sidecar()
             "status sidecar should be valid");
     require(runtime.processes[0].recorder_status.status == "running",
             "status sidecar status should parse");
+    require(runtime.processes[0].recorder_status.stream_kind == "crop",
+            "status sidecar stream kind should parse");
+    require(runtime.processes[0].recorder_status.output_kind == "crop",
+            "status sidecar output kind should parse");
     require(runtime.processes[0].recorder_status.heartbeat_sequence == 7,
             "status sidecar heartbeat should parse");
     require(runtime.processes[0].recorder_status.frames_received == 11,
@@ -595,6 +733,10 @@ void test_process_poll_reads_status_sidecar()
             "runtime summary should include status sidecar path");
     require(summary["processes"][0]["recorder_status"]["valid"].get<bool>(),
             "runtime summary should include parsed status validity");
+    require(summary["processes"][0]["recorder_status"]["stream_kind"] == "crop",
+            "runtime summary should include parsed stream kind");
+    require(summary["processes"][0]["recorder_status"]["output_kind"] == "crop",
+            "runtime summary should include parsed output kind");
     require(summary["processes"][0]["recorder_status"]["heartbeat_sequence"] == 7,
             "runtime summary should include parsed heartbeat");
     require(summary["processes"][0]["recorder_status"]["frames_encoded"] == 8,
@@ -720,6 +862,12 @@ void test_supervised_lifecycle_writes_artifacts_and_env()
                 std::string(socket_env) ==
                     contract["streams"]["2010096"]["socket_path"].get<std::string>(),
             "per-camera socket env should be set");
+    const char* stream_socket_env =
+        std::getenv("ORANGE_EXTERNAL_RECORDER_SOCKET_STREAM_2010096");
+    require(stream_socket_env &&
+                std::string(stream_socket_env) ==
+                    contract["streams"]["2010096"]["socket_path"].get<std::string>(),
+            "per-stream socket env should be set");
 
     require(StopSupervisedRecorderLifecycle(&state, &error),
             "supervised lifecycle should stop: " + error);
@@ -760,9 +908,13 @@ int main(int argc, char** argv)
 
     const TestCase tests[] = {
         {"single_shard_plan_builds_command", test_single_shard_plan_builds_command},
+        {"crop_stream_plan_uses_real_camera_serial_and_env_key",
+         test_crop_stream_plan_uses_real_camera_serial_and_env_key},
         {"two_shard_plan_builds_gop_modulo_command", test_two_shard_plan_builds_gop_modulo_command},
+        {"preserve_shard_mp4s_opt_in", test_preserve_shard_mp4s_opt_in},
         {"spec_requires_external_ipc_sink", test_spec_requires_external_ipc_sink},
         {"spec_requires_selected_stream", test_spec_requires_selected_stream},
+        {"spec_selected_stream_ignores_crop_output", test_spec_selected_stream_ignores_crop_output},
         {"spec_recording_control_flows_to_command", test_spec_recording_control_flows_to_command},
         {"storage_thresholds_flow_to_command_and_plan", test_storage_thresholds_flow_to_command_and_plan},
         {"invalid_shard_policy_fails", test_invalid_shard_policy_fails},

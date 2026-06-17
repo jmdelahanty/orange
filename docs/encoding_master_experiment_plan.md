@@ -339,7 +339,7 @@ One row per run/camera/shard should include:
 - shard id;
 - frames encoded and dropped;
 - bytes emitted;
-- per-shard MP4 size when available;
+- per-shard MP4 byte counters and retained file size when available;
 - encode p50/p95/max;
 - lock-bitstream p50/p95/max;
 - queue or slot wait p50/p95/max;

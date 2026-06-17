@@ -92,10 +92,34 @@ region is the safe area where fish detections should be accepted.
 Recommended separate geometry names:
 
 - `observed_boundary`: the fitted top rim in camera pixels
+- `accepted_experimental_area_boundary`: the operator-accepted daily boundary
+  that Citrus should interpret as the experimental-area boundary
 - `valid_detection_region`: an eroded region used to gate YOLO outputs
 - `valid_tracking_region`: optional future region, usually stricter than the
   observed boundary
 - `stimulus_safe_region`: optional future region, owned or accepted by Citrus
+
+For the Orange/Citrus daily circular-dish workflow, the default policy is that
+the operator-accepted rim boundary equals the Citrus `experimental_area`
+boundary. The accepted experimental-area boundary should bias toward slight
+overcoverage rather than undercoverage because undercoverage allows a fish to
+be physically inside the dish while logically outside the experiment. Eroded
+masks remain useful diagnostics/exports but are not the primary Citrus runtime
+boundary.
+
+The runtime containment invariant is:
+
+```text
+physically_reachable_fish_area <= Citrus experimental_area / chaser boundary
+```
+
+That means a daily rim registration must not silently shrink the Citrus
+experimental area below the operator-accepted reachable boundary. If rim
+visibility, refraction, or fit uncertainty leaves ambiguity, prefer a slightly
+larger accepted experimental-area boundary or require explicit operator review.
+Any inward erosion belongs to `valid_detection_region`, post-processing masks,
+or analysis/tracking diagnostics unless Citrus explicitly accepts a stricter
+runtime policy.
 
 ## Circular Dish V0 Geometry
 
@@ -107,10 +131,12 @@ workflow:
 2. Run an OpenCV Hough-circle detector with logged parameters.
 3. Show the detected circle as an overlay to the operator.
 4. Let the operator accept or adjust center/radius.
-5. Persist the accepted circle as the load-bearing mask geometry.
+5. Persist the accepted circle as the load-bearing experimental-area boundary.
 
-The accepted circle, not the raw detector output, is the geometry used for
-runtime gating and downstream export.
+The accepted circle, not the raw detector output, is the geometry used for the
+daily Citrus experimental-area boundary. Detection gating and Palette exports
+may use an inward-eroded `accepted_mask` or `valid_detection_region`, but those
+derived masks are not the default Citrus runtime/chaser boundary.
 
 Recommended V0 method string:
 
@@ -195,6 +221,10 @@ Mapping:
 
 ```text
 dish_top_rim_observation.observed_boundary
+  -> spatial_layout.dish_mask.outer_geometry
+
+dish_top_rim_observation.accepted_experimental_area_boundary
+  -> Citrus experimental_area / chaser boundary proposal
   -> spatial_layout.dish_mask.outer_geometry
 
 dish_top_rim_observation.accepted_mask or valid_detection_region
@@ -318,6 +348,12 @@ dish area while Citrus logic considers it outside the configured experimental
 area. In that case the chaser or other closed-loop stimulus may fail to pursue
 or constrain the fish near the true boundary.
 
+The stronger invariant is that every physically reachable fish position should
+remain inside the configured Citrus experimental-area / chaser boundary. Small
+positive margin is acceptable; undercoverage is not, because it creates states
+where the fish is physically reachable but logically outside the closed-loop
+stimulus region.
+
 The center-only correction remains useful as a diagnostic because it separates
 translation error from scale/radius error. The intended accepted correction for
 this policy can be an explicit center+radius experimental-area adjustment:
@@ -382,8 +418,8 @@ For example, a `9 mm` plane separation over a `300-600 mm` optical distance is
 on the order of `1.5-3%` before considering refraction/scattering. Whether that
 is experimentally meaningful must be measured.
 
-A dish/fish-plane scale image is useful, but it answers only part of the
-problem:
+A physical target or scale image at dish/fish-plane height can answer a
+camera-side question:
 
 ```text
 camera_px at dish/fish plane -> physical mm at dish/fish plane
@@ -396,22 +432,13 @@ the behavioral plane. It does not by itself fully answer:
 Citrus/projector canvas px -> physical/perceived stimulus size at fish plane
 ```
 
-To calibrate stimulus size as perceived at the fish/tank-bottom plane, use an
-additional projected-size calibration:
-
-1. keep the current Citrus projection-surface homography
-2. capture a dish/tank-bottom scale image to measure camera px/mm at the
-   behavioral plane
-3. project known dots, bars, or circles with known Citrus pixel sizes
-4. image those projected features through the tank/dish
-5. measure their physical size at the behavioral plane using the scale image
-6. decide whether one per-arena scale factor is sufficient or whether a spatial
-   scale field is needed
-
-If measured projected sizes are uniform enough across the arena, the practical
-calibration can be a single `projector_canvas_px_per_mm_at_fish_plane` value
-per arena. If size varies meaningfully by position, use a local scale map or a
-separate fish-plane projection calibration.
+The current Orange calibration workflow does not collect projected-pattern
+tank-bottom or fish-plane artifacts for this purpose. Do not project known dots,
+bars, circles, or grids at dish/base or fish height and label them as camera-side
+physical calibration. If a future experiment needs stimulus-size validation at
+the behavioral plane, it should be defined as a separate projector-side
+validation product with explicit projector/canvas provenance and must remain
+separate from `C_base` / `C_fish` physical camera maps.
 
 ## Capture Modes
 
@@ -475,7 +502,7 @@ actually see. The capture metadata must say which optical state was used.
 The durable package should follow the calibration artifact pattern:
 
 ```text
-~/orange_data/calibrations/artifacts/<artifact_id>/
+~/orange_data/calibrations/sessions/<session_id>/artifacts/Cam<serial>_<arena_id>/top_rim_observations/<artifact_id>/
 |-- manifest.json
 |-- observation.json
 |-- captures/
@@ -484,6 +511,7 @@ The durable package should follow the calibration artifact pattern:
 |   `-- difference.png
 |-- overlays/
 |   |-- top_rim_fit.png
+|   |-- registration_hough_overlay.png
 |   `-- valid_detection_region.png
 |-- exports/
 |   `-- palette_dish_mask_v2.json
@@ -557,6 +585,8 @@ Candidate `observation.json`:
   "review_artifacts": {
     "top_rim_overlay_path": "overlays/top_rim_fit.png",
     "top_rim_overlay_sha256": "...",
+    "registration_hough_overlay_path": "overlays/registration_hough_overlay.png",
+    "registration_hough_overlay_sha256": "...",
     "valid_detection_overlay_path": "overlays/valid_detection_region.png",
     "valid_detection_overlay_sha256": "..."
   },
@@ -593,6 +623,28 @@ Candidate `observation.json`:
       "edge_coverage_fraction": 0.87,
       "quality_flags": []
     }
+  },
+  "accepted_experimental_area_boundary": {
+    "role": "citrus_experimental_area_boundary",
+    "interpretation": "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary",
+    "physical_target": "dish_top_rim",
+    "target_plane": "dish_top_rim",
+    "coordinate_space": "camera_native_pixels",
+    "geometry": {
+      "type": "circle",
+      "center_px": {"x": 1234, "y": 988},
+      "radius_px": 822
+    },
+    "operator_boundary_target": "top_level_visible_boundary",
+    "boundary_inclusion_policy": "prefer_slight_overcoverage_to_avoid_fish_escape"
+  },
+  "boundary_interpretation": {
+    "accepted_boundary_role": "citrus_experimental_area_boundary",
+    "accepted_boundary_semantics": "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary",
+    "observed_boundary_surface": "dish_top_rim",
+    "operator_boundary_target": "top_level_visible_boundary",
+    "boundary_inclusion_policy": "prefer_slight_overcoverage_to_avoid_fish_escape",
+    "valid_detection_region_policy": "derived_by_erosion_for_detection_gating_exports_not_primary_citrus_experimental_area_boundary"
   },
   "valid_detection_region": {
     "coordinate_space": "camera_native_pixels",
@@ -747,7 +799,7 @@ Instead, Orange should expose a deterministic adapter that converts an
 Orange-native circular mask into Palette-compatible metadata when a Palette H5
 or import package is requested.
 
-Native Orange load-bearing fields:
+Palette adapter load-bearing fields:
 
 - `accepted_mask.shape`
 - `accepted_mask.source_array_role`
@@ -920,12 +972,13 @@ is a future or explicit operator-reviewed behavior because top-rim camera
 radius, projection-plane canvas radius, and dish-height/parallax assumptions
 are not interchangeable without additional modeling.
 
-For rigs where the intended Citrus experimental area should match the
-camera-observed area the fish can occupy, use the explicit
-`center_and_radius_match_observed_experimental_area` mode. That mode samples
-the accepted Orange boundary, maps sampled points through the Citrus homography,
+For this rig class, the intended Citrus experimental area is the
+camera-observed area the fish can occupy. Use the explicit
+`center_and_radius_match_observed_experimental_area` mode only after
+scale-aware validation and operator review. That mode samples the accepted
+Orange boundary, maps sampled points through the selected Citrus homography,
 fits a circle in arena-relative coordinates, and proposes updated Citrus
-experimental-area center/radius values for operator review.
+experimental-area center/radius values.
 
 ## Orange UI Workflow
 
@@ -1184,7 +1237,8 @@ alignment offsets remain future work.
   preserve the current Citrus experimental-area shape/radius. Any radius
   adjustment must be an explicit future/operator-reviewed behavior.
 - OpenCV Hough circle detection is the initial automatic proposal mechanism.
-- The accepted circle is the load-bearing mask geometry.
+- The accepted circle is the load-bearing experimental-area boundary; eroded
+  masks are derived detection/export views.
 - The native durable artifact is Orange-specific; Palette metadata is an
   adapter/export view.
 - Citrus H5 should snapshot the Orange artifact reference and Citrus transform

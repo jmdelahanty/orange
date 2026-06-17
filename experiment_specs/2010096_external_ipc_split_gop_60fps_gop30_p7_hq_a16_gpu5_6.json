@@ -31,6 +31,7 @@
       "require_video_sanity": true,
       "require_merged_mp4": true,
       "require_gop_routing": true,
+      "preserve_shard_mp4s": false,
       "streams": {
         "2010096": {
           "stream_id": "2010096",

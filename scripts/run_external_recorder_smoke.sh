@@ -366,6 +366,7 @@ contract = {
     "require_video_sanity": skip_video_sanity == 0,
     "require_merged_mp4": len(expected_shard_gpu_ids) > 1,
     "require_gop_routing": True,
+    "preserve_shard_mp4s": False,
     "streams": {
         camera_serial: {
             "stream_id": camera_serial,
@@ -578,11 +579,13 @@ print(f"  detach_copy_p95_ms={summary.get('detach_timing', {}).get('copy_p95_ms'
 print(f"  prewarm_slots={enc.get('prewarm_slots')} prewarm_ms={enc.get('prewarm_ms')} prewarm_peer_copy={enc.get('prewarm_peer_copy')}")
 print(f"  mp4_bytes={summary.get('output_file_sizes', {}).get('mp4_bytes')} worker_failed={summary.get('worker_failed')}")
 for shard in summary.get("external_encode_shards", []):
+    retention = shard.get("mp4_retention", {})
     print(
         "  shard "
         f"id={shard.get('assigned_shard_id')} gpu={shard.get('assigned_gpu_id')} "
         f"frames_encoded={shard.get('frames_encoded')} "
-        f"prewarm_ms={shard.get('prewarm_ms')} mp4={shard.get('mp4')}"
+        f"prewarm_ms={shard.get('prewarm_ms')} "
+        f"mp4_retention={retention.get('status')} mp4={shard.get('mp4')}"
     )
 PY
 fi

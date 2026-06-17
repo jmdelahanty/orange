@@ -67,6 +67,42 @@ struct CameraCropPipelineConfig {
     int preview_max_fps = kDefaultPreviewMaxFps;
 };
 
+struct CameraLensConfig {
+    bool configured = false;
+    bool present = false;
+    std::string manufacturer;
+    std::string model;
+    std::string serial;
+    std::string mount;
+    double focal_length_mm = 0.0;
+    double aperture_f_number = 0.0;
+    std::string focus_control;
+    std::string iris_control;
+    std::string notes;
+};
+
+struct CameraOpticalFilterConfig {
+    std::string id;
+    std::string manufacturer;
+    std::string model;
+    std::string label;
+    std::string type;
+    std::string thread_size;
+    std::string state;
+    std::string runtime_role;
+    double cutoff_wavelength_nm = 0.0;
+    double center_wavelength_nm = 0.0;
+    double min_wavelength_nm = 0.0;
+    double max_wavelength_nm = 0.0;
+    double bandwidth_fwhm_nm = 0.0;
+    std::string notes;
+};
+
+struct CameraOpticsConfig {
+    CameraLensConfig lens;
+    std::vector<CameraOpticalFilterConfig> filter_stack;
+};
+
 inline int sanitize_camera_crop_size_px(int requested_size_px)
 {
     int size = requested_size_px > 0
@@ -132,6 +168,7 @@ struct CameraParams{
     std::string acquisition_buffer_mode = "auto";
     std::vector<CameraGpioNodeConfig> gpio_nodes;
     std::vector<CameraRigIoConnection> rig_io_connections;
+    CameraOpticsConfig optics;
     CameraRecordingConfig recording;
     CameraCropPipelineConfig crop_pipeline;
     unsigned int gain_max; 

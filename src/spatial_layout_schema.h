@@ -171,6 +171,7 @@ struct ArenaLayoutDefinition {
 struct ArenaLayoutContext {
     std::string dish_design_id;
     std::string canvas_id;
+    std::string arena_id;
 };
 
 struct ArenaLayoutProvenance {

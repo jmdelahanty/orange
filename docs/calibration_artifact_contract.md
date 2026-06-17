@@ -34,16 +34,33 @@ reference rather than treating file paths as identity.
 
 ## Artifact Root
 
-Default artifact root:
+Session-scoped Spatial Layout artifacts are now the canonical path for daily
+camera/arena calibration work:
 
 ```text
-~/orange_data/calibrations/artifacts
+~/orange_data/calibrations/sessions/<session_id>/artifacts
 ```
 
-Each artifact package lives in its own directory:
+Older standalone calibration tools, such as aperture characterization and USAF
+resolution measurements, use a separate non-session default:
 
 ```text
-~/orange_data/calibrations/artifacts/<artifact_id>/
+~/orange_data/calibrations/standalone_artifacts
+```
+
+The legacy top-level `~/orange_data/calibrations/artifacts` directory is retired
+as a default write target. New Spatial Layout saves should refuse to write
+there; they must create or reuse a calibration session.
+
+Each artifact package still lives in its own directory beneath the active
+session or standalone root. Spatial Layout may add typed grouping directories
+inside the session root, for example `Cam<serial>_<arena_id>/` aggregates and
+`top_rim_observations/<artifact_id>/` children:
+
+```text
+<artifact_root>/<artifact_id>/
+<artifact_root>/Cam<serial>_<arena_id>/
+<artifact_root>/Cam<serial>_<arena_id>/top_rim_observations/<artifact_id>/
 ```
 
 `artifact_id` is a stable handle for the package. It is the package directory
@@ -52,7 +69,7 @@ name and should be treated as the artifact identity.
 Artifact registry:
 
 ```text
-~/orange_data/calibrations/artifacts/index.json
+<artifact_root>/index.json
 ```
 
 Orange updates this registry on every successful artifact write. Consumers may
@@ -101,13 +118,13 @@ Notes:
 - USAF v1 uses manual resolved-element annotation per captured field position; it does
   not yet auto-read the target.
 
-Planned generic calibration image-set package layout:
+Implemented generic calibration image-set package layout:
 
 ```text
 <artifact_id>/
 ├── manifest.json
 ├── image_set.json
-├── images/
+├── captures/
 ├── overlays/
 └── exports/
 ```
@@ -115,8 +132,21 @@ Planned generic calibration image-set package layout:
 Notes:
 - `image_set.json` uses `schema_id = "orange.calibration.image_set"`.
 - The image-set artifact is the Orange-owned acquisition package for
-  Citrus-imported homography grids, scale images, dish top-rim captures, and
-  crosshair-alignment captures.
+  Citrus-imported projection-surface homography/validation captures,
+  camera-only physical-target C-plane captures, scale images, dish top-rim
+  captures, and crosshair-alignment captures.
+- Current dry physical-target height-parallax diagnostics use
+  `purpose = "dry_physical_target_height_parallax_diagnostic"`,
+  `reference_only = true`, `physical_target_used = true`, and
+  `projected_pattern_used_as_coordinate_target = false`. Future accepted
+  camera-only physical-target calibration captures use
+  `purpose = "camera_only_physical_target_calibration"` with `plane_id` and
+  `parity_group_id`. Projected-pattern captures at a moved diffuser, dish/base
+  height, or fish height are diagnostics and must not be auto-imported as
+  physical `C_base` or `C_fish` maps.
+- Spatial Layout normally uses a camera/arena aggregate artifact ID such as
+  `Cam2010093_arena_1`, then appends multiple purpose-specific captures under
+  `captures/`.
 - `exports/` may contain Citrus-compatible staging copies or manifests, but
   those exports are not the durable Orange artifact identity.
 
@@ -194,7 +224,7 @@ Current emitted top-level shape:
 {
   "schema_id": "orange.calibration.registry",
   "schema_version": 1,
-  "artifact_root": "/home/jeremy/orange_data/calibrations/artifacts",
+  "artifact_root": "/home/jeremy/orange_data/calibrations/sessions/calsess_.../artifacts",
   "updated_utc": "2026-03-16T22:40:00Z",
   "artifact_count": 1,
   "latest_by_schema": {
@@ -322,10 +352,11 @@ Rules:
 
 ## Consumer Resolution
 
-Consumers should resolve:
+Consumers should resolve the registry for the specific session or standalone
+root they are reading:
 
 ```text
-~/orange_data/calibrations/artifacts/index.json
+~/orange_data/calibrations/sessions/<session_id>/artifacts/index.json
 ```
 
 Then use `artifacts_by_id[artifact_id].relative_manifest_path`.

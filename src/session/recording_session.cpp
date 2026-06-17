@@ -617,6 +617,7 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
         {"require_status_runtime", true},
         {"require_storage_preflight", true},
         {"require_protocol_hello", true},
+        {"preserve_shard_mp4s", false},
         {"recording_control", crop_recording_control},
         {"rollover", crop_rollover},
         {"require_recorder_gpu_separate_from_analytics",
@@ -665,9 +666,12 @@ nlohmann::json materialize_external_crop_recorder_contract_for_cameras(
 
         contract["streams"][stream_key] = {
             {"stream_id", stream_id},
-            // Use a crop-suffixed process key so the supervisor's environment
-            // variables cannot overwrite full-frame external-recorder sockets.
-            {"camera_serial", stream_id},
+            {"stream_kind", "crop"},
+            {"output_kind", "crop"},
+            {"camera_serial", serial},
+            // Use a crop-suffixed process/env key so the supervisor's
+            // environment variables cannot overwrite full-frame sockets.
+            {"env_key", stream_id},
             {"analytics_gpu_id", analytics_gpu_id},
             {"recorder_gpu_id", recorder_gpu_id},
             {"same_gpu_as_analytics", same_gpu_as_analytics},

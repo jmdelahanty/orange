@@ -11,7 +11,10 @@ enum class SpatialLayoutPersistencePanelEvent {
     SaveCalibrationImageSet,
     SaveGroupCalibrationImageSets,
     SaveArenaLayoutArtifact,
-    LoadArenaLayoutArtifact
+    SaveLinkedArenaLayoutArtifacts,
+    LoadArenaLayoutArtifact,
+    LoadCalibrationSession,
+    LoadSelectedSessionImage
 };
 
 struct SpatialLayoutPersistencePanelState {
@@ -22,6 +25,7 @@ struct SpatialLayoutPersistencePanelState {
     bool can_save_top_rim_observation = false;
     bool can_save_generic_image_set = false;
     bool can_save_group_image_sets = false;
+    bool can_save_linked_arena_layouts = false;
 };
 
 SpatialLayoutPersistencePanelEvent render_spatial_layout_persistence_panel(

@@ -214,9 +214,19 @@ void materializes_contract_and_supervisor_plan()
             "materialized contract should require storage preflight telemetry");
     require(contract.value("require_protocol_hello", false),
             "materialized contract should require IPC protocol hello telemetry");
+    require(contract.value("preserve_shard_mp4s", true) == false,
+            "materialized contract should delete shard MP4s by default after merge");
     require(contract["streams"].size() == 2, "expected two contract streams");
     require(contract["streams"]["2010095"].value("routing_policy", "") == "gop_modulo",
             "2010095 should route by GOP modulo");
+    require(contract["streams"]["2010095"].value("stream_kind", "") == "full_frame",
+            "2010095 stream kind should default to full_frame");
+    require(contract["streams"]["2010095"].value("output_kind", "") == "full",
+            "2010095 output kind should default to full");
+    require(contract["streams"]["2010095"].value("camera_serial", "") == "2010095",
+            "2010095 camera serial should default to real serial");
+    require(contract["streams"]["2010095"].value("env_key", "") == "2010095",
+            "2010095 env key should default to serial");
     require(contract["streams"]["2010095"]["expected_shard_gpu_ids"] == nlohmann::json::array({5, 6}),
             "2010095 shard GPU ids mismatch");
     require(contract["streams"]["2010096"].value("mp4", "") ==
@@ -239,6 +249,14 @@ void materializes_contract_and_supervisor_plan()
                 &error),
             "supervisor plan failed: " + error);
     require(plan.streams.size() == 2, "expected two supervisor streams");
+    require(plan.streams[0].stream_kind == "full_frame",
+            "supervisor stream kind should default to full_frame");
+    require(plan.streams[0].output_kind == "full",
+            "supervisor output kind should default to full");
+    require(plan.streams[0].env_key == plan.streams[0].camera_serial,
+            "supervisor env key should default to real serial");
+    require(!plan.preserve_shard_mp4s,
+            "supervisor plan should carry default shard MP4 retention policy");
 }
 
 void preserves_configured_recording_control_when_input_is_default()

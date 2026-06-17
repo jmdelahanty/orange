@@ -112,6 +112,22 @@ CameraRigIoConnection make_default_nir_strobe_connection(const CameraParams& cam
     return connection;
 }
 
+CameraOpticalFilterConfig make_default_hoya_r72_filter()
+{
+    CameraOpticalFilterConfig filter;
+    filter.id = "hoya_r72_67mm";
+    filter.manufacturer = "HOYA / Kenko Tokina Co., Ltd.";
+    filter.model = "Creative Filter Infrared R72";
+    filter.label = "67";
+    filter.type = "infrared_longpass_filter";
+    filter.thread_size = "67 mm";
+    filter.state = "installed";
+    filter.runtime_role = "normal_experiment_filter";
+    filter.cutoff_wavelength_nm = 720.0;
+    filter.notes = "Normal runtime camera filter; remove only for visible-projector calibration captures.";
+    return filter;
+}
+
 bool has_known_nir_strobe_output_pinout(const CameraParams& camera_params)
 {
     const bool known_connector =
@@ -251,6 +267,24 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         "enum",
         "bool",
         "uint"
+    };
+    static const char* const kOpticsControlValues[] = {
+        "",
+        "none",
+        "manual",
+        "camera_focus",
+        "camera_iris",
+        "uart",
+        "unknown"
+    };
+    static const char* const kOpticsControlLabels[] = {
+        "(unset)",
+        "None",
+        "Manual",
+        "Camera Focus Node",
+        "Camera Iris Node",
+        "UART",
+        "Unknown"
     };
     static const char* const kRigIoPurposeValues[] = {
         "nir_strobe_trigger",
@@ -504,6 +538,106 @@ void render_camera_properties_panel(CameraEmergent* ecams,
         if (!cameras_params[selected_camera].lens_control_enabled) {
             ImGui::EndDisabled();
             ImGui::TextDisabled("Lens control is disabled; startup focus/iris writes are skipped.");
+        }
+        if (ImGui::TreeNode("Optics Metadata")) {
+            CameraOpticsConfig& optics = cameras_params[selected_camera].optics;
+            CameraLensConfig& lens = optics.lens;
+            ImGui::TextDisabled("Descriptive per-camera metadata. These fields do not write camera hardware nodes.");
+
+            bool track_lens_metadata = lens.configured;
+            if (ImGui::Checkbox("Track lens metadata", &track_lens_metadata)) {
+                if (track_lens_metadata) {
+                    lens.configured = true;
+                    if (lens.focus_control.empty()) {
+                        lens.focus_control =
+                            cameras_params[selected_camera].lens_control_enabled
+                                ? "camera_focus"
+                                : "none";
+                    }
+                    if (lens.iris_control.empty()) {
+                        lens.iris_control =
+                            cameras_params[selected_camera].lens_control_enabled
+                                ? "camera_iris"
+                                : "none";
+                    }
+                } else {
+                    lens = CameraLensConfig();
+                }
+            }
+            if (lens.configured) {
+                ImGui::Checkbox("Lens present", &lens.present);
+                ImGui::InputText("Lens manufacturer", &lens.manufacturer);
+                ImGui::InputText("Lens model", &lens.model);
+                ImGui::InputText("Lens serial", &lens.serial);
+                ImGui::InputText("Lens mount", &lens.mount);
+                ImGui::InputDouble("Focal length mm", &lens.focal_length_mm);
+                if (lens.focal_length_mm < 0.0) {
+                    lens.focal_length_mm = 0.0;
+                }
+                ImGui::InputDouble("Aperture f-number", &lens.aperture_f_number);
+                if (lens.aperture_f_number < 0.0) {
+                    lens.aperture_f_number = 0.0;
+                }
+                combo_select_string("Focus control",
+                                    &lens.focus_control,
+                                    kOpticsControlValues,
+                                    kOpticsControlLabels,
+                                    IM_ARRAYSIZE(kOpticsControlValues));
+                combo_select_string("Iris control",
+                                    &lens.iris_control,
+                                    kOpticsControlValues,
+                                    kOpticsControlLabels,
+                                    IM_ARRAYSIZE(kOpticsControlValues));
+                ImGui::InputText("Lens notes", &lens.notes);
+            }
+
+            if (ImGui::TreeNode("Optical Filter Stack")) {
+                int remove_filter_index = -1;
+                for (int filter_idx = 0;
+                     filter_idx < static_cast<int>(optics.filter_stack.size());
+                     ++filter_idx) {
+                    CameraOpticalFilterConfig& filter = optics.filter_stack[filter_idx];
+                    ImGui::PushID(filter_idx);
+                    ImGui::Separator();
+                    ImGui::Text("Filter %d", filter_idx + 1);
+                    ImGui::InputText("ID", &filter.id);
+                    ImGui::InputText("Manufacturer", &filter.manufacturer);
+                    ImGui::InputText("Model", &filter.model);
+                    ImGui::InputText("Label", &filter.label);
+                    ImGui::InputText("Type", &filter.type);
+                    ImGui::InputText("Thread size", &filter.thread_size);
+                    ImGui::InputText("State", &filter.state);
+                    ImGui::InputText("Runtime role", &filter.runtime_role);
+                    ImGui::InputDouble("Cutoff wavelength nm", &filter.cutoff_wavelength_nm);
+                    ImGui::InputDouble("Center wavelength nm", &filter.center_wavelength_nm);
+                    ImGui::InputDouble("Min wavelength nm", &filter.min_wavelength_nm);
+                    ImGui::InputDouble("Max wavelength nm", &filter.max_wavelength_nm);
+                    ImGui::InputDouble("Bandwidth FWHM nm", &filter.bandwidth_fwhm_nm);
+                    filter.cutoff_wavelength_nm = std::max(0.0, filter.cutoff_wavelength_nm);
+                    filter.center_wavelength_nm = std::max(0.0, filter.center_wavelength_nm);
+                    filter.min_wavelength_nm = std::max(0.0, filter.min_wavelength_nm);
+                    filter.max_wavelength_nm = std::max(0.0, filter.max_wavelength_nm);
+                    filter.bandwidth_fwhm_nm = std::max(0.0, filter.bandwidth_fwhm_nm);
+                    ImGui::InputText("Filter notes", &filter.notes);
+                    if (ImGui::Button("Remove filter")) {
+                        remove_filter_index = filter_idx;
+                    }
+                    ImGui::PopID();
+                }
+                if (remove_filter_index >= 0) {
+                    optics.filter_stack.erase(
+                        optics.filter_stack.begin() + remove_filter_index);
+                }
+                if (ImGui::Button("Add HOYA R72 67 mm runtime filter")) {
+                    optics.filter_stack.push_back(make_default_hoya_r72_filter());
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Add blank filter")) {
+                    optics.filter_stack.push_back(CameraOpticalFilterConfig{});
+                }
+                ImGui::TreePop();
+            }
+            ImGui::TreePop();
         }
         const std::string previous_sync_mode = cameras_params[selected_camera].sync_mode;
         if (combo_select_string("Sync Mode",

@@ -1051,13 +1051,18 @@ nlohmann::json arena_layout_artifact_to_json(const ArenaLayoutArtifact& value)
     if (!value.provenance.notes.empty()) {
         out["provenance"]["notes"] = value.provenance.notes;
     }
-    if (!value.context.dish_design_id.empty() || !value.context.canvas_id.empty()) {
+    if (!value.context.dish_design_id.empty() ||
+        !value.context.canvas_id.empty() ||
+        !value.context.arena_id.empty()) {
         out["context"] = nlohmann::json::object();
         if (!value.context.dish_design_id.empty()) {
             out["context"]["dish_design_id"] = value.context.dish_design_id;
         }
         if (!value.context.canvas_id.empty()) {
             out["context"]["canvas_id"] = value.context.canvas_id;
+        }
+        if (!value.context.arena_id.empty()) {
+            out["context"]["arena_id"] = value.context.arena_id;
         }
     }
     return out;
@@ -1369,7 +1374,8 @@ bool parse_arena_layout_artifact_json(const nlohmann::json& node, ArenaLayoutArt
     if (node.contains("context")) {
         if (!require_object(node.at("context"), "arena_layout_artifact.context", error_out) ||
             !parse_optional_string(node.at("context"), "dish_design_id", &out->context.dish_design_id, error_out, "arena_layout_artifact.context") ||
-            !parse_optional_string(node.at("context"), "canvas_id", &out->context.canvas_id, error_out, "arena_layout_artifact.context")) {
+            !parse_optional_string(node.at("context"), "canvas_id", &out->context.canvas_id, error_out, "arena_layout_artifact.context") ||
+            !parse_optional_string(node.at("context"), "arena_id", &out->context.arena_id, error_out, "arena_layout_artifact.context")) {
             return false;
         }
     }

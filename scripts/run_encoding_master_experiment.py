@@ -447,6 +447,7 @@ def resolve_run(
     contract["require_protocol_hello"] = True
     contract["require_video_sanity"] = True
     contract["require_gop_routing"] = True
+    contract["preserve_shard_mp4s"] = False
     streams = contract.get("streams", {})
     if isinstance(streams, dict):
         for serial, stream in streams.items():

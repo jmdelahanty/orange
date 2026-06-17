@@ -2,7 +2,25 @@
 
 Date: 2026-05-04
 
-Status: design/TODO. No runtime implementation yet.
+Status: superseded design/TODO. No runtime implementation.
+
+Correction, 2026-06-12: do not use projected dots/grids or moved diffusers as
+camera-side physical dish-bottom or fish-plane calibration. The current
+direction is documented in `docs/calibration_image_set_schema.md`:
+
+- projector/canvas homography captures are projection-surface validation only;
+- current dry physical-target height-parallax diagnostics use
+  `purpose = "dry_physical_target_height_parallax_diagnostic"` and
+  `reference_only = true`;
+- future wet/runtime-condition camera-only physical maps use
+  `purpose = "camera_only_physical_target_calibration"`;
+- `C_0`, `C_base`, and `C_fish` are fit from a physical target with known XY
+  coordinates in millimeters;
+- `projected_pattern_used_as_coordinate_target` must be `false` for those
+  physical maps.
+
+The projected-dot dish-plane ideas below are historical context and should not
+be implemented as physical tank-bottom or fish-plane calibration.
 
 Related docs:
 

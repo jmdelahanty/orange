@@ -125,7 +125,8 @@ Implemented:
   - `--shard-gpu-ids`
   - one encode worker per shard GPU
   - whole-GOP modulo routing
-  - per-shard encode CSV/MP4 artifacts
+  - per-shard encode CSV artifacts, with per-shard MP4s retained only when
+    explicitly preserved for diagnostics
   - merged GOP-ordered base MP4 output
   - `external_gop_routing.csv`
 - Full-rate one-camera and two-camera PTP smoke runners:

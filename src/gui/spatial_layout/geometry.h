@@ -29,6 +29,15 @@ std::vector<Point2d> sample_circle_boundary_points(double cx,
                                                    double radius,
                                                    int point_count);
 
+bool sample_citrus_experimental_area_outline_in_camera_px(
+    const CitrusSpatialTemplateState& template_state,
+    const Point2d& center_arena_relative_px,
+    std::vector<Point2d>* camera_points_out,
+    std::string* error_out);
+
+std::array<Point2d, 4> oriented_rectangle_corners(
+    const orange::spatial::RuntimeGeometry& geometry);
+
 bool fit_circle_to_points(const std::vector<Point2d>& points,
                           orange::spatial::CircleGeometry* circle_out,
                           double* rms_error_out,

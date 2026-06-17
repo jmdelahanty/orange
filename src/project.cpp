@@ -1787,11 +1787,21 @@ void prepare_application_folders(std::string orange_root_dir_str)
         }
     }
 
-    std::string calibration_artifacts_str = orange_root_dir_str + "/calibrations/artifacts";
-    std::filesystem::path calibration_artifacts_path(calibration_artifacts_str);
-    if (!std::filesystem::exists(calibration_artifacts_path)) {
-        if (std::filesystem::create_directories(calibration_artifacts_path)) {
-            std::cout << "Create calibration artifacts folder..." << std::endl;
+    std::string calibration_sessions_str = orange_root_dir_str + "/calibrations/sessions";
+    std::filesystem::path calibration_sessions_path(calibration_sessions_str);
+    if (!std::filesystem::exists(calibration_sessions_path)) {
+        if (std::filesystem::create_directories(calibration_sessions_path)) {
+            std::cout << "Create calibration sessions folder..." << std::endl;
+        }
+    }
+
+    std::string standalone_calibration_artifacts_str =
+        orange_root_dir_str + "/calibrations/standalone_artifacts";
+    std::filesystem::path standalone_calibration_artifacts_path(
+        standalone_calibration_artifacts_str);
+    if (!std::filesystem::exists(standalone_calibration_artifacts_path)) {
+        if (std::filesystem::create_directories(standalone_calibration_artifacts_path)) {
+            std::cout << "Create standalone calibration artifacts folder..." << std::endl;
         }
     }
 }
@@ -2841,6 +2851,7 @@ void reset_camera_config_extensions(CameraParams* camera_params) {
     camera_params->ptp_mode.clear();
     camera_params->gpio_nodes.clear();
     camera_params->rig_io_connections.clear();
+    camera_params->optics = CameraOpticsConfig();
     camera_params->recording = CameraRecordingConfig();
     camera_params->crop_pipeline = CameraCropPipelineConfig();
     camera_params->lens_control_enabled = true;
@@ -3102,9 +3113,60 @@ nlohmann::json build_camera_config_json_from_params(const CameraParams& camera_p
         !rig_io["connections"].empty()) {
         camera_config["rig_io"] = std::move(rig_io);
     }
+    nlohmann::json optics = orange::camera_config::build_optics_config(camera_params);
+    if (!optics.empty()) {
+        camera_config["optics"] = std::move(optics);
+    }
     camera_config["recording"] = build_recording_config_json_from_params(camera_params);
     camera_config["crop_pipeline"] = build_crop_pipeline_config_json_from_params(camera_params);
     return camera_config;
+}
+
+nlohmann::json build_camera_coordinate_frame_snapshot(const CameraParams& camera_params)
+{
+    const int width = static_cast<int>(camera_params.width);
+    const int height = static_cast<int>(camera_params.height);
+    return {
+        {"schema_version", 1},
+        {"coordinate_space", "camera_native_pixels"},
+        {"units", "pixels"},
+        {"origin", {
+            {"name", "top_left_pixel"},
+            {"x_px", 0},
+            {"y_px", 0}
+        }},
+        {"axes", {
+            {"x", {
+                {"positive_direction", "right"},
+                {"index_role", "column"}
+            }},
+            {"y", {
+                {"positive_direction", "down"},
+                {"index_role", "row"}
+            }}
+        }},
+        {"point_order", "xy"},
+        {"pixel_indexing", {
+            {"index_base", 0},
+            {"valid_x_index_min", 0},
+            {"valid_y_index_min", 0},
+            {"valid_x_index_max", width > 0 ? width - 1 : -1},
+            {"valid_y_index_max", height > 0 ? height - 1 : -1}
+        }},
+        {"extent", {
+            {"width_px", width},
+            {"height_px", height},
+            {"x_min_px", 0},
+            {"y_min_px", 0},
+            {"x_max_exclusive_px", width},
+            {"y_max_exclusive_px", height}
+        }},
+        {"image_shape", {
+            {"height", height},
+            {"width", width}
+        }},
+        {"orientation_reference", "orange_live_stream"}
+    };
 }
 
 nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
@@ -3116,6 +3178,7 @@ nlohmann::json build_camera_runtime_snapshot(const CameraParams& camera_params)
         {"configured_gpu_id", camera_params.configured_gpu_id},
         {"gpu_id_runtime_overridden", camera_params.gpu_id_runtime_overridden}
     };
+    snapshot["coordinate_frame"] = build_camera_coordinate_frame_snapshot(camera_params);
     snapshot["runtime"] = build_camera_config_json_from_params(camera_params);
     return snapshot;
 }
@@ -3213,6 +3276,7 @@ void load_camera_json_config_files(std::string file_name, CameraParams* camera_p
 
     parse_gpio_nodes_from_json(camera_config, camera_params);
     orange::camera_config::parse_rig_io_config(camera_config, camera_params);
+    orange::camera_config::parse_optics_config(camera_config, camera_params);
     parse_recording_config_from_json(camera_config, camera_params);
     parse_crop_pipeline_config_from_json(camera_config, camera_params);
     infer_camera_gpio_metadata(camera_params);
@@ -5125,7 +5189,10 @@ bool update_calibration_artifact_registry(const std::string& artifact_root_dir,
     entry["created_utc"] = manifest.value("created_utc", "");
     entry["fingerprint"] = fingerprint;
     entry["relative_manifest_path"] =
-        (std::filesystem::path(artifact_id) / "manifest.json").generic_string();
+        manifest.value("storage", nlohmann::json::object())
+            .value(
+                "relative_manifest_path",
+                (std::filesystem::path(artifact_id) / "manifest.json").generic_string());
     if (manifest.contains("producer")) {
         entry["producer"] = manifest["producer"];
     }

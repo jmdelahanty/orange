@@ -494,8 +494,9 @@ def external_crop_contract_stream_config(
     if not streams:
         return {}
 
-    candidates = [value for value in (stream_id, f"{serial}_crop") if isinstance(value, str) and value]
-    for candidate in candidates:
+    stream_candidates = [value for value in (stream_id, f"{serial}_crop") if isinstance(value, str) and value]
+    serial_candidates = [value for value in (serial, f"{serial}_crop") if isinstance(value, str) and value]
+    for candidate in stream_candidates:
         value = streams.get(candidate)
         if isinstance(value, dict):
             return value
@@ -503,7 +504,11 @@ def external_crop_contract_stream_config(
     for value in streams.values():
         if not isinstance(value, dict):
             continue
-        if value.get("stream_id") in candidates or value.get("camera_serial") in candidates:
+        if (
+            value.get("stream_id") in stream_candidates
+            or value.get("env_key") in stream_candidates
+            or value.get("camera_serial") in serial_candidates
+        ):
             return value
     return {}
 
@@ -513,6 +518,10 @@ def descriptor_stream_config(details: dict[str, Any]) -> dict[str, Any]:
         return {}
     fields = (
         "stream_id",
+        "stream_kind",
+        "output_kind",
+        "camera_serial",
+        "env_key",
         "analytics_gpu_id",
         "recorder_gpu_id",
         "socket_path",

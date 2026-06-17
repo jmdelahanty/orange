@@ -373,7 +373,7 @@ Implemented on 2026-04-26:
 - Frames are routed by complete GOP:
   `assigned_shard_id = gop_index % shard_count`.
 - Each shard owns its CUDA/NVENC path and writes separate diagnostic artifacts:
-  per-shard encode CSV and per-shard MP4.
+  per-shard encode CSV and, when preserved for diagnostics, per-shard MP4.
 - `external_gop_routing.csv` records the selected shard/GPU for every frame.
 - The smoke runner accepts `--shard-gpu-ids`.
 - This slice intentionally kept output split by shard; merged per-camera output
@@ -407,8 +407,9 @@ Implemented on 2026-04-26:
 
 - Multi-shard `external_recorder_ipc_probe` now creates a merged GOP output
   coordinator when `--shard-gpu-ids` and `--mp4-out` are both present.
-- Per-shard encoder workers still own their CUDA/NVENC lanes and diagnostic
-  MP4s, but returned packets are also submitted to the coordinator.
+- Per-shard encoder workers still own their CUDA/NVENC lanes. They submit
+  returned packets to the merged-output coordinator and may write temporary
+  diagnostic shard MP4s.
 - The coordinator buffers encoded packets by GOP, releases GOPs in recording
   order, and writes the base per-camera MP4 path
   `Cam<serial>_external.mp4`.
@@ -419,7 +420,10 @@ Implemented on 2026-04-26:
   pending GOP/byte counts, writer queue stats, MP4 path, and failure state.
 - `outputs.mp4` and `output_file_sizes.mp4_bytes` now refer to the merged base
   MP4 when merged output is enabled.
-- Per-shard MP4s remain in `external_encode_shards` for diagnosis.
+- Per-shard MP4 paths remain in `external_encode_shards` for diagnosis, but the
+  shard MP4 files are deleted by default after clean merged finalization.
+  Set `preserve_shard_mp4s = true` in the external-recorder contract to keep
+  them for encoder experiments.
 - The smoke runner no longer skips video sanity for multi-shard mode; it checks
   the merged base MP4.
 
@@ -503,8 +507,9 @@ Implemented on 2026-04-26:
   `2010096 -> analytics GPU 7, recorder shards 7,8`.
 - The runner uses the local `100_cam4_ptp` config folder, uncapped external
   encode (`--encode-max-fps 0`), nominal MP4 `100 fps`, and queue depth `32`.
-- The runner writes one merged MP4 and per-shard diagnostic MP4s per camera,
-  plus one summary JSON per camera.
+- The runner writes one merged MP4 plus one summary JSON per camera. It records
+  per-shard diagnostic paths in the summary, but deletes the duplicate shard
+  MP4s by default after clean merged finalization.
 - Video sanity runs on both merged camera MP4s.
 
 Validation smoke:

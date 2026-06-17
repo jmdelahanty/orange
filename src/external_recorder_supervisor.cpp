@@ -223,6 +223,8 @@ void refresh_recorder_status_sidecar(RecorderProcessState* process)
         snapshot.schema_id = optional_string(parsed, "schema_id");
         snapshot.schema_version = optional_int(parsed, "schema_version");
         snapshot.status = optional_string(parsed, "status");
+        snapshot.stream_kind = optional_string(parsed, "stream_kind");
+        snapshot.output_kind = optional_string(parsed, "output_kind");
         snapshot.steady_clock_ns = optional_u64(parsed, "steady_clock_ns");
         snapshot.heartbeat_sequence = optional_u64(parsed, "heartbeat_sequence");
         snapshot.frames_received = optional_u64(parsed, "frames_received");
@@ -527,12 +529,20 @@ bool append_selection_camera_serials(const nlohmann::json& experiment_spec,
 
 bool stream_key_exists(const nlohmann::json& streams, const std::string& serial)
 {
-    if (streams.contains(serial)) {
+    if (streams.contains(serial) && streams[serial].is_object() &&
+        normalize_token(streams[serial].value("output_kind", std::string("full"))) == "full") {
         return true;
     }
     for (auto it = streams.begin(); it != streams.end(); ++it) {
+        const nlohmann::json& stream = it.value();
+        if (!stream.is_object()) {
+            continue;
+        }
+        if (normalize_token(stream.value("output_kind", std::string("full"))) != "full") {
+            continue;
+        }
         if (it.value().is_object() &&
-            it.value().value("camera_serial", std::string()) == serial) {
+            stream.value("camera_serial", std::string()) == serial) {
             return true;
         }
     }
@@ -656,6 +666,11 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                          "require_protocol_hello",
                          &plan.require_protocol_hello,
                          error_out,
+                         "external_recorder_contract") ||
+        !read_bool_field(contract,
+                         "preserve_shard_mp4s",
+                         &plan.preserve_shard_mp4s,
+                         error_out,
                          "external_recorder_contract")) {
         return false;
     }
@@ -689,6 +704,8 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
         RecorderStreamPlan stream_plan;
         stream_plan.contract_key = it.key();
         stream_plan.stream_id = it.key();
+        stream_plan.stream_kind = "full_frame";
+        stream_plan.output_kind = "full";
         if (!read_string_field(stream,
                                "stream_id",
                                &stream_plan.stream_id,
@@ -698,17 +715,56 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                                "camera_serial",
                                &stream_plan.camera_serial,
                                error_out,
+                               context) ||
+            !read_string_field(stream,
+                               "stream_kind",
+                               &stream_plan.stream_kind,
+                               error_out,
+                               context) ||
+            !read_string_field(stream,
+                               "output_kind",
+                               &stream_plan.output_kind,
+                               error_out,
+                               context) ||
+            !read_string_field(stream,
+                               "env_key",
+                               &stream_plan.env_key,
+                               error_out,
                                context)) {
             return false;
         }
         if (stream_plan.camera_serial.empty()) {
             stream_plan.camera_serial = stream_plan.stream_id;
         }
+        if (stream_plan.env_key.empty()) {
+            stream_plan.env_key = stream_plan.stream_id;
+        }
         if (stream_plan.stream_id.empty()) {
             return set_error(error_out, context + ".stream_id must not be empty");
         }
+        stream_plan.stream_kind = normalize_token(stream_plan.stream_kind);
+        stream_plan.output_kind = normalize_token(stream_plan.output_kind);
+        if (stream_plan.stream_kind.empty()) {
+            stream_plan.stream_kind = "full_frame";
+        }
+        if (stream_plan.output_kind.empty()) {
+            stream_plan.output_kind = "full";
+        }
+        if (stream_plan.stream_kind != "full_frame" &&
+            stream_plan.stream_kind != "crop") {
+            return set_error(error_out,
+                             context + ".stream_kind must be full_frame or crop");
+        }
+        if (stream_plan.output_kind != "full" &&
+            stream_plan.output_kind != "crop") {
+            return set_error(error_out,
+                             context + ".output_kind must be full or crop");
+        }
         if (stream_plan.camera_serial.empty()) {
             return set_error(error_out, context + ".camera_serial must not be empty");
+        }
+        if (stream_plan.env_key.empty()) {
+            return set_error(error_out, context + ".env_key must not be empty");
         }
 
         stream_plan.encode_fps = options.default_encode_fps;
@@ -950,7 +1006,7 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
 
         if (stream_plan.socket_path.empty()) {
             stream_plan.socket_path =
-                "/tmp/orange_external_recorder_" + stream_plan.camera_serial + ".sock";
+                "/tmp/orange_external_recorder_" + stream_plan.env_key + ".sock";
         }
         if (stream_plan.mp4_keyframe.empty()) {
             stream_plan.mp4_keyframe = derive_keyframe_path(stream_plan.mp4);
@@ -960,28 +1016,28 @@ bool BuildSupervisorPlanFromContract(const nlohmann::json& contract,
                 !stream_plan.summary_json.empty()
                     ? replace_suffix(stream_plan.summary_json, "_summary.json", "_status.json")
                     : path_join(plan.artifact_root,
-                                "Cam" + stream_plan.camera_serial + "_external_status.json");
+                                "Cam" + stream_plan.env_key + "_external_status.json");
         }
         if (stream_plan.detach_csv.empty()) {
             stream_plan.detach_csv =
                 !stream_plan.gop_routing_csv.empty()
                     ? replace_suffix(stream_plan.gop_routing_csv, "_gop_routing.csv", "_detach.csv")
                     : path_join(plan.artifact_root,
-                                "Cam" + stream_plan.camera_serial + "_external_detach.csv");
+                                "Cam" + stream_plan.env_key + "_external_detach.csv");
         }
         if (stream_plan.encode_csv.empty()) {
             stream_plan.encode_csv =
                 !stream_plan.gop_routing_csv.empty()
                     ? replace_suffix(stream_plan.gop_routing_csv, "_gop_routing.csv", "_encode.csv")
                     : path_join(plan.artifact_root,
-                                "Cam" + stream_plan.camera_serial + "_external_encode.csv");
+                                "Cam" + stream_plan.env_key + "_external_encode.csv");
         }
         if (stream_plan.recorder_log.empty()) {
             stream_plan.recorder_log =
                 path_join(plan.artifact_root,
                           stream_count == 1
                               ? "external_recorder.log"
-                              : "Cam" + stream_plan.camera_serial + "_external_recorder.log");
+                              : "Cam" + stream_plan.env_key + "_external_recorder.log");
         }
 
         plan.streams.push_back(std::move(stream_plan));
@@ -1117,6 +1173,10 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         plan.session_id,
         "--stream-id",
         stream.stream_id,
+        "--stream-kind",
+        stream.stream_kind,
+        "--output-kind",
+        stream.output_kind,
         "--record-for-seconds",
         std::to_string(stream.record_for_seconds),
         "--clip-seconds",
@@ -1149,6 +1209,9 @@ std::vector<std::string> BuildRecorderCommand(const SupervisorPlan& plan,
         argv.push_back("--shard-gpu-ids");
         argv.push_back(join_gpu_ids(stream.expected_shard_gpu_ids));
     }
+    if (plan.preserve_shard_mp4s) {
+        argv.push_back("--preserve-shard-mp4s");
+    }
     return argv;
 }
 
@@ -1159,7 +1222,10 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         streams.push_back({
             {"contract_key", stream.contract_key},
             {"stream_id", stream.stream_id},
+            {"stream_kind", stream.stream_kind},
+            {"output_kind", stream.output_kind},
             {"camera_serial", stream.camera_serial},
+            {"env_key", stream.env_key},
             {"analytics_gpu_id", stream.analytics_gpu_id},
             {"recorder_gpu_id", stream.recorder_gpu_id},
             {"expected_shard_gpu_ids", stream.expected_shard_gpu_ids},
@@ -1196,6 +1262,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
             {"vbv_buffer_size", stream.vbv_buffer_size},
             {"min_free_bytes", stream.min_free_bytes},
             {"low_space_warning_bytes", stream.low_space_warning_bytes},
+            {"preserve_shard_mp4s", plan.preserve_shard_mp4s},
             {"command", {
                 {"argv", BuildRecorderCommand(plan, stream)},
                 {"log_path", stream.recorder_log},
@@ -1220,6 +1287,7 @@ nlohmann::json SupervisorPlanToJson(const SupervisorPlan& plan)
         {"require_status_runtime", plan.require_status_runtime},
         {"require_storage_preflight", plan.require_storage_preflight},
         {"require_protocol_hello", plan.require_protocol_hello},
+        {"preserve_shard_mp4s", plan.preserve_shard_mp4s},
         {"streams", streams},
     };
 }
@@ -1243,7 +1311,10 @@ bool StartSupervisorProcesses(const SupervisorPlan& plan,
     for (const RecorderStreamPlan& stream : plan.streams) {
         RecorderProcessState process;
         process.stream_id = stream.stream_id;
+        process.stream_kind = stream.stream_kind;
+        process.output_kind = stream.output_kind;
         process.camera_serial = stream.camera_serial;
+        process.env_key = stream.env_key;
         process.socket_path = stream.socket_path;
         process.status_json_path = stream.status_json;
         process.recorder_status.path = stream.status_json;
@@ -1469,7 +1540,10 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
         const RecorderStatusSnapshot& recorder_status = process.recorder_status;
         processes.push_back({
             {"stream_id", process.stream_id},
+            {"stream_kind", process.stream_kind},
+            {"output_kind", process.output_kind},
             {"camera_serial", process.camera_serial},
+            {"env_key", process.env_key},
             {"socket_path", process.socket_path},
             {"status_json_path", process.status_json_path},
             {"log_path", process.log_path},
@@ -1489,6 +1563,8 @@ nlohmann::json SupervisorRuntimeStateToJson(const SupervisorRuntimeState& runtim
                 {"schema_id", recorder_status.schema_id},
                 {"schema_version", recorder_status.schema_version},
                 {"status", recorder_status.status},
+                {"stream_kind", recorder_status.stream_kind},
+                {"output_kind", recorder_status.output_kind},
                 {"steady_clock_ns", recorder_status.steady_clock_ns},
                 {"heartbeat_sequence", recorder_status.heartbeat_sequence},
                 {"frames_received", recorder_status.frames_received},

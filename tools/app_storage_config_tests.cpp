@@ -73,6 +73,17 @@ void write_text(const std::filesystem::path& path, const std::string& text)
     out << text;
 }
 
+nlohmann::json read_json(const std::filesystem::path& path)
+{
+    std::ifstream in(path);
+    if (!in.is_open()) {
+        throw std::runtime_error("failed to open " + path.string());
+    }
+    nlohmann::json value;
+    in >> value;
+    return value;
+}
+
 AppStorageConfig load_from_path(const std::filesystem::path& path, std::string* error_out = nullptr)
 {
     ScopedEnv app_config("ORANGE_APP_CONFIG_PATH");
@@ -393,6 +404,29 @@ void test_camera_config_loads_lens_control_flag()
   "gpu_direct": true,
   "focus_uart_bootstrap": false,
   "lens_control_enabled": false,
+  "optics": {
+    "schema_id": "orange.camera.optics",
+    "schema_version": 1,
+    "lens": {
+      "present": false,
+      "focus_control": "none",
+      "iris_control": "none",
+      "notes": "Color camera has no controllable lens attached"
+    },
+    "filter_stack": [
+      {
+        "id": "hoya_r72_67mm",
+        "manufacturer": "HOYA / Kenko Tokina Co., Ltd.",
+        "model": "Creative Filter Infrared R72",
+        "label": "67",
+        "type": "infrared_longpass_filter",
+        "thread_size": "67 mm",
+        "state": "installed",
+        "runtime_role": "normal_experiment_filter",
+        "cutoff_wavelength_nm": 720.0
+      }
+    ]
+  },
   "color": true,
   "focus": 0,
   "iris": 0,
@@ -417,6 +451,14 @@ void test_camera_config_loads_lens_control_flag()
     CameraParams params{};
     load_camera_json_config_files(config_path.string(), &params, 0, 1);
     require(!params.lens_control_enabled, "lens_control_enabled=false should load");
+    require(params.optics.lens.configured, "optics.lens should load");
+    require(!params.optics.lens.present, "optics.lens.present=false should load");
+    require(params.optics.lens.focus_control == "none", "lens focus_control should load");
+    require(params.optics.filter_stack.size() == 1, "optics filter stack should load");
+    require(params.optics.filter_stack.front().id == "hoya_r72_67mm", "filter id should load");
+    require(
+        params.optics.filter_stack.front().state == "installed",
+        "runtime filter state should load");
     require(
         params.recording.preferred_sink_mode == "external_ipc",
         "recording.preferred_sink_mode should load");
@@ -449,6 +491,73 @@ void test_camera_config_lens_control_defaults_enabled()
     CameraParams params{};
     load_camera_json_config_files(config_path.string(), &params, 0, 1);
     require(params.lens_control_enabled, "legacy camera config should default lens control on");
+
+    std::filesystem::remove_all(root);
+}
+
+void test_recording_snapshot_includes_camera_coordinate_frame()
+{
+    const std::filesystem::path root = make_temp_dir();
+    const std::filesystem::path recording_folder = root / "recording";
+    const std::filesystem::path config_path = root / "2010096.json";
+    std::filesystem::create_directories(recording_folder);
+    write_text(config_path, R"json({"device_serial_number":"2010096"})json");
+
+    CameraParams params{};
+    params.width = 4512;
+    params.height = 4512;
+    params.frame_rate = 100;
+    params.gpu_id = 5;
+    params.configured_gpu_id = 5;
+    params.camera_id = 0;
+    params.camera_serial = "2010096";
+    params.camera_name = "Cam2010096";
+    params.pixel_format = "Mono8";
+    params.gpu_direct = true;
+    params.config_path = config_path.string();
+
+    require(
+        write_recording_snapshot(
+            recording_folder.string(),
+            "coord_frame_test",
+            &params,
+            1,
+            root.string(),
+            false),
+        "recording snapshot should write");
+
+    const nlohmann::json snapshot = read_json(recording_folder / "recording_snapshot.json");
+    const nlohmann::json& frame =
+        snapshot.at("camera_runtime").at("2010096").at("coordinate_frame");
+
+    require(frame.value("schema_version", 0) == 1, "coordinate frame schema version");
+    require(
+        frame.value("coordinate_space", "") == "camera_native_pixels",
+        "coordinate frame names camera_native_pixels");
+    require(frame.value("units", "") == "pixels", "coordinate frame units");
+    require(frame.at("origin").value("name", "") == "top_left_pixel", "coordinate origin");
+    require(
+        frame.at("axes").at("x").value("positive_direction", "") == "right",
+        "x axis direction");
+    require(
+        frame.at("axes").at("y").value("positive_direction", "") == "down",
+        "y axis direction");
+    require(frame.value("point_order", "") == "xy", "point order");
+    require(frame.at("pixel_indexing").value("index_base", -1) == 0, "zero-based pixel indexing");
+    require(
+        frame.at("pixel_indexing").value("valid_x_index_max", 0) == 4511,
+        "x index max follows width");
+    require(
+        frame.at("pixel_indexing").value("valid_y_index_max", 0) == 4511,
+        "y index max follows height");
+    require(frame.at("extent").value("width_px", 0) == 4512, "extent width");
+    require(frame.at("extent").value("height_px", 0) == 4512, "extent height");
+    require(
+        frame.at("extent").value("x_max_exclusive_px", 0) == 4512,
+        "exclusive x extent");
+    require(
+        frame.at("extent").value("y_max_exclusive_px", 0) == 4512,
+        "exclusive y extent");
 
     std::filesystem::remove_all(root);
 }
@@ -627,6 +736,8 @@ int main()
         {"camera_config_loads_lens_control_flag", &test_camera_config_loads_lens_control_flag},
         {"camera_config_lens_control_defaults_enabled",
          &test_camera_config_lens_control_defaults_enabled},
+        {"recording_snapshot_includes_camera_coordinate_frame",
+         &test_recording_snapshot_includes_camera_coordinate_frame},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},
         {"invalid_crop_queue_depth_fails", &test_invalid_crop_queue_depth_fails},
         {"invalid_crop_recorder_gpu_fails", &test_invalid_crop_recorder_gpu_fails},

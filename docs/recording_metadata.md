@@ -136,7 +136,9 @@ emitted for compatibility, but schema-2 consumers should prefer
 `camera_runtime` is an optional dictionary keyed by camera serial number (as a
 string). It records the resolved runtime camera config actually used for that
 run, including runtime placement overrides such as a different `gpu_id` than
-the one stored in `config/local/...`.
+the one stored in `config/local/...`. New schema-2 snapshots also include
+`camera_runtime[serial].coordinate_frame`, a per-camera raster coordinate
+contract that does not depend on spatial calibration artifacts.
 
 `gpu_inventory` is an optional dictionary keyed by GPU id string. It records the
 resolved runtime device identity for the GPUs used in that recording, so a later
@@ -286,6 +288,47 @@ Current `camera_runtime` shape:
         "configured_gpu_id": 0,
         "gpu_id_runtime_overridden": true
       },
+      "coordinate_frame": {
+        "schema_version": 1,
+        "coordinate_space": "camera_native_pixels",
+        "units": "pixels",
+        "origin": {
+          "name": "top_left_pixel",
+          "x_px": 0,
+          "y_px": 0
+        },
+        "axes": {
+          "x": {
+            "positive_direction": "right",
+            "index_role": "column"
+          },
+          "y": {
+            "positive_direction": "down",
+            "index_role": "row"
+          }
+        },
+        "point_order": "xy",
+        "pixel_indexing": {
+          "index_base": 0,
+          "valid_x_index_min": 0,
+          "valid_y_index_min": 0,
+          "valid_x_index_max": 2255,
+          "valid_y_index_max": 2255
+        },
+        "extent": {
+          "width_px": 2256,
+          "height_px": 2256,
+          "x_min_px": 0,
+          "y_min_px": 0,
+          "x_max_exclusive_px": 2256,
+          "y_max_exclusive_px": 2256
+        },
+        "image_shape": {
+          "height": 2256,
+          "width": 2256
+        },
+        "orientation_reference": "orange_live_stream"
+      },
       "runtime": {
         "name": "cam02010093",
         "width": 2256,
@@ -301,6 +344,16 @@ Current `camera_runtime` shape:
 ```
 
 Notes:
+- `coordinate_frame` is emitted from the resolved camera dimensions and raster
+  convention, not from `calibrations`. Consumers should use it even when
+  `calibrations` is absent.
+- `coordinate_frame.coordinate_space = "camera_native_pixels"` means the raw
+  producer camera raster: `(0,0)` is the top-left pixel, `x` increases right,
+  `y` increases downward, and points are ordered `[x, y]`.
+- `coordinate_frame.extent.x_max_exclusive_px` and
+  `coordinate_frame.extent.y_max_exclusive_px` give the half-open continuous
+  image extent. `pixel_indexing.valid_*_index_max` gives the largest valid
+  integer pixel address.
 - `mode` reflects the current recording-time sync mode:
   - `none`: no camera-side synchronized acquisition was enabled.
   - `ptp_local`: camera-side PTP sync enabled without network-managed gate state.
@@ -314,15 +367,22 @@ Notes:
 
 This section documents the `recording_snapshot.json` surface for per-recording
 spatial calibration outputs consumed by Citrus and other downstream tools. The
-first implemented slice loads Orange spatial layout artifacts saved under
-`calibrations/artifacts/<artifact_id>/` and writes the single-circle-compatible
-`dish_mask` plus `arena_layout` runtime subset described below.
+first implemented slice loads Orange spatial layout artifacts saved under a
+session-scoped artifact root,
+`calibrations/sessions/<session_id>/artifacts/`, and writes the
+single-circle-compatible `dish_mask` plus `arena_layout` runtime subset
+described below. Arena-layout artifacts are still addressed by an artifact
+directory such as
+`calibrations/sessions/<session_id>/artifacts/<artifact_id>/`. Generic
+calibration image sets are normally camera/arena aggregates such as
+`artifacts/Cam2010093_arena_1/`, and top-rim observations may live beneath
+that aggregate in `top_rim_observations/<artifact_id>/`.
 
 GUI recording hook:
 
 ```bash
-ORANGE_SPATIAL_CALIBRATION_ARTIFACT_2010095=/home/jeremy/orange_data/calibrations/artifacts/<artifact_id>
-ORANGE_SPATIAL_CALIBRATION_ARTIFACT_2010096=/home/jeremy/orange_data/calibrations/artifacts/<artifact_id>
+ORANGE_SPATIAL_CALIBRATION_ARTIFACT_2010095=/home/jeremy/orange_data/calibrations/sessions/<session_id>/artifacts/<artifact_id>
+ORANGE_SPATIAL_CALIBRATION_ARTIFACT_2010096=/home/jeremy/orange_data/calibrations/sessions/<session_id>/artifacts/<artifact_id>
 ./scripts/run_gui_aq_off_validation.sh
 ```
 
@@ -819,7 +879,9 @@ Notes:
   `frames_received`, `frames_encoded`, `encode_dropped`,
   `external_frames_dropped`, `encode_queue_depth`, `encode_queue_high_water`,
   and `enqueue_age_p95_ms`, copied from the supervised external crop recorder
-  plan and summaries. In `stream_config`, `analytics_gpu_id` is the
+  plan and summaries. In `stream_config`, `camera_serial` is the real source
+  camera serial, `stream_id` and `env_key` are crop-suffixed, `stream_kind` is
+  `crop`, and `output_kind` is `crop`. `analytics_gpu_id` is the
   source/crop-production GPU and `recorder_gpu_id` is the external process
   encode GPU; they can differ when crop recorder GPU placement is intentionally
   overridden for NVENC load-routing diagnostics.
@@ -844,9 +906,10 @@ Notes:
   `recording_outputs[serial].crop` descriptor is also finalized as an
   external-IPC session aggregate for the merged crop MP4 and root crop CSVs,
   with `details.scope = "session_aggregate"` and the recorder `stream_id`,
-  socket, GPU placement, queue depth, summary, and status paths. Offline GUI
-  validation now checks the per-clip crop sidecars and encoded crop videos; live
-  GUI soak coverage is still pending.
+  `stream_kind`, `output_kind`, real `camera_serial`, `env_key`, socket, GPU
+  placement, queue depth, summary, and status paths. Offline GUI validation now
+  checks the per-clip crop sidecars and encoded crop videos; live GUI soak
+  coverage is still pending.
 - GUI recordings also update `recording_snapshot.json`
   `session.gui_display_frame_rate` after finalization. This is GUI display
   telemetry from ImGui delta time, split into `overall`,

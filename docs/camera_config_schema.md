@@ -54,6 +54,7 @@ Schema and GPIO-related fields:
 - `ptp`
 - `gpio`
 - `rig_io`
+- `optics`
 - `recording`
 - `crop_pipeline`
 
@@ -388,6 +389,67 @@ Notes:
   focus range discovery. It does not, by itself, disable ordinary focus/iris
   writes.
 
+## `optics`
+
+`optics` is optional per-camera physical optics metadata. It is descriptive: it
+does not write EVT `Focus`/`Iris` nodes and does not change camera runtime
+behavior by itself. Use the top-level `lens_control_enabled`,
+`focus_uart_bootstrap`, `focus`, and `iris` fields for hardware control.
+
+Recommended shape:
+
+```json
+"optics": {
+  "schema_id": "orange.camera.optics",
+  "schema_version": 1,
+  "lens": {
+    "present": true,
+    "manufacturer": "Canon",
+    "model": "EF 100mm f/2.8L Macro IS USM",
+    "serial": "",
+    "mount": "EF",
+    "focal_length_mm": 100.0,
+    "aperture_f_number": 2.8,
+    "focus_control": "camera_focus",
+    "iris_control": "camera_iris",
+    "notes": ""
+  },
+  "filter_stack": [
+    {
+      "id": "hoya_r72_67mm",
+      "manufacturer": "HOYA / Kenko Tokina Co., Ltd.",
+      "model": "Creative Filter Infrared R72",
+      "label": "67",
+      "type": "infrared_longpass_filter",
+      "thread_size": "67 mm",
+      "state": "installed",
+      "runtime_role": "normal_experiment_filter",
+      "cutoff_wavelength_nm": 720.0,
+      "notes": "Normal runtime camera filter; remove only for visible-projector calibration captures."
+    }
+  ]
+}
+```
+
+Notes:
+
+- `optics.lens.present` describes whether a physical lens is attached. It is
+  separate from `lens_control_enabled`, which only controls whether Orange
+  attempts focus/iris writes.
+- `focus_control` and `iris_control` should describe how those properties are
+  controlled for this setup, for example `none`, `manual`, `camera_focus`,
+  `camera_iris`, `uart`, or `unknown`.
+- `filter_stack` describes normal runtime optics in front of the camera. It is
+  the right place to record that a HOYA/Kenko Tokina R72 67 mm infrared filter
+  is normally installed.
+- Per-capture fields such as `filter_state` and `runtime_filter_state` still
+  belong in calibration artifacts. For example, a visible-projector homography
+  capture may say the filter was removed for that capture while `optics`
+  records that the filter is installed during normal runtime.
+- Calibration and recording artifacts should snapshot or reference the camera
+  config so downstream analysis can determine which lens/filter stack was
+  attached when the image or video was acquired.
+
 ## Example
 
 ```json
@@ -414,6 +476,32 @@ Notes:
   "gpu_direct": false,
   "focus_uart_bootstrap": false,
   "lens_control_enabled": true,
+  "optics": {
+    "schema_id": "orange.camera.optics",
+    "schema_version": 1,
+    "lens": {
+      "present": true,
+      "manufacturer": "Canon",
+      "model": "EF 100mm f/2.8L Macro IS USM",
+      "mount": "EF",
+      "focal_length_mm": 100.0,
+      "focus_control": "camera_focus",
+      "iris_control": "camera_iris"
+    },
+    "filter_stack": [
+      {
+        "id": "hoya_r72_67mm",
+        "manufacturer": "HOYA / Kenko Tokina Co., Ltd.",
+        "model": "Creative Filter Infrared R72",
+        "label": "67",
+        "type": "infrared_longpass_filter",
+        "thread_size": "67 mm",
+        "state": "installed",
+        "runtime_role": "normal_experiment_filter",
+        "cutoff_wavelength_nm": 720.0
+      }
+    ]
+  },
   "color": true,
   "offset_x": 0,
   "offset_y": 0,

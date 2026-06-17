@@ -170,13 +170,23 @@ bool StartSupervisedRecorderLifecycle(const SupervisedRecorderLifecycleOptions& 
             "ORANGE_EXTERNAL_RECORDER_SESSION_ID",
             state.plan.session_id));
     for (const RecorderStreamPlan& stream : state.plan.streams) {
+        const std::string env_key =
+            stream.env_key.empty() ? stream.stream_id : stream.env_key;
         state.env_overrides.push_back(
             std::make_unique<ScopedExternalRecorderEnvOverride>(
-                "ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" + stream.camera_serial,
+                "ORANGE_EXTERNAL_RECORDER_SESSION_ID_STREAM_" + stream.stream_id,
                 state.plan.session_id));
         state.env_overrides.push_back(
             std::make_unique<ScopedExternalRecorderEnvOverride>(
-                "ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_" + stream.camera_serial,
+                "ORANGE_EXTERNAL_RECORDER_SOCKET_STREAM_" + stream.stream_id,
+                stream.socket_path));
+        state.env_overrides.push_back(
+            std::make_unique<ScopedExternalRecorderEnvOverride>(
+                "ORANGE_EXTERNAL_RECORDER_SESSION_ID_CAM_" + env_key,
+                state.plan.session_id));
+        state.env_overrides.push_back(
+            std::make_unique<ScopedExternalRecorderEnvOverride>(
+                "ORANGE_EXTERNAL_RECORDER_SOCKET_CAM_" + env_key,
                 stream.socket_path));
     }
 

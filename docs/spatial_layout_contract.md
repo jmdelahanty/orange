@@ -14,6 +14,14 @@ For generic Orange-acquired calibration image sets used by Citrus homography,
 scale, top-rim, and crosshair workflows, see
 `docs/calibration_image_set_schema.md`.
 
+Camera-raster coordinate convention is shared with the calibration image-set
+contract: `(0,0)` is the top-left camera pixel, `x` increases right, and `y`
+increases downward. The Orange live stream and grouped-capture thumbnails are
+the visual reference for this orientation. Spatial Layout preview canvases must
+render images to match that convention; if a preview appears flipped relative
+to the live stream, fix the preview renderer rather than flipping saved images
+or artifact geometry.
+
 For the current circular single-arena dish-mask workflow, including
 Hough-circle/operator confirmation, Orange-native mask artifacts, Palette
 export mapping, and Citrus H5 snapshot expectations, see
@@ -105,8 +113,11 @@ Layer mapping:
   proposal shown to the operator, already scaled to full-resolution
   `camera_native_pixels`; top-rim save should persist this proposal instead of
   rerunning Hough at save time.
-- `dish_top_rim_observation.accepted_mask` is the operator-confirmed circular
-  mask used as the V0 load-bearing geometry.
+- `dish_top_rim_observation.accepted_experimental_area_boundary` is the
+  operator-confirmed circular boundary Citrus should interpret as the daily
+  `experimental_area` / chaser boundary.
+- `dish_top_rim_observation.accepted_mask` is the eroded
+  Palette-compatible/detection-gating view of that accepted boundary.
 - `dish_mask.outer_geometry` should represent the accepted or observed top-rim
   circle when the top rim is the usable physical boundary.
 - `dish_mask.valid_geometry` should represent the inward-eroded accepted circle
@@ -120,20 +131,28 @@ Layer mapping:
 - resolved runtime overlays are derived per-recording camera-pixel geometry
   and remain convenience outputs.
 
-The Orange top-rim artifact is therefore a producer for `dish_mask`, not a
-replacement for `arena_layout`.
+The Orange top-rim artifact is therefore camera-space evidence for `dish_mask`
+and Citrus experimental-area review, not a replacement for `arena_layout`.
 
-For V0, the load-bearing geometry is the operator-confirmed circle:
+For V0, the experimental-area boundary is the operator-confirmed circle:
+
+```text
+dish_top_rim_observation.accepted_experimental_area_boundary.circle
+  -> Citrus experimental_area / chaser boundary proposal
+  -> dish_mask.outer_geometry.circle
+```
+
+The eroded detection/export view is separate:
 
 ```text
 dish_top_rim_observation.accepted_mask.circle
   -> dish_mask.valid_geometry.circle
+  -> optional valid_detection_region / Palette export
 ```
 
-If Orange also records a non-eroded rim circle, that maps to
-`dish_mask.outer_geometry.circle`. If only one confirmed circle is available,
-Orange may use the same circle as `outer_geometry` and derive
-`valid_geometry` by applying the configured `edge_margin_px`.
+If only one confirmed circle is available, Orange may use the same circle as
+`outer_geometry` and derive `valid_geometry` by applying the configured
+`edge_margin_px`.
 
 Citrus H5 should snapshot both sides:
 

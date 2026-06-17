@@ -339,8 +339,10 @@ diagnostic shard artifacts:
 - GOP routing and detach/encode diagnostics, including
   `Cam<serial>_external_gop_routing.csv`, `external_detach.csv`, and
   per-shard encode CSVs
-- diagnostic shard MP4s such as
-  `Cam<serial>_external_shard0_gpu<id>.mp4`
+- temporary diagnostic shard MP4s such as
+  `Cam<serial>_external_shard0_gpu<id>.mp4`; these are deleted by default
+  after clean merged finalization and kept only when
+  `preserve_shard_mp4s = true`
 
 Crop recording currently emits optional sidecar outputs per camera:
 
@@ -453,6 +455,9 @@ Acceptance:
       IPC protocol.
 - [x] Keep Orange-side crop metadata and perf CSVs in the recording folder.
 - [x] Supervise external crop recorder processes from the GUI/session layer.
+- [x] Treat external crop as a first-class external recorder stream with
+      `stream_kind = crop`, `output_kind = crop`, real `camera_serial`, and a
+      crop-suffixed `env_key`.
 - [x] Merge external crop recorder summaries into
       `recording_outputs[serial].crop`.
 - [x] Teach validators to follow external crop descriptor paths for MP4 and

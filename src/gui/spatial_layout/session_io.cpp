@@ -197,11 +197,18 @@ std::filesystem::path calibration_base_dir_from_artifact_root(const std::string&
     if (root.filename() == "artifacts" && !root.parent_path().empty()) {
         return root.parent_path();
     }
+    if (root.filename() == "sessions" && !root.parent_path().empty()) {
+        return root.parent_path();
+    }
     return root;
 }
 
 std::filesystem::path calibration_sessions_dir_from_artifact_root(const std::string& artifact_root_dir)
 {
+    const std::filesystem::path root(artifact_root_dir.empty() ? "." : artifact_root_dir);
+    if (root.filename() == "sessions") {
+        return root;
+    }
     return calibration_base_dir_from_artifact_root(artifact_root_dir) / "sessions";
 }
 
@@ -267,6 +274,14 @@ bool write_spatial_calibration_session_manifest(
         if (!ui_state->citrus_template.source_camera_id.empty()) {
             citrus["camera_id"] = ui_state->citrus_template.source_camera_id;
         }
+        if (!ui_state->citrus_template.source_config_path.empty() ||
+            !ui_state->citrus_template.source_config_name.empty()) {
+            citrus["citrus_config_ref"] = {
+                {"source", "spatial_layout_import"},
+                {"path", ui_state->citrus_template.source_config_path},
+                {"config_name", ui_state->citrus_template.source_config_name}
+            };
+        }
         if (!citrus.empty()) {
             context["citrus"] = citrus;
         }
@@ -278,12 +293,18 @@ bool write_spatial_calibration_session_manifest(
         {"session_id", ui_state->calibration_session_id},
         {"created_utc", ui_state->calibration_session_created_utc},
         {"producer", "orange_spatial_layout_ui"},
-        {"artifact_root_legacy", artifact_root_dir},
+        {"calibration_root", calibration_base_dir_from_artifact_root(artifact_root_dir).generic_string()},
         {"session_dir", session_dir.generic_string()},
         {"artifacts_dir", session_artifact_root.generic_string()},
+        {"artifact_storage_policy", {
+            {"mode", "session_scoped"},
+            {"legacy_top_level_artifacts_enabled", false},
+            {"artifact_identity_root", session_artifact_root.generic_string()}
+        }},
         {"context", context},
         {"files", {
             {"session_index", kCalibrationSessionIndexFilename},
+            {"arena_layout_set", kCalibrationSessionArenaLayoutSetFilename},
             {"artifacts_dir", "artifacts"}
         }}
     };
@@ -356,6 +377,196 @@ void clear_spatial_calibration_session(SpatialLayoutUiState* ui_state)
     ui_state->calibration_session_id.clear();
     ui_state->calibration_session_dir.clear();
     ui_state->calibration_session_created_utc.clear();
+    ui_state->session_review_images.clear();
+    ui_state->session_review_camera_groups.clear();
+    ui_state->session_review_warnings.clear();
+    ui_state->selected_session_review_image = -1;
+    ui_state->selected_session_capture_matrix_row = -1;
+    ui_state->selected_session_capture_matrix_column = -1;
+    ui_state->loaded_calibration_session_index_path.clear();
+    ui_state->loaded_calibration_session_citrus_config_path.clear();
+}
+
+std::string arena_layout_set_key_from_entry(const nlohmann::json& entry)
+{
+    const std::string canvas_id = entry.value("canvas_id", std::string());
+    const std::string arena_id = entry.value("arena_id", std::string());
+    if (!canvas_id.empty() && !arena_id.empty()) {
+        return "canvas:" + canvas_id + "/arena:" + arena_id;
+    }
+    const std::string camera_serial =
+        entry.value("camera_serial", std::string());
+    if (!camera_serial.empty()) {
+        return "camera:" + camera_serial;
+    }
+    return entry.value("artifact_id", std::string());
+}
+
+std::filesystem::path session_relative_path(
+    const std::filesystem::path& session_dir,
+    const std::filesystem::path& absolute_path,
+    const std::filesystem::path& fallback)
+{
+    std::error_code rel_error;
+    std::filesystem::path relative =
+        std::filesystem::relative(absolute_path, session_dir, rel_error);
+    if (rel_error || relative.empty()) {
+        return fallback;
+    }
+    return relative;
+}
+
+nlohmann::json make_arena_layout_set_entry(
+    const std::filesystem::path& session_dir,
+    const std::filesystem::path& session_artifact_root,
+    const nlohmann::json& manifest)
+{
+    const std::string artifact_id = manifest.value("artifact_id", std::string());
+    const nlohmann::json summary =
+        manifest.value("summary", nlohmann::json::object());
+    const nlohmann::json compatibility =
+        manifest.value("compatibility", nlohmann::json::object());
+    const nlohmann::json files =
+        manifest.value("files", nlohmann::json::object());
+    const std::filesystem::path artifact_dir =
+        session_artifact_root / artifact_id;
+    const std::string manifest_filename =
+        files.value("manifest", std::string(kSpatialLayoutManifestFilename));
+    const std::string measurement_filename =
+        files.value("measurement_json", std::string(kSpatialLayoutMeasurementFilename));
+    const std::string arena_layout_runtime_filename =
+        files.value(
+            "arena_layout_runtime_json",
+            std::string(kSpatialLayoutArenaLayoutRuntimeFilename));
+    const std::string dish_mask_runtime_filename =
+        files.value(
+            "dish_mask_runtime_json",
+            std::string(kSpatialLayoutDishMaskRuntimeFilename));
+
+    nlohmann::json entry = {
+        {"artifact_id", artifact_id},
+        {"artifact_schema_id", orange::spatial::kArenaLayoutArtifactSchemaId},
+        {"artifact_schema_version", orange::spatial::kArenaLayoutArtifactSchemaVersion},
+        {"created_utc", manifest.value("created_utc", std::string())},
+        {"updated_utc", manifest.value("updated_utc", manifest.value("created_utc", std::string()))},
+        {"selection_policy", "latest_saved_for_camera_canvas_arena"},
+        {"fingerprint",
+         manifest.value("calibration_ref", nlohmann::json::object()).value("fingerprint", std::string())},
+        {"layout_id", summary.value("layout_id", std::string())},
+        {"camera_serial",
+         summary.value(
+             "camera_serial",
+             compatibility.value("camera_serial", std::string()))},
+        {"canvas_id", summary.value("canvas_id", std::string())},
+        {"arena_id", summary.value("arena_id", std::string())},
+        {"coordinate_space", summary.value("coordinate_space", std::string())},
+        {"outer_geometry_type", summary.value("outer_geometry_type", std::string())},
+        {"zone_count", summary.value("zone_count", 0)},
+        {"relative_manifest_path",
+         session_relative_path(
+             session_dir,
+             artifact_dir / manifest_filename,
+             std::filesystem::path("artifacts") / artifact_id / manifest_filename).generic_string()},
+        {"relative_measurement_path",
+         session_relative_path(
+             session_dir,
+             artifact_dir / measurement_filename,
+             std::filesystem::path("artifacts") / artifact_id / measurement_filename).generic_string()},
+        {"relative_arena_layout_runtime_path",
+         session_relative_path(
+             session_dir,
+             artifact_dir / arena_layout_runtime_filename,
+             std::filesystem::path("artifacts") / artifact_id / arena_layout_runtime_filename).generic_string()},
+        {"relative_dish_mask_runtime_path",
+         session_relative_path(
+             session_dir,
+             artifact_dir / dish_mask_runtime_filename,
+             std::filesystem::path("artifacts") / artifact_id / dish_mask_runtime_filename).generic_string()}
+    };
+    if (summary.contains("dish_design_id")) {
+        entry["dish_design_id"] = summary["dish_design_id"];
+    }
+    return entry;
+}
+
+bool update_spatial_calibration_arena_layout_set(
+    const std::filesystem::path& session_dir,
+    const std::filesystem::path& session_artifact_root,
+    const nlohmann::json& manifest,
+    std::string* error_out)
+{
+    const std::filesystem::path set_path =
+        session_dir / kCalibrationSessionArenaLayoutSetFilename;
+    nlohmann::json layout_set = nlohmann::json::object();
+    if (std::filesystem::exists(set_path) &&
+        !read_json_file(set_path, &layout_set, error_out)) {
+        return false;
+    }
+    if (!layout_set.is_object()) {
+        layout_set = nlohmann::json::object();
+    }
+    if (!layout_set.contains("layouts") || !layout_set["layouts"].is_array()) {
+        layout_set["layouts"] = nlohmann::json::array();
+    }
+
+    const std::string session_id = session_dir.filename().generic_string();
+    const std::string updated_utc =
+        manifest.value("updated_utc", manifest.value("created_utc", get_current_utc_timestamp()));
+    nlohmann::json entry =
+        make_arena_layout_set_entry(session_dir, session_artifact_root, manifest);
+    const std::string incoming_key = arena_layout_set_key_from_entry(entry);
+    nlohmann::json layouts = nlohmann::json::array();
+    bool replaced = false;
+    for (const auto& existing : layout_set["layouts"]) {
+        if (!existing.is_object()) {
+            continue;
+        }
+        if (arena_layout_set_key_from_entry(existing) == incoming_key) {
+            layouts.push_back(entry);
+            replaced = true;
+        } else {
+            layouts.push_back(existing);
+        }
+    }
+    if (!replaced) {
+        layouts.push_back(entry);
+    }
+
+    nlohmann::json by_camera = nlohmann::json::object();
+    nlohmann::json by_canvas_arena = nlohmann::json::object();
+    for (const auto& layout : layouts) {
+        if (!layout.is_object()) {
+            continue;
+        }
+        const std::string artifact_id = layout.value("artifact_id", std::string());
+        const std::string camera_serial = layout.value("camera_serial", std::string());
+        const std::string canvas_id = layout.value("canvas_id", std::string());
+        const std::string arena_id = layout.value("arena_id", std::string());
+        if (!camera_serial.empty()) {
+            by_camera[camera_serial] = artifact_id;
+        }
+        if (!canvas_id.empty() && !arena_id.empty()) {
+            if (!by_canvas_arena.contains(canvas_id) ||
+                !by_canvas_arena[canvas_id].is_object()) {
+                by_canvas_arena[canvas_id] = nlohmann::json::object();
+            }
+            by_canvas_arena[canvas_id][arena_id] = artifact_id;
+        }
+    }
+
+    layout_set["schema_id"] = "orange.calibration.arena_layout_set";
+    layout_set["schema_version"] = 1;
+    layout_set["session_id"] = session_id;
+    layout_set["session_dir"] = session_dir.generic_string();
+    layout_set["artifacts_dir"] = session_artifact_root.generic_string();
+    layout_set["updated_utc"] = updated_utc;
+    layout_set["selection_policy"] = "latest_per_camera_canvas_arena";
+    layout_set["mutable_session_companion"] = true;
+    layout_set["layouts"] = std::move(layouts);
+    layout_set["latest_by_camera_serial"] = std::move(by_camera);
+    layout_set["latest_by_canvas_arena"] = std::move(by_canvas_arena);
+    layout_set["layout_count"] = layout_set["layouts"].size();
+    return write_json_file(set_path, layout_set, error_out);
 }
 
 bool update_spatial_calibration_session_index(
@@ -423,12 +634,22 @@ bool update_spatial_calibration_session_index(
     }
 
     std::error_code rel_error;
-    const std::filesystem::path manifest_path =
-        session_artifact_root / artifact_id / kSpatialLayoutManifestFilename;
-    std::filesystem::path relative_manifest =
-        std::filesystem::relative(manifest_path, session_dir, rel_error);
-    if (rel_error || relative_manifest.empty()) {
-        relative_manifest = std::filesystem::path("artifacts") / artifact_id / kSpatialLayoutManifestFilename;
+    std::filesystem::path relative_manifest;
+    const std::string storage_relative_manifest =
+        manifest.value("storage", nlohmann::json::object())
+            .value("relative_manifest_path", std::string());
+    if (!storage_relative_manifest.empty()) {
+        relative_manifest =
+            std::filesystem::path("artifacts") / storage_relative_manifest;
+    } else {
+        const std::filesystem::path manifest_path =
+            session_artifact_root / artifact_id / kSpatialLayoutManifestFilename;
+        relative_manifest =
+            std::filesystem::relative(manifest_path, session_dir, rel_error);
+        if (rel_error || relative_manifest.empty()) {
+            relative_manifest =
+                std::filesystem::path("artifacts") / artifact_id / kSpatialLayoutManifestFilename;
+        }
     }
 
     nlohmann::json entry = {
@@ -475,6 +696,44 @@ bool update_spatial_calibration_session_index(
             }
             index["latest_top_rim_observation_by_arena_artifact_id"]
                  [associated_image_set_artifact_id] = artifact_id;
+        }
+    } else if (artifact_schema_id == orange::spatial::kArenaLayoutArtifactSchemaId) {
+        const nlohmann::json summary =
+            manifest.value("summary", nlohmann::json::object());
+        const nlohmann::json compatibility =
+            manifest.value("compatibility", nlohmann::json::object());
+        const std::string camera_serial =
+            summary.value(
+                "camera_serial",
+                compatibility.value("camera_serial", std::string()));
+        const std::string canvas_id = summary.value("canvas_id", std::string());
+        const std::string arena_id = summary.value("arena_id", std::string());
+        if (!camera_serial.empty()) {
+            if (!index.contains("latest_arena_layout_by_camera_serial") ||
+                !index["latest_arena_layout_by_camera_serial"].is_object()) {
+                index["latest_arena_layout_by_camera_serial"] = nlohmann::json::object();
+            }
+            index["latest_arena_layout_by_camera_serial"][camera_serial] = artifact_id;
+        }
+        if (!canvas_id.empty() && !arena_id.empty()) {
+            if (!index.contains("latest_arena_layout_by_canvas_arena") ||
+                !index["latest_arena_layout_by_canvas_arena"].is_object()) {
+                index["latest_arena_layout_by_canvas_arena"] = nlohmann::json::object();
+            }
+            if (!index["latest_arena_layout_by_canvas_arena"].contains(canvas_id) ||
+                !index["latest_arena_layout_by_canvas_arena"][canvas_id].is_object()) {
+                index["latest_arena_layout_by_canvas_arena"][canvas_id] =
+                    nlohmann::json::object();
+            }
+            index["latest_arena_layout_by_canvas_arena"][canvas_id][arena_id] =
+                artifact_id;
+        }
+        if (!update_spatial_calibration_arena_layout_set(
+                session_dir,
+                session_artifact_root,
+                manifest,
+                error_out)) {
+            return false;
         }
     }
     index["artifact_count"] = index["artifacts_by_id"].size();

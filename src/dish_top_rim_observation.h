@@ -83,6 +83,7 @@ struct DishTopRimCaptureContext {
     bool projector_visible_to_camera = false;
     double exposure_us = 0.0;
     double frame_rate_hz = 0.0;
+    std::string dish_fill_state = "unknown";
     bool requires_camera_mount_unchanged = true;
     bool requires_filter_reinstalled_repeatably = false;
 };
@@ -100,6 +101,7 @@ struct DishTopRimSoftwareInfo {
 
 struct DishTopRimObservationRequest {
     std::string artifact_id;
+    std::string storage_relative_artifact_dir;
     std::string created_utc;
     DishTopRimCameraInfo camera;
     DishTopRimCaptureContext capture;
@@ -109,6 +111,11 @@ struct DishTopRimObservationRequest {
     DishTopRimCircle detected_circle;
     std::string detected_circle_source;
     double valid_region_erosion_px = 0.0;
+    std::string accepted_boundary_runtime_role = "citrus_experimental_area_boundary";
+    std::string accepted_boundary_interpretation =
+        "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary";
+    std::string boundary_inclusion_policy = "prefer_slight_overcoverage_to_avoid_fish_escape";
+    std::string operator_boundary_target = "top_level_visible_boundary";
     bool operator_confirmed = true;
     std::string operator_status = "orange_operator_confirmed";
     std::string operator_notes;
@@ -122,12 +129,15 @@ struct DishTopRimObservationRequest {
 
 struct DishTopRimObservationArtifactPaths {
     std::string artifact_id;
+    std::string artifact_root_dir;
+    std::string relative_artifact_dir;
     std::string artifact_dir;
     std::string manifest_path;
     std::string observation_json_path;
     std::string image_set_json_path;
     std::string source_frame_path;
     std::string review_overlay_path;
+    std::string registration_hough_overlay_path;
     std::string valid_detection_overlay_path;
     std::string palette_export_path;
     std::string spatial_dish_mask_runtime_export_path;
@@ -149,7 +159,8 @@ std::string build_dish_top_rim_observation_artifact_id(
 
 DishTopRimObservationArtifactPaths make_dish_top_rim_observation_artifact_paths(
     const std::string& artifact_root_dir,
-    const std::string& artifact_id);
+    const std::string& artifact_id,
+    const std::string& relative_artifact_dir = "");
 
 bool detect_dish_top_rim_hough_circle(const cv::Mat& source_image,
                                       const DishTopRimHoughParams& params,
@@ -163,6 +174,7 @@ nlohmann::json dish_top_rim_observation_to_json(
     const DishTopRimObservationArtifactPaths& paths,
     const std::string& source_frame_checksum,
     const std::string& review_overlay_checksum,
+    const std::string& registration_hough_overlay_checksum,
     const std::string& valid_detection_overlay_checksum,
     const std::string& fingerprint);
 
@@ -171,6 +183,7 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
     const DishTopRimObservationArtifactPaths& paths,
     const std::string& source_frame_checksum,
     const std::string& review_overlay_checksum,
+    const std::string& registration_hough_overlay_checksum,
     const std::string& valid_detection_overlay_checksum,
     const std::string& fingerprint);
 

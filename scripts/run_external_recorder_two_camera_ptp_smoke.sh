@@ -358,6 +358,7 @@ contract = {
     "require_video_sanity": skip_video_sanity == 0,
     "require_merged_mp4": True,
     "require_gop_routing": True,
+    "preserve_shard_mp4s": False,
     "streams": streams,
 }
 fixed["external_recorder_contract"] = contract
@@ -583,12 +584,14 @@ print(
     f"merged_packets={merged.get('packets_written')} pending_gops={merged.get('pending_gops')}"
 )
 for shard in summary.get("external_encode_shards", []):
+    retention = shard.get("mp4_retention", {})
     print(
         "[external-recorder-ptp] shard "
         f"stream={summary.get('stream_id')} "
         f"id={shard.get('assigned_shard_id')} gpu={shard.get('assigned_gpu_id')} "
         f"encoded={shard.get('frames_encoded')} dropped={shard.get('frames_dropped')} "
-        f"prewarm_ms={shard.get('prewarm_ms')}"
+        f"prewarm_ms={shard.get('prewarm_ms')} "
+        f"mp4_retention={retention.get('status')}"
     )
 PY
   fi

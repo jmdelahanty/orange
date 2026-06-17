@@ -38,7 +38,9 @@ Default configured base path in runtime:
 |---|---|---|---|
 | Recording folder | `<base_folder>/<recording_id>/` | Required for recording sessions | Recording started |
 | Snapshot JSON | `<recording_folder>/recording_snapshot.json` | Required | Recording started |
+| Recording session manifest | `<recording_folder>/recording_session.json` | Required for current GUI/headless session finalization | Recording finalization |
 | PTP sync summary | `<recording_folder>/ptp_sync_summary.json` | Required | Recording started |
+| Local-control event log | `<recording_folder>/orange_local_control.events.jsonl` | Optional | Local-control/orchestrated GUI recording |
 | Latest pointer (local) | `<base_folder>/.orange/latest_recording.json` | Required | Recording started |
 | Latest pointer (canonical) | `<canonical_pointer_root>/latest_recording.json` | Required when configured | Recording started |
 | Latest pointer (shared) | `/run/orange/latest_recording.json` | Required (best-effort write) | Recording started |
@@ -55,11 +57,116 @@ Default configured base path in runtime:
 | Crop video | `<recording_folder>/Cam<serial>_crop.mp4` | Optional | Crop-and-encode active |
 | Crop metadata CSV | `<recording_folder>/Cam<serial>_crop_meta.csv` | Optional | Crop-and-encode active |
 | Crop keyframe sidecar | `<recording_folder>/Cam<serial>_crop_keyframe.json` | Optional | Crop-and-encode active |
+| Crop perf CSV | `<recording_folder>/Cam<serial>_crop_perf.csv` | Optional | Crop-and-encode active |
+| Crop sidecar perf CSV | `<recording_folder>/Cam<serial>_crop_sidecar_perf.csv` | Optional | Crop pipeline active |
 | YOLO perf CSV | `<recording_folder>/Cam<serial>_yolo_perf.csv` | Optional | `ORANGE_YOLO_PERF_LOG != 0` |
 | YOLO event JSONL | `<recording_folder>/Cam<serial>_yolo_events.jsonl` | Optional | GUI YOLO worker receives frames during recording |
 | Pose perf CSV | `<recording_folder>/Cam<serial>_pose_perf.csv` | Optional | GUI pose worker active |
 | Pose event JSONL | `<recording_folder>/Cam<serial>_pose_events.jsonl` | Optional | GUI pose worker receives crop frames during recording |
 | YOLO debug PNG | `./debug_pre_yolo_<serial>_<frame_id>.png` | Optional | `Dump Input` action |
+| Full external recorder contract | `<recording_folder>/external_recorder_contract.json` | Optional | Full-frame `recording_sink_mode = external_ipc` |
+| Full external recorder supervisor plan | `<recording_folder>/external_recorder_supervisor_plan.json` | Optional | Supervised full-frame external IPC |
+| Full external recorder artifact root | `<recording_folder>/external_recorder/` | Optional | Supervised full-frame external IPC |
+| Crop external recorder contract | `<recording_folder>/external_crop_recorder_contract.json` | Optional | Crop `recording_sink_mode = external_ipc` |
+| Crop external recorder supervisor plan | `<recording_folder>/external_crop_recorder_supervisor_plan.json` | Optional | Supervised crop external IPC |
+| Crop external recorder artifact root | `<recording_folder>/external_crop_recorder/` | Optional | Supervised crop external IPC |
+
+## Recording Payload Summary
+
+A recording payload has four classes of files:
+
+1. Session manifests and provenance.
+   These describe what was attempted, what finished, and where the authoritative
+   media lives. Consumers should start with `recording_session.json` and
+   `recording_snapshot.json`, then follow `recording_outputs`.
+2. Durable media.
+   These are the videos consumers should load for analysis. In in-process
+   full-frame mode this is root `Cam<serial>.mp4`; in full-frame external IPC
+   mode it is `external_recorder/Cam<serial>_external.mp4`. Crop videos are
+   sidecar media and may be root `Cam<serial>_crop.mp4` or external
+   `external_crop_recorder/Cam<serial>_crop_external.mp4`.
+3. Telemetry and sidecars.
+   CSV/JSON/JSONL files record timing, routing, keyframes, queue pressure,
+   event rows, local-control state, PTP state, and validation summaries. These
+   are durable diagnostics but are not alternate copies of the recorded video.
+4. Temporary/opt-in diagnostics.
+   Full-frame split-GOP shard MP4s are not part of the durable payload by
+   default. The recorder may create `Cam<serial>_external_shard*_gpu*.mp4`
+   while assembling the merged MP4, but deletes those files after clean merged
+   finalization unless `preserve_shard_mp4s = true`.
+
+For the current production-like GUI shape with both full-frame external IPC and
+external crop recording enabled, the high-level payload looks like:
+
+```text
+<recording_folder>/
+  recording_snapshot.json
+  recording_session.json
+  ptp_sync_summary.json
+  orange_local_control.events.jsonl
+
+  external_recorder_contract.json
+  external_recorder_supervisor_plan.json
+  external_crop_recorder_contract.json
+  external_crop_recorder_supervisor_plan.json
+
+  Cam<serial>_pipeline_perf.csv
+  Cam<serial>_acquisition_cadence_probe.csv
+  Cam<serial>_yolo_perf.csv
+  Cam<serial>_yolo_events.jsonl
+  Cam<serial>_crop_meta.csv
+  Cam<serial>_crop_perf.csv
+  Cam<serial>_crop_sidecar_perf.csv
+
+  external_recorder/
+    Cam<serial>_external.mp4                 # durable full-frame media
+    Cam<serial>_external_keyframes.json
+    Cam<serial>_external_summary.json
+    Cam<serial>_external_status.json
+    Cam<serial>_external_gop_routing.csv
+    Cam<serial>_external_detach.csv
+    Cam<serial>_external_encode_shard*_gpu*.csv
+    Cam<serial>_external_keyframes_shard*_gpu*.json
+    Cam<serial>_external_recorder.log
+    Cam<serial>_external_shard*_gpu*.mp4     # temporary unless preserved
+    external_recorder_session.json
+    external_recorder_supervisor_runtime.json
+    external_recorder_verifier_handoff.json
+    external_recorder_finalization.json
+
+  external_crop_recorder/
+    Cam<serial>_crop_external.mp4            # durable crop sidecar media
+    Cam<serial>_crop_external_keyframe.json
+    Cam<serial>_crop_external_summary.json
+    Cam<serial>_crop_external_status.json
+    Cam<serial>_crop_external_gop_routing.csv
+    Cam<serial>_crop_external_detach.csv
+    Cam<serial>_crop_external_encode.csv
+    Cam<serial>_crop_external_recorder.log
+    external_recorder_session.json
+    external_recorder_supervisor_runtime.json
+    external_recorder_verifier_handoff.json
+    external_recorder_finalization.json
+```
+
+`<serial>` entries are per selected/recorded camera. In external full-frame IPC
+mode, consumers should not require root-level `Cam<serial>.mp4`; the
+authoritative full-frame video is the path recorded in
+`recording_outputs[serial].full.video` and
+`recording_session.json camera_artifacts[serial].video`.
+
+`external_encode_shards[].mp4` in `Cam<serial>_external_summary.json` may point
+at a deleted shard MP4. Consumers should read
+`external_encode_shards[].mp4_retention`:
+
+- `deleted_after_merged_finalization` or
+  `already_absent_after_merged_finalization`: expected default for a clean
+  merged run.
+- `preserved_by_request`: the run explicitly retained shard MP4s.
+- `preserved_merged_incomplete`, `preserved_shard_incomplete`, or
+  `preserved_descriptor_intake_incomplete`: retained for recovery/debugging.
+- `delete_failed`: cleanup was attempted but failed; treat as a diagnostic
+  failure or storage-cleanup issue.
 
 Diagnostic note:
 - `ORANGE_GUI_DIAGNOSTIC_NO_FULL_FRAME=1` starts a GUI recording session with
@@ -173,7 +280,8 @@ Current emitted top-level fields:
   serial, then output kind)
 - `sync: object` (session-level synchronization provenance)
 - `cameras: object`
-- `camera_runtime: object` (resolved per-recording camera config keyed by camera id/serial)
+- `camera_runtime: object` (resolved per-recording camera config and raster
+  coordinate-frame contract keyed by camera id/serial)
 - `gpu_inventory: object` (runtime GPU metadata keyed by GPU id string)
 - `gpu_monitoring: object` (optional host-level GPU monitor sidecars keyed by monitor name)
 - `encoders: object` (added later by encoder worker updates)
@@ -266,18 +374,21 @@ Current emitted top-level fields:
     `coordinate_space`
   - Optional `details` object for backend-specific metadata. For GUI external
     crop outputs, `details` includes static recorder routing/config fields such
-    as `stream_id`, `analytics_gpu_id`, `recorder_gpu_id`,
-    `encode_queue_depth`, `socket_path`, and `summary_json`.
+    as `stream_id`, `stream_kind`, `output_kind`, `camera_serial`, `env_key`,
+    `analytics_gpu_id`, `recorder_gpu_id`, `encode_queue_depth`, `socket_path`,
+    and `summary_json`.
 
 For GUI external crop recording, `recording_session.json`
 `recording_backend.crop_recording` also carries per-camera maps keyed by serial:
 
 - `stream_config`: static recorder config copied from the supervised recorder
-  plan, including `stream_id`, `analytics_gpu_id`, `recorder_gpu_id`,
-  `encode_queue_depth`, socket path, FPS, GOP, codec, and tuning. The
-  `analytics_gpu_id` is the source/crop-production GPU; `recorder_gpu_id` is
-  the external process encode GPU. External crop recorder contracts also carry
-  `same_gpu_as_analytics` for this same-GPU placement check.
+  plan, including `stream_id`, `stream_kind = "crop"`,
+  `output_kind = "crop"`, real `camera_serial`, crop-suffixed `env_key`,
+  `analytics_gpu_id`, `recorder_gpu_id`, `encode_queue_depth`, socket path, FPS,
+  GOP, codec, and tuning. The `analytics_gpu_id` is the source/crop-production
+  GPU; `recorder_gpu_id` is the external process encode GPU. External crop
+  recorder contracts also carry `same_gpu_as_analytics` for this same-GPU
+  placement check.
 - `frames_received`, `frames_encoded`, `encode_dropped`,
   `external_frames_dropped`: count telemetry copied from each external crop
   recorder summary.
@@ -296,7 +407,26 @@ For GUI external crop recording, `recording_session.json`
   - `source.camera_config_path: string`
   - `source.configured_gpu_id: integer`
   - `source.gpu_id_runtime_overridden: boolean`
+  - `coordinate_frame: object` (schema-1 camera raster contract independent of
+    spatial calibration)
   - `runtime: object` (full resolved camera config JSON actually used for the run)
+
+`camera_runtime[serial].coordinate_frame` object:
+- `schema_version: 1`
+- `coordinate_space: "camera_native_pixels"`
+- `units: "pixels"`
+- `origin.name: "top_left_pixel"`
+- `axes.x.positive_direction: "right"`
+- `axes.y.positive_direction: "down"`
+- `point_order: "xy"`
+- `pixel_indexing.index_base: 0`
+- `pixel_indexing.valid_x_index_max` and `valid_y_index_max`: largest valid
+  integer pixel indices for the resolved camera dimensions.
+- `extent`: half-open pixel extent with `width_px`, `height_px`,
+  `x_min_px = 0`, `y_min_px = 0`, `x_max_exclusive_px = width_px`, and
+  `y_max_exclusive_px = height_px`.
+- `image_shape`: `{ "height": height_px, "width": width_px }`.
+- `orientation_reference: "orange_live_stream"`.
 
 `gpu_inventory` object:
 - Keys are GPU id strings such as `"0"`.
@@ -1014,9 +1144,10 @@ optional `recording_backend.crop_recording` per-camera telemetry maps against
 the external crop recorder summaries when those maps are present.
 Use `--require-external-crop-backend-metadata` for current-build external crop
 GUI runs; it requires the `recording_backend.crop_recording` mode, per-camera
-`stream_config`, routing fields (`stream_id`, analytics GPU, recorder GPU,
-socket path, and queue depth), descriptor `details` consistency, and telemetry
-maps to be present instead of treating them as optional compatibility fields.
+  `stream_config`, routing fields (`stream_id`, `stream_kind`, `output_kind`,
+  real `camera_serial`, `env_key`, analytics GPU, recorder GPU, socket path, and
+  queue depth), descriptor `details` consistency, and telemetry maps to be
+  present instead of treating them as optional compatibility fields.
 For rolling external crop artifacts, the same strict gate also requires
 `recording_outputs[serial].crop` to be a finalized external-IPC
 session-aggregate descriptor with `details.scope = "session_aggregate"`, so an

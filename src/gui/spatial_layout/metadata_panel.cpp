@@ -179,6 +179,7 @@ void render_calibration_capture_metadata_panel(
         "black_or_idle",
         "crosshair_on",
         "homography_grid_on",
+        "verification_dots_on",
         "scale_pattern_on",
         "normal_stimulus_active"
     };
@@ -454,8 +455,12 @@ void render_calibration_capture_metadata_panel(
         ImGui::TextDisabled("Fish-plane scale images usually keep the TTL NIR strobe active so a ruler/target is visible to the camera.");
     } else if (ui_state->calibration_image_set_purpose == "arena_projection" ||
                ui_state->calibration_image_set_purpose == "homography_grid" ||
+               ui_state->calibration_image_set_purpose == "verification_dots" ||
                ui_state->calibration_image_set_purpose == "crosshair_alignment") {
         ImGui::TextDisabled("Projector-pattern captures usually suppress mapped NIR strobe pulses and rely on the visible projection.");
+    } else if (ui_state->calibration_image_set_purpose ==
+               "dry_physical_target_height_parallax_diagnostic") {
+        ImGui::TextDisabled("Dry physical-target captures are diagnostic only and do not include the runtime water path.");
     }
     render_string_preset_combo(
         "Illumination spectrum",
@@ -531,6 +536,42 @@ void render_calibration_capture_metadata_panel(
     ImGui::Checkbox(
         "Projector visible to camera",
         &ui_state->calibration_projector_visible_to_camera);
+
+    static constexpr const char* kDishFillStatePresets[] = {
+        "water_filled",
+        "dry_or_empty",
+        "partially_filled",
+        "unknown",
+        "not_applicable"
+    };
+    static constexpr const char* kBoundaryTargetPresets[] = {
+        "top_level_visible_boundary",
+        "outer_visible_rim_edge",
+        "inner_visible_rim_edge",
+        "operator_estimated_reachable_boundary",
+        "unknown"
+    };
+    static constexpr const char* kBoundaryInclusionPolicyPresets[] = {
+        "prefer_slight_overcoverage_to_avoid_fish_escape",
+        "fit_visible_boundary_exactly",
+        "prefer_slight_undercoverage_for_detection_safety",
+        "unknown"
+    };
+    render_string_preset_combo(
+        "Dish fill state",
+        &ui_state->calibration_dish_fill_state,
+        kDishFillStatePresets,
+        IM_ARRAYSIZE(kDishFillStatePresets));
+    render_string_preset_combo(
+        "Rim boundary target",
+        &ui_state->calibration_operator_boundary_target,
+        kBoundaryTargetPresets,
+        IM_ARRAYSIZE(kBoundaryTargetPresets));
+    render_string_preset_combo(
+        "Boundary inclusion policy",
+        &ui_state->calibration_boundary_inclusion_policy,
+        kBoundaryInclusionPolicyPresets,
+        IM_ARRAYSIZE(kBoundaryInclusionPolicyPresets));
     ImGui::Checkbox(
         "Requires repeatable filter reinstall",
         &ui_state->calibration_requires_filter_reinstalled_repeatably);
@@ -543,8 +584,21 @@ void render_calibration_capture_metadata_panel(
     static constexpr const char* kImageSetPurposePresets[] = {
         "arena_projection",
         "homography_grid",
+        "verification_dots",
+        "validation_pattern",
         "scale_image",
-        "crosshair_alignment"
+        "crosshair_alignment",
+        "dry_physical_target_height_parallax_diagnostic",
+        "camera_only_physical_target_calibration"
+    };
+    static constexpr const char* kCaptureStagePresets[] = {
+        "camera_physical_projected_surface",
+        "camera_physical_dish_base_inner_surface",
+        "camera_physical_fish_height",
+        "projected_surface_dry_reference",
+        "projected_surface_wet_runtime_stack",
+        "dish_top_observation",
+        "unknown"
     };
     static constexpr const char* kTargetPlanePresets[] = {
         "projected_surface",
@@ -558,9 +612,66 @@ void render_calibration_capture_metadata_panel(
         "projected_arena",
         "grid_on",
         "scale_target",
+        "physical_target",
         "crosshair_on",
+        "validation_pattern_on",
         "source"
     };
+    static constexpr const char* kWetOrDryPresets[] = {
+        "dry",
+        "wet",
+        "unknown",
+        "not_applicable"
+    };
+    static constexpr const char* kWaterSettledStatusPresets[] = {
+        "settled",
+        "not_settled",
+        "unknown",
+        "not_applicable"
+    };
+    static constexpr const char* kTargetMethodPresets[] = {
+        "projected_pattern_on_diffuser",
+        "physical_target_known_xy",
+        "physical_target",
+        "ruler_only",
+        "inferred",
+        "other",
+        "unknown",
+        "not_applicable"
+    };
+    static constexpr const char* kPatternTypePresets[] = {
+        "rectangular_grid",
+        "circular_rings",
+        "ruler",
+        "crosshair",
+        "validation_pattern",
+        "physical_grid",
+        "physical_point_set",
+        "none",
+        "other",
+        "unknown",
+        "not_applicable"
+    };
+    static constexpr const char* kPatternDomainPresets[] = {
+        "full_projected_surface",
+        "circular_experimental_domain",
+        "other",
+        "unknown",
+        "not_applicable"
+    };
+    static constexpr const char* kParityGroupRolePresets[] = {
+        "physical_projected_surface",
+        "physical_dish_base",
+        "physical_fish_height",
+        "dry_reference",
+        "wet_projected_surface",
+        ""
+    };
+    render_string_preset_combo(
+        "Capture stage",
+        &ui_state->calibration_capture_stage,
+        kCaptureStagePresets,
+        IM_ARRAYSIZE(kCaptureStagePresets));
     if (ImGui::BeginCombo(
             "Image-set purpose",
             ui_state->calibration_image_set_purpose.empty()
@@ -591,6 +702,89 @@ void render_calibration_capture_metadata_panel(
         &ui_state->calibration_image_set_image_role,
         kImageRolePresets,
         IM_ARRAYSIZE(kImageRolePresets));
+    render_string_preset_combo(
+        "Wet/dry state",
+        &ui_state->calibration_wet_or_dry,
+        kWetOrDryPresets,
+        IM_ARRAYSIZE(kWetOrDryPresets));
+    ImGui::Checkbox(
+        "Imaging shelf installed",
+        &ui_state->calibration_imaging_shelf_installed);
+    ImGui::SameLine();
+    ImGui::Checkbox(
+        "Dish installed",
+        &ui_state->calibration_dish_installed);
+    ImGui::SameLine();
+    ImGui::Checkbox(
+        "Open water surface",
+        &ui_state->calibration_open_water_surface_present);
+    ImGui::Checkbox(
+        "Plane Z nominal mm",
+        &ui_state->calibration_has_plane_z_mm_nominal);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_plane_z_mm_nominal);
+    ImGui::InputDouble(
+        "##PlaneZNominalMm",
+        &ui_state->calibration_plane_z_mm_nominal,
+        0.1,
+        1.0,
+        "%.3f");
+    ImGui::EndDisabled();
+    ImGui::Checkbox(
+        "Plane Z uncertainty mm",
+        &ui_state->calibration_has_plane_z_mm_uncertainty);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_plane_z_mm_uncertainty);
+    ImGui::InputDouble(
+        "##PlaneZUncertaintyMm",
+        &ui_state->calibration_plane_z_mm_uncertainty,
+        0.1,
+        1.0,
+        "%.3f");
+    ImGui::EndDisabled();
+    ImGui::InputText("Dish ID", &ui_state->calibration_dish_id);
+    ImGui::Checkbox("Water fill mm", &ui_state->calibration_has_water_fill_mm);
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ui_state->calibration_has_water_fill_mm);
+    ImGui::InputDouble(
+        "##WaterFillMm",
+        &ui_state->calibration_water_fill_mm,
+        0.1,
+        1.0,
+        "%.3f");
+    ImGui::EndDisabled();
+    ImGui::InputText("Fill state", &ui_state->calibration_fill_state);
+    render_string_preset_combo(
+        "Water settled",
+        &ui_state->calibration_water_settled_status,
+        kWaterSettledStatusPresets,
+        IM_ARRAYSIZE(kWaterSettledStatusPresets));
+    render_string_preset_combo(
+        "Target method",
+        &ui_state->calibration_target_method,
+        kTargetMethodPresets,
+        IM_ARRAYSIZE(kTargetMethodPresets));
+    render_string_preset_combo(
+        "Pattern type",
+        &ui_state->calibration_pattern_type,
+        kPatternTypePresets,
+        IM_ARRAYSIZE(kPatternTypePresets));
+    render_string_preset_combo(
+        "Pattern domain",
+        &ui_state->calibration_pattern_domain,
+        kPatternDomainPresets,
+        IM_ARRAYSIZE(kPatternDomainPresets));
+    ImGui::InputText(
+        "Matched parity group",
+        &ui_state->calibration_matched_parity_group_id);
+    render_string_preset_combo(
+        "Parity group role",
+        &ui_state->calibration_parity_group_role,
+        kParityGroupRolePresets,
+        IM_ARRAYSIZE(kParityGroupRolePresets));
+    ImGui::Checkbox(
+        "Reference only",
+        &ui_state->calibration_reference_only);
     ImGui::InputText(
         "Projected pattern ID",
         &ui_state->calibration_image_set_projected_pattern_id);

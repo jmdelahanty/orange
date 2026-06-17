@@ -36,6 +36,11 @@ Embedded runtime payload versions:
 
 - `dish_mask` and `arena_layout` are independent. A camera may emit either one
   or both.
+- Per-arena `orange.calibration.arena_layout` artifacts are immutable saved
+  measurements. A calibration session may also maintain a mutable
+  `arena_layout_set.json` companion that points at the latest saved arena-layout
+  artifact for each camera/canvas/arena. The set is an operator/navigation and
+  import convenience; the per-arena artifact remains the source of truth.
 - `orange.calibration.image_set` is an acquisition/import artifact, not a
   runtime spatial-layout payload. Citrus may import image sets to fit or accept
   homography, scale, top-rim, or crosshair calibration, while `dish_mask` and
@@ -44,10 +49,13 @@ Embedded runtime payload versions:
   may be the inner experimental area if the outer dish rim is not visible.
 - For the current circular single-arena V0, `dish_mask` may be sourced from
   `orange.calibration.dish_top_rim_observation`. In that case the
-  observation's operator-confirmed `accepted_mask` is the load-bearing circular
-  geometry used for `dish_mask.valid_geometry`.
+  observation's `accepted_experimental_area_boundary` is the load-bearing
+  circular geometry used for Citrus experimental-area review and
+  `dish_mask.outer_geometry`, while the eroded `accepted_mask` remains the
+  `dish_mask.valid_geometry` / detection-export view.
 - The Hough-detected circle is proposal/provenance. The operator-confirmed
-  accepted circle is the geometry used for runtime gating and export.
+  accepted circle is the geometry used for the daily experimental-area
+  boundary; eroded derived masks are used for detection gating or export.
 - Palette `dish_mask` metadata is an adapter/export view from the Orange
   artifact. It is not the native spatial-layout payload.
 - `layout_id` and `zone_id` are the authoritative stable identifiers. Runtime
@@ -98,6 +106,14 @@ Embedded runtime payload versions:
   operator-reviewed behavior. It should be recomputed by Citrus from sampled
   accepted-boundary points rather than silently inferred from only a
   camera-space Hough radius.
+- The Citrus runtime containment invariant for chasing/stimulus use is
+  `physically_reachable_fish_area <= Citrus experimental_area / chaser boundary`.
+  Orange exports eroded masks as `valid_detection_region` or
+  `dish_mask.valid_geometry` for detection/analysis safety, but those eroded
+  regions must not silently replace the Citrus runtime `experimental_area`.
+  When uncertain, the accepted experimental-area boundary should prefer slight
+  overcoverage so the fish cannot be physically reachable but logically outside
+  the chaser boundary.
 
 ## Common Types
 
@@ -304,14 +320,18 @@ When a circular mask is sourced from
 `orange.calibration.dish_top_rim_observation`, the runtime mapping is:
 
 ```text
+observation.accepted_experimental_area_boundary
+  -> dish_mask.runtime.geometry.outer_geometry
+
 observation.accepted_mask
   -> dish_mask.runtime.geometry.valid_geometry
 ```
 
-If the observation also contains a non-eroded accepted or observed rim circle,
-that circle maps to `outer_geometry`. If the observation only has one accepted
-circle, Orange may set `outer_geometry` to that circle and derive
-`valid_geometry` by subtracting `edge_margin_px`.
+If the observation lacks `accepted_experimental_area_boundary` but contains a
+non-eroded accepted or observed rim circle, that circle maps to
+`outer_geometry`. If the observation only has one confirmed circle, Orange may
+use the same circle as `outer_geometry` and derive `valid_geometry` by
+subtracting `edge_margin_px`.
 
 Recommended runtime source fields:
 
@@ -338,8 +358,9 @@ Rules:
 - `source_artifact` should reference the Orange-native observation artifact,
   not a Palette export.
 - `source_array_role` must match the coordinate system of the circle values.
-- `operator_confirmed` should be true before using the mask for default
-  runtime gating.
+- `operator_confirmed` should be true before using `valid_geometry` for
+  detection gating or using `outer_geometry` for Citrus experimental-area
+  review.
 - Review overlays are for operator trust and audit; consumers should not parse
   geometry from overlay pixels.
 
@@ -558,6 +579,61 @@ Optional fields:
 }
 ```
 
+## Session Arena Layout Set
+
+When operators save arena registrations one at a time, Orange updates a
+session-scoped companion file:
+
+```text
+calibrations/sessions/<session_id>/arena_layout_set.json
+```
+
+Shape:
+
+```json
+{
+  "schema_id": "orange.calibration.arena_layout_set",
+  "schema_version": 1,
+  "session_id": "calsess_2026_06_09T01_25_48Z_shadow",
+  "selection_policy": "latest_per_camera_canvas_arena",
+  "mutable_session_companion": true,
+  "layout_count": 4,
+  "layouts": [
+    {
+      "artifact_id": "arenalayout_citrus_shadow_arena_1_...",
+      "artifact_schema_id": "orange.calibration.arena_layout",
+      "artifact_schema_version": 1,
+      "camera_serial": "2010093",
+      "canvas_id": "shadow",
+      "arena_id": "arena_1",
+      "layout_id": "citrus_shadow_arena_1",
+      "fingerprint": "fnv1a64:...",
+      "relative_manifest_path": "artifacts/<artifact_id>/manifest.json",
+      "relative_measurement_path": "artifacts/<artifact_id>/measurement.json",
+      "relative_arena_layout_runtime_path": "artifacts/<artifact_id>/arena_layout_runtime.json",
+      "relative_dish_mask_runtime_path": "artifacts/<artifact_id>/dish_mask_runtime.json"
+    }
+  ],
+  "latest_by_camera_serial": {
+    "2010093": "arenalayout_citrus_shadow_arena_1_..."
+  },
+  "latest_by_canvas_arena": {
+    "shadow": {
+      "arena_1": "arenalayout_citrus_shadow_arena_1_..."
+    }
+  }
+}
+```
+
+Rules:
+
+- Each click on `Save Arena Layout Artifact` writes a new per-arena artifact.
+- If the same camera/canvas/arena is saved again, the cumulative set replaces
+  that entry with the latest artifact ID.
+- The cumulative file is intentionally mutable and session-scoped. Consumers
+  that need immutable provenance should follow the listed per-arena artifact
+  paths and fingerprints.
+
 ## Artifact Schema: `orange.calibration.arena_layout`
 
 ### Top-level fields
@@ -647,6 +723,7 @@ Optional fields:
 
 - `dish_design_id`: string
 - `canvas_id`: string
+- `arena_id`: string
 
 ### Example
 
@@ -721,7 +798,8 @@ Optional fields:
   },
   "context": {
     "dish_design_id": "dish4_circle_v1",
-    "canvas_id": "canvas_a"
+    "canvas_id": "canvas_a",
+    "arena_id": "arena_1"
   },
   "provenance": {
     "source": "manual_template",

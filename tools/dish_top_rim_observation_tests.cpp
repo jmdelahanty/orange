@@ -75,8 +75,11 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
     request.capture.projector_visible_to_camera = true;
     request.capture.exposure_us = 500000.0;
     request.capture.frame_rate_hz = 1.0;
+    request.capture.dish_fill_state = "water_filled";
     request.capture.requires_filter_reinstalled_repeatably = true;
     request.valid_region_erosion_px = 10.0;
+    request.operator_boundary_target = "top_level_visible_boundary";
+    request.boundary_inclusion_policy = "prefer_slight_overcoverage_to_avoid_fish_escape";
     request.operator_confirmed = true;
     request.operator_notes = "fixture operator note";
     request.runtime_verification.status = "unknown";
@@ -97,7 +100,20 @@ orange::calibration::DishTopRimObservationRequest make_request(const std::string
         {"arena_id", "arena_1"},
         {"camera_serial", "2012632"},
         {"citrus_camera_id", "2012632"},
-        {"associated_image_set_artifact_id", "Cam2012632_arena_1"}
+        {"associated_image_set_artifact_id", "Cam2012632_arena_1"},
+        {"spatial_layout_registration", {
+            {"schema_id", "orange.spatial_layout.registration_snapshot"},
+            {"schema_version", 1},
+            {"authority", "orange_review_context_only"},
+            {"semantics", "fixture_registration_context"},
+            {"editor_parameters", {
+                {"translate_x_px", 3.0},
+                {"translate_y_px", -2.0},
+                {"scale_px_per_layout_unit", 12.5},
+                {"rotation_deg_clockwise", 1.25},
+                {"edge_margin_px", 10.0}
+            }}
+        }}
     };
     return request;
 }
@@ -174,6 +190,12 @@ void test_artifact_write_and_snapshot()
     require(std::filesystem::exists(artifact_dir / "captures" / "source_frame.png"), "source frame written");
     require(std::filesystem::exists(artifact_dir / "overlays" / "top_rim_fit.png"), "review overlay written");
     require(
+        std::filesystem::exists(artifact_dir / "overlays" / "registration_hough_overlay.png"),
+        "registration/Hough overlay written");
+    require(
+        std::filesystem::exists(artifact_dir / "overlays" / "valid_detection_region.png"),
+        "valid detection overlay written");
+    require(
         std::filesystem::exists(artifact_dir / "exports" / "palette_dish_mask_v2.json"),
         "Palette adapter JSON written");
     require(
@@ -201,6 +223,22 @@ void test_artifact_write_and_snapshot()
         std::abs(observation["accepted_mask"].value("radius_px", 0.0) - 140.0) < 0.001,
         "accepted mask stores eroded valid radius");
     require(
+        observation["accepted_experimental_area_boundary"].value("role", "") ==
+            "citrus_experimental_area_boundary",
+        "accepted experimental-area boundary role");
+    require(
+        std::abs(
+            observation["accepted_experimental_area_boundary"]["geometry"].value("radius_px", 0.0) -
+            150.0) < 0.001,
+        "accepted experimental-area boundary stores non-eroded radius");
+    require(
+        observation["boundary_interpretation"].value("boundary_inclusion_policy", "") ==
+            "prefer_slight_overcoverage_to_avoid_fish_escape",
+        "boundary inclusion policy preserved");
+    require(
+        observation["capture"].value("dish_fill_state", "") == "water_filled",
+        "dish fill state preserved");
+    require(
         observation["operator_review"].value("accepted", false),
         "operator review accepted");
     require(
@@ -213,6 +251,28 @@ void test_artifact_write_and_snapshot()
     require(
         observation["arena_context"].value("arena_id", "") == "arena_1",
         "observation stores arena id");
+    require(
+        observation["arena_context"]["spatial_layout_registration"].value("schema_id", "") ==
+            "orange.spatial_layout.registration_snapshot",
+        "observation stores spatial layout registration snapshot");
+    require(
+        observation["arena_context"]["spatial_layout_registration"].value("semantics", "") ==
+            "fixture_registration_context",
+        "observation preserves spatial layout registration semantics");
+    require(
+        observation["review_artifacts"].value("registration_hough_overlay_path", "") ==
+            "overlays/registration_hough_overlay.png",
+        "observation stores registration/Hough overlay path");
+    require(
+        !observation["review_artifacts"].value("registration_hough_overlay_checksum", "").empty(),
+        "observation stores registration/Hough overlay checksum");
+    require(
+        observation["artifacts"].value("registration_hough_overlay_path", "") ==
+            "overlays/registration_hough_overlay.png",
+        "observation artifact block stores registration/Hough overlay path");
+    require(
+        !observation["artifacts"].value("registration_hough_overlay_checksum", "").empty(),
+        "observation artifact block stores registration/Hough overlay checksum");
     require(
         observation["runtime_verification"].value("status", "") == "unknown",
         "runtime verification preserved");
@@ -312,8 +372,19 @@ void test_artifact_write_and_snapshot()
             "Cam2012632_arena_1",
         "image-set companion stores arena context");
     require(
+        image_set["rig_context"]["arena_context"]["spatial_layout_registration"].value("schema_id", "") ==
+            "orange.spatial_layout.registration_snapshot",
+        "image-set companion stores spatial layout registration snapshot");
+    require(
         image_set["observations"]["arena_context"].value("arena_id", "") == "arena_1",
         "image-set observations stores arena context");
+    require(
+        image_set["review_artifacts"]["registration_hough_overlay"].value("path", "") ==
+            "overlays/registration_hough_overlay.png",
+        "image-set companion stores registration/Hough overlay path");
+    require(
+        !image_set["review_artifacts"]["registration_hough_overlay"].value("checksum", "").empty(),
+        "image-set companion stores registration/Hough overlay checksum");
     require(
         image_set["citrus_preview"].value("diagnostic_only", false),
         "image-set preview is diagnostic");
@@ -332,6 +403,13 @@ void test_artifact_write_and_snapshot()
     require(
         manifest["files"].value("image_set_json", "") == "image_set.json",
         "manifest records image-set companion");
+    require(
+        manifest["files"].value("registration_hough_overlay", "") ==
+            "overlays/registration_hough_overlay.png",
+        "manifest records registration/Hough overlay");
+    require(
+        !manifest["checksums"].value("registration_hough_overlay", "").empty(),
+        "manifest records registration/Hough overlay checksum");
     require(
         manifest["summary"].value("associated_image_set_artifact_id", "") ==
             "Cam2012632_arena_1",
@@ -428,6 +506,57 @@ void test_rejects_mismatched_image_shape()
     std::filesystem::remove_all(root);
 }
 
+void test_nested_storage_relative_manifest_path()
+{
+    using namespace orange::calibration;
+    const std::filesystem::path root = make_temp_root();
+    DishTopRimObservationRequest request =
+        make_request("dishrim_nested_20260604T120000Z_2012632");
+    request.storage_relative_artifact_dir =
+        "Cam2012632_arena_1/top_rim_observations/" + request.artifact_id;
+
+    DishTopRimCircle accepted;
+    accepted.center.x = 322.0;
+    accepted.center.y = 254.0;
+    accepted.radius_px = 150.0;
+
+    DishTopRimObservationWriteResult result;
+    std::string error;
+    require(
+        write_dish_top_rim_observation_artifact(
+            root.string(),
+            request,
+            make_synthetic_dish_frame(),
+            make_hough_params(),
+            accepted,
+            &result,
+            &error),
+        "nested artifact writer should succeed: " + error);
+
+    const std::filesystem::path artifact_dir =
+        root / "Cam2012632_arena_1" / "top_rim_observations" / request.artifact_id;
+    require(std::filesystem::exists(artifact_dir / "manifest.json"), "nested manifest written");
+    require(std::filesystem::exists(artifact_dir / "observation.json"), "nested observation written");
+
+    const nlohmann::json manifest = read_json(artifact_dir / "manifest.json");
+    require(
+        manifest["storage"].value("relative_artifact_dir", "") ==
+            request.storage_relative_artifact_dir,
+        "manifest records nested relative artifact dir");
+    require(
+        manifest["storage"].value("relative_manifest_path", "") ==
+            request.storage_relative_artifact_dir + "/manifest.json",
+        "manifest records nested relative manifest path");
+
+    const nlohmann::json registry = read_json(root / "index.json");
+    require(
+        registry["artifacts_by_id"][request.artifact_id].value("relative_manifest_path", "") ==
+            request.storage_relative_artifact_dir + "/manifest.json",
+        "registry preserves nested relative manifest path");
+
+    std::filesystem::remove_all(root);
+}
+
 void expect_rejects_source_array_role(const std::string& source_array_role)
 {
     using namespace orange::calibration;
@@ -470,6 +599,7 @@ int main()
     try {
         test_hough_detects_circle();
         test_artifact_write_and_snapshot();
+        test_nested_storage_relative_manifest_path();
         test_rejects_mismatched_image_shape();
         test_rejects_non_full_source_array_role();
     } catch (const std::exception& ex) {

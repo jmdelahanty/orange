@@ -283,15 +283,17 @@ template<typename T>
 T* CThreadWorker<T>::GetObjectFromQueueIn()
 {
     T* f = nullptr;
+    bool popped = false;
     mutexQueueIn.lock();
     if (!queueIn.empty())
     {
         f = queueIn.front();
         queueIn.pop();
         countQueueIn--;
+        popped = true;
     }
     mutexQueueIn.unlock();
-    if (f) {
+    if (popped) {
         queueInNotFullCv.notify_one();
     }
     return f;

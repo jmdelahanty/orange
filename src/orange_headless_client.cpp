@@ -168,6 +168,7 @@ struct HeadlessExternalRecorderContractConfig {
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
     bool require_protocol_hello = true;
+    bool preserve_shard_mp4s = false;
     nlohmann::json streams = nlohmann::json::object();
 
     bool enabled() const {
@@ -851,6 +852,7 @@ nlohmann::json build_headless_external_recorder_contract_config_json(
         {"require_status_runtime", config.require_status_runtime},
         {"require_storage_preflight", config.require_storage_preflight},
         {"require_protocol_hello", config.require_protocol_hello},
+        {"preserve_shard_mp4s", config.preserve_shard_mp4s},
         {"streams", config.streams.is_object() ? config.streams : nlohmann::json::object()}
     };
     if (recording_control) {
@@ -2977,6 +2979,8 @@ bool parse_headless_external_recorder_contract_json(
             contract_node.value(
                 "require_protocol_hello",
                 config.require_protocol_hello);
+        config.preserve_shard_mp4s =
+            contract_node.value("preserve_shard_mp4s", config.preserve_shard_mp4s);
         if (contract_node.contains("require_status_runtime")) {
             config.require_status_runtime =
                 contract_node.value("require_status_runtime", config.require_status_runtime);

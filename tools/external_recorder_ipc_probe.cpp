@@ -76,6 +76,8 @@ struct Options {
     std::string gop_routing_csv_path;
     std::string session_id;
     std::string stream_id;
+    std::string stream_kind = "full_frame";
+    std::string output_kind = "full";
     uint32_t record_for_seconds = 0;
     uint32_t clip_seconds = 0;
     uint64_t terminal_tail_coalesce_frames = 0;
@@ -84,6 +86,7 @@ struct Options {
     int shard_id = 0;
     std::vector<int> shard_gpu_ids;
     std::string routing_policy = "single_shard";
+    bool preserve_shard_mp4s = false;
 };
 
 struct FrameDescriptor {
@@ -199,6 +202,8 @@ void signal_handler(int)
         << "  --gop-routing-csv <path> Optional per-frame route/shard CSV.\n"
         << "  --session-id <id>     Session id for artifacts. Defaults to first descriptor.\n"
         << "  --stream-id <id>      Stream id for artifacts. Defaults to camera serial.\n"
+        << "  --stream-kind <kind>  Stream kind label: full_frame or crop. Default full_frame.\n"
+        << "  --output-kind <kind>  Output kind label: full or crop. Default full.\n"
         << "  --record-for-seconds <int> Session recording duration intent. Default 0.\n"
         << "  --clip-seconds <int>  Enable GOP-aligned rolling clip MP4 outputs. Default 0.\n"
         << "  --terminal-tail-coalesce-frames <int> Coalesce this many overrun frames into the final requested clip. Default GOP length.\n"
@@ -207,6 +212,7 @@ void signal_handler(int)
         << "  --shard-id <int>      Recorder shard id for this process/lane. Default 0.\n"
         << "  --shard-gpu-ids <csv> Diagnostic multi-shard GPU ids, e.g. 5,6.\n"
         << "  --routing-policy <name> Routing policy label. Default single_shard.\n"
+        << "  --preserve-shard-mp4s Keep diagnostic per-shard MP4 files after merged output finalizes.\n"
         << "  --monochrome          Enable NVENC monochrome encoding. Default.\n"
         << "  --no-monochrome       Disable monochrome encoding.\n"
         << "  --help\n";
@@ -313,6 +319,8 @@ Options parse_options(int argc, char** argv)
         env_u64("ORANGE_EXTERNAL_RECORDER_MIN_FREE_BYTES", 0);
     options.low_space_warning_bytes =
         env_u64("ORANGE_EXTERNAL_RECORDER_LOW_SPACE_WARNING_BYTES", 0);
+    options.preserve_shard_mp4s =
+        env_flag_enabled("ORANGE_EXTERNAL_RECORDER_PRESERVE_SHARD_MP4S", false);
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         std::string inline_value;
@@ -399,6 +407,10 @@ Options parse_options(int argc, char** argv)
             options.session_id = consume(arg.c_str());
         } else if (arg == "--stream-id") {
             options.stream_id = consume(arg.c_str());
+        } else if (arg == "--stream-kind") {
+            options.stream_kind = lower_ascii(consume(arg.c_str()));
+        } else if (arg == "--output-kind") {
+            options.output_kind = lower_ascii(consume(arg.c_str()));
         } else if (arg == "--record-for-seconds") {
             options.record_for_seconds = parse_u32(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--clip-seconds") {
@@ -417,6 +429,10 @@ Options parse_options(int argc, char** argv)
             options.shard_gpu_ids = parse_i32_list(consume(arg.c_str()), arg.c_str());
         } else if (arg == "--routing-policy") {
             options.routing_policy = lower_ascii(consume(arg.c_str()));
+        } else if (arg == "--preserve-shard-mp4s") {
+            options.preserve_shard_mp4s = true;
+        } else if (arg == "--no-preserve-shard-mp4s") {
+            options.preserve_shard_mp4s = false;
         } else if (arg == "--monochrome") {
             options.monochrome = true;
         } else if (arg == "--no-monochrome") {
@@ -449,6 +465,12 @@ Options parse_options(int argc, char** argv)
     }
     if (options.routing_policy.empty()) {
         throw std::runtime_error("--routing-policy must not be empty");
+    }
+    if (options.stream_kind != "full_frame" && options.stream_kind != "crop") {
+        throw std::runtime_error("--stream-kind must be full_frame or crop");
+    }
+    if (options.output_kind != "full" && options.output_kind != "crop") {
+        throw std::runtime_error("--output-kind must be full or crop");
     }
     if (!options.shard_gpu_ids.empty() && options.shard_gpu_ids.size() < 2) {
         throw std::runtime_error("--shard-gpu-ids requires at least two GPU ids");
@@ -618,6 +640,15 @@ uintmax_t file_size_or_zero(const std::string& path)
     std::error_code ec;
     const auto size = std::filesystem::file_size(path, ec);
     return ec ? 0 : size;
+}
+
+bool file_exists(const std::string& path)
+{
+    if (path.empty()) {
+        return false;
+    }
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && !ec;
 }
 
 struct StoragePathSnapshot {
@@ -990,6 +1021,8 @@ bool write_recorder_status_json(const Options& options,
             out << "  \"status\": \"" << json_escape(status) << "\",\n";
             out << "  \"session_id\": \"" << json_escape(session_id) << "\",\n";
             out << "  \"stream_id\": \"" << json_escape(stream_id) << "\",\n";
+            out << "  \"stream_kind\": \"" << json_escape(options.stream_kind) << "\",\n";
+            out << "  \"output_kind\": \"" << json_escape(options.output_kind) << "\",\n";
             out << "  \"socket_path\": \"" << json_escape(options.socket_path) << "\",\n";
             out << "  \"status_json\": \"" << json_escape(options.status_json_path) << "\",\n";
             out << "  \"steady_clock_ns\": " << steady_clock_now_ns() << ",\n";
@@ -1537,6 +1570,10 @@ struct EncodeSummary {
     std::string bitstream_out_path;
     std::string mp4_path;
     std::string mp4_keyframe_path;
+    std::string mp4_retention_status = "not_evaluated";
+    bool mp4_retained = false;
+    bool mp4_removed_after_merge = false;
+    std::string mp4_retention_error;
 };
 
 struct RollingClipOutputSummary {
@@ -1652,6 +1689,109 @@ EncodeSummary aggregate_encode_summaries(const std::vector<EncodeSummary>& summa
         out.mp4_keyframe_path = summaries.front().mp4_keyframe_path;
     }
     return out;
+}
+
+bool merged_output_clean_for_shard_cleanup(const MergedOutputSummary& merged)
+{
+    return merged.enabled &&
+           !merged.failed &&
+           merged.pending_gops == 0 &&
+           merged.packets_written > 0 &&
+           !merged.mp4_path.empty() &&
+           file_exists(merged.mp4_path);
+}
+
+void apply_shard_mp4_retention(const Options& options,
+                               const MergedOutputSummary& merged,
+                               bool descriptor_intake_clean,
+                               std::vector<EncodeSummary>* shard_summaries)
+{
+    if (!shard_summaries || shard_summaries->empty()) {
+        return;
+    }
+    const bool duplicate_shard_mp4s =
+        std::any_of(
+            shard_summaries->begin(),
+            shard_summaries->end(),
+            [&](const EncodeSummary& shard) {
+                return !shard.mp4_path.empty() &&
+                       shard.mp4_path != merged.mp4_path;
+            });
+    bool shards_clean = true;
+    for (const EncodeSummary& shard : *shard_summaries) {
+        shards_clean = shards_clean &&
+                       !shard.failed &&
+                       shard.frames_dropped == 0 &&
+                       shard.frames_encoded > 0;
+    }
+    const bool can_delete =
+        duplicate_shard_mp4s &&
+        !options.preserve_shard_mp4s &&
+        descriptor_intake_clean &&
+        shards_clean &&
+        merged_output_clean_for_shard_cleanup(merged);
+
+    for (EncodeSummary& shard : *shard_summaries) {
+        shard.mp4_retained = file_exists(shard.mp4_path);
+        shard.mp4_removed_after_merge = false;
+        shard.mp4_retention_error.clear();
+
+        if (shard.mp4_path.empty()) {
+            shard.mp4_retention_status = "not_applicable_no_mp4_path";
+            shard.mp4_retained = false;
+            continue;
+        }
+        if (shard.mp4_path == merged.mp4_path) {
+            shard.mp4_retention_status = "not_applicable_final_mp4";
+            continue;
+        }
+        if (!duplicate_shard_mp4s) {
+            shard.mp4_retention_status = "not_applicable_no_duplicate_shard_mp4";
+            continue;
+        }
+        if (options.preserve_shard_mp4s) {
+            shard.mp4_retention_status = "preserved_by_request";
+            continue;
+        }
+        if (!descriptor_intake_clean) {
+            shard.mp4_retention_status = "preserved_descriptor_intake_incomplete";
+            continue;
+        }
+        if (!shards_clean) {
+            shard.mp4_retention_status = "preserved_shard_incomplete";
+            continue;
+        }
+        if (!merged_output_clean_for_shard_cleanup(merged)) {
+            shard.mp4_retention_status = "preserved_merged_incomplete";
+            continue;
+        }
+        if (!can_delete) {
+            shard.mp4_retention_status = "preserved";
+            continue;
+        }
+
+        std::error_code ec;
+        bool removed = false;
+        {
+            orange::ScopedFsuid fsuid_guard;
+            (void)fsuid_guard;
+            removed = std::filesystem::remove(shard.mp4_path, ec);
+        }
+        if (ec) {
+            shard.mp4_retention_status = "delete_failed";
+            shard.mp4_retention_error = ec.message();
+            shard.mp4_retained = file_exists(shard.mp4_path);
+            continue;
+        }
+        if (removed) {
+            shard.mp4_retention_status = "deleted_after_merged_finalization";
+            shard.mp4_removed_after_merge = true;
+            shard.mp4_retained = false;
+            continue;
+        }
+        shard.mp4_retention_status = "already_absent_after_merged_finalization";
+        shard.mp4_retained = false;
+    }
 }
 
 void write_encode_csv_header(std::ofstream& csv)
@@ -2490,6 +2630,7 @@ public:
         out.bitstream_out_path = options_.bitstream_out_path;
         out.mp4_path = options_.mp4_out_path;
         out.mp4_keyframe_path = resolved_mp4_keyframe_path_;
+        out.mp4_retained = file_exists(options_.mp4_out_path);
         return out;
     }
 
@@ -3593,6 +3734,8 @@ void write_summary_json(const Options& options,
     out << "  \"tool\": \"external_recorder_ipc_probe\",\n";
     out << "  \"session_id\": \"" << json_escape(session_id) << "\",\n";
     out << "  \"stream_id\": \"" << json_escape(stream_id) << "\",\n";
+    out << "  \"stream_kind\": \"" << json_escape(options.stream_kind) << "\",\n";
+    out << "  \"output_kind\": \"" << json_escape(options.output_kind) << "\",\n";
     out << "  \"socket_path\": \"" << json_escape(options.socket_path) << "\",\n";
     out << "  \"gpu_id\": " << options.gpu_id << ",\n";
     out << "  \"assigned_gpu_id\": " << enc.assigned_gpu_id << ",\n";
@@ -3604,6 +3747,8 @@ void write_summary_json(const Options& options,
         << (options.direct_input_source ? "true" : "false") << ",\n";
     out << "  \"deferred_source_release\": "
         << (options.deferred_source_release ? "true" : "false") << ",\n";
+    out << "  \"preserve_shard_mp4s\": "
+        << (options.preserve_shard_mp4s ? "true" : "false") << ",\n";
     write_ipc_protocol_json(out, protocol_state, "  ");
     out << ",\n";
     out << "  \"codec\": \"" << json_escape(options.codec) << "\",\n";
@@ -3712,7 +3857,15 @@ void write_summary_json(const Options& options,
         out << "      \"encode_csv\": \"" << json_escape(shard.encode_csv_path) << "\",\n";
         out << "      \"raw_bitstream\": \"" << json_escape(shard.bitstream_out_path) << "\",\n";
         out << "      \"mp4\": \"" << json_escape(shard.mp4_path) << "\",\n";
-        out << "      \"mp4_keyframe\": \"" << json_escape(shard.mp4_keyframe_path) << "\"\n";
+        out << "      \"mp4_keyframe\": \"" << json_escape(shard.mp4_keyframe_path) << "\",\n";
+        out << "      \"mp4_retention\": {\n";
+        out << "        \"status\": \"" << json_escape(shard.mp4_retention_status) << "\",\n";
+        out << "        \"retained\": " << (shard.mp4_retained ? "true" : "false") << ",\n";
+        out << "        \"removed_after_merge\": "
+            << (shard.mp4_removed_after_merge ? "true" : "false") << ",\n";
+        out << "        \"error_message\": \""
+            << json_escape(shard.mp4_retention_error) << "\"\n";
+        out << "      }\n";
         out << "    }" << (i + 1 < shard_summaries.size() ? "," : "") << "\n";
     }
     out << "  ],\n";
@@ -4388,9 +4541,14 @@ int main(int argc, char** argv)
                 shard_summaries.push_back(worker->summary());
             }
         }
-        const EncodeSummary encode_summary = aggregate_encode_summaries(shard_summaries);
         const MergedOutputSummary merged_summary =
             merged_output ? merged_output->summary() : MergedOutputSummary{};
+        apply_shard_mp4_retention(
+            options,
+            merged_summary,
+            protocol_state.descriptor_intake_completed_cleanly,
+            &shard_summaries);
+        const EncodeSummary encode_summary = aggregate_encode_summaries(shard_summaries);
         write_summary_json(
             options,
             observed_session_id,

@@ -9,6 +9,7 @@ namespace orange::gui::spatial_layout {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr int kProjectedCircleSampleCount = 96;
 
 }  // namespace
 
@@ -76,6 +77,78 @@ std::vector<Point2d> sample_circle_boundary_points(
                                     cy + radius * std::sin(theta)));
     }
     return points;
+}
+
+bool sample_citrus_experimental_area_outline_in_camera_px(
+    const CitrusSpatialTemplateState& template_state,
+    const Point2d& center_arena_relative_px,
+    std::vector<Point2d>* camera_points_out,
+    std::string* error_out)
+{
+    if (camera_points_out == nullptr) {
+        if (error_out) {
+            *error_out = "Null Citrus outline destination.";
+        }
+        return false;
+    }
+    camera_points_out->clear();
+    if (!template_state.available ||
+        !template_state.has_arena_canvas_region ||
+        !template_state.has_canvas_to_camera_homography ||
+        template_state.experimental_area_radius_px <= 0.0) {
+        if (error_out) {
+            *error_out = "Citrus outline projection requires arena canvas region, canvas-to-camera homography, and positive radius.";
+        }
+        return false;
+    }
+
+    const std::vector<Point2d> arena_relative_points = sample_circle_boundary_points(
+        center_arena_relative_px.x,
+        center_arena_relative_px.y,
+        template_state.experimental_area_radius_px,
+        kProjectedCircleSampleCount);
+    camera_points_out->reserve(arena_relative_points.size());
+    for (const Point2d& arena_relative_point : arena_relative_points) {
+        const Point2d canvas_point =
+            citrus_arena_relative_to_canvas_px(template_state, arena_relative_point);
+        Point2d camera_point{};
+        if (!transform_point_projective(
+                template_state.canvas_to_camera_homography,
+                canvas_point,
+                &camera_point)) {
+            camera_points_out->clear();
+            if (error_out) {
+                *error_out = "Failed to project Citrus outline point into camera space.";
+            }
+            return false;
+        }
+        camera_points_out->push_back(camera_point);
+    }
+    return !camera_points_out->empty();
+}
+
+std::array<Point2d, 4> oriented_rectangle_corners(
+    const orange::spatial::RuntimeGeometry& geometry)
+{
+    const auto& rect = geometry.oriented_rectangle;
+    const double half_width = rect.width * 0.5;
+    const double half_height = rect.height * 0.5;
+    const double theta = rect.rotation_deg_clockwise * kPi / 180.0;
+    const double cos_theta = std::cos(theta);
+    const double sin_theta = std::sin(theta);
+
+    auto rotate_and_translate = [&](double local_x, double local_y) -> Point2d {
+        return make_point(
+            rect.cx + cos_theta * local_x - sin_theta * local_y,
+            rect.cy + sin_theta * local_x + cos_theta * local_y);
+    };
+
+    return {
+        rotate_and_translate(-half_width, -half_height),
+        rotate_and_translate(half_width, -half_height),
+        rotate_and_translate(half_width, half_height),
+        rotate_and_translate(-half_width, half_height)
+    };
 }
 
 bool fit_circle_to_points(const std::vector<Point2d>& points,

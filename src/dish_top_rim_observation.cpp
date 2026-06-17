@@ -102,6 +102,27 @@ std::string relative_to_artifact_dir(const std::string& path, const DishTopRimOb
     return std::filesystem::path(path).filename().generic_string();
 }
 
+std::string relative_to_artifact_root(const std::string& path, const DishTopRimObservationArtifactPaths& paths)
+{
+    if (paths.artifact_root_dir.empty()) {
+        return (std::filesystem::path(paths.artifact_id) /
+                std::filesystem::path(path).filename()).generic_string();
+    }
+    std::error_code error;
+    const std::filesystem::path relative =
+        std::filesystem::relative(
+            std::filesystem::path(path),
+            std::filesystem::path(paths.artifact_root_dir),
+            error);
+    if (!error && !relative.empty()) {
+        return relative.generic_string();
+    }
+    return (std::filesystem::path(paths.relative_artifact_dir.empty()
+                                      ? paths.artifact_id
+                                      : paths.relative_artifact_dir) /
+            std::filesystem::path(path).filename()).generic_string();
+}
+
 bool write_json_file(const std::filesystem::path& path,
                      const nlohmann::json& value,
                      std::string* error_out)
@@ -338,7 +359,10 @@ bool update_local_calibration_registry(const std::filesystem::path& artifact_roo
     entry["created_utc"] = manifest.value("created_utc", "");
     entry["fingerprint"] = manifest.value("calibration_ref", nlohmann::json::object()).value("fingerprint", "");
     entry["relative_manifest_path"] =
-        (std::filesystem::path(artifact_id) / "manifest.json").generic_string();
+        manifest.value("storage", nlohmann::json::object())
+            .value(
+                "relative_manifest_path",
+                (std::filesystem::path(artifact_id) / "manifest.json").generic_string());
     if (manifest.contains("producer")) {
         entry["producer"] = manifest["producer"];
     }
@@ -378,17 +402,27 @@ std::string build_dish_top_rim_observation_artifact_id(
 
 DishTopRimObservationArtifactPaths make_dish_top_rim_observation_artifact_paths(
     const std::string& artifact_root_dir,
-    const std::string& artifact_id)
+    const std::string& artifact_id,
+    const std::string& relative_artifact_dir)
 {
-    const std::filesystem::path root = std::filesystem::path(artifact_root_dir) / artifact_id;
+    const std::filesystem::path relative_dir =
+        relative_artifact_dir.empty()
+            ? std::filesystem::path(artifact_id)
+            : std::filesystem::path(relative_artifact_dir);
+    const std::filesystem::path root =
+        std::filesystem::path(artifact_root_dir) / relative_dir;
     DishTopRimObservationArtifactPaths paths;
     paths.artifact_id = artifact_id;
+    paths.artifact_root_dir = artifact_root_dir;
+    paths.relative_artifact_dir = relative_dir.generic_string();
     paths.artifact_dir = root.generic_string();
     paths.manifest_path = (root / "manifest.json").generic_string();
     paths.observation_json_path = (root / "observation.json").generic_string();
     paths.image_set_json_path = (root / "image_set.json").generic_string();
     paths.source_frame_path = (root / "captures" / "source_frame.png").generic_string();
     paths.review_overlay_path = (root / "overlays" / "top_rim_fit.png").generic_string();
+    paths.registration_hough_overlay_path =
+        (root / "overlays" / "registration_hough_overlay.png").generic_string();
     paths.valid_detection_overlay_path =
         (root / "overlays" / "valid_detection_region.png").generic_string();
     paths.palette_export_path = (root / "exports" / "palette_dish_mask_v2.json").generic_string();
@@ -456,6 +490,7 @@ nlohmann::json dish_top_rim_observation_to_json(
     const DishTopRimObservationArtifactPaths& paths,
     const std::string& source_frame_checksum,
     const std::string& review_overlay_checksum,
+    const std::string& registration_hough_overlay_checksum,
     const std::string& valid_detection_overlay_checksum,
     const std::string& fingerprint)
 {
@@ -506,6 +541,7 @@ nlohmann::json dish_top_rim_observation_to_json(
         {"projector_visible_to_camera", request.capture.projector_visible_to_camera},
         {"exposure_us", request.capture.exposure_us},
         {"frame_rate_hz", request.capture.frame_rate_hz},
+        {"dish_fill_state", request.capture.dish_fill_state},
         {"requires_camera_mount_unchanged", request.capture.requires_camera_mount_unchanged},
         {"requires_filter_reinstalled_repeatably",
          request.capture.requires_filter_reinstalled_repeatably}
@@ -555,6 +591,10 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"top_rim_overlay_path", relative_to_artifact_dir(paths.review_overlay_path, paths)},
             {"top_rim_overlay_checksum_algorithm", kCalibrationFingerprintAlgorithm},
             {"top_rim_overlay_checksum", review_overlay_checksum},
+            {"registration_hough_overlay_path",
+             relative_to_artifact_dir(paths.registration_hough_overlay_path, paths)},
+            {"registration_hough_overlay_checksum_algorithm", kCalibrationFingerprintAlgorithm},
+            {"registration_hough_overlay_checksum", registration_hough_overlay_checksum},
             {"valid_detection_overlay_path", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
             {"valid_detection_overlay_checksum_algorithm", kCalibrationFingerprintAlgorithm},
             {"valid_detection_overlay_checksum", valid_detection_overlay_checksum}
@@ -577,6 +617,51 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"surface", "dish_top_rim"},
             {"coordinate_space", "camera_native_pixels"},
             {"geometry", circle_geometry_to_json(accepted_circle)}
+        }},
+        {"accepted_experimental_area_boundary", {
+            {"role", request.accepted_boundary_runtime_role.empty()
+                         ? "citrus_experimental_area_boundary"
+                         : request.accepted_boundary_runtime_role},
+            {"interpretation", request.accepted_boundary_interpretation.empty()
+                                   ? "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary"
+                                   : request.accepted_boundary_interpretation},
+            {"physical_target", "dish_top_rim"},
+            {"target_plane", "dish_top_rim"},
+            {"coordinate_space", "camera_native_pixels"},
+            {"geometry", circle_geometry_to_json(accepted_circle)},
+            {"operator_confirmed", request.operator_confirmed},
+            {"accepted_by_operator", request.operator_confirmed},
+            {"accepted_at_utc", request.created_utc},
+            {"source_boundary", "observed_boundary"},
+            {"operator_boundary_target", request.operator_boundary_target.empty()
+                                             ? "unknown"
+                                             : request.operator_boundary_target},
+            {"boundary_inclusion_policy", request.boundary_inclusion_policy.empty()
+                                              ? "unknown"
+                                              : request.boundary_inclusion_policy},
+            {"operator_adjustment_px", {
+                {"center_dx", rounded_or_zero(center_dx)},
+                {"center_dy", rounded_or_zero(center_dy)},
+                {"radius_delta", rounded_or_zero(radius_delta)}
+            }}
+        }},
+        {"boundary_interpretation", {
+            {"accepted_boundary_role", request.accepted_boundary_runtime_role.empty()
+                                           ? "citrus_experimental_area_boundary"
+                                           : request.accepted_boundary_runtime_role},
+            {"accepted_boundary_semantics",
+             request.accepted_boundary_interpretation.empty()
+                 ? "operator_accepted_orange_dish_rim_equals_citrus_experimental_area_boundary"
+                 : request.accepted_boundary_interpretation},
+            {"observed_boundary_surface", "dish_top_rim"},
+            {"operator_boundary_target", request.operator_boundary_target.empty()
+                                             ? "unknown"
+                                             : request.operator_boundary_target},
+            {"boundary_inclusion_policy", request.boundary_inclusion_policy.empty()
+                                              ? "unknown"
+                                              : request.boundary_inclusion_policy},
+            {"valid_detection_region_policy",
+             "derived_by_erosion_for_detection_gating_exports_not_primary_citrus_experimental_area_boundary"}
         }},
         {"valid_detection_region", {
             {"coordinate_space", "camera_native_pixels"},
@@ -619,10 +704,13 @@ nlohmann::json dish_top_rim_observation_to_json(
             {"image_set_path", relative_to_artifact_dir(paths.image_set_json_path, paths)},
             {"source_frame_path", relative_to_artifact_dir(paths.source_frame_path, paths)},
             {"review_overlay_path", relative_to_artifact_dir(paths.review_overlay_path, paths)},
+            {"registration_hough_overlay_path",
+             relative_to_artifact_dir(paths.registration_hough_overlay_path, paths)},
             {"valid_detection_overlay_path", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
             {"checksum_algorithm", kCalibrationFingerprintAlgorithm},
             {"source_frame_checksum", source_frame_checksum},
             {"review_overlay_checksum", review_overlay_checksum},
+            {"registration_hough_overlay_checksum", registration_hough_overlay_checksum},
             {"valid_detection_overlay_checksum", valid_detection_overlay_checksum}
         }},
         {"software", {
@@ -659,6 +747,7 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
     const DishTopRimObservationArtifactPaths& paths,
     const std::string& source_frame_checksum,
     const std::string& review_overlay_checksum,
+    const std::string& registration_hough_overlay_checksum,
     const std::string& valid_detection_overlay_checksum,
     const std::string& fingerprint)
 {
@@ -677,6 +766,16 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
         {"runtime_verification_status", request.runtime_verification.status},
         {"camera_serial", request.camera.serial},
         {"physical_target", "dish_top_rim"},
+        {"accepted_boundary_role", request.accepted_boundary_runtime_role.empty()
+                                       ? "citrus_experimental_area_boundary"
+                                       : request.accepted_boundary_runtime_role},
+        {"boundary_inclusion_policy", request.boundary_inclusion_policy.empty()
+                                          ? "unknown"
+                                          : request.boundary_inclusion_policy},
+        {"operator_boundary_target", request.operator_boundary_target.empty()
+                                         ? "unknown"
+                                         : request.operator_boundary_target},
+        {"dish_fill_state", request.capture.dish_fill_state},
         {"coordinate_space", "camera_native_pixels"}
     };
     if (!request.arena_context.empty()) {
@@ -708,6 +807,12 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
             {"application", "orange"},
             {"artifact_type", "dish_top_rim_observation"}
         }},
+        {"storage", {
+            {"artifact_root", paths.artifact_root_dir},
+            {"artifact_dir", paths.artifact_dir},
+            {"relative_artifact_dir", paths.relative_artifact_dir},
+            {"relative_manifest_path", relative_to_artifact_root(paths.manifest_path, paths)}
+        }},
         {"calibration_ref", calibration_ref_json(request.artifact_id, fingerprint)},
         {"compatibility", compatibility},
         {"summary", summary},
@@ -717,6 +822,8 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
             {"image_set_json", relative_to_artifact_dir(paths.image_set_json_path, paths)},
             {"source_frame", relative_to_artifact_dir(paths.source_frame_path, paths)},
             {"review_overlay", relative_to_artifact_dir(paths.review_overlay_path, paths)},
+            {"registration_hough_overlay",
+             relative_to_artifact_dir(paths.registration_hough_overlay_path, paths)},
             {"valid_detection_overlay", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
             {"palette_dish_mask_v2", relative_to_artifact_dir(paths.palette_export_path, paths)},
             {"spatial_dish_mask_runtime_v1",
@@ -726,6 +833,7 @@ nlohmann::json dish_top_rim_observation_manifest_to_json(
             {"algorithm", kCalibrationFingerprintAlgorithm},
             {"source_frame", source_frame_checksum},
             {"review_overlay", review_overlay_checksum},
+            {"registration_hough_overlay", registration_hough_overlay_checksum},
             {"valid_detection_overlay", valid_detection_overlay_checksum}
         }}
     };
@@ -736,6 +844,7 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
     const DishTopRimObservationArtifactPaths& paths,
     const std::string& source_frame_checksum,
     const std::string& review_overlay_checksum,
+    const std::string& registration_hough_overlay_checksum,
     const std::string& valid_detection_overlay_checksum,
     const std::string& observation_fingerprint,
     const nlohmann::json& observation_json)
@@ -831,6 +940,11 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
             {"checksum_algorithm", kCalibrationFingerprintAlgorithm},
             {"checksum", review_overlay_checksum}
         }},
+        {"registration_hough_overlay", {
+            {"path", relative_to_artifact_dir(paths.registration_hough_overlay_path, paths)},
+            {"checksum_algorithm", kCalibrationFingerprintAlgorithm},
+            {"checksum", registration_hough_overlay_checksum}
+        }},
         {"valid_detection_overlay", {
             {"path", relative_to_artifact_dir(paths.valid_detection_overlay_path, paths)},
             {"checksum_algorithm", kCalibrationFingerprintAlgorithm},
@@ -841,7 +955,13 @@ CalibrationImageSetRequest build_dish_top_rim_image_set_request(
     image_set.observations = {
         {"dish_top_rim", {
             {"accepted_boundary",
+             observation_json.value(
+                 "accepted_experimental_area_boundary",
+                 observation_json.value("observed_boundary", nlohmann::json::object()))},
+            {"observed_boundary",
              observation_json.value("observed_boundary", nlohmann::json::object())},
+            {"boundary_interpretation",
+             observation_json.value("boundary_interpretation", nlohmann::json::object())},
             {"valid_detection_region",
              observation_json.value("valid_detection_region", nlohmann::json::object())},
             {"accepted_mask",
@@ -973,7 +1093,11 @@ nlohmann::json dish_top_rim_spatial_dish_mask_runtime_export_to_json(
             {"artifact_schema_id", observation_json.value("schema_id", "")},
             {"artifact_schema_version", observation_json.value("schema_version", 0)},
             {"fingerprint",
-             observation_json.value("calibration_ref", nlohmann::json::object()).value("fingerprint", "")}
+             observation_json.value("calibration_ref", nlohmann::json::object()).value("fingerprint", "")},
+            {"accepted_experimental_area_boundary",
+             observation_json.value("accepted_experimental_area_boundary", nlohmann::json::object())},
+            {"boundary_interpretation",
+             observation_json.value("boundary_interpretation", nlohmann::json::object())}
         }}
     };
 }
@@ -1002,6 +1126,7 @@ std::string compute_dish_top_rim_observation_fingerprint(
     for (const std::string& file_path : {
              paths.source_frame_path,
              paths.review_overlay_path,
+             paths.registration_hough_overlay_path,
              paths.valid_detection_overlay_path}) {
         std::vector<unsigned char> bytes;
         if (!read_file_bytes(file_path, &bytes, error_out)) {
@@ -1054,7 +1179,10 @@ bool write_dish_top_rim_observation_artifact(
     }
 
     const DishTopRimObservationArtifactPaths paths =
-        make_dish_top_rim_observation_artifact_paths(artifact_root_dir, request.artifact_id);
+        make_dish_top_rim_observation_artifact_paths(
+            artifact_root_dir,
+            request.artifact_id,
+            request.storage_relative_artifact_dir);
     {
         orange::ScopedFsuid fsuid_guard;
         (void)fsuid_guard;
@@ -1091,6 +1219,7 @@ bool write_dish_top_rim_observation_artifact(
     valid_circle.radius_px = accepted_circle.radius_px - request.valid_region_erosion_px;
     const cv::Mat overlay = make_overlay(source_image, detected_circle, accepted_circle, valid_circle);
     if (!write_image_file(paths.review_overlay_path, overlay, error_out) ||
+        !write_image_file(paths.registration_hough_overlay_path, overlay, error_out) ||
         !write_image_file(paths.valid_detection_overlay_path, overlay, error_out)) {
         return false;
     }
@@ -1101,6 +1230,11 @@ bool write_dish_top_rim_observation_artifact(
     }
     const std::string review_checksum = compute_file_fingerprint(paths.review_overlay_path, error_out);
     if (review_checksum.empty()) {
+        return false;
+    }
+    const std::string registration_hough_overlay_checksum =
+        compute_file_fingerprint(paths.registration_hough_overlay_path, error_out);
+    if (registration_hough_overlay_checksum.empty()) {
         return false;
     }
     const std::string valid_overlay_checksum =
@@ -1116,6 +1250,7 @@ bool write_dish_top_rim_observation_artifact(
         paths,
         source_checksum,
         review_checksum,
+        registration_hough_overlay_checksum,
         valid_overlay_checksum,
         "");
     observation["circle_detection"]["hough_params"] = {
@@ -1162,6 +1297,7 @@ bool write_dish_top_rim_observation_artifact(
                 paths,
                 source_checksum,
                 review_checksum,
+                registration_hough_overlay_checksum,
                 valid_overlay_checksum,
                 fingerprint,
                 observation);
@@ -1183,6 +1319,7 @@ bool write_dish_top_rim_observation_artifact(
         paths,
         source_checksum,
         review_checksum,
+        registration_hough_overlay_checksum,
         valid_overlay_checksum,
         fingerprint);
     if (!write_json_file(paths.manifest_path, manifest, error_out)) {
@@ -1219,6 +1356,12 @@ nlohmann::json build_dish_top_rim_recording_snapshot_entry(
             "coordinate_space",
             "camera_native_pixels");
     entry["accepted_mask"] = observation_json.value("accepted_mask", nlohmann::json::object());
+    entry["accepted_experimental_area_boundary"] =
+        observation_json.value(
+            "accepted_experimental_area_boundary",
+            nlohmann::json::object());
+    entry["boundary_interpretation"] =
+        observation_json.value("boundary_interpretation", nlohmann::json::object());
     entry["review_artifacts"] = observation_json.value("review_artifacts", nlohmann::json::object());
     entry["runtime_verification"] =
         observation_json.value("runtime_verification", nlohmann::json::object());

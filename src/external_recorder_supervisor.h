@@ -34,7 +34,10 @@ struct SupervisorPlanOptions {
 struct RecorderStreamPlan {
     std::string contract_key;
     std::string stream_id;
+    std::string stream_kind = "full_frame";
+    std::string output_kind = "full";
     std::string camera_serial;
+    std::string env_key;
     int analytics_gpu_id = -1;
     int recorder_gpu_id = -1;
     std::vector<int> expected_shard_gpu_ids;
@@ -88,6 +91,7 @@ struct SupervisorPlan {
     bool require_status_runtime = false;
     bool require_storage_preflight = true;
     bool require_protocol_hello = true;
+    bool preserve_shard_mp4s = false;
     std::vector<RecorderStreamPlan> streams;
 };
 
@@ -106,6 +110,8 @@ struct RecorderStatusSnapshot {
     std::string schema_id;
     int schema_version = 0;
     std::string status;
+    std::string stream_kind;
+    std::string output_kind;
     uint64_t steady_clock_ns = 0;
     uint64_t heartbeat_sequence = 0;
     uint64_t frames_received = 0;
@@ -164,7 +170,10 @@ struct RecorderStatusSnapshot {
 
 struct RecorderProcessState {
     std::string stream_id;
+    std::string stream_kind;
+    std::string output_kind;
     std::string camera_serial;
+    std::string env_key;
     std::string socket_path;
     std::string status_json_path;
     std::string log_path;

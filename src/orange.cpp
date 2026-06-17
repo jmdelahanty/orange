@@ -1034,8 +1034,18 @@ bool gui_any_crop_recording_enabled(const CameraEachSelect* cameras_select, cons
 
 std::string gui_crop_stream_camera_serial(const orange::external_recorder::RecorderStreamPlan& stream)
 {
-    std::string serial = stream.stream_id;
     const std::string suffix = "_crop";
+    auto strip_suffix = [&](std::string serial) {
+        if (serial.size() > suffix.size() &&
+            serial.compare(serial.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            serial.resize(serial.size() - suffix.size());
+        }
+        return serial;
+    };
+    if (stream.output_kind == "crop" && !stream.camera_serial.empty()) {
+        return strip_suffix(stream.camera_serial);
+    }
+    std::string serial = stream.stream_id;
     if (serial.size() > suffix.size() &&
         serial.compare(serial.size() - suffix.size(), suffix.size(), suffix) == 0) {
         serial.resize(serial.size() - suffix.size());
@@ -1047,6 +1057,25 @@ std::string gui_crop_stream_camera_serial(const orange::external_recorder::Recor
         serial.resize(serial.size() - suffix.size());
     }
     return serial;
+}
+
+bool gui_external_stream_is_full(
+    const orange::external_recorder::RecorderStreamPlan& stream)
+{
+    return stream.output_kind.empty() || stream.output_kind == "full";
+}
+
+bool gui_external_stream_is_crop(
+    const orange::external_recorder::RecorderStreamPlan& stream)
+{
+    const std::string suffix = "_crop";
+    auto has_crop_suffix = [&](const std::string& value) {
+        return value.size() > suffix.size() &&
+               value.compare(value.size() - suffix.size(), suffix.size(), suffix) == 0;
+    };
+    return stream.output_kind == "crop" ||
+           has_crop_suffix(stream.stream_id) ||
+           has_crop_suffix(stream.camera_serial);
 }
 
 bool gui_read_json_file(const std::string& path, nlohmann::json* out, std::string* error_out)
@@ -1378,6 +1407,9 @@ bool gui_write_external_rolling_recording_session_manifest(
     bool full_frame_clips_ok = true;
 
     for (const auto& stream : plan.streams) {
+        if (!gui_external_stream_is_full(stream)) {
+            continue;
+        }
         const std::string serial = stream.camera_serial.empty()
             ? stream.stream_id
             : stream.camera_serial;
@@ -2210,6 +2242,9 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             nlohmann::json gop_routing_paths = nlohmann::json::object();
 
             for (const auto& stream : recording_session->external_recorder_lifecycle.plan.streams) {
+                if (!gui_external_stream_is_full(stream)) {
+                    continue;
+                }
                 const std::string serial = stream.camera_serial.empty()
                     ? stream.stream_id
                     : stream.camera_serial;
@@ -2445,6 +2480,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 output.coordinate_space = "full_frame_pixels";
                 output.details = {
                     {"stream_id", stream.stream_id},
+                    {"stream_kind", stream.stream_kind},
+                    {"output_kind", stream.output_kind},
+                    {"camera_serial", stream.camera_serial},
+                    {"env_key", stream.env_key},
                     {"scope", crop_rolling_requested ? "session_aggregate" : "single_clip"},
                     {"video_backend", "external_ipc"},
                     {"metadata_backend", "orange_gui"},
@@ -2470,6 +2509,10 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
                 crop_gop_routing_paths[serial] = stream.gop_routing_csv;
                 crop_stream_config[serial] = {
                     {"stream_id", stream.stream_id},
+                    {"stream_kind", stream.stream_kind},
+                    {"output_kind", stream.output_kind},
+                    {"camera_serial", stream.camera_serial},
+                    {"env_key", stream.env_key},
                     {"analytics_gpu_id", stream.analytics_gpu_id},
                     {"recorder_gpu_id", stream.recorder_gpu_id},
                     {"encode_queue_depth", stream.encode_queue_depth},
@@ -2489,6 +2532,9 @@ bool gui_finalize_recording_session_if_ready(GuiRecordingRunState* run,
             };
 
         for (const auto& stream : recording_session->external_crop_recorder_lifecycle.plan.streams) {
+            if (!gui_external_stream_is_crop(stream)) {
+                continue;
+            }
             const std::string serial = gui_crop_stream_camera_serial(stream);
             if (serial.empty()) {
                 continue;
@@ -7439,8 +7485,12 @@ int main(int argc, char **args) {
     list_child_directories(local_start_folder_name, local_config_folders);
     std::string picture_save_folder = orange_root_dir_str + "/pictures/" + get_current_date();
     std::string calib_save_folder = orange_root_dir_str + "/exp/calibration/" + get_current_date();
-    std::string aperture_char_output_folder = orange_root_dir_str + "/calibrations/artifacts";
-    std::string usaf_output_folder = orange_root_dir_str + "/calibrations/artifacts";
+    std::string standalone_calibration_artifact_folder =
+        orange_root_dir_str + "/calibrations/standalone_artifacts";
+    std::string spatial_calibration_sessions_folder =
+        orange_root_dir_str + "/calibrations/sessions";
+    std::string aperture_char_output_folder = standalone_calibration_artifact_folder;
+    std::string usaf_output_folder = standalone_calibration_artifact_folder;
     orange::gui::HostPtpStackUiState host_ptp_stack_ui;
     ApertureCharacterizationUiState aperture_ui_state;
     copy_string_to_buffer(aperture_ui_state.output_dir, aperture_char_output_folder);
@@ -8203,7 +8253,7 @@ int main(int argc, char **args) {
             cameras_select,
             num_cameras,
             calibration_tool_busy,
-            aperture_char_output_folder,
+            spatial_calibration_sessions_folder,
             live_preview_texture_ids.empty() ? nullptr : live_preview_texture_ids.data(),
             display_uploaded_serials.empty() ? nullptr : display_uploaded_serials.data(),
             spatialSnapshotWorkers);

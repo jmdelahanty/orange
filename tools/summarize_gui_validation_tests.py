@@ -181,7 +181,10 @@ def write_external_recorder_status_fixture(
                 "streams": {
                     stream_id: {
                         "stream_id": stream_id,
-                        "camera_serial": stream_id,
+                        "stream_kind": "crop" if crop else "full_frame",
+                        "output_kind": "crop" if crop else "full",
+                        "camera_serial": serial,
+                        "env_key": stream_id,
                         "summary_json": str(summary_path),
                         "status_json": str(status_path),
                     }
@@ -234,6 +237,10 @@ def test_crop_summary_reads_rows_preview_and_fanout() -> None:
                     "stream_config": {
                         serial: {
                             "stream_id": f"{serial}_crop",
+                            "stream_kind": "crop",
+                            "output_kind": "crop",
+                            "camera_serial": serial,
+                            "env_key": f"{serial}_crop",
                             "analytics_gpu_id": 5,
                             "recorder_gpu_id": 6,
                             "socket_path": f"/tmp/orange_external_crop_recorder_{serial}.sock",
@@ -395,6 +402,10 @@ def test_crop_summary_uses_recording_backend_external_fallbacks() -> None:
                     "stream_config": {
                         serial: {
                             "stream_id": f"{serial}_crop",
+                            "stream_kind": "crop",
+                            "output_kind": "crop",
+                            "camera_serial": serial,
+                            "env_key": f"{serial}_crop",
                             "analytics_gpu_id": 7,
                             "recorder_gpu_id": 8,
                             "socket_path": f"/tmp/orange_external_crop_recorder_{serial}.sock",
@@ -463,6 +474,10 @@ def test_crop_summary_marks_same_external_gpu_as_analytics() -> None:
                     "stream_config": {
                         serial: {
                             "stream_id": f"{serial}_crop",
+                            "stream_kind": "crop",
+                            "output_kind": "crop",
+                            "camera_serial": serial,
+                            "env_key": f"{serial}_crop",
                             "analytics_gpu_id": 5,
                             "recorder_gpu_id": 5,
                             "socket_path": f"/tmp/orange_external_crop_recorder_{serial}.sock",
@@ -505,6 +520,10 @@ def test_crop_summary_uses_external_crop_contract_stream_config_fallback() -> No
                         "sidecar_perf": f"Cam{serial}_crop_sidecar_perf.csv",
                         "details": {
                             "stream_id": f"{serial}_crop",
+                            "stream_kind": "crop",
+                            "output_kind": "crop",
+                            "camera_serial": serial,
+                            "env_key": f"{serial}_crop",
                             "video_backend": "external_ipc",
                         },
                     }
@@ -515,6 +534,10 @@ def test_crop_summary_uses_external_crop_contract_stream_config_fallback() -> No
             "streams": {
                 f"{serial}_crop": {
                     "stream_id": f"{serial}_crop",
+                    "stream_kind": "crop",
+                    "output_kind": "crop",
+                    "camera_serial": serial,
+                    "env_key": f"{serial}_crop",
                     "analytics_gpu_id": 5,
                     "recorder_gpu_id": 8,
                     "socket_path": f"/tmp/orange_external_recorder_{serial}_crop.sock",

@@ -175,6 +175,54 @@ void test_full_queue_enqueue_unblocks_false_on_stop()
     require(worker.processed() == 2, "worker should process queued items during shutdown");
 }
 
+void test_manual_pop_of_null_flush_tick_wakes_blocked_enqueue()
+{
+    IntWorker worker;
+    worker.SetMaxQueueSize(1);
+
+    require(worker.PutObjectToQueueIn(nullptr), "flush tick should enqueue");
+    require(worker.GetCountQueueInSize() == 1, "flush tick should occupy one queue slot");
+
+    int value = 5;
+    std::atomic<bool> enqueue_returned{false};
+    std::atomic<bool> enqueue_result{false};
+    std::thread producer([&]() {
+        enqueue_result.store(worker.PutObjectToQueueIn(&value), std::memory_order_release);
+        enqueue_returned.store(true, std::memory_order_release);
+    });
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    require(
+        !enqueue_returned.load(std::memory_order_acquire),
+        "producer should wait while flush tick fills the queue");
+
+    require(
+        worker.GetObjectFromQueueIn() == nullptr,
+        "manual pop should return the queued flush tick");
+    require(worker.GetCountQueueInSize() == 0, "manual pop should free the queue slot");
+
+    bool woke_without_reset = false;
+    for (int i = 0; i < 100; ++i) {
+        if (enqueue_returned.load(std::memory_order_acquire)) {
+            woke_without_reset = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+
+    if (!woke_without_reset) {
+        worker.Reset();  // unblock the producer so the test can fail without hanging
+    }
+    producer.join();
+
+    require(
+        woke_without_reset,
+        "popping a null flush tick should notify producers waiting for queue space");
+    require(enqueue_result.load(std::memory_order_acquire), "producer enqueue should succeed");
+    require(worker.GetObjectFromQueueIn() == &value, "manual pop should retrieve producer item");
+    require(worker.GetCountQueueInSize() == 0, "queue should be empty after cleanup");
+}
+
 }  // namespace
 
 int main()
@@ -185,6 +233,7 @@ int main()
         test_immediate_stop_after_start_rejects_enqueue();
         test_immediate_enqueue_after_restart_succeeds();
         test_full_queue_enqueue_unblocks_false_on_stop();
+        test_manual_pop_of_null_flush_tick_wakes_blocked_enqueue();
     } catch (const std::exception& e) {
         std::cerr << "threadworker_tests failed: " << e.what() << std::endl;
         return 1;

@@ -96,6 +96,37 @@ struct SpatialLayoutCalibrationImageSetMetadata {
     std::string image_set_projected_pattern_type = "dot_grid";
     std::string image_set_scale_target_type = "unknown";
     std::string image_set_notes;
+    std::string capture_stage = "projected_surface_dry_reference";
+    double plane_z_mm_nominal = 0.0;
+    bool has_plane_z_mm_nominal = false;
+    double plane_z_mm_uncertainty = 0.0;
+    bool has_plane_z_mm_uncertainty = false;
+    std::string wet_or_dry = "dry";
+    bool imaging_shelf_installed = false;
+    bool dish_installed = false;
+    std::string dish_id;
+    double water_fill_mm = 0.0;
+    bool has_water_fill_mm = false;
+    std::string fill_state = "dry_or_empty";
+    bool open_water_surface_present = false;
+    std::string water_settled_status = "not_applicable";
+    std::string target_method = "projected_pattern_on_diffuser";
+    std::string pattern_type = "rectangular_grid";
+    std::string pattern_domain = "full_projected_surface";
+    std::string matched_parity_group_id;
+    std::string parity_group_role = "dry_reference";
+    bool reference_only = true;
+    bool physical_target_used = false;
+    bool projected_pattern_used_as_coordinate_target = true;
+    std::string plane_id;
+    double z_mm_relative_to_projection_surface = 0.0;
+    bool has_z_mm_relative_to_projection_surface = false;
+    std::string target_id;
+    std::string target_design;
+    double physical_target_grid_spacing_mm = 0.0;
+    bool has_physical_target_grid_spacing_mm = false;
+    std::string physical_target_origin_definition;
+    std::string physical_target_x_orientation_marker_definition;
     bool has_calibration_domain = false;
     std::string calibration_domain_shape = "unknown";
     std::string calibration_domain_source = "spatial_layout_runtime";
@@ -114,6 +145,9 @@ struct SpatialLayoutCalibrationImageSetMetadata {
     bool has_calibration_domain_valid_rectangle = false;
     double calibration_domain_valid_width_px = 0.0;
     double calibration_domain_valid_height_px = 0.0;
+    nlohmann::json citrus_projection_snapshot_pre_capture = nlohmann::json::object();
+    nlohmann::json citrus_projection_snapshot_post_capture = nlohmann::json::object();
+    nlohmann::json citrus_projection_epoch_consistency = nlohmann::json::object();
 };
 
 struct SpatialLayoutGroupCaptureFrame {
@@ -145,6 +179,65 @@ struct SpatialLayoutGroupCaptureFrame {
     uint64_t last_local_frame_id = 0;
     uint64_t first_camera_frame_id = 0;
     uint64_t last_camera_frame_id = 0;
+};
+
+struct SpatialLayoutSessionReviewImage {
+    bool valid = false;
+    std::string label;
+    std::string artifact_id;
+    std::string artifact_schema_id;
+    int image_index = -1;
+    std::string purpose;
+    std::string target_plane;
+    std::string capture_stage;
+    std::string plane_group;
+    std::string role;
+    std::string rig_id;
+    std::string canvas_id;
+    std::string arena_id;
+    std::string camera_serial;
+    std::string camera_name;
+    std::string capture_group_id;
+    std::string capture_mode = "loaded_calibration_session_image";
+    std::string source_array_role = "images_full";
+    std::string created_utc;
+    std::string image_path;
+    std::string image_set_path;
+    std::string observation_path;
+    int width = 0;
+    int height = 0;
+    SpatialLayoutCalibrationImageSetMetadata metadata;
+    bool has_accepted_circle = false;
+    double accepted_circle_cx = 0.0;
+    double accepted_circle_cy = 0.0;
+    double accepted_circle_r = 0.0;
+    bool has_linked_accepted_top_rim = false;
+};
+
+struct SpatialLayoutSessionReviewPurposeGroup {
+    std::string purpose;
+    std::string target_plane;
+    std::vector<int> image_indices;
+};
+
+struct SpatialLayoutSessionReviewPlaneGroup {
+    std::string label;
+    std::string plane_group;
+    std::string camera_serial;
+    std::string camera_name;
+    std::string rig_id;
+    std::string canvas_id;
+    std::string arena_id;
+    bool has_linked_accepted_top_rim = false;
+    std::vector<int> image_indices;
+    std::vector<SpatialLayoutSessionReviewPurposeGroup> purpose_groups;
+};
+
+struct SpatialLayoutSessionReviewCameraGroup {
+    std::string label;
+    std::string camera_serial;
+    std::string camera_name;
+    std::vector<SpatialLayoutSessionReviewPlaneGroup> plane_groups;
 };
 
 struct SpatialLayoutUiState {
@@ -180,6 +273,10 @@ struct SpatialLayoutUiState {
     uint64_t pending_full_res_snapshot_request_id = 0;
     std::string pending_full_res_snapshot_camera_serial;
     uint32_t pending_full_res_snapshot_target_frame_count = 1;
+    nlohmann::json pending_full_res_snapshot_pre_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_projection_snapshot_pre_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_projection_snapshot_post_capture = nlohmann::json::object();
+    nlohmann::json captured_citrus_projection_epoch_consistency = nlohmann::json::object();
     std::string group_capture_id;
     std::string group_capture_mode = "operator_group_next_frame";
     SpatialLayoutCalibrationImageSetMetadata group_capture_metadata;
@@ -187,6 +284,14 @@ struct SpatialLayoutUiState {
     std::vector<SpatialLayoutGroupCaptureFrame> group_captures;
     std::string group_capture_status;
     std::string group_capture_error;
+    std::vector<SpatialLayoutSessionReviewImage> session_review_images;
+    std::vector<SpatialLayoutSessionReviewCameraGroup> session_review_camera_groups;
+    std::vector<std::string> session_review_warnings;
+    int selected_session_review_image = -1;
+    int selected_session_capture_matrix_row = -1;
+    int selected_session_capture_matrix_column = -1;
+    std::string loaded_calibration_session_index_path;
+    std::string loaded_calibration_session_citrus_config_path;
     bool has_capture = false;
     orange::ui::ImageCanvasViewState captured_canvas_view;
 
@@ -256,6 +361,10 @@ struct SpatialLayoutUiState {
     std::string calibration_illumination_wavelength_confidence = "unknown";
     std::string calibration_projector_state = "unknown";
     bool calibration_projector_visible_to_camera = false;
+    std::string calibration_dish_fill_state = "unknown";
+    std::string calibration_operator_boundary_target = "top_level_visible_boundary";
+    std::string calibration_boundary_inclusion_policy =
+        "prefer_slight_overcoverage_to_avoid_fish_escape";
     bool calibration_requires_filter_reinstalled_repeatably = false;
     std::string calibration_operator_notes;
     std::string calibration_image_set_purpose = "homography_grid";
@@ -265,6 +374,37 @@ struct SpatialLayoutUiState {
     std::string calibration_image_set_projected_pattern_type = "dot_grid";
     std::string calibration_image_set_scale_target_type = "unknown";
     std::string calibration_image_set_notes;
+    std::string calibration_capture_stage = "projected_surface_dry_reference";
+    double calibration_plane_z_mm_nominal = 0.0;
+    bool calibration_has_plane_z_mm_nominal = false;
+    double calibration_plane_z_mm_uncertainty = 0.0;
+    bool calibration_has_plane_z_mm_uncertainty = false;
+    std::string calibration_wet_or_dry = "dry";
+    bool calibration_imaging_shelf_installed = false;
+    bool calibration_dish_installed = false;
+    std::string calibration_dish_id;
+    double calibration_water_fill_mm = 0.0;
+    bool calibration_has_water_fill_mm = false;
+    std::string calibration_fill_state = "dry_or_empty";
+    bool calibration_open_water_surface_present = false;
+    std::string calibration_water_settled_status = "not_applicable";
+    std::string calibration_target_method = "projected_pattern_on_diffuser";
+    std::string calibration_pattern_type = "rectangular_grid";
+    std::string calibration_pattern_domain = "full_projected_surface";
+    std::string calibration_matched_parity_group_id;
+    std::string calibration_parity_group_role = "dry_reference";
+    bool calibration_reference_only = true;
+    bool calibration_physical_target_used = false;
+    bool calibration_projected_pattern_used_as_coordinate_target = true;
+    std::string calibration_plane_id;
+    double calibration_z_mm_relative_to_projection_surface = 0.0;
+    bool calibration_has_z_mm_relative_to_projection_surface = false;
+    std::string calibration_target_id;
+    std::string calibration_target_design;
+    double calibration_physical_target_grid_spacing_mm = 0.0;
+    bool calibration_has_physical_target_grid_spacing_mm = false;
+    std::string calibration_physical_target_origin_definition;
+    std::string calibration_physical_target_x_orientation_marker_definition;
     std::string canonical_layout_json;
     std::string runtime_preview_json;
 };

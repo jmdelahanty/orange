@@ -83,6 +83,32 @@ inline bool try_get_positive_double(const nlohmann::json& object,
     return true;
 }
 
+inline bool try_get_nonnegative_double(const nlohmann::json& object,
+                                       const char* key,
+                                       double* out_value)
+{
+    if (!out_value || !object.contains(key) || !object[key].is_number()) {
+        return false;
+    }
+    const double parsed = object[key].get<double>();
+    if (parsed < 0.0) {
+        return false;
+    }
+    *out_value = parsed;
+    return true;
+}
+
+inline bool try_get_bool(const nlohmann::json& object,
+                         const char* key,
+                         bool* out_value)
+{
+    if (!out_value || !object.contains(key) || !object[key].is_boolean()) {
+        return false;
+    }
+    *out_value = object[key].get<bool>();
+    return true;
+}
+
 }  // namespace detail
 
 inline void parse_crop_pipeline_config(const nlohmann::json& camera_config,
@@ -132,6 +158,208 @@ inline nlohmann::json build_crop_pipeline_config(const CameraParams& camera_para
         {"preview_max_fps", sanitize_camera_crop_preview_max_fps(
             camera_params.crop_pipeline.preview_max_fps)}
     };
+}
+
+inline bool lens_config_has_content(const CameraLensConfig& lens)
+{
+    return lens.configured ||
+           lens.present ||
+           !lens.manufacturer.empty() ||
+           !lens.model.empty() ||
+           !lens.serial.empty() ||
+           !lens.mount.empty() ||
+           lens.focal_length_mm > 0.0 ||
+           lens.aperture_f_number > 0.0 ||
+           !lens.focus_control.empty() ||
+           !lens.iris_control.empty() ||
+           !lens.notes.empty();
+}
+
+inline bool optical_filter_config_has_content(const CameraOpticalFilterConfig& filter)
+{
+    return !filter.id.empty() ||
+           !filter.manufacturer.empty() ||
+           !filter.model.empty() ||
+           !filter.label.empty() ||
+           !filter.type.empty() ||
+           !filter.thread_size.empty() ||
+           !filter.state.empty() ||
+           !filter.runtime_role.empty() ||
+           filter.cutoff_wavelength_nm > 0.0 ||
+           filter.center_wavelength_nm > 0.0 ||
+           filter.min_wavelength_nm > 0.0 ||
+           filter.max_wavelength_nm > 0.0 ||
+           filter.bandwidth_fwhm_nm > 0.0 ||
+           !filter.notes.empty();
+}
+
+inline void parse_optics_config(const nlohmann::json& camera_config,
+                                CameraParams* camera_params)
+{
+    if (!camera_params) {
+        return;
+    }
+
+    camera_params->optics = CameraOpticsConfig();
+    if (!camera_config.contains("optics") ||
+        !camera_config["optics"].is_object()) {
+        return;
+    }
+
+    const nlohmann::json& optics = camera_config["optics"];
+    if (optics.contains("lens") && optics["lens"].is_object()) {
+        const nlohmann::json& lens_json = optics["lens"];
+        CameraLensConfig lens;
+        lens.configured = true;
+        detail::try_get_bool(lens_json, "present", &lens.present);
+        detail::try_get_string(lens_json, "manufacturer", &lens.manufacturer);
+        detail::try_get_string(lens_json, "model", &lens.model);
+        detail::try_get_string(lens_json, "serial", &lens.serial);
+        detail::try_get_string(lens_json, "mount", &lens.mount);
+        detail::try_get_nonnegative_double(lens_json, "focal_length_mm", &lens.focal_length_mm);
+        detail::try_get_nonnegative_double(lens_json, "aperture_f_number", &lens.aperture_f_number);
+        detail::try_get_string(lens_json, "focus_control", &lens.focus_control);
+        detail::try_get_string(lens_json, "iris_control", &lens.iris_control);
+        detail::try_get_string(lens_json, "notes", &lens.notes);
+        camera_params->optics.lens = std::move(lens);
+    }
+
+    const nlohmann::json* filters_json = nullptr;
+    if (optics.contains("filter_stack") && optics["filter_stack"].is_array()) {
+        filters_json = &optics["filter_stack"];
+    } else if (optics.contains("filters") && optics["filters"].is_array()) {
+        filters_json = &optics["filters"];
+    }
+    if (!filters_json) {
+        return;
+    }
+
+    for (const nlohmann::json& filter_json : *filters_json) {
+        if (!filter_json.is_object()) {
+            continue;
+        }
+        CameraOpticalFilterConfig filter;
+        detail::try_get_string(filter_json, "id", &filter.id);
+        detail::try_get_string(filter_json, "manufacturer", &filter.manufacturer);
+        detail::try_get_string(filter_json, "model", &filter.model);
+        detail::try_get_string(filter_json, "label", &filter.label);
+        detail::try_get_string(filter_json, "type", &filter.type);
+        detail::try_get_string(filter_json, "thread_size", &filter.thread_size);
+        detail::try_get_string(filter_json, "state", &filter.state);
+        detail::try_get_string(filter_json, "runtime_role", &filter.runtime_role);
+        detail::try_get_nonnegative_double(
+            filter_json, "cutoff_wavelength_nm", &filter.cutoff_wavelength_nm);
+        detail::try_get_nonnegative_double(
+            filter_json, "center_wavelength_nm", &filter.center_wavelength_nm);
+        detail::try_get_nonnegative_double(
+            filter_json, "min_wavelength_nm", &filter.min_wavelength_nm);
+        detail::try_get_nonnegative_double(
+            filter_json, "max_wavelength_nm", &filter.max_wavelength_nm);
+        detail::try_get_nonnegative_double(
+            filter_json, "bandwidth_fwhm_nm", &filter.bandwidth_fwhm_nm);
+        detail::try_get_string(filter_json, "notes", &filter.notes);
+        if (optical_filter_config_has_content(filter)) {
+            camera_params->optics.filter_stack.push_back(std::move(filter));
+        }
+    }
+}
+
+inline nlohmann::json build_optics_config(const CameraParams& camera_params)
+{
+    nlohmann::json optics = nlohmann::json::object();
+    const CameraLensConfig& lens = camera_params.optics.lens;
+    if (lens_config_has_content(lens)) {
+        nlohmann::json lens_json = nlohmann::json::object();
+        lens_json["present"] = lens.present;
+        if (!lens.manufacturer.empty()) {
+            lens_json["manufacturer"] = lens.manufacturer;
+        }
+        if (!lens.model.empty()) {
+            lens_json["model"] = lens.model;
+        }
+        if (!lens.serial.empty()) {
+            lens_json["serial"] = lens.serial;
+        }
+        if (!lens.mount.empty()) {
+            lens_json["mount"] = lens.mount;
+        }
+        if (lens.focal_length_mm > 0.0) {
+            lens_json["focal_length_mm"] = lens.focal_length_mm;
+        }
+        if (lens.aperture_f_number > 0.0) {
+            lens_json["aperture_f_number"] = lens.aperture_f_number;
+        }
+        if (!lens.focus_control.empty()) {
+            lens_json["focus_control"] = lens.focus_control;
+        }
+        if (!lens.iris_control.empty()) {
+            lens_json["iris_control"] = lens.iris_control;
+        }
+        if (!lens.notes.empty()) {
+            lens_json["notes"] = lens.notes;
+        }
+        optics["lens"] = std::move(lens_json);
+    }
+
+    nlohmann::json filter_stack = nlohmann::json::array();
+    for (const CameraOpticalFilterConfig& filter : camera_params.optics.filter_stack) {
+        if (!optical_filter_config_has_content(filter)) {
+            continue;
+        }
+        nlohmann::json filter_json = nlohmann::json::object();
+        if (!filter.id.empty()) {
+            filter_json["id"] = filter.id;
+        }
+        if (!filter.manufacturer.empty()) {
+            filter_json["manufacturer"] = filter.manufacturer;
+        }
+        if (!filter.model.empty()) {
+            filter_json["model"] = filter.model;
+        }
+        if (!filter.label.empty()) {
+            filter_json["label"] = filter.label;
+        }
+        if (!filter.type.empty()) {
+            filter_json["type"] = filter.type;
+        }
+        if (!filter.thread_size.empty()) {
+            filter_json["thread_size"] = filter.thread_size;
+        }
+        if (!filter.state.empty()) {
+            filter_json["state"] = filter.state;
+        }
+        if (!filter.runtime_role.empty()) {
+            filter_json["runtime_role"] = filter.runtime_role;
+        }
+        if (filter.cutoff_wavelength_nm > 0.0) {
+            filter_json["cutoff_wavelength_nm"] = filter.cutoff_wavelength_nm;
+        }
+        if (filter.center_wavelength_nm > 0.0) {
+            filter_json["center_wavelength_nm"] = filter.center_wavelength_nm;
+        }
+        if (filter.min_wavelength_nm > 0.0) {
+            filter_json["min_wavelength_nm"] = filter.min_wavelength_nm;
+        }
+        if (filter.max_wavelength_nm > 0.0) {
+            filter_json["max_wavelength_nm"] = filter.max_wavelength_nm;
+        }
+        if (filter.bandwidth_fwhm_nm > 0.0) {
+            filter_json["bandwidth_fwhm_nm"] = filter.bandwidth_fwhm_nm;
+        }
+        if (!filter.notes.empty()) {
+            filter_json["notes"] = filter.notes;
+        }
+        filter_stack.push_back(std::move(filter_json));
+    }
+    if (!filter_stack.empty()) {
+        optics["filter_stack"] = std::move(filter_stack);
+    }
+
+    if (!optics.empty()) {
+        optics["schema_id"] = "orange.camera.optics";
+        optics["schema_version"] = 1;
+    }
+    return optics;
 }
 
 inline void parse_rig_io_config(const nlohmann::json& camera_config,

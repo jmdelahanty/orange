@@ -344,6 +344,7 @@ def verify_one(
     summary_path: Path,
     mp4_path: Path,
     *,
+    stream_fields: dict | None = None,
     expected_depth: int | None = None,
     max_high_water: int | None = None,
     max_enqueue_age: float | None = None,
@@ -360,6 +361,8 @@ def verify_one(
         "mp4": str(mp4_path),
         "routing_policy": "single_shard",
     }
+    if stream_fields:
+        stream.update(stream_fields)
     contract = {
         "require_gop_routing": False,
         "require_merged_mp4": True,
@@ -635,6 +638,37 @@ def test_status_sidecar_passes_and_summarizes() -> None:
         require(recorder_status["heartbeat_sequence"] == 8, "heartbeat should be summarized")
 
 
+def test_stream_kind_and_output_kind_match_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        summary_path, mp4_path = write_summary(root, "2010096")
+        status_path = write_status(root, "2010096")
+        for path in (summary_path, status_path):
+            rewrite_summary(
+                path,
+                lambda payload: payload.update(
+                    {"stream_kind": "full_frame", "output_kind": "full"}
+                ),
+            )
+
+        stream_fields = {"stream_kind": "full_frame", "output_kind": "full"}
+        verify_one(root, summary_path, mp4_path, stream_fields=stream_fields, require_status=True)
+
+        rewrite_summary(summary_path, lambda payload: payload.update({"output_kind": "crop"}))
+        try:
+            verify_one(
+                root,
+                summary_path,
+                mp4_path,
+                stream_fields=stream_fields,
+                require_status=True,
+            )
+        except verifier.VerificationError as exc:
+            require("output_kind mismatch" in str(exc), f"unexpected output-kind failure: {exc}")
+        else:
+            raise AssertionError("expected summary output_kind mismatch to fail")
+
+
 def test_status_sidecar_checks_rolling_progress() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -762,6 +796,143 @@ def test_runtime_status_checks_rolling_progress() -> None:
             raise AssertionError("expected runtime rolling mismatch to fail")
 
 
+def test_multi_shard_shard_mp4_retention_contract() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        serial = "2010096"
+        mp4_path = root / f"Cam{serial}_external.mp4"
+        mp4_path.write_bytes(b"merged-mp4")
+        summary_path = root / f"Cam{serial}_external_summary.json"
+        shard0 = root / f"Cam{serial}_external_shard0_gpu5.mp4"
+        shard1 = root / f"Cam{serial}_external_shard1_gpu6.mp4"
+        summary = {
+            "schema_id": verifier.SUMMARY_SCHEMA_ID,
+            "schema_version": 1,
+            "tool": "external_recorder_ipc_probe",
+            "stream_id": serial,
+            "routing_policy": "gop_modulo",
+            "shard_count": 2,
+            "encode": True,
+            "worker_failed": False,
+            "frames_received": 4,
+            "acks_sent": 4,
+            "detach_copied": 4,
+            "encode_enqueued": 4,
+            "encode_skipped": 0,
+            "encode_dropped": 0,
+            "encode_queue_depth": 32,
+            "encode_queue_high_water": 2,
+            "frames_encoded": 4,
+            "external_encode": {
+                "frames_dropped": 0,
+                "enqueue_age_p95_ms": 1.0,
+            },
+            "external_encode_shards": [
+                {
+                    "assigned_gpu_id": 5,
+                    "assigned_shard_id": 0,
+                    "frames_encoded": 2,
+                    "frames_dropped": 0,
+                    "worker_failed": False,
+                    "mp4": str(shard0),
+                    "mp4_retention": {
+                        "status": "deleted_after_merged_finalization",
+                        "retained": False,
+                        "removed_after_merge": True,
+                    },
+                },
+                {
+                    "assigned_gpu_id": 6,
+                    "assigned_shard_id": 1,
+                    "frames_encoded": 2,
+                    "frames_dropped": 0,
+                    "worker_failed": False,
+                    "mp4": str(shard1),
+                    "mp4_retention": {
+                        "status": "already_absent_after_merged_finalization",
+                        "retained": False,
+                        "removed_after_merge": False,
+                    },
+                },
+            ],
+            "merged_output": {
+                "enabled": True,
+                "failed": False,
+                "packets_written": 4,
+                "pending_gops": 0,
+                "mp4": str(mp4_path),
+            },
+            "storage_preflight": storage_preflight_payload(),
+            "ipc_protocol": ipc_protocol_payload(),
+            "outputs": {
+                "mp4": str(mp4_path),
+            },
+        }
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+        stream = {
+            "stream_id": serial,
+            "summary_json": str(summary_path),
+            "mp4": str(mp4_path),
+            "routing_policy": "gop_modulo",
+            "expected_shard_gpu_ids": [5, 6],
+        }
+        contract = {
+            "require_gop_routing": False,
+            "require_merged_mp4": True,
+            "require_video_sanity": False,
+            "preserve_shard_mp4s": False,
+        }
+        original_ffprobe = verifier.ffprobe_video
+        verifier.ffprobe_video = lambda path, ffprobe: None
+        try:
+            result = verifier.verify_summary(
+                root,
+                serial,
+                stream,
+                contract,
+                "ffprobe",
+                True,
+                None,
+                None,
+                None,
+                False,
+                False,
+                False,
+                False,
+            )
+            require(
+                result["shard_mp4_retention"] == "deleted_after_merged_finalization",
+                "retention summary should report deleted shard MP4s",
+            )
+
+            shard0.write_bytes(b"leftover-shard")
+            try:
+                verifier.verify_summary(
+                    root,
+                    serial,
+                    stream,
+                    contract,
+                    "ffprobe",
+                    True,
+                    None,
+                    None,
+                    None,
+                    False,
+                    False,
+                    False,
+                    False,
+                )
+            except verifier.VerificationError as exc:
+                require(
+                    "should have been removed" in str(exc),
+                    f"unexpected retained shard failure: {exc}",
+                )
+            else:
+                raise AssertionError("expected retained shard MP4 to fail")
+        finally:
+            verifier.ffprobe_video = original_ffprobe
+
+
 def main() -> int:
     tests = [
         test_queue_thresholds_pass_and_summarize,
@@ -772,10 +943,12 @@ def main() -> int:
         test_rolling_output_uses_summary_recording_control,
         test_rolling_output_requires_keyframe_zero,
         test_status_sidecar_passes_and_summarizes,
+        test_stream_kind_and_output_kind_match_contract,
         test_status_sidecar_checks_rolling_progress,
         test_status_sidecar_failures,
         test_runtime_status_is_checked_when_required,
         test_runtime_status_checks_rolling_progress,
+        test_multi_shard_shard_mp4_retention_contract,
     ]
     for test in tests:
         test()
