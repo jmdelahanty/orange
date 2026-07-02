@@ -4,12 +4,15 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <exception>
 #include <mutex>
 #include <queue>
 #include <vector>
 #include "offthreadmachine.h"
-#include "genericmutex.h"
+// For should_log_worker_entry_release_issue() (exponentially spaced
+// rate-limited logging shared with the entry-ownership diagnostics).
+#include "worker_entry_ownership_core.h"
 #include <cstdio>
 
 #if defined(__GNUC__)
@@ -45,6 +48,23 @@ public:
     void SetMaxQueueSize(int size) { maxQueueSize = size; }
     int GetMaxQueueSize() const { return maxQueueSize; }
 
+    // Optional bound for the output queue. 0 (the default) keeps the historic
+    // unbounded behavior. When bounded and full, PutObjectToQueueOut drops the
+    // OLDEST queued entry (drop-oldest keeps the freshest data for display /
+    // preview consumers), increments the drop counter, and hands the dropped
+    // entry to ReleaseDroppedQueueOutEntry(). Only opt in workers whose
+    // output-queue consumers tolerate loss (display/preview); data-critical
+    // workers must stay unbounded and rely on input-queue backpressure.
+    //
+    // IMPORTANT: entries are typically pool-backed and refcounted (see
+    // worker_entry_ownership_core.h). If the entries placed on this worker's
+    // output queue still own a pool reference that the consumer would release,
+    // the subclass MUST override ReleaseDroppedQueueOutEntry() to release the
+    // dropped entry exactly as the consumer would have, or the pool leaks.
+    // Shrinking the bound below the current backlog trims (drops) the oldest
+    // surplus entries through the same path.
+    void SetMaxQueueOutSize(int size);
+
     int GetCountQueueInSize();
     int GetCountQueueOutSize();
     int GetCountQueueIn() const { return countQueueIn; }
@@ -52,6 +72,10 @@ public:
     int GetCountInTotal() const { return countInTotal; }
     int GetCountOutTotal() const { return countOutTotal; }
     int GetCountQueueInMax() const { return countQueueInMax; }
+    uint64_t GetCountQueueOutDropped() const
+    {
+        return countQueueOutDropped.load(std::memory_order_acquire);
+    }
 
     void SetInterval(unsigned int i) {
         interval = i;
@@ -83,6 +107,16 @@ protected:
     virtual void OnQueueInEnqueued(T*, int) {}
     virtual void OnQueueInDequeued(T*, int) {}
 
+    // Called (off the queue lock) for every entry evicted from a bounded
+    // output queue, and for entries discarded when Reset() clears the output
+    // queue. Must release the entry exactly as the output-queue consumer
+    // would have (e.g. release_worker_entry_to_recycle with this worker's
+    // recycle queue), otherwise pool-backed entries leak. The default is a
+    // no-op, which is only correct when the worker's WorkerFunction has
+    // already released its reference before returning true (the pointer on
+    // the output queue then owns nothing).
+    virtual void ReleaseDroppedQueueOutEntry(T*) {}
+
     void GetQueueInSnapshotForInstrumentation(int* size, T** oldest);
 
 private:
@@ -92,6 +126,7 @@ private:
 
     void ResetInner();
     T* WaitForObjectFromQueueIn();
+    void HandleDroppedQueueOutEntry(T* dropped, int capacity);
 
 private:
     int id = 0;
@@ -99,7 +134,7 @@ private:
     std::condition_variable queueInNotEmptyCv;
     std::condition_variable queueInNotFullCv;
     std::queue<T*> queueIn;
-    CGenericMutex mutexQueueOut;
+    std::mutex mutexQueueOut;
     std::queue<T*> queueOut;
     bool stopRequested = false;
 
@@ -110,7 +145,9 @@ private:
     std::atomic<int> countInTotal{0};
     std::atomic<int> countOutTotal{0};
     std::atomic<int> countQueueInMax{0};
+    std::atomic<uint64_t> countQueueOutDropped{0};
     int maxQueueSize = 40; // Default max queue size
+    int maxQueueOutSize = 0; // Guarded by mutexQueueOut. 0 = unbounded (default)
 
     int myWork = 0;
     unsigned int interval;
@@ -183,6 +220,7 @@ void CThreadWorker<T>::ResetInner()
     countInTotal = 0;
     countOutTotal = 0;
     countQueueInMax = 0;
+    countQueueOutDropped = 0;
 
     // Safely clear the queues
     {
@@ -193,10 +231,22 @@ void CThreadWorker<T>::ResetInner()
     queueInNotEmptyCv.notify_all();
     queueInNotFullCv.notify_all();
 
-    mutexQueueOut.Lock();
     std::queue<T*> emptyOut;
-    std::swap(queueOut, emptyOut);
-    mutexQueueOut.Unlock();
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueOut);
+        std::swap(queueOut, emptyOut);
+    }
+    // Release discarded output entries the same way a consumer would have,
+    // so pool-backed entries are not leaked by a reset. Not counted as
+    // overflow drops. (During construction this dispatches to the base-class
+    // no-op; the queue is empty then, so nothing is lost.)
+    while (!emptyOut.empty()) {
+        T* entry = emptyOut.front();
+        emptyOut.pop();
+        if (entry) {
+            this->ReleaseDroppedQueueOutEntry(entry);
+        }
+    }
 }
 
 template<typename T>
@@ -224,7 +274,7 @@ bool CThreadWorker<T>::PutObjectToQueueIn(T* f)
 template<typename T>
 void CThreadWorker<T>::GetObjectsFromQueueOut(std::vector<T*>& items)
 {
-    mutexQueueOut.Lock();
+    std::lock_guard<std::mutex> lock(mutexQueueOut);
     items.clear();
     while (!queueOut.empty())
     {
@@ -233,21 +283,19 @@ void CThreadWorker<T>::GetObjectsFromQueueOut(std::vector<T*>& items)
     }
     countOutTotal += static_cast<int>(items.size());
     countQueueOut = 0; // The queue is now empty
-    mutexQueueOut.Unlock();
 }
 
 template<typename T>
 T* CThreadWorker<T>::GetObjectFromQueueOut()
 {
     T* f = nullptr;
-    mutexQueueOut.Lock();
+    std::lock_guard<std::mutex> lock(mutexQueueOut);
     if (!queueOut.empty())
     {
         f = queueOut.front();
         queueOut.pop();
         countQueueOut--;
     }
-    mutexQueueOut.Unlock();
     return f;
 }
 
@@ -255,30 +303,83 @@ T* CThreadWorker<T>::GetObjectFromQueueOut()
 template<typename T>
 void CThreadWorker<T>::PutObjectToQueueOut(T* f)
 {
-    mutexQueueOut.Lock();
-    queueOut.push(f);
-    countQueueOut++;
-    mutexQueueOut.Unlock();
+    T* dropped = nullptr;
+    bool didDrop = false;
+    int capacity = 0;
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueOut);
+        capacity = maxQueueOutSize;
+        if (capacity > 0 && queueOut.size() >= static_cast<size_t>(capacity))
+        {
+            // Bounded and full: evict the oldest entry so the freshest data
+            // stays available to the (slow) consumer.
+            dropped = queueOut.front();
+            queueOut.pop();
+            countQueueOut--;
+            didDrop = true;
+        }
+        queueOut.push(f);
+        countQueueOut++;
+    }
+    if (didDrop) {
+        this->HandleDroppedQueueOutEntry(dropped, capacity);
+    }
+}
+
+template<typename T>
+void CThreadWorker<T>::SetMaxQueueOutSize(int size)
+{
+    std::vector<T*> trimmed;
+    {
+        std::lock_guard<std::mutex> lock(mutexQueueOut);
+        maxQueueOutSize = size;
+        if (size > 0) {
+            while (queueOut.size() > static_cast<size_t>(size)) {
+                trimmed.push_back(queueOut.front());
+                queueOut.pop();
+                countQueueOut--;
+            }
+        }
+    }
+    for (T* entry : trimmed) {
+        this->HandleDroppedQueueOutEntry(entry, size);
+    }
+}
+
+// Runs off the queue lock: bumps the drop counter, releases the dropped entry
+// via the subclass hook, and logs at exponentially spaced drop counts.
+template<typename T>
+void CThreadWorker<T>::HandleDroppedQueueOutEntry(T* dropped, int capacity)
+{
+    const uint64_t drops =
+        countQueueOutDropped.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (dropped) {
+        // Pool-backed, refcounted entries must be released exactly as the
+        // consumer would have released them (see the hook's contract).
+        this->ReleaseDroppedQueueOutEntry(dropped);
+    }
+    if (should_log_worker_entry_release_issue(drops)) {
+        std::fprintf(stderr,
+            "[CThreadWorker] %s: output queue full (cap=%d); dropped oldest "
+            "entry (total drops=%llu)\n",
+            threadName,
+            capacity,
+            static_cast<unsigned long long>(drops));
+    }
 }
 
 template<typename T>
 int CThreadWorker<T>::GetCountQueueInSize()
 {
-    int size = -1;
-    mutexQueueIn.lock();
-    size = static_cast<int>(queueIn.size());
-    mutexQueueIn.unlock();
-    return size;
+    std::lock_guard<std::mutex> lock(mutexQueueIn);
+    return static_cast<int>(queueIn.size());
 }
 
 template<typename T>
 int CThreadWorker<T>::GetCountQueueOutSize()
 {
-    int size = -1;
-    mutexQueueOut.Lock();
-    size = static_cast<int>(queueOut.size());
-    mutexQueueOut.Unlock();
-    return size;
+    std::lock_guard<std::mutex> lock(mutexQueueOut);
+    return static_cast<int>(queueOut.size());
 }
 
 template<typename T>
@@ -286,15 +387,16 @@ T* CThreadWorker<T>::GetObjectFromQueueIn()
 {
     T* f = nullptr;
     bool popped = false;
-    mutexQueueIn.lock();
-    if (!queueIn.empty())
     {
-        f = queueIn.front();
-        queueIn.pop();
-        countQueueIn--;
-        popped = true;
+        std::lock_guard<std::mutex> lock(mutexQueueIn);
+        if (!queueIn.empty())
+        {
+            f = queueIn.front();
+            queueIn.pop();
+            countQueueIn--;
+            popped = true;
+        }
     }
-    mutexQueueIn.unlock();
     if (popped) {
         queueInNotFullCv.notify_one();
     }

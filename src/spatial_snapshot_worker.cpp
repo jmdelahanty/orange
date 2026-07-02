@@ -111,6 +111,15 @@ SpatialSnapshotWorker::SpatialSnapshotWorker(
       camera_params_(camera_params),
       recycle_queue_(&recycle_queue)
 {
+    // Preview/diagnostic-only output queue: WorkerFunction returns true after
+    // handling a snapshot frame, pushing the entry pointer onto the
+    // base-class output queue, but results are delivered via
+    // complete_result() and nothing in-tree drains the queue. Dropping is
+    // always acceptable. No ReleaseDroppedQueueOutEntry override is needed:
+    // WorkerFunction's WorkerEntryRefGuard releases the entry's pool
+    // reference BEFORE returning true, so pointers on the output queue own no
+    // pool reference and the base-class no-op release is correct.
+    SetMaxQueueOutSize(8);
 }
 
 bool SpatialSnapshotWorker::RequestSnapshot(
