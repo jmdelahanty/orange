@@ -67,3 +67,4 @@ __pycache__/
 *.pyc
 .codex
 .codex/
+.claude/settings.local.json
