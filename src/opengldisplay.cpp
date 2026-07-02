@@ -55,6 +55,17 @@ COpenGLDisplay::COpenGLDisplay(const char* name, CameraParams *camera_params, Ca
       last_display_log_time_(std::chrono::steady_clock::now())
 {
     std::cout << "[OPENGL_DISPLAY] CONSTRUCTOR for " << camera_params->camera_name << " on display GPU " << display_gpu_id << std::endl;
+
+    // Display-only output queue: the fast mono path in WorkerFunction returns
+    // true, pushing the entry pointer onto the base-class output queue, but
+    // nothing in-tree drains it, so it would otherwise grow one pointer per
+    // displayed frame for the whole session. Dropping is always acceptable
+    // here (preview data only). No ReleaseDroppedQueueOutEntry override is
+    // needed: WorkerFunction releases the entry's pool reference to
+    // m_recycle_queue BEFORE returning true, so pointers on the output queue
+    // own no pool reference and the base-class no-op release is correct.
+    SetMaxQueueOutSize(8);
+
     ck(cudaSetDevice(display_gpu_id));
     ck(cudaStreamCreate(&m_stream));
 
