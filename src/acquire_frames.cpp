@@ -2148,6 +2148,20 @@ void acquire_frames(
                     if (!recording_accepted) {
                         if (recording_retained) {
                             log_fanout_enqueue_rejected("recording");
+                            if (camera_control->record_video &&
+                                recording_ingress->fail_on_drop()) {
+                                std::cerr << "[ACQ][ERROR] recording failed:"
+                                          << " frame dropped while recording.fail_on_drop"
+                                          << " is enabled; stopping recording cleanly"
+                                          << " cam=" << camera_params->camera_serial
+                                          << " frame=" << current_entry->frame_id
+                                          << " recording_frame="
+                                          << current_entry->recording_frame_id
+                                          << std::endl;
+                                camera_control->record_video = false;
+                                camera_control->recording_draining = true;
+                                camera_control->stop_record = true;
+                            }
                         }
                     }
                     if (will_yolo) {

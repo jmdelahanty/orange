@@ -42,6 +42,7 @@ public:
     void PutObjectToQueueOut(T* f);
     T* GetObjectFromQueueIn();
     void SetMaxQueueSize(int size) { maxQueueSize = size; }
+    int GetMaxQueueSize() const { return maxQueueSize; }
 
     int GetCountQueueInSize();
     int GetCountQueueOutSize();

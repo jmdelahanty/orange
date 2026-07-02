@@ -65,6 +65,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             resolved_recording_config_.resources.encoder_entry_pool_size,
             recycle_queue,
             camera_control);
+        preprocess_worker_->SetFailOnDrop(resolved_recording_config_.fail_on_drop);
 
         recording_ingress_ = std::make_unique<RecordingIngress>(
             preprocess_worker_.get(),
@@ -112,6 +113,8 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                     resolved_recording_config_.resources.encoder_entry_pool_size,
                     recycle_queue,
                     camera_control);
+                helper_target.preprocess_worker->SetFailOnDrop(
+                    resolved_recording_config_.fail_on_drop);
 
                 recording_ingress_->RegisterHelperPreprocessWorker(
                     helper_gpu_id,
@@ -158,6 +161,7 @@ ModernRecordingPipeline::ModernRecordingPipeline(
             recycle_queue,
             camera_control);
 
+        preprocess_worker_->SetFailOnDrop(resolved_recording_config_.fail_on_drop);
         preprocess_worker_->SetHwWorker(hw_worker_.get());
         hw_worker_->SetPreprocessWorker(preprocess_worker_.get());
         recording_ingress_ = std::make_unique<RecordingIngress>(
@@ -223,6 +227,8 @@ ModernRecordingPipeline::ModernRecordingPipeline(
                     recycle_queue,
                     camera_control);
 
+                helper_target.preprocess_worker->SetFailOnDrop(
+                    resolved_recording_config_.fail_on_drop);
                 helper_target.preprocess_worker->SetHwWorker(helper_target.hw_worker.get());
                 helper_target.hw_worker->SetPreprocessWorker(helper_target.preprocess_worker.get());
                 recording_ingress_->RegisterHelperPreprocessWorker(

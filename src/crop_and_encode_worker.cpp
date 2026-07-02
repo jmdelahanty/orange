@@ -9,6 +9,7 @@
 #include "project.h" // Add this include
 #include "fsuid_guard.h"
 #include "video_encode_profile.h"
+#include "worker_entry_ownership_core.h"
 #include <nppi.h>
 #include <npp.h>
 #include <nppi_color_conversion.h>
@@ -743,9 +744,22 @@ bool CropAndEncodeWorker::TryEnqueueJob(CropEncodeJob* job)
         run_queue_high_water_ = std::max(run_queue_high_water_, queue_depth + 1);
     }
     if (queue_depth >= max_queue_size_) {
-        queue_full_drops_.fetch_add(1, std::memory_order_relaxed);
+        const uint64_t dropped_total =
+            queue_full_drops_.fetch_add(1, std::memory_order_relaxed) + 1;
         if (record_active) {
             ++run_queue_full_drops_;
+        }
+        if (should_log_deduplicated_count(dropped_total)) {
+            std::cerr << "[CropAndEncodeWorker][WARNING] crop job dropped:"
+                      << " queue full"
+                      << " worker=" << threadName
+                      << " frame=" << job->frame.local_frame_id
+                      << " recording_frame=" << job->frame.recording_frame_id
+                      << " record_active=" << (record_active ? 1 : 0)
+                      << " queue_depth=" << queue_depth
+                      << " queue_capacity=" << max_queue_size_
+                      << " dropped_total=" << dropped_total
+                      << std::endl;
         }
         return false;
     }

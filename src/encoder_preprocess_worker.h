@@ -85,6 +85,12 @@ public:
 
     void SetHwWorker(EncoderHwWorker* hw_worker);
 
+    // Opt-in fail-on-drop mode resolved from the recording config: when
+    // enabled, a dropped frame during an active recording stops the recording
+    // cleanly instead of silently continuing. Set before StartThread().
+    void SetFailOnDrop(bool enabled) { fail_on_drop_ = enabled; }
+    bool fail_on_drop() const { return fail_on_drop_; }
+
     // This queue is public so the HW worker can return buffers
     SafeQueue<ENCODER_WORKER_ENTRY*> free_encoder_entries_;
     SafeQueue<cudaEvent_t*> free_events_;  // Assuming this is also public
@@ -205,6 +211,7 @@ private:
     std::atomic<int> frame_counter_{0};
     std::atomic<double> current_fps_{0.0};
     std::atomic<uint64_t> frames_dropped_{0};
+    bool fail_on_drop_ = false;
     std::atomic<uint64_t> resource_waits_{0};
     std::atomic<int> in_flight_{0};
 };
