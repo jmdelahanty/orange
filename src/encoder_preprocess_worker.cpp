@@ -1256,7 +1256,37 @@ bool EncoderPreprocessWorker::WorkerFunction(WORKER_ENTRY* entry)
     }
     
     if (!encoder_entry || !event || (direct_input_enabled_ && direct_input_slot_id < 0)) {
-        frames_dropped_++;
+        const uint64_t dropped_total = frames_dropped_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (should_log_deduplicated_count(dropped_total)) {
+            std::cerr << "[EncoderPreprocessWorker][WARNING] frame dropped:"
+                      << " encoder resources exhausted after retries"
+                      << " cam="
+                      << (camera_params_ ? camera_params_->camera_serial : std::string("unknown"))
+                      << " gpu=" << preprocess_gpu_id_
+                      << " frame=" << entry->frame_id
+                      << " recording_frame=" << entry->recording_frame_id
+                      << " queue_depth=" << GetCountQueueInSize()
+                      << " queue_capacity=" << GetMaxQueueSize()
+                      << " available_buffers=" << available_buffers_.load(std::memory_order_relaxed)
+                      << " available_events=" << available_events_.load(std::memory_order_relaxed)
+                      << " dropped_total=" << dropped_total
+                      << std::endl;
+        }
+        if (fail_on_drop_ && camera_control_ && camera_control_->record_video) {
+            std::cerr << "[EncoderPreprocessWorker][ERROR] recording failed:"
+                      << " frame dropped while recording.fail_on_drop is enabled;"
+                      << " stopping recording cleanly"
+                      << " cam="
+                      << (camera_params_ ? camera_params_->camera_serial : std::string("unknown"))
+                      << " gpu=" << preprocess_gpu_id_
+                      << " frame=" << entry->frame_id
+                      << " recording_frame=" << entry->recording_frame_id
+                      << " dropped_total=" << dropped_total
+                      << std::endl;
+            camera_control_->record_video = false;
+            camera_control_->recording_draining = true;
+            camera_control_->stop_record = true;
+        }
         return false;
     }
     

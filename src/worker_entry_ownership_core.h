@@ -169,9 +169,17 @@ inline void reset_worker_entry_release_diagnostics_for_tests()
     worker_entry_context_diagnostic_buckets().clear();
 }
 
-inline bool should_log_worker_entry_release_issue(const uint64_t count)
+// Shared deduplicated-logging predicate for hot-path warning sites: log the
+// first 16 occurrences of an event, then only exponentially spaced
+// (power-of-two) counts so a sustained storm cannot spam stderr.
+inline bool should_log_deduplicated_count(const uint64_t count)
 {
     return count <= 16 || (count & (count - 1)) == 0;
+}
+
+inline bool should_log_worker_entry_release_issue(const uint64_t count)
+{
+    return should_log_deduplicated_count(count);
 }
 
 template <typename EntryT, typename = void>

@@ -113,6 +113,9 @@ struct CameraRecordingResourcesConfig {
 struct CameraRecordingConfig {
     std::string profile_name;
     std::string preferred_sink_mode;
+    // Opt-in: when true, a dropped frame during an active recording marks the
+    // recording failed and stops it cleanly instead of silently continuing.
+    bool fail_on_drop = false;
     CameraRecordingEncodeConfig encode;
     CameraRecordingOutputConfig output;
     RecordingStrategyConfig strategy;
@@ -123,6 +126,7 @@ struct CameraRecordingConfig {
 struct ResolvedRecordingConfig {
     int source_gpu_id = -1;
     int recording_gpu_id = -1;
+    bool fail_on_drop = false;
     CameraRecordingEncodeConfig encode;
     RecordingOutputConfig output;
     RecordingStrategyConfig strategy;

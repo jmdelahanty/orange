@@ -74,6 +74,7 @@ public:
     bool requires_owned_cuda_source() const;
 
     EncoderPreprocessWorker* primary_preprocess_worker() const { return primary_preprocess_worker_; }
+    bool fail_on_drop() const { return resolved_recording_config_.fail_on_drop; }
 
 private:
     class ThreadedHandoffWorker;

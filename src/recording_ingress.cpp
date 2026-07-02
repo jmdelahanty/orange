@@ -1081,12 +1081,19 @@ bool RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
             entry->recording_route_helper = false;
         }
         if (!threaded_handoff_worker_->PutObjectToQueueIn(entry)) {
-            enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed);
-            std::cerr << "[RecordingIngress] threaded_handoff_only enqueue rejected"
-                      << " cam=" << camera_serial_
-                      << " frame=" << (entry ? entry->frame_id : 0)
-                      << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
-                      << std::endl;
+            const uint64_t dropped_total =
+                enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (should_log_deduplicated_count(dropped_total)) {
+                std::cerr << "[RecordingIngress][WARNING] frame dropped:"
+                          << " threaded_handoff_only enqueue rejected"
+                          << " cam=" << camera_serial_
+                          << " frame=" << (entry ? entry->frame_id : 0)
+                          << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
+                          << " queue_depth=" << threaded_handoff_worker_->GetCountQueueInSize()
+                          << " queue_capacity=" << threaded_handoff_worker_->GetMaxQueueSize()
+                          << " dropped_total=" << dropped_total
+                          << std::endl;
+            }
             return false;
         }
         return true;
@@ -1105,12 +1112,19 @@ bool RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
             entry->recording_route_helper = false;
         }
         if (!external_ipc_handoff_worker_->PutObjectToQueueIn(entry)) {
-            enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed);
-            std::cerr << "[RecordingIngress] external_ipc enqueue rejected"
-                      << " cam=" << camera_serial_
-                      << " frame=" << (entry ? entry->frame_id : 0)
-                      << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
-                      << std::endl;
+            const uint64_t dropped_total =
+                enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (should_log_deduplicated_count(dropped_total)) {
+                std::cerr << "[RecordingIngress][WARNING] frame dropped:"
+                          << " external_ipc enqueue rejected"
+                          << " cam=" << camera_serial_
+                          << " frame=" << (entry ? entry->frame_id : 0)
+                          << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
+                          << " queue_depth=" << external_ipc_handoff_worker_->GetCountQueueInSize()
+                          << " queue_capacity=" << external_ipc_handoff_worker_->GetMaxQueueSize()
+                          << " dropped_total=" << dropped_total
+                          << std::endl;
+            }
             return false;
         }
         return true;
@@ -1170,13 +1184,20 @@ bool RecordingIngress::SubmitFrame(WORKER_ENTRY* entry)
         entry->recording_target_gpu_id = target_gpu_id;
     }
     if (!target_worker->PutObjectToQueueIn(entry)) {
-        enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed);
-        std::cerr << "[RecordingIngress] preprocess enqueue rejected"
-                  << " cam=" << camera_serial_
-                  << " frame=" << (entry ? entry->frame_id : 0)
-                  << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
-                  << " target_gpu=" << target_gpu_id
-                  << std::endl;
+        const uint64_t dropped_total =
+            enqueue_rejected_frames_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (should_log_deduplicated_count(dropped_total)) {
+            std::cerr << "[RecordingIngress][WARNING] frame dropped:"
+                      << " preprocess enqueue rejected"
+                      << " cam=" << camera_serial_
+                      << " frame=" << (entry ? entry->frame_id : 0)
+                      << " recording_frame=" << (entry ? entry->recording_frame_id : 0)
+                      << " target_gpu=" << target_gpu_id
+                      << " queue_depth=" << target_worker->GetCountQueueInSize()
+                      << " queue_capacity=" << target_worker->GetMaxQueueSize()
+                      << " dropped_total=" << dropped_total
+                      << std::endl;
+        }
         return false;
     }
     return true;

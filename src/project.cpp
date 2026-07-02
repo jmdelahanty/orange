@@ -2539,6 +2539,15 @@ bool parse_camera_recording_json_impl(const nlohmann::json& recording_json,
 
     CameraRecordingConfig recording;
     recording.profile_name = recording_json.value("profile_name", recording.profile_name);
+    if (recording_json.contains("fail_on_drop")) {
+        if (!recording_json["fail_on_drop"].is_boolean()) {
+            if (error_out) {
+                *error_out = "recording.fail_on_drop must be a boolean";
+            }
+            return false;
+        }
+        recording.fail_on_drop = recording_json["fail_on_drop"].get<bool>();
+    }
     if (recording_json.contains("preferred_sink_mode")) {
         if (!recording_json["preferred_sink_mode"].is_string()) {
             if (error_out) {
@@ -2695,6 +2704,7 @@ nlohmann::json build_camera_recording_json_impl(const CameraRecordingConfig& rec
 
     nlohmann::json recording_json = build_recording_strategy_json_object(recording.strategy);
     recording_json["profile_name"] = recording.profile_name;
+    recording_json["fail_on_drop"] = recording.fail_on_drop;
     if (!recording.preferred_sink_mode.empty()) {
         recording_json["preferred_sink_mode"] = recording.preferred_sink_mode;
     }
@@ -3621,6 +3631,9 @@ ResolvedRecordingConfig build_resolved_recording_config(
     resolved.source_gpu_id = camera_params.gpu_id;
     resolved.recording_gpu_id =
         overrides.recording_gpu_id >= 0 ? overrides.recording_gpu_id : camera_params.gpu_id;
+    resolved.fail_on_drop = parse_runtime_env_flag(
+        "ORANGE_RECORDING_FAIL_ON_DROP",
+        camera_params.recording.fail_on_drop);
     resolved.encode = camera_params.recording.encode;
     if (!overrides.codec.empty()) {
         resolved.encode.codec = lower_ascii_copy(overrides.codec);

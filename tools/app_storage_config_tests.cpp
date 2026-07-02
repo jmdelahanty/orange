@@ -558,6 +558,63 @@ void test_camera_config_lens_control_defaults_enabled()
     std::filesystem::remove_all(root);
 }
 
+void test_recording_fail_on_drop_flag_parsing()
+{
+    // Default OFF when absent.
+    CameraRecordingConfig defaults;
+    require(
+        parse_camera_recording_json(nlohmann::json::object(), &defaults),
+        "empty recording config should parse");
+    require(!defaults.fail_on_drop, "fail_on_drop should default to false");
+
+    // Opt-in true parses.
+    CameraRecordingConfig enabled;
+    require(
+        parse_camera_recording_json(
+            nlohmann::json{{"fail_on_drop", true}}, &enabled),
+        "fail_on_drop=true should parse");
+    require(enabled.fail_on_drop, "fail_on_drop=true should load");
+
+    // Explicit false parses.
+    CameraRecordingConfig disabled;
+    require(
+        parse_camera_recording_json(
+            nlohmann::json{{"fail_on_drop", false}}, &disabled),
+        "fail_on_drop=false should parse");
+    require(!disabled.fail_on_drop, "fail_on_drop=false should load");
+
+    // Non-boolean is rejected with a clear error.
+    CameraRecordingConfig invalid;
+    std::string error;
+    require(
+        !parse_camera_recording_json(
+            nlohmann::json{{"fail_on_drop", "yes"}}, &invalid, &error),
+        "non-boolean fail_on_drop should be rejected");
+    require(
+        error.find("fail_on_drop") != std::string::npos,
+        "fail_on_drop parse error should name the field");
+
+    // Round-trips through serialization.
+    const nlohmann::json serialized = build_camera_recording_json(enabled);
+    require(
+        serialized.contains("fail_on_drop") && serialized["fail_on_drop"].is_boolean() &&
+            serialized["fail_on_drop"].get<bool>(),
+        "fail_on_drop should serialize");
+    CameraRecordingConfig round_tripped;
+    require(
+        parse_camera_recording_json(serialized, &round_tripped),
+        "serialized recording config should re-parse");
+    require(round_tripped.fail_on_drop, "fail_on_drop should round-trip");
+
+    // Resolves into the runtime recording config (default env: no override).
+    ScopedEnv fail_on_drop_env("ORANGE_RECORDING_FAIL_ON_DROP");
+    fail_on_drop_env.Unset();
+    CameraParams params{};
+    params.recording = enabled;
+    const ResolvedRecordingConfig resolved = build_resolved_recording_config(params);
+    require(resolved.fail_on_drop, "fail_on_drop should resolve into ResolvedRecordingConfig");
+}
+
 void test_recording_snapshot_includes_camera_coordinate_frame()
 {
     const std::filesystem::path root = make_temp_dir();
@@ -801,6 +858,7 @@ int main()
         {"camera_config_loads_lens_control_flag", &test_camera_config_loads_lens_control_flag},
         {"camera_config_lens_control_defaults_enabled",
          &test_camera_config_lens_control_defaults_enabled},
+        {"recording_fail_on_drop_flag_parsing", &test_recording_fail_on_drop_flag_parsing},
         {"recording_snapshot_includes_camera_coordinate_frame",
          &test_recording_snapshot_includes_camera_coordinate_frame},
         {"invalid_crop_sink_fails", &test_invalid_crop_sink_fails},
