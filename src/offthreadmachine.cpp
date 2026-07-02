@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <exception>
 #include "offthreadmachine.h"
 
 COffThreadMachine::COffThreadMachine(const char *tName)
@@ -91,6 +92,16 @@ void COffThreadMachine::DoStopThread() {
   // queues).
 }
 
+void COffThreadMachine::NoteWorkerException(const char *what) noexcept {
+  fatalError.store(true, std::memory_order_release);
+  const int count = fatalErrorLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (count <= 5) {
+    fprintf(stderr, "[%s] worker thread exception%s: %s\n", threadName,
+            count == 5 ? " (suppressing further reports)" : "",
+            what ? what : "unknown");
+  }
+}
+
 THREAD_FUNCTION COffThreadMachine::MachineThread(void *arg) {
   auto *self = static_cast<COffThreadMachine *>(arg);
 
@@ -107,7 +118,20 @@ THREAD_FUNCTION COffThreadMachine::MachineThread(void *arg) {
 #endif
   }
 
-  self->ThreadRunning();
+  // Last line of defence: an exception escaping a thread body would call
+  // std::terminate and kill the whole process (no NVENC flush, no MP4
+  // trailer). Log it, latch the fatal-error flag, and let the thread exit
+  // cleanly instead. DoStopThread() unblocks any producers waiting on this
+  // worker's queues so the pipeline can drain.
+  try {
+    self->ThreadRunning();
+  } catch (const std::exception &e) {
+    self->NoteWorkerException(e.what());
+    self->DoStopThread();
+  } catch (...) {
+    self->NoteWorkerException("non-std exception");
+    self->DoStopThread();
+  }
   self->threadOn = 0; // mark finished before exiting
   return 0;
 }

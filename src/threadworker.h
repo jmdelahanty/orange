@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <exception>
 #include <mutex>
 #include <queue>
 #include <vector>
@@ -359,9 +360,21 @@ void CThreadWorker<T>::ThreadRunning()
 
         if (f)
         {
-            if (this->WorkerFunction(f))
-            {
-                this->PutObjectToQueueOut(f);
+            // A throwing WorkerFunction (e.g. a CUDA error surfaced by
+            // CHECK()) must not escape the thread: that would call
+            // std::terminate and kill the process with no NVENC flush and no
+            // MP4 trailer. Treat it like a failed item (not forwarded), latch
+            // the fatal-error flag, and keep the loop alive so flush ticks can
+            // still drain and finalize recordings.
+            try {
+                if (this->WorkerFunction(f))
+                {
+                    this->PutObjectToQueueOut(f);
+                }
+            } catch (const std::exception& e) {
+                this->NoteWorkerException(e.what());
+            } catch (...) {
+                this->NoteWorkerException("non-std exception");
             }
             myWork++;
         }
@@ -370,7 +383,13 @@ void CThreadWorker<T>::ThreadRunning()
             // A flush tick: either an EnqueueFlushTick() marker reached the
             // front of the queue (FIFO, so everything ahead of it has been
             // processed), or the stop signal woke an empty queue.
-            this->OnFlushTick();
+            try {
+                this->OnFlushTick();
+            } catch (const std::exception& e) {
+                this->NoteWorkerException(e.what());
+            } catch (...) {
+                this->NoteWorkerException("non-std exception");
+            }
 
             // If the machine is shutting down and the queue is empty, exit.
             if (!this->IsMachineOn()) {
