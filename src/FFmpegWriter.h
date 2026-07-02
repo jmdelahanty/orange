@@ -52,6 +52,10 @@ public:
     void join_thread();
     void write_one_pkt(AVPacket* pkt); 
     bool is_open() const { return open_; }
+    // True once the writer thread exited on an exception. The thread never
+    // calls exit(); it logs, latches this flag and stops so the owner can
+    // still finalize the container.
+    bool writer_thread_failed() const { return writer_thread_error_.load(std::memory_order_acquire); }
     bool has_queue_overflowed() const { return queue_overflowed_.load(std::memory_order_relaxed); }
     uint64_t queue_overflow_events() const { return queue_overflow_events_.load(std::memory_order_relaxed); }
     size_t queued_packets() const { return queued_packets_.load(std::memory_order_relaxed); }
@@ -89,9 +93,11 @@ private:
     std::atomic<size_t> peak_queued_bytes_{0};
     std::atomic<bool> queue_overflowed_{false};
     std::atomic<uint64_t> queue_overflow_events_{0};
+    std::atomic<bool> writer_thread_error_{false};
     mutable std::mutex latency_mutex_;
     FFmpegWriterLatencyStats latency_stats_;
     void write_thread();
+    void write_thread_loop();
     void write_keyframe_sidecar();
     bool packet_has_idr(const uint8_t* data, size_t size) const;
     bool packet_has_idr_h264(const uint8_t* data, size_t size) const;

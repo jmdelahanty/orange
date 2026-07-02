@@ -8704,7 +8704,13 @@ int main(int argc, char **args) {
                                     }
                                 }
                             }
-                            // Create worker thread objects and GPU textures
+                            // Create worker thread objects and GPU textures.
+                            // Worker constructors (YoloWorker, CropAndEncodeWorker, ...)
+                            // and CHECK() throw on CUDA/TensorRT failures; library code
+                            // never exits. Catch construction-time throws here at the
+                            // pipeline construction boundary: print and exit nonzero
+                            // (exiting from main is fine).
+                            try {
                             openGLDisplayWorkers = new COpenGLDisplay*[num_cameras]();
                             cropProducerWorkers = new CropProducerWorker*[num_cameras]();
                             cropAndEncodeWorkers = new CropAndEncodeWorker*[num_cameras]();
@@ -8850,6 +8856,11 @@ int main(int argc, char **args) {
                                 camera_resources.data(),
                                 camera_control,
                                 &app_storage_config);
+                            } catch (const std::exception& ex) {
+                                std::cerr << "FATAL: pipeline construction failed: "
+                                          << ex.what() << std::endl;
+                                return 1;
+                            }
 
                             // START ALL WORKER THREADS
                             for (int i = 0; i < num_cameras; i++) {

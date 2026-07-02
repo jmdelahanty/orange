@@ -281,6 +281,25 @@ void FFmpegWriter::write_one_pkt(AVPacket* pkt)
 
 void FFmpegWriter::write_thread()
 {
+    // An exception escaping this thread would call std::terminate and kill
+    // the whole process (stranding every encoder shard's in-flight GOPs).
+    // Log it, latch the error flag and exit the thread cleanly instead so the
+    // owner can still finalize the container.
+    try {
+        write_thread_loop();
+    } catch (const std::exception& e) {
+        writer_thread_error_.store(true, std::memory_order_release);
+        std::cerr << "FFMPEG: writer thread [" << output_label_
+                  << "] exception: " << e.what() << std::endl;
+    } catch (...) {
+        writer_thread_error_.store(true, std::memory_order_release);
+        std::cerr << "FFMPEG: writer thread [" << output_label_
+                  << "] non-std exception" << std::endl;
+    }
+}
+
+void FFmpegWriter::write_thread_loop()
+{
     while (true) {
         QueuedPacket queued_packet;
         if (m_queue.pop(queued_packet)) {

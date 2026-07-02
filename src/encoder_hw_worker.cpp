@@ -1855,6 +1855,10 @@ void EncoderHwWorker::split_harvest_loop()
         set_split_harvest_error(e.what());
         std::cerr << "[" << threadName << "] split harvest exception: "
                   << e.what() << std::endl;
+    } catch (...) {
+        set_split_harvest_error("non-std exception");
+        std::cerr << "[" << threadName << "] split harvest non-std exception"
+                  << std::endl;
     }
 }
 

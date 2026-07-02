@@ -28,7 +28,17 @@ public:
     // read‑only helpers
     bool IsMachineOn() const { return threadOn.load(std::memory_order_acquire); }
 
+    // True once the worker thread has caught a fatal exception (e.g. a CUDA
+    // error surfaced by CHECK()). The thread never calls exit(); it logs, sets
+    // this flag and keeps shutdown/drain paths functional so recordings can
+    // be finalized.
+    bool HasFatalError() const { return fatalError.load(std::memory_order_acquire); }
+
 protected:
+    // Record a fatal exception observed on the worker thread: log it with the
+    // worker's name (rate-limited) and latch the fatal-error flag. Never throws.
+    void NoteWorkerException(const char *what) noexcept;
+
     char threadName[64]{}; // NUL‑terminated label for debugging / naming
 
 private:
@@ -40,6 +50,8 @@ private:
 
     // data
     std::atomic<bool> threadOn{false}; // true while thread should stay alive
+    std::atomic<bool> fatalError{false}; // latched by NoteWorkerException
+    std::atomic<int>  fatalErrorLogCount{0}; // rate-limits fatal-error logging
     THREAD_HANDLE      threadHandle{}; // 0 / nullptr when not running
     int                cpuToUse = -1;  // 0‑based CPU#, ‑1 ⇒ no affinity
 };

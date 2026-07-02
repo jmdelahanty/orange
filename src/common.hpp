@@ -3,22 +3,43 @@
 #ifndef POSE_NORMAL_COMMON_HPP
 #define POSE_NORMAL_COMMON_HPP
 #include "NvInfer.h"
+#include <cuda_runtime_api.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 #include <string>
+#include <stdexcept>
 #include <iostream>
+
+// Thrown by CHECK() when a CUDA runtime call fails. Carries the failing
+// file/line and cudaGetErrorString() text in what(). Library code must never
+// exit(); thread entry points catch this, log it, and stop the worker so the
+// pipeline can drain and finalize recordings.
+class cuda_error : public std::runtime_error {
+public:
+    cuda_error(cudaError_t code, const char* file, int line):
+        std::runtime_error(make_message(code, file, line)),
+        code_(code)
+    {
+    }
+
+    cudaError_t code() const noexcept { return code_; }
+
+private:
+    static std::string make_message(cudaError_t code, const char* file, int line)
+    {
+        return std::string("CUDA error ") + std::to_string(static_cast<int>(code)) + " (" +
+               cudaGetErrorString(code) + ") at " + file + ":" + std::to_string(line);
+    }
+
+    cudaError_t code_;
+};
 
 #define CHECK(call)                                                                                                    \
     do {                                                                                                               \
         const cudaError_t error_code = call;                                                                           \
         if (error_code != cudaSuccess) {                                                                               \
-            printf("CUDA Error:\n");                                                                                   \
-            printf("    File:       %s\n", __FILE__);                                                                  \
-            printf("    Line:       %d\n", __LINE__);                                                                  \
-            printf("    Error code: %d\n", error_code);                                                                \
-            printf("    Error text: %s\n", cudaGetErrorString(error_code));                                            \
-            exit(1);                                                                                                   \
+            throw cuda_error(error_code, __FILE__, __LINE__);                                                          \
         }                                                                                                              \
     } while (0)
 
